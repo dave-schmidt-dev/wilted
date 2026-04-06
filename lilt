@@ -27,24 +27,31 @@ works offline and doesn't depend on paywalls at listen time.
 """
 
 import argparse
-import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
 import atexit
-from datetime import datetime
-from pathlib import Path
 
 import numpy as np
 
+from lilt import VOICES
+from lilt.text import clean_text, extract_title_from_paste, split_into_chunks
+from lilt.fetch import (
+    get_text_from_clipboard,
+    get_text_from_url,
+    extract_title_from_url,
+)
+from lilt.queue import (
+    add_article,
+    clear_queue,
+    get_article_text,
+    load_queue,
+    mark_completed,
+    remove_article,
+)
 
-# --- Constants ---
-
-DATA_DIR = Path(__file__).resolve().parent / "data"
-QUEUE_FILE = DATA_DIR / "queue.json"
-ARTICLES_DIR = DATA_DIR / "articles"
 
 # --- Temp file cleanup ---
 
@@ -62,167 +69,11 @@ def _cleanup_temp_files():
 atexit.register(_cleanup_temp_files)
 
 
-# --- Text acquisition ---
-
-
-def get_text_from_clipboard():
-    """Read text from macOS clipboard via pbpaste."""
-    result = subprocess.run(["pbpaste"], capture_output=True, text=True)
-    return result.stdout.strip()
-
-
-def resolve_apple_news_url(url):
-    """Extract canonical URL from Apple News share link."""
-    import urllib.request
-
-    req = urllib.request.Request(url, method="GET")
-    req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
-        match = re.search(r'redirectToUrl[^"]*"([^"]+)"', html)
-        if match:
-            canonical = match.group(1).split("?")[0]
-            print(f"  Resolved to: {canonical}")
-            return canonical
-    except Exception as e:
-        print(f"  Warning: could not resolve Apple News URL: {e}", file=sys.stderr)
-    return url
-
-
-def extract_title_from_url(url):
-    """Try to extract article title from the URL's HTML."""
-    import urllib.request
-
-    try:
-        req = urllib.request.Request(url)
-        req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
-        match = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
-        if match:
-            title = match.group(1).strip()
-            # Strip common suffixes like " - The Atlantic" or " | The New Yorker"
-            title = re.split(r"\s*[|\-\u2014\u2013]\s*(?:The\s+)?(?:Atlantic|New Yorker|Reason|NYT|Washington Post).*$", title, flags=re.IGNORECASE)[0]
-            return title.strip()
-    except Exception:
-        pass
-    return None
-
-
-def get_text_from_url(url):
-    """Fetch and extract article text from a URL."""
-    import trafilatura
-
-    if "apple.news" in url:
-        url = resolve_apple_news_url(url)
-    html = trafilatura.fetch_url(url)
-    if html:
-        text = trafilatura.extract(html, include_comments=False, include_tables=False)
-        return text, url
-    return None, url
-
-
-# --- Text processing ---
-
-
-def clean_text(text):
-    """Strip Apple News copy-paste artifacts and clean up for TTS."""
-    # Remove Apple News footer block
-    footer = re.search(r"\n\s*Excerpt From\s*\n.*$", text, flags=re.DOTALL)
-    if footer:
-        text = text[: footer.start()]
-
-    # Remove "Follow X on Apple News" lines
-    text = re.sub(r"Follow .+ on Apple News\s*\n?", "", text)
-
-    # Remove copyright notices
-    text = re.sub(r"This material may be protected by copyright\.?\s*\n?", "", text)
-
-    # Collapse multiple blank lines
-    text = re.sub(r"\n{3,}", "\n\n", text)
-
-    return text.strip()
-
-
-def extract_title_from_paste(text):
-    """Try to pull a title from Apple News paste format.
-
-    Format is typically:
-        CATEGORY
-        TITLE IN ALL CAPS
-        Subtitle
-        DATE
-        Body...
-    """
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
-    if len(lines) >= 2:
-        # Second line is often the title in all caps
-        candidate = lines[1] if lines[0].isupper() and len(lines[0].split()) <= 3 else lines[0]
-        if candidate.isupper() and len(candidate.split()) >= 3:
-            return candidate.title()
-    return None
-
-
-def split_into_chunks(text, max_chars=800):
-    """Split text into chunks on paragraph boundaries."""
-    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
-
-    chunks = []
-    for para in paragraphs:
-        if len(para) <= max_chars:
-            chunks.append(para)
-        else:
-            sentences = re.split(r"(?<=[.!?])\s+", para)
-            current = ""
-            for sent in sentences:
-                if len(current) + len(sent) > max_chars and current:
-                    chunks.append(current.strip())
-                    current = sent
-                else:
-                    current = f"{current} {sent}" if current else sent
-            if current:
-                chunks.append(current.strip())
-
-    return chunks
-
-
-# --- Reading list ---
-
-
-def _ensure_data_dirs():
-    """Create data directories if they don't exist."""
-    ARTICLES_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _load_queue():
-    """Load the reading list queue."""
-    if QUEUE_FILE.exists():
-        with open(QUEUE_FILE) as f:
-            return json.load(f)
-    return []
-
-
-def _save_queue(queue):
-    """Save the reading list queue."""
-    _ensure_data_dirs()
-    with open(QUEUE_FILE, "w") as f:
-        json.dump(queue, f, indent=2)
-
-
-def _slugify(text, max_len=50):
-    """Convert text to a filesystem-safe slug."""
-    slug = re.sub(r"[^\w\s-]", "", text.lower())
-    slug = re.sub(r"[\s_]+", "-", slug).strip("-")
-    return slug[:max_len]
+# --- Commands ---
 
 
 def cmd_add(args):
     """Add an article to the reading list."""
-    _ensure_data_dirs()
-    queue = _load_queue()
-    next_id = max((e["id"] for e in queue), default=0) + 1
-
     source_url = None
     canonical_url = None
     title = None
@@ -240,7 +91,6 @@ def cmd_add(args):
             sys.exit(1)
         title = extract_title_from_url(canonical_url)
     else:
-        # From clipboard
         print("Reading from clipboard...")
         raw = get_text_from_clipboard()
         if not raw:
@@ -248,48 +98,25 @@ def cmd_add(args):
             sys.exit(1)
         text = raw
         title = extract_title_from_paste(raw)
-        # Check for Apple News URL in the paste
         url_match = re.search(r"https://apple\.news/\S+", raw)
         if url_match:
             source_url = url_match.group(0)
 
     text = clean_text(text)
-    word_count = len(text.split())
+    entry = add_article(
+        text, title=title, source_url=source_url, canonical_url=canonical_url
+    )
 
-    if not title:
-        # Use first line as title fallback
-        first_line = text.split("\n")[0][:80]
-        title = first_line
-
-    # Save article text
-    slug = _slugify(title)
-    filename = f"{next_id}_{slug}.txt"
-    article_path = ARTICLES_DIR / filename
-    with open(article_path, "w") as f:
-        f.write(text)
-
-    # Add to queue
-    entry = {
-        "id": next_id,
-        "title": title,
-        "words": word_count,
-        "source_url": source_url,
-        "canonical_url": canonical_url,
-        "file": filename,
-        "added": datetime.now().isoformat(timespec="seconds"),
-    }
-    queue.append(entry)
-    _save_queue(queue)
-
-    est_min = word_count / 150
-    print(f"Added #{next_id}: {title}")
-    print(f"  {word_count} words, ~{est_min:.0f} min listen time")
+    est_min = entry["words"] / 150
+    print(f"Added #{entry['id']}: {entry['title']}")
+    print(f"  {entry['words']} words, ~{est_min:.0f} min listen time")
+    queue = load_queue()
     print(f"  Queue now has {len(queue)} article(s).")
 
 
 def cmd_list(args):
     """Show the reading list."""
-    queue = _load_queue()
+    queue = load_queue()
     if not queue:
         print("Reading list is empty.")
         return
@@ -310,38 +137,24 @@ def cmd_list(args):
 
 def cmd_remove(args):
     """Remove an article from the reading list by position number."""
-    queue = _load_queue()
-    idx = args.remove - 1
-    if idx < 0 or idx >= len(queue):
-        print(f"Invalid index. Queue has {len(queue)} article(s).", file=sys.stderr)
+    try:
+        entry = remove_article(args.remove - 1)
+    except IndexError as e:
+        print(str(e), file=sys.stderr)
         sys.exit(1)
 
-    entry = queue.pop(idx)
-    # Remove cached file
-    article_path = ARTICLES_DIR / entry["file"]
-    if article_path.exists():
-        article_path.unlink()
-
-    _save_queue(queue)
     print(f"Removed: {entry['title']}")
+    queue = load_queue()
     print(f"Queue now has {len(queue)} article(s).")
 
 
 def cmd_clear(args):
     """Clear the entire reading list."""
-    queue = _load_queue()
-    if not queue:
+    count = clear_queue()
+    if count == 0:
         print("Reading list is already empty.")
-        return
-
-    count = len(queue)
-    for entry in queue:
-        article_path = ARTICLES_DIR / entry["file"]
-        if article_path.exists():
-            article_path.unlink()
-
-    _save_queue([])
-    print(f"Cleared {count} article(s) from reading list.")
+    else:
+        print(f"Cleared {count} article(s) from reading list.")
 
 
 def _play_text(text, args):
@@ -353,7 +166,7 @@ def _play_text(text, args):
     est_minutes = word_count / 150
     print(f"  {word_count} words, ~{est_minutes:.0f} min listen time")
 
-    print(f"  Loading model...")
+    print("  Loading model...")
     model = load_model(args.model)
 
     chunks = split_into_chunks(text)
@@ -420,14 +233,14 @@ def _play_text(text, args):
             if player:
                 player.terminate()
             print("\n  Stopped.")
-            return False  # Signal interrupted
+            return False
 
     return True
 
 
 def cmd_play(args):
     """Play all articles in the reading list."""
-    queue = _load_queue()
+    queue = load_queue()
     if not queue:
         print("Reading list is empty. Add articles with: lilt --add URL")
         return
@@ -435,66 +248,49 @@ def cmd_play(args):
     print(f"Playing {len(queue)} article(s)...\n")
     completed = []
     for i, entry in enumerate(queue):
-        article_path = ARTICLES_DIR / entry["file"]
-        if not article_path.exists():
+        text = get_article_text(entry)
+        if text is None:
             print(f"Skipping #{entry['id']}: cached file missing")
             continue
-
-        with open(article_path) as f:
-            text = f.read()
 
         print(f"[{i + 1}/{len(queue)}] {entry['title']}")
         finished = _play_text(text, args)
         if finished:
             completed.append(entry)
         else:
-            # Interrupted — stop playing queue
             break
 
-    # Remove completed articles from queue
     if completed:
-        remaining = [e for e in queue if e not in completed]
-        _save_queue(remaining)
         for entry in completed:
-            article_path = ARTICLES_DIR / entry["file"]
-            if article_path.exists():
-                article_path.unlink()
+            mark_completed(entry)
+        remaining = load_queue()
         print(f"\nFinished {len(completed)} article(s). {len(remaining)} remaining.")
 
 
 def cmd_next(args):
     """Play the next article in the reading list."""
-    queue = _load_queue()
+    queue = load_queue()
     if not queue:
         print("Reading list is empty. Add articles with: lilt --add URL")
         return
 
     entry = queue[0]
-    article_path = ARTICLES_DIR / entry["file"]
-    if not article_path.exists():
+    text = get_article_text(entry)
+    if text is None:
         print(f"Cached file missing for: {entry['title']}", file=sys.stderr)
-        queue.pop(0)
-        _save_queue(queue)
+        remove_article(0)
         sys.exit(1)
-
-    with open(article_path) as f:
-        text = f.read()
 
     print(f"Now playing: {entry['title']}")
     finished = _play_text(text, args)
 
     if finished:
-        queue.pop(0)
-        _save_queue(queue)
-        article_path.unlink()
-        remaining = len(queue)
+        mark_completed(entry)
+        remaining = load_queue()
         if remaining:
-            print(f"{remaining} article(s) remaining.")
+            print(f"{len(remaining)} article(s) remaining.")
         else:
             print("Reading list is now empty.")
-
-
-# --- Direct playback (no queue) ---
 
 
 def cmd_direct(args):
@@ -564,7 +360,8 @@ def main():
     # Reading list commands
     queue_group = parser.add_argument_group("reading list")
     queue_group.add_argument(
-        "--add", action="store_true",
+        "--add",
+        action="store_true",
         help="Add article to reading list (from URL argument or clipboard)",
     )
     queue_group.add_argument("--list", action="store_true", help="Show reading list")
@@ -584,19 +381,24 @@ def main():
     # Playback options
     play_group = parser.add_argument_group("playback")
     play_group.add_argument(
-        "--voice", default="af_heart",
+        "--voice",
+        default="af_heart",
         help="Voice preset (default: af_heart)",
     )
     play_group.add_argument(
-        "--speed", type=float, default=1.0,
+        "--speed",
+        type=float,
+        default=1.0,
         help="Speech speed 0.5-2.0 (default: 1.0)",
     )
     play_group.add_argument(
-        "--model", default="mlx-community/Kokoro-82M-bf16",
+        "--model",
+        default="mlx-community/Kokoro-82M-bf16",
         help="TTS model (default: mlx-community/Kokoro-82M-bf16)",
     )
     play_group.add_argument(
-        "--lang", default="a",
+        "--lang",
+        default="a",
         help="Language: a=American, b=British, j=Japanese (default: a)",
     )
     play_group.add_argument(
@@ -606,7 +408,8 @@ def main():
     # Utility
     util_group = parser.add_argument_group("utility")
     util_group.add_argument(
-        "--clean", action="store_true",
+        "--clean",
+        action="store_true",
         help="Output cleaned text only, no audio",
     )
     util_group.add_argument(
@@ -618,15 +421,15 @@ def main():
     # --- Dispatch ---
 
     if args.list_voices:
-        print("Kokoro voices (mlx-community/Kokoro-82M-bf16):\n")
-        print("  American English:")
-        print("    af_heart   af_bella   af_nova   af_sky    (female)")
-        print("    am_adam    am_echo                         (male)")
-        print("  British English:")
-        print("    bf_alice   bf_emma                         (female)")
-        print("    bm_daniel  bm_george                       (male)")
-        print("  Japanese:  jf_alpha (F)  jm_kumo (M)")
-        print("  Chinese:   zf_xiaobei (F)  zm_yunxi (M)")
+        print("Kokoro voices:\n")
+        for accent in ["American", "British", "Japanese", "Chinese"]:
+            voices = [
+                f"{code} ({v['name']}, {v['gender']})"
+                for code, v in VOICES.items()
+                if v["accent"] == accent
+            ]
+            if voices:
+                print(f"  {accent}: {', '.join(voices)}")
         return
 
     if args.list:

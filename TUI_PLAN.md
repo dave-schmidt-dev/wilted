@@ -169,23 +169,44 @@ Modal overlay triggered by `v` key:
 1. Create `src/lilt/` package with `pyproject.toml`
 2. Extract shared functions into package modules (queue, text, fetch, state)
 3. Add atomic write to `save_queue()` and new `save_state()`
-4. Refactor existing CLI to import from the package
-5. **Verify**: `lilt --list`, `lilt --add URL`, `lilt --clean`, `lilt --play` all work identically
-6. `pip install textual` into the venv
+4. Tests for shared library:
+   - `queue.py`: load/save round-trip, add/remove/clear, atomic write (crash-safe), next-ID generation, missing file handling
+   - `text.py`: clean_text strips Apple News artifacts (footer, copyright, "Follow" lines), split_into_chunks respects max_chars and sentence boundaries, split_paragraphs normalizes `\n` correctly
+   - `fetch.py`: Apple News URL resolution (mock HTTP), title extraction from HTML, clipboard fallback
+   - `state.py`: load/save round-trip, atomic write, clear on completion, missing file handling
+5. Refactor existing CLI to import from the package
+6. **Verify**: `lilt --list`, `lilt --add URL`, `lilt --clean`, `lilt --play` all work identically
+7. `pip install textual sounddevice` into the venv
 
 ### Phase 2: TUI core + playback
-7. Create `lilt-tui` with Textual app: Header, Footer, two-panel layout, DataTable for queue
-8. AudioEngine class: model loading, OutputStream-based playback, pause/resume/stop
-9. TTS worker: paragraph-based generation, segment tracking, progress updates via `call_from_thread`
-10. Key bindings: space (play/pause), s (stop), right (skip segment), n (next article), enter (play selected)
-11. Resume state: state.json persistence, resume on replay
-12. Voice settings modal + speed control
-13. Add from clipboard (isolated fetch in separate worker, not in audio pipeline)
+8. Create `lilt-tui` with Textual app: Header, Footer, two-panel layout, DataTable for queue
+9. AudioEngine class: model loading, OutputStream-based playback, pause/resume/stop
+10. Tests for AudioEngine:
+    - Pause/resume/stop state machine (mock sounddevice OutputStream, verify event logic)
+    - Block-write loop respects stop_event and pause_event
+    - Sample offset saved correctly on pause/stop mid-segment
+11. TTS worker: paragraph-based generation, segment tracking, progress updates via `call_from_thread`
+12. Tests for segment tracking:
+    - Paragraph index advances correctly through article
+    - Resume from saved `(paragraph_idx, segment_in_paragraph)` skips completed content
+    - Completion clears state for that article
+13. Key bindings: space (play/pause), s (stop), right (skip segment), n (next article), enter (play selected)
+14. TUI app tests (Textual pilot):
+    - App launches and displays queue from queue.json
+    - Key bindings dispatch correct actions (space toggles play/pause, q quits, d deletes selected)
+    - Empty queue shows appropriate message
+    - Add from clipboard updates the queue list
+15. Resume state: state.json persistence, resume on replay
+16. Voice settings modal + speed control
 
 ### Phase 3: Polish + docs
-14. Edge cases: empty queue, missing files, model load failure, audio device errors (PortAudioError catch)
-15. Clean shutdown: stop audio, save state on quit
-16. Update `README.md`, `HISTORY.md`, `~/Documents/Projects/LLM/README.md`, `~/Documents/Projects/LLM/HISTORY.md`
+17. Edge cases: empty queue, missing files, model load failure, audio device errors (PortAudioError catch)
+18. Clean shutdown: stop audio, save state on quit
+19. Tests for edge cases:
+    - Missing cached article file skips gracefully
+    - Corrupt queue.json / state.json handled without crash
+    - Concurrent queue writes (CLI add while TUI plays) don't corrupt data
+20. Update `README.md`, `HISTORY.md`, `~/Documents/Projects/LLM/README.md`, `~/Documents/Projects/LLM/HISTORY.md`
 
 ## Future Roadmap (v2+)
 
@@ -194,14 +215,16 @@ Modal overlay triggered by `v` key:
 - **Pre-generate audio on add** — background TTS generation at `--add` time so playback is instant with zero latency. Hybrid: fall back to streaming if audio isn't ready yet. Storage: ~1.5MB/min WAV at 24kHz mono (~150MB for a 100-min article). Generation: ~11 min for 100-min article at 0.11 RTF on M5 Max
 - **Custom RSS feeds** — subscribe to publication feeds (Atlantic, New Yorker, Reason, etc.), auto-fetch new articles into queue on a schedule
 - **Apple Podcast integration** — generate podcast-style audio files from reading list, publish as a private RSS feed compatible with Apple Podcasts for listening on any device
-- **Automated tests** for queue persistence, resume state, and completion cleanup
+- **Unified ad-free feed** — if private feed works, extend it: download existing podcast subscriptions, strip ads (silence detection + sponsor segment databases like SponsorBlock), and merge everything into the single private feed for a clean, ad-free listening experience
+- **Expanded test coverage** — property-based tests for text splitting, stress tests for concurrent queue access
 
 ## Files to Create/Modify
 
 | File | Action |
 |------|--------|
-| `pyproject.toml` | **Create** — package metadata |
+| `pyproject.toml` | **Create** — package metadata, test dependencies |
 | `src/lilt/*.py` | **Create** — shared modules (5 files) |
+| `tests/` | **Create** — test suite (Phase 1: library, Phase 2: engine + TUI, Phase 3: edge cases) |
 | `lilt` | **Modify** — import from shared package |
 | `lilt-tui` | **Create** — TUI app |
 | `README.md` | **Update** — add TUI docs |

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lilt"
+version = "0.1.0"
+description = "Local TTS article reader using Kokoro via mlx-audio on Apple Silicon"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "mlx-audio[tts]",
+    "trafilatura",
+    "numpy",
+]
+
+[project.optional-dependencies]
+tui = ["textual>=8.0", "sounddevice"]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
