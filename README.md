@@ -11,10 +11,18 @@ python3.12 -m venv ~/.venvs/mlx-audio
 ~/.venvs/mlx-audio/bin/pip install "mlx-audio[tts]" trafilatura numpy
 ```
 
-Add a shell alias (e.g. in `~/.zshrc`):
+Then install the package (editable) and TUI dependencies:
+
+```bash
+cd ~/Documents/Projects/lilt
+~/.venvs/mlx-audio/bin/pip install -e ".[tui,test]"
+```
+
+Add shell aliases (e.g. in `~/.zshrc`):
 
 ```bash
 alias lilt='~/Documents/Projects/lilt/lilt'
+alias lilt-tui='~/Documents/Projects/lilt/lilt-tui'
 ```
 
 First run downloads the Kokoro model from HuggingFace (~160MB, one-time).
@@ -91,22 +99,61 @@ For hard-paywalled articles, scroll to the bottom in Apple News first, then Cmd+
 
 ## Data
 
-Cached articles and queue metadata are stored in the `data/` directory (gitignored):
+Runtime data stored in `data/` (gitignored):
 
 ```
 data/
   queue.json        # reading list metadata
+  state.json        # TUI resume positions
   articles/         # cached article text files
+```
+
+## TUI
+
+Interactive terminal player with pause/resume, skip, voice/speed controls, and resume support.
+
+```bash
+lilt-tui
+```
+
+| Key | Action |
+|-----|--------|
+| `space` | Play / Pause / Resume |
+| `s` | Stop playback |
+| `enter` | Play selected article |
+| `right` | Skip to next segment |
+| `n` | Next article |
+| `v` | Voice/speed settings |
+| `a` | Add from clipboard |
+| `d` | Delete selected |
+| `r` | Refresh queue |
+| `q` | Quit (saves resume position) |
+
+Full design: [TUI_PLAN.md](TUI_PLAN.md)
+
+## Project structure
+
+```
+lilt                     # CLI script
+lilt-tui                 # TUI script
+pyproject.toml           # package metadata
+src/lilt/                # shared library
+    __init__.py          # constants, VOICES
+    engine.py            # AudioEngine (sounddevice + TTS)
+    fetch.py             # URL resolution, text extraction
+    queue.py             # reading list persistence
+    state.py             # resume state persistence
+    text.py              # text cleaning and splitting
+tests/                   # 78 tests (pytest)
+data/                    # runtime data (.gitignored)
 ```
 
 ## Roadmap
 
-A Textual TUI (`lilt-tui`) is planned with interactive playback controls, pause/resume, skip, voice/speed settings, and resume support. Full plan: [TUI_PLAN.md](TUI_PLAN.md)
-
-Future features include:
 - Pre-generated audio for instant playback
 - Custom RSS feed subscriptions
 - Apple Podcast integration (private feed)
+- Unified ad-free feed (download existing podcasts, strip ads, merge into private feed)
 
 ## Dependencies
 
@@ -115,4 +162,5 @@ Future features include:
 - Kokoro TTS model (82M params, downloaded on first use)
 - trafilatura (article text extraction)
 - numpy
-- afplay (macOS built-in audio player)
+- textual (TUI framework)
+- sounddevice (TUI audio playback with pause/resume)
