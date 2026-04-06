@@ -2,22 +2,22 @@
 """Read articles aloud using local TTS on Apple Silicon.
 
 Usage:
-    readarticle                              # read from clipboard
-    readarticle URL                          # fetch and read article from URL
-    readarticle article.txt                  # read from file
-    cat article.txt | readarticle -          # read from stdin
+    lilt                              # read from clipboard
+    lilt URL                          # fetch and read article from URL
+    lilt article.txt                  # read from file
+    cat article.txt | lilt -          # read from stdin
 
-    readarticle --add URL                    # add article to reading list
-    readarticle --add                        # add from clipboard
-    readarticle --list                       # show reading list
-    readarticle --play                       # play all queued articles
-    readarticle --next                       # play next queued article
-    readarticle --remove N                   # remove article N from list
-    readarticle --clear                      # clear the reading list
+    lilt --add URL                    # add article to reading list
+    lilt --add                        # add from clipboard
+    lilt --list                       # show reading list
+    lilt --play                       # play all queued articles
+    lilt --next                       # play next queued article
+    lilt --remove N                   # remove article N from list
+    lilt --clear                      # clear the reading list
 
-    readarticle --clean                      # preview cleaned text, no audio
-    readarticle --save out.wav               # save audio to file
-    readarticle --list-voices                # show available voices
+    lilt --clean                      # preview cleaned text, no audio
+    lilt --save out.wav               # save audio to file
+    lilt --list-voices                # show available voices
 
 Supports Apple News share links (apple.news/...), which are resolved to
 the original source URL automatically.
@@ -42,7 +42,7 @@ import numpy as np
 
 # --- Constants ---
 
-DATA_DIR = Path.home() / ".local" / "share" / "readarticle"
+DATA_DIR = Path(__file__).resolve().parent / "data"
 QUEUE_FILE = DATA_DIR / "queue.json"
 ARTICLES_DIR = DATA_DIR / "articles"
 
@@ -234,7 +234,7 @@ def cmd_add(args):
         if not text:
             print(
                 "Could not fetch article text (paywall?). "
-                "Copy the text, then run: readarticle --add",
+                "Copy the text, then run: lilt --add",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -429,7 +429,7 @@ def cmd_play(args):
     """Play all articles in the reading list."""
     queue = _load_queue()
     if not queue:
-        print("Reading list is empty. Add articles with: readarticle --add URL")
+        print("Reading list is empty. Add articles with: lilt --add URL")
         return
 
     print(f"Playing {len(queue)} article(s)...\n")
@@ -466,7 +466,7 @@ def cmd_next(args):
     """Play the next article in the reading list."""
     queue = _load_queue()
     if not queue:
-        print("Reading list is empty. Add articles with: readarticle --add URL")
+        print("Reading list is empty. Add articles with: lilt --add URL")
         return
 
     entry = queue[0]
@@ -508,7 +508,7 @@ def cmd_direct(args):
             if not text:
                 print(
                     "Could not extract article text (paywall?). "
-                    "Try copying the text and running: readarticle",
+                    "Try copying the text and running: lilt",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -545,14 +545,14 @@ def main():
         description="Read articles aloud using local TTS on Apple Silicon.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
-  readarticle                                  Read clipboard aloud
-  readarticle https://apple.news/ABC123        Fetch and read article
-  readarticle --add https://apple.news/ABC123  Add to reading list
-  readarticle --add                            Add clipboard to reading list
-  readarticle --list                           Show reading list
-  readarticle --play                           Play entire reading list
-  readarticle --next                           Play next article only
-  readarticle --voice am_adam --speed 0.9      Use a different voice/speed""",
+  lilt                                  Read clipboard aloud
+  lilt https://apple.news/ABC123        Fetch and read article
+  lilt --add https://apple.news/ABC123  Add to reading list
+  lilt --add                            Add clipboard to reading list
+  lilt --list                           Show reading list
+  lilt --play                           Play entire reading list
+  lilt --next                           Play next article only
+  lilt --voice am_adam --speed 0.9      Use a different voice/speed""",
     )
 
     parser.add_argument(

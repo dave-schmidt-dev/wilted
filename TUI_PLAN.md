@@ -1,27 +1,27 @@
-# Plan: readarticle Textual TUI
+# Plan: lilt Textual TUI
 
 ## Context
 
-The `readarticle` CLI tool reads news articles aloud using Kokoro TTS via mlx-audio on Apple Silicon. It works well for one-off reads, but lacks interactive playback controls (pause, resume, skip) and has no way to resume interrupted articles. The user reads long-form articles from The Atlantic and The New Yorker (often 15,000+ words / 100+ minutes) and needs a proper player interface.
+The `lilt` CLI tool reads news articles aloud using Kokoro TTS via mlx-audio on Apple Silicon. It works well for one-off reads, but lacks interactive playback controls (pause, resume, skip) and has no way to resume interrupted articles. The user reads long-form articles from The Atlantic and The New Yorker (often 15,000+ words / 100+ minutes) and needs a proper player interface.
 
 ## Architecture
 
-**Separate script**: `~/.local/bin/readarticle-tui` — keeps the existing CLI clean and avoids importing Textual for simple `--add`/`--list` operations.
+**Project home**: `~/Documents/Projects/lilt/` — all source, docs, and runtime data in one place. CLI alias `lilt` points here.
 
-**Shared code via editable install**: Create a `readarticle` Python package at `~/.local/lib/readarticle/` with `pyproject.toml`, installed as `pip install -e` into the venv. Both scripts `import readarticle.queue`, etc. No `sys.path` hacking. Linter/type-checker friendly.
+**Separate script**: `lilt-tui` — keeps the existing CLI clean and avoids importing Textual for simple `--add`/`--list` operations.
 
-**Separate state file**: Resume position stored in `~/.local/share/readarticle/state.json` (keyed by article ID), not in `queue.json`. Both files use atomic writes (write-to-temp + `os.replace()`).
+**Shared code via editable install**: Create a `lilt` Python package at `src/lilt/` with `pyproject.toml`, installed as `pip install -e` into the venv. Both scripts `import lilt.queue`, etc. No `sys.path` hacking. Linter/type-checker friendly.
+
+**Separate state file**: Resume position stored in `data/state.json` (keyed by article ID), not in `queue.json`. Both files use atomic writes (write-to-temp + `os.replace()`).
 
 **New dependency**: `textual>=8.0` (current is 8.x; install into existing `~/.venvs/mlx-audio/` venv).
-
-**Backup first**: Copy `~/.local/bin/readarticle` to `~/.local/bin/readarticle.bak` before refactoring. No git history or tests exist for this script.
 
 ## Layout
 
 Single-screen, two-panel design:
 
 ```
-┌─ readarticle ──────────────────────────────────────────────┐
+┌─ lilt ──────────────────────────────────────────────┐
 │                                                            │
 │  Reading List (3)          │  Now Playing                  │
 │  ─────────────────────     │  ──────────────────────────── │
@@ -117,7 +117,7 @@ Lazy load on first play, not on TUI launch. Show "Loading model..." in the now-p
 
 ## Resume Support
 
-`~/.local/share/readarticle/state.json`:
+`data/state.json`:
 
 ```json
 {
@@ -144,49 +144,48 @@ Modal overlay triggered by `v` key:
 ## File Structure
 
 ```
-~/.local/lib/readarticle/           # shared package (NEW)
-    pyproject.toml                   # for pip install -e
-    readarticle/
+~/Documents/Projects/lilt/
+    lilt                             # existing CLI (refactored to import from package)
+    lilt-tui                         # TUI entry point (NEW)
+    pyproject.toml                   # package metadata (NEW)
+    README.md                        # project docs
+    TUI_PLAN.md                      # this plan
+    LICENSE
+    src/lilt/                        # shared package (NEW)
         __init__.py                  # DATA_DIR, QUEUE_FILE, ARTICLES_DIR, STATE_FILE, VOICES
         queue.py                     # load_queue, save_queue (atomic), add, remove, clear
         state.py                     # load_state, save_state (atomic), clear_state
         text.py                      # clean_text, split_into_chunks, split_paragraphs
         fetch.py                     # resolve_apple_news_url, get_text_from_url, clipboard
-
-~/.local/bin/readarticle             # existing CLI (refactored to import from package)
-~/.local/bin/readarticle-tui         # TUI entry point (NEW)
-
-~/.local/share/readarticle/
-    queue.json                       # article queue (unchanged schema)
-    state.json                       # resume positions (NEW)
-    articles/                        # cached text (unchanged)
-    README.md                        # docs (update)
+    data/                            # runtime data (.gitignored)
+        queue.json                   # article queue (unchanged schema)
+        state.json                   # resume positions (NEW)
+        articles/                    # cached text (unchanged)
 ```
 
 ## Implementation Phases
 
 ### Phase 1: Shared library + CLI refactor
-1. Backup `readarticle` to `readarticle.bak`
-2. Create `~/.local/lib/readarticle/` package with `pyproject.toml`
-3. Extract shared functions into package modules (queue, text, fetch, state)
-4. Add atomic write to `save_queue()` and new `save_state()`
-5. Refactor existing CLI to import from the package
-6. **Verify**: `readarticle --list`, `readarticle --add URL`, `readarticle --clean`, `readarticle --play` all work identically
-7. `pip install textual` into the venv
+1. Create `src/lilt/` package with `pyproject.toml`
+2. Extract shared functions into package modules (queue, text, fetch, state)
+3. Add atomic write to `save_queue()` and new `save_state()`
+4. Refactor existing CLI to import from the package
+5. **Verify**: `lilt --list`, `lilt --add URL`, `lilt --clean`, `lilt --play` all work identically
+6. `pip install textual` into the venv
 
 ### Phase 2: TUI core + playback
-8. Create `readarticle-tui` with Textual app: Header, Footer, two-panel layout, DataTable for queue
-9. AudioEngine class: model loading, OutputStream-based playback, pause/resume/stop
-10. TTS worker: paragraph-based generation, segment tracking, progress updates via `call_from_thread`
-11. Key bindings: space (play/pause), s (stop), right (skip segment), n (next article), enter (play selected)
-12. Resume state: state.json persistence, resume on replay
-13. Voice settings modal + speed control
-14. Add from clipboard (isolated fetch in separate worker, not in audio pipeline)
+7. Create `lilt-tui` with Textual app: Header, Footer, two-panel layout, DataTable for queue
+8. AudioEngine class: model loading, OutputStream-based playback, pause/resume/stop
+9. TTS worker: paragraph-based generation, segment tracking, progress updates via `call_from_thread`
+10. Key bindings: space (play/pause), s (stop), right (skip segment), n (next article), enter (play selected)
+11. Resume state: state.json persistence, resume on replay
+12. Voice settings modal + speed control
+13. Add from clipboard (isolated fetch in separate worker, not in audio pipeline)
 
 ### Phase 3: Polish + docs
-15. Edge cases: empty queue, missing files, model load failure, audio device errors (PortAudioError catch)
-16. Clean shutdown: stop audio, save state on quit
-17. Update `~/.local/share/readarticle/README.md`, `LLM/README.md`, `LLM/HISTORY.md`
+14. Edge cases: empty queue, missing files, model load failure, audio device errors (PortAudioError catch)
+15. Clean shutdown: stop audio, save state on quit
+16. Update `README.md`, `HISTORY.md`, `~/Documents/Projects/LLM/README.md`, `~/Documents/Projects/LLM/HISTORY.md`
 
 ## Future Roadmap (v2+)
 
@@ -201,24 +200,25 @@ Modal overlay triggered by `v` key:
 
 | File | Action |
 |------|--------|
-| `~/.local/lib/readarticle/pyproject.toml` | **Create** — package metadata |
-| `~/.local/lib/readarticle/readarticle/*.py` | **Create** — shared modules (5 files) |
-| `~/.local/bin/readarticle` | **Modify** — import from shared package |
-| `~/.local/bin/readarticle-tui` | **Create** — TUI app |
-| `~/.local/share/readarticle/README.md` | **Update** — add TUI + roadmap docs |
-| `/Users/dave/Documents/Projects/LLM/README.md` | **Update** — add TUI entry |
-| `/Users/dave/Documents/Projects/LLM/HISTORY.md` | **Update** — log changes |
+| `pyproject.toml` | **Create** — package metadata |
+| `src/lilt/*.py` | **Create** — shared modules (5 files) |
+| `lilt` | **Modify** — import from shared package |
+| `lilt-tui` | **Create** — TUI app |
+| `README.md` | **Update** — add TUI docs |
+| `HISTORY.md` | **Update** — log changes |
+| `~/Documents/Projects/LLM/README.md` | **Update** — update lilt entry |
+| `~/Documents/Projects/LLM/HISTORY.md` | **Update** — log changes |
 
 ## Verification
 
 1. **CLI regression**: all existing commands work after refactor to shared library
-2. **TUI launch**: `readarticle-tui` displays queue from `queue.json`
+2. **TUI launch**: `lilt-tui` displays queue from `queue.json`
 3. **Playback**: Select article, space to play, audio starts within 2-3s (model load) or <1s (model cached)
 4. **Pause/resume**: Space pauses within ~50ms, resumes from exact position
 5. **Skip**: Right arrow skips to next segment, "Generating..." shown during ~1s gap
 6. **Resume persistence**: Quit mid-playback → relaunch → article resumes near saved position
 7. **Voice change**: Press v, change voice/speed, next segment uses new settings, time estimate adjusts
-8. **Concurrent access**: `readarticle --add URL` in another terminal while TUI plays doesn't corrupt queue or state
+8. **Concurrent access**: `lilt --add URL` in another terminal while TUI plays doesn't corrupt queue or state
 9. **Clean shutdown**: Ctrl+C or q saves state and exits without orphaned audio threads
 
 ## Review Decision Log
@@ -268,7 +268,7 @@ Modal overlay triggered by `v` key:
 | Skip has ~1s silence | **Accept** | Show "Generating..." indicator; pre-buffer in v2 |
 | Voice sync unspecified | **Accept** | Simple attributes, read at generate() call boundary |
 | 150 WPM ignores speed param | **Accept** | Adjust: words / (150 * speed) |
-| Backup before refactoring | **Accept** | Copy to readarticle.bak first |
+| Backup before refactoring | **Accept** | Copy to lilt.bak first |
 | Model loading timing unspecified | **Accept** | Lazy load on first play |
 | Scope still large / simpler approach | **Reject** | User explicitly requested Textual TUI |
 | split_into_chunks fate unclear | **Accept** | Kept in shared lib for CLI; TUI uses split_paragraphs |

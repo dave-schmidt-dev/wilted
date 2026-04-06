@@ -17,7 +17,5 @@ build/
 *.swo
 *~
 
-# Runtime data (lives at ~/.local/share/readarticle/)
-queue.json
-articles/
-state.json
+# Runtime data
+data/
