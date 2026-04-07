@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-from lilt.fetch import get_text_from_clipboard, resolve_apple_news_url
+from lilt.fetch import get_text_from_clipboard, resolve_apple_news_url, suppress_subprocess_output
 
 
 @dataclass
@@ -64,8 +64,6 @@ def _resolve_from_url(
     status: Callable[[str], None],
 ) -> ArticleResult:
     """Fetch article from a URL, extracting title from trafilatura metadata."""
-    import trafilatura
-
     from lilt.text import clean_text
 
     source_url = url
@@ -77,7 +75,14 @@ def _resolve_from_url(
         url = canonical_url
 
     status("Fetching article...")
-    html = trafilatura.fetch_url(url)
+
+    # Suppress stdout/stderr during trafilatura import — spacy model
+    # downloads via pip subprocess corrupt the Textual TUI.
+    with suppress_subprocess_output():
+        import trafilatura
+
+        html = trafilatura.fetch_url(url)
+
     if not html:
         raise ValueError("Could not fetch article text (paywall?). Copy the text, then run: lilt --add")
 

@@ -1,9 +1,34 @@
 """Article fetching — URL resolution, text extraction, clipboard."""
 
+import os
 import re
 import subprocess
 import sys
 import urllib.request
+from contextlib import contextmanager
+
+
+@contextmanager
+def suppress_subprocess_output():
+    """Redirect OS-level file descriptors 1 & 2 to /dev/null.
+
+    Python's contextlib.redirect_stdout only catches sys.stdout writes.
+    Subprocess output (e.g. pip installing spacy models) goes straight to
+    fd 1/2, which corrupts the Textual TUI. This redirects at the OS level.
+    """
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    saved_stdout_fd = os.dup(1)
+    saved_stderr_fd = os.dup(2)
+    try:
+        os.dup2(devnull_fd, 1)
+        os.dup2(devnull_fd, 2)
+        yield
+    finally:
+        os.dup2(saved_stdout_fd, 1)
+        os.dup2(saved_stderr_fd, 2)
+        os.close(saved_stdout_fd)
+        os.close(saved_stderr_fd)
+        os.close(devnull_fd)
 
 
 def get_text_from_clipboard() -> str:
@@ -60,11 +85,16 @@ def get_text_from_url(url: str) -> tuple[str | None, str]:
     Returns (text, resolved_url). The URL may differ from input if an
     Apple News link was resolved.
     """
-    import trafilatura
-
     if "apple.news" in url:
         url = resolve_apple_news_url(url)
-    html = trafilatura.fetch_url(url)
+
+    # Suppress stdout/stderr during trafilatura import — spacy model
+    # downloads via pip subprocess corrupt the Textual TUI.
+    with suppress_subprocess_output():
+        import trafilatura
+
+        html = trafilatura.fetch_url(url)
+
     if html:
         text = trafilatura.extract(html, include_comments=False, include_tables=False)
         return text, url

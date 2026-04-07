@@ -9,11 +9,20 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+# Ensure sounddevice is mockable without triggering PortAudio initialization
+if "sounddevice" not in sys.modules:
+    _sd = types.ModuleType("sounddevice")
+    _sd.OutputStream = MagicMock()
+    _sd.PortAudioError = OSError
+    sys.modules["sounddevice"] = _sd
+
 # Ensure mlx_audio.audio_io is mockable even if mlx_audio isn't installed
 if "mlx_audio" not in sys.modules:
     sys.modules["mlx_audio"] = types.ModuleType("mlx_audio")
 if "mlx_audio.audio_io" not in sys.modules:
-    sys.modules["mlx_audio.audio_io"] = types.ModuleType("mlx_audio.audio_io")
+    _audio_io = types.ModuleType("mlx_audio.audio_io")
+    _audio_io.write = lambda *a, **kw: None  # stub for test_cli patching
+    sys.modules["mlx_audio.audio_io"] = _audio_io
 
 from lilt.engine import AudioEngine, _normalize_segments
 
@@ -38,7 +47,7 @@ def engine():
 @pytest.fixture
 def mock_stream():
     """Patch sounddevice.OutputStream to a no-op mock."""
-    with patch("lilt.engine.sd.OutputStream") as mock_cls:
+    with patch("sounddevice.OutputStream") as mock_cls:
         stream_instance = MagicMock()
         mock_cls.return_value = stream_instance
         yield stream_instance
@@ -312,7 +321,7 @@ class TestGenerateAudio:
         engine._model = MagicMock()
         engine._model.generate.return_value = mock_segment
 
-        with patch("lilt.engine.sd"):
+        with patch("sounddevice.OutputStream"):
             result = engine.generate_audio("Hello world.")
         assert isinstance(result, np.ndarray)
         assert len(result) == 1024
@@ -326,7 +335,7 @@ class TestGenerateAudio:
         engine._model = MagicMock()
         engine._model.generate.return_value = [seg1, seg2]
 
-        with patch("lilt.engine.sd"):
+        with patch("sounddevice.OutputStream"):
             result = engine.generate_audio("Long paragraph.")
         assert len(result) == 1024
 
@@ -335,7 +344,7 @@ class TestGenerateAudio:
         engine._model = MagicMock()
         engine._model.generate.side_effect = Exception("Generation failed")
 
-        with patch("lilt.engine.sd"):
+        with patch("sounddevice.OutputStream"):
             with pytest.raises(RuntimeError, match="TTS generation failed"):
                 engine.generate_audio("Test text.")
 
@@ -344,7 +353,7 @@ class TestGenerateAudio:
         engine._model = MagicMock()
         engine._model.generate.return_value = []
 
-        with patch("lilt.engine.sd"):
+        with patch("sounddevice.OutputStream"):
             result = engine.generate_audio("Empty.")
         assert isinstance(result, np.ndarray)
         assert len(result) == 0
@@ -381,7 +390,7 @@ class TestLangCodeParameter:
         engine._model = MagicMock()
         engine._model.generate.return_value = mock_segment
 
-        with patch("lilt.engine.sd"):
+        with patch("sounddevice.OutputStream"):
             engine.generate_and_play("Test.")
 
         call_kwargs = engine._model.generate.call_args[1]
@@ -396,7 +405,7 @@ class TestLangCodeParameter:
         engine._model = MagicMock()
         engine._model.generate.return_value = (segment for segment in [seg1, seg2])
 
-        with patch("lilt.engine.sd"):
+        with patch("sounddevice.OutputStream"):
             result = engine.generate_audio("Test generator output.")
 
         assert isinstance(result, np.ndarray)
@@ -411,7 +420,7 @@ class TestLangCodeParameter:
         engine._model = MagicMock()
         engine._model.generate.return_value = (segment for segment in [seg1, seg2])
 
-        with patch("lilt.engine.sd.OutputStream") as mock_cls:
+        with patch("sounddevice.OutputStream") as mock_cls:
             stream_instance = MagicMock()
             mock_cls.return_value = stream_instance
             engine.generate_and_play("Test generator playback.")
@@ -426,7 +435,7 @@ class TestLangCodeParameter:
         engine._model = MagicMock()
         engine._model.generate.return_value = mock_segment
 
-        with patch("lilt.engine.sd"):
+        with patch("sounddevice.OutputStream"):
             engine.generate_audio("Test.")
 
         call_kwargs = engine._model.generate.call_args[1]

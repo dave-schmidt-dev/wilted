@@ -514,12 +514,14 @@ class LiltApp(App):
     #time-remaining {
         margin-bottom: 1;
     }
-    #current-text {
+    #text-scroll {
         height: auto;
         max-height: 10;
         margin: 1 0;
-        padding: 1;
         border: round $accent;
+    }
+    #current-text {
+        padding: 1;
     }
     #voice-display {
         margin-top: 1;
@@ -582,7 +584,8 @@ class LiltApp(App):
                 yield Label("No article selected", id="now-playing-title")
                 yield ProgressBar(id="progress-bar", total=100, show_eta=False)
                 yield Label("", id="time-remaining")
-                yield Static("", id="current-text")
+                with VerticalScroll(id="text-scroll"):
+                    yield Static("", id="current-text")
                 yield Label("", id="voice-display")
                 yield Label("", id="status-line")
         yield Footer()
@@ -593,6 +596,8 @@ class LiltApp(App):
         table.add_columns("#", "Title", "Words", "Est. Time")
         self._refresh_queue_display()
         self._update_voice_display()
+        # Preload TTS model in background so play starts instantly
+        self._preload_model()
 
     # -- Queue display ------------------------------------------------------
 
@@ -639,7 +644,9 @@ class LiltApp(App):
         bar = self.query_one("#progress-bar", ProgressBar)
         bar.update(progress=progress)
         self.query_one("#time-remaining", Label).update(time_remaining)
-        self.query_one("#current-text", Static).update(text_snippet)
+        if text_snippet:
+            self.query_one("#current-text", Static).update(text_snippet)
+            self.query_one("#text-scroll", VerticalScroll).scroll_home(animate=False)
         if status:
             self.query_one("#status-line", Label).update(status)
 
@@ -655,6 +662,25 @@ class LiltApp(App):
 
             self._engine = AudioEngine(lang=self._lang)
 
+    @work(thread=True, exclusive=True, group="preload")
+    def _preload_model(self) -> None:
+        """Eagerly load the TTS model in the background at startup."""
+        from lilt.fetch import suppress_subprocess_output
+
+        try:
+            self._ensure_engine()
+            self.call_from_thread(self._set_status, "Loading TTS model...")
+            with suppress_subprocess_output():
+                self._engine.load_model()
+            # Only clear status if it still says "Loading" — avoid clobbering
+            # messages set by other actions while the model was loading.
+            status_widget = self.query_one("#status-line", Label)
+            if "Loading" in str(status_widget.render()):
+                self.call_from_thread(self._set_status, "Ready")
+        except Exception:
+            # Non-fatal — model will load on first play instead
+            pass
+
     # -- Playback worker ----------------------------------------------------
 
     @work(thread=True, exclusive=True, group="playback")
@@ -662,9 +688,14 @@ class LiltApp(App):
         """Play an article from the given paragraph/segment position."""
         worker = get_current_worker()
 
+        from lilt.fetch import suppress_subprocess_output
+
         self.call_from_thread(self._update_now_playing, status="Loading model...")
         self._ensure_engine()
         engine = self._engine
+        # Ensure model is loaded (no-op if preload already finished)
+        with suppress_subprocess_output():
+            engine.load_model()
 
         engine.voice = self._voice
         engine.speed = self._speed
@@ -701,7 +732,6 @@ class LiltApp(App):
             self._segment_in_paragraph = 0
 
             paragraph = paragraphs[para_idx]
-            snippet = paragraph[:120] + "..." if len(paragraph) > 120 else paragraph
 
             # Calculate progress
             progress = (para_idx / len(paragraphs)) * 100
@@ -712,7 +742,7 @@ class LiltApp(App):
                 self._update_now_playing,
                 progress=progress,
                 time_remaining=f"~{mins_remaining} min remaining  (para {para_idx + 1}/{len(paragraphs)})",
-                text_snippet=snippet,
+                text_snippet=paragraph,
                 status="Playing",
             )
 

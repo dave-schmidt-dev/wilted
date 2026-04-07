@@ -3,12 +3,34 @@
 import importlib
 import json
 import os
+import sys
 import threading
 import types
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+
+# Ensure sounddevice is mockable without triggering PortAudio initialization
+if "sounddevice" not in sys.modules:
+    _sd = types.ModuleType("sounddevice")
+    _sd.OutputStream = MagicMock()
+    _sd.PortAudioError = OSError
+    sys.modules["sounddevice"] = _sd
+
+# Ensure mlx_audio stubs exist for patching
+if "mlx_audio" not in sys.modules:
+    sys.modules["mlx_audio"] = types.ModuleType("mlx_audio")
+if "mlx_audio.tts" not in sys.modules:
+    sys.modules["mlx_audio.tts"] = types.ModuleType("mlx_audio.tts")
+if "mlx_audio.tts.utils" not in sys.modules:
+    _tts_utils = types.ModuleType("mlx_audio.tts.utils")
+    _tts_utils.load_model = MagicMock()
+    sys.modules["mlx_audio.tts.utils"] = _tts_utils
+if "mlx_audio.audio_io" not in sys.modules:
+    _audio_io = types.ModuleType("mlx_audio.audio_io")
+    _audio_io.write = lambda *a, **kw: None
+    sys.modules["mlx_audio.audio_io"] = _audio_io
 
 import lilt
 from lilt.engine import AudioEngine
@@ -256,7 +278,7 @@ class TestEngineErrorHandling:
         engine._model = MagicMock()
         audio = np.zeros(4096, dtype=np.float32)
 
-        with patch("lilt.engine.sd.OutputStream") as mock_cls:
+        with patch("sounddevice.OutputStream") as mock_cls:
             mock_cls.side_effect = OSError("No audio device found")
             with pytest.raises((OSError, RuntimeError)):
                 engine._play_audio(audio)
@@ -281,7 +303,7 @@ class TestEngineErrorHandling:
         seg2 = types.SimpleNamespace(audio=np.zeros(1024), sample_rate=24000)
         engine._model.generate.return_value = [seg1, seg2]
 
-        with patch("lilt.engine.sd.OutputStream") as mock_cls:
+        with patch("sounddevice.OutputStream") as mock_cls:
             stream_instance = MagicMock()
             mock_cls.return_value = stream_instance
 
@@ -307,7 +329,7 @@ class TestEngineErrorHandling:
         engine = AudioEngine()
         engine._model = MagicMock()
 
-        with patch("lilt.engine.sd.OutputStream"):
+        with patch("sounddevice.OutputStream"):
             engine.play_article("")
             # No paragraphs to process, so model.generate should not be called
             engine._model.generate.assert_not_called()
@@ -329,7 +351,7 @@ class TestEngineErrorHandling:
             progress_calls.append(para_idx)
             engine._stop_event.set()  # Stop after first paragraph
 
-        with patch("lilt.engine.sd.OutputStream") as mock_cls:
+        with patch("sounddevice.OutputStream") as mock_cls:
             stream_instance = MagicMock()
             mock_cls.return_value = stream_instance
             engine.play_article(
@@ -364,7 +386,7 @@ class TestGenerateAudioEdgeCases:
         engine._model = MagicMock()
         engine._model.generate.return_value = []
 
-        with patch("lilt.engine.sd"):
+        with patch("sounddevice.OutputStream"):
             result = engine.generate_audio("")
         assert isinstance(result, np.ndarray)
         assert len(result) == 0
@@ -378,7 +400,10 @@ class TestGenerateAudioEdgeCases:
         mock_segment.audio = np.zeros(100)
         mock_model.generate.return_value = mock_segment
 
-        with patch("lilt.engine.sd"), patch("mlx_audio.tts.utils.load_model", return_value=mock_model) as mock_load:
+        with (
+            patch("sounddevice.OutputStream"),
+            patch("mlx_audio.tts.utils.load_model", return_value=mock_model) as mock_load,
+        ):
             engine.generate_audio("Test text.")
             mock_load.assert_called_once()
 
@@ -436,7 +461,7 @@ class TestLangCodeIntegration:
         def on_progress(*args):
             progress_calls.append(args)
 
-        with patch("lilt.engine.sd"):
+        with patch("sounddevice.OutputStream"):
             engine.play_article("Test paragraph.", on_progress=on_progress)
 
         call_kwargs = engine._model.generate.call_args[1]
@@ -454,7 +479,7 @@ class TestLangCodeIntegration:
         engine._model = MagicMock()
         engine._model.generate.return_value = mock_segment
 
-        with patch("lilt.engine.sd"):
+        with patch("sounddevice.OutputStream"):
             engine.generate_and_play("Test.")
 
         # Stop event should have been cleared at entry

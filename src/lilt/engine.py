@@ -6,7 +6,6 @@ import threading
 from collections.abc import Callable, Iterable
 
 import numpy as np
-import sounddevice as sd
 
 from lilt.text import split_paragraphs
 
@@ -135,6 +134,8 @@ class AudioEngine:
         Raises:
             RuntimeError: If the audio device cannot be opened or playback fails.
         """
+        import sounddevice as sd
+
         block_size = 1024
         try:
             stream = sd.OutputStream(samplerate=self.sample_rate, channels=1, dtype="float32")

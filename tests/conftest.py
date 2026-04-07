@@ -1,8 +1,17 @@
 """Shared test fixtures for lilt."""
 
+from unittest.mock import patch
+
 import pytest
 
 import lilt
+
+
+@pytest.fixture(autouse=True)
+def _no_preload_model():
+    """Prevent TUI tests from loading the real TTS model."""
+    with patch("lilt.tui.LiltApp._preload_model"):
+        yield
 
 
 @pytest.fixture(autouse=True)
