@@ -144,7 +144,7 @@ src/lilt/                # shared library
     queue.py             # reading list persistence
     state.py             # resume state persistence
     text.py              # text cleaning and splitting
-tests/                   # 78 tests (pytest)
+tests/                   # 102 tests (pytest)
 data/                    # runtime data (.gitignored)
 ```
 

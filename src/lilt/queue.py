@@ -12,8 +12,11 @@ from lilt import ARTICLES_DIR, QUEUE_FILE, ensure_data_dirs
 def load_queue() -> list[dict]:
     """Load the reading list queue from disk."""
     if QUEUE_FILE.exists():
-        with open(QUEUE_FILE) as f:
-            return json.load(f)
+        try:
+            with open(QUEUE_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            return []
     return []
 
 

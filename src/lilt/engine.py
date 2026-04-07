@@ -56,9 +56,14 @@ class AudioEngine:
         """Lazy-load the TTS model. No-op if already loaded."""
         if self._model is not None:
             return
-        from mlx_audio.tts.utils import load_model
+        try:
+            from mlx_audio.tts.utils import load_model
 
-        self._model = load_model(self.model_name)
+            self._model = load_model(self.model_name)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load TTS model '{self.model_name}': {e}"
+            ) from e
 
     def _play_audio(self, audio_np: np.ndarray):
         """Play a numpy audio array with pause/resume/stop support.
@@ -68,12 +73,20 @@ class AudioEngine:
         block and waits on _pause_event (zero CPU while paused).
 
         Saves _sample_offset on interruption for resume tracking.
+
+        Raises:
+            RuntimeError: If the audio device cannot be opened or playback fails.
         """
         block_size = 1024
-        stream = sd.OutputStream(
-            samplerate=self.sample_rate, channels=1, dtype="float32"
-        )
-        stream.start()
+        try:
+            stream = sd.OutputStream(
+                samplerate=self.sample_rate, channels=1, dtype="float32"
+            )
+            stream.start()
+        except sd.PortAudioError as e:
+            raise RuntimeError(
+                f"Audio device error — cannot open output stream: {e}"
+            ) from e
         try:
             offset = 0
             while offset < len(audio_np):
@@ -83,12 +96,52 @@ class AudioEngine:
                 if self._stop_event.is_set():
                     break
                 end = min(offset + block_size, len(audio_np))
-                stream.write(audio_np[offset:end].reshape(-1, 1))
+                try:
+                    stream.write(audio_np[offset:end].reshape(-1, 1))
+                except sd.PortAudioError as e:
+                    raise RuntimeError(
+                        f"Audio playback error during write: {e}"
+                    ) from e
                 offset = end
             self._sample_offset = offset
         finally:
             stream.stop()
             stream.close()
+
+    def generate_and_play(self, text: str):
+        """Generate TTS for a single text string and play it.
+
+        Intended to be called from the TUI worker loop, once per paragraph.
+        Clears _stop_event at entry so that a previous skip (which sets
+        _stop_event without cancelling the worker) doesn't block the next call.
+
+        Args:
+            text: The text to synthesize and play.
+
+        Raises:
+            RuntimeError: If model loading, generation, or audio playback fails.
+        """
+        self._stop_event.clear()
+        self.load_model()
+
+        try:
+            result = self._model.generate(
+                text, voice=self.voice, speed=self.speed, lang=self.lang
+            )
+        except Exception as e:
+            raise RuntimeError(f"TTS generation failed: {e}") from e
+
+        # model.generate can return a single result or a list of segments
+        if isinstance(result, list):
+            segments = result
+        else:
+            segments = [result]
+
+        for segment in segments:
+            if self._stop_event.is_set():
+                break
+            audio_np = np.array(segment.audio, dtype=np.float32)
+            self._play_audio(audio_np)
 
     def play_article(
         self,
