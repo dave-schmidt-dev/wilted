@@ -23,9 +23,7 @@ def load_queue() -> list[dict]:
 def save_queue(queue: list[dict]) -> None:
     """Save the reading list queue atomically."""
     ensure_data_dirs()
-    with tempfile.NamedTemporaryFile(
-        "w", dir=QUEUE_FILE.parent, suffix=".tmp", delete=False
-    ) as f:
+    with tempfile.NamedTemporaryFile("w", dir=QUEUE_FILE.parent, suffix=".tmp", delete=False) as f:
         json.dump(queue, f, indent=2)
         tmp_path = f.name
     os.replace(tmp_path, QUEUE_FILE)
@@ -82,9 +80,7 @@ def remove_article(index: int) -> dict:
     """
     queue = load_queue()
     if index < 0 or index >= len(queue):
-        raise IndexError(
-            f"Invalid index {index}. Queue has {len(queue)} article(s)."
-        )
+        raise IndexError(f"Invalid index {index}. Queue has {len(queue)} article(s).")
 
     entry = queue.pop(index)
     article_path = ARTICLES_DIR / entry["file"]

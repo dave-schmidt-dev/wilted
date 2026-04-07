@@ -31,7 +31,6 @@ from lilt.queue import (
 from lilt.state import clear_article_state, get_article_state, set_article_state
 from lilt.text import clean_text, extract_title_from_paste, split_paragraphs
 
-
 # ---------------------------------------------------------------------------
 # Voice settings modal
 # ---------------------------------------------------------------------------
@@ -110,9 +109,7 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
         Binding("z", "lang_z", "Chinese", show=False),
     ]
 
-    def __init__(
-        self, current_voice: str, current_speed: float, current_lang: str = "a", **kwargs
-    ) -> None:
+    def __init__(self, current_voice: str, current_speed: float, current_lang: str = "a", **kwargs) -> None:
         super().__init__(**kwargs)
         self.selected_voice = current_voice
         self.selected_speed = current_speed
@@ -147,9 +144,7 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
                 selected_row = i
         table.move_cursor(row=selected_row)
 
-    def on_data_table_row_highlighted(
-        self, event: DataTable.RowHighlighted
-    ) -> None:
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.cursor_row is not None:
             table = self.query_one("#voice-table", DataTable)
             row_data = table.get_row_at(event.cursor_row)
@@ -157,15 +152,11 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
 
     def action_speed_down(self) -> None:
         self.selected_speed = max(0.5, round(self.selected_speed - 0.1, 1))
-        self.query_one("#speed-display", Label).update(
-            f"{self.selected_speed:.1f}x"
-        )
+        self.query_one("#speed-display", Label).update(f"{self.selected_speed:.1f}x")
 
     def action_speed_up(self) -> None:
         self.selected_speed = min(2.0, round(self.selected_speed + 0.1, 1))
-        self.query_one("#speed-display", Label).update(
-            f"{self.selected_speed:.1f}x"
-        )
+        self.query_one("#speed-display", Label).update(f"{self.selected_speed:.1f}x")
 
     def _set_lang(self, code: str) -> None:
         self.selected_lang = code
@@ -338,6 +329,7 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
 
                 # Check for Apple News URL in clipboard
                 import re
+
                 url_match = re.search(r"https://apple\.news/\S+", raw)
                 source_url = url_match.group(0) if url_match else None
 
@@ -348,6 +340,7 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
             self.app.call_from_thread(status.update, f"Added: {title_display}")
             # Small delay so user can see the success message
             import time
+
             time.sleep(0.5)
             self.app.call_from_thread(self.dismiss, (action, entry))
 
@@ -727,7 +720,7 @@ class LiltApp(App):
         self._paragraph_idx = resume_para
         self._segments_played = resume_para
 
-        total_words = entry.get("words", 0)
+        entry.get("words", 0)
         title = entry.get("title", "Untitled")
 
         self.call_from_thread(
@@ -771,14 +764,10 @@ class LiltApp(App):
             engine.lang = self._lang
 
             try:
-                self.call_from_thread(
-                    self._set_status, "Generating audio..."
-                )
+                self.call_from_thread(self._set_status, "Generating audio...")
                 engine.generate_and_play(paragraph)
             except Exception as e:
-                self.call_from_thread(
-                    self._set_status, f"Playback error: {e}"
-                )
+                self.call_from_thread(self._set_status, f"Playback error: {e}")
                 break
 
             if worker.is_cancelled:
@@ -837,9 +826,7 @@ class LiltApp(App):
             self._paused = True
             self._set_status("Paused")
             if self._current_entry:
-                set_article_state(
-                    self._current_entry["id"], self._paragraph_idx, 0
-                )
+                set_article_state(self._current_entry["id"], self._paragraph_idx, 0)
         elif self._playing and self._paused:
             # Resume
             if self._engine:
@@ -865,9 +852,7 @@ class LiltApp(App):
         if self._playback_worker and self._playback_worker.is_running:
             self._playback_worker.cancel()
         if self._current_entry:
-            set_article_state(
-                self._current_entry["id"], self._paragraph_idx, 0
-            )
+            set_article_state(self._current_entry["id"], self._paragraph_idx, 0)
         self._playing = False
         self._paused = False
         self._set_status("Stopped")
@@ -918,12 +903,11 @@ class LiltApp(App):
                 self._update_voice_display()
                 self._refresh_queue_display()  # Update est. time column
 
-        self.push_screen(
-            VoiceSettingsScreen(self._voice, self._speed, self._lang), on_dismiss
-        )
+        self.push_screen(VoiceSettingsScreen(self._voice, self._speed, self._lang), on_dismiss)
 
     def action_add_article(self) -> None:
         """Open the add article dialog."""
+
         def on_dismiss(result: tuple[str, dict] | None) -> None:
             if result is not None:
                 action, entry = result
@@ -1017,9 +1001,7 @@ class LiltApp(App):
         if self._playback_worker and self._playback_worker.is_running:
             self._playback_worker.cancel()
         if self._current_entry:
-            set_article_state(
-                self._current_entry["id"], self._paragraph_idx, 0
-            )
+            set_article_state(self._current_entry["id"], self._paragraph_idx, 0)
         self.exit()
 
     # -- WAV export ---------------------------------------------------------
@@ -1087,6 +1069,7 @@ class LiltApp(App):
             return
 
         import numpy as np
+
         combined = np.concatenate(all_audio)
 
         # Generate filename from title
@@ -1099,6 +1082,7 @@ class LiltApp(App):
 
         try:
             from mlx_audio.audio_io import write as audio_write
+
             audio_write(filename, combined, engine.sample_rate)
         except Exception as e:
             self.call_from_thread(self._set_status, f"Write error: {e}")

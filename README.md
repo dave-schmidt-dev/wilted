@@ -140,7 +140,7 @@ src/lilt/                # shared library
     state.py             # resume state persistence
     text.py              # text cleaning and splitting
     tui.py               # Textual TUI app
-tests/                   # 127 tests (pytest)
+tests/                   # 139 tests (pytest)
 data/                    # runtime data (.gitignored)
 ```
 

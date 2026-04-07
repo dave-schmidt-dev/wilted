@@ -22,9 +22,7 @@ def load_state() -> dict:
 def save_state(state: dict) -> None:
     """Save resume state atomically."""
     ensure_data_dirs()
-    with tempfile.NamedTemporaryFile(
-        "w", dir=STATE_FILE.parent, suffix=".tmp", delete=False
-    ) as f:
+    with tempfile.NamedTemporaryFile("w", dir=STATE_FILE.parent, suffix=".tmp", delete=False) as f:
         json.dump(state, f, indent=2)
         tmp_path = f.name
     os.replace(tmp_path, STATE_FILE)
@@ -36,9 +34,7 @@ def get_article_state(article_id: int) -> dict | None:
     return state.get(str(article_id))
 
 
-def set_article_state(
-    article_id: int, paragraph_idx: int, segment_in_paragraph: int = 0
-) -> None:
+def set_article_state(article_id: int, paragraph_idx: int, segment_in_paragraph: int = 0) -> None:
     """Save resume position for an article."""
     state = load_state()
     state[str(article_id)] = {

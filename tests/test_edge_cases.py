@@ -3,12 +3,13 @@
 import json
 import threading
 import types
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-from unittest.mock import MagicMock, patch
 
 import lilt
+from lilt.engine import AudioEngine
 from lilt.queue import (
     add_article,
     clear_queue,
@@ -22,11 +23,8 @@ from lilt.state import (
     clear_article_state,
     get_article_state,
     load_state,
-    save_state,
     set_article_state,
 )
-from lilt.engine import AudioEngine
-
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -303,7 +301,6 @@ class TestEngineErrorHandling:
 
             # Stop after first segment's audio is written
             call_count = [0]
-            original_write = stream_instance.write
 
             def write_side_effect(data):
                 call_count[0] += 1
@@ -337,9 +334,7 @@ class TestEngineErrorHandling:
         """
         engine = AudioEngine()
         engine._model = MagicMock()
-        fake_segment = types.SimpleNamespace(
-            audio=np.zeros(1024), sample_rate=24000
-        )
+        fake_segment = types.SimpleNamespace(audio=np.zeros(1024), sample_rate=24000)
         engine._model.generate.return_value = fake_segment
 
         progress_calls = []
@@ -397,9 +392,8 @@ class TestGenerateAudioEdgeCases:
         mock_segment.audio = np.zeros(100)
         mock_model.generate.return_value = mock_segment
 
-        with patch("lilt.engine.sd"), \
-             patch("mlx_audio.tts.utils.load_model", return_value=mock_model) as mock_load:
-            result = engine.generate_audio("Test text.")
+        with patch("lilt.engine.sd"), patch("mlx_audio.tts.utils.load_model", return_value=mock_model) as mock_load:
+            engine.generate_audio("Test text.")
             mock_load.assert_called_once()
 
 
@@ -417,8 +411,7 @@ class TestLanguageConstants:
 
         for voice_id, info in VOICES.items():
             accent = info["accent"]
-            matching = [code for code, name in LANGUAGES.items()
-                        if accent in name]
+            matching = [code for code, name in LANGUAGES.items() if accent in name]
             assert matching, f"Voice {voice_id} has accent '{accent}' with no matching LANGUAGES entry"
 
     def test_chinese_language_exists(self):
@@ -506,6 +499,6 @@ class TestWpmEstimateConsistency:
             stripped = line.strip()
             if stripped.startswith("#") or stripped.startswith('"') or stripped.startswith("'"):
                 continue
-            if re.search(r'/\s*\(?\s*150\s*[*)]', line):
+            if re.search(r"/\s*\(?\s*150\s*[*)]", line):
                 violations.append(f"Line {i}: {stripped}")
-        assert not violations, f"Hardcoded 150 WPM found:\n" + "\n".join(violations)
+        assert not violations, "Hardcoded 150 WPM found:\n" + "\n".join(violations)

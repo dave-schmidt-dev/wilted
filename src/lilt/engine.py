@@ -1,9 +1,9 @@
 """Audio engine — TTS generation and playback with pause/resume/stop controls."""
 
-from collections.abc import Iterable
 import os
 import sys
 import threading
+from collections.abc import Iterable
 
 import numpy as np
 import sounddevice as sd
@@ -27,22 +27,43 @@ def _normalize_segments(result):
     return [result]
 
 
-def _disable_hf_xet_for_stability() -> None:
-    """Force Hugging Face downloads onto the HTTP path unless explicitly overridden.
+def _force_hf_offline_if_cached(model_name: str) -> None:
+    """Enable HF offline mode when the model is already in the local cache.
 
-    `huggingface_hub` will automatically use `hf_xet` when it is installed. In
-    this project that download path has been unstable on macOS during model
-    fetches, so prefer the plain HTTP downloader by default.
+    ``huggingface_hub``'s download stack (especially the ``hf_xet`` Rust
+    extension) is unstable inside the Textual TUI on macOS — open file
+    descriptors from the event loop cause ``bad value(s) in fds_to_keep``
+    during subprocess forking.
 
-    Set `LILT_ENABLE_HF_XET=1` to opt back into Xet-backed downloads.
+    When the model is already cached we can sidestep the entire download stack
+    by telling ``huggingface_hub`` to work offline.  If the model is *not*
+    cached, we fall back to the env-var + sys.modules approach so that a plain
+    HTTP download can still succeed.
+
+    Set ``LILT_ENABLE_HF_XET=1`` to opt back into Xet-backed downloads.
     """
     if os.environ.get("LILT_ENABLE_HF_XET", "").lower() in {"1", "true", "yes"}:
         return
 
+    # --- Layer 1: check cache and go offline if present ---
+    cache_dir = os.path.join(
+        os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface")),
+        "hub",
+        f"models--{model_name.replace('/', '--')}",
+    )
+    if os.path.isdir(os.path.join(cache_dir, "snapshots")):
+        os.environ["HF_HUB_OFFLINE"] = "1"
+
+    # --- Layer 2: disable xet via env var ---
     os.environ["HF_HUB_DISABLE_XET"] = "1"
 
-    # If huggingface_hub was imported earlier in the process, update the cached
-    # constant as well so later availability checks see the override.
+    # --- Layer 3: poison hf_xet in sys.modules ---
+    for mod_name in list(sys.modules):
+        if mod_name == "hf_xet" or mod_name.startswith("hf_xet."):
+            del sys.modules[mod_name]
+    sys.modules["hf_xet"] = None  # type: ignore[assignment]
+
+    # --- Layer 4: patch already-loaded constants ---
     hub_constants = sys.modules.get("huggingface_hub.constants")
     if hub_constants is not None:
         hub_constants.HF_HUB_DISABLE_XET = True
@@ -95,14 +116,12 @@ class AudioEngine:
         if self._model is not None:
             return
         try:
-            _disable_hf_xet_for_stability()
+            _force_hf_offline_if_cached(self.model_name)
             from mlx_audio.tts.utils import load_model
 
             self._model = load_model(self.model_name)
         except Exception as e:
-            raise RuntimeError(
-                f"Failed to load TTS model '{self.model_name}': {e}"
-            ) from e
+            raise RuntimeError(f"Failed to load TTS model '{self.model_name}': {e}") from e
 
     def _play_audio(self, audio_np: np.ndarray):
         """Play a numpy audio array with pause/resume/stop support.
@@ -118,14 +137,10 @@ class AudioEngine:
         """
         block_size = 1024
         try:
-            stream = sd.OutputStream(
-                samplerate=self.sample_rate, channels=1, dtype="float32"
-            )
+            stream = sd.OutputStream(samplerate=self.sample_rate, channels=1, dtype="float32")
             stream.start()
         except sd.PortAudioError as e:
-            raise RuntimeError(
-                f"Audio device error — cannot open output stream: {e}"
-            ) from e
+            raise RuntimeError(f"Audio device error — cannot open output stream: {e}") from e
         try:
             offset = 0
             while offset < len(audio_np):
@@ -138,9 +153,7 @@ class AudioEngine:
                 try:
                     stream.write(audio_np[offset:end].reshape(-1, 1))
                 except sd.PortAudioError as e:
-                    raise RuntimeError(
-                        f"Audio playback error during write: {e}"
-                    ) from e
+                    raise RuntimeError(f"Audio playback error during write: {e}") from e
                 offset = end
             self._sample_offset = offset
         finally:
@@ -164,9 +177,7 @@ class AudioEngine:
         self.load_model()
 
         try:
-            result = self._model.generate(
-                text, voice=self.voice, speed=self.speed, lang_code=self.lang
-            )
+            result = self._model.generate(text, voice=self.voice, speed=self.speed, lang_code=self.lang)
         except Exception as e:
             raise RuntimeError(f"TTS generation failed: {e}") from e
 
@@ -227,9 +238,7 @@ class AudioEngine:
                     self._play_audio(audio_np)
 
                     if on_progress is not None:
-                        on_progress(
-                            para_idx, seg_idx, total_paragraphs, paragraph_text
-                        )
+                        on_progress(para_idx, seg_idx, total_paragraphs, paragraph_text)
         finally:
             self._playing = False
 
@@ -240,9 +249,7 @@ class AudioEngine:
         """
         self.load_model()
         try:
-            result = self._model.generate(
-                text, voice=self.voice, speed=self.speed, lang_code=self.lang
-            )
+            result = self._model.generate(text, voice=self.voice, speed=self.speed, lang_code=self.lang)
         except Exception as e:
             raise RuntimeError(f"TTS generation failed: {e}") from e
 

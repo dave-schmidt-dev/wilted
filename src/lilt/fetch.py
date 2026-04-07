@@ -15,9 +15,7 @@ def get_text_from_clipboard() -> str:
 def resolve_apple_news_url(url: str) -> str:
     """Extract canonical URL from Apple News share link."""
     req = urllib.request.Request(url, method="GET")
-    req.add_header(
-        "User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
-    )
+    req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             html = resp.read().decode("utf-8", errors="replace")
@@ -38,9 +36,7 @@ def extract_title_from_url(url: str) -> str | None:
     """Try to extract article title from the URL's HTML."""
     try:
         req = urllib.request.Request(url)
-        req.add_header(
-            "User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
-        )
+        req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
         with urllib.request.urlopen(req, timeout=10) as resp:
             html = resp.read().decode("utf-8", errors="replace")
         match = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
@@ -70,8 +66,6 @@ def get_text_from_url(url: str) -> tuple[str | None, str]:
         url = resolve_apple_news_url(url)
     html = trafilatura.fetch_url(url)
     if html:
-        text = trafilatura.extract(
-            html, include_comments=False, include_tables=False
-        )
+        text = trafilatura.extract(html, include_comments=False, include_tables=False)
         return text, url
     return None, url

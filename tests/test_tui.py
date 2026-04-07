@@ -8,7 +8,6 @@ import pytest
 
 from lilt.tui import AddArticleScreen, ConfirmScreen, LiltApp, TextPreviewScreen, VoiceSettingsScreen
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -45,7 +44,7 @@ SAMPLE_QUEUE = [
 async def test_app_launches(mock_load):
     """App starts without error and shows the DataTable."""
     app = LiltApp()
-    async with app.run_test() as pilot:
+    async with app.run_test():
         from textual.widgets import DataTable
 
         tables = app.query(DataTable)
@@ -57,7 +56,7 @@ async def test_app_launches(mock_load):
 async def test_queue_displayed(mock_load):
     """Two articles from the mock queue appear in the DataTable."""
     app = LiltApp()
-    async with app.run_test() as pilot:
+    async with app.run_test():
         from textual.widgets import DataTable
 
         table = app.query_one("#queue-table", DataTable)
@@ -72,7 +71,7 @@ async def test_queue_displayed(mock_load):
 async def test_empty_queue_message(mock_load):
     """When queue is empty, an 'empty' message is shown."""
     app = LiltApp()
-    async with app.run_test() as pilot:
+    async with app.run_test():
         from textual.widgets import Label
 
         empty_label = app.query_one("#empty-message", Label)
@@ -139,10 +138,7 @@ async def test_add_screen_launches_on_a_key():
             await pilot.press("a")
             await pilot.pause()
             # Check that AddArticleScreen is on the screen stack
-            assert any(
-                isinstance(screen, AddArticleScreen)
-                for screen in app.screen_stack
-            )
+            assert any(isinstance(screen, AddArticleScreen) for screen in app.screen_stack)
 
 
 @pytest.mark.asyncio
@@ -157,9 +153,7 @@ async def test_add_screen_cancel():
             await pilot.pause()
             # Should be back to main screen
             assert not any(
-                isinstance(screen, AddArticleScreen)
-                for screen in app.screen_stack
-                if screen is not app.screen
+                isinstance(screen, AddArticleScreen) for screen in app.screen_stack if screen is not app.screen
             )
 
 
@@ -200,9 +194,7 @@ async def test_refresh_key(mock_load):
         # load_queue is called once on mount
         initial_count = mock_load.call_count
         await pilot.press("r")
-        assert mock_load.call_count > initial_count, (
-            "load_queue should be called again on refresh"
-        )
+        assert mock_load.call_count > initial_count, "load_queue should be called again on refresh"
 
 
 @pytest.mark.asyncio
@@ -271,10 +263,7 @@ async def test_text_preview_launches():
             await pilot.pause()
             await pilot.press("t")
             await pilot.pause()
-            assert any(
-                isinstance(screen, TextPreviewScreen)
-                for screen in app.screen_stack
-            )
+            assert any(isinstance(screen, TextPreviewScreen) for screen in app.screen_stack)
 
 
 @pytest.mark.asyncio
@@ -322,10 +311,7 @@ async def test_clear_all_launches_confirm():
             await pilot.pause()
             await pilot.press("c")
             await pilot.pause()
-            assert any(
-                isinstance(screen, ConfirmScreen)
-                for screen in app.screen_stack
-            )
+            assert any(isinstance(screen, ConfirmScreen) for screen in app.screen_stack)
 
 
 @pytest.mark.asyncio
@@ -340,10 +326,7 @@ async def test_delete_launches_confirm():
             await pilot.pause()
             await pilot.press("d")
             await pilot.pause()
-            assert any(
-                isinstance(screen, ConfirmScreen)
-                for screen in app.screen_stack
-            )
+            assert any(isinstance(screen, ConfirmScreen) for screen in app.screen_stack)
 
 
 @pytest.mark.asyncio

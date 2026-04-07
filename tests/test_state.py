@@ -1,7 +1,5 @@
 """Tests for lilt.state — resume position persistence."""
 
-import json
-
 import pytest
 
 import lilt

@@ -3,10 +3,10 @@
 import os
 import threading
 import types
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-from unittest.mock import MagicMock, patch
 
 from lilt.engine import AudioEngine, _normalize_segments
 
@@ -76,7 +76,6 @@ class TestPlayAudio:
         block_size = 1024
         # After 2 blocks, trigger stop
         call_count = [0]
-        original_write = mock_stream.write
 
         def write_side_effect(data):
             call_count[0] += 1
@@ -187,7 +186,7 @@ class TestControls:
 
 class TestModelLoading:
     def test_load_model_disables_hf_xet_by_default(self):
-        """load_model should force plain HTTP Hub downloads before importing mlx_audio."""
+        """load_model should disable xet and enable offline mode when cached."""
         engine = AudioEngine()
         mock_load_model = MagicMock(return_value="mock-model")
         mlx_audio_mod = types.ModuleType("mlx_audio")
@@ -205,12 +204,63 @@ class TestModelLoading:
                     "mlx_audio.tts.utils": mlx_audio_utils_mod,
                 },
             ),
+            patch("lilt.engine.os.path.isdir", return_value=True),
         ):
             engine.load_model()
             assert os.environ["HF_HUB_DISABLE_XET"] == "1"
 
         assert engine._model == "mock-model"
         mock_load_model.assert_called_once_with(engine.model_name)
+
+    def test_load_model_enables_offline_when_cached(self):
+        """load_model sets HF_HUB_OFFLINE=1 when the model snapshot dir exists."""
+        engine = AudioEngine()
+        mock_load_model = MagicMock(return_value="mock-model")
+        mlx_audio_mod = types.ModuleType("mlx_audio")
+        mlx_audio_tts_mod = types.ModuleType("mlx_audio.tts")
+        mlx_audio_utils_mod = types.ModuleType("mlx_audio.tts.utils")
+        mlx_audio_utils_mod.load_model = mock_load_model
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.dict(
+                "sys.modules",
+                {
+                    "mlx_audio": mlx_audio_mod,
+                    "mlx_audio.tts": mlx_audio_tts_mod,
+                    "mlx_audio.tts.utils": mlx_audio_utils_mod,
+                },
+            ),
+            patch("lilt.engine.os.path.isdir", return_value=True),
+        ):
+            engine.load_model()
+            assert os.environ.get("HF_HUB_OFFLINE") == "1"
+
+    def test_load_model_skips_offline_when_not_cached(self):
+        """load_model should not set offline mode if model cache is missing."""
+        engine = AudioEngine()
+        mock_load_model = MagicMock(return_value="mock-model")
+        mlx_audio_mod = types.ModuleType("mlx_audio")
+        mlx_audio_tts_mod = types.ModuleType("mlx_audio.tts")
+        mlx_audio_utils_mod = types.ModuleType("mlx_audio.tts.utils")
+        mlx_audio_utils_mod.load_model = mock_load_model
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.dict(
+                "sys.modules",
+                {
+                    "mlx_audio": mlx_audio_mod,
+                    "mlx_audio.tts": mlx_audio_tts_mod,
+                    "mlx_audio.tts.utils": mlx_audio_utils_mod,
+                },
+            ),
+            patch("lilt.engine.os.path.isdir", return_value=False),
+        ):
+            engine.load_model()
+            assert "HF_HUB_OFFLINE" not in os.environ
+            # xet should still be disabled even without cache
+            assert os.environ["HF_HUB_DISABLE_XET"] == "1"
 
     def test_load_model_respects_xet_opt_in(self):
         """Setting LILT_ENABLE_HF_XET should skip the safety override."""
@@ -237,8 +287,10 @@ class TestModelLoading:
             ),
         ):
             engine.load_model()
+            # Check inside the controlled env — the real shell may already
+            # have the var from a previous lilt run.
+            assert "HF_HUB_DISABLE_XET" not in os.environ
 
-        assert "HF_HUB_DISABLE_XET" not in os.environ
         assert engine._model == "mock-model"
         mock_load_model.assert_called_once_with(engine.model_name)
 

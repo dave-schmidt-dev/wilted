@@ -1,7 +1,5 @@
 """Tests for lilt.queue — reading list persistence and operations."""
 
-import json
-
 import pytest
 
 import lilt
@@ -157,7 +155,7 @@ class TestMarkCompleted:
 
     def test_leaves_other_entries(self):
         add_article("First.", title="First")
-        entry2 = add_article("Second.", title="Second")
+        add_article("Second.", title="Second")
         # Remove first (id=1)
         queue = load_queue()
         mark_completed(queue[0])

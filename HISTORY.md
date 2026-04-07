@@ -1,3 +1,10 @@
+## 2026-04-07
+
+- Fixed persistent `bad value(s) in fds_to_keep` playback error. The `hf_xet` Rust extension (hard dependency of `huggingface_hub` 1.9.0) spawns subprocesses that fail when Textual's event loop has open file descriptors. Previous env-var-only workaround (`HF_HUB_DISABLE_XET=1`) was insufficient — `hf_xet` native code could still trigger forking during the download-stack initialization. Replaced with a layered approach: (1) `HF_HUB_OFFLINE=1` when model is cached, bypassing the entire download stack; (2) `HF_HUB_DISABLE_XET=1`; (3) `sys.modules["hf_xet"] = None` to block import; (4) patching `huggingface_hub.constants`. Also fixed the CLI `_play_text()` path which was missing the workaround entirely.
+- Added 2 regression tests for offline-mode model loading (cached and uncached paths). 139 total tests.
+- Added ruff as a dev dependency. Ran lint + format across entire codebase — fixed import ordering, removed unused imports/variables, formatted all files. Added `[tool.ruff]` config to `pyproject.toml`.
+- Created `tasks.md` with ASAP tech debt items from contrarian review (CLI consolidation, CLI tests, hardcoded WPM, shebang, sounddevice dep, XDG data dir).
+
 ## 2026-04-06
 
 - Created lilt project (renamed from readarticle).

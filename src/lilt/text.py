@@ -34,11 +34,7 @@ def extract_title_from_paste(text: str) -> str | None:
     """
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     if len(lines) >= 2:
-        candidate = (
-            lines[1]
-            if lines[0].isupper() and len(lines[0].split()) <= 3
-            else lines[0]
-        )
+        candidate = lines[1] if lines[0].isupper() and len(lines[0].split()) <= 3 else lines[0]
         if candidate.isupper() and len(candidate.split()) >= 3:
             return candidate.title()
     return None

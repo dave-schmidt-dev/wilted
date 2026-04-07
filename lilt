@@ -39,20 +39,19 @@ def _launch_tui() -> None:
 
 def _run_cli() -> None:
     """Parse args and run the appropriate CLI command."""
+    import atexit
     import os
     import re
     import subprocess
     import tempfile
-    import atexit
 
     import numpy as np
 
     from lilt import VOICES
-    from lilt.text import clean_text, extract_title_from_paste, split_into_chunks
     from lilt.fetch import (
+        extract_title_from_url,
         get_text_from_clipboard,
         get_text_from_url,
-        extract_title_from_url,
     )
     from lilt.queue import (
         add_article,
@@ -62,6 +61,7 @@ def _run_cli() -> None:
         mark_completed,
         remove_article,
     )
+    from lilt.text import clean_text, extract_title_from_paste, split_into_chunks
 
     # --- Temp file cleanup ---
 
@@ -89,8 +89,7 @@ def _run_cli() -> None:
             text, canonical_url = get_text_from_url(args.input)
             if not text:
                 print(
-                    "Could not fetch article text (paywall?). "
-                    "Copy the text, then run: lilt --add",
+                    "Could not fetch article text (paywall?). Copy the text, then run: lilt --add",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -108,9 +107,7 @@ def _run_cli() -> None:
                 source_url = url_match.group(0)
 
         text = clean_text(text)
-        entry = add_article(
-            text, title=title, source_url=source_url, canonical_url=canonical_url
-        )
+        entry = add_article(text, title=title, source_url=source_url, canonical_url=canonical_url)
 
         est_min = entry["words"] / 150
         print(f"Added #{entry['id']}: {entry['title']}")
@@ -156,8 +153,11 @@ def _run_cli() -> None:
             print(f"Cleared {count} article(s) from reading list.")
 
     def _play_text(text, args):
-        from mlx_audio.tts.utils import load_model
+        from lilt.engine import _force_hf_offline_if_cached
+
+        _force_hf_offline_if_cached(args.model)
         from mlx_audio.audio_io import write as audio_write
+        from mlx_audio.tts.utils import load_model
 
         word_count = len(text.split())
         est_minutes = word_count / 150
@@ -175,9 +175,7 @@ def _run_cli() -> None:
             for i, chunk in enumerate(chunks, 1):
                 sys.stdout.write(f"\r  Generating {i}/{len(chunks)}...")
                 sys.stdout.flush()
-                for result in model.generate(
-                    text=chunk, voice=args.voice, speed=args.speed, lang_code=args.lang
-                ):
+                for result in model.generate(text=chunk, voice=args.voice, speed=args.speed, lang_code=args.lang):
                     audio_arr = result.audio
                     if hasattr(audio_arr, "tolist"):
                         audio_arr = audio_arr.tolist()
@@ -294,8 +292,7 @@ def _run_cli() -> None:
                 text, _ = get_text_from_url(args.input)
                 if not text:
                     print(
-                        "Could not extract article text (paywall?). "
-                        "Try copying the text and running: lilt --add",
+                        "Could not extract article text (paywall?). Try copying the text and running: lilt --add",
                         file=sys.stderr,
                     )
                     sys.exit(1)
@@ -352,26 +349,14 @@ def _run_cli() -> None:
         help="Add article to reading list (from URL argument or clipboard)",
     )
     queue_group.add_argument("--list", action="store_true", help="Show reading list")
-    queue_group.add_argument(
-        "--play", action="store_true", help="Play all articles in reading list"
-    )
-    queue_group.add_argument(
-        "--next", action="store_true", help="Play next article in reading list"
-    )
-    queue_group.add_argument(
-        "--remove", type=int, metavar="N", help="Remove article N from reading list"
-    )
-    queue_group.add_argument(
-        "--clear", action="store_true", help="Clear entire reading list"
-    )
+    queue_group.add_argument("--play", action="store_true", help="Play all articles in reading list")
+    queue_group.add_argument("--next", action="store_true", help="Play next article in reading list")
+    queue_group.add_argument("--remove", type=int, metavar="N", help="Remove article N from reading list")
+    queue_group.add_argument("--clear", action="store_true", help="Clear entire reading list")
 
     play_group = parser.add_argument_group("playback")
-    play_group.add_argument(
-        "--voice", default="af_heart", help="Voice preset (default: af_heart)"
-    )
-    play_group.add_argument(
-        "--speed", type=float, default=1.0, help="Speech speed 0.5-2.0 (default: 1.0)"
-    )
+    play_group.add_argument("--voice", default="af_heart", help="Voice preset (default: af_heart)")
+    play_group.add_argument("--speed", type=float, default=1.0, help="Speech speed 0.5-2.0 (default: 1.0)")
     play_group.add_argument(
         "--model",
         default="mlx-community/Kokoro-82M-bf16",
@@ -380,17 +365,11 @@ def _run_cli() -> None:
     play_group.add_argument(
         "--lang", default="a", help="Language: a=American, b=British, j=Japanese, z=Chinese (default: a)"
     )
-    play_group.add_argument(
-        "--save", metavar="FILE", help="Save audio to file instead of playing"
-    )
+    play_group.add_argument("--save", metavar="FILE", help="Save audio to file instead of playing")
 
     util_group = parser.add_argument_group("utility")
-    util_group.add_argument(
-        "--clean", action="store_true", help="Output cleaned text only, no audio"
-    )
-    util_group.add_argument(
-        "--list-voices", action="store_true", help="List available voices"
-    )
+    util_group.add_argument("--clean", action="store_true", help="Output cleaned text only, no audio")
+    util_group.add_argument("--list-voices", action="store_true", help="List available voices")
 
     args = parser.parse_args()
 
@@ -399,11 +378,7 @@ def _run_cli() -> None:
     if args.list_voices:
         print("Kokoro voices:\n")
         for accent in ["American", "British", "Japanese", "Chinese"]:
-            voices = [
-                f"{code} ({v['name']}, {v['gender']})"
-                for code, v in VOICES.items()
-                if v["accent"] == accent
-            ]
+            voices = [f"{code} ({v['name']}, {v['gender']})" for code, v in VOICES.items() if v["accent"] == accent]
             if voices:
                 print(f"  {accent}: {', '.join(voices)}")
         return
