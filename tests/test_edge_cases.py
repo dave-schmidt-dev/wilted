@@ -27,31 +27,6 @@ from lilt.state import (
 )
 
 # ---------------------------------------------------------------------------
-# Shared fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def isolated_data(tmp_path, monkeypatch):
-    """Redirect all data paths to a temp directory for every test."""
-    data_dir = tmp_path / "data"
-    articles_dir = data_dir / "articles"
-    articles_dir.mkdir(parents=True)
-
-    monkeypatch.setattr(lilt, "DATA_DIR", data_dir)
-    monkeypatch.setattr(lilt, "QUEUE_FILE", data_dir / "queue.json")
-    monkeypatch.setattr(lilt, "ARTICLES_DIR", articles_dir)
-    monkeypatch.setattr(lilt, "STATE_FILE", data_dir / "state.json")
-
-    from lilt import queue as queue_mod
-    from lilt import state as state_mod
-
-    monkeypatch.setattr(queue_mod, "QUEUE_FILE", data_dir / "queue.json")
-    monkeypatch.setattr(queue_mod, "ARTICLES_DIR", articles_dir)
-    monkeypatch.setattr(state_mod, "STATE_FILE", data_dir / "state.json")
-
-
-# ---------------------------------------------------------------------------
 # TestCorruptQueue
 # ---------------------------------------------------------------------------
 
@@ -77,10 +52,13 @@ class TestCorruptQueue:
         """
         lilt.QUEUE_FILE.write_text(json.dumps({"not": "a list"}))
         result = load_queue()
-        # After hardening the expected behavior is []; if the function doesn't
-        # validate yet, it would return the dict. Either way, this documents
-        # the current contract.
-        assert result == [] or isinstance(result, dict)
+        assert result == []
+
+    def test_non_list_json_types_return_empty(self):
+        """Non-list JSON types (string, int, dict) should all return []."""
+        for value in ['"just a string"', "42", '{"key": "val"}']:
+            lilt.QUEUE_FILE.write_text(value)
+            assert load_queue() == [], f"load_queue() should return [] for JSON: {value}"
 
     def test_corrupt_queue_does_not_break_add(self):
         """Adding an article when the queue file is corrupt should recover."""
@@ -108,6 +86,12 @@ class TestCorruptState:
         """Corrupt state file should produce an empty dict from load_state()."""
         lilt.STATE_FILE.write_text("{{{bad json!!")
         assert load_state() == {}
+
+    def test_non_dict_json_returns_empty_dict(self):
+        """Non-dict JSON types (list, string, int) should return {}."""
+        for value in ["[1, 2, 3]", '"a string"', "42"]:
+            lilt.STATE_FILE.write_text(value)
+            assert load_state() == {}, f"load_state() should return {{}} for JSON: {value}"
 
     def test_get_article_state_on_corrupt_file(self):
         """get_article_state() should return None when state is corrupt."""

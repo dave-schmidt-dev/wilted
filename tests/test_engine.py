@@ -1,12 +1,19 @@
 """Tests for lilt.engine — TTS playback engine with pause/resume/stop."""
 
 import os
+import sys
 import threading
 import types
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+
+# Ensure mlx_audio.audio_io is mockable even if mlx_audio isn't installed
+if "mlx_audio" not in sys.modules:
+    sys.modules["mlx_audio"] = types.ModuleType("mlx_audio")
+if "mlx_audio.audio_io" not in sys.modules:
+    sys.modules["mlx_audio.audio_io"] = types.ModuleType("mlx_audio.audio_io")
 
 from lilt.engine import AudioEngine, _normalize_segments
 
@@ -426,3 +433,49 @@ class TestLangCodeParameter:
         assert "lang_code" in call_kwargs
         assert call_kwargs["lang_code"] == "j"
         assert "lang" not in call_kwargs  # Should NOT use 'lang='
+
+
+class TestExportToWav:
+    def test_normal_export(self, engine, mock_stream, tmp_path):
+        """export_to_wav generates audio for each chunk and writes WAV."""
+        from lilt.engine import export_to_wav
+
+        filepath = str(tmp_path / "output.wav")
+        with patch("mlx_audio.audio_io.write", create=True) as mock_write:
+            export_to_wav(engine, ["Chunk one.", "Chunk two."], filepath)
+
+        assert engine._model.generate.call_count == 2
+        mock_write.assert_called_once()
+        assert mock_write.call_args[0][0] == filepath
+
+    def test_on_progress_callback(self, engine, mock_stream, tmp_path):
+        """export_to_wav calls on_progress with (current, total)."""
+        from lilt.engine import export_to_wav
+
+        progress_calls = []
+        filepath = str(tmp_path / "output.wav")
+        with patch("mlx_audio.audio_io.write", create=True):
+            export_to_wav(
+                engine,
+                ["A.", "B.", "C."],
+                filepath,
+                on_progress=lambda cur, tot: progress_calls.append((cur, tot)),
+            )
+
+        assert progress_calls == [(1, 3), (2, 3), (3, 3)]
+
+    def test_empty_chunks_raises(self, engine):
+        """export_to_wav raises ValueError for empty chunk list."""
+        from lilt.engine import export_to_wav
+
+        with pytest.raises(ValueError, match="No text chunks"):
+            export_to_wav(engine, [], "output.wav")
+
+    def test_no_audio_generated_raises(self, engine, mock_stream, tmp_path):
+        """export_to_wav raises ValueError when model produces no audio."""
+        from lilt.engine import export_to_wav
+
+        engine._model.generate.return_value = []  # No segments
+        filepath = str(tmp_path / "output.wav")
+        with pytest.raises(ValueError, match="No audio generated"):
+            export_to_wav(engine, ["Some text."], filepath)

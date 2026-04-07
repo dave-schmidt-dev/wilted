@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import lilt
 from lilt.cli import (
     CLIError,
     _play_text,
@@ -19,23 +18,6 @@ from lilt.cli import (
     run_cli,
 )
 from lilt.queue import add_article, load_queue
-
-
-@pytest.fixture(autouse=True)
-def isolated_data(tmp_path, monkeypatch):
-    """Redirect all data paths to a temp directory."""
-    data_dir = tmp_path / "data"
-    articles_dir = data_dir / "articles"
-    articles_dir.mkdir(parents=True)
-
-    monkeypatch.setattr(lilt, "DATA_DIR", data_dir)
-    monkeypatch.setattr(lilt, "QUEUE_FILE", data_dir / "queue.json")
-    monkeypatch.setattr(lilt, "ARTICLES_DIR", articles_dir)
-
-    from lilt import queue as queue_mod
-
-    monkeypatch.setattr(queue_mod, "QUEUE_FILE", data_dir / "queue.json")
-    monkeypatch.setattr(queue_mod, "ARTICLES_DIR", articles_dir)
 
 
 def _make_args(**overrides):
@@ -74,13 +56,16 @@ def _add_test_article(text="Hello world. This is a test article.", title="Test A
 class TestCmdAdd:
     def test_add_from_url(self, capsys):
         """cmd_add with URL input fetches and adds article."""
+        from lilt.ingest import ArticleResult
+
         args = _make_args(input="https://example.com/article", add=True)
-        with (
-            patch(
-                "lilt.cli.get_text_from_url", return_value=("Article body text here.", "https://example.com/article")
-            ),
-            patch("lilt.cli.extract_title_from_url", return_value="Example Article"),
-        ):
+        fake_result = ArticleResult(
+            text="Article body text here.",
+            title="Example Article",
+            source_url="https://example.com/article",
+            canonical_url="https://example.com/article",
+        )
+        with patch("lilt.cli.resolve_article", return_value=fake_result):
             cmd_add(args)
 
         captured = capsys.readouterr()
@@ -90,8 +75,16 @@ class TestCmdAdd:
 
     def test_add_from_clipboard(self, capsys):
         """cmd_add from clipboard when no URL given."""
+        from lilt.ingest import ArticleResult
+
         args = _make_args(add=True)
-        with patch("lilt.cli.get_text_from_clipboard", return_value="Clipboard article text here."):
+        fake_result = ArticleResult(
+            text="Clipboard article text here.",
+            title=None,
+            source_url=None,
+            canonical_url=None,
+        )
+        with patch("lilt.cli.resolve_article", return_value=fake_result):
             cmd_add(args)
 
         captured = capsys.readouterr()
@@ -102,7 +95,7 @@ class TestCmdAdd:
         """cmd_add raises CLIError when clipboard is empty."""
         args = _make_args(add=True)
         with (
-            patch("lilt.cli.get_text_from_clipboard", return_value=""),
+            patch("lilt.cli.resolve_article", side_effect=ValueError("Clipboard is empty.")),
             pytest.raises(CLIError, match="Clipboard is empty"),
         ):
             cmd_add(args)
@@ -111,7 +104,7 @@ class TestCmdAdd:
         """cmd_add raises CLIError when URL fetch returns no text."""
         args = _make_args(input="https://example.com/paywall", add=True)
         with (
-            patch("lilt.cli.get_text_from_url", return_value=(None, "https://example.com/paywall")),
+            patch("lilt.cli.resolve_article", side_effect=ValueError("Could not fetch article text")),
             pytest.raises(CLIError, match="Could not fetch"),
         ):
             cmd_add(args)

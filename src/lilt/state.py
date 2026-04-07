@@ -13,7 +13,10 @@ def load_state() -> dict:
     if STATE_FILE.exists():
         try:
             with open(STATE_FILE) as f:
-                return json.load(f)
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return {}
+            return data
         except (json.JSONDecodeError, ValueError):
             return {}
     return {}

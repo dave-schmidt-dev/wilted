@@ -1,3 +1,10 @@
+## 2026-04-07 — Backlog Phases 1-3 (code quality)
+
+- **Phase 1 — Quick fixes**: Deleted dead `entry.get("words", 0)` expression in tui.py `_play_article()`. Added `isinstance` type validation to `load_queue()` (returns `[]` for non-list JSON) and `load_state()` (returns `{}` for non-dict JSON). Removed 3 redundant local imports in tui.py (2x `import re`, 1x `import time`), added `import re` at module top. Expanded ruff rules with `"UP"` (pyupgrade) and `"TCH"` (type-checking imports).
+- **Phase 2 — Refactoring**: Extracted `isolated_data` test fixture to shared `tests/conftest.py`, removing duplicates from 4 test files. Created `src/lilt/ingest.py` with `resolve_article()` and `ArticleResult` — shared ingest helper used by both CLI `cmd_add` and TUI `_fetch_article`. Eliminates double HTTP fetch for title by using `trafilatura.bare_extraction()`. Created `export_to_wav()` in engine.py — shared WAV export used by both CLI `--save` and TUI export. Both callers now delegate chunking strategy to the shared function.
+- **Phase 3 — E2E smoke tests**: Created `tests/test_e2e.py` with 5 `@pytest.mark.slow` tests: subprocess smoke (stdin + version), real model load, short clip generation (validates non-silence float32), duration bounds check. Default `pytest` skips slow tests via `addopts = "-m 'not slow'"`.
+- Test count: 165 (160 fast + 5 slow). Ruff clean. Phase 4 (roadmap features) deferred to future sessions.
+
 ## 2026-04-07 (v0.2.0)
 
 - **CLI consolidation**: Extracted all CLI logic from root `lilt` script into `src/lilt/cli.py`. CLI now uses `AudioEngine.play_article()` for playback and `AudioEngine.generate_audio()` per chunk for `--save` mode. Eliminated: afplay subprocess, temp file creation/cleanup, direct mlx_audio imports, atexit handler. Root `lilt` script reduced to a thin shim.

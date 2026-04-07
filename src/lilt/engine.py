@@ -286,3 +286,45 @@ class AudioEngine:
     def is_paused(self) -> bool:
         """True if playback is paused."""
         return self._paused
+
+
+def export_to_wav(
+    engine: AudioEngine,
+    chunks: list[str],
+    filepath: str,
+    *,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> None:
+    """Generate TTS audio for text chunks and write to a WAV file.
+
+    Args:
+        engine: AudioEngine instance (model will be loaded if needed).
+        chunks: Pre-split text chunks (paragraphs or sentence groups).
+        filepath: Output WAV file path.
+        on_progress: Optional callback called with (current_chunk, total_chunks).
+
+    Raises:
+        ValueError: If chunks is empty or no audio is generated.
+        RuntimeError: If TTS generation fails.
+    """
+    if not chunks:
+        raise ValueError("No text chunks to export")
+
+    all_audio = []
+    total = len(chunks)
+
+    for i, chunk in enumerate(chunks):
+        audio = engine.generate_audio(chunk)
+        if len(audio) > 0:
+            all_audio.append(audio)
+        if on_progress is not None:
+            on_progress(i + 1, total)
+
+    if not all_audio:
+        raise ValueError("No audio generated")
+
+    combined = np.concatenate(all_audio)
+
+    from mlx_audio.audio_io import write as audio_write
+
+    audio_write(filepath, combined, engine.sample_rate)

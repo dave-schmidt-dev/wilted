@@ -14,7 +14,10 @@ def load_queue() -> list[dict]:
     if QUEUE_FILE.exists():
         try:
             with open(QUEUE_FILE) as f:
-                return json.load(f)
+                data = json.load(f)
+            if not isinstance(data, list):
+                return []
+            return data
         except (json.JSONDecodeError, ValueError):
             return []
     return []

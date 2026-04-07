@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import ClassVar
 
@@ -14,12 +15,6 @@ from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Pro
 from textual.worker import get_current_worker
 
 from lilt import LANGUAGES, VOICES, WPM_ESTIMATE
-from lilt.fetch import (
-    extract_title_from_url,
-    get_text_from_clipboard,
-    get_text_from_url,
-    resolve_apple_news_url,
-)
 from lilt.queue import (
     add_article,
     clear_queue,
@@ -29,7 +24,7 @@ from lilt.queue import (
     remove_article,
 )
 from lilt.state import clear_article_state, get_article_state, set_article_state
-from lilt.text import clean_text, extract_title_from_paste, split_paragraphs
+from lilt.text import split_paragraphs
 
 # ---------------------------------------------------------------------------
 # Voice settings modal
@@ -290,57 +285,27 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
     @work(thread=True, group="fetch")
     def _fetch_article(self, url: str | None, play_after: bool) -> None:
         """Fetch article in background and dismiss when done."""
+        from lilt.ingest import resolve_article
+
         status = self.query_one("#add-status", Label)
         try:
-            if url and url.startswith(("http://", "https://")):
-                # URL path
-                source_url = url
-                canonical_url = url
+            result = resolve_article(
+                url=url if url and url.startswith(("http://", "https://")) else None,
+                min_clipboard_len=50,
+                on_status=lambda msg: self.app.call_from_thread(status.update, msg),
+            )
 
-                if "apple.news" in url:
-                    self.app.call_from_thread(status.update, "Resolving Apple News link...")
-                    canonical_url = resolve_apple_news_url(url)
-
-                self.app.call_from_thread(status.update, "Fetching article...")
-                text, canonical_url = get_text_from_url(canonical_url if "apple.news" in url else url)
-
-                if not text:
-                    self.app.call_from_thread(status.update, "Error: Could not fetch article (paywall?)")
-                    self.app.call_from_thread(self._set_controls_disabled, False)
-                    return
-
-                self.app.call_from_thread(status.update, "Extracting title...")
-                title = extract_title_from_url(canonical_url)
-
-                text = clean_text(text)
-                entry = add_article(text, title=title, source_url=source_url, canonical_url=canonical_url)
-            else:
-                # Clipboard path
-                self.app.call_from_thread(status.update, "Reading clipboard...")
-                raw = get_text_from_clipboard()
-
-                if not raw or len(raw.strip()) < 50:
-                    self.app.call_from_thread(status.update, "Error: Clipboard empty or too short")
-                    self.app.call_from_thread(self._set_controls_disabled, False)
-                    return
-
-                text = clean_text(raw)
-                title = extract_title_from_paste(text)
-
-                # Check for Apple News URL in clipboard
-                import re
-
-                url_match = re.search(r"https://apple\.news/\S+", raw)
-                source_url = url_match.group(0) if url_match else None
-
-                entry = add_article(text, title=title, source_url=source_url)
+            entry = add_article(
+                result.text,
+                title=result.title,
+                source_url=result.source_url,
+                canonical_url=result.canonical_url,
+            )
 
             action = "play" if play_after else "queued"
             title_display = entry.get("title", "Untitled")
             self.app.call_from_thread(status.update, f"Added: {title_display}")
             # Small delay so user can see the success message
-            import time
-
             time.sleep(0.5)
             self.app.call_from_thread(self.dismiss, (action, entry))
 
@@ -720,7 +685,6 @@ class LiltApp(App):
         self._paragraph_idx = resume_para
         self._segments_played = resume_para
 
-        entry.get("words", 0)
         title = entry.get("title", "Untitled")
 
         self.call_from_thread(
@@ -1023,9 +987,7 @@ class LiltApp(App):
     @work(thread=True, exclusive=True, group="export")
     def _export_wav(self, entry: dict, text: str) -> None:
         """Export article to WAV file with progress."""
-        import re
-
-        worker = get_current_worker()
+        from lilt.engine import export_to_wav
 
         self.call_from_thread(self._set_status, "Loading model...")
         self._ensure_engine()
@@ -1039,53 +1001,26 @@ class LiltApp(App):
             self.call_from_thread(self._set_status, "Error: no text to export")
             return
 
-        all_audio = []
-        total = len(paragraphs)
-
-        for i, paragraph in enumerate(paragraphs):
-            if worker.is_cancelled:
-                self.call_from_thread(self._set_status, "Export cancelled")
-                return
-
-            progress = ((i + 1) / total) * 100
-            self.call_from_thread(
-                self._update_now_playing,
-                title=f"Exporting: {entry.get('title', 'Untitled')}",
-                progress=progress,
-                time_remaining=f"Generating paragraph {i + 1}/{total}",
-                status="Exporting...",
-            )
-
-            try:
-                audio = engine.generate_audio(paragraph)
-                if len(audio) > 0:
-                    all_audio.append(audio)
-            except RuntimeError as e:
-                self.call_from_thread(self._set_status, f"Export error: {e}")
-                return
-
-        if not all_audio:
-            self.call_from_thread(self._set_status, "Error: no audio generated")
-            return
-
-        import numpy as np
-
-        combined = np.concatenate(all_audio)
-
         # Generate filename from title
         title = entry.get("title", "untitled")
         slug = re.sub(r"[^\w\s-]", "", title.lower())
         slug = re.sub(r"[\s_]+", "-", slug).strip("-")[:50]
         filename = f"{slug}.wav"
 
-        self.call_from_thread(self._set_status, f"Writing {filename}...")
+        def on_progress(current, total_chunks):
+            progress = (current / total_chunks) * 100
+            self.call_from_thread(
+                self._update_now_playing,
+                title=f"Exporting: {entry.get('title', 'Untitled')}",
+                progress=progress,
+                time_remaining=f"Generating paragraph {current}/{total_chunks}",
+                status="Exporting...",
+            )
 
         try:
-            from mlx_audio.audio_io import write as audio_write
-
-            audio_write(filename, combined, engine.sample_rate)
-        except Exception as e:
-            self.call_from_thread(self._set_status, f"Write error: {e}")
+            export_to_wav(engine, paragraphs, filename, on_progress=on_progress)
+        except (ValueError, RuntimeError) as e:
+            self.call_from_thread(self._set_status, f"Export error: {e}")
             return
 
         self.call_from_thread(

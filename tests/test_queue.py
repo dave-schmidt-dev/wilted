@@ -14,24 +14,6 @@ from lilt.queue import (
 )
 
 
-@pytest.fixture(autouse=True)
-def isolated_data(tmp_path, monkeypatch):
-    """Redirect all data paths to a temp directory."""
-    data_dir = tmp_path / "data"
-    articles_dir = data_dir / "articles"
-    articles_dir.mkdir(parents=True)
-
-    monkeypatch.setattr(lilt, "DATA_DIR", data_dir)
-    monkeypatch.setattr(lilt, "QUEUE_FILE", data_dir / "queue.json")
-    monkeypatch.setattr(lilt, "ARTICLES_DIR", articles_dir)
-
-    # Also patch the module-level imports in queue.py
-    from lilt import queue as queue_mod
-
-    monkeypatch.setattr(queue_mod, "QUEUE_FILE", data_dir / "queue.json")
-    monkeypatch.setattr(queue_mod, "ARTICLES_DIR", articles_dir)
-
-
 class TestLoadSaveQueue:
     def test_empty_when_no_file(self):
         assert load_queue() == []

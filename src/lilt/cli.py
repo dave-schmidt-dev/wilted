@@ -2,13 +2,13 @@
 
 import argparse
 import os
-import re
 import sys
 
 from lilt import VOICES, WPM_ESTIMATE
-from lilt.fetch import extract_title_from_url, get_text_from_clipboard, get_text_from_url
+from lilt.fetch import get_text_from_clipboard, get_text_from_url
+from lilt.ingest import resolve_article
 from lilt.queue import add_article, clear_queue, get_article_text, load_queue, mark_completed, remove_article
-from lilt.text import clean_text, extract_title_from_paste
+from lilt.text import clean_text
 
 
 class CLIError(Exception):
@@ -22,30 +22,20 @@ class CLIError(Exception):
 
 def cmd_add(args):
     """Add an article to the reading list from URL or clipboard."""
-    source_url = None
-    canonical_url = None
-    title = None
+    try:
+        result = resolve_article(
+            url=args.input if args.input and args.input.startswith(("http://", "https://")) else None,
+            on_status=lambda msg: print(msg),
+        )
+    except ValueError as e:
+        raise CLIError(str(e)) from e
 
-    if args.input and args.input.startswith(("http://", "https://")):
-        source_url = args.input
-        print("Fetching article...")
-        text, canonical_url = get_text_from_url(args.input)
-        if not text:
-            raise CLIError("Could not fetch article text (paywall?). Copy the text, then run: lilt --add")
-        title = extract_title_from_url(canonical_url)
-    else:
-        print("Reading from clipboard...")
-        raw = get_text_from_clipboard()
-        if not raw:
-            raise CLIError("Clipboard is empty.")
-        text = raw
-        title = extract_title_from_paste(raw)
-        url_match = re.search(r"https://apple\.news/\S+", raw)
-        if url_match:
-            source_url = url_match.group(0)
-
-    text = clean_text(text)
-    entry = add_article(text, title=title, source_url=source_url, canonical_url=canonical_url)
+    entry = add_article(
+        result.text,
+        title=result.title,
+        source_url=result.source_url,
+        canonical_url=result.canonical_url,
+    )
 
     est_min = entry["words"] / WPM_ESTIMATE
     print(f"Added #{entry['id']}: {entry['title']}")
@@ -110,30 +100,21 @@ def _play_text(text, args):
     engine = AudioEngine(model_name=args.model, voice=args.voice, speed=args.speed, lang=args.lang)
 
     if args.save:
-        # Generate all audio per chunk, then write to file
-        import numpy as np
-        from mlx_audio.audio_io import write as audio_write
-
+        from lilt.engine import export_to_wav
         from lilt.text import split_into_chunks
 
         chunks = split_into_chunks(text)
         print(f"  {len(chunks)} chunks. Generating...")
 
-        all_audio = []
-        for i, chunk in enumerate(chunks, 1):
-            sys.stdout.write(f"\r  Generating {i}/{len(chunks)}...")
+        def on_progress(current, total):
+            sys.stdout.write(f"\r  Generating {current}/{total}...")
             sys.stdout.flush()
-            audio = engine.generate_audio(chunk)
-            if len(audio) > 0:
-                all_audio.append(audio)
 
-        print()
-        if all_audio:
-            combined = np.concatenate(all_audio)
-            audio_write(args.save, combined, engine.sample_rate)
-            print(f"  Saved to {args.save}")
-        else:
-            print("  No audio generated.", file=sys.stderr)
+        try:
+            export_to_wav(engine, chunks, args.save, on_progress=on_progress)
+            print(f"\n  Saved to {args.save}")
+        except ValueError as e:
+            print(f"\n  {e}", file=sys.stderr)
     else:
         # Stream playback via AudioEngine.play_article
         from lilt.text import split_paragraphs

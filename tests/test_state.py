@@ -1,7 +1,5 @@
 """Tests for lilt.state — resume position persistence."""
 
-import pytest
-
 import lilt
 from lilt.state import (
     clear_article_state,
@@ -10,21 +8,6 @@ from lilt.state import (
     save_state,
     set_article_state,
 )
-
-
-@pytest.fixture(autouse=True)
-def isolated_data(tmp_path, monkeypatch):
-    """Redirect all data paths to a temp directory."""
-    data_dir = tmp_path / "data"
-    data_dir.mkdir(parents=True)
-
-    monkeypatch.setattr(lilt, "DATA_DIR", data_dir)
-    monkeypatch.setattr(lilt, "STATE_FILE", data_dir / "state.json")
-    monkeypatch.setattr(lilt, "ARTICLES_DIR", data_dir / "articles")
-
-    from lilt import state as state_mod
-
-    monkeypatch.setattr(state_mod, "STATE_FILE", data_dir / "state.json")
 
 
 class TestLoadSaveState:
