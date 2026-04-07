@@ -126,11 +126,19 @@ async def test_quit_key(mock_load):
 @patch("lilt_tui.remove_article")
 @patch("lilt_tui.clear_article_state")
 async def test_delete_key(mock_clear_state, mock_remove, mock_load):
-    """Pressing d calls remove_article for the selected entry."""
+    """Pressing d opens ConfirmScreen, confirming calls remove_article."""
     app = LiltApp()
     async with app.run_test() as pilot:
+        await pilot.pause()
         # Select the first row (should be selected by default) and delete
         await pilot.press("d")
+        await pilot.pause()
+        # ConfirmScreen should be open
+        confirm = app.screen
+        assert isinstance(confirm, lilt_tui.ConfirmScreen)
+        # Confirm the deletion
+        confirm.action_confirm()
+        await pilot.pause()
         mock_remove.assert_called_once_with(0)
 
 
@@ -216,3 +224,72 @@ async def test_voice_settings_dismiss_includes_lang(mock_load):
         await pilot.pause()
         # After dismiss, the app should have the updated lang
         assert app._lang == "b"
+
+
+@pytest.mark.asyncio
+async def test_text_preview_launches():
+    """Pressing 't' with a selected article should open TextPreviewScreen."""
+    articles = [
+        {"id": 1, "title": "Test Article", "words": 100, "file": "1_test.txt", "added": "2026-04-06"},
+    ]
+    with (
+        patch("lilt_tui.load_queue", return_value=articles),
+        patch("lilt_tui.get_article_text", return_value="This is the article text."),
+    ):
+        app = lilt_tui.LiltApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("t")
+            await pilot.pause()
+            assert any(
+                isinstance(screen, lilt_tui.TextPreviewScreen)
+                for screen in app.screen_stack
+            )
+
+
+@pytest.mark.asyncio
+async def test_text_preview_no_article():
+    """Pressing 't' with empty queue should show error status."""
+    with patch("lilt_tui.load_queue", return_value=[]):
+        app = lilt_tui.LiltApp()
+        async with app.run_test() as pilot:
+            await pilot.press("t")
+            await pilot.pause()
+            status = app.query_one("#status-line").render()
+            assert "No article" in str(status) or "selected" in str(status)
+
+
+@pytest.mark.asyncio
+async def test_clear_all_launches_confirm():
+    """Pressing 'c' should open ConfirmScreen."""
+    articles = [
+        {"id": 1, "title": "Test", "words": 50, "file": "1_test.txt", "added": "2026-04-06"},
+    ]
+    with patch("lilt_tui.load_queue", return_value=articles):
+        app = lilt_tui.LiltApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("c")
+            await pilot.pause()
+            assert any(
+                isinstance(screen, lilt_tui.ConfirmScreen)
+                for screen in app.screen_stack
+            )
+
+
+@pytest.mark.asyncio
+async def test_delete_launches_confirm():
+    """Pressing 'd' should open ConfirmScreen for deletion."""
+    articles = [
+        {"id": 1, "title": "Test", "words": 50, "file": "1_test.txt", "added": "2026-04-06"},
+    ]
+    with patch("lilt_tui.load_queue", return_value=articles):
+        app = lilt_tui.LiltApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("d")
+            await pilot.pause()
+            assert any(
+                isinstance(screen, lilt_tui.ConfirmScreen)
+                for screen in app.screen_stack
+            )

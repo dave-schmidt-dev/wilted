@@ -9,7 +9,7 @@ from typing import ClassVar
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, ProgressBar, Static
 from textual.worker import get_current_worker
@@ -23,6 +23,7 @@ from lilt.fetch import (
 )
 from lilt.queue import (
     add_article,
+    clear_queue,
     get_article_text,
     load_queue,
     mark_completed,
@@ -319,6 +320,125 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
 
 
 # ---------------------------------------------------------------------------
+# Confirm dialog modal
+# ---------------------------------------------------------------------------
+
+
+class ConfirmScreen(ModalScreen[bool]):
+    """Reusable confirmation dialog."""
+
+    DEFAULT_CSS = """
+    ConfirmScreen {
+        align: center middle;
+    }
+    #confirm-dialog {
+        width: 50;
+        height: auto;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    .confirm-title {
+        text-style: bold;
+        content-align: center middle;
+        width: 100%;
+        margin-bottom: 1;
+    }
+    #confirm-message {
+        margin: 1 0;
+    }
+    .confirm-buttons {
+        height: 3;
+        align: center middle;
+        margin-top: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("enter", "confirm", "Confirm", show=True),
+        Binding("escape", "cancel", "Cancel", show=True),
+    ]
+
+    def __init__(self, title: str, message: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._title = title
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-dialog"):
+            yield Label(self._title, classes="confirm-title")
+            yield Label(self._message, id="confirm-message")
+            yield Label("[enter] Confirm  [esc] Cancel", classes="confirm-buttons")
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
+# ---------------------------------------------------------------------------
+# Text preview modal
+# ---------------------------------------------------------------------------
+
+
+class TextPreviewScreen(ModalScreen[None]):
+    """Scrollable text preview of an article."""
+
+    DEFAULT_CSS = """
+    TextPreviewScreen {
+        align: center middle;
+    }
+    #preview-dialog {
+        width: 80%;
+        height: 80%;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    .preview-title {
+        text-style: bold;
+        content-align: center middle;
+        width: 100%;
+        margin-bottom: 1;
+    }
+    #preview-scroll {
+        height: 1fr;
+        border: round $accent;
+    }
+    #preview-text {
+        padding: 1;
+    }
+    .preview-footer {
+        height: 3;
+        align: center middle;
+        margin-top: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close", show=True),
+    ]
+
+    def __init__(self, title: str, text: str, word_count: int, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._title = title
+        self._text = text
+        self._word_count = word_count
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="preview-dialog"):
+            yield Label(self._title, classes="preview-title")
+            with VerticalScroll(id="preview-scroll"):
+                yield Static(self._text, id="preview-text")
+            with Horizontal(classes="preview-footer"):
+                yield Label(f"{self._word_count} words  [esc] Close")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
+# ---------------------------------------------------------------------------
 # Main TUI app
 # ---------------------------------------------------------------------------
 
@@ -394,6 +514,8 @@ class LiltApp(App):
         Binding("v", "voice_settings", "Voice"),
         Binding("a", "add_article", "Add"),
         Binding("d", "delete_selected", "Delete"),
+        Binding("t", "text_preview", "Preview"),
+        Binding("c", "clear_all", "Clear All"),
         Binding("r", "refresh_queue", "Refresh"),
         Binding("q", "quit_app", "Quit"),
     ]
@@ -739,28 +861,75 @@ class LiltApp(App):
         self.push_screen(AddArticleScreen(), on_dismiss)
 
     def action_delete_selected(self) -> None:
-        """Delete the selected article from the queue."""
-        table = self.query_one("#queue-table", DataTable)
-        if not self._queue:
+        """Delete the selected article with confirmation."""
+        entry = self._get_selected_entry()
+        if not entry:
             self._set_status("Nothing to delete")
             return
-        row_idx = table.cursor_row
-        if row_idx is not None and 0 <= row_idx < len(self._queue):
-            entry = self._queue[row_idx]
-            # If deleting the currently playing article, stop playback
-            if (
-                self._current_entry
-                and entry["id"] == self._current_entry["id"]
-            ):
-                self.action_stop()
-                self._current_entry = None
-            try:
-                remove_article(row_idx)
-                clear_article_state(entry["id"])
-                self._set_status(f"Deleted: {entry.get('title', 'Untitled')}")
-            except IndexError:
-                self._set_status("Delete failed: invalid index")
-            self._refresh_queue_display()
+
+        title = entry.get("title", "Untitled")
+        if len(title) > 40:
+            title = title[:37] + "..."
+
+        def on_dismiss(confirmed: bool) -> None:
+            if confirmed:
+                table = self.query_one("#queue-table", DataTable)
+                row_idx = table.cursor_row
+                if row_idx is not None and 0 <= row_idx < len(self._queue):
+                    # Stop playback if deleting current article
+                    if self._current_entry and entry["id"] == self._current_entry["id"]:
+                        self.action_stop()
+                        self._current_entry = None
+                    try:
+                        remove_article(row_idx)
+                        clear_article_state(entry["id"])
+                        self._set_status(f"Deleted: {entry.get('title', 'Untitled')}")
+                    except IndexError:
+                        self._set_status("Delete failed: invalid index")
+                    self._refresh_queue_display()
+
+        self.push_screen(
+            ConfirmScreen("Delete Article?", f'Delete "{title}"?'),
+            on_dismiss,
+        )
+
+    def action_text_preview(self) -> None:
+        """Preview the text of the selected article."""
+        entry = self._get_selected_entry()
+        if not entry:
+            self._set_status("No article selected")
+            return
+
+        text = get_article_text(entry)
+        if text is None:
+            self._set_status("Error: article text not found")
+            return
+
+        title = entry.get("title", "Untitled")
+        word_count = entry.get("words", len(text.split()))
+        self.push_screen(TextPreviewScreen(title, text, word_count))
+
+    def action_clear_all(self) -> None:
+        """Clear all articles with confirmation."""
+        if not self._queue:
+            self._set_status("Queue is already empty")
+            return
+
+        count = len(self._queue)
+
+        def on_dismiss(confirmed: bool) -> None:
+            if confirmed:
+                if self._playing:
+                    self.action_stop()
+                    self._current_entry = None
+                cleared = clear_queue()
+                self._set_status(f"Cleared {cleared} article(s)")
+                self._refresh_queue_display()
+
+        self.push_screen(
+            ConfirmScreen("Clear All Articles?", f"This will remove {count} article(s) and delete all cached text."),
+            on_dismiss,
+        )
 
     def action_refresh_queue(self) -> None:
         """Refresh queue from disk."""
