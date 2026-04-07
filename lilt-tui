@@ -14,7 +14,7 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Label, ProgressBar, Static
 from textual.worker import get_current_worker
 
-from lilt import VOICES
+from lilt import LANGUAGES, VOICES, WPM_ESTIMATE
 from lilt.fetch import get_text_from_clipboard
 from lilt.queue import (
     add_article,
@@ -32,7 +32,7 @@ from lilt.text import clean_text, extract_title_from_paste, split_paragraphs
 # ---------------------------------------------------------------------------
 
 
-class VoiceSettingsScreen(ModalScreen[tuple[str, float] | None]):
+class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
     """Modal for selecting voice and speed."""
 
     DEFAULT_CSS = """
@@ -72,6 +72,14 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float] | None]):
         width: auto;
         margin: 0 1;
     }
+    .lang-row {
+        height: 3;
+        align: center middle;
+    }
+    .lang-row Label {
+        width: auto;
+        margin: 0 1;
+    }
     .button-row {
         height: 3;
         align: center middle;
@@ -88,14 +96,19 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float] | None]):
         Binding("enter", "confirm", "Confirm", show=True),
         Binding("minus", "speed_down", "-Speed"),
         Binding("equal,plus", "speed_up", "+Speed"),
+        Binding("a", "lang_a", "American", show=False),
+        Binding("b", "lang_b", "British", show=False),
+        Binding("j", "lang_j", "Japanese", show=False),
+        Binding("z", "lang_z", "Chinese", show=False),
     ]
 
     def __init__(
-        self, current_voice: str, current_speed: float, **kwargs
+        self, current_voice: str, current_speed: float, current_lang: str = "a", **kwargs
     ) -> None:
         super().__init__(**kwargs)
         self.selected_voice = current_voice
         self.selected_speed = current_speed
+        self.selected_lang = current_lang
 
     def compose(self) -> ComposeResult:
         with Vertical(id="voice-dialog"):
@@ -106,6 +119,10 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float] | None]):
                 yield Label("Speed:")
                 yield Label(f"{self.selected_speed:.1f}x", id="speed-display")
                 yield Label("  [-] slower  [+] faster")
+            with Horizontal(classes="lang-row"):
+                yield Label("Language:")
+                yield Label(LANGUAGES.get(self.selected_lang, "Unknown"), id="lang-display")
+                yield Label("  [a]merican [b]ritish [j]apanese [z]chinese")
             with Horizontal(classes="button-row"):
                 yield Label("[enter] Confirm  [esc] Cancel")
 
@@ -140,8 +157,24 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float] | None]):
             f"{self.selected_speed:.1f}x"
         )
 
+    def _set_lang(self, code: str) -> None:
+        self.selected_lang = code
+        self.query_one("#lang-display", Label).update(LANGUAGES.get(code, "Unknown"))
+
+    def action_lang_a(self) -> None:
+        self._set_lang("a")
+
+    def action_lang_b(self) -> None:
+        self._set_lang("b")
+
+    def action_lang_j(self) -> None:
+        self._set_lang("j")
+
+    def action_lang_z(self) -> None:
+        self._set_lang("z")
+
     def action_confirm(self) -> None:
-        self.dismiss((self.selected_voice, self.selected_speed))
+        self.dismiss((self.selected_voice, self.selected_speed, self.selected_lang))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -241,6 +274,7 @@ class LiltApp(App):
         self._paused: bool = False
         self._voice: str = "af_heart"
         self._speed: float = 1.0
+        self._lang: str = "a"
         self._last_state_save: float = 0.0
         self._playback_worker = None
 
@@ -284,7 +318,7 @@ class LiltApp(App):
             empty_msg.display = False
             for i, entry in enumerate(self._queue, 1):
                 words = entry.get("words", 0)
-                minutes = max(1, round(words / (150 * self._speed)))
+                minutes = max(1, round(words / (WPM_ESTIMATE * self._speed)))
                 title = entry.get("title", "Untitled")
                 if len(title) > 40:
                     title = title[:37] + "..."
@@ -295,8 +329,9 @@ class LiltApp(App):
     def _update_voice_display(self) -> None:
         voice_info = VOICES.get(self._voice, {})
         name = voice_info.get("name", self._voice)
+        lang_name = LANGUAGES.get(self._lang, self._lang)
         self.query_one("#voice-display", Label).update(
-            f"Voice: {self._voice} ({name})  Speed: {self._speed:.1f}x"
+            f"Voice: {self._voice} ({name})  Speed: {self._speed:.1f}x  Lang: {lang_name}"
         )
 
     def _update_now_playing(
@@ -326,7 +361,7 @@ class LiltApp(App):
         if self._engine is None:
             from lilt.engine import AudioEngine
 
-            self._engine = AudioEngine()
+            self._engine = AudioEngine(lang=self._lang)
 
     # -- Playback worker ----------------------------------------------------
 
@@ -341,6 +376,7 @@ class LiltApp(App):
 
         engine.voice = self._voice
         engine.speed = self._speed
+        engine.lang = self._lang
 
         text = get_article_text(entry)
         if not text:
@@ -379,7 +415,7 @@ class LiltApp(App):
             # Calculate progress
             progress = (para_idx / len(paragraphs)) * 100
             words_remaining = sum(len(p.split()) for p in paragraphs[para_idx:])
-            mins_remaining = max(1, round(words_remaining / (150 * self._speed)))
+            mins_remaining = max(1, round(words_remaining / (WPM_ESTIMATE * self._speed)))
 
             self.call_from_thread(
                 self._update_now_playing,
@@ -395,9 +431,10 @@ class LiltApp(App):
                 set_article_state(entry["id"], para_idx, 0)
                 self._last_state_save = now
 
-            # Read voice/speed at segment boundary (allows mid-playback changes)
+            # Read voice/speed/lang at segment boundary (allows mid-playback changes)
             engine.voice = self._voice
             engine.speed = self._speed
+            engine.lang = self._lang
 
             try:
                 self.call_from_thread(
@@ -541,14 +578,14 @@ class LiltApp(App):
     def action_voice_settings(self) -> None:
         """Open voice/speed settings modal."""
 
-        def on_dismiss(result: tuple[str, float] | None) -> None:
+        def on_dismiss(result: tuple[str, float, str] | None) -> None:
             if result is not None:
-                self._voice, self._speed = result
+                self._voice, self._speed, self._lang = result
                 self._update_voice_display()
                 self._refresh_queue_display()  # Update est. time column
 
         self.push_screen(
-            VoiceSettingsScreen(self._voice, self._speed), on_dismiss
+            VoiceSettingsScreen(self._voice, self._speed, self._lang), on_dismiss
         )
 
     @work(thread=True, group="clipboard")

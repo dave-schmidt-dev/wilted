@@ -34,6 +34,7 @@ sys.modules["lilt_tui"] = lilt_tui
 _spec.loader.exec_module(lilt_tui)
 
 LiltApp = lilt_tui.LiltApp
+VoiceSettingsScreen = lilt_tui.VoiceSettingsScreen
 
 
 # ---------------------------------------------------------------------------
@@ -163,3 +164,40 @@ async def test_refresh_key(mock_load):
         assert mock_load.call_count > initial_count, (
             "load_queue should be called again on refresh"
         )
+
+
+@pytest.mark.asyncio
+@patch("lilt_tui.load_queue", return_value=[])
+async def test_voice_settings_shows_language(mock_load):
+    """VoiceSettingsScreen displays a language label widget."""
+    app = LiltApp()
+    async with app.run_test() as pilot:
+        await pilot.press("v")
+        from textual.widgets import Label
+
+        lang_label = app.screen.query_one("#lang-display", Label)
+        assert lang_label is not None
+        # Default language is American English
+        assert "American" in lang_label.content
+
+
+@pytest.mark.asyncio
+@patch("lilt_tui.load_queue", return_value=[])
+async def test_voice_settings_dismiss_includes_lang(mock_load):
+    """VoiceSettingsScreen dismiss returns a 3-tuple (voice, speed, lang)."""
+    app = LiltApp()
+    async with app.run_test() as pilot:
+        await pilot.press("v")
+        await pilot.pause()
+        # Verify modal is open
+        screen = app.screen
+        assert isinstance(screen, VoiceSettingsScreen)
+        # Change language to British before confirming
+        await pilot.press("b")
+        await pilot.pause()
+        assert screen.selected_lang == "b"
+        # Directly run the confirm action (enter is intercepted by DataTable)
+        screen.action_confirm()
+        await pilot.pause()
+        # After dismiss, the app should have the updated lang
+        assert app._lang == "b"
