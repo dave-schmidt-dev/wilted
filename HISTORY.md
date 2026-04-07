@@ -1,3 +1,12 @@
+## 2026-04-07 — Fix PROJECT_ROOT resolution for non-editable installs
+
+- **Bug**: TUI showed empty queue despite `data/queue.json` containing 3 articles. Root cause: `PROJECT_ROOT` in `__init__.py` used a hardcoded `Path(__file__).parent.parent.parent` traversal that only works from `src/lilt/`. When installed to `.venv/lib/python3.13/site-packages/lilt/`, the three-parent walk resolves to `.venv/lib/python3.13/` — wrong directory.
+- **Fix**: Replaced hardcoded parent traversal with upward walk that searches for `pyproject.toml` as the project root marker. Works from both `src/lilt/` (development) and `site-packages/lilt/` (installed) because `.venv/` is a subdirectory of the project root.
+- **Env var override**: Added `LILT_PROJECT_ROOT` for explicit override when auto-detection isn't viable.
+- **Python 3.13 `.pth` bug**: Editable installs (`pip install -e .`) are broken on Homebrew Python 3.13 — the interpreter skips ALL `.pth` files during site initialization ("Skipping hidden .pth file" in verbose output), so the `__editable__.lilt-0.2.0.pth` file is never processed. Workaround: use regular `pip install --no-deps .` (non-editable). The upward `pyproject.toml` walk makes this work correctly.
+- Added 3 regression tests for `PROJECT_ROOT` resolution (pyproject.toml detection, DATA_DIR derivation, env var override). Added `.python-version` to `.gitignore`. Deleted stray `=0.9.4` junk file.
+- Test count: 188 (183 fast + 5 slow).
+
 ## 2026-04-07 — Backlog Phases 1-3 (code quality)
 
 - **Phase 1 — Quick fixes**: Deleted dead `entry.get("words", 0)` expression in tui.py `_play_article()`. Added `isinstance` type validation to `load_queue()` (returns `[]` for non-list JSON) and `load_state()` (returns `{}` for non-dict JSON). Removed 3 redundant local imports in tui.py (2x `import re`, 1x `import time`), added `import re` at module top. Expanded ruff rules with `"UP"` (pyupgrade) and `"TCH"` (type-checking imports).

@@ -1,6 +1,8 @@
 """Edge case tests for lilt — corrupt data, missing files, concurrent access, engine errors."""
 
+import importlib
 import json
+import os
 import threading
 import types
 from unittest.mock import MagicMock, patch
@@ -499,3 +501,41 @@ class TestWpmEstimateConsistency:
         cli_path = Path(__file__).resolve().parent.parent / "src" / "lilt" / "cli.py"
         violations = self._scan_for_hardcoded_150(cli_path)
         assert not violations, "Hardcoded 150 WPM found in cli.py:\n" + "\n".join(violations)
+
+
+# ---------------------------------------------------------------------------
+# TestProjectRootResolution
+# ---------------------------------------------------------------------------
+
+
+class TestProjectRootResolution:
+    """Verify PROJECT_ROOT resolves correctly regardless of install type."""
+
+    def test_project_root_contains_pyproject_toml(self):
+        """PROJECT_ROOT should point to the directory containing pyproject.toml."""
+        assert (lilt.PROJECT_ROOT / "pyproject.toml").exists(), (
+            f"PROJECT_ROOT={lilt.PROJECT_ROOT} does not contain pyproject.toml"
+        )
+
+    def test_data_dir_default_is_under_project_root(self):
+        """The default DATA_DIR (before fixture override) should be PROJECT_ROOT/data."""
+        # The autouse isolated_data fixture patches DATA_DIR to a tmp path, so
+        # we verify the source definition rather than the live patched value.
+        from pathlib import Path
+
+        init_path = Path(lilt.__file__)
+        source = init_path.read_text()
+        assert 'DATA_DIR = PROJECT_ROOT / "data"' in source
+
+    def test_env_var_override(self, tmp_path):
+        """LILT_PROJECT_ROOT env var should override auto-detection."""
+        original_root = lilt.PROJECT_ROOT
+        try:
+            with patch.dict("os.environ", {"LILT_PROJECT_ROOT": str(tmp_path)}):
+                importlib.reload(lilt)
+                assert lilt.PROJECT_ROOT == tmp_path
+        finally:
+            with patch.dict("os.environ", {}, clear=False):
+                os.environ.pop("LILT_PROJECT_ROOT", None)
+                importlib.reload(lilt)
+            assert lilt.PROJECT_ROOT == original_root

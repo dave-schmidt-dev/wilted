@@ -2,9 +2,24 @@
 
 __version__ = "0.2.0"
 
+import os
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+# Allow override via env var; otherwise find the project root by looking for
+# pyproject.toml upward from __file__ (works for both editable and regular installs).
+if _env_root := os.environ.get("LILT_PROJECT_ROOT"):
+    PROJECT_ROOT = Path(_env_root)
+else:
+    _candidate = Path(__file__).resolve().parent
+    while _candidate != _candidate.parent:
+        if (_candidate / "pyproject.toml").exists():
+            break
+        _candidate = _candidate.parent
+    else:
+        # Fallback: assume original layout (src/lilt/__init__.py -> 3 parents up)
+        _candidate = Path(__file__).resolve().parent.parent.parent
+    PROJECT_ROOT = _candidate
+
 DATA_DIR = PROJECT_ROOT / "data"
 QUEUE_FILE = DATA_DIR / "queue.json"
 ARTICLES_DIR = DATA_DIR / "articles"
