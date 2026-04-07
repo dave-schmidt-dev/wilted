@@ -484,15 +484,12 @@ class TestLangCodeIntegration:
 class TestWpmEstimateConsistency:
     """Verify no hardcoded 150 WPM literals remain in the codebase."""
 
-    def test_no_hardcoded_150_in_tui(self):
-        """lilt-tui should use WPM_ESTIMATE, not literal 150."""
+    @staticmethod
+    def _scan_for_hardcoded_150(path):
+        """Scan a file for hardcoded 150 WPM literals, return violations."""
         import re
-        from pathlib import Path
 
-        tui_path = Path(__file__).resolve().parent.parent / "src" / "lilt" / "tui.py"
-        content = tui_path.read_text()
-        # Look for patterns like "/ 150" or "/ (150" that suggest hardcoded WPM
-        # But exclude comments and string literals
+        content = path.read_text()
         lines = content.split("\n")
         violations = []
         for i, line in enumerate(lines, 1):
@@ -501,4 +498,20 @@ class TestWpmEstimateConsistency:
                 continue
             if re.search(r"/\s*\(?\s*150\s*[*)]", line):
                 violations.append(f"Line {i}: {stripped}")
-        assert not violations, "Hardcoded 150 WPM found:\n" + "\n".join(violations)
+        return violations
+
+    def test_no_hardcoded_150_in_tui(self):
+        """lilt-tui should use WPM_ESTIMATE, not literal 150."""
+        from pathlib import Path
+
+        tui_path = Path(__file__).resolve().parent.parent / "src" / "lilt" / "tui.py"
+        violations = self._scan_for_hardcoded_150(tui_path)
+        assert not violations, "Hardcoded 150 WPM found in tui.py:\n" + "\n".join(violations)
+
+    def test_no_hardcoded_150_in_cli(self):
+        """lilt CLI module should use WPM_ESTIMATE, not literal 150."""
+        from pathlib import Path
+
+        cli_path = Path(__file__).resolve().parent.parent / "src" / "lilt" / "cli.py"
+        violations = self._scan_for_hardcoded_150(cli_path)
+        assert not violations, "Hardcoded 150 WPM found in cli.py:\n" + "\n".join(violations)

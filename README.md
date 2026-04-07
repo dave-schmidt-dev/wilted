@@ -130,18 +130,18 @@ Full design: [TUI_PLAN.md](TUI_PLAN.md)
 ## Project structure
 
 ```
-lilt                     # single entry point (no args = TUI, with flags = CLI)
-pyproject.toml           # package metadata
+lilt                     # thin shim (backward compat with shell alias)
+pyproject.toml           # package metadata, [project.scripts] entry point
 src/lilt/                # shared library
-    __init__.py          # constants, VOICES, LANGUAGES
+    __init__.py          # constants, VOICES, LANGUAGES, data paths
+    cli.py               # CLI commands and argparse dispatch
     engine.py            # AudioEngine (sounddevice + TTS)
     fetch.py             # URL resolution, text extraction
     queue.py             # reading list persistence
     state.py             # resume state persistence
     text.py              # text cleaning and splitting
     tui.py               # Textual TUI app
-tests/                   # 139 tests (pytest)
-data/                    # runtime data (.gitignored)
+tests/                   # 172 tests (pytest)
 ```
 
 ## Roadmap
@@ -159,4 +159,4 @@ data/                    # runtime data (.gitignored)
 - trafilatura (article text extraction)
 - numpy
 - textual (TUI framework)
-- sounddevice (TUI audio playback with pause/resume)
+- sounddevice (audio playback)

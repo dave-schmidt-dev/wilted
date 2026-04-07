@@ -1,3 +1,17 @@
+## 2026-04-07 (v0.2.0)
+
+- **CLI consolidation**: Extracted all CLI logic from root `lilt` script into `src/lilt/cli.py`. CLI now uses `AudioEngine.play_article()` for playback and `AudioEngine.generate_audio()` per chunk for `--save` mode. Eliminated: afplay subprocess, temp file creation/cleanup, direct mlx_audio imports, atexit handler. Root `lilt` script reduced to a thin shim.
+- **Packaged entry point**: Added `[project.scripts] lilt = "lilt.cli:main"` to pyproject.toml. Users get a proper pip-installed `lilt` command with the correct Python interpreter. Shell alias still works for backward compat.
+- **CLI test coverage**: 27 new tests in `tests/test_cli.py` covering all commands (add, list, remove, clear, play, next, direct), playback/save modes, KeyboardInterrupt handling, argparse dispatch, and CLIError conversion. Total test count: 172.
+- **Hardcoded WPM fix**: Replaced all four `/ 150` literals in CLI with `WPM_ESTIMATE` constant. Extended consistency test to scan both tui.py and cli.py.
+- **Shebang fix**: Replaced hardcoded `#!/Users/dave/.venvs/mlx-audio/bin/python3` with `#!/usr/bin/env python3`.
+- **sounddevice to core deps**: Moved from `[project.optional-dependencies] tui` to `[project] dependencies`. It's ~170KB with PortAudio bundled on macOS, and engine.py imports it unconditionally.
+- **XDG data directory**: Implemented then reverted. Data stays in project-relative `data/` by design — everything lives in one project folder.
+- **Version tracking**: Added `__version__ = "0.2.0"` to `src/lilt/__init__.py` and `--version` flag to CLI.
+- **Callable annotation**: Fixed deprecated lowercase `callable` type hint in `engine.py:play_article()` to `Callable | None`.
+- **CLIError pattern**: CLI commands now raise `CLIError` instead of calling `sys.exit(1)` deep in business logic. `run_cli()` catches at the top level and converts to sys.exit.
+- Plan reviewed by contrarian (2 rounds) and Codex (GPT-5.4 xhigh). 34 findings evaluated across all reviews; 20 accepted, 14 rejected.
+
 ## 2026-04-07
 
 - Fixed persistent `bad value(s) in fds_to_keep` playback error. The `hf_xet` Rust extension (hard dependency of `huggingface_hub` 1.9.0) spawns subprocesses that fail when Textual's event loop has open file descriptors. Previous env-var-only workaround (`HF_HUB_DISABLE_XET=1`) was insufficient — `hf_xet` native code could still trigger forking during the download-stack initialization. Replaced with a layered approach: (1) `HF_HUB_OFFLINE=1` when model is cached, bypassing the entire download stack; (2) `HF_HUB_DISABLE_XET=1`; (3) `sys.modules["hf_xet"] = None` to block import; (4) patching `huggingface_hub.constants`. Also fixed the CLI `_play_text()` path which was missing the workaround entirely.

@@ -3,7 +3,7 @@
 import os
 import sys
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 import numpy as np
 import sounddevice as sd
@@ -193,7 +193,7 @@ class AudioEngine:
         self,
         text: str,
         start_paragraph: int = 0,
-        on_progress: callable = None,
+        on_progress: Callable | None = None,
     ):
         """Generate and play TTS for an article, paragraph by paragraph.
 
