@@ -496,7 +496,7 @@ class TestWpmEstimateConsistency:
         import re
         from pathlib import Path
 
-        tui_path = Path(__file__).resolve().parent.parent / "lilt-tui"
+        tui_path = Path(__file__).resolve().parent.parent / "src" / "lilt" / "tui.py"
         content = tui_path.read_text()
         # Look for patterns like "/ 150" or "/ (150" that suggest hardcoded WPM
         # But exclude comments and string literals

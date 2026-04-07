@@ -226,7 +226,7 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=True),
-        Binding("p", "play_after", "Add & Play", show=True, priority=True),
+        Binding("ctrl+p", "play_after", "Add & Play", show=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -234,7 +234,7 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
             yield Label("Add Article", classes="add-title")
             yield Label("URL (leave blank for clipboard):")
             yield Input(placeholder="https://...", id="url-input")
-            yield Label("[enter] Add to queue  [p] Add & play  [esc] Cancel", classes="add-help")
+            yield Label("[enter] Add to queue  [ctrl+p] Add & play  [esc] Cancel", classes="add-help")
             yield Label("Ready", id="add-status")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -266,30 +266,30 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
                 canonical_url = url
 
                 if "apple.news" in url:
-                    self.call_from_thread(status.update, "Resolving Apple News link...")
+                    self.app.call_from_thread(status.update, "Resolving Apple News link...")
                     canonical_url = resolve_apple_news_url(url)
 
-                self.call_from_thread(status.update, "Fetching article...")
+                self.app.call_from_thread(status.update, "Fetching article...")
                 text, canonical_url = get_text_from_url(canonical_url if "apple.news" in url else url)
 
                 if not text:
-                    self.call_from_thread(status.update, "Error: Could not fetch article (paywall?)")
-                    self.call_from_thread(self._re_enable_input)
+                    self.app.call_from_thread(status.update, "Error: Could not fetch article (paywall?)")
+                    self.app.call_from_thread(self._re_enable_input)
                     return
 
-                self.call_from_thread(status.update, "Extracting title...")
+                self.app.call_from_thread(status.update, "Extracting title...")
                 title = extract_title_from_url(canonical_url)
 
                 text = clean_text(text)
                 entry = add_article(text, title=title, source_url=source_url, canonical_url=canonical_url)
             else:
                 # Clipboard path
-                self.call_from_thread(status.update, "Reading clipboard...")
+                self.app.call_from_thread(status.update, "Reading clipboard...")
                 raw = get_text_from_clipboard()
 
                 if not raw or len(raw.strip()) < 50:
-                    self.call_from_thread(status.update, "Error: Clipboard empty or too short")
-                    self.call_from_thread(self._re_enable_input)
+                    self.app.call_from_thread(status.update, "Error: Clipboard empty or too short")
+                    self.app.call_from_thread(self._re_enable_input)
                     return
 
                 text = clean_text(raw)
@@ -304,15 +304,15 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
 
             action = "play" if play_after else "queued"
             title_display = entry.get("title", "Untitled")
-            self.call_from_thread(status.update, f"Added: {title_display}")
+            self.app.call_from_thread(status.update, f"Added: {title_display}")
             # Small delay so user can see the success message
             import time
             time.sleep(0.5)
-            self.call_from_thread(self.dismiss, (action, entry))
+            self.app.call_from_thread(self.dismiss, (action, entry))
 
         except Exception as e:
-            self.call_from_thread(status.update, f"Error: {e}")
-            self.call_from_thread(self._re_enable_input)
+            self.app.call_from_thread(status.update, f"Error: {e}")
+            self.app.call_from_thread(self._re_enable_input)
 
     def _re_enable_input(self) -> None:
         self.query_one("#url-input", Input).disabled = False
