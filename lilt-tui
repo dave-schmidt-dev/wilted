@@ -516,6 +516,7 @@ class LiltApp(App):
         Binding("d", "delete_selected", "Delete"),
         Binding("t", "text_preview", "Preview"),
         Binding("c", "clear_all", "Clear All"),
+        Binding("w", "export_wav", "Export WAV"),
         Binding("r", "refresh_queue", "Refresh"),
         Binding("q", "quit_app", "Quit"),
     ]
@@ -947,6 +948,97 @@ class LiltApp(App):
                 self._current_entry["id"], self._paragraph_idx, 0
             )
         self.exit()
+
+    # -- WAV export ---------------------------------------------------------
+
+    def action_export_wav(self) -> None:
+        """Export selected article to WAV file."""
+        entry = self._get_selected_entry()
+        if not entry:
+            self._set_status("No article selected")
+            return
+
+        text = get_article_text(entry)
+        if text is None:
+            self._set_status("Error: article text not found")
+            return
+
+        self._export_wav(entry, text)
+
+    @work(thread=True, exclusive=True, group="export")
+    def _export_wav(self, entry: dict, text: str) -> None:
+        """Export article to WAV file with progress."""
+        import re
+
+        worker = get_current_worker()
+
+        self.call_from_thread(self._set_status, "Loading model...")
+        self._ensure_engine()
+        engine = self._engine
+        engine.voice = self._voice
+        engine.speed = self._speed
+        engine.lang = self._lang
+
+        paragraphs = split_paragraphs(text)
+        if not paragraphs:
+            self.call_from_thread(self._set_status, "Error: no text to export")
+            return
+
+        all_audio = []
+        total = len(paragraphs)
+
+        for i, paragraph in enumerate(paragraphs):
+            if worker.is_cancelled:
+                self.call_from_thread(self._set_status, "Export cancelled")
+                return
+
+            progress = ((i + 1) / total) * 100
+            self.call_from_thread(
+                self._update_now_playing,
+                title=f"Exporting: {entry.get('title', 'Untitled')}",
+                progress=progress,
+                time_remaining=f"Generating paragraph {i + 1}/{total}",
+                status="Exporting...",
+            )
+
+            try:
+                audio = engine.generate_audio(paragraph)
+                if len(audio) > 0:
+                    all_audio.append(audio)
+            except RuntimeError as e:
+                self.call_from_thread(self._set_status, f"Export error: {e}")
+                return
+
+        if not all_audio:
+            self.call_from_thread(self._set_status, "Error: no audio generated")
+            return
+
+        import numpy as np
+        combined = np.concatenate(all_audio)
+
+        # Generate filename from title
+        title = entry.get("title", "untitled")
+        slug = re.sub(r"[^\w\s-]", "", title.lower())
+        slug = re.sub(r"[\s_]+", "-", slug).strip("-")[:50]
+        filename = f"{slug}.wav"
+
+        self.call_from_thread(self._set_status, f"Writing {filename}...")
+
+        try:
+            from mlx_audio.audio_io import write as audio_write
+            audio_write(filename, combined, engine.sample_rate)
+        except Exception as e:
+            self.call_from_thread(self._set_status, f"Write error: {e}")
+            return
+
+        self.call_from_thread(
+            self._update_now_playing,
+            title="Export Complete",
+            progress=100,
+            time_remaining="",
+            text_snippet="",
+            status=f"Saved to {filename}",
+        )
 
     # -- Helpers ------------------------------------------------------------
 

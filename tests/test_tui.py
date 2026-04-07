@@ -293,3 +293,34 @@ async def test_delete_launches_confirm():
                 isinstance(screen, lilt_tui.ConfirmScreen)
                 for screen in app.screen_stack
             )
+
+
+@pytest.mark.asyncio
+async def test_export_wav_no_article():
+    """Pressing 'w' with empty queue should show error."""
+    with patch("lilt_tui.load_queue", return_value=[]):
+        app = lilt_tui.LiltApp()
+        async with app.run_test() as pilot:
+            await pilot.press("w")
+            await pilot.pause()
+            status = app.query_one("#status-line").render()
+            assert "No article" in str(status)
+
+
+@pytest.mark.asyncio
+async def test_export_wav_missing_file():
+    """Pressing 'w' when article file is missing should show error."""
+    articles = [
+        {"id": 1, "title": "Test", "words": 50, "file": "1_test.txt", "added": "2026-04-06"},
+    ]
+    with (
+        patch("lilt_tui.load_queue", return_value=articles),
+        patch("lilt_tui.get_article_text", return_value=None),
+    ):
+        app = lilt_tui.LiltApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("w")
+            await pilot.pause()
+            status = app.query_one("#status-line").render()
+            assert "not found" in str(status)
