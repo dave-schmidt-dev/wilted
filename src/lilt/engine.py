@@ -294,6 +294,7 @@ def export_to_wav(
     filepath: str,
     *,
     on_progress: Callable[[int, int], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> None:
     """Generate TTS audio for text chunks and write to a WAV file.
 
@@ -302,10 +303,13 @@ def export_to_wav(
         chunks: Pre-split text chunks (paragraphs or sentence groups).
         filepath: Output WAV file path.
         on_progress: Optional callback called with (current_chunk, total_chunks).
+        should_cancel: Optional callback returning True to abort export.
+            Checked between chunks. Raises InterruptedError on cancellation.
 
     Raises:
         ValueError: If chunks is empty or no audio is generated.
         RuntimeError: If TTS generation fails.
+        InterruptedError: If should_cancel returns True.
     """
     if not chunks:
         raise ValueError("No text chunks to export")
@@ -314,6 +318,8 @@ def export_to_wav(
     total = len(chunks)
 
     for i, chunk in enumerate(chunks):
+        if should_cancel is not None and should_cancel():
+            raise InterruptedError("Export cancelled")
         audio = engine.generate_audio(chunk)
         if len(audio) > 0:
             all_audio.append(audio)

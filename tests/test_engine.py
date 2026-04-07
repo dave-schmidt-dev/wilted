@@ -479,3 +479,18 @@ class TestExportToWav:
         filepath = str(tmp_path / "output.wav")
         with pytest.raises(ValueError, match="No audio generated"):
             export_to_wav(engine, ["Some text."], filepath)
+
+    def test_should_cancel_aborts(self, engine, mock_stream, tmp_path):
+        """export_to_wav raises InterruptedError when should_cancel returns True."""
+        from lilt.engine import export_to_wav
+
+        filepath = str(tmp_path / "output.wav")
+        with pytest.raises(InterruptedError, match="Export cancelled"):
+            export_to_wav(
+                engine,
+                ["Chunk one.", "Chunk two."],
+                filepath,
+                should_cancel=lambda: True,
+            )
+        # Model should not have been called — cancel checked before generation
+        engine._model.generate.assert_not_called()

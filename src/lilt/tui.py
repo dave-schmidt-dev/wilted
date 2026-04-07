@@ -989,6 +989,8 @@ class LiltApp(App):
         """Export article to WAV file with progress."""
         from lilt.engine import export_to_wav
 
+        worker = get_current_worker()
+
         self.call_from_thread(self._set_status, "Loading model...")
         self._ensure_engine()
         engine = self._engine
@@ -1018,7 +1020,16 @@ class LiltApp(App):
             )
 
         try:
-            export_to_wav(engine, paragraphs, filename, on_progress=on_progress)
+            export_to_wav(
+                engine,
+                paragraphs,
+                filename,
+                on_progress=on_progress,
+                should_cancel=lambda: worker.is_cancelled,
+            )
+        except InterruptedError:
+            self.call_from_thread(self._set_status, "Export cancelled")
+            return
         except (ValueError, RuntimeError) as e:
             self.call_from_thread(self._set_status, f"Export error: {e}")
             return
