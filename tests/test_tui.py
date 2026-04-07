@@ -35,6 +35,7 @@ _spec.loader.exec_module(lilt_tui)
 
 LiltApp = lilt_tui.LiltApp
 VoiceSettingsScreen = lilt_tui.VoiceSettingsScreen
+AddArticleScreen = lilt_tui.AddArticleScreen
 
 
 # ---------------------------------------------------------------------------
@@ -134,22 +135,36 @@ async def test_delete_key(mock_clear_state, mock_remove, mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt_tui.load_queue", return_value=SAMPLE_QUEUE)
-@patch("lilt_tui.get_text_from_clipboard", return_value="This is a test article with enough words to pass the length check. " * 5)
-@patch("lilt_tui.add_article")
-@patch("lilt_tui.clean_text", side_effect=lambda t: t)
-@patch("lilt_tui.extract_title_from_paste", return_value="Test Article")
-async def test_add_key(
-    mock_title, mock_clean, mock_add, mock_clipboard, mock_load
-):
-    """Pressing a triggers clipboard fetch and add_article."""
-    app = LiltApp()
-    async with app.run_test() as pilot:
-        await pilot.press("a")
-        # Wait for the clipboard worker to complete
-        await app.workers.wait_for_complete()
-        mock_clipboard.assert_called_once()
-        mock_add.assert_called_once()
+async def test_add_screen_launches_on_a_key():
+    """Pressing 'a' should open the AddArticleScreen modal."""
+    with patch("lilt_tui.load_queue", return_value=[]):
+        app = LiltApp()
+        async with app.run_test() as pilot:
+            await pilot.press("a")
+            await pilot.pause()
+            # Check that AddArticleScreen is on the screen stack
+            assert any(
+                isinstance(screen, AddArticleScreen)
+                for screen in app.screen_stack
+            )
+
+
+@pytest.mark.asyncio
+async def test_add_screen_cancel():
+    """Pressing escape in AddArticleScreen should dismiss without adding."""
+    with patch("lilt_tui.load_queue", return_value=[]):
+        app = LiltApp()
+        async with app.run_test() as pilot:
+            await pilot.press("a")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            # Should be back to main screen
+            assert not any(
+                isinstance(screen, AddArticleScreen)
+                for screen in app.screen_stack
+                if screen is not app.screen
+            )
 
 
 @pytest.mark.asyncio

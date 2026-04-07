@@ -11,11 +11,16 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Footer, Header, Label, ProgressBar, Static
+from textual.widgets import DataTable, Footer, Header, Input, Label, ProgressBar, Static
 from textual.worker import get_current_worker
 
 from lilt import LANGUAGES, VOICES, WPM_ESTIMATE
-from lilt.fetch import get_text_from_clipboard
+from lilt.fetch import (
+    extract_title_from_url,
+    get_text_from_clipboard,
+    get_text_from_url,
+    resolve_apple_news_url,
+)
 from lilt.queue import (
     add_article,
     get_article_text,
@@ -181,6 +186,139 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
 
 
 # ---------------------------------------------------------------------------
+# Add article modal
+# ---------------------------------------------------------------------------
+
+
+class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
+    """Modal for adding an article from URL or clipboard."""
+
+    DEFAULT_CSS = """
+    AddArticleScreen {
+        align: center middle;
+    }
+    #add-dialog {
+        width: 70;
+        height: auto;
+        max-height: 60%;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    .add-title {
+        text-style: bold;
+        content-align: center middle;
+        width: 100%;
+        margin-bottom: 1;
+    }
+    #url-input {
+        margin: 1 0;
+    }
+    #add-status {
+        margin-top: 1;
+        text-style: italic;
+        color: $text-muted;
+    }
+    .add-help {
+        margin-top: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=True),
+        Binding("p", "play_after", "Add & Play", show=True, priority=True),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="add-dialog"):
+            yield Label("Add Article", classes="add-title")
+            yield Label("URL (leave blank for clipboard):")
+            yield Input(placeholder="https://...", id="url-input")
+            yield Label("[enter] Add to queue  [p] Add & play  [esc] Cancel", classes="add-help")
+            yield Label("Ready", id="add-status")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle enter key on the URL input."""
+        self._do_add(play_after=False)
+
+    def action_play_after(self) -> None:
+        """Add and play immediately."""
+        self._do_add(play_after=True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _do_add(self, play_after: bool) -> None:
+        """Fetch article and dismiss with result."""
+        url_input = self.query_one("#url-input", Input)
+        url = url_input.value.strip()
+        url_input.disabled = True  # Prevent double-submit
+        self._fetch_article(url if url else None, play_after)
+
+    @work(thread=True, group="fetch")
+    def _fetch_article(self, url: str | None, play_after: bool) -> None:
+        """Fetch article in background and dismiss when done."""
+        status = self.query_one("#add-status", Label)
+        try:
+            if url and url.startswith(("http://", "https://")):
+                # URL path
+                source_url = url
+                canonical_url = url
+
+                if "apple.news" in url:
+                    self.call_from_thread(status.update, "Resolving Apple News link...")
+                    canonical_url = resolve_apple_news_url(url)
+
+                self.call_from_thread(status.update, "Fetching article...")
+                text, canonical_url = get_text_from_url(canonical_url if "apple.news" in url else url)
+
+                if not text:
+                    self.call_from_thread(status.update, "Error: Could not fetch article (paywall?)")
+                    self.call_from_thread(self._re_enable_input)
+                    return
+
+                self.call_from_thread(status.update, "Extracting title...")
+                title = extract_title_from_url(canonical_url)
+
+                text = clean_text(text)
+                entry = add_article(text, title=title, source_url=source_url, canonical_url=canonical_url)
+            else:
+                # Clipboard path
+                self.call_from_thread(status.update, "Reading clipboard...")
+                raw = get_text_from_clipboard()
+
+                if not raw or len(raw.strip()) < 50:
+                    self.call_from_thread(status.update, "Error: Clipboard empty or too short")
+                    self.call_from_thread(self._re_enable_input)
+                    return
+
+                text = clean_text(raw)
+                title = extract_title_from_paste(text)
+
+                # Check for Apple News URL in clipboard
+                import re
+                url_match = re.search(r"https://apple\.news/\S+", raw)
+                source_url = url_match.group(0) if url_match else None
+
+                entry = add_article(text, title=title, source_url=source_url)
+
+            action = "play" if play_after else "queued"
+            title_display = entry.get("title", "Untitled")
+            self.call_from_thread(status.update, f"Added: {title_display}")
+            # Small delay so user can see the success message
+            import time
+            time.sleep(0.5)
+            self.call_from_thread(self.dismiss, (action, entry))
+
+        except Exception as e:
+            self.call_from_thread(status.update, f"Error: {e}")
+            self.call_from_thread(self._re_enable_input)
+
+    def _re_enable_input(self) -> None:
+        self.query_one("#url-input", Input).disabled = False
+
+
+# ---------------------------------------------------------------------------
 # Main TUI app
 # ---------------------------------------------------------------------------
 
@@ -254,7 +392,7 @@ class LiltApp(App):
         Binding("right", "skip_segment", "Skip Seg"),
         Binding("n", "next_article", "Next"),
         Binding("v", "voice_settings", "Voice"),
-        Binding("a", "add_clipboard", "Add"),
+        Binding("a", "add_article", "Add"),
         Binding("d", "delete_selected", "Delete"),
         Binding("r", "refresh_queue", "Refresh"),
         Binding("q", "quit_app", "Quit"),
@@ -588,28 +726,17 @@ class LiltApp(App):
             VoiceSettingsScreen(self._voice, self._speed, self._lang), on_dismiss
         )
 
-    @work(thread=True, group="clipboard")
-    def action_add_clipboard(self) -> None:
-        """Add article from clipboard."""
-        worker = get_current_worker()
-        self.call_from_thread(self._set_status, "Reading clipboard...")
-        try:
-            text = get_text_from_clipboard()
-            if worker.is_cancelled:
-                return
-            if not text or len(text.strip()) < 50:
-                self.call_from_thread(
-                    self._set_status, "Clipboard empty or too short"
-                )
-                return
+    def action_add_article(self) -> None:
+        """Open the add article dialog."""
+        def on_dismiss(result: tuple[str, dict] | None) -> None:
+            if result is not None:
+                action, entry = result
+                self._refresh_queue_display()
+                self._set_status(f"Added: {entry.get('title', 'Untitled')}")
+                if action == "play":
+                    self._start_playback(entry)
 
-            cleaned = clean_text(text)
-            title = extract_title_from_paste(cleaned)
-            add_article(cleaned, title=title)
-            self.call_from_thread(self._set_status, f"Added: {title or 'Untitled'}")
-            self.call_from_thread(self._refresh_queue_display)
-        except Exception as e:
-            self.call_from_thread(self._set_status, f"Add failed: {e}")
+        self.push_screen(AddArticleScreen(), on_dismiss)
 
     def action_delete_selected(self) -> None:
         """Delete the selected article from the queue."""
