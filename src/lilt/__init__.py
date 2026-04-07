@@ -25,6 +25,15 @@ VOICES = {
     "zm_yunxi": {"name": "Yunxi", "gender": "M", "accent": "Chinese"},
 }
 
+WPM_ESTIMATE = 150  # Approximate words-per-minute for TTS time estimates
+
+LANGUAGES = {
+    "a": "American English",
+    "b": "British English",
+    "j": "Japanese",
+    "z": "Chinese",
+}
+
 
 def ensure_data_dirs():
     """Create data directories if they don't exist."""

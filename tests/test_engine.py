@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
 
-from lilt.engine import AudioEngine
+from lilt.engine import AudioEngine, _normalize_segments
 
 
 def _make_fake_segment(n_samples=1024, sample_rate=24000):
@@ -182,3 +182,96 @@ class TestControls:
         """is_playing is False before play_article is called."""
         engine = AudioEngine()
         assert not engine.is_playing
+
+
+class TestGenerateAudio:
+    def test_returns_numpy_array(self):
+        # Mock model.generate to return a single segment
+        engine = AudioEngine()
+        mock_segment = MagicMock()
+        mock_segment.audio = np.zeros(1024)
+        mock_segment.sample_rate = 24000
+        engine._model = MagicMock()
+        engine._model.generate.return_value = mock_segment
+
+        with patch("lilt.engine.sd"):
+            result = engine.generate_audio("Hello world.")
+        assert isinstance(result, np.ndarray)
+        assert len(result) == 1024
+
+    def test_concatenates_segments(self):
+        engine = AudioEngine()
+        seg1 = MagicMock()
+        seg1.audio = np.zeros(512)
+        seg2 = MagicMock()
+        seg2.audio = np.ones(512)
+        engine._model = MagicMock()
+        engine._model.generate.return_value = [seg1, seg2]
+
+        with patch("lilt.engine.sd"):
+            result = engine.generate_audio("Long paragraph.")
+        assert len(result) == 1024
+
+    def test_model_failure_raises_runtime_error(self):
+        engine = AudioEngine()
+        engine._model = MagicMock()
+        engine._model.generate.side_effect = Exception("Generation failed")
+
+        with patch("lilt.engine.sd"):
+            with pytest.raises(RuntimeError, match="TTS generation failed"):
+                engine.generate_audio("Test text.")
+
+    def test_empty_result(self):
+        engine = AudioEngine()
+        engine._model = MagicMock()
+        engine._model.generate.return_value = []
+
+        with patch("lilt.engine.sd"):
+            result = engine.generate_audio("Empty.")
+        assert isinstance(result, np.ndarray)
+        assert len(result) == 0
+
+
+class TestNormalizeSegments:
+    def test_single_result_wrapped_in_list(self):
+        result = MagicMock()
+        segments = _normalize_segments(result)
+        assert segments == [result]
+
+    def test_list_result_passed_through(self):
+        result = [MagicMock(), MagicMock()]
+        segments = _normalize_segments(result)
+        assert segments is result
+
+
+class TestLangCodeParameter:
+    def test_generate_and_play_uses_lang_code(self):
+        engine = AudioEngine()
+        engine.lang = "b"
+        mock_segment = MagicMock()
+        mock_segment.audio = np.zeros(100)
+        engine._model = MagicMock()
+        engine._model.generate.return_value = mock_segment
+
+        with patch("lilt.engine.sd"):
+            engine.generate_and_play("Test.")
+
+        call_kwargs = engine._model.generate.call_args[1]
+        assert "lang_code" in call_kwargs
+        assert call_kwargs["lang_code"] == "b"
+        assert "lang" not in call_kwargs  # Should NOT use 'lang='
+
+    def test_generate_audio_uses_lang_code(self):
+        engine = AudioEngine()
+        engine.lang = "j"
+        mock_segment = MagicMock()
+        mock_segment.audio = np.zeros(100)
+        engine._model = MagicMock()
+        engine._model.generate.return_value = mock_segment
+
+        with patch("lilt.engine.sd"):
+            engine.generate_audio("Test.")
+
+        call_kwargs = engine._model.generate.call_args[1]
+        assert "lang_code" in call_kwargs
+        assert call_kwargs["lang_code"] == "j"

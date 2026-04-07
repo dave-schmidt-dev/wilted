@@ -10,6 +10,11 @@ from lilt.text import split_paragraphs
 SAMPLE_RATE = 24000  # Kokoro default
 
 
+def _normalize_segments(result):
+    """Normalize model output to a list of segments."""
+    return result if isinstance(result, list) else [result]
+
+
 class AudioEngine:
     """TTS audio engine with thread-safe playback controls.
 
@@ -126,16 +131,12 @@ class AudioEngine:
 
         try:
             result = self._model.generate(
-                text, voice=self.voice, speed=self.speed, lang=self.lang
+                text, voice=self.voice, speed=self.speed, lang_code=self.lang
             )
         except Exception as e:
             raise RuntimeError(f"TTS generation failed: {e}") from e
 
-        # model.generate can return a single result or a list of segments
-        if isinstance(result, list):
-            segments = result
-        else:
-            segments = [result]
+        segments = _normalize_segments(result)
 
         for segment in segments:
             if self._stop_event.is_set():
@@ -178,14 +179,10 @@ class AudioEngine:
                     paragraph_text,
                     voice=self.voice,
                     speed=self.speed,
-                    lang=self.lang,
+                    lang_code=self.lang,
                 )
 
-                # model.generate can return a single result or a list of segments
-                if isinstance(result, list):
-                    segments = result
-                else:
-                    segments = [result]
+                segments = _normalize_segments(result)
 
                 for seg_idx, segment in enumerate(segments):
                     if self._stop_event.is_set():
@@ -201,6 +198,27 @@ class AudioEngine:
                         )
         finally:
             self._playing = False
+
+    def generate_audio(self, text: str) -> np.ndarray:
+        """Generate TTS audio for text and return as numpy array (no playback).
+
+        Raises RuntimeError on model or generation failure.
+        """
+        self.load_model()
+        try:
+            result = self._model.generate(
+                text, voice=self.voice, speed=self.speed, lang_code=self.lang
+            )
+        except Exception as e:
+            raise RuntimeError(f"TTS generation failed: {e}") from e
+
+        segments = _normalize_segments(result)
+        all_audio = []
+        for segment in segments:
+            audio_arr = np.array(segment.audio, dtype=np.float32)
+            all_audio.append(audio_arr)
+
+        return np.concatenate(all_audio) if all_audio else np.array([], dtype=np.float32)
 
     def pause(self):
         """Pause playback. The write loop blocks until resume()."""

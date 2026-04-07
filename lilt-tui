@@ -274,6 +274,7 @@ class LiltApp(App):
         """Reload queue from disk and update the DataTable."""
         self._queue = load_queue()
         table = self.query_one("#queue-table", DataTable)
+        saved_cursor = table.cursor_row
         table.clear()
         empty_msg = self.query_one("#empty-message", Label)
         if not self._queue:
@@ -288,6 +289,8 @@ class LiltApp(App):
                 if len(title) > 40:
                     title = title[:37] + "..."
                 table.add_row(str(i), title, str(words), f"~{minutes} min")
+        if saved_cursor is not None and saved_cursor < len(self._queue):
+            table.move_cursor(row=saved_cursor)
 
     def _update_voice_display(self) -> None:
         voice_info = VOICES.get(self._voice, {})
