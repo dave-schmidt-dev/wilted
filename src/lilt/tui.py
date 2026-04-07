@@ -10,7 +10,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Footer, Header, Input, Label, ProgressBar, Static
+from textual.widgets import Button, DataTable, Footer, Header, Input, Label, ProgressBar, Static
 from textual.worker import get_current_worker
 
 from lilt import LANGUAGES, VOICES, WPM_ESTIMATE
@@ -46,7 +46,7 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
     }
     #voice-dialog {
         width: 60;
-        height: auto;
+        height: 80%;
         max-height: 80%;
         border: thick $accent;
         background: $surface;
@@ -62,15 +62,13 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
         width: 100%;
     }
     #voice-list {
-        height: auto;
-        max-height: 20;
-        overflow-y: auto;
+        height: 1fr;
     }
     #voice-list DataTable {
         height: auto;
     }
     .speed-row {
-        height: 3;
+        height: auto;
         align: center middle;
     }
     .speed-row Label {
@@ -78,7 +76,7 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
         margin: 0 1;
     }
     .lang-row {
-        height: 3;
+        height: auto;
         align: center middle;
     }
     .lang-row Label {
@@ -86,13 +84,18 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
         margin: 0 1;
     }
     .button-row {
-        height: 3;
+        height: auto;
         align: center middle;
         margin-top: 1;
     }
-    .button-row Label {
+    .button-row Button {
         width: auto;
-        margin: 0 2;
+        margin: 0 1;
+    }
+    .button-help {
+        width: 100%;
+        content-align: center middle;
+        color: $text-muted;
     }
     """
 
@@ -118,7 +121,7 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="voice-dialog"):
             yield Label("Voice Settings", classes="voice-title")
-            with Vertical(id="voice-list"):
+            with VerticalScroll(id="voice-list"):
                 yield DataTable(id="voice-table")
             with Horizontal(classes="speed-row"):
                 yield Label("Speed:")
@@ -129,7 +132,9 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
                 yield Label(LANGUAGES.get(self.selected_lang, "Unknown"), id="lang-display")
                 yield Label("  [a]merican [b]ritish [j]apanese [z]chinese")
             with Horizontal(classes="button-row"):
-                yield Label("[enter] Confirm  [esc] Cancel")
+                yield Button("Confirm", id="voice-confirm", variant="primary")
+                yield Button("Cancel", id="voice-cancel")
+            yield Label("[enter] Confirm  [esc] Cancel", classes="button-help")
 
     def on_mount(self) -> None:
         table = self.query_one("#voice-table", DataTable)
@@ -184,6 +189,12 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
     def action_cancel(self) -> None:
         self.dismiss(None)
 
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "voice-confirm":
+            self.action_confirm()
+        elif event.button.id == "voice-cancel":
+            self.action_cancel()
+
 
 # ---------------------------------------------------------------------------
 # Add article modal
@@ -219,8 +230,20 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
         text-style: italic;
         color: $text-muted;
     }
+    #add-actions {
+        height: auto;
+        align: center middle;
+        margin-top: 1;
+    }
+    #add-actions Button {
+        width: auto;
+        margin: 0 1;
+    }
     .add-help {
         margin-top: 1;
+        width: 100%;
+        content-align: center middle;
+        color: $text-muted;
     }
     """
 
@@ -234,12 +257,28 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
             yield Label("Add Article", classes="add-title")
             yield Label("URL (leave blank for clipboard):")
             yield Input(placeholder="https://...", id="url-input")
+            with Horizontal(id="add-actions"):
+                yield Button("Add to Queue", id="add-queue", variant="primary")
+                yield Button("Add & Play", id="add-play", variant="success")
+                yield Button("Cancel", id="add-cancel")
             yield Label("[enter] Add to queue  [ctrl+p] Add & play  [esc] Cancel", classes="add-help")
             yield Label("Ready", id="add-status")
+
+    def on_mount(self) -> None:
+        self.query_one("#url-input", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle enter key on the URL input."""
         self._do_add(play_after=False)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        button_id = event.button.id
+        if button_id == "add-queue":
+            self._do_add(play_after=False)
+        elif button_id == "add-play":
+            self._do_add(play_after=True)
+        elif button_id == "add-cancel":
+            self.action_cancel()
 
     def action_play_after(self) -> None:
         """Add and play immediately."""
@@ -251,8 +290,10 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
     def _do_add(self, play_after: bool) -> None:
         """Fetch article and dismiss with result."""
         url_input = self.query_one("#url-input", Input)
+        if url_input.disabled:
+            return
         url = url_input.value.strip()
-        url_input.disabled = True  # Prevent double-submit
+        self._set_controls_disabled(True)
         self._fetch_article(url if url else None, play_after)
 
     @work(thread=True, group="fetch")
@@ -274,7 +315,7 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
 
                 if not text:
                     self.app.call_from_thread(status.update, "Error: Could not fetch article (paywall?)")
-                    self.app.call_from_thread(self._re_enable_input)
+                    self.app.call_from_thread(self._set_controls_disabled, False)
                     return
 
                 self.app.call_from_thread(status.update, "Extracting title...")
@@ -289,7 +330,7 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
 
                 if not raw or len(raw.strip()) < 50:
                     self.app.call_from_thread(status.update, "Error: Clipboard empty or too short")
-                    self.app.call_from_thread(self._re_enable_input)
+                    self.app.call_from_thread(self._set_controls_disabled, False)
                     return
 
                 text = clean_text(raw)
@@ -312,10 +353,12 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
 
         except Exception as e:
             self.app.call_from_thread(status.update, f"Error: {e}")
-            self.app.call_from_thread(self._re_enable_input)
+            self.app.call_from_thread(self._set_controls_disabled, False)
 
-    def _re_enable_input(self) -> None:
-        self.query_one("#url-input", Input).disabled = False
+    def _set_controls_disabled(self, disabled: bool) -> None:
+        self.query_one("#url-input", Input).disabled = disabled
+        for button in self.query(Button):
+            button.disabled = disabled
 
 
 # ---------------------------------------------------------------------------
@@ -347,9 +390,18 @@ class ConfirmScreen(ModalScreen[bool]):
         margin: 1 0;
     }
     .confirm-buttons {
-        height: 3;
+        height: auto;
         align: center middle;
         margin-top: 1;
+    }
+    .confirm-buttons Button {
+        width: auto;
+        margin: 0 1;
+    }
+    .confirm-help {
+        width: 100%;
+        content-align: center middle;
+        color: $text-muted;
     }
     """
 
@@ -367,13 +419,22 @@ class ConfirmScreen(ModalScreen[bool]):
         with Vertical(id="confirm-dialog"):
             yield Label(self._title, classes="confirm-title")
             yield Label(self._message, id="confirm-message")
-            yield Label("[enter] Confirm  [esc] Cancel", classes="confirm-buttons")
+            with Horizontal(classes="confirm-buttons"):
+                yield Button("Confirm", id="confirm-accept", variant="error")
+                yield Button("Cancel", id="confirm-cancel")
+            yield Label("[enter] Confirm  [esc] Cancel", classes="confirm-help")
 
     def action_confirm(self) -> None:
         self.dismiss(True)
 
     def action_cancel(self) -> None:
         self.dismiss(False)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "confirm-accept":
+            self.action_confirm()
+        elif event.button.id == "confirm-cancel":
+            self.action_cancel()
 
 
 # ---------------------------------------------------------------------------
@@ -409,9 +470,17 @@ class TextPreviewScreen(ModalScreen[None]):
         padding: 1;
     }
     .preview-footer {
-        height: 3;
+        height: auto;
         align: center middle;
         margin-top: 1;
+    }
+    .preview-footer Button {
+        width: auto;
+        margin-right: 1;
+    }
+    .preview-help {
+        width: auto;
+        color: $text-muted;
     }
     """
 
@@ -431,10 +500,15 @@ class TextPreviewScreen(ModalScreen[None]):
             with VerticalScroll(id="preview-scroll"):
                 yield Static(self._text, id="preview-text")
             with Horizontal(classes="preview-footer"):
-                yield Label(f"{self._word_count} words  [esc] Close")
+                yield Button("Close", id="preview-close", variant="primary")
+                yield Label(f"{self._word_count} words", classes="preview-help")
 
     def action_close(self) -> None:
         self.dismiss(None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "preview-close":
+            self.action_close()
 
 
 # ---------------------------------------------------------------------------

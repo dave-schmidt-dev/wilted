@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-import lilt.tui as lilt_tui
 from lilt.tui import AddArticleScreen, ConfirmScreen, LiltApp, TextPreviewScreen, VoiceSettingsScreen
 
 
@@ -115,6 +114,23 @@ async def test_delete_key(mock_clear_state, mock_remove, mock_load):
 
 
 @pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
+@patch("lilt.tui.remove_article")
+@patch("lilt.tui.clear_article_state")
+async def test_delete_confirm_button_click(mock_clear_state, mock_remove, mock_load):
+    """Clicking Confirm should delete the selected article."""
+    app = LiltApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmScreen)
+        await pilot.click("#confirm-accept", offset=(2, 1))
+        await pilot.pause()
+        mock_remove.assert_called_once_with(0)
+
+
+@pytest.mark.asyncio
 async def test_add_screen_launches_on_a_key():
     """Pressing 'a' should open the AddArticleScreen modal."""
     with patch("lilt.tui.load_queue", return_value=[]):
@@ -145,6 +161,34 @@ async def test_add_screen_cancel():
                 for screen in app.screen_stack
                 if screen is not app.screen
             )
+
+
+@pytest.mark.asyncio
+async def test_add_screen_click_add_and_play_button():
+    """Clicking Add & Play should trigger the play-after add path."""
+    with patch("lilt.tui.load_queue", return_value=[]):
+        app = LiltApp()
+        async with app.run_test() as pilot:
+            await pilot.press("a")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, AddArticleScreen)
+            with patch.object(screen, "_do_add") as mock_do_add:
+                await pilot.click("#add-play", offset=(2, 1))
+                mock_do_add.assert_called_once_with(play_after=True)
+
+
+@pytest.mark.asyncio
+async def test_add_screen_click_cancel_button():
+    """Clicking Cancel should dismiss the add-article modal."""
+    with patch("lilt.tui.load_queue", return_value=[]):
+        app = LiltApp()
+        async with app.run_test() as pilot:
+            await pilot.press("a")
+            await pilot.pause()
+            await pilot.click("#add-cancel", offset=(2, 1))
+            await pilot.pause()
+            assert not isinstance(app.screen, AddArticleScreen)
 
 
 @pytest.mark.asyncio
@@ -199,6 +243,20 @@ async def test_voice_settings_dismiss_includes_lang(mock_load):
 
 
 @pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_voice_settings_cancel_button_click(mock_load):
+    """Clicking Cancel should dismiss the voice settings modal."""
+    app = LiltApp()
+    async with app.run_test() as pilot:
+        await pilot.press("v")
+        await pilot.pause()
+        assert isinstance(app.screen, VoiceSettingsScreen)
+        await pilot.click("#voice-cancel", offset=(2, 1))
+        await pilot.pause()
+        assert not isinstance(app.screen, VoiceSettingsScreen)
+
+
+@pytest.mark.asyncio
 async def test_text_preview_launches():
     """Pressing 't' with a selected article should open TextPreviewScreen."""
     articles = [
@@ -217,6 +275,27 @@ async def test_text_preview_launches():
                 isinstance(screen, TextPreviewScreen)
                 for screen in app.screen_stack
             )
+
+
+@pytest.mark.asyncio
+async def test_text_preview_close_button_click():
+    """Clicking Close should dismiss the preview modal."""
+    articles = [
+        {"id": 1, "title": "Test Article", "words": 100, "file": "1_test.txt", "added": "2026-04-06"},
+    ]
+    with (
+        patch("lilt.tui.load_queue", return_value=articles),
+        patch("lilt.tui.get_article_text", return_value="This is the article text."),
+    ):
+        app = LiltApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("t")
+            await pilot.pause()
+            assert isinstance(app.screen, TextPreviewScreen)
+            await pilot.click("#preview-close", offset=(2, 1))
+            await pilot.pause()
+            assert not isinstance(app.screen, TextPreviewScreen)
 
 
 @pytest.mark.asyncio

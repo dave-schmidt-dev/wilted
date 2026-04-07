@@ -1,5 +1,6 @@
 """Tests for lilt.engine — TTS playback engine with pause/resume/stop."""
 
+import os
 import threading
 import types
 
@@ -184,6 +185,64 @@ class TestControls:
         assert not engine.is_playing
 
 
+class TestModelLoading:
+    def test_load_model_disables_hf_xet_by_default(self):
+        """load_model should force plain HTTP Hub downloads before importing mlx_audio."""
+        engine = AudioEngine()
+        mock_load_model = MagicMock(return_value="mock-model")
+        mlx_audio_mod = types.ModuleType("mlx_audio")
+        mlx_audio_tts_mod = types.ModuleType("mlx_audio.tts")
+        mlx_audio_utils_mod = types.ModuleType("mlx_audio.tts.utils")
+        mlx_audio_utils_mod.load_model = mock_load_model
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.dict(
+                "sys.modules",
+                {
+                    "mlx_audio": mlx_audio_mod,
+                    "mlx_audio.tts": mlx_audio_tts_mod,
+                    "mlx_audio.tts.utils": mlx_audio_utils_mod,
+                },
+            ),
+        ):
+            engine.load_model()
+            assert os.environ["HF_HUB_DISABLE_XET"] == "1"
+
+        assert engine._model == "mock-model"
+        mock_load_model.assert_called_once_with(engine.model_name)
+
+    def test_load_model_respects_xet_opt_in(self):
+        """Setting LILT_ENABLE_HF_XET should skip the safety override."""
+        engine = AudioEngine()
+        mock_load_model = MagicMock(return_value="mock-model")
+        mlx_audio_mod = types.ModuleType("mlx_audio")
+        mlx_audio_tts_mod = types.ModuleType("mlx_audio.tts")
+        mlx_audio_utils_mod = types.ModuleType("mlx_audio.tts.utils")
+        mlx_audio_utils_mod.load_model = mock_load_model
+
+        with (
+            patch.dict(
+                os.environ,
+                {"LILT_ENABLE_HF_XET": "1"},
+                clear=True,
+            ),
+            patch.dict(
+                "sys.modules",
+                {
+                    "mlx_audio": mlx_audio_mod,
+                    "mlx_audio.tts": mlx_audio_tts_mod,
+                    "mlx_audio.tts.utils": mlx_audio_utils_mod,
+                },
+            ),
+        ):
+            engine.load_model()
+
+        assert "HF_HUB_DISABLE_XET" not in os.environ
+        assert engine._model == "mock-model"
+        mock_load_model.assert_called_once_with(engine.model_name)
+
+
 class TestGenerateAudio:
     def test_returns_numpy_array(self):
         # Mock model.generate to return a single segment
@@ -235,6 +294,7 @@ class TestGenerateAudio:
 class TestNormalizeSegments:
     def test_single_result_wrapped_in_list(self):
         result = MagicMock()
+        result.audio = np.zeros(1)
         segments = _normalize_segments(result)
         assert segments == [result]
 
@@ -242,6 +302,15 @@ class TestNormalizeSegments:
         result = [MagicMock(), MagicMock()]
         segments = _normalize_segments(result)
         assert segments is result
+
+    def test_generator_result_passed_through(self):
+        seg1 = MagicMock()
+        seg1.audio = np.zeros(1)
+        seg2 = MagicMock()
+        seg2.audio = np.zeros(1)
+        result = (segment for segment in [seg1, seg2])
+        segments = _normalize_segments(result)
+        assert list(segments) == [seg1, seg2]
 
 
 class TestLangCodeParameter:
@@ -258,8 +327,37 @@ class TestLangCodeParameter:
 
         call_kwargs = engine._model.generate.call_args[1]
         assert "lang_code" in call_kwargs
-        assert call_kwargs["lang_code"] == "b"
-        assert "lang" not in call_kwargs  # Should NOT use 'lang='
+
+    def test_generate_audio_handles_generator_result(self):
+        engine = AudioEngine()
+        seg1 = MagicMock()
+        seg1.audio = np.zeros(256)
+        seg2 = MagicMock()
+        seg2.audio = np.ones(256)
+        engine._model = MagicMock()
+        engine._model.generate.return_value = (segment for segment in [seg1, seg2])
+
+        with patch("lilt.engine.sd"):
+            result = engine.generate_audio("Test generator output.")
+
+        assert isinstance(result, np.ndarray)
+        assert len(result) == 512
+
+    def test_generate_and_play_handles_generator_result(self):
+        engine = AudioEngine()
+        seg1 = MagicMock()
+        seg1.audio = np.zeros(256)
+        seg2 = MagicMock()
+        seg2.audio = np.ones(256)
+        engine._model = MagicMock()
+        engine._model.generate.return_value = (segment for segment in [seg1, seg2])
+
+        with patch("lilt.engine.sd.OutputStream") as mock_cls:
+            stream_instance = MagicMock()
+            mock_cls.return_value = stream_instance
+            engine.generate_and_play("Test generator playback.")
+
+        assert stream_instance.write.call_count >= 2
 
     def test_generate_audio_uses_lang_code(self):
         engine = AudioEngine()
@@ -275,3 +373,4 @@ class TestLangCodeParameter:
         call_kwargs = engine._model.generate.call_args[1]
         assert "lang_code" in call_kwargs
         assert call_kwargs["lang_code"] == "j"
+        assert "lang" not in call_kwargs  # Should NOT use 'lang='

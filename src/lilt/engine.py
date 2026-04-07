@@ -1,5 +1,8 @@
 """Audio engine — TTS generation and playback with pause/resume/stop controls."""
 
+from collections.abc import Iterable
+import os
+import sys
 import threading
 
 import numpy as np
@@ -11,8 +14,38 @@ SAMPLE_RATE = 24000  # Kokoro default
 
 
 def _normalize_segments(result):
-    """Normalize model output to a list of segments."""
-    return result if isinstance(result, list) else [result]
+    """Normalize model output to an iterable of segment objects.
+
+    `mlx_audio` may return a single segment object, a list of segments, or a
+    generator that yields segments. Preserve iterables as-is so playback can
+    stream them, but wrap plain segment objects in a one-item list.
+    """
+    if hasattr(result, "audio"):
+        return [result]
+    if isinstance(result, Iterable) and not isinstance(result, (str, bytes)):
+        return result
+    return [result]
+
+
+def _disable_hf_xet_for_stability() -> None:
+    """Force Hugging Face downloads onto the HTTP path unless explicitly overridden.
+
+    `huggingface_hub` will automatically use `hf_xet` when it is installed. In
+    this project that download path has been unstable on macOS during model
+    fetches, so prefer the plain HTTP downloader by default.
+
+    Set `LILT_ENABLE_HF_XET=1` to opt back into Xet-backed downloads.
+    """
+    if os.environ.get("LILT_ENABLE_HF_XET", "").lower() in {"1", "true", "yes"}:
+        return
+
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
+
+    # If huggingface_hub was imported earlier in the process, update the cached
+    # constant as well so later availability checks see the override.
+    hub_constants = sys.modules.get("huggingface_hub.constants")
+    if hub_constants is not None:
+        hub_constants.HF_HUB_DISABLE_XET = True
 
 
 class AudioEngine:
@@ -62,6 +95,7 @@ class AudioEngine:
         if self._model is not None:
             return
         try:
+            _disable_hf_xet_for_stability()
             from mlx_audio.tts.utils import load_model
 
             self._model = load_model(self.model_name)
