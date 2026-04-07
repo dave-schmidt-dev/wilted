@@ -367,3 +367,145 @@ class TestEngineErrorHandling:
         # Should not attempt to import mlx_audio
         engine.load_model()  # no-op, should not raise
         assert engine._model is not None
+
+
+# ---------------------------------------------------------------------------
+# TestGenerateAudioEdgeCases
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateAudioEdgeCases:
+    """Edge cases for the generate_audio engine method."""
+
+    def test_empty_text_returns_empty_array(self):
+        """generate_audio with text that produces no segments returns empty array."""
+        engine = AudioEngine()
+        engine._model = MagicMock()
+        engine._model.generate.return_value = []
+
+        with patch("lilt.engine.sd"):
+            result = engine.generate_audio("")
+        assert isinstance(result, np.ndarray)
+        assert len(result) == 0
+
+    def test_model_not_loaded_auto_loads(self):
+        """generate_audio should auto-load model if not loaded."""
+        engine = AudioEngine()
+
+        mock_model = MagicMock()
+        mock_segment = MagicMock()
+        mock_segment.audio = np.zeros(100)
+        mock_model.generate.return_value = mock_segment
+
+        with patch("lilt.engine.sd"), \
+             patch("mlx_audio.tts.utils.load_model", return_value=mock_model) as mock_load:
+            result = engine.generate_audio("Test text.")
+            mock_load.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# TestLanguageConstants
+# ---------------------------------------------------------------------------
+
+
+class TestLanguageConstants:
+    """Verify LANGUAGES dict is complete and consistent with VOICES."""
+
+    def test_all_voice_accents_have_language(self):
+        """Every accent in VOICES should have a matching LANGUAGES entry."""
+        from lilt import LANGUAGES, VOICES
+
+        for voice_id, info in VOICES.items():
+            accent = info["accent"]
+            matching = [code for code, name in LANGUAGES.items()
+                        if accent in name]
+            assert matching, f"Voice {voice_id} has accent '{accent}' with no matching LANGUAGES entry"
+
+    def test_chinese_language_exists(self):
+        """Chinese must be in LANGUAGES since Chinese voices exist."""
+        from lilt import LANGUAGES
+
+        assert "z" in LANGUAGES
+        assert "Chinese" in LANGUAGES["z"]
+
+    def test_wpm_estimate_is_positive(self):
+        from lilt import WPM_ESTIMATE
+
+        assert WPM_ESTIMATE > 0
+
+
+# ---------------------------------------------------------------------------
+# TestLangCodeIntegration
+# ---------------------------------------------------------------------------
+
+
+class TestLangCodeIntegration:
+    """Verify lang_code is used correctly across the engine."""
+
+    def test_play_article_uses_lang_code(self):
+        """play_article should pass lang_code= to model.generate."""
+        engine = AudioEngine()
+        engine.lang = "b"
+
+        mock_segment = MagicMock()
+        mock_segment.audio = np.zeros(100)
+        engine._model = MagicMock()
+        engine._model.generate.return_value = mock_segment
+
+        progress_calls = []
+
+        def on_progress(*args):
+            progress_calls.append(args)
+
+        with patch("lilt.engine.sd"):
+            engine.play_article("Test paragraph.", on_progress=on_progress)
+
+        call_kwargs = engine._model.generate.call_args[1]
+        assert "lang_code" in call_kwargs
+        assert call_kwargs["lang_code"] == "b"
+        assert "lang" not in call_kwargs
+
+    def test_generate_and_play_clears_stop_event(self):
+        """generate_and_play should clear stop event at entry for skip support."""
+        engine = AudioEngine()
+        engine._stop_event.set()  # Simulate previous stop
+
+        mock_segment = MagicMock()
+        mock_segment.audio = np.zeros(100)
+        engine._model = MagicMock()
+        engine._model.generate.return_value = mock_segment
+
+        with patch("lilt.engine.sd"):
+            engine.generate_and_play("Test.")
+
+        # Stop event should have been cleared at entry
+        # (and may be set again by the end, but the method should have run)
+        engine._model.generate.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# TestWpmEstimateConsistency
+# ---------------------------------------------------------------------------
+
+
+class TestWpmEstimateConsistency:
+    """Verify no hardcoded 150 WPM literals remain in the codebase."""
+
+    def test_no_hardcoded_150_in_tui(self):
+        """lilt-tui should use WPM_ESTIMATE, not literal 150."""
+        import re
+        from pathlib import Path
+
+        tui_path = Path(__file__).resolve().parent.parent / "lilt-tui"
+        content = tui_path.read_text()
+        # Look for patterns like "/ 150" or "/ (150" that suggest hardcoded WPM
+        # But exclude comments and string literals
+        lines = content.split("\n")
+        violations = []
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith("#") or stripped.startswith('"') or stripped.startswith("'"):
+                continue
+            if re.search(r'/\s*\(?\s*150\s*[*)]', line):
+                violations.append(f"Line {i}: {stripped}")
+        assert not violations, f"Hardcoded 150 WPM found:\n" + "\n".join(violations)

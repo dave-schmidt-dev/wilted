@@ -110,7 +110,7 @@ data/
 
 ## TUI
 
-Interactive terminal player with pause/resume, skip, voice/speed controls, and resume support.
+Interactive terminal player — a complete replacement for the CLI with visual feedback.
 
 ```bash
 lilt-tui
@@ -123,9 +123,12 @@ lilt-tui
 | `enter` | Play selected article |
 | `right` | Skip to next segment |
 | `n` | Next article |
-| `v` | Voice/speed settings |
-| `a` | Add from clipboard |
-| `d` | Delete selected |
+| `v` | Voice / speed / language settings |
+| `a` | Add article (URL or clipboard, with fetch progress) |
+| `d` | Delete selected (with confirmation) |
+| `t` | Text preview of selected article |
+| `w` | Export selected article to WAV |
+| `c` | Clear all articles (with confirmation) |
 | `r` | Refresh queue |
 | `q` | Quit (saves resume position) |
 
@@ -144,7 +147,7 @@ src/lilt/                # shared library
     queue.py             # reading list persistence
     state.py             # resume state persistence
     text.py              # text cleaning and splitting
-tests/                   # 102 tests (pytest)
+tests/                   # 127 tests (pytest)
 data/                    # runtime data (.gitignored)
 ```
 
