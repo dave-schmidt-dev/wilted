@@ -18,11 +18,10 @@ cd ~/Documents/Projects/lilt
 ~/.venvs/mlx-audio/bin/pip install -e ".[tui,test]"
 ```
 
-Add shell aliases (e.g. in `~/.zshrc`):
+Add a shell alias (e.g. in `~/.zshrc`):
 
 ```bash
 alias lilt='~/Documents/Projects/lilt/lilt'
-alias lilt-tui='~/Documents/Projects/lilt/lilt-tui'
 ```
 
 First run downloads the Kokoro model from HuggingFace (~160MB, one-time).
@@ -30,12 +29,9 @@ First run downloads the Kokoro model from HuggingFace (~160MB, one-time).
 ## Quick start
 
 ```bash
-# Copy article text, then:
-lilt
-
-# Or pass a URL (supports Apple News share links):
-lilt https://apple.news/ABC123
-lilt https://www.theatlantic.com/some-article/
+lilt                              # launch TUI (no args)
+lilt --add https://apple.news/... # add article to queue
+lilt --list                       # show queue
 ```
 
 ## Reading list
@@ -110,11 +106,7 @@ data/
 
 ## TUI
 
-Interactive terminal player — a complete replacement for the CLI with visual feedback.
-
-```bash
-lilt-tui
-```
+Running `lilt` with no arguments launches the interactive TUI — a complete replacement for the CLI with visual feedback.
 
 | Key | Action |
 |-----|--------|
@@ -125,6 +117,7 @@ lilt-tui
 | `n` | Next article |
 | `v` | Voice / speed / language settings |
 | `a` | Add article (URL or clipboard, with fetch progress) |
+| `ctrl+p` | Add article and play immediately |
 | `d` | Delete selected (with confirmation) |
 | `t` | Text preview of selected article |
 | `w` | Export selected article to WAV |
@@ -137,16 +130,16 @@ Full design: [TUI_PLAN.md](TUI_PLAN.md)
 ## Project structure
 
 ```
-lilt                     # CLI script
-lilt-tui                 # TUI script
+lilt                     # single entry point (no args = TUI, with flags = CLI)
 pyproject.toml           # package metadata
 src/lilt/                # shared library
-    __init__.py          # constants, VOICES
+    __init__.py          # constants, VOICES, LANGUAGES
     engine.py            # AudioEngine (sounddevice + TTS)
     fetch.py             # URL resolution, text extraction
     queue.py             # reading list persistence
     state.py             # resume state persistence
     text.py              # text cleaning and splitting
+    tui.py               # Textual TUI app
 tests/                   # 127 tests (pytest)
 data/                    # runtime data (.gitignored)
 ```

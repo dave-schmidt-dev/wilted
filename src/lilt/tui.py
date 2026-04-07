@@ -1,4 +1,4 @@
-"""lilt-tui — Textual TUI for the lilt local TTS article reader."""
+"""Textual TUI for the lilt local TTS article reader."""
 
 from __future__ import annotations
 
