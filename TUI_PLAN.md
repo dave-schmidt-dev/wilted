@@ -216,6 +216,7 @@ Modal overlay triggered by `v` key:
 - **Custom RSS feeds** — subscribe to publication feeds (Atlantic, New Yorker, Reason, etc.), auto-fetch new articles into queue on a schedule
 - **Apple Podcast integration** — generate podcast-style audio files from reading list, publish as a private RSS feed compatible with Apple Podcasts for listening on any device
 - **Unified ad-free feed** — if private feed works, extend it: download existing podcast subscriptions, strip ads (silence detection + sponsor segment databases like SponsorBlock), and merge everything into the single private feed for a clean, ad-free listening experience
+- **macOS .app bundle** — Lilt.app in ~/Applications for Finder, Dock, Spotlight, and Launchpad access. Thin wrapper that opens iTerm with lilt-tui. Custom .icns icon for native look.
 - **Expanded test coverage** — property-based tests for text splitting, stress tests for concurrent queue access
 
 ## Files to Create/Modify

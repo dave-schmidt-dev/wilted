@@ -6,36 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# We need to patch lilt.engine before importing the TUI module, since the
-# engine module may not exist yet (built concurrently by another agent).
-# The TUI only imports AudioEngine lazily on first play, but we mock it
-# everywhere to be safe.
-
-# Import the lilt-tui script as a module. The file has no .py extension and
-# contains a hyphen, so we use SourceFileLoader directly.
-import importlib.machinery
-import importlib.util
-import sys
-from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-# Ensure lilt.engine exists as a mock so the TUI can reference it
-# (engine module is built concurrently by another agent and may not exist yet)
-if "lilt.engine" not in sys.modules:
-    mock_engine_module = MagicMock()
-    mock_engine_module.AudioEngine = MagicMock
-    sys.modules["lilt.engine"] = mock_engine_module
-
-_loader = importlib.machinery.SourceFileLoader("lilt_tui", str(PROJECT_ROOT / "lilt-tui"))
-_spec = importlib.util.spec_from_loader("lilt_tui", _loader, origin=str(PROJECT_ROOT / "lilt-tui"))
-lilt_tui = importlib.util.module_from_spec(_spec)
-sys.modules["lilt_tui"] = lilt_tui
-_spec.loader.exec_module(lilt_tui)
-
-LiltApp = lilt_tui.LiltApp
-VoiceSettingsScreen = lilt_tui.VoiceSettingsScreen
-AddArticleScreen = lilt_tui.AddArticleScreen
+import lilt.tui as lilt_tui
+from lilt.tui import AddArticleScreen, ConfirmScreen, LiltApp, TextPreviewScreen, VoiceSettingsScreen
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +42,7 @@ SAMPLE_QUEUE = [
 
 
 @pytest.mark.asyncio
-@patch("lilt_tui.load_queue", return_value=[])
+@patch("lilt.tui.load_queue", return_value=[])
 async def test_app_launches(mock_load):
     """App starts without error and shows the DataTable."""
     app = LiltApp()
@@ -82,7 +54,7 @@ async def test_app_launches(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt_tui.load_queue", return_value=SAMPLE_QUEUE)
+@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
 async def test_queue_displayed(mock_load):
     """Two articles from the mock queue appear in the DataTable."""
     app = LiltApp()
@@ -97,7 +69,7 @@ async def test_queue_displayed(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt_tui.load_queue", return_value=[])
+@patch("lilt.tui.load_queue", return_value=[])
 async def test_empty_queue_message(mock_load):
     """When queue is empty, an 'empty' message is shown."""
     app = LiltApp()
@@ -110,7 +82,7 @@ async def test_empty_queue_message(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt_tui.load_queue", return_value=[])
+@patch("lilt.tui.load_queue", return_value=[])
 async def test_quit_key(mock_load):
     """Pressing q exits the app."""
     app = LiltApp()
@@ -122,9 +94,9 @@ async def test_quit_key(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt_tui.load_queue", return_value=SAMPLE_QUEUE)
-@patch("lilt_tui.remove_article")
-@patch("lilt_tui.clear_article_state")
+@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
+@patch("lilt.tui.remove_article")
+@patch("lilt.tui.clear_article_state")
 async def test_delete_key(mock_clear_state, mock_remove, mock_load):
     """Pressing d opens ConfirmScreen, confirming calls remove_article."""
     app = LiltApp()
@@ -135,7 +107,7 @@ async def test_delete_key(mock_clear_state, mock_remove, mock_load):
         await pilot.pause()
         # ConfirmScreen should be open
         confirm = app.screen
-        assert isinstance(confirm, lilt_tui.ConfirmScreen)
+        assert isinstance(confirm, ConfirmScreen)
         # Confirm the deletion
         confirm.action_confirm()
         await pilot.pause()
@@ -145,7 +117,7 @@ async def test_delete_key(mock_clear_state, mock_remove, mock_load):
 @pytest.mark.asyncio
 async def test_add_screen_launches_on_a_key():
     """Pressing 'a' should open the AddArticleScreen modal."""
-    with patch("lilt_tui.load_queue", return_value=[]):
+    with patch("lilt.tui.load_queue", return_value=[]):
         app = LiltApp()
         async with app.run_test() as pilot:
             await pilot.press("a")
@@ -160,7 +132,7 @@ async def test_add_screen_launches_on_a_key():
 @pytest.mark.asyncio
 async def test_add_screen_cancel():
     """Pressing escape in AddArticleScreen should dismiss without adding."""
-    with patch("lilt_tui.load_queue", return_value=[]):
+    with patch("lilt.tui.load_queue", return_value=[]):
         app = LiltApp()
         async with app.run_test() as pilot:
             await pilot.press("a")
@@ -176,7 +148,7 @@ async def test_add_screen_cancel():
 
 
 @pytest.mark.asyncio
-@patch("lilt_tui.load_queue", return_value=SAMPLE_QUEUE)
+@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
 async def test_refresh_key(mock_load):
     """Pressing r calls load_queue again to refresh."""
     app = LiltApp()
@@ -190,7 +162,7 @@ async def test_refresh_key(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt_tui.load_queue", return_value=[])
+@patch("lilt.tui.load_queue", return_value=[])
 async def test_voice_settings_shows_language(mock_load):
     """VoiceSettingsScreen displays a language label widget."""
     app = LiltApp()
@@ -205,7 +177,7 @@ async def test_voice_settings_shows_language(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt_tui.load_queue", return_value=[])
+@patch("lilt.tui.load_queue", return_value=[])
 async def test_voice_settings_dismiss_includes_lang(mock_load):
     """VoiceSettingsScreen dismiss returns a 3-tuple (voice, speed, lang)."""
     app = LiltApp()
@@ -233,16 +205,16 @@ async def test_text_preview_launches():
         {"id": 1, "title": "Test Article", "words": 100, "file": "1_test.txt", "added": "2026-04-06"},
     ]
     with (
-        patch("lilt_tui.load_queue", return_value=articles),
-        patch("lilt_tui.get_article_text", return_value="This is the article text."),
+        patch("lilt.tui.load_queue", return_value=articles),
+        patch("lilt.tui.get_article_text", return_value="This is the article text."),
     ):
-        app = lilt_tui.LiltApp()
+        app = LiltApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("t")
             await pilot.pause()
             assert any(
-                isinstance(screen, lilt_tui.TextPreviewScreen)
+                isinstance(screen, TextPreviewScreen)
                 for screen in app.screen_stack
             )
 
@@ -250,8 +222,8 @@ async def test_text_preview_launches():
 @pytest.mark.asyncio
 async def test_text_preview_no_article():
     """Pressing 't' with empty queue should show error status."""
-    with patch("lilt_tui.load_queue", return_value=[]):
-        app = lilt_tui.LiltApp()
+    with patch("lilt.tui.load_queue", return_value=[]):
+        app = LiltApp()
         async with app.run_test() as pilot:
             await pilot.press("t")
             await pilot.pause()
@@ -265,14 +237,14 @@ async def test_clear_all_launches_confirm():
     articles = [
         {"id": 1, "title": "Test", "words": 50, "file": "1_test.txt", "added": "2026-04-06"},
     ]
-    with patch("lilt_tui.load_queue", return_value=articles):
-        app = lilt_tui.LiltApp()
+    with patch("lilt.tui.load_queue", return_value=articles):
+        app = LiltApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("c")
             await pilot.pause()
             assert any(
-                isinstance(screen, lilt_tui.ConfirmScreen)
+                isinstance(screen, ConfirmScreen)
                 for screen in app.screen_stack
             )
 
@@ -283,14 +255,14 @@ async def test_delete_launches_confirm():
     articles = [
         {"id": 1, "title": "Test", "words": 50, "file": "1_test.txt", "added": "2026-04-06"},
     ]
-    with patch("lilt_tui.load_queue", return_value=articles):
-        app = lilt_tui.LiltApp()
+    with patch("lilt.tui.load_queue", return_value=articles):
+        app = LiltApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("d")
             await pilot.pause()
             assert any(
-                isinstance(screen, lilt_tui.ConfirmScreen)
+                isinstance(screen, ConfirmScreen)
                 for screen in app.screen_stack
             )
 
@@ -298,8 +270,8 @@ async def test_delete_launches_confirm():
 @pytest.mark.asyncio
 async def test_export_wav_no_article():
     """Pressing 'w' with empty queue should show error."""
-    with patch("lilt_tui.load_queue", return_value=[]):
-        app = lilt_tui.LiltApp()
+    with patch("lilt.tui.load_queue", return_value=[]):
+        app = LiltApp()
         async with app.run_test() as pilot:
             await pilot.press("w")
             await pilot.pause()
@@ -314,10 +286,10 @@ async def test_export_wav_missing_file():
         {"id": 1, "title": "Test", "words": 50, "file": "1_test.txt", "added": "2026-04-06"},
     ]
     with (
-        patch("lilt_tui.load_queue", return_value=articles),
-        patch("lilt_tui.get_article_text", return_value=None),
+        patch("lilt.tui.load_queue", return_value=articles),
+        patch("lilt.tui.get_article_text", return_value=None),
     ):
-        app = lilt_tui.LiltApp()
+        app = LiltApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("w")

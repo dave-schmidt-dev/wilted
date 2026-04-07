@@ -1,12 +1,11 @@
 #!/Users/dave/.venvs/mlx-audio/bin/python3
-"""Read articles aloud using local TTS on Apple Silicon.
+"""Lilt — local TTS article reader for Apple Silicon.
+
+With no arguments, launches the interactive TUI. With flags, runs
+CLI commands and exits.
 
 Usage:
-    lilt                              # read from clipboard
-    lilt URL                          # fetch and read article from URL
-    lilt article.txt                  # read from file
-    cat article.txt | lilt -          # read from stdin
-
+    lilt                              # launch TUI
     lilt --add URL                    # add article to reading list
     lilt --add                        # add from clipboard
     lilt --list                       # show reading list
@@ -14,350 +13,338 @@ Usage:
     lilt --next                       # play next queued article
     lilt --remove N                   # remove article N from list
     lilt --clear                      # clear the reading list
-
-    lilt --clean                      # preview cleaned text, no audio
-    lilt --save out.wav               # save audio to file
+    lilt --clean URL                  # preview cleaned text, no audio
+    lilt --save out.wav URL           # save audio to file
     lilt --list-voices                # show available voices
-
-Supports Apple News share links (apple.news/...), which are resolved to
-the original source URL automatically.
-
-Reading list articles are pre-fetched and cached locally so playback
-works offline and doesn't depend on paywalls at listen time.
 """
 
 import argparse
-import os
-import re
-import subprocess
 import sys
-import tempfile
-import atexit
-
-import numpy as np
-
-from lilt import VOICES
-from lilt.text import clean_text, extract_title_from_paste, split_into_chunks
-from lilt.fetch import (
-    get_text_from_clipboard,
-    get_text_from_url,
-    extract_title_from_url,
-)
-from lilt.queue import (
-    add_article,
-    clear_queue,
-    get_article_text,
-    load_queue,
-    mark_completed,
-    remove_article,
-)
 
 
-# --- Temp file cleanup ---
-
-_temp_files = []
-
-
-def _cleanup_temp_files():
-    for f in _temp_files:
-        try:
-            os.unlink(f)
-        except OSError:
-            pass
+def _has_cli_flags() -> bool:
+    """Check if any CLI flags were passed (as opposed to bare 'lilt')."""
+    # If there are any arguments at all, it's a CLI invocation
+    return len(sys.argv) > 1
 
 
-atexit.register(_cleanup_temp_files)
+def _launch_tui() -> None:
+    """Launch the interactive TUI."""
+    # Lazy import — avoids loading textual/sounddevice for CLI commands
+    from lilt.tui import LiltApp
+
+    app = LiltApp()
+    app.run()
 
 
-# --- Commands ---
+def _run_cli() -> None:
+    """Parse args and run the appropriate CLI command."""
+    import os
+    import re
+    import subprocess
+    import tempfile
+    import atexit
 
+    import numpy as np
 
-def cmd_add(args):
-    """Add an article to the reading list."""
-    source_url = None
-    canonical_url = None
-    title = None
-
-    if args.input and args.input.startswith(("http://", "https://")):
-        source_url = args.input
-        print("Fetching article...")
-        text, canonical_url = get_text_from_url(args.input)
-        if not text:
-            print(
-                "Could not fetch article text (paywall?). "
-                "Copy the text, then run: lilt --add",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        title = extract_title_from_url(canonical_url)
-    else:
-        print("Reading from clipboard...")
-        raw = get_text_from_clipboard()
-        if not raw:
-            print("Clipboard is empty.", file=sys.stderr)
-            sys.exit(1)
-        text = raw
-        title = extract_title_from_paste(raw)
-        url_match = re.search(r"https://apple\.news/\S+", raw)
-        if url_match:
-            source_url = url_match.group(0)
-
-    text = clean_text(text)
-    entry = add_article(
-        text, title=title, source_url=source_url, canonical_url=canonical_url
+    from lilt import VOICES
+    from lilt.text import clean_text, extract_title_from_paste, split_into_chunks
+    from lilt.fetch import (
+        get_text_from_clipboard,
+        get_text_from_url,
+        extract_title_from_url,
+    )
+    from lilt.queue import (
+        add_article,
+        clear_queue,
+        get_article_text,
+        load_queue,
+        mark_completed,
+        remove_article,
     )
 
-    est_min = entry["words"] / 150
-    print(f"Added #{entry['id']}: {entry['title']}")
-    print(f"  {entry['words']} words, ~{est_min:.0f} min listen time")
-    queue = load_queue()
-    print(f"  Queue now has {len(queue)} article(s).")
+    # --- Temp file cleanup ---
 
+    _temp_files = []
 
-def cmd_list(args):
-    """Show the reading list."""
-    queue = load_queue()
-    if not queue:
-        print("Reading list is empty.")
-        return
+    def _cleanup_temp_files():
+        for f in _temp_files:
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
 
-    total_words = 0
-    print(f"Reading list ({len(queue)} articles):\n")
-    for i, entry in enumerate(queue, 1):
-        words = entry.get("words", 0)
-        total_words += words
-        est = words / 150
-        added = entry.get("added", "")[:10]
-        print(f"  {i}. {entry['title']}")
-        print(f"     {words} words, ~{est:.0f} min | added {added}")
+    atexit.register(_cleanup_temp_files)
 
-    total_min = total_words / 150
-    print(f"\nTotal: ~{total_words} words, ~{total_min:.0f} min listen time")
+    # --- Commands ---
 
+    def cmd_add(args):
+        source_url = None
+        canonical_url = None
+        title = None
 
-def cmd_remove(args):
-    """Remove an article from the reading list by position number."""
-    try:
-        entry = remove_article(args.remove - 1)
-    except IndexError as e:
-        print(str(e), file=sys.stderr)
-        sys.exit(1)
-
-    print(f"Removed: {entry['title']}")
-    queue = load_queue()
-    print(f"Queue now has {len(queue)} article(s).")
-
-
-def cmd_clear(args):
-    """Clear the entire reading list."""
-    count = clear_queue()
-    if count == 0:
-        print("Reading list is already empty.")
-    else:
-        print(f"Cleared {count} article(s) from reading list.")
-
-
-def _play_text(text, args):
-    """Generate TTS and play or save audio for the given text."""
-    from mlx_audio.tts.utils import load_model
-    from mlx_audio.audio_io import write as audio_write
-
-    word_count = len(text.split())
-    est_minutes = word_count / 150
-    print(f"  {word_count} words, ~{est_minutes:.0f} min listen time")
-
-    print("  Loading model...")
-    model = load_model(args.model)
-
-    chunks = split_into_chunks(text)
-    print(f"  {len(chunks)} chunks. Playing... (Ctrl+C to stop)\n")
-
-    if args.save:
-        all_audio = []
-        sample_rate = None
-        for i, chunk in enumerate(chunks, 1):
-            sys.stdout.write(f"\r  Generating {i}/{len(chunks)}...")
-            sys.stdout.flush()
-            for result in model.generate(
-                text=chunk, voice=args.voice, speed=args.speed, lang_code=args.lang
-            ):
-                audio_arr = result.audio
-                if hasattr(audio_arr, "tolist"):
-                    audio_arr = audio_arr.tolist()
-                all_audio.extend(audio_arr)
-                sample_rate = result.sample_rate
-
-        print()
-        audio_write(args.save, np.array(all_audio, dtype=np.float32), sample_rate)
-        print(f"  Saved to {args.save}")
-    else:
-        player = None
-        try:
-            for i, chunk in enumerate(chunks, 1):
-                for result in model.generate(
-                    text=chunk,
-                    voice=args.voice,
-                    speed=args.speed,
-                    lang_code=args.lang,
-                ):
-                    if player and player.poll() is None:
-                        player.wait()
-
-                    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-                    tmp_path = tmp.name
-                    tmp.close()
-                    _temp_files.append(tmp_path)
-
-                    audio_arr = result.audio
-                    if hasattr(audio_arr, "tolist"):
-                        audio_arr = audio_arr.tolist()
-                    audio_write(
-                        tmp_path,
-                        np.array(audio_arr, dtype=np.float32),
-                        result.sample_rate,
-                    )
-
-                    player = subprocess.Popen(
-                        ["afplay", tmp_path],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    sys.stdout.write(f"\r  Chunk {i}/{len(chunks)}")
-                    sys.stdout.flush()
-
-            if player:
-                player.wait()
-            print("\n  Done.")
-
-        except KeyboardInterrupt:
-            if player:
-                player.terminate()
-            print("\n  Stopped.")
-            return False
-
-    return True
-
-
-def cmd_play(args):
-    """Play all articles in the reading list."""
-    queue = load_queue()
-    if not queue:
-        print("Reading list is empty. Add articles with: lilt --add URL")
-        return
-
-    print(f"Playing {len(queue)} article(s)...\n")
-    completed = []
-    for i, entry in enumerate(queue):
-        text = get_article_text(entry)
-        if text is None:
-            print(f"Skipping #{entry['id']}: cached file missing")
-            continue
-
-        print(f"[{i + 1}/{len(queue)}] {entry['title']}")
-        finished = _play_text(text, args)
-        if finished:
-            completed.append(entry)
-        else:
-            break
-
-    if completed:
-        for entry in completed:
-            mark_completed(entry)
-        remaining = load_queue()
-        print(f"\nFinished {len(completed)} article(s). {len(remaining)} remaining.")
-
-
-def cmd_next(args):
-    """Play the next article in the reading list."""
-    queue = load_queue()
-    if not queue:
-        print("Reading list is empty. Add articles with: lilt --add URL")
-        return
-
-    entry = queue[0]
-    text = get_article_text(entry)
-    if text is None:
-        print(f"Cached file missing for: {entry['title']}", file=sys.stderr)
-        remove_article(0)
-        sys.exit(1)
-
-    print(f"Now playing: {entry['title']}")
-    finished = _play_text(text, args)
-
-    if finished:
-        mark_completed(entry)
-        remaining = load_queue()
-        if remaining:
-            print(f"{len(remaining)} article(s) remaining.")
-        else:
-            print("Reading list is now empty.")
-
-
-def cmd_direct(args):
-    """Play text directly without the reading list."""
-    if args.input == "-":
-        text = sys.stdin.read()
-    elif args.input:
-        if args.input.startswith(("http://", "https://")):
+        if args.input and args.input.startswith(("http://", "https://")):
+            source_url = args.input
             print("Fetching article...")
-            text, _ = get_text_from_url(args.input)
+            text, canonical_url = get_text_from_url(args.input)
             if not text:
                 print(
-                    "Could not extract article text (paywall?). "
-                    "Try copying the text and running: lilt",
+                    "Could not fetch article text (paywall?). "
+                    "Copy the text, then run: lilt --add",
                     file=sys.stderr,
                 )
                 sys.exit(1)
-        elif os.path.isfile(args.input):
-            with open(args.input) as f:
-                text = f.read()
+            title = extract_title_from_url(canonical_url)
         else:
-            print(f"File not found: {args.input}", file=sys.stderr)
+            print("Reading from clipboard...")
+            raw = get_text_from_clipboard()
+            if not raw:
+                print("Clipboard is empty.", file=sys.stderr)
+                sys.exit(1)
+            text = raw
+            title = extract_title_from_paste(raw)
+            url_match = re.search(r"https://apple\.news/\S+", raw)
+            if url_match:
+                source_url = url_match.group(0)
+
+        text = clean_text(text)
+        entry = add_article(
+            text, title=title, source_url=source_url, canonical_url=canonical_url
+        )
+
+        est_min = entry["words"] / 150
+        print(f"Added #{entry['id']}: {entry['title']}")
+        print(f"  {entry['words']} words, ~{est_min:.0f} min listen time")
+        queue = load_queue()
+        print(f"  Queue now has {len(queue)} article(s).")
+
+    def cmd_list(args):
+        queue = load_queue()
+        if not queue:
+            print("Reading list is empty.")
+            return
+
+        total_words = 0
+        print(f"Reading list ({len(queue)} articles):\n")
+        for i, entry in enumerate(queue, 1):
+            words = entry.get("words", 0)
+            total_words += words
+            est = words / 150
+            added = entry.get("added", "")[:10]
+            print(f"  {i}. {entry['title']}")
+            print(f"     {words} words, ~{est:.0f} min | added {added}")
+
+        total_min = total_words / 150
+        print(f"\nTotal: ~{total_words} words, ~{total_min:.0f} min listen time")
+
+    def cmd_remove(args):
+        try:
+            entry = remove_article(args.remove - 1)
+        except IndexError as e:
+            print(str(e), file=sys.stderr)
             sys.exit(1)
-    elif not sys.stdin.isatty():
-        text = sys.stdin.read()
-    else:
-        print("Reading from clipboard...")
-        text = get_text_from_clipboard()
 
-    if not text or not text.strip():
-        print("No text found.", file=sys.stderr)
-        sys.exit(1)
+        print(f"Removed: {entry['title']}")
+        queue = load_queue()
+        print(f"Queue now has {len(queue)} article(s).")
 
-    text = clean_text(text)
+    def cmd_clear(args):
+        count = clear_queue()
+        if count == 0:
+            print("Reading list is already empty.")
+        else:
+            print(f"Cleared {count} article(s) from reading list.")
 
-    if args.clean:
-        print(text)
-        return
+    def _play_text(text, args):
+        from mlx_audio.tts.utils import load_model
+        from mlx_audio.audio_io import write as audio_write
 
-    _play_text(text, args)
+        word_count = len(text.split())
+        est_minutes = word_count / 150
+        print(f"  {word_count} words, ~{est_minutes:.0f} min listen time")
 
+        print("  Loading model...")
+        model = load_model(args.model)
 
-# --- CLI ---
+        chunks = split_into_chunks(text)
+        print(f"  {len(chunks)} chunks. Playing... (Ctrl+C to stop)\n")
 
+        if args.save:
+            all_audio = []
+            sample_rate = None
+            for i, chunk in enumerate(chunks, 1):
+                sys.stdout.write(f"\r  Generating {i}/{len(chunks)}...")
+                sys.stdout.flush()
+                for result in model.generate(
+                    text=chunk, voice=args.voice, speed=args.speed, lang_code=args.lang
+                ):
+                    audio_arr = result.audio
+                    if hasattr(audio_arr, "tolist"):
+                        audio_arr = audio_arr.tolist()
+                    all_audio.extend(audio_arr)
+                    sample_rate = result.sample_rate
 
-def main():
+            print()
+            audio_write(args.save, np.array(all_audio, dtype=np.float32), sample_rate)
+            print(f"  Saved to {args.save}")
+        else:
+            player = None
+            try:
+                for i, chunk in enumerate(chunks, 1):
+                    for result in model.generate(
+                        text=chunk,
+                        voice=args.voice,
+                        speed=args.speed,
+                        lang_code=args.lang,
+                    ):
+                        if player and player.poll() is None:
+                            player.wait()
+
+                        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+                        tmp_path = tmp.name
+                        tmp.close()
+                        _temp_files.append(tmp_path)
+
+                        audio_arr = result.audio
+                        if hasattr(audio_arr, "tolist"):
+                            audio_arr = audio_arr.tolist()
+                        audio_write(
+                            tmp_path,
+                            np.array(audio_arr, dtype=np.float32),
+                            result.sample_rate,
+                        )
+
+                        player = subprocess.Popen(
+                            ["afplay", tmp_path],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        sys.stdout.write(f"\r  Chunk {i}/{len(chunks)}")
+                        sys.stdout.flush()
+
+                if player:
+                    player.wait()
+                print("\n  Done.")
+
+            except KeyboardInterrupt:
+                if player:
+                    player.terminate()
+                print("\n  Stopped.")
+                return False
+
+        return True
+
+    def cmd_play(args):
+        queue = load_queue()
+        if not queue:
+            print("Reading list is empty. Add articles with: lilt --add URL")
+            return
+
+        print(f"Playing {len(queue)} article(s)...\n")
+        completed = []
+        for i, entry in enumerate(queue):
+            text = get_article_text(entry)
+            if text is None:
+                print(f"Skipping #{entry['id']}: cached file missing")
+                continue
+
+            print(f"[{i + 1}/{len(queue)}] {entry['title']}")
+            finished = _play_text(text, args)
+            if finished:
+                completed.append(entry)
+            else:
+                break
+
+        if completed:
+            for entry in completed:
+                mark_completed(entry)
+            remaining = load_queue()
+            print(f"\nFinished {len(completed)} article(s). {len(remaining)} remaining.")
+
+    def cmd_next(args):
+        queue = load_queue()
+        if not queue:
+            print("Reading list is empty. Add articles with: lilt --add URL")
+            return
+
+        entry = queue[0]
+        text = get_article_text(entry)
+        if text is None:
+            print(f"Cached file missing for: {entry['title']}", file=sys.stderr)
+            remove_article(0)
+            sys.exit(1)
+
+        print(f"Now playing: {entry['title']}")
+        finished = _play_text(text, args)
+
+        if finished:
+            mark_completed(entry)
+            remaining = load_queue()
+            if remaining:
+                print(f"{len(remaining)} article(s) remaining.")
+            else:
+                print("Reading list is now empty.")
+
+    def cmd_direct(args):
+        if args.input == "-":
+            text = sys.stdin.read()
+        elif args.input:
+            if args.input.startswith(("http://", "https://")):
+                print("Fetching article...")
+                text, _ = get_text_from_url(args.input)
+                if not text:
+                    print(
+                        "Could not extract article text (paywall?). "
+                        "Try copying the text and running: lilt --add",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+            elif os.path.isfile(args.input):
+                with open(args.input) as f:
+                    text = f.read()
+            else:
+                print(f"File not found: {args.input}", file=sys.stderr)
+                sys.exit(1)
+        elif not sys.stdin.isatty():
+            text = sys.stdin.read()
+        else:
+            print("Reading from clipboard...")
+            text = get_text_from_clipboard()
+
+        if not text or not text.strip():
+            print("No text found.", file=sys.stderr)
+            sys.exit(1)
+
+        text = clean_text(text)
+
+        if args.clean:
+            print(text)
+            return
+
+        _play_text(text, args)
+
+    # --- Argument parsing ---
+
     parser = argparse.ArgumentParser(
-        description="Read articles aloud using local TTS on Apple Silicon.",
+        description="Lilt — local TTS article reader. No args launches the TUI.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
-  lilt                                  Read clipboard aloud
-  lilt https://apple.news/ABC123        Fetch and read article
+  lilt                                  Launch interactive TUI
   lilt --add https://apple.news/ABC123  Add to reading list
   lilt --add                            Add clipboard to reading list
   lilt --list                           Show reading list
   lilt --play                           Play entire reading list
   lilt --next                           Play next article only
-  lilt --voice am_adam --speed 0.9      Use a different voice/speed""",
+  lilt --clean URL                      Preview cleaned article text
+  lilt --save out.wav URL               Export article audio to WAV""",
     )
 
     parser.add_argument(
         "input",
         nargs="?",
-        help="URL, file path, '-' for stdin, or omit for clipboard",
+        help="URL, file path, '-' for stdin (CLI mode only)",
     )
 
-    # Reading list commands
     queue_group = parser.add_argument_group("reading list")
     queue_group.add_argument(
         "--add",
@@ -378,18 +365,12 @@ def main():
         "--clear", action="store_true", help="Clear entire reading list"
     )
 
-    # Playback options
     play_group = parser.add_argument_group("playback")
     play_group.add_argument(
-        "--voice",
-        default="af_heart",
-        help="Voice preset (default: af_heart)",
+        "--voice", default="af_heart", help="Voice preset (default: af_heart)"
     )
     play_group.add_argument(
-        "--speed",
-        type=float,
-        default=1.0,
-        help="Speech speed 0.5-2.0 (default: 1.0)",
+        "--speed", type=float, default=1.0, help="Speech speed 0.5-2.0 (default: 1.0)"
     )
     play_group.add_argument(
         "--model",
@@ -397,20 +378,15 @@ def main():
         help="TTS model (default: mlx-community/Kokoro-82M-bf16)",
     )
     play_group.add_argument(
-        "--lang",
-        default="a",
-        help="Language: a=American, b=British, j=Japanese (default: a)",
+        "--lang", default="a", help="Language: a=American, b=British, j=Japanese, z=Chinese (default: a)"
     )
     play_group.add_argument(
         "--save", metavar="FILE", help="Save audio to file instead of playing"
     )
 
-    # Utility
     util_group = parser.add_argument_group("utility")
     util_group.add_argument(
-        "--clean",
-        action="store_true",
-        help="Output cleaned text only, no audio",
+        "--clean", action="store_true", help="Output cleaned text only, no audio"
     )
     util_group.add_argument(
         "--list-voices", action="store_true", help="List available voices"
@@ -446,6 +422,13 @@ def main():
         cmd_next(args)
     else:
         cmd_direct(args)
+
+
+def main():
+    if _has_cli_flags():
+        _run_cli()
+    else:
+        _launch_tui()
 
 
 if __name__ == "__main__":
