@@ -90,6 +90,9 @@ def remove_article(index: int) -> dict:
     if article_path.exists():
         article_path.unlink()
 
+    from lilt.cache import clear_cache
+
+    clear_cache(entry["id"])
     save_queue(queue)
     return entry
 
@@ -100,11 +103,14 @@ def clear_queue() -> int:
     if not queue:
         return 0
 
+    from lilt.cache import clear_cache
+
     count = len(queue)
     for entry in queue:
         article_path = ARTICLES_DIR / entry["file"]
         if article_path.exists():
             article_path.unlink()
+        clear_cache(entry["id"])
 
     save_queue([])
     return count
@@ -127,3 +133,7 @@ def mark_completed(entry: dict) -> None:
     article_path = ARTICLES_DIR / entry["file"]
     if article_path.exists():
         article_path.unlink()
+
+    from lilt.cache import clear_cache
+
+    clear_cache(entry["id"])

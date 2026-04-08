@@ -102,6 +102,7 @@ data/
   queue.json        # reading list metadata
   state.json        # TUI resume positions
   articles/         # cached article text files
+  audio/            # pre-generated MP3 cache (per-article)
 ```
 
 ## TUI
@@ -139,9 +140,10 @@ src/lilt/                # shared library
     fetch.py             # URL resolution, text extraction
     queue.py             # reading list persistence
     state.py             # resume state persistence
+    cache.py             # audio cache (MP3 storage, manifest)
     text.py              # text cleaning and splitting
     tui.py               # Textual TUI app
-tests/                   # 172 tests (pytest)
+tests/                   # 224 tests (pytest)
 ```
 
 ## Roadmap
@@ -153,8 +155,9 @@ tests/                   # 172 tests (pytest)
 
 ## Dependencies
 
-- Python 3.12 (via Homebrew)
+- Python 3.12+ (via Homebrew)
 - mlx-audio (Apple Silicon TTS framework)
+- ffmpeg (required for MP3 audio caching; `brew install ffmpeg`)
 - Kokoro TTS model (82M params, downloaded on first use)
 - trafilatura (article text extraction)
 - numpy

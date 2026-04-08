@@ -24,6 +24,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 QUEUE_FILE = DATA_DIR / "queue.json"
 ARTICLES_DIR = DATA_DIR / "articles"
 STATE_FILE = DATA_DIR / "state.json"
+AUDIO_DIR = DATA_DIR / "audio"
 
 
 VOICES = {
@@ -56,3 +57,4 @@ LANGUAGES = {
 def ensure_data_dirs():
     """Create data directories if they don't exist."""
     ARTICLES_DIR.mkdir(parents=True, exist_ok=True)
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)

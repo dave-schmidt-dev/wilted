@@ -97,6 +97,7 @@ class AudioEngine:
         self.sample_rate = SAMPLE_RATE
 
         self._model = None
+        self._model_lock = threading.Lock()
 
         # Threading controls
         self._stop_event = threading.Event()
@@ -136,6 +137,7 @@ class AudioEngine:
         """
         import sounddevice as sd
 
+        self._sample_offset = 0
         block_size = 1024
         try:
             stream = sd.OutputStream(samplerate=self.sample_rate, channels=1, dtype="float32")
@@ -177,12 +179,13 @@ class AudioEngine:
         self._stop_event.clear()
         self.load_model()
 
-        try:
-            result = self._model.generate(text, voice=self.voice, speed=self.speed, lang_code=self.lang)
-        except Exception as e:
-            raise RuntimeError(f"TTS generation failed: {e}") from e
+        with self._model_lock:
+            try:
+                result = self._model.generate(text, voice=self.voice, speed=self.speed, lang_code=self.lang)
+            except Exception as e:
+                raise RuntimeError(f"TTS generation failed: {e}") from e
 
-        segments = _normalize_segments(result)
+            segments = _normalize_segments(result)
 
         for segment in segments:
             if self._stop_event.is_set():
@@ -221,14 +224,14 @@ class AudioEngine:
                 paragraph_text = paragraphs[para_idx]
 
                 # Generate TTS for this paragraph — may yield 1+ segments
-                result = self._model.generate(
-                    paragraph_text,
-                    voice=self.voice,
-                    speed=self.speed,
-                    lang_code=self.lang,
-                )
-
-                segments = _normalize_segments(result)
+                with self._model_lock:
+                    result = self._model.generate(
+                        paragraph_text,
+                        voice=self.voice,
+                        speed=self.speed,
+                        lang_code=self.lang,
+                    )
+                    segments = _normalize_segments(result)
 
                 for seg_idx, segment in enumerate(segments):
                     if self._stop_event.is_set():
@@ -243,18 +246,37 @@ class AudioEngine:
         finally:
             self._playing = False
 
-    def generate_audio(self, text: str) -> np.ndarray:
+    def generate_audio(
+        self,
+        text: str,
+        *,
+        voice: str | None = None,
+        lang: str | None = None,
+        speed: float | None = None,
+    ) -> np.ndarray:
         """Generate TTS audio for text and return as numpy array (no playback).
+
+        Args:
+            text: The text to synthesize.
+            voice: Override voice (falls back to self.voice).
+            lang: Override language (falls back to self.lang).
+            speed: Override speed (falls back to self.speed).
 
         Raises RuntimeError on model or generation failure.
         """
         self.load_model()
-        try:
-            result = self._model.generate(text, voice=self.voice, speed=self.speed, lang_code=self.lang)
-        except Exception as e:
-            raise RuntimeError(f"TTS generation failed: {e}") from e
+        eff_voice = voice if voice is not None else self.voice
+        eff_lang = lang if lang is not None else self.lang
+        eff_speed = speed if speed is not None else self.speed
 
-        segments = _normalize_segments(result)
+        with self._model_lock:
+            try:
+                result = self._model.generate(text, voice=eff_voice, speed=eff_speed, lang_code=eff_lang)
+            except Exception as e:
+                raise RuntimeError(f"TTS generation failed: {e}") from e
+
+            segments = _normalize_segments(result)
+
         all_audio = []
         for segment in segments:
             audio_arr = np.array(segment.audio, dtype=np.float32)

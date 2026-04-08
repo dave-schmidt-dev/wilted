@@ -1,3 +1,13 @@
+## 2026-04-08 — Audio cache infrastructure + engine refactor (Phases 1-2)
+
+- **Audio cache module** (`src/lilt/cache.py`): Per-paragraph MP3 caching with atomic manifest tracking. Functions: `check_ffmpeg`, `save_audio`/`load_audio`, `save_manifest`/`load_manifest`, `is_cache_valid`, `clear_cache`, `generate_article_cache`. Requires ffmpeg for MP3 encoding via mlx_audio.
+- **Engine refactor**: Added `threading.Lock` (`_model_lock`) to serialize all `_model.generate()` calls — prevents race conditions between playback and background generation. `generate_audio()` now accepts optional explicit `voice`, `lang`, `speed` keyword params (falls back to instance attrs for CLI compatibility). `_sample_offset` reset to 0 at start of each `_play_audio()` call for accurate progress tracking.
+- **Queue cleanup hooks**: `remove_article()`, `mark_completed()`, and `clear_queue()` now call `clear_cache()` to remove audio files when articles are removed.
+- **Background generation worker**: TUI spawns `_generate_cache()` worker after model preload and on article add. Iterates queue, generates MP3 cache for uncached articles. Supports cancellation and pause coordination via `_generation_paused` flag (wired in Phase 3). Status line shows generation progress when playback is idle.
+- **Dead code removal**: Removed unused `resume_seg` parameter from `_start_playback()` and `_play_article()`. Removed `_segment_in_paragraph` instance variable.
+- **Test fixtures**: `AUDIO_DIR` redirected to temp directory in `conftest.py`. 37 new tests covering cache functions, `generate_article_cache`, explicit engine params, model lock, and queue cleanup integration.
+- Test count: 224 (219 fast + 5 slow). Reviewed by contrarian; 6 findings fixed (variable shadowing, incomplete cache validation, redundant MP3 re-read, missing ffmpeg check, stale import, dead `import time`).
+
 ## 2026-04-07 — Fix PROJECT_ROOT resolution for non-editable installs
 
 - **Bug**: TUI showed empty queue despite `data/queue.json` containing 3 articles. Root cause: `PROJECT_ROOT` in `__init__.py` used a hardcoded `Path(__file__).parent.parent.parent` traversal that only works from `src/lilt/`. When installed to `.venv/lib/python3.13/site-packages/lilt/`, the three-parent walk resolves to `.venv/lib/python3.13/` — wrong directory.

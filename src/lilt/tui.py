@@ -561,7 +561,6 @@ class LiltApp(App):
         self._current_entry: dict | None = None
         self._paragraphs: list[str] = []
         self._paragraph_idx: int = 0
-        self._segment_in_paragraph: int = 0
         self._total_segments: int = 0
         self._segments_played: int = 0
         self._playing: bool = False
@@ -571,6 +570,8 @@ class LiltApp(App):
         self._lang: str = "a"
         self._last_state_save: float = 0.0
         self._playback_worker = None
+        self._generation_paused: bool = False
+        self._generation_worker = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -677,14 +678,86 @@ class LiltApp(App):
             status_widget = self.query_one("#status-line", Label)
             if "Loading" in str(status_widget.render()):
                 self.call_from_thread(self._set_status, "Ready")
+            # Start background generation now that model is loaded
+            self.call_from_thread(self._trigger_generation)
         except Exception:
             # Non-fatal — model will load on first play instead
             pass
 
+    # -- Background generation worker ----------------------------------------
+
+    @work(thread=True, exclusive=True, group="generate")
+    def _generate_cache(self) -> None:
+        """Background worker: generate audio cache for queued articles."""
+        from lilt.cache import generate_article_cache, is_cache_valid
+        from lilt.fetch import suppress_subprocess_output
+        from lilt.queue import get_article_text, load_queue
+
+        worker = get_current_worker()
+
+        self._ensure_engine()
+        engine = self._engine
+        with suppress_subprocess_output():
+            engine.load_model()
+
+        queue = load_queue()
+        for entry in queue:
+            if worker.is_cancelled:
+                break
+
+            article_id = entry["id"]
+            added = entry.get("added", "")
+            voice, lang, speed = self._voice, self._lang, self._speed
+
+            if is_cache_valid(article_id, voice, lang, speed, added):
+                continue
+
+            text = get_article_text(entry)
+            if not text:
+                continue
+
+            title = entry.get("title", "Untitled")
+
+            def on_progress(para_idx, total):
+                if not self._playing:
+                    self.call_from_thread(
+                        self._set_status,
+                        f"Generating audio: {title[:30]} — para {para_idx + 1}/{total}",
+                    )
+
+            def should_cancel():
+                if worker.is_cancelled:
+                    return True
+                # Spin-wait while generation is paused (playback active)
+                while self._generation_paused and not worker.is_cancelled:
+                    time.sleep(0.1)
+                return worker.is_cancelled
+
+            generate_article_cache(
+                engine,
+                text,
+                article_id,
+                voice,
+                lang,
+                speed,
+                added,
+                on_progress=on_progress,
+                should_cancel=should_cancel,
+            )
+
+        if not worker.is_cancelled and not self._playing:
+            self.call_from_thread(self._set_status, "Ready")
+
+    def _trigger_generation(self) -> None:
+        """Start or restart the background generation worker."""
+        if self._generation_worker and self._generation_worker.is_running:
+            self._generation_worker.cancel()
+        self._generation_worker = self._generate_cache()
+
     # -- Playback worker ----------------------------------------------------
 
     @work(thread=True, exclusive=True, group="playback")
-    def _play_article(self, entry: dict, resume_para: int = 0, resume_seg: int = 0) -> None:
+    def _play_article(self, entry: dict, resume_para: int = 0) -> None:
         """Play an article from the given paragraph/segment position."""
         worker = get_current_worker()
 
@@ -729,7 +802,6 @@ class LiltApp(App):
                 break
 
             self._paragraph_idx = para_idx
-            self._segment_in_paragraph = 0
 
             paragraph = paragraphs[para_idx]
 
@@ -796,7 +868,7 @@ class LiltApp(App):
         if self._queue:
             self._start_playback(self._queue[0])
 
-    def _start_playback(self, entry: dict, resume_para: int = 0, resume_seg: int = 0) -> None:
+    def _start_playback(self, entry: dict, resume_para: int = 0) -> None:
         """Start playing an article, stopping any current playback."""
         if self._playing and self._engine:
             self._engine.stop()
@@ -807,7 +879,7 @@ class LiltApp(App):
         self._playing = True
         self._paused = False
         self._last_state_save = time.time()
-        self._playback_worker = self._play_article(entry, resume_para, resume_seg)
+        self._playback_worker = self._play_article(entry, resume_para)
 
     # -- Actions (key bindings) ---------------------------------------------
 
@@ -836,8 +908,7 @@ class LiltApp(App):
                 # Check for resume state
                 saved = get_article_state(entry["id"])
                 resume_para = saved["paragraph_idx"] if saved else 0
-                resume_seg = saved.get("segment_in_paragraph", 0) if saved else 0
-                self._start_playback(entry, resume_para, resume_seg)
+                self._start_playback(entry, resume_para)
 
     def action_stop(self) -> None:
         """Stop playback completely."""
@@ -857,8 +928,7 @@ class LiltApp(App):
         if entry:
             saved = get_article_state(entry["id"])
             resume_para = saved["paragraph_idx"] if saved else 0
-            resume_seg = saved.get("segment_in_paragraph", 0) if saved else 0
-            self._start_playback(entry, resume_para, resume_seg)
+            self._start_playback(entry, resume_para)
 
     def action_skip_segment(self) -> None:
         """Skip to the next segment/paragraph."""
@@ -909,6 +979,7 @@ class LiltApp(App):
                 self._set_status(f"Added: {entry.get('title', 'Untitled')}")
                 if action == "play":
                     self._start_playback(entry)
+                self._trigger_generation()
 
         self.push_screen(AddArticleScreen(), on_dismiss)
 
