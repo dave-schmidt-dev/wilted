@@ -163,6 +163,17 @@ class AudioEngine:
             stream.stop()
             stream.close()
 
+    def play_audio(self, audio_np: np.ndarray):
+        """Play pre-generated audio (e.g. from cache) with pause/resume/stop.
+
+        Clears _stop_event at entry so a previous skip doesn't block the next call.
+
+        Args:
+            audio_np: Float32 numpy array of audio samples at self.sample_rate.
+        """
+        self._stop_event.clear()
+        self._play_audio(audio_np)
+
     def generate_and_play(self, text: str):
         """Generate TTS for a single text string and play it.
 

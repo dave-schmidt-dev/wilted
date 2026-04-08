@@ -5,6 +5,8 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
+from textual.binding import Binding
+from textual.widgets import Static
 
 from lilt.tui import AddArticleScreen, ConfirmScreen, LiltApp, TextPreviewScreen, VoiceSettingsScreen
 
@@ -358,3 +360,341 @@ async def test_export_wav_missing_file():
             await pilot.pause()
             status = app.query_one("#status-line").render()
             assert "not found" in str(status)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Paragraph navigation and generation pausing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
+async def test_prev_paragraph_binding_exists(mock_load):
+    """The [ key binding is registered on the app."""
+    app = LiltApp()
+    async with app.run_test():
+        bindings = {b.key for b in app.BINDINGS if isinstance(b, Binding)}
+        assert "left_square_bracket" in bindings
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
+async def test_skip_forward_binding_includes_bracket(mock_load):
+    """The ] key is an alias for skip (alongside right arrow)."""
+    app = LiltApp()
+    async with app.run_test():
+        skip_binding = next(
+            (b for b in app.BINDINGS if isinstance(b, Binding) and b.action == "skip_segment"),
+            None,
+        )
+        assert skip_binding is not None
+        assert "right_square_bracket" in skip_binding.key
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_prev_paragraph_no_crash_when_not_playing(mock_load):
+    """Pressing [ when not playing should not crash."""
+    app = LiltApp()
+    async with app.run_test() as pilot:
+        await pilot.press("left_square_bracket")
+        await pilot.pause()
+        # Should not crash — no-op since not playing
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_generation_paused_default_false(mock_load):
+    """_generation_paused starts as False."""
+    app = LiltApp()
+    async with app.run_test():
+        assert app._generation_paused is False
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_rewind_to_default_none(mock_load):
+    """_rewind_to starts as None."""
+    app = LiltApp()
+    async with app.run_test():
+        assert app._rewind_to is None
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_voice_settings_feedback_not_playing(mock_load):
+    """Changing voice settings when not playing triggers generation."""
+    app = LiltApp()
+    async with app.run_test() as pilot:
+        with patch.object(app, "_trigger_generation") as mock_trigger:
+            await pilot.press("v")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, VoiceSettingsScreen)
+            # Change speed
+            screen.selected_speed = 1.5
+            screen.action_confirm()
+            await pilot.pause()
+            mock_trigger.assert_called()
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
+async def test_voice_settings_feedback_while_playing(mock_load):
+    """Changing voice settings during playback shows status feedback."""
+    app = LiltApp()
+    async with app.run_test() as pilot:
+        # Simulate playing state
+        app._playing = True
+        app._speed = 1.0
+        await pilot.press("v")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, VoiceSettingsScreen)
+        screen.selected_speed = 1.5
+        screen.action_confirm()
+        await pilot.pause()
+        status = str(app.query_one("#status-line").render())
+        assert "1.5x" in status or "next paragraph" in status
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
+async def test_start_playback_pauses_generation(mock_load):
+    """_start_playback sets _generation_paused to True."""
+    app = LiltApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        entry = SAMPLE_QUEUE[0]
+        # Mock the playback worker to prevent actual TTS
+        with patch.object(app, "_play_article"):
+            app._start_playback(entry)
+        assert app._generation_paused is True
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
+async def test_stop_resumes_generation(mock_load):
+    """action_stop sets _generation_paused to False and triggers generation."""
+    app = LiltApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._generation_paused = True
+        app._playing = True
+        with patch.object(app, "_trigger_generation") as mock_trigger:
+            app.action_stop()
+        assert app._generation_paused is False
+        mock_trigger.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Enhanced UI
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_playback_bar_widget_exists(mock_load):
+    """The #playback-bar Static widget is present in the app."""
+    app = LiltApp()
+    async with app.run_test():
+        bar = app.query_one("#playback-bar", Static)
+        assert bar is not None
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_playback_bar_shows_state_icon(mock_load):
+    """PlaybackBar shows state icon when playing/paused."""
+    app = LiltApp()
+    async with app.run_test():
+        app._playing = True
+        app._paragraphs = ["Para one.", "Para two."]
+        app._paragraph_idx = 0
+        app._bar_progress = 50.0
+        app._estimated_remaining_secs = 120
+        app._update_playback_bar()
+        content = str(app.query_one("#playback-bar", Static).render())
+        assert "\u25b6" in content  # ▶
+
+        app._paused = True
+        app._update_playback_bar()
+        content = str(app.query_one("#playback-bar", Static).render())
+        assert "\u23f8" in content  # ⏸
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_playback_bar_shows_para_count(mock_load):
+    """PlaybackBar shows paragraph count like 1/5."""
+    app = LiltApp()
+    async with app.run_test():
+        app._playing = True
+        app._paragraphs = ["P1", "P2", "P3", "P4", "P5"]
+        app._paragraph_idx = 2
+        app._bar_progress = 40.0
+        app._estimated_remaining_secs = 60
+        app._update_playback_bar()
+        content = str(app.query_one("#playback-bar", Static).render())
+        assert "3/5" in content
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_playback_bar_shows_timer(mock_load):
+    """PlaybackBar shows mm:ss timer."""
+    app = LiltApp()
+    async with app.run_test():
+        app._playing = True
+        app._paragraphs = ["P1"]
+        app._paragraph_idx = 0
+        app._bar_progress = 0.0
+        app._estimated_remaining_secs = 185  # 3:05
+        app._update_playback_bar()
+        content = str(app.query_one("#playback-bar", Static).render())
+        assert "3:05" in content
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_timer_decrements(mock_load):
+    """_update_timer decrements _estimated_remaining_secs by 1."""
+    app = LiltApp()
+    async with app.run_test():
+        app._playing = True
+        app._paragraphs = ["P1", "P2"]
+        app._estimated_remaining_secs = 100
+        app._update_timer()
+        assert app._estimated_remaining_secs == 99
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_timer_noop_when_paused(mock_load):
+    """_update_timer does nothing when paused."""
+    app = LiltApp()
+    async with app.run_test():
+        app._playing = True
+        app._paused = True
+        app._paragraphs = ["P1"]
+        app._estimated_remaining_secs = 100
+        app._update_timer()
+        assert app._estimated_remaining_secs == 100  # Unchanged
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_timer_noop_when_not_playing(mock_load):
+    """_update_timer does nothing when not playing."""
+    app = LiltApp()
+    async with app.run_test():
+        app._estimated_remaining_secs = 100
+        app._update_timer()
+        assert app._estimated_remaining_secs == 100
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_speed_down_key(mock_load):
+    """Pressing - decreases speed by 0.1x."""
+    app = LiltApp()
+    async with app.run_test() as pilot:
+        assert app._speed == 1.0
+        await pilot.press("minus")
+        await pilot.pause()
+        assert app._speed == 0.9
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_speed_up_key(mock_load):
+    """Pressing + increases speed by 0.1x."""
+    app = LiltApp()
+    async with app.run_test() as pilot:
+        assert app._speed == 1.0
+        await pilot.press("equal")
+        await pilot.pause()
+        assert app._speed == 1.1
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_speed_clamps_to_range(mock_load):
+    """Speed stays within 0.5x-2.0x bounds."""
+    app = LiltApp()
+    async with app.run_test() as pilot:
+        app._speed = 0.5
+        await pilot.press("minus")
+        await pilot.pause()
+        assert app._speed == 0.5  # Can't go below 0.5
+
+        app._speed = 2.0
+        await pilot.press("equal")
+        await pilot.pause()
+        assert app._speed == 2.0  # Can't go above 2.0
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_speed_key_shows_feedback(mock_load):
+    """Speed change shows feedback in status line."""
+    app = LiltApp()
+    async with app.run_test() as pilot:
+        await pilot.press("equal")
+        await pilot.pause()
+        status = str(app.query_one("#status-line").render())
+        assert "1.1x" in status
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_status_priority_blocks_low(mock_load):
+    """MEDIUM priority message blocks subsequent LOW message within hold window."""
+    from lilt.tui import _STATUS_LOW, _STATUS_MEDIUM
+
+    app = LiltApp()
+    async with app.run_test():
+        app._set_status("Important", _STATUS_MEDIUM)
+        status1 = str(app.query_one("#status-line").render())
+        app._set_status("Routine", _STATUS_LOW)
+        status2 = str(app.query_one("#status-line").render())
+        assert status1 == status2  # LOW didn't overwrite
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_status_priority_allows_equal(mock_load):
+    """Same-priority messages can overwrite each other."""
+    from lilt.tui import _STATUS_MEDIUM
+
+    app = LiltApp()
+    async with app.run_test():
+        app._set_status("First", _STATUS_MEDIUM)
+        app._set_status("Second", _STATUS_MEDIUM)
+        status = str(app.query_one("#status-line").render())
+        assert "Second" in status
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_transcript_markup_bold_current(mock_load):
+    """_build_transcript marks current paragraph as bold."""
+    app = LiltApp()
+    async with app.run_test():
+        app._paragraphs = ["First para.", "Second para.", "Third para."]
+        result = app._build_transcript(1)
+        assert "[bold]Second para.[/bold]" in result
+        assert "[dim]First para.[/dim]" in result
+        assert "[dim italic]Third para.[/dim italic]" in result
+
+
+@pytest.mark.asyncio
+@patch("lilt.tui.load_queue", return_value=[])
+async def test_transcript_escapes_brackets(mock_load):
+    """_build_transcript escapes Rich markup in article text."""
+    app = LiltApp()
+    async with app.run_test():
+        app._paragraphs = ["Text with [brackets] inside."]
+        result = app._build_transcript(0)
+        # The brackets should be escaped, not interpreted as markup
+        assert "\\[brackets]" in result or "[brackets]" not in result.replace("\\[", "")

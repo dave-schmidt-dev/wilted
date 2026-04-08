@@ -1,3 +1,17 @@
+## 2026-04-08 — Hybrid playback + enhanced TUI (Phases 3-4)
+
+- **Hybrid playback**: Playback loop checks per-paragraph MP3 cache before generating TTS. Cache hit plays via `engine.play_audio()` (status: "Playing (cached)"); miss falls back to `generate_and_play()`. New `is_paragraph_cached()` validates manifest params AND file existence, works with both "generating" and "complete" cache status for mid-generation hits.
+- **While-loop refactor**: Replaced `for` loop in `_play_article` with `while` loop to support backward navigation. `_rewind_to` instance variable set by rewind action, picked up at loop top.
+- **Paragraph navigation**: `[` rewinds to previous paragraph, `]` / `right` skips forward. Rewind sets `_rewind_to` and stops current audio; while loop jumps to target index.
+- **Generation pausing**: `_generation_paused` now wired: set `True` in `_start_playback`, `False` in `action_stop` and `_on_article_completed`. Background generation worker spin-waits while flag is set, avoiding model lock contention during playback. `_trigger_generation()` restarts worker on stop/completion.
+- **Inline speed keys**: `-` and `+`/`=` adjust speed 0.1x directly from the main app (0.5x-2.0x range), no modal needed.
+- **PlaybackBar widget**: Replaced `ProgressBar` + time_remaining label with a single Static-based bar showing state icon (▶/⏸), text progress bar (━/╌), paragraph counter (42/120), and mm:ss countdown timer.
+- **Live progress timer**: 1-second `set_interval` ticks down `_estimated_remaining_secs` and refreshes the PlaybackBar. Resyncs at each paragraph boundary from word count. Pauses when playback paused.
+- **Transcript pane**: Shows context window (1 prev dimmed, current bold, 2 next dim italic) with Rich markup. Text escaped via `rich.markup.escape()`. Transcript area uses `height: 1fr` for flexible sizing.
+- **Status line priority system**: `_set_status()` accepts priority (`_STATUS_LOW`/`_STATUS_MEDIUM`/`_STATUS_HIGH`). Higher-priority messages hold for 2 seconds, blocking lower-priority overwrites. All 30+ calls updated: errors=HIGH, user actions=MEDIUM, routine=LOW.
+- **Engine**: Added `play_audio(audio_np)` public method for playing pre-generated/cached audio with pause/resume/stop support.
+- Test count: 257 (252 fast + 5 slow). 33 new tests covering all Phase 3-4 features.
+
 ## 2026-04-08 — Audio cache infrastructure + engine refactor (Phases 1-2)
 
 - **Audio cache module** (`src/lilt/cache.py`): Per-paragraph MP3 caching with atomic manifest tracking. Functions: `check_ffmpeg`, `save_audio`/`load_audio`, `save_manifest`/`load_manifest`, `is_cache_valid`, `clear_cache`, `generate_article_cache`. Requires ffmpeg for MP3 encoding via mlx_audio.

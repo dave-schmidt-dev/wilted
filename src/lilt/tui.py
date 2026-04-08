@@ -11,7 +11,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, Footer, Header, Input, Label, ProgressBar, Static
+from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static
 from textual.worker import get_current_worker
 
 from lilt import LANGUAGES, VOICES, WPM_ESTIMATE
@@ -25,6 +25,15 @@ from lilt.queue import (
 )
 from lilt.state import clear_article_state, get_article_state, set_article_state
 from lilt.text import split_paragraphs
+
+# Status message priorities — higher priority messages hold for a minimum
+# duration and won't be overwritten by lower-priority routine updates.
+_STATUS_LOW = 0  # Routine: "Playing (cached)", "Generating audio..."
+_STATUS_MEDIUM = 1  # Info: "Speed: 1.5x", "Ready", "Paused"
+_STATUS_HIGH = 2  # Errors, important user actions
+
+# Minimum seconds a high/medium-priority message stays visible
+_STATUS_HOLD_SECS = 2.0
 
 # ---------------------------------------------------------------------------
 # Voice settings modal
@@ -508,15 +517,13 @@ class LiltApp(App):
         text-style: bold;
         margin-bottom: 1;
     }
-    #progress-bar {
+    #playback-bar {
+        height: 1;
         margin: 1 0;
     }
-    #time-remaining {
-        margin-bottom: 1;
-    }
     #text-scroll {
-        height: auto;
-        max-height: 10;
+        height: 1fr;
+        min-height: 5;
         margin: 1 0;
         border: round $accent;
     }
@@ -542,8 +549,11 @@ class LiltApp(App):
         Binding("space", "toggle_play", "Play/Pause"),
         Binding("s", "stop", "Stop"),
         Binding("enter", "play_selected", "Play Selected"),
-        Binding("right", "skip_segment", "Skip Seg"),
+        Binding("right,right_square_bracket", "skip_segment", ">>"),
+        Binding("left_square_bracket", "prev_paragraph", "<<"),
         Binding("n", "next_article", "Next"),
+        Binding("minus", "speed_down", "-Spd"),
+        Binding("equal,plus", "speed_up", "+Spd"),
         Binding("v", "voice_settings", "Voice"),
         Binding("a", "add_article", "Add"),
         Binding("d", "delete_selected", "Delete"),
@@ -572,6 +582,12 @@ class LiltApp(App):
         self._playback_worker = None
         self._generation_paused: bool = False
         self._generation_worker = None
+        self._rewind_to: int | None = None
+        self._status_priority: int = _STATUS_LOW
+        self._status_time: float = 0.0
+        self._estimated_remaining_secs: float = 0
+        self._bar_progress: float = 0.0
+        self._bar_time_override: str = ""
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -583,10 +599,9 @@ class LiltApp(App):
             with Vertical(id="right-panel"):
                 yield Label("Now Playing", classes="panel-title")
                 yield Label("No article selected", id="now-playing-title")
-                yield ProgressBar(id="progress-bar", total=100, show_eta=False)
-                yield Label("", id="time-remaining")
+                yield Static("", id="playback-bar")
                 with VerticalScroll(id="text-scroll"):
-                    yield Static("", id="current-text")
+                    yield Static("", id="current-text", markup=True)
                 yield Label("", id="voice-display")
                 yield Label("", id="status-line")
         yield Footer()
@@ -597,6 +612,8 @@ class LiltApp(App):
         table.add_columns("#", "Title", "Words", "Est. Time")
         self._refresh_queue_display()
         self._update_voice_display()
+        # 1-second timer for live playback countdown
+        self.set_interval(1.0, self._update_timer)
         # Preload TTS model in background so play starts instantly
         self._preload_model()
 
@@ -642,16 +659,87 @@ class LiltApp(App):
     ) -> None:
         if title:
             self.query_one("#now-playing-title", Label).update(title)
-        bar = self.query_one("#progress-bar", ProgressBar)
-        bar.update(progress=progress)
-        self.query_one("#time-remaining", Label).update(time_remaining)
+        self._bar_progress = progress
+        self._bar_time_override = time_remaining
+        self._update_playback_bar()
         if text_snippet:
             self.query_one("#current-text", Static).update(text_snippet)
             self.query_one("#text-scroll", VerticalScroll).scroll_home(animate=False)
         if status:
-            self.query_one("#status-line", Label).update(status)
+            self._set_status(status)
 
-    def _set_status(self, msg: str) -> None:
+    def _update_playback_bar(self) -> None:
+        """Render the PlaybackBar with state icon, progress, para count, and timer."""
+        # State icon
+        if self._paused:
+            icon = "\u23f8"  # ⏸
+        elif self._playing:
+            icon = "\u25b6"  # ▶
+        else:
+            icon = ""
+
+        # Progress bar
+        bar_width = 20
+        frac = max(0.0, min(self._bar_progress / 100, 1.0))
+        filled = int(frac * bar_width)
+        bar_str = "\u2501" * filled + "\u254c" * (bar_width - filled)  # ━ and ╌
+
+        # Paragraph counter
+        if self._paragraphs:
+            total = len(self._paragraphs)
+            current = min(self._paragraph_idx + 1, total)
+            para_info = f"{current}/{total}"
+        else:
+            para_info = ""
+
+        # Timer — use override (for export) or live countdown
+        if self._bar_time_override:
+            time_str = self._bar_time_override
+        else:
+            secs = max(0, int(self._estimated_remaining_secs))
+            m, s = divmod(secs, 60)
+            time_str = f"~{m}:{s:02d}" if secs > 0 or self._playing else ""
+
+        parts = [p for p in [icon, bar_str, para_info, time_str] if p]
+        self.query_one("#playback-bar", Static).update("  ".join(parts))
+
+    def _update_timer(self) -> None:
+        """1-second interval: tick down the remaining estimate and refresh the bar."""
+        if not self._playing or self._paused or not self._paragraphs:
+            return
+        self._estimated_remaining_secs = max(0, self._estimated_remaining_secs - 1)
+        self._update_playback_bar()
+
+    def _build_transcript(self, para_idx: int) -> str:
+        """Build Rich markup showing paragraphs around the current one."""
+        from rich.markup import escape
+
+        if not self._paragraphs:
+            return ""
+        lines: list[str] = []
+        start = max(0, para_idx - 1)
+        end = min(len(self._paragraphs), para_idx + 3)
+        for i in range(start, end):
+            text = escape(self._paragraphs[i])
+            if i < para_idx:
+                lines.append(f"[dim]{text}[/dim]")
+            elif i == para_idx:
+                lines.append(f"[bold]{text}[/bold]")
+            else:
+                lines.append(f"[dim italic]{text}[/dim italic]")
+        return "\n\n".join(lines)
+
+    def _set_status(self, msg: str, priority: int = _STATUS_LOW) -> None:
+        """Update the status line, respecting message priorities.
+
+        Higher-priority messages hold for _STATUS_HOLD_SECS and won't be
+        overwritten by lower-priority routine updates during that window.
+        """
+        now = time.time()
+        if priority < self._status_priority and now - self._status_time < _STATUS_HOLD_SECS:
+            return
+        self._status_priority = priority
+        self._status_time = now
         self.query_one("#status-line", Label).update(msg)
 
     # -- Engine lazy load ---------------------------------------------------
@@ -776,12 +864,12 @@ class LiltApp(App):
 
         text = get_article_text(entry)
         if not text:
-            self.call_from_thread(self._set_status, "Error: article text not found")
+            self.call_from_thread(self._set_status, "Error: article text not found", _STATUS_HIGH)
             return
 
         paragraphs = split_paragraphs(text)
         if not paragraphs:
-            self.call_from_thread(self._set_status, "Error: no text to play")
+            self.call_from_thread(self._set_status, "Error: no text to play", _STATUS_HIGH)
             return
 
         self._paragraphs = paragraphs
@@ -797,24 +885,35 @@ class LiltApp(App):
             status="Playing",
         )
 
-        for para_idx in range(resume_para, len(paragraphs)):
+        from lilt.cache import is_paragraph_cached, load_audio
+
+        article_id = entry["id"]
+        added = entry.get("added", "")
+
+        para_idx = resume_para
+        while para_idx < len(paragraphs):
             if worker.is_cancelled:
                 break
 
-            self._paragraph_idx = para_idx
+            # Check for rewind request
+            if self._rewind_to is not None:
+                para_idx = self._rewind_to
+                self._rewind_to = None
 
+            self._paragraph_idx = para_idx
             paragraph = paragraphs[para_idx]
 
-            # Calculate progress
+            # Calculate progress and resync the countdown timer
             progress = (para_idx / len(paragraphs)) * 100
             words_remaining = sum(len(p.split()) for p in paragraphs[para_idx:])
-            mins_remaining = max(1, round(words_remaining / (WPM_ESTIMATE * self._speed)))
+            self._estimated_remaining_secs = words_remaining / (WPM_ESTIMATE * self._speed) * 60
+
+            transcript = self._build_transcript(para_idx)
 
             self.call_from_thread(
                 self._update_now_playing,
                 progress=progress,
-                time_remaining=f"~{mins_remaining} min remaining  (para {para_idx + 1}/{len(paragraphs)})",
-                text_snippet=paragraph,
+                text_snippet=transcript,
                 status="Playing",
             )
 
@@ -830,16 +929,33 @@ class LiltApp(App):
             engine.lang = self._lang
 
             try:
-                self.call_from_thread(self._set_status, "Generating audio...")
-                engine.generate_and_play(paragraph)
+                # Hybrid playback: cache hit → play_audio, miss → generate_and_play
+                if is_paragraph_cached(article_id, para_idx, self._voice, self._lang, self._speed, added):
+                    cached = load_audio(article_id, para_idx)
+                    if cached is not None:
+                        audio_np, _sr = cached
+                        self.call_from_thread(self._set_status, "Playing (cached)")
+                        engine.play_audio(audio_np)
+                    else:
+                        # File disappeared between check and load — fall through
+                        self.call_from_thread(self._set_status, "Generating audio...")
+                        engine.generate_and_play(paragraph)
+                else:
+                    self.call_from_thread(self._set_status, "Generating audio...")
+                    engine.generate_and_play(paragraph)
             except Exception as e:
-                self.call_from_thread(self._set_status, f"Playback error: {e}")
+                self.call_from_thread(self._set_status, f"Playback error: {e}", _STATUS_HIGH)
                 break
 
             if worker.is_cancelled:
                 break
 
+            # Check for rewind before advancing
+            if self._rewind_to is not None:
+                continue
+
             self._segments_played = para_idx + 1
+            para_idx += 1
 
         # Finished or cancelled
         if not worker.is_cancelled and self._segments_played >= len(paragraphs):
@@ -855,6 +971,7 @@ class LiltApp(App):
         mark_completed(entry)
         self._playing = False
         self._paused = False
+        self._generation_paused = False
         self._current_entry = None
         self._update_now_playing(
             title="Completed!",
@@ -867,6 +984,8 @@ class LiltApp(App):
         # Auto-advance to next article
         if self._queue:
             self._start_playback(self._queue[0])
+        else:
+            self._trigger_generation()
 
     def _start_playback(self, entry: dict, resume_para: int = 0) -> None:
         """Start playing an article, stopping any current playback."""
@@ -875,9 +994,11 @@ class LiltApp(App):
         if self._playback_worker and self._playback_worker.is_running:
             self._playback_worker.cancel()
 
+        self._generation_paused = True  # Pause background generation during playback
         self._current_entry = entry
         self._playing = True
         self._paused = False
+        self._rewind_to = None
         self._last_state_save = time.time()
         self._playback_worker = self._play_article(entry, resume_para)
 
@@ -890,7 +1011,7 @@ class LiltApp(App):
             if self._engine:
                 self._engine.pause()
             self._paused = True
-            self._set_status("Paused")
+            self._set_status("Paused", _STATUS_MEDIUM)
             if self._current_entry:
                 set_article_state(self._current_entry["id"], self._paragraph_idx, 0)
         elif self._playing and self._paused:
@@ -898,7 +1019,7 @@ class LiltApp(App):
             if self._engine:
                 self._engine.resume()
             self._paused = False
-            self._set_status("Playing")
+            self._set_status("Playing", _STATUS_MEDIUM)
         else:
             # Start playing selected or first article
             entry = self._get_selected_entry()
@@ -920,7 +1041,9 @@ class LiltApp(App):
             set_article_state(self._current_entry["id"], self._paragraph_idx, 0)
         self._playing = False
         self._paused = False
-        self._set_status("Stopped")
+        self._generation_paused = False
+        self._set_status("Stopped", _STATUS_MEDIUM)
+        self._trigger_generation()
 
     def action_play_selected(self) -> None:
         """Play the selected article from the queue list."""
@@ -931,10 +1054,30 @@ class LiltApp(App):
             self._start_playback(entry, resume_para)
 
     def action_skip_segment(self) -> None:
-        """Skip to the next segment/paragraph."""
+        """Skip to the next paragraph."""
         if self._playing and self._engine:
             self._engine.stop()
-            # The worker loop will naturally advance to the next paragraph
+            # The while loop will naturally advance para_idx
+
+    def action_prev_paragraph(self) -> None:
+        """Rewind to the previous paragraph."""
+        if self._playing and self._engine:
+            self._rewind_to = max(0, self._paragraph_idx - 1)
+            self._engine.stop()  # Stop current audio; while loop picks up _rewind_to
+
+    def action_speed_down(self) -> None:
+        """Decrease playback speed by 0.1x."""
+        self._speed = max(0.5, round(self._speed - 0.1, 1))
+        self._update_voice_display()
+        self._refresh_queue_display()
+        self._set_status(f"Speed: {self._speed:.1f}x", _STATUS_MEDIUM)
+
+    def action_speed_up(self) -> None:
+        """Increase playback speed by 0.1x."""
+        self._speed = min(2.0, round(self._speed + 0.1, 1))
+        self._update_voice_display()
+        self._refresh_queue_display()
+        self._set_status(f"Speed: {self._speed:.1f}x", _STATUS_MEDIUM)
 
     def action_next_article(self) -> None:
         """Stop current and play next article in queue."""
@@ -963,9 +1106,15 @@ class LiltApp(App):
 
         def on_dismiss(result: tuple[str, float, str] | None) -> None:
             if result is not None:
+                old_voice, old_speed, old_lang = self._voice, self._speed, self._lang
                 self._voice, self._speed, self._lang = result
                 self._update_voice_display()
                 self._refresh_queue_display()  # Update est. time column
+                changed = old_voice != self._voice or old_speed != self._speed or old_lang != self._lang
+                if changed and self._playing:
+                    self._set_status(f"Speed: {self._speed:.1f}x — takes effect next paragraph", _STATUS_MEDIUM)
+                elif changed and not self._playing:
+                    self._trigger_generation()
 
         self.push_screen(VoiceSettingsScreen(self._voice, self._speed, self._lang), on_dismiss)
 
@@ -976,7 +1125,7 @@ class LiltApp(App):
             if result is not None:
                 action, entry = result
                 self._refresh_queue_display()
-                self._set_status(f"Added: {entry.get('title', 'Untitled')}")
+                self._set_status(f"Added: {entry.get('title', 'Untitled')}", _STATUS_MEDIUM)
                 if action == "play":
                     self._start_playback(entry)
                 self._trigger_generation()
@@ -987,7 +1136,7 @@ class LiltApp(App):
         """Delete the selected article with confirmation."""
         entry = self._get_selected_entry()
         if not entry:
-            self._set_status("Nothing to delete")
+            self._set_status("Nothing to delete", _STATUS_MEDIUM)
             return
 
         title = entry.get("title", "Untitled")
@@ -1006,9 +1155,9 @@ class LiltApp(App):
                     try:
                         remove_article(row_idx)
                         clear_article_state(entry["id"])
-                        self._set_status(f"Deleted: {entry.get('title', 'Untitled')}")
+                        self._set_status(f"Deleted: {entry.get('title', 'Untitled')}", _STATUS_MEDIUM)
                     except IndexError:
-                        self._set_status("Delete failed: invalid index")
+                        self._set_status("Delete failed: invalid index", _STATUS_HIGH)
                     self._refresh_queue_display()
 
         self.push_screen(
@@ -1020,12 +1169,12 @@ class LiltApp(App):
         """Preview the text of the selected article."""
         entry = self._get_selected_entry()
         if not entry:
-            self._set_status("No article selected")
+            self._set_status("No article selected", _STATUS_MEDIUM)
             return
 
         text = get_article_text(entry)
         if text is None:
-            self._set_status("Error: article text not found")
+            self._set_status("Error: article text not found", _STATUS_HIGH)
             return
 
         title = entry.get("title", "Untitled")
@@ -1035,7 +1184,7 @@ class LiltApp(App):
     def action_clear_all(self) -> None:
         """Clear all articles with confirmation."""
         if not self._queue:
-            self._set_status("Queue is already empty")
+            self._set_status("Queue is already empty", _STATUS_MEDIUM)
             return
 
         count = len(self._queue)
@@ -1046,7 +1195,7 @@ class LiltApp(App):
                     self.action_stop()
                     self._current_entry = None
                 cleared = clear_queue()
-                self._set_status(f"Cleared {cleared} article(s)")
+                self._set_status(f"Cleared {cleared} article(s)", _STATUS_MEDIUM)
                 self._refresh_queue_display()
 
         self.push_screen(
@@ -1075,12 +1224,12 @@ class LiltApp(App):
         """Export selected article to WAV file."""
         entry = self._get_selected_entry()
         if not entry:
-            self._set_status("No article selected")
+            self._set_status("No article selected", _STATUS_MEDIUM)
             return
 
         text = get_article_text(entry)
         if text is None:
-            self._set_status("Error: article text not found")
+            self._set_status("Error: article text not found", _STATUS_HIGH)
             return
 
         self._export_wav(entry, text)
@@ -1101,7 +1250,7 @@ class LiltApp(App):
 
         paragraphs = split_paragraphs(text)
         if not paragraphs:
-            self.call_from_thread(self._set_status, "Error: no text to export")
+            self.call_from_thread(self._set_status, "Error: no text to export", _STATUS_HIGH)
             return
 
         # Generate filename from title
@@ -1129,10 +1278,10 @@ class LiltApp(App):
                 should_cancel=lambda: worker.is_cancelled,
             )
         except InterruptedError:
-            self.call_from_thread(self._set_status, "Export cancelled")
+            self.call_from_thread(self._set_status, "Export cancelled", _STATUS_HIGH)
             return
         except (ValueError, RuntimeError) as e:
-            self.call_from_thread(self._set_status, f"Export error: {e}")
+            self.call_from_thread(self._set_status, f"Export error: {e}", _STATUS_HIGH)
             return
 
         self.call_from_thread(

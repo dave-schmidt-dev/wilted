@@ -18,7 +18,7 @@
 - [ ] **Redundant imports in tui.py**: `import time` at line 5 (top-level) and again at line 342. `import re` inside method bodies at lines 331, 1026.
 - [ ] **Expand ruff rules**: Current `["E", "F", "W", "I"]` misses deprecated annotations and redundant imports. Add `"UP"` (pyupgrade), `"TCH"` (type checking).
 - [ ] **load_queue type validation**: `queue.py:16-17` returns raw JSON without validating it's a list.
-- [ ] Pre-generated audio for instant playback
+- [x] Pre-generated audio for instant playback (background MP3 caching + hybrid playback, Phases 1-4)
 - [ ] Custom RSS feed subscriptions
 - [ ] Apple Podcast integration (private feed)
 - [ ] Unified ad-free feed (download existing podcasts, strip ads, merge into private feed)

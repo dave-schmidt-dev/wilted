@@ -180,6 +180,68 @@ class TestCacheValidation:
         assert is_cache_valid(999, "af_heart", "a", 1.0, "2026-04-08T08:00:00") is False
 
 
+class TestIsParagraphCached:
+    """Tests for is_paragraph_cached() — per-paragraph cache validation."""
+
+    def test_true_when_manifest_matches_and_file_exists(self):
+        from lilt.cache import is_paragraph_cached
+
+        manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
+        manifest["paragraphs"].append({"file": "para_000.mp3"})
+        save_manifest(1, manifest)
+        # Create the MP3 file
+        mp3_path = get_cache_dir(1) / "para_000.mp3"
+        mp3_path.write_bytes(b"fake mp3")
+
+        assert is_paragraph_cached(1, 0, "af_heart", "a", 1.0, "2026-04-08T08:00:00") is True
+
+    def test_false_when_no_manifest(self):
+        from lilt.cache import is_paragraph_cached
+
+        assert is_paragraph_cached(999, 0, "af_heart", "a", 1.0, "2026-04-08T08:00:00") is False
+
+    def test_false_when_voice_mismatch(self):
+        from lilt.cache import is_paragraph_cached
+
+        manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
+        save_manifest(1, manifest)
+        mp3_path = get_cache_dir(1) / "para_000.mp3"
+        mp3_path.write_bytes(b"fake mp3")
+
+        assert is_paragraph_cached(1, 0, "bf_emma", "a", 1.0, "2026-04-08T08:00:00") is False
+
+    def test_false_when_speed_mismatch(self):
+        from lilt.cache import is_paragraph_cached
+
+        manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
+        save_manifest(1, manifest)
+        mp3_path = get_cache_dir(1) / "para_000.mp3"
+        mp3_path.write_bytes(b"fake mp3")
+
+        assert is_paragraph_cached(1, 0, "af_heart", "a", 1.5, "2026-04-08T08:00:00") is False
+
+    def test_false_when_file_missing(self):
+        from lilt.cache import is_paragraph_cached
+
+        manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
+        save_manifest(1, manifest)
+        # Don't create the MP3 file
+
+        assert is_paragraph_cached(1, 0, "af_heart", "a", 1.0, "2026-04-08T08:00:00") is False
+
+    def test_works_with_generating_status(self):
+        """Partially generated cache (status=generating) should still allow hits."""
+        from lilt.cache import is_paragraph_cached
+
+        manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
+        assert manifest["status"] == "generating"  # Not complete
+        save_manifest(1, manifest)
+        mp3_path = get_cache_dir(1) / "para_000.mp3"
+        mp3_path.write_bytes(b"fake mp3")
+
+        assert is_paragraph_cached(1, 0, "af_heart", "a", 1.0, "2026-04-08T08:00:00") is True
+
+
 class TestClearCache:
     def test_removes_directory(self):
         cache_dir = get_cache_dir(1)

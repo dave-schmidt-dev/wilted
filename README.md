@@ -114,7 +114,10 @@ Running `lilt` with no arguments launches the interactive TUI — a complete rep
 | `space` | Play / Pause / Resume |
 | `s` | Stop playback |
 | `enter` | Play selected article |
-| `right` | Skip to next segment |
+| `]` / `right` | Skip to next paragraph |
+| `[` | Rewind to previous paragraph |
+| `+` / `=` | Speed up 0.1x |
+| `-` | Speed down 0.1x |
 | `n` | Next article |
 | `v` | Voice / speed / language settings |
 | `a` | Add article (URL or clipboard, with fetch progress) |
@@ -143,12 +146,12 @@ src/lilt/                # shared library
     cache.py             # audio cache (MP3 storage, manifest)
     text.py              # text cleaning and splitting
     tui.py               # Textual TUI app
-tests/                   # 224 tests (pytest)
+tests/                   # 257 tests (pytest)
 ```
 
 ## Roadmap
 
-- Pre-generated audio for instant playback
+- ~~Pre-generated audio for instant playback~~ (done: background MP3 caching + hybrid playback)
 - Custom RSS feed subscriptions
 - Apple Podcast integration (private feed)
 - Unified ad-free feed (download existing podcasts, strip ads, merge into private feed)

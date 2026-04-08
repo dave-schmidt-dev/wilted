@@ -97,6 +97,27 @@ def is_cache_valid(article_id: int, voice: str, lang: str, speed: float, added: 
     )
 
 
+def is_paragraph_cached(article_id: int, para_idx: int, voice: str, lang: str, speed: float, added: str) -> bool:
+    """Check if a specific paragraph has valid cached audio.
+
+    Validates that the manifest params match the requested settings AND the
+    MP3 file exists on disk. Used by hybrid playback to decide between
+    cache hit (play_audio) and streaming fallback (generate_and_play).
+    """
+    manifest = load_manifest(article_id)
+    if manifest is None:
+        return False
+    if (
+        manifest.get("voice") != voice
+        or manifest.get("lang") != lang
+        or manifest.get("speed") != speed
+        or manifest.get("added") != added
+    ):
+        return False
+    path = get_cache_dir(article_id) / f"para_{para_idx:03d}.mp3"
+    return path.exists()
+
+
 def clear_cache(article_id: int) -> None:
     """Remove the entire audio cache directory for an article."""
     cache_dir = get_cache_dir(article_id)

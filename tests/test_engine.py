@@ -153,6 +153,40 @@ class TestPlayArticle:
         assert progress_calls[0] == 0
 
 
+class TestPlayAudioPublic:
+    """Tests for the public play_audio() method (cached audio playback)."""
+
+    def test_clears_stop_event(self, engine, mock_stream):
+        """play_audio clears _stop_event so previous skip doesn't block."""
+        engine._stop_event.set()
+        audio = np.zeros(1024, dtype=np.float32)
+        engine.play_audio(audio)
+        assert not engine._stop_event.is_set()
+
+    def test_plays_audio_through_stream(self, engine, mock_stream):
+        """play_audio opens, writes to, and closes the OutputStream."""
+        audio = np.zeros(2048, dtype=np.float32)
+        engine.play_audio(audio)
+        assert mock_stream.start.called
+        assert mock_stream.write.called
+        assert mock_stream.stop.called
+
+    def test_respects_stop_during_playback(self, engine, mock_stream):
+        """Stopping mid-play_audio exits the write loop."""
+        audio = np.zeros(8192, dtype=np.float32)
+        call_count = [0]
+
+        def write_side_effect(data):
+            call_count[0] += 1
+            if call_count[0] >= 2:
+                engine._stop_event.set()
+
+        mock_stream.write.side_effect = write_side_effect
+        engine.play_audio(audio)
+        # Should have stopped after ~2 blocks, not played the full 8 blocks
+        assert call_count[0] < 8
+
+
 class TestControls:
     def test_pause_clears_event(self):
         """pause() clears _pause_event (blocks the write loop)."""
