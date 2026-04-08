@@ -105,8 +105,8 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=True),
         Binding("enter", "confirm", "Confirm", show=True),
-        Binding("minus", "speed_down", "-Speed"),
-        Binding("equal,plus", "speed_up", "+Speed"),
+        Binding("left,minus", "speed_down", "-Speed"),
+        Binding("right,equal,plus", "speed_up", "+Speed"),
         Binding("a", "lang_a", "American", show=False),
         Binding("b", "lang_b", "British", show=False),
         Binding("j", "lang_j", "Japanese", show=False),
@@ -127,7 +127,7 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
             with Horizontal(classes="speed-row"):
                 yield Label("Speed:")
                 yield Label(f"{self.selected_speed:.1f}x", id="speed-display")
-                yield Label("  [-] slower  [+] faster")
+                yield Label("  [←] slower  [→] faster")
             with Horizontal(classes="lang-row"):
                 yield Label("Language:")
                 yield Label(LANGUAGES.get(self.selected_lang, "Unknown"), id="lang-display")
@@ -147,6 +147,10 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
             if vid == self.selected_voice:
                 selected_row = i
         table.move_cursor(row=selected_row)
+        table.focus()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        self.action_confirm()
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.cursor_row is not None:
@@ -1070,14 +1074,20 @@ class LiltApp(App):
         self._speed = max(0.5, round(self._speed - 0.1, 1))
         self._update_voice_display()
         self._refresh_queue_display()
-        self._set_status(f"Speed: {self._speed:.1f}x", _STATUS_MEDIUM)
+        msg = f"Speed: {self._speed:.1f}x"
+        if self._playing:
+            msg += " — next paragraph"
+        self._set_status(msg, _STATUS_MEDIUM)
 
     def action_speed_up(self) -> None:
         """Increase playback speed by 0.1x."""
         self._speed = min(2.0, round(self._speed + 0.1, 1))
         self._update_voice_display()
         self._refresh_queue_display()
-        self._set_status(f"Speed: {self._speed:.1f}x", _STATUS_MEDIUM)
+        msg = f"Speed: {self._speed:.1f}x"
+        if self._playing:
+            msg += " — next paragraph"
+        self._set_status(msg, _STATUS_MEDIUM)
 
     def action_next_article(self) -> None:
         """Stop current and play next article in queue."""

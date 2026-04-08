@@ -112,16 +112,20 @@ class AudioEngine:
         self._sample_offset: int = 0
 
     def load_model(self):
-        """Lazy-load the TTS model. No-op if already loaded."""
+        """Lazy-load the TTS model. Thread-safe via _model_lock."""
         if self._model is not None:
             return
-        try:
-            _force_hf_offline_if_cached(self.model_name)
-            from mlx_audio.tts.utils import load_model
+        with self._model_lock:
+            # Double-check after acquiring lock (another thread may have loaded)
+            if self._model is not None:
+                return
+            try:
+                _force_hf_offline_if_cached(self.model_name)
+                from mlx_audio.tts.utils import load_model
 
-            self._model = load_model(self.model_name)
-        except Exception as e:
-            raise RuntimeError(f"Failed to load TTS model '{self.model_name}': {e}") from e
+                self._model = load_model(self.model_name)
+            except Exception as e:
+                raise RuntimeError(f"Failed to load TTS model '{self.model_name}': {e}") from e
 
     def _play_audio(self, audio_np: np.ndarray):
         """Play a numpy audio array with pause/resume/stop support.
@@ -196,12 +200,14 @@ class AudioEngine:
             except Exception as e:
                 raise RuntimeError(f"TTS generation failed: {e}") from e
 
-            segments = _normalize_segments(result)
+            # Materialize segments and convert to numpy inside the lock so all
+            # MLX GPU operations complete before releasing — prevents concurrent
+            # Metal access from another thread.
+            audio_arrays = [np.array(seg.audio, dtype=np.float32) for seg in _normalize_segments(result)]
 
-        for segment in segments:
+        for audio_np in audio_arrays:
             if self._stop_event.is_set():
                 break
-            audio_np = np.array(segment.audio, dtype=np.float32)
             self._play_audio(audio_np)
 
     def play_article(
@@ -242,14 +248,13 @@ class AudioEngine:
                         speed=self.speed,
                         lang_code=self.lang,
                     )
-                    segments = _normalize_segments(result)
+                    audio_arrays = [np.array(seg.audio, dtype=np.float32) for seg in _normalize_segments(result)]
 
-                for seg_idx, segment in enumerate(segments):
+                for seg_idx, audio_np in enumerate(audio_arrays):
                     if self._stop_event.is_set():
                         break
 
                     self.current_segment_idx = seg_idx
-                    audio_np = np.array(segment.audio, dtype=np.float32)
                     self._play_audio(audio_np)
 
                     if on_progress is not None:
@@ -286,12 +291,7 @@ class AudioEngine:
             except Exception as e:
                 raise RuntimeError(f"TTS generation failed: {e}") from e
 
-            segments = _normalize_segments(result)
-
-        all_audio = []
-        for segment in segments:
-            audio_arr = np.array(segment.audio, dtype=np.float32)
-            all_audio.append(audio_arr)
+            all_audio = [np.array(seg.audio, dtype=np.float32) for seg in _normalize_segments(result)]
 
         return np.concatenate(all_audio) if all_audio else np.array([], dtype=np.float32)
 

@@ -345,6 +345,51 @@ class TestModelLoading:
         mock_load_model.assert_called_once_with(engine.model_name)
 
 
+class TestLoadModelThreadSafety:
+    def test_concurrent_load_model_only_loads_once(self):
+        """Two threads calling load_model simultaneously should only load once."""
+        import time
+
+        engine = AudioEngine()
+        load_count = 0
+        gate = threading.Event()
+
+        def fake_load(name):
+            nonlocal load_count
+            load_count += 1
+            gate.set()  # Signal that we're inside the load
+            time.sleep(0.1)  # Hold the lock to give the other thread time to arrive
+            return MagicMock()
+
+        mlx_audio_mod = types.ModuleType("mlx_audio")
+        mlx_audio_tts_mod = types.ModuleType("mlx_audio.tts")
+        mlx_audio_utils_mod = types.ModuleType("mlx_audio.tts.utils")
+        mlx_audio_utils_mod.load_model = fake_load
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.dict(
+                "sys.modules",
+                {
+                    "mlx_audio": mlx_audio_mod,
+                    "mlx_audio.tts": mlx_audio_tts_mod,
+                    "mlx_audio.tts.utils": mlx_audio_utils_mod,
+                },
+            ),
+            patch("lilt.engine.os.path.isdir", return_value=True),
+        ):
+            t1 = threading.Thread(target=engine.load_model)
+            t1.start()
+            gate.wait(timeout=2)  # Wait until t1 is inside fake_load
+            t2 = threading.Thread(target=engine.load_model)
+            t2.start()
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+
+        assert load_count == 1
+        assert engine._model is not None
+
+
 class TestGenerateAudio:
     def test_returns_numpy_array(self):
         # Mock model.generate to return a single segment

@@ -1,3 +1,14 @@
+## 2026-04-08 — Fix segfault + voice modal UX
+
+- **Segfault fix**: Resolved crash caused by MLX thread-safety issues. Three changes in `engine.py`:
+  1. `load_model()` now uses double-checked locking with `_model_lock` — prevents two workers from simultaneously initializing the Metal GPU model.
+  2. Segment iteration and `np.array(segment.audio)` conversion moved inside `_model_lock` in `generate_and_play()`, `play_article()`, and `generate_audio()` — prevents concurrent Metal access when background generation and playback overlap.
+  3. Generators from `_normalize_segments()` are now materialized (as lists) inside the lock, ensuring lazy MLX computation doesn't escape the critical section.
+- **Voice modal UX**: Arrow keys now work — `table.focus()` on mount gives the DataTable keyboard focus. Up/down navigates voices, left/right adjusts speed. Enter confirms (via `on_data_table_row_selected` handler, since DataTable consumes Enter before screen-level binding).
+- **Speed change feedback**: Status message during playback shows "Speed: 1.3x — next paragraph" to indicate the change isn't immediate.
+- **Post-commit hook**: Added `.git/hooks/post-commit` to auto-reinstall the package after each commit (workaround for non-editable install requirement on Python 3.13).
+- Test count: 258 (253 fast + 5 slow).
+
 ## 2026-04-08 — Hybrid playback + enhanced TUI (Phases 3-4)
 
 - **Hybrid playback**: Playback loop checks per-paragraph MP3 cache before generating TTS. Cache hit plays via `engine.play_audio()` (status: "Playing (cached)"); miss falls back to `generate_and_play()`. New `is_paragraph_cached()` validates manifest params AND file existence, works with both "generating" and "complete" cache status for mid-generation hits.
