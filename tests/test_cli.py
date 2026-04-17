@@ -378,6 +378,118 @@ class TestArgparse:
             run_cli(["--add"])
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 subcommand dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestFeedSubcommand:
+    def test_feed_add(self, capsys):
+        """wilted feed add creates a feed."""
+        run_cli(["feed", "add", "https://example.com/feed.xml", "--type", "article"])
+        out = capsys.readouterr().out
+        assert "Added feed #1" in out
+
+    def test_feed_list_empty(self, capsys):
+        """wilted feed list with no feeds."""
+        run_cli(["feed", "list"])
+        out = capsys.readouterr().out
+        assert "No feeds" in out
+
+    def test_feed_list_populated(self, capsys):
+        """wilted feed list shows feeds."""
+        run_cli(["feed", "add", "https://example.com/feed.xml"])
+        run_cli(["feed", "list"])
+        out = capsys.readouterr().out
+        assert "example.com" in out
+
+    def test_feed_remove(self, capsys):
+        """wilted feed remove deletes a feed."""
+        run_cli(["feed", "add", "https://example.com/feed.xml"])
+        run_cli(["feed", "remove", "1"])
+        out = capsys.readouterr().out
+        assert "Removed feed #1" in out
+
+    def test_feed_remove_nonexistent_exits(self):
+        """wilted feed remove with bad ID exits 1."""
+        with pytest.raises(SystemExit):
+            run_cli(["feed", "remove", "999"])
+
+    def test_feed_no_action_exits(self):
+        """wilted feed with no action exits 1."""
+        with pytest.raises(SystemExit):
+            run_cli(["feed"])
+
+
+class TestKeywordSubcommand:
+    def test_keyword_add(self, capsys):
+        """wilted keyword add creates a keyword."""
+        run_cli(["keyword", "add", "kubernetes"])
+        out = capsys.readouterr().out
+        assert "Added keyword" in out
+        assert "kubernetes" in out
+
+    def test_keyword_add_with_weight(self, capsys):
+        """wilted keyword add with --weight."""
+        run_cli(["keyword", "add", "security", "--weight", "2.0"])
+        out = capsys.readouterr().out
+        assert "weight: 2.0" in out
+
+    def test_keyword_list_empty(self, capsys):
+        """wilted keyword list with no keywords."""
+        run_cli(["keyword", "list"])
+        out = capsys.readouterr().out
+        assert "No keywords" in out
+
+    def test_keyword_list_populated(self, capsys):
+        """wilted keyword list shows keywords."""
+        run_cli(["keyword", "add", "python"])
+        run_cli(["keyword", "list"])
+        out = capsys.readouterr().out
+        assert "python" in out
+
+    def test_keyword_remove(self, capsys):
+        """wilted keyword remove deletes a keyword."""
+        run_cli(["keyword", "add", "remove-me"])
+        run_cli(["keyword", "remove", "remove-me"])
+        out = capsys.readouterr().out
+        assert "Removed keyword" in out
+
+    def test_keyword_no_action_exits(self):
+        """wilted keyword with no action exits 1."""
+        with pytest.raises(SystemExit):
+            run_cli(["keyword"])
+
+
+class TestPipelineSubcommands:
+    def test_discover_dispatch(self, monkeypatch, capsys):
+        """wilted discover dispatches to run_discover."""
+        monkeypatch.setattr(
+            "wilted.discover.run_discover",
+            lambda: {"discovered": 3, "feeds_polled": 2, "errors": 0},
+        )
+        run_cli(["discover"])
+        out = capsys.readouterr().out
+        assert "3 new items" in out
+
+    def test_classify_dispatch(self, monkeypatch, capsys):
+        """wilted classify dispatches to run_classify."""
+        monkeypatch.setattr(
+            "wilted.classify.run_classify",
+            lambda: {"classified": 5, "errors": 0},
+        )
+        run_cli(["classify"])
+        out = capsys.readouterr().out
+        assert "5 items classified" in out
+
+    def test_stub_subcmds_still_exit(self):
+        """Remaining stub subcommands still exit 1."""
+        with pytest.raises(SystemExit):
+            run_cli(["report"])
+        with pytest.raises(SystemExit):
+            run_cli(["prepare"])
+
+
 class TestMainEntrypoint:
     def test_main_cli_mode_dispatches_without_tqdm_preinit(self):
         """CLI mode should dispatch directly to run_cli."""

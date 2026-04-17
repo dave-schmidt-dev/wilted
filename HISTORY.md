@@ -1,3 +1,14 @@
+## 2026-04-17 — Phase 2: Discovery + Classification pipeline
+
+- **Feed management** (`src/wilted/feeds.py`): Full CRUD for RSS/Atom feed subscriptions. `wilted feed add/list/remove` CLI commands. Supports article and podcast feed types with optional default playlist assignment.
+- **RSS discovery** (`src/wilted/discover.py`): Stage 1 pipeline — polls all enabled feeds via feedparser with conditional GET (ETag/If-Modified-Since). Three-tier dedup: GUID, canonical URL, SHA-256 content hash. Articles: full text fetched via trafilatura with RSS summary fallback. Podcasts: audio enclosure URL extracted from RSS. Partial failures (individual feed errors) logged and skipped without stopping other feeds.
+- **LLM backend interface** (`src/wilted/llm.py`): `LLMBackend` Protocol with `MlxBackend` (mlx-vlm) and `GgufBackend` (llama-cpp-python) implementations. Load/generate/close lifecycle with explicit Metal GPU memory reclamation (`del model; gc.collect(); mx.metal.clear_cache()`). JSON response parser handles markdown fences, surrounding text, and nested objects.
+- **Classification stage** (`src/wilted/classify.py`): Stage 2 pipeline — loads LLM once, classifies all fetched items. Each item receives: playlist assignment (Work/Fun/Education), relevance score (0.0-1.0), and 2-3 sentence summary. System prompt with few-shot examples. User preference keywords integrated into relevance scoring.
+- **Preference keywords** (`src/wilted/preferences.py`): Keyword CRUD with weighted relevance scoring. `wilted keyword add/list/remove` CLI commands. Keywords formatted into LLM classification prompts.
+- **LLM benchmarking** (`wilted benchmark classify --models "model1,model2"`): Runs multiple models against a labeled 10-item test set. Reports accuracy, latency, and token counts in tabular format.
+- **CLI wiring**: Removed `discover`, `classify`, `feed`, `keyword`, `benchmark` from Phase 2+ stubs. Real dispatch to implemented modules.
+- **Tests**: 122 new tests covering feeds CRUD, RSS polling with mocked feeds, dedup logic, entry extractors, LLM protocol conformance, JSON parsing, classification output validation, keyword integration, CLI subcommands. Total: 409 tests, `make validate` green.
+
 ## 2026-04-17 — Salad Palette theme and NerdFont icon system
 
 - Applied the **Salad Palette** custom Textual theme: Dark Sea Green primary, Sage secondary, Cream accent, Ebony background, Muted Red errors, Bright Lime success. Registered as a named theme via `register_theme()` so all Textual widgets pick up the palette automatically.

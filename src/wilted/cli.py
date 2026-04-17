@@ -38,7 +38,7 @@ _SUBCMD_TO_FLAG = {
 }
 
 # Phase 2+ pipeline and management subcommands — stubbed until implemented.
-_STUB_SUBCMDS = frozenset({"discover", "classify", "report", "prepare", "feed", "playlist", "keyword", "benchmark"})
+_STUB_SUBCMDS = frozenset({"report", "prepare", "playlist"})
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:
@@ -347,6 +347,195 @@ def cmd_doctor(_argv: list[str] | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase 2 — Feed management subcommands
+# ---------------------------------------------------------------------------
+
+
+def cmd_feed(argv: list[str]) -> None:
+    """Dispatch feed subcommands: add, list, remove."""
+    if not argv:
+        print("Usage: wilted feed <add|list|remove> [args]", file=sys.stderr)
+        sys.exit(1)
+
+    action = argv[0]
+
+    if action == "add":
+        parser = argparse.ArgumentParser(prog="wilted feed add")
+        parser.add_argument("url", help="Feed URL")
+        parser.add_argument("--type", dest="feed_type", default="article", choices=["article", "podcast"])
+        parser.add_argument("--title", default=None, help="Feed title (auto-detected if omitted)")
+        parser.add_argument("--playlist", default=None, help="Default playlist for new items")
+        args = parser.parse_args(argv[1:])
+
+        from wilted.feeds import add_feed
+
+        try:
+            feed = add_feed(
+                args.url,
+                feed_type=args.feed_type,
+                title=args.title,
+                default_playlist=args.playlist,
+            )
+            print(f"Added feed #{feed.id}: {feed.title} ({feed.feed_type})")
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    elif action == "list":
+        from wilted.feeds import list_feeds
+
+        feeds = list_feeds()
+        if not feeds:
+            print("No feeds configured. Add one with: wilted feed add <url>")
+            return
+
+        print(f"Feeds ({len(feeds)}):\n")
+        for f in feeds:
+            status = "enabled" if f.enabled else "disabled"
+            playlist = f" -> {f.default_playlist}" if f.default_playlist else ""
+            print(f"  #{f.id}  {f.title} [{f.feed_type}] ({status}){playlist}")
+            print(f"       {f.feed_url}")
+
+    elif action == "remove":
+        if len(argv) < 2:
+            print("Usage: wilted feed remove <id>", file=sys.stderr)
+            sys.exit(1)
+
+        from wilted.feeds import remove_feed
+
+        try:
+            feed_id = int(argv[1])
+            feed = remove_feed(feed_id)
+            print(f"Removed feed #{feed_id}: {feed.title}")
+        except (ValueError, TypeError) as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    else:
+        print(f"Unknown feed action: '{action}'. Use add, list, or remove.", file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Keyword management subcommands
+# ---------------------------------------------------------------------------
+
+
+def cmd_keyword(argv: list[str]) -> None:
+    """Dispatch keyword subcommands: add, list, remove."""
+    if not argv:
+        print("Usage: wilted keyword <add|list|remove> [args]", file=sys.stderr)
+        sys.exit(1)
+
+    action = argv[0]
+
+    if action == "add":
+        parser = argparse.ArgumentParser(prog="wilted keyword add")
+        parser.add_argument("keyword", help="Keyword or phrase")
+        parser.add_argument("--weight", type=float, default=1.0, help="Relevance weight (default: 1.0)")
+        args = parser.parse_args(argv[1:])
+
+        from wilted.preferences import add_keyword
+
+        try:
+            kw = add_keyword(args.keyword, weight=args.weight)
+            print(f"Added keyword: '{kw.keyword}' (weight: {kw.weight:.1f})")
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    elif action == "list":
+        from wilted.preferences import list_keywords
+
+        keywords = list_keywords()
+        if not keywords:
+            print("No keywords configured. Add one with: wilted keyword add <word>")
+            return
+
+        print(f"Keywords ({len(keywords)}):\n")
+        for kw in keywords:
+            print(f"  {kw.keyword} (weight: {kw.weight:.1f})")
+
+    elif action == "remove":
+        if len(argv) < 2:
+            print("Usage: wilted keyword remove <keyword>", file=sys.stderr)
+            sys.exit(1)
+
+        from wilted.preferences import remove_keyword
+
+        keyword = " ".join(argv[1:])  # Support multi-word keywords
+        try:
+            remove_keyword(keyword)
+            print(f"Removed keyword: '{keyword}'")
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    else:
+        print(f"Unknown keyword action: '{action}'. Use add, list, or remove.", file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Pipeline subcommands
+# ---------------------------------------------------------------------------
+
+
+def cmd_discover(argv: list[str]) -> None:
+    """Run the discovery stage: poll feeds, dedup, fetch articles."""
+    from wilted.discover import run_discover
+
+    try:
+        stats = run_discover()
+        print(f"Discovery complete: {stats['discovered']} new items from {stats['feeds_polled']} feeds")
+        if stats["errors"]:
+            print(f"  {stats['errors']} feed(s) had errors (see /tmp/wilted.log)")
+    except Exception as e:
+        print(f"Discovery failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_classify(argv: list[str]) -> None:
+    """Run the classification stage: categorize, score, summarize fetched items."""
+    from wilted.classify import run_classify
+
+    try:
+        stats = run_classify()
+        print(f"Classification complete: {stats['classified']} items classified")
+        if stats["errors"]:
+            print(f"  {stats['errors']} item(s) had errors (see /tmp/wilted.log)")
+    except Exception as e:
+        print(f"Classification failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_benchmark(argv: list[str]) -> None:
+    """Run LLM benchmarking for classification tasks."""
+    if not argv:
+        print("Usage: wilted benchmark classify --models 'model1,model2'", file=sys.stderr)
+        sys.exit(1)
+
+    task = argv[0]
+    if task != "classify":
+        print(f"Unknown benchmark task: '{task}'. Available: classify", file=sys.stderr)
+        sys.exit(1)
+
+    parser = argparse.ArgumentParser(prog="wilted benchmark classify")
+    parser.add_argument("--models", required=True, help="Comma-separated list of model identifiers")
+    parser.add_argument("--backend", default="mlx", choices=["mlx", "gguf"], help="Backend type (default: mlx)")
+    args = parser.parse_args(argv[1:])
+
+    from wilted.classify import run_benchmark
+
+    models = [m.strip() for m in args.models.split(",")]
+    try:
+        run_benchmark(models=models, backend_type=args.backend)
+    except Exception as e:
+        print(f"Benchmark failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Argument parsing and dispatch
 # ---------------------------------------------------------------------------
 
@@ -364,7 +553,7 @@ def run_cli(argv=None):
         argv = sys.argv[1:]
     argv = list(argv)
 
-    # Route Phase 2+ stubs and doctor before argparse.
+    # Route subcommands before argparse.
     if argv:
         first = argv[0]
         if first == "doctor":
@@ -374,6 +563,21 @@ def run_cli(argv=None):
             from wilted.migrate import cmd_migrate
 
             cmd_migrate(argv[1:])
+            return
+        if first == "feed":
+            cmd_feed(argv[1:])
+            return
+        if first == "keyword":
+            cmd_keyword(argv[1:])
+            return
+        if first == "discover":
+            cmd_discover(argv[1:])
+            return
+        if first == "classify":
+            cmd_classify(argv[1:])
+            return
+        if first == "benchmark":
+            cmd_benchmark(argv[1:])
             return
         if first in _STUB_SUBCMDS:
             _run_stub(argv)

@@ -123,10 +123,10 @@ Runtime data stored in `data/` (gitignored):
 
 ```
 data/
-  queue.json        # reading list metadata
-  state.json        # TUI resume positions
+  wilted.db         # SQLite database (WAL mode)
   articles/         # cached article text files
   audio/            # pre-generated MP3 cache (per-article)
+  state.json        # TUI resume positions
 ```
 
 ## TUI
@@ -189,14 +189,24 @@ pyproject.toml           # package metadata, [project.scripts] entry point
 src/wilted/                # shared library
     __init__.py          # constants, VOICES, LANGUAGES, data paths
     cli.py               # CLI commands and argparse dispatch
+    db.py                # Peewee ORM models, migrations, SQLite management
     engine.py            # AudioEngine (sounddevice + TTS)
     fetch.py             # URL resolution, text extraction
-    queue.py             # reading list persistence
+    queue.py             # reading list persistence (SQLite-backed)
     state.py             # resume state persistence
     cache.py             # audio cache (MP3 storage, manifest)
     text.py              # text cleaning and splitting
-    tui.py               # Textual TUI app
-tests/                   # pytest suite covering CLI, engine, TUI, ingest, cache, and guardrail tests
+    ingest.py            # shared article ingestion
+    feeds.py             # feed subscription CRUD
+    discover.py          # RSS polling, dedup, article fetch
+    classify.py          # LLM-based classification + benchmark
+    llm.py               # LLM backend interface (MLX, GGUF)
+    preferences.py       # keyword-based relevance scoring
+    migrate.py           # queue.json -> SQLite migration
+    log.py               # RotatingFileHandler setup
+    tui/                 # Textual TUI (decomposed package)
+tests/                   # pytest suite (410 tests)
+migrations/              # numbered schema migrations
 ```
 
 ## Validation
@@ -222,27 +232,55 @@ What to avoid in future:
 - Do not let lazy MLX generators escape the lock before converting segment audio to NumPy.
 - Do not let the first `tqdm` lock initialization happen inside a Textual worker thread.
 
+## Feed management
+
+Subscribe to RSS/Atom feeds for automatic content discovery:
+
+```bash
+wilted feed add https://example.com/feed.xml --type article --playlist Work
+wilted feed add https://example.com/pod.xml --type podcast --playlist Fun
+wilted feed list
+wilted feed remove 3
+```
+
+Run the nightly pipeline stages:
+
+```bash
+wilted discover              # poll feeds, fetch articles, dedup
+wilted classify              # categorize, score, summarize (requires MLX LLM)
+wilted benchmark classify --models "model1,model2"  # compare classification models
+```
+
+Manage relevance keywords:
+
+```bash
+wilted keyword add "kubernetes" --weight 1.5
+wilted keyword list
+wilted keyword remove "kubernetes"
+```
+
 ## Roadmap
 
 - Near term:
   - CI/local validation parity for lint + guarded tests
   - packaging/install pass on the supported Python + venv path
   - manual real-device playback verification
-- Unified ingest:
-  - RSS/article feed data model and persistence
-  - feed polling, dedupe, and queue import
-  - CLI/TUI feed management
-  - podcast subscription import, likely via private feeds or exported subscription sources
-- Unified content model:
-  - normalize articles and podcasts into one listenable item model
-  - support playlists such as `Work`, `Fun`, and `Education`
-  - allow playlists to build up and break down dynamically based on freshness, source, and priority
-- Listening intelligence:
-  - article ranking and source selection for major news sources
-  - morning report summarizing what arrived since yesterday
-  - direct jump targets so the most interesting articles or podcast episodes can be played first
-  - ad stripping / enrichment pipeline where feasible and legally safe
+- Morning report (Phase 3):
+  - report assembly grouping classified items by playlist
+  - TUI ReportScreen with checkbox selection and playlist override
+  - selection history and per-feed source stats
+- Content preparation (Phase 4):
+  - podcast audio download and transcription (RSS ingest + local fallback)
+  - ad detection with sliding window + ffmpeg cutting
+  - article promotional content removal
+  - article TTS generation for pipeline items
+- Playlists + polish (Phase 5):
+  - dynamic/static playlists with expiry and keep flag
+  - TUI playlist navigation
+  - email morning report, nightly wrapper script, `wilted doctor`
 - ~~Pre-generated audio for instant playback~~ (done: background MP3 caching + hybrid playback)
+- ~~RSS feed management~~ (done: feed CRUD, RSS polling, dedup, conditional GET)
+- ~~LLM classification~~ (done: playlist assignment, relevance scoring, summarization)
 
 ## Dependencies
 
@@ -251,6 +289,8 @@ What to avoid in future:
 - ffmpeg (required for MP3 audio caching; `brew install ffmpeg`)
 - Kokoro TTS model (82M params, downloaded on first use)
 - trafilatura (article text extraction)
+- peewee (SQLite ORM)
+- feedparser (RSS/Atom parsing)
 - numpy
 - textual (TUI framework)
 - sounddevice (audio playback)
