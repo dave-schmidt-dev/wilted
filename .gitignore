@@ -25,3 +25,6 @@ data/
 
 # Lock files
 uv.lock
+
+# Plans (local working documents)
+/plans
