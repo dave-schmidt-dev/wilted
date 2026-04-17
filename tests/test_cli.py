@@ -234,11 +234,11 @@ class TestCmdNext:
 
     def test_next_missing_file_raises(self, tmp_path):
         """cmd_next raises CLIError when cached file is missing."""
+        import wilted
+
         entry = _add_test_article(title="Missing File Article")
         # Delete the cached file
-        from wilted import queue as queue_mod
-
-        article_path = queue_mod.ARTICLES_DIR / entry["file"]
+        article_path = wilted.ARTICLES_DIR / entry["file"]
         article_path.unlink()
 
         with pytest.raises(CLIError, match="Cached file missing"):

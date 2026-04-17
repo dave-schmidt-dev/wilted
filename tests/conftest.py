@@ -37,10 +37,16 @@ def isolated_data(tmp_path, monkeypatch):
     monkeypatch.setattr(wilted, "AUDIO_DIR", audio_dir)
 
     from wilted import cache as cache_mod
-    from wilted import queue as queue_mod
     from wilted import state as state_mod
+    from wilted.db import reset_db, run_migrations
 
     monkeypatch.setattr(cache_mod, "AUDIO_DIR", audio_dir)
-    monkeypatch.setattr(queue_mod, "QUEUE_FILE", data_dir / "queue.json")
-    monkeypatch.setattr(queue_mod, "ARTICLES_DIR", articles_dir)
     monkeypatch.setattr(state_mod, "STATE_FILE", data_dir / "state.json")
+
+    # Give each test a fresh, isolated SQLite database.
+    reset_db()
+    run_migrations(data_dir / "wilted.db")
+
+    yield
+
+    reset_db()  # Close file handles so tmp_path cleanup succeeds on Windows

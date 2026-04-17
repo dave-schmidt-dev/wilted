@@ -11,7 +11,7 @@ The end state is not just a text-to-speech article reader. It is a personal audi
 - pulls in subscribed podcasts and written sources
 - converts important articles into listenable audio
 - removes friction where possible, including podcast ad stripping
-- organizes everything into dynamic playlists such as `News`, `Entertainment`, and `Learning`
+- organizes everything into dynamic playlists such as `Work`, `Fun`, and `Education`
 - produces a morning report that summarizes what arrived since yesterday and points to the highest-value items first
 
 The product should feel like a private, local-first listening surface rather than a collection of separate article and podcast tools.
@@ -114,7 +114,7 @@ The current implementation is article-first, but the roadmap is broader:
 - saved articles and Apple News links flow into the same listening system
 - podcast subscriptions should eventually be ingested into Wilted as audio items
 - playlists should become the main organizing concept, not just a flat queue
-- articles and podcasts should coexist inside shared listening contexts like `News`, `Entertainment`, and `Learning`
+- articles and podcasts should coexist inside shared listening contexts like `Work`, `Fun`, and `Education`
 - the daily morning report should become the control surface for deciding what to hear first
 
 ## Data
@@ -235,7 +235,7 @@ What to avoid in future:
   - podcast subscription import, likely via private feeds or exported subscription sources
 - Unified content model:
   - normalize articles and podcasts into one listenable item model
-  - support playlists such as `News`, `Entertainment`, and `Learning`
+  - support playlists such as `Work`, `Fun`, and `Education`
   - allow playlists to build up and break down dynamically based on freshness, source, and priority
 - Listening intelligence:
   - article ranking and source selection for major news sources

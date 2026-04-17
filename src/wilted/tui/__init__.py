@@ -1,4 +1,17 @@
-"""Textual TUI for the wilted local TTS article reader."""
+"""Textual TUI package for wilted.
+
+WiltedApp is defined here (in __init__.py, not app.py) so that
+``@patch("wilted.tui.load_queue")`` and similar test patches intercept calls
+made from WiltedApp methods — Python looks up free variables in the containing
+module's __dict__ at call time, not at definition time.
+
+Screens (AddArticleScreen, ConfirmScreen, etc.) are in tui/screens/.
+PlaybackBar widget is in tui/widgets/playback_bar.py.
+
+Backward-compat imports:
+    from wilted.tui import WiltedApp
+    from wilted.tui import AddArticleScreen, ConfirmScreen, ...
+"""
 
 from __future__ import annotations
 
@@ -10,14 +23,12 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static
+from textual.widgets import DataTable, Footer, Header, Label, Static
 from textual.worker import get_current_worker
 
 from wilted import ICONS, LANGUAGES, VOICES, WPM_ESTIMATE
 from wilted.queue import (
-    add_article,
     clear_queue,
     get_article_text,
     load_queue,
@@ -26,6 +37,11 @@ from wilted.queue import (
 )
 from wilted.state import clear_article_state, get_article_state, set_article_state
 from wilted.text import split_paragraphs
+from wilted.tui.screens.add_article import AddArticleScreen
+from wilted.tui.screens.confirm import ConfirmScreen
+from wilted.tui.screens.text_preview import TextPreviewScreen
+from wilted.tui.screens.voice_settings import VoiceSettingsScreen
+from wilted.tui.widgets.playback_bar import PlaybackBar
 
 # Status message priorities — higher priority messages hold for a minimum
 # duration and won't be overwritten by lower-priority routine updates.
@@ -67,457 +83,6 @@ _ICON_PAUSED = ICONS["paused"]
 
 # Fractional block characters for smooth progress bar fill
 _BLOCKS = " ▏▎▍▌▋▊▉█"
-
-# ---------------------------------------------------------------------------
-# Voice settings modal
-# ---------------------------------------------------------------------------
-
-
-class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
-    """Modal for selecting voice and speed."""
-
-    DEFAULT_CSS = """
-    VoiceSettingsScreen {
-        align: center middle;
-    }
-    #voice-dialog {
-        width: 60;
-        height: 80%;
-        max-height: 80%;
-        border: thick $accent;
-        background: $surface;
-        padding: 1 2;
-    }
-    #voice-dialog Label {
-        width: 100%;
-        margin-bottom: 1;
-    }
-    .voice-title {
-        text-style: bold;
-        content-align: center middle;
-        width: 100%;
-    }
-    #voice-list {
-        height: 1fr;
-    }
-    #voice-list DataTable {
-        height: auto;
-    }
-    .speed-row {
-        height: auto;
-        align: center middle;
-    }
-    .speed-row Label {
-        width: auto;
-        margin: 0 1;
-    }
-    .lang-row {
-        height: auto;
-        align: center middle;
-    }
-    .lang-row Label {
-        width: auto;
-        margin: 0 1;
-    }
-    .button-row {
-        height: auto;
-        align: center middle;
-        margin-top: 1;
-    }
-    .button-row Button {
-        width: auto;
-        margin: 0 1;
-    }
-    .button-help {
-        width: 100%;
-        content-align: center middle;
-        color: $text-muted;
-    }
-    """
-
-    BINDINGS = [
-        Binding("escape", "cancel", "Cancel", show=True),
-        Binding("enter", "confirm", "Confirm", show=True),
-        Binding("left,minus", "speed_down", "-Speed"),
-        Binding("right,equal,plus", "speed_up", "+Speed"),
-        Binding("a", "lang_a", "American", show=False),
-        Binding("b", "lang_b", "British", show=False),
-        Binding("j", "lang_j", "Japanese", show=False),
-        Binding("z", "lang_z", "Chinese", show=False),
-    ]
-
-    def __init__(self, current_voice: str, current_speed: float, current_lang: str = "a", **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.selected_voice = current_voice
-        self.selected_speed = current_speed
-        self.selected_lang = current_lang
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="voice-dialog"):
-            yield Label("Voice Settings", classes="voice-title")
-            with VerticalScroll(id="voice-list"):
-                yield DataTable(id="voice-table")
-            with Horizontal(classes="speed-row"):
-                yield Label("Speed:")
-                yield Label(f"{self.selected_speed:.1f}x", id="speed-display")
-                yield Label("  [←] slower  [→] faster")
-            with Horizontal(classes="lang-row"):
-                yield Label("Language:")
-                yield Label(LANGUAGES.get(self.selected_lang, "Unknown"), id="lang-display")
-                yield Label("  [a]merican [b]ritish [j]apanese [z]chinese")
-            with Horizontal(classes="button-row"):
-                yield Button("Confirm", id="voice-confirm", variant="primary")
-                yield Button("Cancel", id="voice-cancel")
-            yield Label("[enter] Confirm  [esc] Cancel", classes="button-help")
-
-    def on_mount(self) -> None:
-        table = self.query_one("#voice-table", DataTable)
-        table.cursor_type = "row"
-        table.add_columns("ID", "Name", "Gender", "Accent")
-        selected_row = 0
-        for i, (vid, info) in enumerate(VOICES.items()):
-            table.add_row(vid, info["name"], info["gender"], info["accent"])
-            if vid == self.selected_voice:
-                selected_row = i
-        table.move_cursor(row=selected_row)
-        table.focus()
-
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        self.action_confirm()
-
-    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        if event.cursor_row is not None:
-            table = self.query_one("#voice-table", DataTable)
-            row_data = table.get_row_at(event.cursor_row)
-            self.selected_voice = str(row_data[0])
-
-    def action_speed_down(self) -> None:
-        self.selected_speed = max(0.5, round(self.selected_speed - 0.1, 1))
-        self.query_one("#speed-display", Label).update(f"{self.selected_speed:.1f}x")
-
-    def action_speed_up(self) -> None:
-        self.selected_speed = min(2.0, round(self.selected_speed + 0.1, 1))
-        self.query_one("#speed-display", Label).update(f"{self.selected_speed:.1f}x")
-
-    def _set_lang(self, code: str) -> None:
-        self.selected_lang = code
-        self.query_one("#lang-display", Label).update(LANGUAGES.get(code, "Unknown"))
-
-    def action_lang_a(self) -> None:
-        self._set_lang("a")
-
-    def action_lang_b(self) -> None:
-        self._set_lang("b")
-
-    def action_lang_j(self) -> None:
-        self._set_lang("j")
-
-    def action_lang_z(self) -> None:
-        self._set_lang("z")
-
-    def action_confirm(self) -> None:
-        self.dismiss((self.selected_voice, self.selected_speed, self.selected_lang))
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "voice-confirm":
-            self.action_confirm()
-        elif event.button.id == "voice-cancel":
-            self.action_cancel()
-
-
-# ---------------------------------------------------------------------------
-# Add article modal
-# ---------------------------------------------------------------------------
-
-
-class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
-    """Modal for adding an article from URL or clipboard."""
-
-    DEFAULT_CSS = """
-    AddArticleScreen {
-        align: center middle;
-    }
-    #add-dialog {
-        width: 70;
-        height: auto;
-        max-height: 60%;
-        border: thick $accent;
-        background: $surface;
-        padding: 1 2;
-    }
-    .add-title {
-        text-style: bold;
-        content-align: center middle;
-        width: 100%;
-        margin-bottom: 1;
-    }
-    #url-input {
-        margin: 1 0;
-    }
-    #add-status {
-        margin-top: 1;
-        text-style: italic;
-        color: $text-muted;
-    }
-    #add-actions {
-        height: auto;
-        align: center middle;
-        margin-top: 1;
-    }
-    #add-actions Button {
-        width: auto;
-        margin: 0 1;
-    }
-    .add-help {
-        margin-top: 1;
-        width: 100%;
-        content-align: center middle;
-        color: $text-muted;
-    }
-    """
-
-    BINDINGS = [
-        Binding("escape", "cancel", "Cancel", show=True),
-        Binding("ctrl+p", "play_after", "Add & Play", show=True),
-    ]
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="add-dialog"):
-            yield Label("Add Article", classes="add-title")
-            yield Label("URL (leave blank for clipboard):")
-            yield Input(placeholder="https://...", id="url-input")
-            with Horizontal(id="add-actions"):
-                yield Button("Add to Queue", id="add-queue", variant="primary")
-                yield Button("Add & Play", id="add-play", variant="success")
-                yield Button("Cancel", id="add-cancel")
-            yield Label("[enter] Add to queue  [ctrl+p] Add & play  [esc] Cancel", classes="add-help")
-            yield Label("Ready", id="add-status")
-
-    def on_mount(self) -> None:
-        self.query_one("#url-input", Input).focus()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle enter key on the URL input."""
-        self._do_add(play_after=False)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        button_id = event.button.id
-        if button_id == "add-queue":
-            self._do_add(play_after=False)
-        elif button_id == "add-play":
-            self._do_add(play_after=True)
-        elif button_id == "add-cancel":
-            self.action_cancel()
-
-    def action_play_after(self) -> None:
-        """Add and play immediately."""
-        self._do_add(play_after=True)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def _do_add(self, play_after: bool) -> None:
-        """Fetch article and dismiss with result."""
-        url_input = self.query_one("#url-input", Input)
-        if url_input.disabled:
-            return
-        url = url_input.value.strip()
-        self._set_controls_disabled(True)
-        self._fetch_article(url if url else None, play_after)
-
-    @work(thread=True, group="fetch")
-    def _fetch_article(self, url: str | None, play_after: bool) -> None:
-        """Fetch article in background and dismiss when done."""
-        from wilted.ingest import resolve_article
-
-        status = self.query_one("#add-status", Label)
-        try:
-            result = resolve_article(
-                url=url if url and url.startswith(("http://", "https://")) else None,
-                min_clipboard_len=50,
-                on_status=lambda msg: self.app.call_from_thread(status.update, msg),
-            )
-
-            entry = add_article(
-                result.text,
-                title=result.title,
-                source_url=result.source_url,
-                canonical_url=result.canonical_url,
-            )
-
-            action = "play" if play_after else "queued"
-            title_display = entry.get("title", "Untitled")
-            self.app.call_from_thread(status.update, f"🥬 Added to larder: {title_display}")
-            # Small delay so user can see the success message
-            time.sleep(0.5)
-            self.app.call_from_thread(self.dismiss, (action, entry))
-
-        except Exception as e:
-            self.app.call_from_thread(status.update, f"Error: {e}")
-            self.app.call_from_thread(self._set_controls_disabled, False)
-
-    def _set_controls_disabled(self, disabled: bool) -> None:
-        self.query_one("#url-input", Input).disabled = disabled
-        for button in self.query(Button):
-            button.disabled = disabled
-
-
-# ---------------------------------------------------------------------------
-# Confirm dialog modal
-# ---------------------------------------------------------------------------
-
-
-class ConfirmScreen(ModalScreen[bool]):
-    """Reusable confirmation dialog."""
-
-    DEFAULT_CSS = """
-    ConfirmScreen {
-        align: center middle;
-    }
-    #confirm-dialog {
-        width: 50;
-        height: auto;
-        border: thick $accent;
-        background: $surface;
-        padding: 1 2;
-    }
-    .confirm-title {
-        text-style: bold;
-        content-align: center middle;
-        width: 100%;
-        margin-bottom: 1;
-    }
-    #confirm-message {
-        margin: 1 0;
-    }
-    .confirm-buttons {
-        height: auto;
-        align: center middle;
-        margin-top: 1;
-    }
-    .confirm-buttons Button {
-        width: auto;
-        margin: 0 1;
-    }
-    .confirm-help {
-        width: 100%;
-        content-align: center middle;
-        color: $text-muted;
-    }
-    """
-
-    BINDINGS = [
-        Binding("enter", "confirm", "Confirm", show=True),
-        Binding("escape", "cancel", "Cancel", show=True),
-    ]
-
-    def __init__(self, title: str, message: str, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self._title = title
-        self._message = message
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="confirm-dialog"):
-            yield Label(self._title, classes="confirm-title")
-            yield Label(self._message, id="confirm-message")
-            with Horizontal(classes="confirm-buttons"):
-                yield Button("Confirm", id="confirm-accept", variant="error")
-                yield Button("Cancel", id="confirm-cancel")
-            yield Label("[enter] Confirm  [esc] Cancel", classes="confirm-help")
-
-    def action_confirm(self) -> None:
-        self.dismiss(True)
-
-    def action_cancel(self) -> None:
-        self.dismiss(False)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "confirm-accept":
-            self.action_confirm()
-        elif event.button.id == "confirm-cancel":
-            self.action_cancel()
-
-
-# ---------------------------------------------------------------------------
-# Text preview modal
-# ---------------------------------------------------------------------------
-
-
-class TextPreviewScreen(ModalScreen[None]):
-    """Scrollable text preview of an article."""
-
-    DEFAULT_CSS = """
-    TextPreviewScreen {
-        align: center middle;
-    }
-    #preview-dialog {
-        width: 80%;
-        height: 80%;
-        border: thick $accent;
-        background: $surface;
-        padding: 1 2;
-    }
-    .preview-title {
-        text-style: bold;
-        content-align: center middle;
-        width: 100%;
-        margin-bottom: 1;
-    }
-    #preview-scroll {
-        height: 1fr;
-        border: round $accent;
-    }
-    #preview-text {
-        padding: 1;
-    }
-    .preview-footer {
-        height: auto;
-        align: center middle;
-        margin-top: 1;
-    }
-    .preview-footer Button {
-        width: auto;
-        margin-right: 1;
-    }
-    .preview-help {
-        width: auto;
-        color: $text-muted;
-    }
-    """
-
-    BINDINGS = [
-        Binding("escape", "close", "Close", show=True),
-    ]
-
-    def __init__(self, title: str, text: str, word_count: int, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self._title = title
-        self._text = text
-        self._word_count = word_count
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="preview-dialog"):
-            yield Label(self._title, classes="preview-title")
-            with VerticalScroll(id="preview-scroll"):
-                yield Static(self._text, id="preview-text")
-            with Horizontal(classes="preview-footer"):
-                yield Button("Close", id="preview-close", variant="primary")
-                yield Label(f"{self._word_count} words", classes="preview-help")
-
-    def action_close(self) -> None:
-        self.dismiss(None)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "preview-close":
-            self.action_close()
-
-
-# ---------------------------------------------------------------------------
-# Main TUI app
-# ---------------------------------------------------------------------------
 
 
 class WiltedApp(App):
@@ -657,8 +222,10 @@ class WiltedApp(App):
         self._update_voice_display()
         # 1-second timer for live playback countdown
         self.set_interval(1.0, self._update_timer)
-        # Preload TTS model in background so play starts instantly
-        self._preload_model()
+        # Preload TTS model only if there are items that need TTS synthesis.
+        # Pipeline items with audio_file set already have generated audio; skip.
+        if any(not e.get("audio_file") for e in self._queue):
+            self._preload_model()
 
     # -- Queue display ------------------------------------------------------
 
@@ -842,6 +409,10 @@ class WiltedApp(App):
         for entry in queue:
             if worker.is_cancelled:
                 break
+
+            # Pipeline items already have pre-generated audio; skip TTS for them.
+            if entry.get("audio_file"):
+                continue
 
             article_id = entry["id"]
             added = entry.get("added", "")
@@ -1360,10 +931,11 @@ class WiltedApp(App):
         return None
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    app = WiltedApp()
-    app.run()
+__all__ = [
+    "WiltedApp",
+    "AddArticleScreen",
+    "ConfirmScreen",
+    "TextPreviewScreen",
+    "VoiceSettingsScreen",
+    "PlaybackBar",
+]

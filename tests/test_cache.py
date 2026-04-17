@@ -271,7 +271,8 @@ class TestQueueCacheCleanup:
         remove_article(0)
         assert not cache_dir.exists()
 
-    def test_mark_completed_clears_cache(self):
+    def test_mark_completed_retains_cache(self):
+        """mark_completed keeps audio cache; the retention policy handles cleanup."""
         from wilted.queue import add_article, mark_completed
 
         entry = add_article("Hello world.", title="Test")
@@ -280,7 +281,7 @@ class TestQueueCacheCleanup:
         (cache_dir / "para_000.mp3").write_bytes(b"data")
 
         mark_completed(entry)
-        assert not cache_dir.exists()
+        assert cache_dir.exists()
 
     def test_clear_queue_clears_all_caches(self):
         from wilted.queue import add_article, clear_queue

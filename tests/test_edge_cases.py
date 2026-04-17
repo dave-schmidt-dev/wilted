@@ -202,14 +202,12 @@ class TestConcurrentQueueAccess:
         assert fresh_queue[0]["title"] == "First"
         assert fresh_queue[1]["title"] == "Second"
 
-    def test_atomic_write_survives_content(self):
-        """Overwriting queue with save_queue() replaces entirely, no partial merge."""
+    def test_save_queue_is_noop(self):
+        """save_queue() is a backward-compat shim; SQLite is the source of truth."""
         save_queue([{"id": 1, "title": "Old", "file": "old.txt"}])
-        new_queue = [{"id": 2, "title": "New", "file": "new.txt"}]
-        save_queue(new_queue)
-        loaded = load_queue()
-        assert len(loaded) == 1
-        assert loaded[0]["title"] == "New"
+        save_queue([{"id": 2, "title": "New", "file": "new.txt"}])
+        # Both calls are no-ops; queue is empty because no add_article() was called
+        assert load_queue() == []
 
     def test_concurrent_adds_from_threads(self):
         """Two threads adding articles concurrently should not corrupt the file.
@@ -515,9 +513,9 @@ class TestWpmEstimateConsistency:
         """wilted-tui should use WPM_ESTIMATE, not literal 150."""
         from pathlib import Path
 
-        tui_path = Path(__file__).resolve().parent.parent / "src" / "wilted" / "tui.py"
-        violations = self._scan_for_hardcoded_150(tui_path)
-        assert not violations, "Hardcoded 150 WPM found in tui.py:\n" + "\n".join(violations)
+        tui_init = Path(__file__).resolve().parent.parent / "src" / "wilted" / "tui" / "__init__.py"
+        violations = self._scan_for_hardcoded_150(tui_init)
+        assert not violations, "Hardcoded 150 WPM found in tui/__init__.py:\n" + "\n".join(violations)
 
     def test_no_hardcoded_150_in_cli(self):
         """wilted CLI module should use WPM_ESTIMATE, not literal 150."""

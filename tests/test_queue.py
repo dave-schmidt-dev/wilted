@@ -15,25 +15,19 @@ from wilted.queue import (
 
 
 class TestLoadSaveQueue:
-    def test_empty_when_no_file(self):
+    def test_empty_when_no_items(self):
         assert load_queue() == []
 
-    def test_round_trip(self):
-        entries = [{"id": 1, "title": "Test", "file": "test.txt"}]
-        save_queue(entries)
-        assert load_queue() == entries
+    def test_save_queue_is_noop(self):
+        """save_queue() is a backward-compat shim; it does not persist data."""
+        save_queue([{"id": 1, "title": "Test", "file": "test.txt"}])
+        assert load_queue() == []
 
-    def test_atomic_write_creates_file(self, tmp_path):
-        queue_file = wilted.QUEUE_FILE
-        assert not queue_file.exists()
-        save_queue([{"id": 1}])
-        assert queue_file.exists()
-
-    def test_atomic_write_no_partial(self, tmp_path):
-        """Save should not leave .tmp files behind."""
-        save_queue([{"id": 1}])
-        tmp_files = list(wilted.DATA_DIR.glob("*.tmp"))
-        assert tmp_files == []
+    def test_load_returns_only_ready_items(self):
+        add_article("Text.", title="Added")
+        queue = load_queue()
+        assert len(queue) == 1
+        assert queue[0]["status"] == "ready"
 
 
 class TestAddArticle:
@@ -129,11 +123,12 @@ class TestMarkCompleted:
         mark_completed(entry)
         assert load_queue() == []
 
-    def test_deletes_cached_file(self):
+    def test_retains_cached_file(self):
+        """mark_completed keeps files; retention policy handles cleanup later."""
         entry = add_article("Content.", title="Test")
         article_path = wilted.ARTICLES_DIR / entry["file"]
         mark_completed(entry)
-        assert not article_path.exists()
+        assert article_path.exists()
 
     def test_leaves_other_entries(self):
         add_article("First.", title="First")

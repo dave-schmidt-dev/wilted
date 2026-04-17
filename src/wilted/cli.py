@@ -7,12 +7,100 @@ import sys
 from wilted import VOICES, WPM_ESTIMATE
 from wilted.fetch import get_text_from_clipboard, get_text_from_url
 from wilted.ingest import resolve_article
-from wilted.queue import add_article, clear_queue, get_article_text, load_queue, mark_completed, remove_article
+from wilted.log import setup_logging
+from wilted.queue import (
+    add_article,
+    clear_queue,
+    get_article_text,
+    load_queue,
+    mark_completed,
+    remove_article,
+    utc_to_local_date,
+)
 from wilted.text import clean_text
 
 
 class CLIError(Exception):
     """Raised by CLI commands to signal a user-facing error."""
+
+
+# ---------------------------------------------------------------------------
+# Subcommand dispatch helpers
+# ---------------------------------------------------------------------------
+
+# Old --flag → new subcommand name (for translation in both directions)
+_SUBCMD_TO_FLAG = {
+    "add": "--add",
+    "list": "--list",
+    "play": "--play",
+    "next": "--next",
+    "clear": "--clear",
+}
+
+# Phase 2+ pipeline and management subcommands — stubbed until implemented.
+_STUB_SUBCMDS = frozenset({"discover", "classify", "report", "prepare", "feed", "playlist", "keyword", "benchmark"})
+
+
+def _normalize_argv(argv: list[str]) -> list[str]:
+    """Translate new subcommand argv to legacy flag argv.
+
+    Allows ``wilted list`` and ``wilted --list`` to both work.
+
+    Examples::
+
+        ['add', 'URL']   → ['--add', 'URL']
+        ['remove', '3']  → ['--remove', '3']
+        ['list']         → ['--list']
+    """
+    if not argv:
+        return argv
+    first = argv[0]
+    if first in _SUBCMD_TO_FLAG:
+        return [_SUBCMD_TO_FLAG[first]] + argv[1:]
+    if first == "remove":
+        return ["--remove"] + argv[1:]
+    return argv
+
+
+def _run_stub(argv: list[str]) -> None:
+    """Print a 'not yet implemented' message for Phase 2+ subcommands."""
+    cmd = argv[0]
+    print(f"'{cmd}' is not yet implemented (coming in Phase 2+).", file=sys.stderr)
+    sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# PROJECT_ROOT validation (Task 1.4)
+# ---------------------------------------------------------------------------
+
+
+def validate_project_root() -> None:
+    """Verify PROJECT_ROOT is sane and data/ is writable.
+
+    Raises:
+        RuntimeError: If PROJECT_ROOT does not contain pyproject.toml or
+            data/ cannot be created/written to.  The message includes
+            instructions for setting WILTED_PROJECT_ROOT.
+    """
+    from wilted import DATA_DIR, PROJECT_ROOT
+
+    if not (PROJECT_ROOT / "pyproject.toml").exists():
+        raise RuntimeError(
+            f"PROJECT_ROOT '{PROJECT_ROOT}' does not contain pyproject.toml.\n"
+            "Set the WILTED_PROJECT_ROOT environment variable to the correct path, e.g.:\n"
+            "  export WILTED_PROJECT_ROOT=/path/to/wilted"
+        )
+
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        probe = DATA_DIR / ".write_probe"
+        probe.touch()
+        probe.unlink()
+    except OSError as e:
+        raise RuntimeError(
+            f"data/ directory '{DATA_DIR}' is not writable: {e}\n"
+            "Check directory permissions or set WILTED_PROJECT_ROOT."
+        ) from e
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +145,7 @@ def cmd_list(args):
         words = entry.get("words", 0)
         total_words += words
         est = words / WPM_ESTIMATE
-        added = entry.get("added", "")[:10]
+        added = utc_to_local_date(entry.get("added", ""))
         print(f"  {i}. {entry['title']}")
         print(f"     {words} words, ~{est:.0f} min | added {added}")
 
@@ -235,6 +323,29 @@ def cmd_list_voices():
             print(f"  {accent}: {', '.join(voices)}")
 
 
+def cmd_doctor(_argv: list[str] | None = None) -> None:
+    """Print diagnostic path and configuration info."""
+    import shutil
+
+    from wilted import DATA_DIR, PROJECT_ROOT
+
+    db_path = DATA_DIR / "wilted.db"
+    config_path = PROJECT_ROOT / "wilted.toml"
+
+    print("wilted doctor\n")
+    print(f"  PROJECT_ROOT : {PROJECT_ROOT}")
+    print(f"  DATA_DIR     : {DATA_DIR}")
+    print(f"  DB path      : {db_path}  ({'exists' if db_path.exists() else 'missing'})")
+    print(f"  Config path  : {config_path}  ({'exists' if config_path.exists() else 'using defaults'})")
+    print(f"  pyproject    : {(PROJECT_ROOT / 'pyproject.toml').exists()}")
+
+    data_writable = os.access(DATA_DIR, os.W_OK) if DATA_DIR.exists() else False
+    print(f"  data/ writable: {data_writable}")
+
+    ffmpeg = shutil.which("ffmpeg")
+    print(f"  ffmpeg       : {ffmpeg or 'NOT FOUND'}")
+
+
 # ---------------------------------------------------------------------------
 # Argument parsing and dispatch
 # ---------------------------------------------------------------------------
@@ -243,19 +354,43 @@ def cmd_list_voices():
 def run_cli(argv=None):
     """Parse CLI arguments and dispatch to the appropriate command.
 
+    Accepts both new subcommand syntax (``wilted list``) and legacy flag
+    syntax (``wilted --list``) via :func:`_normalize_argv`.
+
     Args:
         argv: Argument list to parse. Defaults to sys.argv[1:] if None.
     """
+    if argv is None:
+        argv = sys.argv[1:]
+    argv = list(argv)
+
+    # Route Phase 2+ stubs and doctor before argparse.
+    if argv:
+        first = argv[0]
+        if first == "doctor":
+            cmd_doctor(argv[1:])
+            return
+        if first == "migrate":
+            from wilted.migrate import cmd_migrate
+
+            cmd_migrate(argv[1:])
+            return
+        if first in _STUB_SUBCMDS:
+            _run_stub(argv)
+            return
+
+    # Translate subcommand style → flag style so the flat parser handles both.
+    argv = _normalize_argv(argv)
+
     parser = argparse.ArgumentParser(
         description="Wilted — local TTS article reader. No args launches the TUI.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
   wilted                                  Launch interactive TUI
-  wilted --add https://apple.news/ABC123  Add to reading list
-  wilted --add                            Add clipboard to reading list
-  wilted --list                           Show reading list
-  wilted --play                           Play entire reading list
-  wilted --next                           Play next article only
+  wilted add https://apple.news/ABC123    Add to reading list (subcommand)
+  wilted --add https://apple.news/ABC123  Add to reading list (legacy)
+  wilted list                             Show reading list
+  wilted play                             Play entire reading list
   wilted --clean URL                      Preview cleaned article text
   wilted --save out.wav URL               Export article audio to WAV""",
     )
@@ -285,6 +420,7 @@ def run_cli(argv=None):
     util_group.add_argument("--clean", action="store_true", help="Output cleaned text only, no audio")
     util_group.add_argument("--list-voices", action="store_true", help="List available voices")
     util_group.add_argument("--version", action="store_true", help="Show version and exit")
+    util_group.add_argument("--debug", action="store_true", help="Enable DEBUG logging to /tmp/wilted.log")
 
     args = parser.parse_args(argv)
 
@@ -321,7 +457,20 @@ def run_cli(argv=None):
 
 
 def main():
-    """Main entry point — dispatches to TUI (no args) or CLI (with args)."""
+    """Main entry point — dispatches to TUI (no args) or CLI (with args).
+
+    Startup order: logging → project root validation → migrations → tqdm lock → TUI/CLI
+    """
+    debug = bool(os.environ.get("WILTED_DEBUG")) or "--debug" in sys.argv
+    setup_logging(debug=debug)
+
+    validate_project_root()
+
+    from wilted import DATA_DIR
+    from wilted.db import run_migrations
+
+    run_migrations(DATA_DIR / "wilted.db")
+
     if len(sys.argv) > 1:
         run_cli()
     else:
