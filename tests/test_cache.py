@@ -1,12 +1,12 @@
-"""Tests for lilt.cache — audio caching with MP3 storage and manifest tracking."""
+"""Tests for wilted.cache — audio caching with MP3 storage and manifest tracking."""
 
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
-import lilt
-from lilt.cache import (
+import wilted
+from wilted.cache import (
     check_ffmpeg,
     clear_cache,
     get_cache_dir,
@@ -20,12 +20,12 @@ from lilt.cache import (
 class TestCheckFfmpeg:
     def test_passes_when_ffmpeg_available(self):
         """Should not raise when ffmpeg is found."""
-        with patch("lilt.cache.subprocess.run") as mock_run:
+        with patch("wilted.cache.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             check_ffmpeg()  # Should not raise
 
     def test_raises_when_ffmpeg_missing(self):
-        with patch("lilt.cache.subprocess.run", side_effect=FileNotFoundError):
+        with patch("wilted.cache.subprocess.run", side_effect=FileNotFoundError):
             with pytest.raises(RuntimeError, match="ffmpeg is required"):
                 check_ffmpeg()
 
@@ -33,7 +33,7 @@ class TestCheckFfmpeg:
         from subprocess import CalledProcessError
 
         with patch(
-            "lilt.cache.subprocess.run",
+            "wilted.cache.subprocess.run",
             side_effect=CalledProcessError(1, "ffmpeg"),
         ):
             with pytest.raises(RuntimeError, match="ffmpeg is required"):
@@ -43,7 +43,7 @@ class TestCheckFfmpeg:
 class TestGetCacheDir:
     def test_returns_correct_path(self):
         result = get_cache_dir(42)
-        assert result == lilt.AUDIO_DIR / "42"
+        assert result == wilted.AUDIO_DIR / "42"
 
     def test_uses_string_article_id(self):
         result = get_cache_dir(7)
@@ -54,7 +54,7 @@ class TestSaveLoadAudio:
     """Test MP3 save/load round-trip via mlx_audio mocks."""
 
     def test_save_creates_mp3_file(self):
-        from lilt.cache import save_audio
+        from wilted.cache import save_audio
 
         audio_np = np.zeros(24000, dtype=np.float32)
         with patch("mlx_audio.audio_io.write") as mock_write:
@@ -63,7 +63,7 @@ class TestSaveLoadAudio:
             mock_write.assert_called_once_with(path, audio_np, 24000)
 
     def test_save_creates_directory(self):
-        from lilt.cache import save_audio
+        from wilted.cache import save_audio
 
         audio_np = np.zeros(24000, dtype=np.float32)
         with patch("mlx_audio.audio_io.write"):
@@ -72,13 +72,13 @@ class TestSaveLoadAudio:
             assert path.name == "para_005.mp3"
 
     def test_load_returns_none_when_missing(self):
-        from lilt.cache import load_audio
+        from wilted.cache import load_audio
 
         result = load_audio(1, 0)
         assert result is None
 
     def test_load_returns_float32_array(self):
-        from lilt.cache import load_audio
+        from wilted.cache import load_audio
 
         cache_dir = get_cache_dir(1)
         cache_dir.mkdir(parents=True)
@@ -184,7 +184,7 @@ class TestIsParagraphCached:
     """Tests for is_paragraph_cached() — per-paragraph cache validation."""
 
     def test_true_when_manifest_matches_and_file_exists(self):
-        from lilt.cache import is_paragraph_cached
+        from wilted.cache import is_paragraph_cached
 
         manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
         manifest["paragraphs"].append({"file": "para_000.mp3"})
@@ -196,12 +196,12 @@ class TestIsParagraphCached:
         assert is_paragraph_cached(1, 0, "af_heart", "a", 1.0, "2026-04-08T08:00:00") is True
 
     def test_false_when_no_manifest(self):
-        from lilt.cache import is_paragraph_cached
+        from wilted.cache import is_paragraph_cached
 
         assert is_paragraph_cached(999, 0, "af_heart", "a", 1.0, "2026-04-08T08:00:00") is False
 
     def test_false_when_voice_mismatch(self):
-        from lilt.cache import is_paragraph_cached
+        from wilted.cache import is_paragraph_cached
 
         manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
         save_manifest(1, manifest)
@@ -211,7 +211,7 @@ class TestIsParagraphCached:
         assert is_paragraph_cached(1, 0, "bf_emma", "a", 1.0, "2026-04-08T08:00:00") is False
 
     def test_false_when_speed_mismatch(self):
-        from lilt.cache import is_paragraph_cached
+        from wilted.cache import is_paragraph_cached
 
         manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
         save_manifest(1, manifest)
@@ -221,7 +221,7 @@ class TestIsParagraphCached:
         assert is_paragraph_cached(1, 0, "af_heart", "a", 1.5, "2026-04-08T08:00:00") is False
 
     def test_false_when_file_missing(self):
-        from lilt.cache import is_paragraph_cached
+        from wilted.cache import is_paragraph_cached
 
         manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
         save_manifest(1, manifest)
@@ -231,7 +231,7 @@ class TestIsParagraphCached:
 
     def test_works_with_generating_status(self):
         """Partially generated cache (status=generating) should still allow hits."""
-        from lilt.cache import is_paragraph_cached
+        from wilted.cache import is_paragraph_cached
 
         manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
         assert manifest["status"] == "generating"  # Not complete
@@ -261,7 +261,7 @@ class TestQueueCacheCleanup:
     """Verify queue operations clean up audio cache."""
 
     def test_remove_article_clears_cache(self):
-        from lilt.queue import add_article, remove_article
+        from wilted.queue import add_article, remove_article
 
         entry = add_article("Hello world.", title="Test")
         cache_dir = get_cache_dir(entry["id"])
@@ -272,7 +272,7 @@ class TestQueueCacheCleanup:
         assert not cache_dir.exists()
 
     def test_mark_completed_clears_cache(self):
-        from lilt.queue import add_article, mark_completed
+        from wilted.queue import add_article, mark_completed
 
         entry = add_article("Hello world.", title="Test")
         cache_dir = get_cache_dir(entry["id"])
@@ -283,7 +283,7 @@ class TestQueueCacheCleanup:
         assert not cache_dir.exists()
 
     def test_clear_queue_clears_all_caches(self):
-        from lilt.queue import add_article, clear_queue
+        from wilted.queue import add_article, clear_queue
 
         e1 = add_article("Article one.", title="One")
         e2 = add_article("Article two.", title="Two")
@@ -308,7 +308,7 @@ class TestGenerateArticleCache:
         return engine
 
     def test_generates_all_paragraphs(self):
-        from lilt.cache import generate_article_cache
+        from wilted.cache import generate_article_cache
 
         engine = self._make_engine()
         text = "Paragraph one.\n\nParagraph two.\n\nParagraph three."
@@ -329,7 +329,7 @@ class TestGenerateArticleCache:
         assert len(manifest["paragraphs"]) == 3
 
     def test_cancellation_stops_early(self):
-        from lilt.cache import generate_article_cache
+        from wilted.cache import generate_article_cache
 
         engine = self._make_engine()
         text = "Para one.\n\nPara two.\n\nPara three."
@@ -357,7 +357,7 @@ class TestGenerateArticleCache:
         assert engine.generate_audio.call_count == 1
 
     def test_on_progress_callback(self):
-        from lilt.cache import generate_article_cache
+        from wilted.cache import generate_article_cache
 
         engine = self._make_engine()
         text = "First.\n\nSecond."
@@ -378,7 +378,7 @@ class TestGenerateArticleCache:
         assert progress_calls == [(0, 2), (1, 2)]
 
     def test_clears_stale_cache(self):
-        from lilt.cache import generate_article_cache
+        from wilted.cache import generate_article_cache
 
         # Create cache with different voice
         manifest = new_manifest(4, "bf_emma", "b", 1.0, "2026-04-08T08:00:00")
@@ -392,7 +392,7 @@ class TestGenerateArticleCache:
         assert manifest["voice"] == "af_heart"
 
     def test_empty_text_returns_true(self):
-        from lilt.cache import generate_article_cache
+        from wilted.cache import generate_article_cache
 
         engine = self._make_engine()
         result = generate_article_cache(engine, "", 5, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
@@ -404,7 +404,7 @@ class TestEngineExplicitParams:
     """Tests for generate_audio() with explicit voice/lang/speed params."""
 
     def test_explicit_params_used(self):
-        from lilt.engine import AudioEngine
+        from wilted.engine import AudioEngine
 
         engine = AudioEngine()
         mock_model = MagicMock()
@@ -417,7 +417,7 @@ class TestEngineExplicitParams:
         mock_model.generate.assert_called_once_with("hello", voice="bf_emma", speed=1.5, lang_code="b")
 
     def test_fallback_to_instance_attrs(self):
-        from lilt.engine import AudioEngine
+        from wilted.engine import AudioEngine
 
         engine = AudioEngine(voice="am_adam", speed=0.8, lang="a")
         mock_model = MagicMock()
@@ -430,7 +430,7 @@ class TestEngineExplicitParams:
         mock_model.generate.assert_called_once_with("hello", voice="am_adam", speed=0.8, lang_code="a")
 
     def test_partial_override(self):
-        from lilt.engine import AudioEngine
+        from wilted.engine import AudioEngine
 
         engine = AudioEngine(voice="am_adam", speed=0.8, lang="a")
         mock_model = MagicMock()
@@ -447,13 +447,13 @@ class TestModelLock:
     """Tests for threading.Lock on model access."""
 
     def test_lock_exists(self):
-        from lilt.engine import AudioEngine
+        from wilted.engine import AudioEngine
 
         engine = AudioEngine()
         assert hasattr(engine, "_model_lock")
 
     def test_generate_audio_acquires_lock(self):
-        from lilt.engine import AudioEngine
+        from wilted.engine import AudioEngine
 
         engine = AudioEngine()
         mock_model = MagicMock()

@@ -1,4 +1,4 @@
-"""Edge case tests for lilt — corrupt data, missing files, concurrent access, engine errors."""
+"""Edge case tests for wilted — corrupt data, missing files, concurrent access, engine errors."""
 
 import importlib
 import json
@@ -32,9 +32,9 @@ if "mlx_audio.audio_io" not in sys.modules:
     _audio_io.write = lambda *a, **kw: None
     sys.modules["mlx_audio.audio_io"] = _audio_io
 
-import lilt
-from lilt.engine import AudioEngine
-from lilt.queue import (
+import wilted
+from wilted.engine import AudioEngine
+from wilted.queue import (
     add_article,
     clear_queue,
     get_article_text,
@@ -43,7 +43,7 @@ from lilt.queue import (
     remove_article,
     save_queue,
 )
-from lilt.state import (
+from wilted.state import (
     clear_article_state,
     get_article_state,
     load_state,
@@ -60,12 +60,12 @@ class TestCorruptQueue:
 
     def test_corrupt_json_returns_empty(self):
         """Invalid JSON in the queue file should return an empty list."""
-        lilt.QUEUE_FILE.write_text("{not valid json at all!!")
+        wilted.QUEUE_FILE.write_text("{not valid json at all!!")
         assert load_queue() == []
 
     def test_empty_file_returns_empty(self):
         """A zero-byte queue file should return an empty list."""
-        lilt.QUEUE_FILE.write_text("")
+        wilted.QUEUE_FILE.write_text("")
         assert load_queue() == []
 
     def test_non_list_json_returns_empty(self):
@@ -74,26 +74,26 @@ class TestCorruptQueue:
         After hardening, load_queue() validates the top-level type and returns []
         for non-list JSON.
         """
-        lilt.QUEUE_FILE.write_text(json.dumps({"not": "a list"}))
+        wilted.QUEUE_FILE.write_text(json.dumps({"not": "a list"}))
         result = load_queue()
         assert result == []
 
     def test_non_list_json_types_return_empty(self):
         """Non-list JSON types (string, int, dict) should all return []."""
         for value in ['"just a string"', "42", '{"key": "val"}']:
-            lilt.QUEUE_FILE.write_text(value)
+            wilted.QUEUE_FILE.write_text(value)
             assert load_queue() == [], f"load_queue() should return [] for JSON: {value}"
 
     def test_corrupt_queue_does_not_break_add(self):
         """Adding an article when the queue file is corrupt should recover."""
-        lilt.QUEUE_FILE.write_text("<<<garbage>>>")
+        wilted.QUEUE_FILE.write_text("<<<garbage>>>")
         entry = add_article("Recovery test article.", title="Recovery")
         assert entry["id"] == 1
         assert load_queue() == [entry]
 
     def test_corrupt_queue_does_not_break_clear(self):
         """Clearing when the queue file is corrupt should not crash."""
-        lilt.QUEUE_FILE.write_text("not json")
+        wilted.QUEUE_FILE.write_text("not json")
         count = clear_queue()
         assert count == 0
 
@@ -108,23 +108,23 @@ class TestCorruptState:
 
     def test_corrupt_json_returns_empty_dict(self):
         """Corrupt state file should produce an empty dict from load_state()."""
-        lilt.STATE_FILE.write_text("{{{bad json!!")
+        wilted.STATE_FILE.write_text("{{{bad json!!")
         assert load_state() == {}
 
     def test_non_dict_json_returns_empty_dict(self):
         """Non-dict JSON types (list, string, int) should return {}."""
         for value in ["[1, 2, 3]", '"a string"', "42"]:
-            lilt.STATE_FILE.write_text(value)
+            wilted.STATE_FILE.write_text(value)
             assert load_state() == {}, f"load_state() should return {{}} for JSON: {value}"
 
     def test_get_article_state_on_corrupt_file(self):
         """get_article_state() should return None when state is corrupt."""
-        lilt.STATE_FILE.write_text("not json")
+        wilted.STATE_FILE.write_text("not json")
         assert get_article_state(1) is None
 
     def test_set_article_state_on_corrupt_file(self):
         """set_article_state() should overwrite corrupt state without crashing."""
-        lilt.STATE_FILE.write_text("corrupt!")
+        wilted.STATE_FILE.write_text("corrupt!")
         set_article_state(1, paragraph_idx=5, segment_in_paragraph=2)
         result = get_article_state(1)
         assert result is not None
@@ -132,7 +132,7 @@ class TestCorruptState:
 
     def test_clear_article_state_on_corrupt_file(self):
         """clear_article_state() should not crash on corrupt state file."""
-        lilt.STATE_FILE.write_text("{oops")
+        wilted.STATE_FILE.write_text("{oops")
         clear_article_state(42)  # should not raise
         assert load_state() == {}
 
@@ -148,7 +148,7 @@ class TestMissingArticleFile:
     def test_get_article_text_missing_file(self):
         """Add an article, delete its file, then get_article_text returns None."""
         entry = add_article("Some article text.", title="Vanishing")
-        article_path = lilt.ARTICLES_DIR / entry["file"]
+        article_path = wilted.ARTICLES_DIR / entry["file"]
         assert article_path.exists()
         article_path.unlink()
         assert get_article_text(entry) is None
@@ -156,7 +156,7 @@ class TestMissingArticleFile:
     def test_remove_article_missing_file(self):
         """remove_article should not crash when the cached file is already gone."""
         entry = add_article("Disappearing content.", title="Gone")
-        article_path = lilt.ARTICLES_DIR / entry["file"]
+        article_path = wilted.ARTICLES_DIR / entry["file"]
         article_path.unlink()
         removed = remove_article(0)
         assert removed["title"] == "Gone"
@@ -167,7 +167,7 @@ class TestMissingArticleFile:
         add_article("First article.", title="First")
         add_article("Second article.", title="Second")
         # Delete all cached files before clearing
-        for f in lilt.ARTICLES_DIR.iterdir():
+        for f in wilted.ARTICLES_DIR.iterdir():
             f.unlink()
         count = clear_queue()
         assert count == 2
@@ -176,7 +176,7 @@ class TestMissingArticleFile:
     def test_mark_completed_missing_file(self):
         """mark_completed should not crash when the cached file is gone."""
         entry = add_article("Completed content.", title="Done")
-        article_path = lilt.ARTICLES_DIR / entry["file"]
+        article_path = wilted.ARTICLES_DIR / entry["file"]
         article_path.unlink()
         mark_completed(entry)  # should not raise
         assert load_queue() == []
@@ -262,7 +262,7 @@ class TestEngineErrorHandling:
         def _failing_load(*args, **kwargs):
             raise ImportError("mlx_audio not available")
 
-        with patch("lilt.engine.AudioEngine.load_model") as mock_load:
+        with patch("wilted.engine.AudioEngine.load_model") as mock_load:
             mock_load.side_effect = RuntimeError("Failed to load TTS model 'test': mlx_audio not available")
             with pytest.raises(RuntimeError, match="Failed to load TTS model"):
                 engine.load_model()
@@ -418,7 +418,7 @@ class TestLanguageConstants:
 
     def test_all_voice_accents_have_language(self):
         """Every accent in VOICES should have a matching LANGUAGES entry."""
-        from lilt import LANGUAGES, VOICES
+        from wilted import LANGUAGES, VOICES
 
         for voice_id, info in VOICES.items():
             accent = info["accent"]
@@ -427,13 +427,13 @@ class TestLanguageConstants:
 
     def test_chinese_language_exists(self):
         """Chinese must be in LANGUAGES since Chinese voices exist."""
-        from lilt import LANGUAGES
+        from wilted import LANGUAGES
 
         assert "z" in LANGUAGES
         assert "Chinese" in LANGUAGES["z"]
 
     def test_wpm_estimate_is_positive(self):
-        from lilt import WPM_ESTIMATE
+        from wilted import WPM_ESTIMATE
 
         assert WPM_ESTIMATE > 0
 
@@ -512,18 +512,18 @@ class TestWpmEstimateConsistency:
         return violations
 
     def test_no_hardcoded_150_in_tui(self):
-        """lilt-tui should use WPM_ESTIMATE, not literal 150."""
+        """wilted-tui should use WPM_ESTIMATE, not literal 150."""
         from pathlib import Path
 
-        tui_path = Path(__file__).resolve().parent.parent / "src" / "lilt" / "tui.py"
+        tui_path = Path(__file__).resolve().parent.parent / "src" / "wilted" / "tui.py"
         violations = self._scan_for_hardcoded_150(tui_path)
         assert not violations, "Hardcoded 150 WPM found in tui.py:\n" + "\n".join(violations)
 
     def test_no_hardcoded_150_in_cli(self):
-        """lilt CLI module should use WPM_ESTIMATE, not literal 150."""
+        """wilted CLI module should use WPM_ESTIMATE, not literal 150."""
         from pathlib import Path
 
-        cli_path = Path(__file__).resolve().parent.parent / "src" / "lilt" / "cli.py"
+        cli_path = Path(__file__).resolve().parent.parent / "src" / "wilted" / "cli.py"
         violations = self._scan_for_hardcoded_150(cli_path)
         assert not violations, "Hardcoded 150 WPM found in cli.py:\n" + "\n".join(violations)
 
@@ -538,8 +538,8 @@ class TestProjectRootResolution:
 
     def test_project_root_contains_pyproject_toml(self):
         """PROJECT_ROOT should point to the directory containing pyproject.toml."""
-        assert (lilt.PROJECT_ROOT / "pyproject.toml").exists(), (
-            f"PROJECT_ROOT={lilt.PROJECT_ROOT} does not contain pyproject.toml"
+        assert (wilted.PROJECT_ROOT / "pyproject.toml").exists(), (
+            f"PROJECT_ROOT={wilted.PROJECT_ROOT} does not contain pyproject.toml"
         )
 
     def test_data_dir_default_is_under_project_root(self):
@@ -548,19 +548,19 @@ class TestProjectRootResolution:
         # we verify the source definition rather than the live patched value.
         from pathlib import Path
 
-        init_path = Path(lilt.__file__)
+        init_path = Path(wilted.__file__)
         source = init_path.read_text()
         assert 'DATA_DIR = PROJECT_ROOT / "data"' in source
 
     def test_env_var_override(self, tmp_path):
-        """LILT_PROJECT_ROOT env var should override auto-detection."""
-        original_root = lilt.PROJECT_ROOT
+        """WILTED_PROJECT_ROOT env var should override auto-detection."""
+        original_root = wilted.PROJECT_ROOT
         try:
-            with patch.dict("os.environ", {"LILT_PROJECT_ROOT": str(tmp_path)}):
-                importlib.reload(lilt)
-                assert lilt.PROJECT_ROOT == tmp_path
+            with patch.dict("os.environ", {"WILTED_PROJECT_ROOT": str(tmp_path)}):
+                importlib.reload(wilted)
+                assert wilted.PROJECT_ROOT == tmp_path
         finally:
             with patch.dict("os.environ", {}, clear=False):
-                os.environ.pop("LILT_PROJECT_ROOT", None)
-                importlib.reload(lilt)
-            assert lilt.PROJECT_ROOT == original_root
+                os.environ.pop("WILTED_PROJECT_ROOT", None)
+                importlib.reload(wilted)
+            assert wilted.PROJECT_ROOT == original_root

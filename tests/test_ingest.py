@@ -1,4 +1,4 @@
-"""Tests for lilt.ingest — shared article ingestion."""
+"""Tests for wilted.ingest — shared article ingestion."""
 
 import sys
 import types
@@ -10,7 +10,7 @@ import pytest
 if "trafilatura" not in sys.modules:
     sys.modules["trafilatura"] = types.ModuleType("trafilatura")
 
-from lilt.ingest import ArticleResult, resolve_article
+from wilted.ingest import ArticleResult, resolve_article
 
 
 class TestResolveFromURL:
@@ -75,7 +75,7 @@ class TestResolveFromClipboard:
 
     def test_reads_system_clipboard_when_no_text_provided(self):
         """resolve_article reads from pbpaste when no clipboard_text given."""
-        with patch("lilt.ingest.get_text_from_clipboard", return_value="Clipboard content here."):
+        with patch("wilted.ingest.get_text_from_clipboard", return_value="Clipboard content here."):
             result = resolve_article()
 
         assert "Clipboard content" in result.text
@@ -100,7 +100,7 @@ class TestOnStatusCallback:
     def test_on_status_called_for_clipboard(self):
         """on_status callback receives progress messages for clipboard path."""
         messages = []
-        with patch("lilt.ingest.get_text_from_clipboard", return_value="Clipboard body."):
+        with patch("wilted.ingest.get_text_from_clipboard", return_value="Clipboard body."):
             resolve_article(on_status=messages.append)
 
         assert any("clipboard" in m.lower() for m in messages)

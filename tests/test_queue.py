@@ -1,9 +1,9 @@
-"""Tests for lilt.queue — reading list persistence and operations."""
+"""Tests for wilted.queue — reading list persistence and operations."""
 
 import pytest
 
-import lilt
-from lilt.queue import (
+import wilted
+from wilted.queue import (
     add_article,
     clear_queue,
     get_article_text,
@@ -24,7 +24,7 @@ class TestLoadSaveQueue:
         assert load_queue() == entries
 
     def test_atomic_write_creates_file(self, tmp_path):
-        queue_file = lilt.QUEUE_FILE
+        queue_file = wilted.QUEUE_FILE
         assert not queue_file.exists()
         save_queue([{"id": 1}])
         assert queue_file.exists()
@@ -32,7 +32,7 @@ class TestLoadSaveQueue:
     def test_atomic_write_no_partial(self, tmp_path):
         """Save should not leave .tmp files behind."""
         save_queue([{"id": 1}])
-        tmp_files = list(lilt.DATA_DIR.glob("*.tmp"))
+        tmp_files = list(wilted.DATA_DIR.glob("*.tmp"))
         assert tmp_files == []
 
 
@@ -51,7 +51,7 @@ class TestAddArticle:
 
     def test_saves_article_file(self):
         entry = add_article("Article content here.", title="My Article")
-        article_path = lilt.ARTICLES_DIR / entry["file"]
+        article_path = wilted.ARTICLES_DIR / entry["file"]
         assert article_path.exists()
         assert article_path.read_text() == "Article content here."
 
@@ -80,7 +80,7 @@ class TestRemoveArticle:
 
     def test_deletes_cached_file(self):
         entry = add_article("Content.", title="Test")
-        article_path = lilt.ARTICLES_DIR / entry["file"]
+        article_path = wilted.ARTICLES_DIR / entry["file"]
         assert article_path.exists()
         remove_article(0)
         assert not article_path.exists()
@@ -108,7 +108,7 @@ class TestClearQueue:
 
     def test_deletes_cached_files(self):
         entry = add_article("Content.", title="Test")
-        article_path = lilt.ARTICLES_DIR / entry["file"]
+        article_path = wilted.ARTICLES_DIR / entry["file"]
         clear_queue()
         assert not article_path.exists()
 
@@ -131,7 +131,7 @@ class TestMarkCompleted:
 
     def test_deletes_cached_file(self):
         entry = add_article("Content.", title="Test")
-        article_path = lilt.ARTICLES_DIR / entry["file"]
+        article_path = wilted.ARTICLES_DIR / entry["file"]
         mark_completed(entry)
         assert not article_path.exists()
 

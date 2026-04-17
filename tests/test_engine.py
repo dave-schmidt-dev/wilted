@@ -1,4 +1,4 @@
-"""Tests for lilt.engine — TTS playback engine with pause/resume/stop."""
+"""Tests for wilted.engine — TTS playback engine with pause/resume/stop."""
 
 import os
 import sys
@@ -24,7 +24,7 @@ if "mlx_audio.audio_io" not in sys.modules:
     _audio_io.write = lambda *a, **kw: None  # stub for test_cli patching
     sys.modules["mlx_audio.audio_io"] = _audio_io
 
-from lilt.engine import AudioEngine, _normalize_segments
+from wilted.engine import AudioEngine, _normalize_segments
 
 
 def _make_fake_segment(n_samples=1024, sample_rate=24000):
@@ -254,7 +254,7 @@ class TestModelLoading:
                     "mlx_audio.tts.utils": mlx_audio_utils_mod,
                 },
             ),
-            patch("lilt.engine.os.path.isdir", return_value=True),
+            patch("wilted.engine.os.path.isdir", return_value=True),
         ):
             engine.load_model()
             assert os.environ["HF_HUB_DISABLE_XET"] == "1"
@@ -281,7 +281,7 @@ class TestModelLoading:
                     "mlx_audio.tts.utils": mlx_audio_utils_mod,
                 },
             ),
-            patch("lilt.engine.os.path.isdir", return_value=True),
+            patch("wilted.engine.os.path.isdir", return_value=True),
         ):
             engine.load_model()
             assert os.environ.get("HF_HUB_OFFLINE") == "1"
@@ -305,7 +305,7 @@ class TestModelLoading:
                     "mlx_audio.tts.utils": mlx_audio_utils_mod,
                 },
             ),
-            patch("lilt.engine.os.path.isdir", return_value=False),
+            patch("wilted.engine.os.path.isdir", return_value=False),
         ):
             engine.load_model()
             assert "HF_HUB_OFFLINE" not in os.environ
@@ -313,7 +313,7 @@ class TestModelLoading:
             assert os.environ["HF_HUB_DISABLE_XET"] == "1"
 
     def test_load_model_respects_xet_opt_in(self):
-        """Setting LILT_ENABLE_HF_XET should skip the safety override."""
+        """Setting WILTED_ENABLE_HF_XET should skip the safety override."""
         engine = AudioEngine()
         mock_load_model = MagicMock(return_value="mock-model")
         mlx_audio_mod = types.ModuleType("mlx_audio")
@@ -324,7 +324,7 @@ class TestModelLoading:
         with (
             patch.dict(
                 os.environ,
-                {"LILT_ENABLE_HF_XET": "1"},
+                {"WILTED_ENABLE_HF_XET": "1"},
                 clear=True,
             ),
             patch.dict(
@@ -338,7 +338,7 @@ class TestModelLoading:
         ):
             engine.load_model()
             # Check inside the controlled env — the real shell may already
-            # have the var from a previous lilt run.
+            # have the var from a previous wilted run.
             assert "HF_HUB_DISABLE_XET" not in os.environ
 
         assert engine._model == "mock-model"
@@ -376,7 +376,7 @@ class TestLoadModelThreadSafety:
                     "mlx_audio.tts.utils": mlx_audio_utils_mod,
                 },
             ),
-            patch("lilt.engine.os.path.isdir", return_value=True),
+            patch("wilted.engine.os.path.isdir", return_value=True),
         ):
             t1 = threading.Thread(target=engine.load_model)
             t1.start()
@@ -648,7 +648,7 @@ class TestLangCodeParameter:
 class TestExportToWav:
     def test_normal_export(self, engine, mock_stream, tmp_path):
         """export_to_wav generates audio for each chunk and writes WAV."""
-        from lilt.engine import export_to_wav
+        from wilted.engine import export_to_wav
 
         filepath = str(tmp_path / "output.wav")
         with patch("mlx_audio.audio_io.write", create=True) as mock_write:
@@ -660,7 +660,7 @@ class TestExportToWav:
 
     def test_on_progress_callback(self, engine, mock_stream, tmp_path):
         """export_to_wav calls on_progress with (current, total)."""
-        from lilt.engine import export_to_wav
+        from wilted.engine import export_to_wav
 
         progress_calls = []
         filepath = str(tmp_path / "output.wav")
@@ -676,14 +676,14 @@ class TestExportToWav:
 
     def test_empty_chunks_raises(self, engine):
         """export_to_wav raises ValueError for empty chunk list."""
-        from lilt.engine import export_to_wav
+        from wilted.engine import export_to_wav
 
         with pytest.raises(ValueError, match="No text chunks"):
             export_to_wav(engine, [], "output.wav")
 
     def test_no_audio_generated_raises(self, engine, mock_stream, tmp_path):
         """export_to_wav raises ValueError when model produces no audio."""
-        from lilt.engine import export_to_wav
+        from wilted.engine import export_to_wav
 
         engine._model.generate.return_value = []  # No segments
         filepath = str(tmp_path / "output.wav")
@@ -692,7 +692,7 @@ class TestExportToWav:
 
     def test_should_cancel_aborts(self, engine, mock_stream, tmp_path):
         """export_to_wav raises InterruptedError when should_cancel returns True."""
-        from lilt.engine import export_to_wav
+        from wilted.engine import export_to_wav
 
         filepath = str(tmp_path / "output.wav")
         with pytest.raises(InterruptedError, match="Export cancelled"):

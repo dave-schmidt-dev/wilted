@@ -1,4 +1,4 @@
-"""Lilt — local TTS article reader for Apple Silicon."""
+"""Wilted — local TTS article reader for Apple Silicon."""
 
 __version__ = "0.2.0"
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Allow override via env var; otherwise find the project root by looking for
 # pyproject.toml upward from __file__ (works for both editable and regular installs).
-if _env_root := os.environ.get("LILT_PROJECT_ROOT"):
+if _env_root := os.environ.get("WILTED_PROJECT_ROOT"):
     PROJECT_ROOT = Path(_env_root)
 else:
     _candidate = Path(__file__).resolve().parent
@@ -16,7 +16,7 @@ else:
             break
         _candidate = _candidate.parent
     else:
-        # Fallback: assume original layout (src/lilt/__init__.py -> 3 parents up)
+        # Fallback: assume original layout (src/wilted/__init__.py -> 3 parents up)
         _candidate = Path(__file__).resolve().parent.parent.parent
     PROJECT_ROOT = _candidate
 

@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterable
 
 import numpy as np
 
-from lilt.text import split_paragraphs
+from wilted.text import split_paragraphs
 
 SAMPLE_RATE = 24000  # Kokoro default
 
@@ -41,9 +41,9 @@ def _force_hf_offline_if_cached(model_name: str) -> None:
     code paths, but they are not the root-cause fix for the ``fds_to_keep``
     failure.
 
-    Set ``LILT_ENABLE_HF_XET=1`` to opt back into Xet-backed downloads.
+    Set ``WILTED_ENABLE_HF_XET=1`` to opt back into Xet-backed downloads.
     """
-    if os.environ.get("LILT_ENABLE_HF_XET", "").lower() in {"1", "true", "yes"}:
+    if os.environ.get("WILTED_ENABLE_HF_XET", "").lower() in {"1", "true", "yes"}:
         return
 
     # --- Layer 1: check cache and go offline if present ---

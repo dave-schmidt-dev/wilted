@@ -1,14 +1,14 @@
-"""CLI commands for lilt — extracted from the root lilt script for testability."""
+"""CLI commands for wilted — extracted from the root wilted script for testability."""
 
 import argparse
 import os
 import sys
 
-from lilt import VOICES, WPM_ESTIMATE
-from lilt.fetch import get_text_from_clipboard, get_text_from_url
-from lilt.ingest import resolve_article
-from lilt.queue import add_article, clear_queue, get_article_text, load_queue, mark_completed, remove_article
-from lilt.text import clean_text
+from wilted import VOICES, WPM_ESTIMATE
+from wilted.fetch import get_text_from_clipboard, get_text_from_url
+from wilted.ingest import resolve_article
+from wilted.queue import add_article, clear_queue, get_article_text, load_queue, mark_completed, remove_article
+from wilted.text import clean_text
 
 
 class CLIError(Exception):
@@ -91,7 +91,7 @@ def _play_text(text, args):
 
     Returns True if playback completed, False if interrupted.
     """
-    from lilt.engine import AudioEngine
+    from wilted.engine import AudioEngine
 
     word_count = len(text.split())
     est_minutes = word_count / WPM_ESTIMATE
@@ -100,8 +100,8 @@ def _play_text(text, args):
     engine = AudioEngine(model_name=args.model, voice=args.voice, speed=args.speed, lang=args.lang)
 
     if args.save:
-        from lilt.engine import export_to_wav
-        from lilt.text import split_into_chunks
+        from wilted.engine import export_to_wav
+        from wilted.text import split_into_chunks
 
         chunks = split_into_chunks(text)
         print(f"  {len(chunks)} chunks. Generating...")
@@ -117,7 +117,7 @@ def _play_text(text, args):
             print(f"\n  {e}", file=sys.stderr)
     else:
         # Stream playback via AudioEngine.play_article
-        from lilt.text import split_paragraphs
+        from wilted.text import split_paragraphs
 
         paragraphs = split_paragraphs(text)
         print(f"  {len(paragraphs)} paragraphs. Playing... (Ctrl+C to stop)\n")
@@ -141,7 +141,7 @@ def cmd_play(args):
     """Play all articles in the reading list sequentially."""
     queue = load_queue()
     if not queue:
-        print("Reading list is empty. Add articles with: lilt --add URL")
+        print("Reading list is empty. Add articles with: wilted --add URL")
         return
 
     print(f"Playing {len(queue)} article(s)...\n")
@@ -170,7 +170,7 @@ def cmd_next(args):
     """Play the next article in the reading list."""
     queue = load_queue()
     if not queue:
-        print("Reading list is empty. Add articles with: lilt --add URL")
+        print("Reading list is empty. Add articles with: wilted --add URL")
         return
 
     entry = queue[0]
@@ -202,7 +202,7 @@ def cmd_direct(args):
             print("Fetching article...")
             text, _ = get_text_from_url(args.input)
             if not text:
-                raise CLIError("Could not extract article text (paywall?). Try: lilt --add")
+                raise CLIError("Could not extract article text (paywall?). Try: wilted --add")
         elif os.path.isfile(args.input):
             with open(args.input) as f:
                 text = f.read()
@@ -247,17 +247,17 @@ def run_cli(argv=None):
         argv: Argument list to parse. Defaults to sys.argv[1:] if None.
     """
     parser = argparse.ArgumentParser(
-        description="Lilt — local TTS article reader. No args launches the TUI.",
+        description="Wilted — local TTS article reader. No args launches the TUI.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
-  lilt                                  Launch interactive TUI
-  lilt --add https://apple.news/ABC123  Add to reading list
-  lilt --add                            Add clipboard to reading list
-  lilt --list                           Show reading list
-  lilt --play                           Play entire reading list
-  lilt --next                           Play next article only
-  lilt --clean URL                      Preview cleaned article text
-  lilt --save out.wav URL               Export article audio to WAV""",
+  wilted                                  Launch interactive TUI
+  wilted --add https://apple.news/ABC123  Add to reading list
+  wilted --add                            Add clipboard to reading list
+  wilted --list                           Show reading list
+  wilted --play                           Play entire reading list
+  wilted --next                           Play next article only
+  wilted --clean URL                      Preview cleaned article text
+  wilted --save out.wav URL               Export article audio to WAV""",
     )
 
     parser.add_argument("input", nargs="?", help="URL, file path, '-' for stdin (CLI mode only)")
@@ -290,9 +290,9 @@ def run_cli(argv=None):
 
     try:
         if args.version:
-            from lilt import __version__
+            from wilted import __version__
 
-            print(f"lilt {__version__}")
+            print(f"wilted {__version__}")
             return
         if args.list_voices:
             cmd_list_voices()
@@ -333,6 +333,6 @@ def main():
 
         tqdm.tqdm.get_lock()
 
-        from lilt.tui import LiltApp
+        from wilted.tui import WiltedApp
 
-        LiltApp().run()
+        WiltedApp().run()

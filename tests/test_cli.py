@@ -1,4 +1,4 @@
-"""Tests for lilt.cli — CLI commands and argument parsing."""
+"""Tests for wilted.cli — CLI commands and argument parsing."""
 
 import argparse
 import types
@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lilt.cli import (
+from wilted.cli import (
     CLIError,
     _play_text,
     cmd_add,
@@ -19,7 +19,7 @@ from lilt.cli import (
     main,
     run_cli,
 )
-from lilt.queue import add_article, load_queue
+from wilted.queue import add_article, load_queue
 
 
 def _make_args(**overrides):
@@ -58,7 +58,7 @@ def _add_test_article(text="Hello world. This is a test article.", title="Test A
 class TestCmdAdd:
     def test_add_from_url(self, capsys):
         """cmd_add with URL input fetches and adds article."""
-        from lilt.ingest import ArticleResult
+        from wilted.ingest import ArticleResult
 
         args = _make_args(input="https://example.com/article", add=True)
         fake_result = ArticleResult(
@@ -67,7 +67,7 @@ class TestCmdAdd:
             source_url="https://example.com/article",
             canonical_url="https://example.com/article",
         )
-        with patch("lilt.cli.resolve_article", return_value=fake_result):
+        with patch("wilted.cli.resolve_article", return_value=fake_result):
             cmd_add(args)
 
         captured = capsys.readouterr()
@@ -77,7 +77,7 @@ class TestCmdAdd:
 
     def test_add_from_clipboard(self, capsys):
         """cmd_add from clipboard when no URL given."""
-        from lilt.ingest import ArticleResult
+        from wilted.ingest import ArticleResult
 
         args = _make_args(add=True)
         fake_result = ArticleResult(
@@ -86,7 +86,7 @@ class TestCmdAdd:
             source_url=None,
             canonical_url=None,
         )
-        with patch("lilt.cli.resolve_article", return_value=fake_result):
+        with patch("wilted.cli.resolve_article", return_value=fake_result):
             cmd_add(args)
 
         captured = capsys.readouterr()
@@ -97,7 +97,7 @@ class TestCmdAdd:
         """cmd_add raises CLIError when clipboard is empty."""
         args = _make_args(add=True)
         with (
-            patch("lilt.cli.resolve_article", side_effect=ValueError("Clipboard is empty.")),
+            patch("wilted.cli.resolve_article", side_effect=ValueError("Clipboard is empty.")),
             pytest.raises(CLIError, match="Clipboard is empty"),
         ):
             cmd_add(args)
@@ -106,7 +106,7 @@ class TestCmdAdd:
         """cmd_add raises CLIError when URL fetch returns no text."""
         args = _make_args(input="https://example.com/paywall", add=True)
         with (
-            patch("lilt.cli.resolve_article", side_effect=ValueError("Could not fetch article text")),
+            patch("wilted.cli.resolve_article", side_effect=ValueError("Could not fetch article text")),
             pytest.raises(CLIError, match="Could not fetch"),
         ):
             cmd_add(args)
@@ -189,7 +189,7 @@ class TestCmdPlay:
     def test_play_empty(self, capsys):
         """cmd_play with empty queue shows appropriate message."""
         args = _make_args(play=True)
-        with patch("lilt.cli._play_text", return_value=True):
+        with patch("wilted.cli._play_text", return_value=True):
             cmd_play(args)
         assert "empty" in capsys.readouterr().out.lower()
 
@@ -198,7 +198,7 @@ class TestCmdPlay:
         _add_test_article(title="Article One")
         _add_test_article(title="Article Two")
         args = _make_args(play=True)
-        with patch("lilt.cli._play_text", return_value=True):
+        with patch("wilted.cli._play_text", return_value=True):
             cmd_play(args)
 
         out = capsys.readouterr().out
@@ -224,7 +224,7 @@ class TestCmdNext:
         _add_test_article(title="First Article")
         _add_test_article(title="Second Article")
         args = _make_args()
-        with patch("lilt.cli._play_text", return_value=True):
+        with patch("wilted.cli._play_text", return_value=True):
             cmd_next(args)
 
         out = capsys.readouterr().out
@@ -236,7 +236,7 @@ class TestCmdNext:
         """cmd_next raises CLIError when cached file is missing."""
         entry = _add_test_article(title="Missing File Article")
         # Delete the cached file
-        from lilt import queue as queue_mod
+        from wilted import queue as queue_mod
 
         article_path = queue_mod.ARTICLES_DIR / entry["file"]
         article_path.unlink()
@@ -255,8 +255,8 @@ class TestCmdDirect:
         """cmd_direct with URL input fetches and plays."""
         args = _make_args(input="https://example.com/test")
         with (
-            patch("lilt.cli.get_text_from_url", return_value=("Test article text.", "https://example.com/test")),
-            patch("lilt.cli._play_text", return_value=True),
+            patch("wilted.cli.get_text_from_url", return_value=("Test article text.", "https://example.com/test")),
+            patch("wilted.cli._play_text", return_value=True),
         ):
             cmd_direct(args)
 
@@ -265,13 +265,13 @@ class TestCmdDirect:
         test_file = tmp_path / "article.txt"
         test_file.write_text("File article content here.")
         args = _make_args(input=str(test_file))
-        with patch("lilt.cli._play_text", return_value=True):
+        with patch("wilted.cli._play_text", return_value=True):
             cmd_direct(args)
 
     def test_direct_clean(self, capsys):
         """cmd_direct with --clean prints cleaned text, no audio."""
         args = _make_args(input="https://example.com/test", clean=True)
-        with patch("lilt.cli.get_text_from_url", return_value=("Raw text content.", "https://example.com/test")):
+        with patch("wilted.cli.get_text_from_url", return_value=("Raw text content.", "https://example.com/test")):
             cmd_direct(args)
 
         out = capsys.readouterr().out
@@ -281,7 +281,7 @@ class TestCmdDirect:
         """cmd_direct raises CLIError when no text found."""
         args = _make_args()
         with (
-            patch("lilt.cli.get_text_from_clipboard", return_value=""),
+            patch("wilted.cli.get_text_from_clipboard", return_value=""),
             patch("sys.stdin") as mock_stdin,
             pytest.raises(CLIError, match="No text found"),
         ):
@@ -299,7 +299,7 @@ class TestPlayText:
         """_play_text in playback mode uses AudioEngine.play_article."""
         args = _make_args()
         mock_engine = MagicMock()
-        with patch("lilt.engine.AudioEngine", return_value=mock_engine):
+        with patch("wilted.engine.AudioEngine", return_value=mock_engine):
             result = _play_text("Hello world test text.", args)
 
         assert result is True
@@ -317,7 +317,7 @@ class TestPlayText:
         mock_engine.sample_rate = 24000
 
         with (
-            patch("lilt.engine.AudioEngine", return_value=mock_engine),
+            patch("wilted.engine.AudioEngine", return_value=mock_engine),
             patch("mlx_audio.audio_io.write"),
         ):
             result = _play_text("Hello world test text.", args)
@@ -331,7 +331,7 @@ class TestPlayText:
         args = _make_args()
         mock_engine = MagicMock()
         mock_engine.play_article.side_effect = KeyboardInterrupt
-        with patch("lilt.engine.AudioEngine", return_value=mock_engine):
+        with patch("wilted.engine.AudioEngine", return_value=mock_engine):
             result = _play_text("Hello world test text.", args)
 
         assert result is False
@@ -356,7 +356,7 @@ class TestArgparse:
         """--version prints version string."""
         run_cli(["--version"])
         out = capsys.readouterr().out
-        assert "lilt" in out
+        assert "wilted" in out
         assert "0.2.0" in out
 
     def test_list_dispatch(self, capsys):
@@ -372,7 +372,7 @@ class TestArgparse:
     def test_cli_error_exits(self):
         """CLIError is caught and converted to sys.exit(1)."""
         with (
-            patch("lilt.cli.cmd_add", side_effect=CLIError("test error")),
+            patch("wilted.cli.cmd_add", side_effect=CLIError("test error")),
             pytest.raises(SystemExit, match="1"),
         ):
             run_cli(["--add"])
@@ -382,8 +382,8 @@ class TestMainEntrypoint:
     def test_main_cli_mode_dispatches_without_tqdm_preinit(self):
         """CLI mode should dispatch directly to run_cli."""
         with (
-            patch("lilt.cli.run_cli") as mock_run_cli,
-            patch("sys.argv", ["lilt", "--version"]),
+            patch("wilted.cli.run_cli") as mock_run_cli,
+            patch("sys.argv", ["wilted", "--version"]),
         ):
             main()
 
@@ -396,12 +396,12 @@ class TestMainEntrypoint:
         mock_app_cls = MagicMock(return_value=mock_app)
 
         with (
-            patch("sys.argv", ["lilt"]),
+            patch("sys.argv", ["wilted"]),
             patch.dict(
                 "sys.modules",
                 {
                     "tqdm": types.SimpleNamespace(tqdm=mock_tqdm),
-                    "lilt.tui": types.SimpleNamespace(LiltApp=mock_app_cls),
+                    "wilted.tui": types.SimpleNamespace(WiltedApp=mock_app_cls),
                 },
             ),
         ):

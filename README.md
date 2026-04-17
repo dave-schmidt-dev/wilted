@@ -1,6 +1,20 @@
-# Lilt
+# Wilted
 
-Local text-to-speech article reader for macOS, powered by [Kokoro TTS](https://github.com/hexgrad/kokoro) via [mlx-audio](https://github.com/Blaizzy/mlx-audio) on Apple Silicon.
+Local-first personal audio news and entertainment system for macOS, powered by [Kokoro TTS](https://github.com/hexgrad/kokoro) via [mlx-audio](https://github.com/Blaizzy/mlx-audio) on Apple Silicon.
+
+## Vision
+
+Wilted is meant to become the one place to listen to news, podcasts, and learning content throughout the day.
+
+The end state is not just a text-to-speech article reader. It is a personal audio system that:
+
+- pulls in subscribed podcasts and written sources
+- converts important articles into listenable audio
+- removes friction where possible, including podcast ad stripping
+- organizes everything into dynamic playlists such as `News`, `Entertainment`, and `Learning`
+- produces a morning report that summarizes what arrived since yesterday and points to the highest-value items first
+
+The product should feel like a private, local-first listening surface rather than a collection of separate article and podcast tools.
 
 ## Install
 
@@ -14,14 +28,14 @@ python3.12 -m venv ~/.venvs/mlx-audio
 Then install the package (editable) and TUI dependencies:
 
 ```bash
-cd ~/Documents/Projects/lilt
+cd ~/Documents/Projects/wilted
 ~/.venvs/mlx-audio/bin/pip install -e ".[tui,test]"
 ```
 
 Add a shell alias (e.g. in `~/.zshrc`):
 
 ```bash
-alias lilt='~/Documents/Projects/lilt/lilt'
+alias wilted='~/Documents/Projects/wilted/wilted'
 ```
 
 First run downloads the Kokoro model from HuggingFace (~160MB, one-time).
@@ -29,9 +43,9 @@ First run downloads the Kokoro model from HuggingFace (~160MB, one-time).
 ## Quick start
 
 ```bash
-lilt                              # launch TUI (no args)
-lilt --add https://apple.news/... # add article to queue
-lilt --list                       # show queue
+wilted                              # launch TUI (no args)
+wilted --add https://apple.news/... # add article to queue
+wilted --list                       # show queue
 ```
 
 ## Reading list
@@ -39,32 +53,32 @@ lilt --list                       # show queue
 Queue articles for later listening. Text is pre-fetched and cached locally so playback works offline.
 
 ```bash
-lilt --add https://apple.news/ABC123   # fetch and cache article
-lilt --add                              # cache from clipboard
-lilt --list                             # show queue with word counts
-lilt --next                             # play and remove next article
-lilt --play                             # play all, removing as completed
-lilt --remove 2                         # drop article #2
-lilt --clear                            # empty the queue
+wilted --add https://apple.news/ABC123   # fetch and cache article
+wilted --add                              # cache from clipboard
+wilted --list                             # show queue with word counts
+wilted --next                             # play and remove next article
+wilted --play                             # play all, removing as completed
+wilted --remove 2                         # drop article #2
+wilted --clear                            # empty the queue
 ```
 
 ## Playback options
 
 ```bash
-lilt --voice am_adam        # male American voice
-lilt --voice bf_emma        # female British voice
-lilt --speed 1.2            # faster
-lilt --speed 0.8            # slower
-lilt --lang b               # British English prosody
-lilt --save article.wav     # save to file instead of playing
-lilt --list-voices          # show all available voices
+wilted --voice am_adam        # male American voice
+wilted --voice bf_emma        # female British voice
+wilted --speed 1.2            # faster
+wilted --speed 0.8            # slower
+wilted --lang b               # British English prosody
+wilted --save article.wav     # save to file instead of playing
+wilted --list-voices          # show all available voices
 ```
 
 ## Utility
 
 ```bash
-lilt --clean                # preview cleaned text, no audio
-lilt --clean > article.txt  # save cleaned text to file
+wilted --clean                # preview cleaned text, no audio
+wilted --clean > article.txt  # save cleaned text to file
 ```
 
 ## Voices (Kokoro)
@@ -87,11 +101,21 @@ lilt --clean > article.txt  # save cleaned text to file
 Apple News copy-paste truncates long articles. For full text, use the share link:
 
 1. In Apple News, tap Share > Copy Link
-2. `lilt --add <paste link>`
+2. `wilted --add <paste link>`
 
 The script resolves the `apple.news` URL to the source site and fetches the complete article. Works for non-hard-paywalled content (Atlantic, New Yorker metered articles, Reason, etc.).
 
-For hard-paywalled articles, scroll to the bottom in Apple News first, then Cmd+A > Cmd+C and run `lilt --add`.
+For hard-paywalled articles, scroll to the bottom in Apple News first, then Cmd+A > Cmd+C and run `wilted --add`.
+
+## Product direction
+
+The current implementation is article-first, but the roadmap is broader:
+
+- saved articles and Apple News links flow into the same listening system
+- podcast subscriptions should eventually be ingested into Wilted as audio items
+- playlists should become the main organizing concept, not just a flat queue
+- articles and podcasts should coexist inside shared listening contexts like `News`, `Entertainment`, and `Learning`
+- the daily morning report should become the control surface for deciding what to hear first
 
 ## Data
 
@@ -107,7 +131,7 @@ data/
 
 ## TUI
 
-Running `lilt` with no arguments launches the interactive TUI — a complete replacement for the CLI with visual feedback.
+Running `wilted` with no arguments launches the interactive TUI — a complete replacement for the CLI with visual feedback.
 
 | Key | Action |
 |-----|--------|
@@ -134,9 +158,9 @@ Full design: [TUI_PLAN.md](TUI_PLAN.md)
 ## Project structure
 
 ```
-lilt                     # thin shim (backward compat with shell alias)
+wilted                     # thin shim (backward compat with shell alias)
 pyproject.toml           # package metadata, [project.scripts] entry point
-src/lilt/                # shared library
+src/wilted/                # shared library
     __init__.py          # constants, VOICES, LANGUAGES, data paths
     cli.py               # CLI commands and argparse dispatch
     engine.py            # AudioEngine (sounddevice + TTS)
@@ -151,7 +175,7 @@ tests/                   # pytest suite covering CLI, engine, TUI, ingest, cache
 
 ## Validation
 
-Routine validation uses only the guarded code paths that Lilt actually relies on:
+Routine validation uses only the guarded code paths that Wilted actually relies on:
 
 ```bash
 make validate
@@ -174,14 +198,25 @@ What to avoid in future:
 
 ## Roadmap
 
-- CI/local validation parity for lint + guarded tests
-- RSS subscriptions:
-  - Phase 1: feed data model and persistence
-  - Phase 2: feed polling, dedupe, and queue import
-  - Phase 3: CLI/TUI feed management
+- Near term:
+  - CI/local validation parity for lint + guarded tests
+  - packaging/install pass on the supported Python + venv path
+  - manual real-device playback verification
+- Unified ingest:
+  - RSS/article feed data model and persistence
+  - feed polling, dedupe, and queue import
+  - CLI/TUI feed management
+  - podcast subscription import, likely via private feeds or exported subscription sources
+- Unified content model:
+  - normalize articles and podcasts into one listenable item model
+  - support playlists such as `News`, `Entertainment`, and `Learning`
+  - allow playlists to build up and break down dynamically based on freshness, source, and priority
+- Listening intelligence:
+  - article ranking and source selection for major news sources
+  - morning report summarizing what arrived since yesterday
+  - direct jump targets so the most interesting articles or podcast episodes can be played first
+  - ad stripping / enrichment pipeline where feasible and legally safe
 - ~~Pre-generated audio for instant playback~~ (done: background MP3 caching + hybrid playback)
-- Apple Podcast integration (private feed)
-- Unified private feed for saved articles and podcast content
 
 ## Dependencies
 

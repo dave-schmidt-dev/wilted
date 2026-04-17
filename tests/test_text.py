@@ -1,6 +1,6 @@
-"""Tests for lilt.text — cleaning, splitting, title extraction."""
+"""Tests for wilted.text — cleaning, splitting, title extraction."""
 
-from lilt.text import (
+from wilted.text import (
     clean_text,
     extract_title_from_paste,
     split_into_chunks,

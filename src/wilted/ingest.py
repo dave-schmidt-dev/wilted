@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-from lilt.fetch import get_text_from_clipboard, resolve_apple_news_url, suppress_subprocess_output
+from wilted.fetch import get_text_from_clipboard, resolve_apple_news_url, suppress_subprocess_output
 
 
 @dataclass
@@ -64,7 +64,7 @@ def _resolve_from_url(
     status: Callable[[str], None],
 ) -> ArticleResult:
     """Fetch article from a URL, extracting title from trafilatura metadata."""
-    from lilt.text import clean_text
+    from wilted.text import clean_text
 
     source_url = url
     canonical_url = url
@@ -84,12 +84,12 @@ def _resolve_from_url(
         html = trafilatura.fetch_url(url)
 
     if not html:
-        raise ValueError("Could not fetch article text (paywall?). Copy the text, then run: lilt --add")
+        raise ValueError("Could not fetch article text (paywall?). Copy the text, then run: wilted --add")
 
     # Use bare_extraction to get text + title in one pass (no double HTTP fetch)
     result = trafilatura.bare_extraction(html, include_comments=False, include_tables=False)
     if not result or not result.get("text"):
-        raise ValueError("Could not extract article text (paywall?). Copy the text, then run: lilt --add")
+        raise ValueError("Could not extract article text (paywall?). Copy the text, then run: wilted --add")
 
     text = clean_text(result["text"])
     title = result.get("title")
@@ -108,7 +108,7 @@ def _resolve_from_clipboard(
     status: Callable[[str], None],
 ) -> ArticleResult:
     """Resolve article from clipboard text."""
-    from lilt.text import clean_text, extract_title_from_paste
+    from wilted.text import clean_text, extract_title_from_paste
 
     if clipboard_text is None:
         status("Reading clipboard...")

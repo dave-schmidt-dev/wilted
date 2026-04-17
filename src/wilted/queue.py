@@ -6,7 +6,7 @@ import re
 import tempfile
 from datetime import datetime
 
-from lilt import ARTICLES_DIR, QUEUE_FILE, ensure_data_dirs
+from wilted import ARTICLES_DIR, QUEUE_FILE, ensure_data_dirs
 
 
 def load_queue() -> list[dict]:
@@ -90,7 +90,7 @@ def remove_article(index: int) -> dict:
     if article_path.exists():
         article_path.unlink()
 
-    from lilt.cache import clear_cache
+    from wilted.cache import clear_cache
 
     clear_cache(entry["id"])
     save_queue(queue)
@@ -103,7 +103,7 @@ def clear_queue() -> int:
     if not queue:
         return 0
 
-    from lilt.cache import clear_cache
+    from wilted.cache import clear_cache
 
     count = len(queue)
     for entry in queue:
@@ -134,6 +134,6 @@ def mark_completed(entry: dict) -> None:
     if article_path.exists():
         article_path.unlink()
 
-    from lilt.cache import clear_cache
+    from wilted.cache import clear_cache
 
     clear_cache(entry["id"])

@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 from typing import TYPE_CHECKING
 
-from lilt import AUDIO_DIR
+from wilted import AUDIO_DIR
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -166,7 +166,7 @@ def generate_article_cache(
     Returns:
         True if all paragraphs were cached, False if cancelled.
     """
-    from lilt.text import split_paragraphs
+    from wilted.text import split_paragraphs
 
     check_ffmpeg()
 

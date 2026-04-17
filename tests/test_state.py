@@ -1,7 +1,7 @@
-"""Tests for lilt.state — resume position persistence."""
+"""Tests for wilted.state — resume position persistence."""
 
-import lilt
-from lilt.state import (
+import wilted
+from wilted.state import (
     clear_article_state,
     get_article_state,
     load_state,
@@ -21,11 +21,11 @@ class TestLoadSaveState:
 
     def test_atomic_write_no_tmp_files(self):
         save_state({"1": {"paragraph_idx": 0}})
-        tmp_files = list(lilt.DATA_DIR.glob("*.tmp"))
+        tmp_files = list(wilted.DATA_DIR.glob("*.tmp"))
         assert tmp_files == []
 
     def test_corrupt_file_returns_empty(self):
-        lilt.STATE_FILE.write_text("not valid json{{{")
+        wilted.STATE_FILE.write_text("not valid json{{{")
         assert load_state() == {}
 
 

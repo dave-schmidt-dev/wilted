@@ -1,4 +1,4 @@
-"""Tests for the lilt TUI app using Textual's pilot testing framework."""
+"""Tests for the wilted TUI app using Textual's pilot testing framework."""
 
 from __future__ import annotations
 
@@ -8,7 +8,13 @@ import pytest
 from textual.binding import Binding
 from textual.widgets import Static
 
-from lilt.tui import AddArticleScreen, ConfirmScreen, LiltApp, TextPreviewScreen, VoiceSettingsScreen
+from wilted.tui import (
+    AddArticleScreen,
+    ConfirmScreen,
+    TextPreviewScreen,
+    VoiceSettingsScreen,
+    WiltedApp,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -42,10 +48,10 @@ SAMPLE_QUEUE = [
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_app_launches(mock_load):
     """App starts without error and shows the DataTable."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         from textual.widgets import DataTable
 
@@ -54,10 +60,10 @@ async def test_app_launches(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
+@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
 async def test_queue_displayed(mock_load):
     """Two articles from the mock queue appear in the DataTable."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         from textual.widgets import DataTable
 
@@ -69,10 +75,10 @@ async def test_queue_displayed(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_empty_queue_message(mock_load):
     """When queue is empty, an 'empty' message is shown."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         from textual.widgets import Label
 
@@ -82,10 +88,10 @@ async def test_empty_queue_message(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_quit_key(mock_load):
     """Pressing q exits the app."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test() as pilot:
         await pilot.press("q")
         # If we reach here without error, the app processed the quit action.
@@ -94,12 +100,12 @@ async def test_quit_key(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
-@patch("lilt.tui.remove_article")
-@patch("lilt.tui.clear_article_state")
+@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
+@patch("wilted.tui.remove_article")
+@patch("wilted.tui.clear_article_state")
 async def test_delete_key(mock_clear_state, mock_remove, mock_load):
     """Pressing d opens ConfirmScreen, confirming calls remove_article."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         # Select the first row (should be selected by default) and delete
@@ -115,12 +121,12 @@ async def test_delete_key(mock_clear_state, mock_remove, mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
-@patch("lilt.tui.remove_article")
-@patch("lilt.tui.clear_article_state")
+@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
+@patch("wilted.tui.remove_article")
+@patch("wilted.tui.clear_article_state")
 async def test_delete_confirm_button_click(mock_clear_state, mock_remove, mock_load):
     """Clicking Confirm should delete the selected article."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("d")
@@ -134,8 +140,8 @@ async def test_delete_confirm_button_click(mock_clear_state, mock_remove, mock_l
 @pytest.mark.asyncio
 async def test_add_screen_launches_on_a_key():
     """Pressing 'a' should open the AddArticleScreen modal."""
-    with patch("lilt.tui.load_queue", return_value=[]):
-        app = LiltApp()
+    with patch("wilted.tui.load_queue", return_value=[]):
+        app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.press("a")
             await pilot.pause()
@@ -146,8 +152,8 @@ async def test_add_screen_launches_on_a_key():
 @pytest.mark.asyncio
 async def test_add_screen_cancel():
     """Pressing escape in AddArticleScreen should dismiss without adding."""
-    with patch("lilt.tui.load_queue", return_value=[]):
-        app = LiltApp()
+    with patch("wilted.tui.load_queue", return_value=[]):
+        app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.press("a")
             await pilot.pause()
@@ -162,8 +168,8 @@ async def test_add_screen_cancel():
 @pytest.mark.asyncio
 async def test_add_screen_click_add_and_play_button():
     """Clicking Add & Play should trigger the play-after add path."""
-    with patch("lilt.tui.load_queue", return_value=[]):
-        app = LiltApp()
+    with patch("wilted.tui.load_queue", return_value=[]):
+        app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.press("a")
             await pilot.pause()
@@ -177,8 +183,8 @@ async def test_add_screen_click_add_and_play_button():
 @pytest.mark.asyncio
 async def test_add_screen_click_cancel_button():
     """Clicking Cancel should dismiss the add-article modal."""
-    with patch("lilt.tui.load_queue", return_value=[]):
-        app = LiltApp()
+    with patch("wilted.tui.load_queue", return_value=[]):
+        app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.press("a")
             await pilot.pause()
@@ -188,10 +194,10 @@ async def test_add_screen_click_cancel_button():
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
+@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
 async def test_refresh_key(mock_load):
     """Pressing r calls load_queue again to refresh."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test() as pilot:
         # load_queue is called once on mount
         initial_count = mock_load.call_count
@@ -200,10 +206,10 @@ async def test_refresh_key(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_voice_settings_shows_language(mock_load):
     """VoiceSettingsScreen displays a language label widget."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test() as pilot:
         await pilot.press("v")
         from textual.widgets import Label
@@ -215,10 +221,10 @@ async def test_voice_settings_shows_language(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_voice_settings_dismiss_includes_lang(mock_load):
     """VoiceSettingsScreen dismiss returns a 3-tuple (voice, speed, lang)."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test() as pilot:
         await pilot.press("v")
         await pilot.pause()
@@ -237,10 +243,10 @@ async def test_voice_settings_dismiss_includes_lang(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_voice_settings_cancel_button_click(mock_load):
     """Clicking Cancel should dismiss the voice settings modal."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test() as pilot:
         await pilot.press("v")
         await pilot.pause()
@@ -257,10 +263,10 @@ async def test_text_preview_launches():
         {"id": 1, "title": "Test Article", "words": 100, "file": "1_test.txt", "added": "2026-04-06"},
     ]
     with (
-        patch("lilt.tui.load_queue", return_value=articles),
-        patch("lilt.tui.get_article_text", return_value="This is the article text."),
+        patch("wilted.tui.load_queue", return_value=articles),
+        patch("wilted.tui.get_article_text", return_value="This is the article text."),
     ):
-        app = LiltApp()
+        app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("t")
@@ -275,10 +281,10 @@ async def test_text_preview_close_button_click():
         {"id": 1, "title": "Test Article", "words": 100, "file": "1_test.txt", "added": "2026-04-06"},
     ]
     with (
-        patch("lilt.tui.load_queue", return_value=articles),
-        patch("lilt.tui.get_article_text", return_value="This is the article text."),
+        patch("wilted.tui.load_queue", return_value=articles),
+        patch("wilted.tui.get_article_text", return_value="This is the article text."),
     ):
-        app = LiltApp()
+        app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("t")
@@ -292,8 +298,8 @@ async def test_text_preview_close_button_click():
 @pytest.mark.asyncio
 async def test_text_preview_no_article():
     """Pressing 't' with empty queue should show error status."""
-    with patch("lilt.tui.load_queue", return_value=[]):
-        app = LiltApp()
+    with patch("wilted.tui.load_queue", return_value=[]):
+        app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.press("t")
             await pilot.pause()
@@ -307,8 +313,8 @@ async def test_clear_all_launches_confirm():
     articles = [
         {"id": 1, "title": "Test", "words": 50, "file": "1_test.txt", "added": "2026-04-06"},
     ]
-    with patch("lilt.tui.load_queue", return_value=articles):
-        app = LiltApp()
+    with patch("wilted.tui.load_queue", return_value=articles):
+        app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("c")
@@ -322,8 +328,8 @@ async def test_delete_launches_confirm():
     articles = [
         {"id": 1, "title": "Test", "words": 50, "file": "1_test.txt", "added": "2026-04-06"},
     ]
-    with patch("lilt.tui.load_queue", return_value=articles):
-        app = LiltApp()
+    with patch("wilted.tui.load_queue", return_value=articles):
+        app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("d")
@@ -334,8 +340,8 @@ async def test_delete_launches_confirm():
 @pytest.mark.asyncio
 async def test_export_wav_no_article():
     """Pressing 'w' with empty queue should show error."""
-    with patch("lilt.tui.load_queue", return_value=[]):
-        app = LiltApp()
+    with patch("wilted.tui.load_queue", return_value=[]):
+        app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.press("w")
             await pilot.pause()
@@ -350,10 +356,10 @@ async def test_export_wav_missing_file():
         {"id": 1, "title": "Test", "words": 50, "file": "1_test.txt", "added": "2026-04-06"},
     ]
     with (
-        patch("lilt.tui.load_queue", return_value=articles),
-        patch("lilt.tui.get_article_text", return_value=None),
+        patch("wilted.tui.load_queue", return_value=articles),
+        patch("wilted.tui.get_article_text", return_value=None),
     ):
-        app = LiltApp()
+        app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("w")
@@ -368,20 +374,20 @@ async def test_export_wav_missing_file():
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
+@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
 async def test_prev_paragraph_binding_exists(mock_load):
     """The [ key binding is registered on the app."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         bindings = {b.key for b in app.BINDINGS if isinstance(b, Binding)}
         assert "left_square_bracket" in bindings
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
+@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
 async def test_skip_forward_binding_includes_bracket(mock_load):
     """The ] key is an alias for skip (alongside right arrow)."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         skip_binding = next(
             (b for b in app.BINDINGS if isinstance(b, Binding) and b.action == "skip_segment"),
@@ -392,10 +398,10 @@ async def test_skip_forward_binding_includes_bracket(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_prev_paragraph_no_crash_when_not_playing(mock_load):
     """Pressing [ when not playing should not crash."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test() as pilot:
         await pilot.press("left_square_bracket")
         await pilot.pause()
@@ -403,28 +409,28 @@ async def test_prev_paragraph_no_crash_when_not_playing(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_generation_paused_default_false(mock_load):
     """_generation_paused starts as False."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         assert app._generation_paused is False
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_rewind_to_default_none(mock_load):
     """_rewind_to starts as None."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         assert app._rewind_to is None
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_voice_settings_feedback_not_playing(mock_load):
     """Changing voice settings when not playing triggers generation."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test() as pilot:
         with patch.object(app, "_trigger_generation") as mock_trigger:
             await pilot.press("v")
@@ -439,10 +445,10 @@ async def test_voice_settings_feedback_not_playing(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
+@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
 async def test_voice_settings_feedback_while_playing(mock_load):
     """Changing voice settings during playback shows status feedback."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test() as pilot:
         # Simulate playing state
         app._playing = True
@@ -459,10 +465,10 @@ async def test_voice_settings_feedback_while_playing(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
+@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
 async def test_start_playback_pauses_generation(mock_load):
     """_start_playback sets _generation_paused to True."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         entry = SAMPLE_QUEUE[0]
@@ -473,10 +479,10 @@ async def test_start_playback_pauses_generation(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=SAMPLE_QUEUE)
+@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
 async def test_stop_resumes_generation(mock_load):
     """action_stop sets _generation_paused to False and triggers generation."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         app._generation_paused = True
@@ -493,20 +499,20 @@ async def test_stop_resumes_generation(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_playback_bar_widget_exists(mock_load):
     """The #playback-bar Static widget is present in the app."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         bar = app.query_one("#playback-bar", Static)
         assert bar is not None
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_playback_bar_shows_state_icon(mock_load):
     """PlaybackBar shows state icon when playing/paused."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         app._playing = True
         app._paragraphs = ["Para one.", "Para two."]
@@ -524,10 +530,10 @@ async def test_playback_bar_shows_state_icon(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_playback_bar_shows_para_count(mock_load):
     """PlaybackBar shows paragraph count like 1/5."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         app._playing = True
         app._paragraphs = ["P1", "P2", "P3", "P4", "P5"]
@@ -540,10 +546,10 @@ async def test_playback_bar_shows_para_count(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_playback_bar_shows_timer(mock_load):
     """PlaybackBar shows mm:ss timer."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         app._playing = True
         app._paragraphs = ["P1"]
@@ -556,10 +562,10 @@ async def test_playback_bar_shows_timer(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_timer_decrements(mock_load):
     """_update_timer decrements _estimated_remaining_secs by 1."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         app._playing = True
         app._paragraphs = ["P1", "P2"]
@@ -569,10 +575,10 @@ async def test_timer_decrements(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_timer_noop_when_paused(mock_load):
     """_update_timer does nothing when paused."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         app._playing = True
         app._paused = True
@@ -583,10 +589,10 @@ async def test_timer_noop_when_paused(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_timer_noop_when_not_playing(mock_load):
     """_update_timer does nothing when not playing."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         app._estimated_remaining_secs = 100
         app._update_timer()
@@ -594,10 +600,10 @@ async def test_timer_noop_when_not_playing(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_speed_down_key(mock_load):
     """Pressing - decreases speed by 0.1x."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test() as pilot:
         assert app._speed == 1.0
         await pilot.press("minus")
@@ -606,10 +612,10 @@ async def test_speed_down_key(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_speed_up_key(mock_load):
     """Pressing + increases speed by 0.1x."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test() as pilot:
         assert app._speed == 1.0
         await pilot.press("equal")
@@ -618,10 +624,10 @@ async def test_speed_up_key(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_speed_clamps_to_range(mock_load):
     """Speed stays within 0.5x-2.0x bounds."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test() as pilot:
         app._speed = 0.5
         await pilot.press("minus")
@@ -635,10 +641,10 @@ async def test_speed_clamps_to_range(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_speed_key_shows_feedback(mock_load):
     """Speed change shows feedback in status line."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test() as pilot:
         await pilot.press("equal")
         await pilot.pause()
@@ -647,12 +653,12 @@ async def test_speed_key_shows_feedback(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_status_priority_blocks_low(mock_load):
     """MEDIUM priority message blocks subsequent LOW message within hold window."""
-    from lilt.tui import _STATUS_LOW, _STATUS_MEDIUM
+    from wilted.tui import _STATUS_LOW, _STATUS_MEDIUM
 
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         app._set_status("Important", _STATUS_MEDIUM)
         status1 = str(app.query_one("#status-line").render())
@@ -662,12 +668,12 @@ async def test_status_priority_blocks_low(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_status_priority_allows_equal(mock_load):
     """Same-priority messages can overwrite each other."""
-    from lilt.tui import _STATUS_MEDIUM
+    from wilted.tui import _STATUS_MEDIUM
 
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         app._set_status("First", _STATUS_MEDIUM)
         app._set_status("Second", _STATUS_MEDIUM)
@@ -676,10 +682,10 @@ async def test_status_priority_allows_equal(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_transcript_markup_bold_current(mock_load):
     """_build_transcript marks current paragraph as bold."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         app._paragraphs = ["First para.", "Second para.", "Third para."]
         result = app._build_transcript(1)
@@ -689,10 +695,10 @@ async def test_transcript_markup_bold_current(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("lilt.tui.load_queue", return_value=[])
+@patch("wilted.tui.load_queue", return_value=[])
 async def test_transcript_escapes_brackets(mock_load):
     """_build_transcript escapes Rich markup in article text."""
-    app = LiltApp()
+    app = WiltedApp()
     async with app.run_test():
         app._paragraphs = ["Text with [brackets] inside."]
         result = app._build_transcript(0)

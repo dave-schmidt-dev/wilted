@@ -1,4 +1,4 @@
-"""Textual TUI for the lilt local TTS article reader."""
+"""Textual TUI for the wilted local TTS article reader."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static
 from textual.worker import get_current_worker
 
-from lilt import LANGUAGES, VOICES, WPM_ESTIMATE
-from lilt.queue import (
+from wilted import LANGUAGES, VOICES, WPM_ESTIMATE
+from wilted.queue import (
     add_article,
     clear_queue,
     get_article_text,
@@ -23,8 +23,8 @@ from lilt.queue import (
     mark_completed,
     remove_article,
 )
-from lilt.state import clear_article_state, get_article_state, set_article_state
-from lilt.text import split_paragraphs
+from wilted.state import clear_article_state, get_article_state, set_article_state
+from wilted.text import split_paragraphs
 
 # Status message priorities — higher priority messages hold for a minimum
 # duration and won't be overwritten by lower-priority routine updates.
@@ -298,7 +298,7 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
     @work(thread=True, group="fetch")
     def _fetch_article(self, url: str | None, play_after: bool) -> None:
         """Fetch article in background and dismiss when done."""
-        from lilt.ingest import resolve_article
+        from wilted.ingest import resolve_article
 
         status = self.query_one("#add-status", Label)
         try:
@@ -487,10 +487,10 @@ class TextPreviewScreen(ModalScreen[None]):
 # ---------------------------------------------------------------------------
 
 
-class LiltApp(App):
+class WiltedApp(App):
     """Local TTS article reader — Textual TUI."""
 
-    TITLE = "lilt"
+    TITLE = "wilted"
 
     DEFAULT_CSS = """
     Screen {
@@ -751,14 +751,14 @@ class LiltApp(App):
     def _ensure_engine(self) -> None:
         """Lazy-load the AudioEngine on first use."""
         if self._engine is None:
-            from lilt.engine import AudioEngine
+            from wilted.engine import AudioEngine
 
             self._engine = AudioEngine(lang=self._lang)
 
     @work(thread=True, exclusive=True, group="preload")
     def _preload_model(self) -> None:
         """Eagerly load the TTS model in the background at startup."""
-        from lilt.fetch import suppress_subprocess_output
+        from wilted.fetch import suppress_subprocess_output
 
         try:
             self._ensure_engine()
@@ -781,9 +781,9 @@ class LiltApp(App):
     @work(thread=True, exclusive=True, group="generate")
     def _generate_cache(self) -> None:
         """Background worker: generate audio cache for queued articles."""
-        from lilt.cache import generate_article_cache, is_cache_valid
-        from lilt.fetch import suppress_subprocess_output
-        from lilt.queue import get_article_text, load_queue
+        from wilted.cache import generate_article_cache, is_cache_valid
+        from wilted.fetch import suppress_subprocess_output
+        from wilted.queue import get_article_text, load_queue
 
         worker = get_current_worker()
 
@@ -853,7 +853,7 @@ class LiltApp(App):
         """Play an article from the given paragraph/segment position."""
         worker = get_current_worker()
 
-        from lilt.fetch import suppress_subprocess_output
+        from wilted.fetch import suppress_subprocess_output
 
         self.call_from_thread(self._update_now_playing, status="Loading model...")
         self._ensure_engine()
@@ -889,7 +889,7 @@ class LiltApp(App):
             status="Playing",
         )
 
-        from lilt.cache import is_paragraph_cached, load_audio
+        from wilted.cache import is_paragraph_cached, load_audio
 
         article_id = entry["id"]
         added = entry.get("added", "")
@@ -1247,7 +1247,7 @@ class LiltApp(App):
     @work(thread=True, exclusive=True, group="export")
     def _export_wav(self, entry: dict, text: str) -> None:
         """Export article to WAV file with progress."""
-        from lilt.engine import export_to_wav
+        from wilted.engine import export_to_wav
 
         worker = get_current_worker()
 
@@ -1319,5 +1319,5 @@ class LiltApp(App):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    app = LiltApp()
+    app = WiltedApp()
     app.run()

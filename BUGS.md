@@ -6,7 +6,7 @@
 
 - Trigger: two threads enter MLX GPU work concurrently (`load_model()`, `model.generate()`, or lazy generator materialization).
 - Failure mode: `SIGABRT` / `SIGSEGV` in Metal-backed MLX code.
-- Status: mitigated in Lilt. `AudioEngine` serializes MLX access with `_model_lock`, materializes generators inside the lock, and double-check-locks model loading.
+- Status: mitigated in Wilted. `AudioEngine` serializes MLX access with `_model_lock`, materializes generators inside the lock, and double-check-locks model loading.
 - Follow-up: keep concurrency guards intact and treat any future unlocked MLX access as a regression.
 
 ### BUG-2 — `fds_to_keep` failure from Textual worker download path
@@ -20,10 +20,10 @@
 
 ## Validation Debt
 
-- The routine automated suite covers the safe, guarded paths that Lilt actually uses.
+- The routine automated suite covers the safe, guarded paths that Wilted actually uses.
 - Manual audio-device playback verification is still required when changing playback UX or output-device behavior.
 - Recommended next validation task:
-  - Launch a fresh `lilt` process on a machine with a working output device.
+  - Launch a fresh `wilted` process on a machine with a working output device.
   - Add a short source.
   - Play a short clip through the real `mlx-audio` stack.
   - Confirm speaker output, pause/resume, stop, and TUI status updates without mocks.

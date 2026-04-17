@@ -5,7 +5,7 @@ import os
 import tempfile
 from datetime import datetime
 
-from lilt import STATE_FILE, ensure_data_dirs
+from wilted import STATE_FILE, ensure_data_dirs
 
 
 def load_state() -> dict:

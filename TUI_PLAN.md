@@ -1,16 +1,16 @@
-# Plan: lilt Textual TUI
+# Plan: wilted Textual TUI
 
 ## Context
 
-The `lilt` CLI tool reads news articles aloud using Kokoro TTS via mlx-audio on Apple Silicon. It works well for one-off reads, but lacks interactive playback controls (pause, resume, skip) and has no way to resume interrupted articles. The user reads long-form articles from The Atlantic and The New Yorker (often 15,000+ words / 100+ minutes) and needs a proper player interface.
+The `wilted` CLI tool reads news articles aloud using Kokoro TTS via mlx-audio on Apple Silicon. It works well for one-off reads, but lacks interactive playback controls (pause, resume, skip) and has no way to resume interrupted articles. The user reads long-form articles from The Atlantic and The New Yorker (often 15,000+ words / 100+ minutes) and needs a proper player interface.
 
 ## Architecture
 
-**Project home**: `~/Documents/Projects/lilt/` — all source, docs, and runtime data in one place. CLI alias `lilt` points here.
+**Project home**: `~/Documents/Projects/wilted/` — all source, docs, and runtime data in one place. CLI alias `wilted` points here.
 
-**Separate script**: `lilt-tui` — keeps the existing CLI clean and avoids importing Textual for simple `--add`/`--list` operations.
+**Separate script**: `wilted-tui` — keeps the existing CLI clean and avoids importing Textual for simple `--add`/`--list` operations.
 
-**Shared code via editable install**: Create a `lilt` Python package at `src/lilt/` with `pyproject.toml`, installed as `pip install -e` into the venv. Both scripts `import lilt.queue`, etc. No `sys.path` hacking. Linter/type-checker friendly.
+**Shared code via editable install**: Create a `wilted` Python package at `src/wilted/` with `pyproject.toml`, installed as `pip install -e` into the venv. Both scripts `import wilted.queue`, etc. No `sys.path` hacking. Linter/type-checker friendly.
 
 **Separate state file**: Resume position stored in `data/state.json` (keyed by article ID), not in `queue.json`. Both files use atomic writes (write-to-temp + `os.replace()`).
 
@@ -21,7 +21,7 @@ The `lilt` CLI tool reads news articles aloud using Kokoro TTS via mlx-audio on 
 Single-screen, two-panel design:
 
 ```
-┌─ lilt ──────────────────────────────────────────────┐
+┌─ wilted ──────────────────────────────────────────────┐
 │                                                            │
 │  Reading List (3)          │  Now Playing                  │
 │  ─────────────────────     │  ──────────────────────────── │
@@ -144,14 +144,14 @@ Modal overlay triggered by `v` key:
 ## File Structure
 
 ```
-~/Documents/Projects/lilt/
-    lilt                             # existing CLI (refactored to import from package)
-    lilt-tui                         # TUI entry point (NEW)
+~/Documents/Projects/wilted/
+    wilted                             # existing CLI (refactored to import from package)
+    wilted-tui                         # TUI entry point (NEW)
     pyproject.toml                   # package metadata (NEW)
     README.md                        # project docs
     TUI_PLAN.md                      # this plan
     LICENSE
-    src/lilt/                        # shared package (NEW)
+    src/wilted/                        # shared package (NEW)
         __init__.py                  # DATA_DIR, QUEUE_FILE, ARTICLES_DIR, STATE_FILE, VOICES
         queue.py                     # load_queue, save_queue (atomic), add, remove, clear
         state.py                     # load_state, save_state (atomic), clear_state
@@ -166,7 +166,7 @@ Modal overlay triggered by `v` key:
 ## Implementation Phases
 
 ### Phase 1: Shared library + CLI refactor
-1. Create `src/lilt/` package with `pyproject.toml`
+1. Create `src/wilted/` package with `pyproject.toml`
 2. Extract shared functions into package modules (queue, text, fetch, state)
 3. Add atomic write to `save_queue()` and new `save_state()`
 4. Tests for shared library:
@@ -175,11 +175,11 @@ Modal overlay triggered by `v` key:
    - `fetch.py`: Apple News URL resolution (mock HTTP), title extraction from HTML, clipboard fallback
    - `state.py`: load/save round-trip, atomic write, clear on completion, missing file handling
 5. Refactor existing CLI to import from the package
-6. **Verify**: `lilt --list`, `lilt --add URL`, `lilt --clean`, `lilt --play` all work identically
+6. **Verify**: `wilted --list`, `wilted --add URL`, `wilted --clean`, `wilted --play` all work identically
 7. `pip install textual sounddevice` into the venv
 
 ### Phase 2: TUI core + playback
-8. Create `lilt-tui` with Textual app: Header, Footer, two-panel layout, DataTable for queue
+8. Create `wilted-tui` with Textual app: Header, Footer, two-panel layout, DataTable for queue
 9. AudioEngine class: model loading, OutputStream-based playback, pause/resume/stop
 10. Tests for AudioEngine:
     - Pause/resume/stop state machine (mock sounddevice OutputStream, verify event logic)
@@ -216,7 +216,7 @@ Modal overlay triggered by `v` key:
 - **Custom RSS feeds** — subscribe to publication feeds (Atlantic, New Yorker, Reason, etc.), auto-fetch new articles into queue on a schedule
 - **Apple Podcast integration** — generate podcast-style audio files from reading list, publish as a private RSS feed compatible with Apple Podcasts for listening on any device
 - **Unified ad-free feed** — if private feed works, extend it: download existing podcast subscriptions, strip ads (silence detection + sponsor segment databases like SponsorBlock), and merge everything into the single private feed for a clean, ad-free listening experience
-- **macOS .app bundle** — Lilt.app in ~/Applications for Finder, Dock, Spotlight, and Launchpad access. Thin wrapper that opens iTerm with lilt-tui. Custom .icns icon for native look.
+- **macOS .app bundle** — Wilted.app in ~/Applications for Finder, Dock, Spotlight, and Launchpad access. Thin wrapper that opens iTerm with wilted-tui. Custom .icns icon for native look.
 - **Expanded test coverage** — property-based tests for text splitting, stress tests for concurrent queue access
 
 ## Files to Create/Modify
@@ -224,25 +224,25 @@ Modal overlay triggered by `v` key:
 | File | Action |
 |------|--------|
 | `pyproject.toml` | **Create** — package metadata, test dependencies |
-| `src/lilt/*.py` | **Create** — shared modules (5 files) |
+| `src/wilted/*.py` | **Create** — shared modules (5 files) |
 | `tests/` | **Create** — test suite (Phase 1: library, Phase 2: engine + TUI, Phase 3: edge cases) |
-| `lilt` | **Modify** — import from shared package |
-| `lilt-tui` | **Create** — TUI app |
+| `wilted` | **Modify** — import from shared package |
+| `wilted-tui` | **Create** — TUI app |
 | `README.md` | **Update** — add TUI docs |
 | `HISTORY.md` | **Update** — log changes |
-| `~/Documents/Projects/LLM/README.md` | **Update** — update lilt entry |
+| `~/Documents/Projects/LLM/README.md` | **Update** — update wilted entry |
 | `~/Documents/Projects/LLM/HISTORY.md` | **Update** — log changes |
 
 ## Verification
 
 1. **CLI regression**: all existing commands work after refactor to shared library
-2. **TUI launch**: `lilt-tui` displays queue from `queue.json`
+2. **TUI launch**: `wilted-tui` displays queue from `queue.json`
 3. **Playback**: Select article, space to play, audio starts within 2-3s (model load) or <1s (model cached)
 4. **Pause/resume**: Space pauses within ~50ms, resumes from exact position
 5. **Skip**: Right arrow skips to next segment, "Generating..." shown during ~1s gap
 6. **Resume persistence**: Quit mid-playback → relaunch → article resumes near saved position
 7. **Voice change**: Press v, change voice/speed, next segment uses new settings, time estimate adjusts
-8. **Concurrent access**: `lilt --add URL` in another terminal while TUI plays doesn't corrupt queue or state
+8. **Concurrent access**: `wilted --add URL` in another terminal while TUI plays doesn't corrupt queue or state
 9. **Clean shutdown**: Ctrl+C or q saves state and exits without orphaned audio threads
 
 ## Review Decision Log
@@ -292,7 +292,7 @@ Modal overlay triggered by `v` key:
 | Skip has ~1s silence | **Accept** | Show "Generating..." indicator; pre-buffer in v2 |
 | Voice sync unspecified | **Accept** | Simple attributes, read at generate() call boundary |
 | 150 WPM ignores speed param | **Accept** | Adjust: words / (150 * speed) |
-| Backup before refactoring | **Accept** | Copy to lilt.bak first |
+| Backup before refactoring | **Accept** | Copy to wilted.bak first |
 | Model loading timing unspecified | **Accept** | Lazy load on first play |
 | Scope still large / simpler approach | **Reject** | User explicitly requested Textual TUI |
 | split_into_chunks fate unclear | **Accept** | Kept in shared lib for CLI; TUI uses split_paragraphs |

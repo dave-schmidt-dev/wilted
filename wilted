@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""Wilted — local TTS article reader for Apple Silicon.
+
+Thin shim for backward compatibility with shell aliases.
+The real entry point is wilted.cli:main (installed via pip).
+"""
+
+from wilted.cli import main
+
+main()
