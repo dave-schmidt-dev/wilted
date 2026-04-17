@@ -11,10 +11,11 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.theme import Theme
 from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static
 from textual.worker import get_current_worker
 
-from wilted import LANGUAGES, VOICES, WPM_ESTIMATE
+from wilted import ICONS, LANGUAGES, VOICES, WPM_ESTIMATE
 from wilted.queue import (
     add_article,
     clear_queue,
@@ -34,6 +35,38 @@ _STATUS_HIGH = 2  # Errors, important user actions
 
 # Minimum seconds a high/medium-priority message stays visible
 _STATUS_HOLD_SECS = 2.0
+
+# ---------------------------------------------------------------------------
+# Salad Palette — custom Textual theme
+# ---------------------------------------------------------------------------
+
+SALAD_THEME = Theme(
+    name="salad",
+    primary="#8FBC8F",  # Dark Sea Green — headers, active play
+    secondary="#A9BA9D",  # Sage — secondary text, read items
+    accent="#F2E8CF",  # Cream/Parchment — focus, selection
+    foreground="#D4D4D4",  # Light gray text
+    background="#121212",  # Ebony — deep background
+    surface="#1A1A2E",  # Dark surface for panels
+    panel="#1A1A2E",  # Panel background
+    success="#A7C957",  # Bright Lime — new/unread
+    warning="#EBCB8B",  # Warm yellow
+    error="#BC4749",  # Muted Red — stop, delete
+    dark=True,
+    variables={
+        "footer-key-foreground": "#8FBC8F",
+        "footer-description-foreground": "#A9BA9D",
+        "block-cursor-text-style": "none",
+        "input-selection-background": "#8FBC8F 35%",
+    },
+)
+
+# Playback icon helpers (read from the ICONS dict in wilted.__init__)
+_ICON_PLAYING = ICONS["playing"]
+_ICON_PAUSED = ICONS["paused"]
+
+# Fractional block characters for smooth progress bar fill
+_BLOCKS = " ▏▎▍▌▋▊▉█"
 
 # ---------------------------------------------------------------------------
 # Voice settings modal
@@ -317,7 +350,7 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
 
             action = "play" if play_after else "queued"
             title_display = entry.get("title", "Untitled")
-            self.app.call_from_thread(status.update, f"Added: {title_display}")
+            self.app.call_from_thread(status.update, f"🥬 Added to larder: {title_display}")
             # Small delay so user can see the success message
             time.sleep(0.5)
             self.app.call_from_thread(self.dismiss, (action, entry))
@@ -490,7 +523,7 @@ class TextPreviewScreen(ModalScreen[None]):
 class WiltedApp(App):
     """Local TTS article reader — Textual TUI."""
 
-    TITLE = "wilted"
+    TITLE = "🥬 wilted"
 
     DEFAULT_CSS = """
     Screen {
@@ -499,7 +532,7 @@ class WiltedApp(App):
     #left-panel {
         width: 2fr;
         height: 100%;
-        border-right: solid $accent;
+        border-right: solid $primary;
         padding: 0 1;
     }
     #right-panel {
@@ -512,6 +545,7 @@ class WiltedApp(App):
     }
     .panel-title {
         text-style: bold;
+        color: $primary;
         margin-bottom: 1;
     }
     #queue-table {
@@ -519,23 +553,26 @@ class WiltedApp(App):
     }
     #now-playing-title {
         text-style: bold;
+        color: $accent;
         margin-bottom: 1;
     }
     #playback-bar {
         height: 1;
         margin: 1 0;
+        color: $primary;
     }
     #text-scroll {
         height: 1fr;
         min-height: 5;
         margin: 1 0;
-        border: round $accent;
+        border: round $primary;
     }
     #current-text {
         padding: 1;
     }
     #voice-display {
         margin-top: 1;
+        color: $secondary;
     }
     #status-line {
         text-style: italic;
@@ -570,6 +607,8 @@ class WiltedApp(App):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
+        self.register_theme(SALAD_THEME)
+        self.theme = "salad"
         self._queue: list[dict] = []
         self._engine = None
         self._current_entry: dict | None = None
@@ -597,11 +636,11 @@ class WiltedApp(App):
         yield Header()
         with Horizontal():
             with Vertical(id="left-panel"):
-                yield Label("Reading List", classes="panel-title")
+                yield Label("The Larder", classes="panel-title")
                 yield DataTable(id="queue-table")
                 yield Label("", id="empty-message")
             with Vertical(id="right-panel"):
-                yield Label("Now Playing", classes="panel-title")
+                yield Label("The Plate", classes="panel-title")
                 yield Label("No article selected", id="now-playing-title")
                 yield Static("", id="playback-bar")
                 with VerticalScroll(id="text-scroll"):
@@ -631,7 +670,7 @@ class WiltedApp(App):
         table.clear()
         empty_msg = self.query_one("#empty-message", Label)
         if not self._queue:
-            empty_msg.update("Queue is empty. Press [a] to add an article.")
+            empty_msg.update("The larder is empty. Press [a] to add an article.")
             empty_msg.display = True
         else:
             empty_msg.display = False
@@ -676,17 +715,24 @@ class WiltedApp(App):
         """Render the PlaybackBar with state icon, progress, para count, and timer."""
         # State icon
         if self._paused:
-            icon = "\u23f8"  # ⏸
+            icon = _ICON_PAUSED
         elif self._playing:
-            icon = "\u25b6"  # ▶
+            icon = _ICON_PLAYING
         else:
             icon = ""
 
-        # Progress bar
+        # Progress bar — fractional block characters for smooth fill
         bar_width = 20
         frac = max(0.0, min(self._bar_progress / 100, 1.0))
-        filled = int(frac * bar_width)
-        bar_str = "\u2501" * filled + "\u254c" * (bar_width - filled)  # ━ and ╌
+        total_eighths = int(frac * bar_width * 8)
+        full_blocks = total_eighths // 8
+        remainder = total_eighths % 8
+        bar_str = "█" * full_blocks
+        if remainder > 0 and full_blocks < bar_width:
+            bar_str += _BLOCKS[remainder]
+            bar_str += "░" * (bar_width - full_blocks - 1)
+        else:
+            bar_str += "░" * (bar_width - full_blocks)
 
         # Paragraph counter
         if self._paragraphs:
@@ -726,11 +772,11 @@ class WiltedApp(App):
         for i in range(start, end):
             text = escape(self._paragraphs[i])
             if i < para_idx:
-                lines.append(f"[dim]{text}[/dim]")
+                lines.append(f"[#A9BA9D]{text}[/#A9BA9D]")
             elif i == para_idx:
-                lines.append(f"[bold]{text}[/bold]")
+                lines.append(f"[bold #F2E8CF]{text}[/bold #F2E8CF]")
             else:
-                lines.append(f"[dim italic]{text}[/dim italic]")
+                lines.append(f"[dim #A9BA9D]{text}[/dim #A9BA9D]")
         return "\n\n".join(lines)
 
     def _set_status(self, msg: str, priority: int = _STATUS_LOW) -> None:

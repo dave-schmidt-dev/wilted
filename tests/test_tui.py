@@ -8,6 +8,7 @@ import pytest
 from textual.binding import Binding
 from textual.widgets import Static
 
+from wilted import ICONS
 from wilted.tui import (
     AddArticleScreen,
     ConfirmScreen,
@@ -521,12 +522,12 @@ async def test_playback_bar_shows_state_icon(mock_load):
         app._estimated_remaining_secs = 120
         app._update_playback_bar()
         content = str(app.query_one("#playback-bar", Static).render())
-        assert "\u25b6" in content  # ▶
+        assert ICONS["playing"] in content
 
         app._paused = True
         app._update_playback_bar()
         content = str(app.query_one("#playback-bar", Static).render())
-        assert "\u23f8" in content  # ⏸
+        assert ICONS["paused"] in content
 
 
 @pytest.mark.asyncio
@@ -689,9 +690,9 @@ async def test_transcript_markup_bold_current(mock_load):
     async with app.run_test():
         app._paragraphs = ["First para.", "Second para.", "Third para."]
         result = app._build_transcript(1)
-        assert "[bold]Second para.[/bold]" in result
-        assert "[dim]First para.[/dim]" in result
-        assert "[dim italic]Third para.[/dim italic]" in result
+        assert "[bold #F2E8CF]Second para.[/bold #F2E8CF]" in result
+        assert "[#A9BA9D]First para.[/#A9BA9D]" in result
+        assert "[dim #A9BA9D]Third para.[/dim #A9BA9D]" in result
 
 
 @pytest.mark.asyncio

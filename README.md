@@ -35,7 +35,7 @@ cd ~/Documents/Projects/wilted
 Add a shell alias (e.g. in `~/.zshrc`):
 
 ```bash
-alias wilted='~/Documents/Projects/wilted/wilted'
+alias wilted='~/.venvs/mlx-audio/bin/wilted'
 ```
 
 First run downloads the Kokoro model from HuggingFace (~160MB, one-time).
@@ -132,6 +132,32 @@ data/
 ## TUI
 
 Running `wilted` with no arguments launches the interactive TUI — a complete replacement for the CLI with visual feedback.
+
+The TUI uses the **Salad Palette** — a muted, organic color scheme designed for comfortable reading in a dark terminal:
+
+- **Dark Sea Green** (`#8FBC8F`) — headers, active playback state
+- **Sage** (`#A9BA9D`) — secondary text, read paragraphs
+- **Cream** (`#F2E8CF`) — current paragraph highlight, focus/selection
+- **Muted Red** (`#BC4749`) — stop, delete actions
+- **Bright Lime** (`#A7C957`) — new/unread indicators
+
+The queue panel is called **The Larder** and the playback panel is **The Plate**.
+
+### NerdFont icons
+
+The TUI uses standard Unicode icons by default (`▶ ⏸ ● ◐ ○`). If you have a [NerdFont](https://www.nerdfonts.com/)-patched terminal font installed, enable richer icons:
+
+```bash
+NERD_FONTS=1 wilted
+```
+
+Or add to your shell profile:
+
+```bash
+export NERD_FONTS=1
+```
+
+### Key bindings
 
 | Key | Action |
 |-----|--------|

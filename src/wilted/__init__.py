@@ -53,6 +53,46 @@ LANGUAGES = {
     "z": "Chinese",
 }
 
+# ---------------------------------------------------------------------------
+# Icon system — NerdFont with Unicode fallback
+# ---------------------------------------------------------------------------
+
+_ICONS_UNICODE = {
+    "app": "🥬",
+    "playing": "▶",
+    "paused": "⏸",
+    "stopped": "■",
+    "article": "●",
+    "partial": "◐",
+    "completed": "○",
+    "playlist": "☰",
+    "settings": "⚙",
+    "add": "+",
+    "audio": "♫",
+}
+
+_ICONS_NERD = {
+    "app": "🥬",
+    "playing": "󰐊",
+    "paused": "󰏤",
+    "stopped": "󰓛",
+    "article": "󰛄",
+    "partial": "󰪡",
+    "completed": "󰄬",
+    "playlist": "󱇧",
+    "settings": "󰒓",
+    "add": "󰐕",
+    "audio": "󰝚",
+}
+
+
+def use_nerd_fonts() -> bool:
+    """Check if NerdFont icons are enabled via environment variable."""
+    return os.environ.get("NERD_FONTS", "0") == "1"
+
+
+ICONS = _ICONS_NERD if use_nerd_fonts() else _ICONS_UNICODE
+
 
 def ensure_data_dirs():
     """Create data directories if they don't exist."""

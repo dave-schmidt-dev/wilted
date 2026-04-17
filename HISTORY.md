@@ -1,3 +1,15 @@
+## 2026-04-17 — Salad Palette theme and NerdFont icon system
+
+- Applied the **Salad Palette** custom Textual theme: Dark Sea Green primary, Sage secondary, Cream accent, Ebony background, Muted Red errors, Bright Lime success. Registered as a named theme via `register_theme()` so all Textual widgets pick up the palette automatically.
+- Added **NerdFont icon system** with Unicode fallback. `ICONS` dict in `__init__.py` resolves at import time based on `NERD_FONTS=1` env var. TUI code references semantic icon names (`ICONS["playing"]`), not raw codepoints.
+- Renamed TUI panels: "Reading List" → **The Larder**, "Now Playing" → **The Plate**. Thematic naming from the Wilted design language.
+- Upgraded progress bar from `━╌` segments to **fractional block characters** (`▏▎▍▌▋▊▉█░`) for smooth visual fill.
+- Styled transcript pane: current paragraph highlighted in Cream (`#F2E8CF`), surrounding paragraphs in Sage (`#A9BA9D`).
+- Added `🥬` lettuce emoji to app title bar and article-add toast messages.
+- Updated footer key colors and panel borders to use the Salad Palette via Textual theme variables.
+- Updated tests to reference `ICONS` dict instead of hardcoded Unicode codepoints.
+- Updated README with theme documentation and NerdFont setup instructions.
+
 ## 2026-04-17 — Rename project from lilt to wilted
 
 - Renamed the package, CLI entry point, root shim, docs, tests, and repo references from `lilt` to `wilted`.
