@@ -28,8 +28,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-m 'not slow'"
-markers = ["slow: requires real TTS model (deselected by default)"]
 
 [tool.ruff]
 line-length = 120

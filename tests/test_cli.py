@@ -1,6 +1,7 @@
 """Tests for lilt.cli — CLI commands and argument parsing."""
 
 import argparse
+import types
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,6 +16,7 @@ from lilt.cli import (
     cmd_next,
     cmd_play,
     cmd_remove,
+    main,
     run_cli,
 )
 from lilt.queue import add_article, load_queue
@@ -374,3 +376,37 @@ class TestArgparse:
             pytest.raises(SystemExit, match="1"),
         ):
             run_cli(["--add"])
+
+
+class TestMainEntrypoint:
+    def test_main_cli_mode_dispatches_without_tqdm_preinit(self):
+        """CLI mode should dispatch directly to run_cli."""
+        with (
+            patch("lilt.cli.run_cli") as mock_run_cli,
+            patch("sys.argv", ["lilt", "--version"]),
+        ):
+            main()
+
+        mock_run_cli.assert_called_once_with()
+
+    def test_main_tui_mode_preinitializes_tqdm_lock(self):
+        """TUI mode must initialize tqdm's lock before starting Textual."""
+        mock_tqdm = MagicMock()
+        mock_app = MagicMock()
+        mock_app_cls = MagicMock(return_value=mock_app)
+
+        with (
+            patch("sys.argv", ["lilt"]),
+            patch.dict(
+                "sys.modules",
+                {
+                    "tqdm": types.SimpleNamespace(tqdm=mock_tqdm),
+                    "lilt.tui": types.SimpleNamespace(LiltApp=mock_app_cls),
+                },
+            ),
+        ):
+            main()
+
+        mock_tqdm.get_lock.assert_called_once_with()
+        mock_app_cls.assert_called_once_with()
+        mock_app.run.assert_called_once_with()

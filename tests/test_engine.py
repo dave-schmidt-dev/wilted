@@ -437,6 +437,48 @@ class TestGenerateAudio:
         assert isinstance(result, np.ndarray)
         assert len(result) == 0
 
+    def test_concurrent_generate_audio_is_serialized(self):
+        """Concurrent generate_audio calls must not overlap model.generate."""
+        engine = AudioEngine()
+        overlap_count = 0
+        active_calls = 0
+        active_lock = threading.Lock()
+        start_gate = threading.Event()
+
+        def fake_generate(*args, **kwargs):
+            nonlocal overlap_count, active_calls
+            start_gate.wait(timeout=2)
+            with active_lock:
+                active_calls += 1
+                if active_calls > 1:
+                    overlap_count += 1
+            try:
+                threading.Event().wait(0.05)
+                return _make_fake_segment(n_samples=128)
+            finally:
+                with active_lock:
+                    active_calls -= 1
+
+        engine._model = MagicMock()
+        engine._model.generate.side_effect = fake_generate
+
+        results = []
+
+        def worker():
+            results.append(engine.generate_audio("Concurrent text"))
+
+        t1 = threading.Thread(target=worker)
+        t2 = threading.Thread(target=worker)
+        t1.start()
+        t2.start()
+        start_gate.set()
+        t1.join(timeout=2)
+        t2.join(timeout=2)
+
+        assert overlap_count == 0
+        assert len(results) == 2
+        assert all(isinstance(result, np.ndarray) for result in results)
+
 
 class TestNormalizeSegments:
     def test_single_result_wrapped_in_list(self):
@@ -505,6 +547,86 @@ class TestLangCodeParameter:
             engine.generate_and_play("Test generator playback.")
 
         assert stream_instance.write.call_count >= 2
+
+    def test_generate_and_play_materializes_generator_inside_lock(self):
+        """Lazy generator evaluation must complete before another call enters generate."""
+        engine = AudioEngine()
+        overlap_count = 0
+        active_calls = 0
+        active_lock = threading.Lock()
+        start_gate = threading.Event()
+
+        def fake_generate(*args, **kwargs):
+            start_gate.wait(timeout=2)
+
+            def segments():
+                nonlocal overlap_count, active_calls
+                with active_lock:
+                    active_calls += 1
+                    if active_calls > 1:
+                        overlap_count += 1
+                try:
+                    threading.Event().wait(0.05)
+                    yield _make_fake_segment(n_samples=64)
+                finally:
+                    with active_lock:
+                        active_calls -= 1
+
+            return segments()
+
+        engine._model = MagicMock()
+        engine._model.generate.side_effect = fake_generate
+
+        with patch.object(engine, "_play_audio"):
+            t1 = threading.Thread(target=lambda: engine.generate_and_play("One"))
+            t2 = threading.Thread(target=lambda: engine.generate_and_play("Two"))
+            t1.start()
+            t2.start()
+            start_gate.set()
+            t1.join(timeout=2)
+            t2.join(timeout=2)
+
+        assert overlap_count == 0
+
+    def test_play_article_materializes_generator_inside_lock(self):
+        """play_article must not leave lazy segment evaluation outside _model_lock."""
+        engine = AudioEngine()
+        overlap_count = 0
+        active_calls = 0
+        active_lock = threading.Lock()
+        start_gate = threading.Event()
+
+        def fake_generate(*args, **kwargs):
+            start_gate.wait(timeout=2)
+
+            def segments():
+                nonlocal overlap_count, active_calls
+                with active_lock:
+                    active_calls += 1
+                    if active_calls > 1:
+                        overlap_count += 1
+                try:
+                    threading.Event().wait(0.05)
+                    yield _make_fake_segment(n_samples=64)
+                finally:
+                    with active_lock:
+                        active_calls -= 1
+
+            return segments()
+
+        engine._model = MagicMock()
+        engine._model.generate.side_effect = fake_generate
+
+        with patch.object(engine, "_play_audio"):
+            t1 = threading.Thread(target=lambda: engine.play_article("Paragraph one."))
+            t2 = threading.Thread(target=lambda: engine.play_article("Paragraph two."))
+            t1.start()
+            t2.start()
+            start_gate.set()
+            t1.join(timeout=2)
+            t2.join(timeout=2)
+
+        assert overlap_count == 0
 
     def test_generate_audio_uses_lang_code(self):
         engine = AudioEngine()

@@ -146,15 +146,42 @@ src/lilt/                # shared library
     cache.py             # audio cache (MP3 storage, manifest)
     text.py              # text cleaning and splitting
     tui.py               # Textual TUI app
-tests/                   # 257 tests (pytest)
+tests/                   # pytest suite covering CLI, engine, TUI, ingest, cache, and guardrail tests
 ```
+
+## Validation
+
+Routine validation uses only the guarded code paths that Lilt actually relies on:
+
+```bash
+make validate
+```
+
+That runs:
+
+- `ruff` linting
+- unit/integration tests for CLI, engine, queue/cache, ingest, and TUI behavior
+- concurrency guardrails that verify MLX work stays serialized behind `_model_lock`
+- startup guardrails that verify `tqdm` lock initialization happens on the main thread before Textual starts
+
+What to avoid in future:
+
+- Do not add in-process tests that import or execute real MLX/Metal work inside the pytest runner.
+- Do not add “native smoke” tests to the default validation path just to probe known-bad runtime behavior.
+- Do not bypass `_model_lock` for `load_model()`, `generate_audio()`, `generate_and_play()`, or `play_article()`.
+- Do not let lazy MLX generators escape the lock before converting segment audio to NumPy.
+- Do not let the first `tqdm` lock initialization happen inside a Textual worker thread.
 
 ## Roadmap
 
+- CI/local validation parity for lint + guarded tests
+- RSS subscriptions:
+  - Phase 1: feed data model and persistence
+  - Phase 2: feed polling, dedupe, and queue import
+  - Phase 3: CLI/TUI feed management
 - ~~Pre-generated audio for instant playback~~ (done: background MP3 caching + hybrid playback)
-- Custom RSS feed subscriptions
 - Apple Podcast integration (private feed)
-- Unified ad-free feed (download existing podcasts, strip ads, merge into private feed)
+- Unified private feed for saved articles and podcast content
 
 ## Dependencies
 

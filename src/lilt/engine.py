@@ -29,15 +29,17 @@ def _normalize_segments(result):
 def _force_hf_offline_if_cached(model_name: str) -> None:
     """Enable HF offline mode when the model is already in the local cache.
 
-    ``huggingface_hub``'s download stack (especially the ``hf_xet`` Rust
-    extension) is unstable inside the Textual TUI on macOS — open file
-    descriptors from the event loop cause ``bad value(s) in fds_to_keep``
-    during subprocess forking.
+    The first-time Hugging Face download path can be unstable inside a Textual
+    worker on macOS because ``snapshot_download()`` initializes ``tqdm``'s
+    multiprocessing lock, which may spawn Python's ``resource_tracker``
+    subprocess. When this happens from the worker thread, fork/exec can fail
+    with ``bad value(s) in fds_to_keep``.
 
     When the model is already cached we can sidestep the entire download stack
-    by telling ``huggingface_hub`` to work offline.  If the model is *not*
-    cached, we fall back to the env-var + sys.modules approach so that a plain
-    HTTP download can still succeed.
+    by telling ``huggingface_hub`` to work offline. The remaining xet-related
+    env/sys.modules guards are retained as defense-in-depth for alternative Hub
+    code paths, but they are not the root-cause fix for the ``fds_to_keep``
+    failure.
 
     Set ``LILT_ENABLE_HF_XET=1`` to opt back into Xet-backed downloads.
     """

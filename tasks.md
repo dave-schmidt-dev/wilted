@@ -1,24 +1,38 @@
 # Lilt — Tasks
 
-## ASAP
+## Current Status
 
-- [x] **Consolidate CLI audio path**: Extracted CLI to `src/lilt/cli.py`, uses `AudioEngine.play_article()` for playback, `generate_audio()` per chunk for `--save`. Eliminated afplay subprocess, temp files, direct mlx_audio imports.
-- [x] **Add CLI test coverage**: 27 tests in `tests/test_cli.py` covering all commands, playback, save mode, argparse, error handling.
-- [x] **Replace hardcoded WPM 150 in CLI**: All four occurrences replaced with `WPM_ESTIMATE`. Consistency test covers both tui.py and cli.py.
-- [x] **Use `#!/usr/bin/env python3` shebang**: Fixed. Also added `[project.scripts]` pip entry point in pyproject.toml.
-- [x] **Move `sounddevice` to core deps**: Moved from `[tui]` optional to core dependencies.
-- [x] ~~**Use XDG data directory**~~: Reverted — data stays in project-relative `data/` by design (everything in one project folder).
+- [x] Unified `lilt` entry point for CLI + TUI
+- [x] Shared `AudioEngine` path for playback and WAV export
+- [x] Reading-list persistence in project-local `data/`
+- [x] Background MP3 cache generation + hybrid cached/live playback
+- [x] TUI playback controls: pause/resume, skip/rewind paragraph, transcript pane, voice/speed controls
+- [x] Regression coverage for CLI, engine, ingest, cache, TUI, and configuration guardrails
+- [ ] Manual audio-device playback verification is still missing for the true speaker output path
 
-## Backlog
+## Now
 
-- [ ] End-to-end smoke test: launch fresh `lilt` process, load real model, synthesize short clip, confirm playback
-- [ ] **TUI dead code**: `tui.py:723` `entry.get("words", 0)` is a standalone expression (return value discarded). Likely should be `word_count = entry.get("words", 0)`.
-- [ ] **TUI WAV export deduplication**: `tui.py:1023-1098` manually loops paragraphs and calls `generate_audio()`. Share logic with CLI `--save` path.
-- [ ] **Shared ingest helper**: CLI `cmd_add` and TUI `_fetch_article` both implement URL-vs-clipboard ingest, title extraction, Apple News handling separately. Extract shared function.
-- [ ] **Redundant imports in tui.py**: `import time` at line 5 (top-level) and again at line 342. `import re` inside method bodies at lines 331, 1026.
-- [ ] **Expand ruff rules**: Current `["E", "F", "W", "I"]` misses deprecated annotations and redundant imports. Add `"UP"` (pyupgrade), `"TCH"` (type checking).
-- [ ] **load_queue type validation**: `queue.py:16-17` returns raw JSON without validating it's a list.
-- [x] Pre-generated audio for instant playback (background MP3 caching + hybrid playback, Phases 1-4)
-- [ ] Custom RSS feed subscriptions
-- [ ] Apple Podcast integration (private feed)
-- [ ] Unified ad-free feed (download existing podcasts, strip ads, merge into private feed)
+- [x] **Define a repeatable validation target**: `make validate` runs lint plus the guarded fast test suite via `uv run`
+- [ ] **Run a packaging/install pass**: verify the current install flow on the supported Python/venv path and document any non-editable-install caveats cleanly
+- [ ] **Manual playback check**: verify actual speaker output, pause/resume, stop, and status updates on a machine with a working audio device
+
+## Next
+
+- [ ] **RSS Phase 1 — data model**: add `data/feeds.json` plus feed metadata (`id`, title, feed URL, site URL, last checked, etag/last-modified, enabled)
+- [ ] **RSS Phase 2 — fetch/sync**: poll feeds, dedupe entries by canonical URL/GUID, and convert new entries into normal queued articles
+- [ ] **RSS Phase 3 — UX**: CLI/TUI flows for add/list/remove/refresh feeds and review newly imported entries before auto-queueing
+- [ ] **Playback observability**: add lightweight file logging under `/tmp/lilt.log` with `RotatingFileHandler` and a `--debug` path, per project conventions
+- [ ] **Release hygiene**: align `README.md`, `HISTORY.md`, and task tracking after each meaningful change so roadmap drift does not recur
+
+## Later
+
+- [ ] **Apple Podcast integration**: ingest from a private feed or exported subscription source, likely reusing the RSS feed plumbing
+- [ ] **Unified private feed**: merge saved articles and podcast episodes into one ad-free listening queue/feed once feed ingestion is stable
+- [ ] **Ad stripping / enrichment pipeline**: evaluate whether this belongs in Lilt or a separate feeder project before implementation
+
+## Notes
+
+- Backlog items from the April 7 code-quality pass are complete and no longer tracked here: shared ingest helper, shared WAV export, dead-code cleanup, redundant import cleanup, expanded Ruff rules, and queue/state type validation.
+- The main open risk is now actual audio-device playback verification in the TUI/CLI path, not safe-path configuration inside the codebase.
+- RSS work should reuse the existing queue/article cache model instead of creating a second content pipeline.
+- Future tests should validate only the guarded paths we rely on. Native crash-probe tests do not belong in routine project validation.

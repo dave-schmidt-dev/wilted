@@ -325,6 +325,14 @@ def main():
     if len(sys.argv) > 1:
         run_cli()
     else:
+        # Pre-initialize tqdm's multiprocessing lock on the main thread.
+        # If the first initialization happens inside a Textual worker during
+        # Hugging Face snapshot_download(), Python's resource_tracker may spawn
+        # a subprocess with invalid pass-through FDs and raise fds_to_keep.
+        import tqdm
+
+        tqdm.tqdm.get_lock()
+
         from lilt.tui import LiltApp
 
         LiltApp().run()

@@ -1,5 +1,6 @@
 """Shared test fixtures for lilt."""
 
+import importlib
 from unittest.mock import patch
 
 import pytest
@@ -10,6 +11,12 @@ import lilt
 @pytest.fixture(autouse=True)
 def _no_preload_model():
     """Prevent TUI tests from loading the real TTS model."""
+    try:
+        importlib.import_module("lilt.tui")
+    except ImportError:
+        yield
+        return
+
     with patch("lilt.tui.LiltApp._preload_model"):
         yield
 
