@@ -1,3 +1,10 @@
+## 2026-04-19 — Post-commit fixes: ReportScreen UX, mlx_vlm compat, podcast discovery
+
+- **ReportScreen UX overhaul**: Removed Score column (internal LLM metric, not user-facing) and empty first column. Widened dialog to 90%. Replaced `[x]`/`[ ]` checkboxes with `✓` marks. Added `priority=True` to key bindings to override parent app bindings (`s`=stop, `a`=add, `n`=next, `q`=quit were intercepting). Hooked `on_data_table_row_selected` for enter/space toggle since DataTable consumes those keys before screen bindings fire. Removed confusing Playlist cycling shortcut. Added in-dialog help line since the modal covers the app's Footer.
+- **mlx_vlm GenerationResult compat**: `mlx_vlm.generate()` now returns a `GenerationResult` dataclass instead of a plain string. Fixed `MlxBackend.generate()` to extract `.text` and `.total_tokens` with fallback for older versions.
+- **Default classification model**: Changed from nonexistent `gemma-4-12b-a4b-it-4bit` to `gemma-4-e4b-it-4bit` (cached locally, 4B params, sufficient for playlist/relevance/summary classification).
+- **Podcast discovery limit**: Initial discovery of podcast feeds now caps at 5 most recent episodes to avoid ingesting hundreds of backlog episodes. Subsequent polls process all new entries normally.
+
 ## 2026-04-19 — Phase 3: Morning Report
 
 - **Phase 3 implementation plan** (`plans/phase3-implementation.md`): Wrote detailed handoff spec for morning report (Tasks 3.1-3.4). Covers API contracts, TUI ReportScreen UX, selection history, source stats, test requirements, quality gates, and explicit "What NOT to do" guardrails.

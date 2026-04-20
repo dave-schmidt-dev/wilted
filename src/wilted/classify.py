@@ -31,7 +31,7 @@ def _now_utc() -> str:
 
 
 # Default classification model
-_DEFAULT_MODEL = "mlx-community/gemma-4-12b-a4b-it-4bit"
+_DEFAULT_MODEL = "mlx-community/gemma-4-e4b-it-4bit"
 _DEFAULT_BACKEND = "mlx"
 
 # Valid playlist categories

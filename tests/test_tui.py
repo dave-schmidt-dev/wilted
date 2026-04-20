@@ -864,8 +864,8 @@ async def test_toggle_selection():
         screen = app.screen
         # Initially all items are selected
         assert screen._selected.get(1, False) is True
-        # Toggle selection
-        await pilot.press(" ")
+        # Toggle selection — enter triggers on_data_table_row_selected
+        await pilot.press("enter")
         await pilot.pause()
         # Item should now be unselected
         assert screen._selected.get(1, True) is False
@@ -952,8 +952,8 @@ async def test_dismiss_without_action_preserves_state():
     async with app.run_test() as pilot:
         app.push_screen(ReportScreen(report_data))
         await pilot.pause()
-        # Toggle to unselect
-        await pilot.press(" ")
+        # Toggle to unselect — enter triggers on_data_table_row_selected
+        await pilot.press("enter")
         await pilot.pause()
         screen = app.screen
         assert screen._selected.get(1, True) is False

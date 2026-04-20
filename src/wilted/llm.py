@@ -6,7 +6,7 @@ Only one model loaded at a time; explicit unloading reclaims Metal GPU memory.
 Usage:
     from wilted.llm import create_backend
 
-    backend = create_backend("mlx", model="mlx-community/gemma-4-12b-a4b-it-4bit")
+    backend = create_backend("mlx", model="mlx-community/gemma-4-e4b-it-4bit")
     backend.load()
     response, tokens = backend.generate("You are a classifier.", "Classify this text.")
     backend.close()
@@ -99,7 +99,7 @@ class MlxBackend:
         prompt = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
         start = time.monotonic()
-        response = mlx_generate(
+        result = mlx_generate(
             self._model,
             self._processor,
             prompt=prompt,
@@ -109,8 +109,13 @@ class MlxBackend:
         )
         elapsed = time.monotonic() - start
 
-        # Estimate token count from response length (rough: ~4 chars/token)
-        token_count = max(1, len(response) // 4)
+        # mlx_vlm >=0.2 returns a GenerationResult dataclass; older versions return str
+        if hasattr(result, "text"):
+            response = result.text
+            token_count = getattr(result, "total_tokens", None) or max(1, len(response) // 4)
+        else:
+            response = str(result)
+            token_count = max(1, len(response) // 4)
         logger.debug(
             "Generated %d tokens in %.1fs (%.0f tok/s)",
             token_count,

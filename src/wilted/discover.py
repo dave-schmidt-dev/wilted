@@ -235,8 +235,17 @@ def _poll_feed(feed: Feed) -> dict:
 
     update_feed(feed.id, **update_fields)
 
+    # For podcast feeds, limit to the most recent episodes on initial discovery.
+    # RSS feeds list entries newest-first; cap at 5 to avoid ingesting a backlog
+    # of hundreds of episodes from long-running shows.
+    entries = parsed.entries
+    if feed.feed_type == "podcast":
+        existing_count = Item.select().where(Item.feed == feed).count()
+        if existing_count == 0:
+            entries = entries[:5]
+
     # Process entries
-    for entry in parsed.entries:
+    for entry in entries:
         try:
             _process_entry(feed, entry, stats)
         except Exception as e:
