@@ -28,7 +28,7 @@ from textual.theme import Theme
 from textual.widgets import Footer, Header, Label, Static, Tree
 from textual.worker import get_current_worker
 
-from wilted import ICONS, LANGUAGES, VOICES, WPM_ESTIMATE
+from wilted import ICONS, WPM_ESTIMATE
 from wilted.playlists import (
     clear_resume_position,
     ensure_default_playlists,
@@ -145,7 +145,7 @@ class WiltedApp(App):
     #current-text {
         padding: 1;
     }
-    #voice-display {
+    #speed-display {
         margin-top: 1;
         color: $secondary;
     }
@@ -163,20 +163,20 @@ class WiltedApp(App):
 
     BINDINGS: ClassVar[list[Binding | tuple]] = [
         Binding("space", "toggle_play", "Play/Pause"),
+        Binding("p", "play_selected", "Play"),
         Binding("s", "stop", "Stop"),
-        Binding("enter", "play_selected", "Play Selected"),
         Binding("right,right_square_bracket", "skip_segment", ">>"),
         Binding("left_square_bracket", "prev_paragraph", "<<"),
         Binding("n", "next_article", "Next"),
-        Binding("minus", "speed_down", "-Spd"),
-        Binding("equal,plus", "speed_up", "+Spd"),
-        Binding("v", "voice_settings", "Voice"),
         Binding("a", "add_article", "Add"),
-        Binding("d", "delete_selected", "Delete"),
-        Binding("t", "text_preview", "Preview"),
-        Binding("c", "clear_all", "Clear All"),
-        Binding("w", "export_wav", "Export WAV"),
-        Binding("r", "refresh_queue", "Refresh"),
+        Binding("d", "delete_selected", "Del"),
+        Binding("t", "text_preview", "Text"),
+        Binding("v", "voice_settings", "Voice", show=False),
+        Binding("minus", "speed_down", show=False),
+        Binding("equal,plus", "speed_up", show=False),
+        Binding("c", "clear_all", show=False),
+        Binding("w", "export_wav", show=False),
+        Binding("r", "refresh_queue", show=False),
         Binding("q", "quit_app", "Quit"),
     ]
 
@@ -221,13 +221,13 @@ class WiltedApp(App):
                 yield Static("", id="playback-bar")
                 with VerticalScroll(id="text-scroll"):
                     yield Static("", id="current-text", markup=True)
-                yield Label("", id="voice-display")
+                yield Static("", id="speed-display")
                 yield Label("", id="status-line")
         yield Footer()
 
     def on_mount(self) -> None:
         self._refresh_playlists()
-        self._update_voice_display()
+        self._update_speed_display()
         # 1-second timer for live playback countdown
         self.set_interval(1.0, self._update_timer)
         # Preload TTS model only if there are items that need TTS synthesis.
@@ -316,13 +316,16 @@ class WiltedApp(App):
         else:
             empty_msg.display = False
 
-    def _update_voice_display(self) -> None:
-        voice_info = VOICES.get(self._voice, {})
-        name = voice_info.get("name", self._voice)
-        lang_name = LANGUAGES.get(self._lang, self._lang)
-        self.query_one("#voice-display", Label).update(
-            f"Voice: {self._voice} ({name})  Speed: {self._speed:.1f}x  Lang: {lang_name}"
-        )
+    def _update_speed_display(self) -> None:
+        spd = f"{self._speed:.1f}x"
+        parts = [
+            f"Speed: {spd}",
+            "[@click=app.speed_down][-][@/]",
+            "[@click=app.speed_up][+][@/]",
+            "│",
+            "[@click=app.voice_settings]voice[@/]",
+        ]
+        self.query_one("#speed-display", Static).update("  ".join(parts))
 
     def _update_now_playing(
         self,
@@ -737,7 +740,7 @@ class WiltedApp(App):
         self._trigger_generation()
 
     def action_play_selected(self) -> None:
-        """Play selected item or toggle playlist expand/collapse."""
+        """Play the selected item from the playlist tree."""
         tree = self.query_one("#playlist-tree", Tree)
         node = tree.cursor_node
         if node is None:
@@ -747,11 +750,6 @@ class WiltedApp(App):
             saved = get_resume_position(data["id"])
             resume_para = saved["paragraph_idx"] if saved else 0
             self._start_playback(data, resume_para)
-        elif isinstance(data, str):
-            if node.is_expanded:
-                node.collapse()
-            else:
-                node.expand()
 
     def action_skip_segment(self) -> None:
         """Skip to the next paragraph."""
@@ -768,22 +766,12 @@ class WiltedApp(App):
     def action_speed_down(self) -> None:
         """Decrease playback speed by 0.1x."""
         self._speed = max(0.5, round(self._speed - 0.1, 1))
-        self._update_voice_display()
-        self._refresh_playlists()
-        msg = f"Speed: {self._speed:.1f}x"
-        if self._playing:
-            msg += " — next paragraph"
-        self._set_status(msg, _STATUS_MEDIUM)
+        self._update_speed_display()
 
     def action_speed_up(self) -> None:
         """Increase playback speed by 0.1x."""
         self._speed = min(2.0, round(self._speed + 0.1, 1))
-        self._update_voice_display()
-        self._refresh_playlists()
-        msg = f"Speed: {self._speed:.1f}x"
-        if self._playing:
-            msg += " — next paragraph"
-        self._set_status(msg, _STATUS_MEDIUM)
+        self._update_speed_display()
 
     def action_next_article(self) -> None:
         """Stop current and play next article in queue."""
@@ -814,7 +802,7 @@ class WiltedApp(App):
             if result is not None:
                 old_voice, old_speed, old_lang = self._voice, self._speed, self._lang
                 self._voice, self._speed, self._lang = result
-                self._update_voice_display()
+                self._update_speed_display()
                 self._refresh_playlists()  # Update est. time column
                 changed = old_voice != self._voice or old_speed != self._speed or old_lang != self._lang
                 if changed and self._playing:

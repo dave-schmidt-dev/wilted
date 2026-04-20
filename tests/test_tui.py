@@ -813,13 +813,13 @@ async def test_speed_clamps_to_range(mock_items, mock_list, mock_ensure):
 @patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
 @patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
 async def test_speed_key_shows_feedback(mock_items, mock_list, mock_ensure):
-    """Speed change shows feedback in status line."""
+    """Speed change updates the speed display."""
     app = WiltedApp()
     async with app.run_test() as pilot:
         await pilot.press("equal")
         await pilot.pause()
-        status = str(app.query_one("#status-line").render())
-        assert "1.1x" in status
+        speed_text = str(app.query_one("#speed-display").render())
+        assert "1.1x" in speed_text
 
 
 @pytest.mark.asyncio
