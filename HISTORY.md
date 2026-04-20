@@ -1,3 +1,16 @@
+## 2026-04-20 — Phase 5: Playlists + Polish
+
+- **Playlist module** (`src/wilted/playlists.py`): Hybrid dynamic/static playlist system. Dynamic playlists (All, Work, Fun, Education) are computed queries over the items table using `COALESCE(playlist_override, playlist_assigned)`. Static playlists use `playlist_items` join table with position ordering. "All" is the superset (no expiry, date-sorted oldest first); Work/Fun/Education have 7-day configurable expiry. Full CRUD: `ensure_default_playlists`, `list_playlists`, `create_playlist`, `delete_playlist`, `add_to_playlist`, `remove_from_playlist`, `get_playlist_items`, `run_expiry`. 54 tests.
+- **TUI playlist navigation**: Replaced flat DataTable queue ("The Larder") with Textual Tree widget showing collapsible playlist groups. "All" expanded by default, other playlists collapsed. Enter on header toggles expand/collapse, enter on item starts playback. Expand/collapse state preserved across refreshes. Tree node `.data` is polymorphic — string for playlist headers, dict for item entries.
+- **Resume position in SQLite**: Migrated from `data/state.json` to `items.metadata` JSON field. `get_resume_position`, `set_resume_position`, `clear_resume_position` in playlists.py. Preserves other metadata keys. 11 tests.
+- **Email morning report**: `format_report_email()` in report.py renders plain text with playlist groups, relevance scores, and summaries. `wilted report --email` pipes body to `~/.agent/bin/email-alert` via subprocess. Config in `wilted.toml` `[email]` section (enabled, to). 2 tests.
+- **CLI playlist subcommands**: `wilted playlist list/create/delete/add/remove`. Replaced the Phase 2+ stub. 7 unit tests, 3 e2e subprocess tests.
+- **wilted doctor additions**: Checks email-alert binary availability, email config (enabled/disabled + recipient), and playlist health (default playlists exist with counts).
+- **Nightly wrapper + launchd**: Rewrote `scripts/wilted-nightly.sh` for launchd-style logging to `~/Library/Logs/wilted-nightly/` (aggregate + per-run). Sends email report on success, failure notification on error. Created `scripts/local.wilted-nightly.plist` (2:00 AM, RunAtLoad). `make install-launchd` / `make uninstall-launchd` Makefile targets. Removed all cron references.
+- **ldstatus integration**: Added WILTED section to `~/.launchd/scripts/ldstatus.sh` parsing nightly log for OK/FAIL rows.
+- **Dead code removal**: Deleted `src/wilted/state.py`, `tests/test_state.py`, `STATE_FILE` constant. Removed 5 obsolete `TestCorruptState` tests.
+- Suite: `660 passed` (`220` unit, `354` integration, `30` e2e, `56` TUI).
+
 ## 2026-04-20 — Pre-Phase-5 test coverage and validation gate
 
 - **`run_setup` behavioral tests** (9 tests in `test_onboard.py`): Covers all interactive branches — early exit when feeds exist and declined, continue when confirmed, add-all/add-none/add-specific starters, custom feed entry, keyword entry, ingest confirmation, and ingest skipped when no feeds added. Uses `monkeypatch` on `builtins.input` to drive the full interactive flow without a TTY.
