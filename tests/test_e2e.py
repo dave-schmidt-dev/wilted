@@ -551,3 +551,49 @@ class TestSetup:
         feeds = _run("feed", "list", env=env)
         # Only the original feed — no duplicates added
         assert "Feeds (1):" in feeds.stdout
+
+
+# ---------------------------------------------------------------------------
+# Playlist lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestPlaylistLifecycle:
+    def test_playlist_list(self, wilted_home):
+        """playlist list returns exit 0 and shows the default dynamic playlists."""
+        _, env = wilted_home
+        r = _run("playlist", "list", env=env)
+        assert r.returncode == 0
+        assert "All" in r.stdout
+        assert "Work" in r.stdout
+
+    def test_playlist_create_and_delete(self, wilted_home):
+        """Creating a static playlist persists it; deleting it removes it."""
+        _, env = wilted_home
+
+        # Create
+        r = _run("playlist", "create", "TestList", env=env)
+        assert r.returncode == 0
+        assert "Created" in r.stdout
+
+        # Verify it appears in list
+        r = _run("playlist", "list", env=env)
+        assert r.returncode == 0
+        assert "TestList" in r.stdout
+
+        # Delete
+        r = _run("playlist", "delete", "TestList", env=env)
+        assert r.returncode == 0
+        assert "Deleted" in r.stdout
+
+    def test_playlist_delete_dynamic_fails(self, wilted_home):
+        """Deleting a dynamic (built-in) playlist must fail with a non-zero exit."""
+        _, env = wilted_home
+
+        # Ensure defaults are seeded by running list first
+        r = _run("playlist", "list", env=env)
+        assert r.returncode == 0
+
+        # Attempting to delete a dynamic playlist should fail
+        r = _run("playlist", "delete", "Work", env=env)
+        assert r.returncode != 0

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from textual.binding import Binding
-from textual.widgets import Static
+from textual.widgets import Static, Tree
 
 from wilted import ICONS
 from wilted.tui import (
@@ -44,6 +45,34 @@ SAMPLE_QUEUE = [
     },
 ]
 
+# Mock playlists returned by list_playlists
+MOCK_PLAYLISTS = [
+    SimpleNamespace(name="All"),
+    SimpleNamespace(name="Education"),
+    SimpleNamespace(name="Fun"),
+    SimpleNamespace(name="Work"),
+]
+
+
+def _mock_get_playlist_items(items):
+    """Return a side_effect function for get_playlist_items that returns items for 'All' and [] for others."""
+
+    def _side_effect(playlist_name):
+        if playlist_name == "All":
+            return list(items)
+        return []
+
+    return _side_effect
+
+
+def _count_tree_leaves(app):
+    """Count the total number of leaf nodes (items) in the playlist tree."""
+    tree = app.query_one("#playlist-tree", Tree)
+    count = 0
+    for playlist_node in tree.root.children:
+        count += len(playlist_node.children)
+    return count
+
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -51,35 +80,44 @@ SAMPLE_QUEUE = [
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_app_launches(mock_load):
-    """App starts without error and shows the DataTable."""
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_app_launches(mock_items, mock_list, mock_ensure):
+    """App starts without error and shows the Tree widget."""
     app = WiltedApp()
     async with app.run_test():
-        from textual.widgets import DataTable
-
-        tables = app.query(DataTable)
-        assert len(tables) > 0, "DataTable should be present in the app"
+        trees = app.query(Tree)
+        assert len(trees) > 0, "Tree should be present in the app"
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
-async def test_queue_displayed(mock_load):
-    """Two articles from the mock queue appear in the DataTable."""
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
+async def test_queue_displayed(mock_items, mock_list, mock_ensure):
+    """Two articles from the mock queue appear in the playlist tree."""
     app = WiltedApp()
     async with app.run_test():
-        from textual.widgets import DataTable
-
-        table = app.query_one("#queue-table", DataTable)
-        assert table.row_count == 2, f"Expected 2 rows, got {table.row_count}"
-        # Verify first row contains the title (possibly truncated)
-        row_data = table.get_row_at(0)
-        assert "Future" in str(row_data[1]) or "AI" in str(row_data[1])
+        tree = app.query_one("#playlist-tree", Tree)
+        # The "All" playlist node should have 2 children (items)
+        all_node = None
+        for node in tree.root.children:
+            if node.data == "All":
+                all_node = node
+                break
+        assert all_node is not None, "All playlist node should exist"
+        assert len(all_node.children) == 2, f"Expected 2 items, got {len(all_node.children)}"
+        # Verify first item contains the title
+        first_label = str(all_node.children[0].label)
+        assert "Future" in first_label or "AI" in first_label
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_empty_queue_message(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_empty_queue_message(mock_items, mock_list, mock_ensure):
     """When queue is empty, an 'empty' message is shown."""
     app = WiltedApp()
     async with app.run_test():
@@ -91,8 +129,10 @@ async def test_empty_queue_message(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_quit_key(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_quit_key(mock_items, mock_list, mock_ensure):
     """Pressing q exits the app."""
     app = WiltedApp()
     async with app.run_test() as pilot:
@@ -103,15 +143,23 @@ async def test_quit_key(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
 @patch("wilted.tui.remove_article")
-@patch("wilted.tui.clear_article_state")
-async def test_delete_key(mock_clear_state, mock_remove, mock_load):
+@patch("wilted.tui.clear_resume_position")
+async def test_delete_key(mock_clear_state, mock_remove, mock_items, mock_list, mock_ensure):
     """Pressing d opens ConfirmScreen, confirming calls remove_article."""
     app = WiltedApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        # Select the first row (should be selected by default) and delete
+        # Move cursor to an item leaf node (first item under "All")
+        tree = app.query_one("#playlist-tree", Tree)
+        all_node = next(n for n in tree.root.children if n.data == "All")
+        if all_node.children:
+            tree.select_node(all_node.children[0])
+            tree.scroll_to_node(all_node.children[0])
+        await pilot.pause()
         await pilot.press("d")
         await pilot.pause()
         # ConfirmScreen should be open
@@ -124,13 +172,22 @@ async def test_delete_key(mock_clear_state, mock_remove, mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
 @patch("wilted.tui.remove_article")
-@patch("wilted.tui.clear_article_state")
-async def test_delete_confirm_button_click(mock_clear_state, mock_remove, mock_load):
+@patch("wilted.tui.clear_resume_position")
+async def test_delete_confirm_button_click(mock_clear_state, mock_remove, mock_items, mock_list, mock_ensure):
     """Clicking Confirm should delete the selected article."""
     app = WiltedApp()
     async with app.run_test() as pilot:
+        await pilot.pause()
+        # Move cursor to an item leaf node
+        tree = app.query_one("#playlist-tree", Tree)
+        all_node = next(n for n in tree.root.children if n.data == "All")
+        if all_node.children:
+            tree.select_node(all_node.children[0])
+            tree.scroll_to_node(all_node.children[0])
         await pilot.pause()
         await pilot.press("d")
         await pilot.pause()
@@ -143,7 +200,11 @@ async def test_delete_confirm_button_click(mock_clear_state, mock_remove, mock_l
 @pytest.mark.asyncio
 async def test_add_screen_launches_on_a_key():
     """Pressing 'a' should open the AddArticleScreen modal."""
-    with patch("wilted.tui.load_queue", return_value=[]):
+    with (
+        patch("wilted.tui.ensure_default_playlists"),
+        patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS),
+        patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([])),
+    ):
         app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.press("a")
@@ -155,7 +216,11 @@ async def test_add_screen_launches_on_a_key():
 @pytest.mark.asyncio
 async def test_add_screen_cancel():
     """Pressing escape in AddArticleScreen should dismiss without adding."""
-    with patch("wilted.tui.load_queue", return_value=[]):
+    with (
+        patch("wilted.tui.ensure_default_playlists"),
+        patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS),
+        patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([])),
+    ):
         app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.press("a")
@@ -171,7 +236,11 @@ async def test_add_screen_cancel():
 @pytest.mark.asyncio
 async def test_add_screen_click_add_and_play_button():
     """Clicking Add & Play should trigger the play-after add path."""
-    with patch("wilted.tui.load_queue", return_value=[]):
+    with (
+        patch("wilted.tui.ensure_default_playlists"),
+        patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS),
+        patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([])),
+    ):
         app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.press("a")
@@ -186,7 +255,11 @@ async def test_add_screen_click_add_and_play_button():
 @pytest.mark.asyncio
 async def test_add_screen_click_cancel_button():
     """Clicking Cancel should dismiss the add-article modal."""
-    with patch("wilted.tui.load_queue", return_value=[]):
+    with (
+        patch("wilted.tui.ensure_default_playlists"),
+        patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS),
+        patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([])),
+    ):
         app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.press("a")
@@ -197,20 +270,24 @@ async def test_add_screen_click_cancel_button():
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
-async def test_refresh_key(mock_load):
-    """Pressing r calls load_queue again to refresh."""
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
+async def test_refresh_key(mock_items, mock_list, mock_ensure):
+    """Pressing r calls get_playlist_items again to refresh."""
     app = WiltedApp()
     async with app.run_test() as pilot:
-        # load_queue is called once on mount
-        initial_count = mock_load.call_count
+        # get_playlist_items is called during on_mount
+        initial_count = mock_items.call_count
         await pilot.press("r")
-        assert mock_load.call_count > initial_count, "load_queue should be called again on refresh"
+        assert mock_items.call_count > initial_count, "get_playlist_items should be called again on refresh"
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_voice_settings_shows_language(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_voice_settings_shows_language(mock_items, mock_list, mock_ensure):
     """VoiceSettingsScreen displays a language label widget."""
     app = WiltedApp()
     async with app.run_test() as pilot:
@@ -224,8 +301,10 @@ async def test_voice_settings_shows_language(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_voice_settings_dismiss_includes_lang(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_voice_settings_dismiss_includes_lang(mock_items, mock_list, mock_ensure):
     """VoiceSettingsScreen dismiss returns a 3-tuple (voice, speed, lang)."""
     app = WiltedApp()
     async with app.run_test() as pilot:
@@ -238,7 +317,7 @@ async def test_voice_settings_dismiss_includes_lang(mock_load):
         await pilot.press("b")
         await pilot.pause()
         assert screen.selected_lang == "b"
-        # Directly run the confirm action (enter is intercepted by DataTable)
+        # Directly run the confirm action (enter is intercepted by Tree)
         screen.action_confirm()
         await pilot.pause()
         # After dismiss, the app should have the updated lang
@@ -246,8 +325,10 @@ async def test_voice_settings_dismiss_includes_lang(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_voice_settings_cancel_button_click(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_voice_settings_cancel_button_click(mock_items, mock_list, mock_ensure):
     """Clicking Cancel should dismiss the voice settings modal."""
     app = WiltedApp()
     async with app.run_test() as pilot:
@@ -266,11 +347,19 @@ async def test_text_preview_launches():
         {"id": 1, "title": "Test Article", "words": 100, "file": "1_test.txt", "added": "2026-04-06"},
     ]
     with (
-        patch("wilted.tui.load_queue", return_value=articles),
+        patch("wilted.tui.ensure_default_playlists"),
+        patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS),
+        patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(articles)),
         patch("wilted.tui.get_article_text", return_value="This is the article text."),
     ):
         app = WiltedApp()
         async with app.run_test() as pilot:
+            await pilot.pause()
+            # Select the first item leaf node
+            tree = app.query_one("#playlist-tree", Tree)
+            all_node = next(n for n in tree.root.children if n.data == "All")
+            if all_node.children:
+                tree.select_node(all_node.children[0])
             await pilot.pause()
             await pilot.press("t")
             await pilot.pause()
@@ -284,11 +373,19 @@ async def test_text_preview_close_button_click():
         {"id": 1, "title": "Test Article", "words": 100, "file": "1_test.txt", "added": "2026-04-06"},
     ]
     with (
-        patch("wilted.tui.load_queue", return_value=articles),
+        patch("wilted.tui.ensure_default_playlists"),
+        patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS),
+        patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(articles)),
         patch("wilted.tui.get_article_text", return_value="This is the article text."),
     ):
         app = WiltedApp()
         async with app.run_test() as pilot:
+            await pilot.pause()
+            # Select the first item leaf node
+            tree = app.query_one("#playlist-tree", Tree)
+            all_node = next(n for n in tree.root.children if n.data == "All")
+            if all_node.children:
+                tree.select_node(all_node.children[0])
             await pilot.pause()
             await pilot.press("t")
             await pilot.pause()
@@ -301,7 +398,11 @@ async def test_text_preview_close_button_click():
 @pytest.mark.asyncio
 async def test_text_preview_no_article():
     """Pressing 't' with empty queue should show error status."""
-    with patch("wilted.tui.load_queue", return_value=[]):
+    with (
+        patch("wilted.tui.ensure_default_playlists"),
+        patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS),
+        patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([])),
+    ):
         app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.press("t")
@@ -316,7 +417,11 @@ async def test_clear_all_launches_confirm():
     articles = [
         {"id": 1, "title": "Test", "words": 50, "file": "1_test.txt", "added": "2026-04-06"},
     ]
-    with patch("wilted.tui.load_queue", return_value=articles):
+    with (
+        patch("wilted.tui.ensure_default_playlists"),
+        patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS),
+        patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(articles)),
+    ):
         app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -331,9 +436,19 @@ async def test_delete_launches_confirm():
     articles = [
         {"id": 1, "title": "Test", "words": 50, "file": "1_test.txt", "added": "2026-04-06"},
     ]
-    with patch("wilted.tui.load_queue", return_value=articles):
+    with (
+        patch("wilted.tui.ensure_default_playlists"),
+        patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS),
+        patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(articles)),
+    ):
         app = WiltedApp()
         async with app.run_test() as pilot:
+            await pilot.pause()
+            # Select an item node
+            tree = app.query_one("#playlist-tree", Tree)
+            all_node = next(n for n in tree.root.children if n.data == "All")
+            if all_node.children:
+                tree.select_node(all_node.children[0])
             await pilot.pause()
             await pilot.press("d")
             await pilot.pause()
@@ -343,7 +458,11 @@ async def test_delete_launches_confirm():
 @pytest.mark.asyncio
 async def test_export_wav_no_article():
     """Pressing 'w' with empty queue should show error."""
-    with patch("wilted.tui.load_queue", return_value=[]):
+    with (
+        patch("wilted.tui.ensure_default_playlists"),
+        patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS),
+        patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([])),
+    ):
         app = WiltedApp()
         async with app.run_test() as pilot:
             await pilot.press("w")
@@ -359,11 +478,19 @@ async def test_export_wav_missing_file():
         {"id": 1, "title": "Test", "words": 50, "file": "1_test.txt", "added": "2026-04-06"},
     ]
     with (
-        patch("wilted.tui.load_queue", return_value=articles),
+        patch("wilted.tui.ensure_default_playlists"),
+        patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS),
+        patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(articles)),
         patch("wilted.tui.get_article_text", return_value=None),
     ):
         app = WiltedApp()
         async with app.run_test() as pilot:
+            await pilot.pause()
+            # Select an item node
+            tree = app.query_one("#playlist-tree", Tree)
+            all_node = next(n for n in tree.root.children if n.data == "All")
+            if all_node.children:
+                tree.select_node(all_node.children[0])
             await pilot.pause()
             await pilot.press("w")
             await pilot.pause()
@@ -377,8 +504,10 @@ async def test_export_wav_missing_file():
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
-async def test_prev_paragraph_binding_exists(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
+async def test_prev_paragraph_binding_exists(mock_items, mock_list, mock_ensure):
     """The [ key binding is registered on the app."""
     app = WiltedApp()
     async with app.run_test():
@@ -387,8 +516,10 @@ async def test_prev_paragraph_binding_exists(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
-async def test_skip_forward_binding_includes_bracket(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
+async def test_skip_forward_binding_includes_bracket(mock_items, mock_list, mock_ensure):
     """The ] key is an alias for skip (alongside right arrow)."""
     app = WiltedApp()
     async with app.run_test():
@@ -401,8 +532,10 @@ async def test_skip_forward_binding_includes_bracket(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_prev_paragraph_no_crash_when_not_playing(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_prev_paragraph_no_crash_when_not_playing(mock_items, mock_list, mock_ensure):
     """Pressing [ when not playing should not crash."""
     app = WiltedApp()
     async with app.run_test() as pilot:
@@ -412,8 +545,10 @@ async def test_prev_paragraph_no_crash_when_not_playing(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_generation_paused_default_false(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_generation_paused_default_false(mock_items, mock_list, mock_ensure):
     """_generation_paused starts as False."""
     app = WiltedApp()
     async with app.run_test():
@@ -421,8 +556,10 @@ async def test_generation_paused_default_false(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_rewind_to_default_none(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_rewind_to_default_none(mock_items, mock_list, mock_ensure):
     """_rewind_to starts as None."""
     app = WiltedApp()
     async with app.run_test():
@@ -430,8 +567,10 @@ async def test_rewind_to_default_none(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_voice_settings_feedback_not_playing(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_voice_settings_feedback_not_playing(mock_items, mock_list, mock_ensure):
     """Changing voice settings when not playing triggers generation."""
     app = WiltedApp()
     async with app.run_test() as pilot:
@@ -448,8 +587,10 @@ async def test_voice_settings_feedback_not_playing(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
-async def test_voice_settings_feedback_while_playing(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
+async def test_voice_settings_feedback_while_playing(mock_items, mock_list, mock_ensure):
     """Changing voice settings during playback shows status feedback."""
     app = WiltedApp()
     async with app.run_test() as pilot:
@@ -468,8 +609,10 @@ async def test_voice_settings_feedback_while_playing(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
-async def test_start_playback_pauses_generation(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
+async def test_start_playback_pauses_generation(mock_items, mock_list, mock_ensure):
     """_start_playback sets _generation_paused to True."""
     app = WiltedApp()
     async with app.run_test() as pilot:
@@ -482,8 +625,10 @@ async def test_start_playback_pauses_generation(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=SAMPLE_QUEUE)
-async def test_stop_resumes_generation(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
+async def test_stop_resumes_generation(mock_items, mock_list, mock_ensure):
     """action_stop sets _generation_paused to False and triggers generation."""
     app = WiltedApp()
     async with app.run_test() as pilot:
@@ -502,8 +647,10 @@ async def test_stop_resumes_generation(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_playback_bar_widget_exists(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_playback_bar_widget_exists(mock_items, mock_list, mock_ensure):
     """The #playback-bar Static widget is present in the app."""
     app = WiltedApp()
     async with app.run_test():
@@ -512,8 +659,10 @@ async def test_playback_bar_widget_exists(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_playback_bar_shows_state_icon(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_playback_bar_shows_state_icon(mock_items, mock_list, mock_ensure):
     """PlaybackBar shows state icon when playing/paused."""
     app = WiltedApp()
     async with app.run_test():
@@ -533,8 +682,10 @@ async def test_playback_bar_shows_state_icon(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_playback_bar_shows_para_count(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_playback_bar_shows_para_count(mock_items, mock_list, mock_ensure):
     """PlaybackBar shows paragraph count like 1/5."""
     app = WiltedApp()
     async with app.run_test():
@@ -549,8 +700,10 @@ async def test_playback_bar_shows_para_count(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_playback_bar_shows_timer(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_playback_bar_shows_timer(mock_items, mock_list, mock_ensure):
     """PlaybackBar shows mm:ss timer."""
     app = WiltedApp()
     async with app.run_test():
@@ -565,8 +718,10 @@ async def test_playback_bar_shows_timer(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_timer_decrements(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_timer_decrements(mock_items, mock_list, mock_ensure):
     """_update_timer decrements _estimated_remaining_secs by 1."""
     app = WiltedApp()
     async with app.run_test():
@@ -578,8 +733,10 @@ async def test_timer_decrements(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_timer_noop_when_paused(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_timer_noop_when_paused(mock_items, mock_list, mock_ensure):
     """_update_timer does nothing when paused."""
     app = WiltedApp()
     async with app.run_test():
@@ -592,8 +749,10 @@ async def test_timer_noop_when_paused(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_timer_noop_when_not_playing(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_timer_noop_when_not_playing(mock_items, mock_list, mock_ensure):
     """_update_timer does nothing when not playing."""
     app = WiltedApp()
     async with app.run_test():
@@ -603,8 +762,10 @@ async def test_timer_noop_when_not_playing(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_speed_down_key(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_speed_down_key(mock_items, mock_list, mock_ensure):
     """Pressing - decreases speed by 0.1x."""
     app = WiltedApp()
     async with app.run_test() as pilot:
@@ -615,8 +776,10 @@ async def test_speed_down_key(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_speed_up_key(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_speed_up_key(mock_items, mock_list, mock_ensure):
     """Pressing + increases speed by 0.1x."""
     app = WiltedApp()
     async with app.run_test() as pilot:
@@ -627,8 +790,10 @@ async def test_speed_up_key(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_speed_clamps_to_range(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_speed_clamps_to_range(mock_items, mock_list, mock_ensure):
     """Speed stays within 0.5x-2.0x bounds."""
     app = WiltedApp()
     async with app.run_test() as pilot:
@@ -644,8 +809,10 @@ async def test_speed_clamps_to_range(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_speed_key_shows_feedback(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_speed_key_shows_feedback(mock_items, mock_list, mock_ensure):
     """Speed change shows feedback in status line."""
     app = WiltedApp()
     async with app.run_test() as pilot:
@@ -656,8 +823,10 @@ async def test_speed_key_shows_feedback(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_status_priority_blocks_low(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_status_priority_blocks_low(mock_items, mock_list, mock_ensure):
     """MEDIUM priority message blocks subsequent LOW message within hold window."""
     from wilted.tui import _STATUS_LOW, _STATUS_MEDIUM
 
@@ -671,8 +840,10 @@ async def test_status_priority_blocks_low(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_status_priority_allows_equal(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_status_priority_allows_equal(mock_items, mock_list, mock_ensure):
     """Same-priority messages can overwrite each other."""
     from wilted.tui import _STATUS_MEDIUM
 
@@ -685,8 +856,10 @@ async def test_status_priority_allows_equal(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_transcript_markup_bold_current(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_transcript_markup_bold_current(mock_items, mock_list, mock_ensure):
     """_build_transcript marks current paragraph as bold."""
     app = WiltedApp()
     async with app.run_test():
@@ -698,8 +871,10 @@ async def test_transcript_markup_bold_current(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_transcript_escapes_brackets(mock_load):
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_transcript_escapes_brackets(mock_items, mock_list, mock_ensure):
     """_build_transcript escapes Rich markup in article text."""
     app = WiltedApp()
     async with app.run_test():
@@ -710,19 +885,17 @@ async def test_transcript_escapes_brackets(mock_load):
 
 
 # ---------------------------------------------------------------------------
-# TUI launch with real database (no load_queue mock)
+# TUI launch with real database (no mock)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_tui_launches_with_real_db():
     """TUI starts against the real (isolated) SQLite database, not a mocked queue."""
-    from textual.widgets import DataTable
-
     app = WiltedApp()
     async with app.run_test():
-        tables = app.query(DataTable)
-        assert len(tables) > 0
+        trees = app.query(Tree)
+        assert len(trees) > 0
         # Empty DB: the empty-message label should be visible
         from textual.widgets import Label
 
@@ -739,12 +912,13 @@ async def test_tui_shows_articles_from_real_db():
 
     app = WiltedApp()
     async with app.run_test():
-        from textual.widgets import DataTable
-
-        table = app.query_one("#queue-table", DataTable)
-        assert table.row_count == 1
-        row = table.get_row_at(0)
-        assert "TUI DB Test" in str(row)
+        tree = app.query_one("#playlist-tree", Tree)
+        # Find the "All" playlist node
+        all_node = next((n for n in tree.root.children if n.data == "All"), None)
+        assert all_node is not None, "All playlist node should exist"
+        assert len(all_node.children) == 1
+        label = str(all_node.children[0].label)
+        assert "TUI DB Test" in label
 
 
 @pytest.mark.asyncio
@@ -984,23 +1158,27 @@ async def test_report_screen_not_shown_when_no_report():
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_on_report_dismissed_refreshes_queue(mock_load):
-    """_on_report_dismissed(True) calls _refresh_queue_display."""
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_on_report_dismissed_refreshes_queue(mock_items, mock_list, mock_ensure):
+    """_on_report_dismissed(True) calls _refresh_playlists."""
     app = WiltedApp()
     async with app.run_test():
-        with patch.object(app, "_refresh_queue_display") as mock_refresh:
+        with patch.object(app, "_refresh_playlists") as mock_refresh:
             app._on_report_dismissed(True)
             mock_refresh.assert_called_once()
 
 
 @pytest.mark.asyncio
-@patch("wilted.tui.load_queue", return_value=[])
-async def test_on_report_dismissed_no_refresh_when_not_accepted(mock_load):
-    """_on_report_dismissed(False) does not refresh the queue."""
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_on_report_dismissed_no_refresh_when_not_accepted(mock_items, mock_list, mock_ensure):
+    """_on_report_dismissed(False) does not refresh the playlists."""
     app = WiltedApp()
     async with app.run_test():
-        with patch.object(app, "_refresh_queue_display") as mock_refresh:
+        with patch.object(app, "_refresh_playlists") as mock_refresh:
             app._on_report_dismissed(False)
             mock_refresh.assert_not_called()
 
@@ -1032,6 +1210,3 @@ async def test_report_screen_has_footer():
         await pilot.pause()
         footers = app.screen.query(Footer)
         assert len(footers) == 1, "ReportScreen should have exactly one Footer"
-
-
-# ---------------------------------------------------------------------------

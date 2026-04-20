@@ -131,7 +131,6 @@ data/
   wilted.db         # SQLite database (WAL mode)
   articles/         # cached article text files
   audio/            # pre-generated MP3 cache (per-article)
-  state.json        # TUI resume positions
 ```
 
 ## TUI
@@ -198,10 +197,10 @@ src/wilted/                # shared library
     engine.py            # AudioEngine (sounddevice + TTS)
     fetch.py             # URL resolution, text extraction
     queue.py             # reading list persistence (SQLite-backed)
-    state.py             # resume state persistence
     cache.py             # audio cache (MP3 storage, manifest)
     text.py              # text cleaning and splitting
     ingest.py            # shared article ingestion
+    playlists.py         # playlist CRUD and default-playlist bootstrap
     feeds.py             # feed subscription CRUD
     discover.py          # RSS polling, dedup, article fetch
     classify.py          # LLM-based classification + benchmark
@@ -210,7 +209,7 @@ src/wilted/                # shared library
     migrate.py           # queue.json -> SQLite migration
     log.py               # RotatingFileHandler setup
     tui/                 # Textual TUI (decomposed package)
-tests/                   # pytest suite (596 tests across unit/integration/e2e/TUI lanes)
+tests/                   # pytest suite (660 tests across unit/integration/e2e/TUI lanes)
 migrations/              # numbered schema migrations
 ```
 
@@ -219,8 +218,8 @@ migrations/              # numbered schema migrations
 Routine validation uses tiered lanes. The current split is:
 
 - `220` unit tests
-- `293` integration tests
-- `27` subprocess e2e tests
+- `354` integration tests
+- `30` subprocess e2e tests
 - `56` TUI tests
 
 Default project validation still uses the guarded fast lane:
@@ -301,6 +300,32 @@ wilted keyword list
 wilted keyword remove "kubernetes"
 ```
 
+## Playlist management
+
+Playlists organize content into listening contexts. Dynamic playlists (All, Work, Fun, Education) are created automatically. Static playlists are user-created.
+
+```bash
+wilted playlist list                               # show all playlists with item counts
+wilted playlist create "My Reading List"           # create static playlist
+wilted playlist delete "My Reading List"           # delete static (not dynamic)
+wilted playlist add "My Reading List" <item_id>    # add item to static playlist
+wilted playlist remove "My Reading List" <item_id> # remove from static playlist
+```
+
+## Email reports
+
+Configure email delivery of the morning report:
+
+1. Install [email-alerts](https://github.com/dave-schmidt-dev/email-alerts) and set `GMAIL_USER` / `GMAIL_APP_PASSWORD`
+2. Create `wilted.toml` in the project root:
+```toml
+[email]
+enabled = true
+to = "you@example.com"
+```
+3. Send manually: `wilted report --email`
+4. Or install the nightly schedule: `make install-launchd`
+
 ## Roadmap
 
 - Near term:
@@ -311,10 +336,6 @@ wilted keyword remove "kubernetes"
   - ad detection with sliding window + ffmpeg cutting
   - article promotional content removal
   - article TTS generation for pipeline items
-- Playlists + polish (Phase 5):
-  - dynamic/static playlists with expiry and keep flag
-  - TUI playlist navigation
-  - email morning report, nightly wrapper script, `wilted doctor`
 - Radio mode (Phase 6):
   - always-on continuous playback that fills airtime from queue, feeds, and discovered content
   - priority interrupts for breaking/important stories, then resume where you left off
@@ -325,6 +346,7 @@ wilted keyword remove "kubernetes"
 - ~~RSS feed management~~ (done: feed CRUD, RSS polling, dedup, conditional GET)
 - ~~LLM classification~~ (done: playlist assignment, relevance scoring, summarization)
 - ~~Morning report~~ (done: report assembly, TUI ReportScreen, selection history, source stats, `wilted report` + `wilted feed stats`)
+- ~~Playlists + Polish (Phase 5)~~ (done: dynamic/static playlists, CLI `wilted playlist`, `ensure_default_playlists` on startup, email morning report, nightly wrapper script, launchd integration. 660 tests green.)
 - ~~E2e test coverage + playback verification~~ (done: tiered suite with 580 app-facing tests, plus manual speaker verification)
 
 ## Dependencies

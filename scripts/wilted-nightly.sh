@@ -1,34 +1,36 @@
 #!/usr/bin/env bash
-# wilted-nightly.sh — cron wrapper for the nightly ingestion pipeline.
+# wilted-nightly.sh — launchd wrapper for the nightly ingestion pipeline.
 #
-# Runs discover → classify → report with flock-based locking so
-# concurrent executions are skipped rather than stacked.
+# Install:
+#   make install-launchd
 #
-# Install in crontab:
-#   0 2 * * * /path/to/wilted/scripts/wilted-nightly.sh
-#
-# Or with launchd (macOS):
-#   See scripts/com.wilted.nightly.plist (if created)
-#
-# Logs go to /tmp/wilted.log (via wilted's own RotatingFileHandler).
-# This script also logs a one-line summary to /tmp/wilted-nightly.log.
+# Logs:
+#   ~/Library/Logs/wilted-nightly/wilted.log                  (aggregate)
+#   ~/Library/Logs/wilted-nightly/wilted-YYYYMMDD-HHMMSS.log  (per-run)
 
 set -euo pipefail
 
 LOCK_FILE="/tmp/wilted-nightly.lock"
-LOG_FILE="/tmp/wilted-nightly.log"
+LOG_DIR="${HOME}/Library/Logs/wilted-nightly"
+AGG_LOG="${LOG_DIR}/wilted.log"
+RUN_LOG="${LOG_DIR}/wilted-$(date '+%Y%m%d-%H%M%S').log"
 
-# Resolve the project root (directory containing this script's parent).
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
+# Resolve the project root — follow symlinks.
+REAL_SCRIPT="${BASH_SOURCE[0]}"
+if [[ -L "$REAL_SCRIPT" ]]; then
+    REAL_SCRIPT="$(readlink "$REAL_SCRIPT")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$REAL_SCRIPT")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export WILTED_PROJECT_ROOT="$PROJECT_ROOT"
 
-# Use the project's uv-managed Python.
-WILTED="uv run --project $PROJECT_ROOT python -m wilted.cli"
+WILTED="uv run --project ${PROJECT_ROOT} python -m wilted.cli"
+EMAIL_ALERT="${HOME}/.agent/bin/email-alert"
+
+mkdir -p "$LOG_DIR"
 
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S %Z')] $*" >> "$AGG_LOG"
 }
 
 # --- Locking ---
@@ -42,13 +44,24 @@ log "START: nightly ingestion"
 START_TIME=$(date +%s)
 
 # --- Pipeline ---
-if $WILTED ingest 2>&1 | tee -a "$LOG_FILE"; then
+if $WILTED ingest >> "$RUN_LOG" 2>&1; then
     END_TIME=$(date +%s)
     ELAPSED=$((END_TIME - START_TIME))
-    log "DONE: completed in ${ELAPSED}s"
+    log "completed successfully in ${ELAPSED}s"
+
+    # Send email report if configured
+    if $WILTED report --email >> "$RUN_LOG" 2>&1; then
+        log "email report sent"
+    fi
 else
     END_TIME=$(date +%s)
     ELAPSED=$((END_TIME - START_TIME))
-    log "FAIL: exited with errors after ${ELAPSED}s"
+    log "failed with exit code $? after ${ELAPSED}s"
+
+    # Send failure notification if email-alert is available
+    if [[ -x "$EMAIL_ALERT" ]]; then
+        tail -20 "$RUN_LOG" | "$EMAIL_ALERT" \
+            --subject "Wilted Nightly Failed" 2>/dev/null || true
+    fi
     exit 1
 fi

@@ -25,11 +25,12 @@ _TEST_MARKERS = {
     "test_ingest.py": ("unit",),
     "test_llm.py": ("unit",),
     "test_onboard.py": ("unit",),
+    "test_playlists.py": ("integration",),
+    "test_resume.py": ("integration",),
     "test_preferences.py": ("integration",),
     "test_prepare.py": ("integration",),
     "test_queue.py": ("integration",),
     "test_report.py": ("integration",),
-    "test_state.py": ("integration",),
     "test_text.py": ("unit",),
     "test_transcribe.py": ("unit",),
     "test_tui.py": ("tui",),
@@ -68,15 +69,12 @@ def isolated_data(tmp_path, monkeypatch):
     monkeypatch.setattr(wilted, "DATA_DIR", data_dir)
     monkeypatch.setattr(wilted, "QUEUE_FILE", data_dir / "queue.json")
     monkeypatch.setattr(wilted, "ARTICLES_DIR", articles_dir)
-    monkeypatch.setattr(wilted, "STATE_FILE", data_dir / "state.json")
     monkeypatch.setattr(wilted, "AUDIO_DIR", audio_dir)
 
     from wilted import cache as cache_mod
-    from wilted import state as state_mod
     from wilted.db import reset_db, run_migrations
 
     monkeypatch.setattr(cache_mod, "AUDIO_DIR", audio_dir)
-    monkeypatch.setattr(state_mod, "STATE_FILE", data_dir / "state.json")
 
     # Give each test a fresh, isolated SQLite database.
     reset_db()

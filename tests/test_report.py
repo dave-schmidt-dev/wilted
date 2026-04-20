@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime
 
 from wilted.db import Feed, Item, Report, SelectionHistory, SourceStat
 from wilted.report import (
+    format_report_email,
     get_feed_stats,
     get_latest_unread_report,
     get_report,
@@ -418,3 +419,45 @@ class TestSourceStats:
         assert feed_stat["items_discovered"] == 10
         assert feed_stat["items_selected"] == 5
         assert feed_stat["selection_rate"] == 0.5
+
+
+# ---------------------------------------------------------------------------
+# TestFormatReportEmail
+# ---------------------------------------------------------------------------
+
+
+class TestFormatReportEmail:
+    def test_format_report_email_structure(self):
+        """Subject and body contain expected content after run_report."""
+        feed = _create_feed()
+        _create_classified_item(
+            "AI Trends Article",
+            playlist="Work",
+            relevance=0.85,
+            feed=feed,
+            summary="A summary about AI trends.",
+        )
+        _create_classified_item(
+            "Cooking Recipe",
+            playlist="Fun",
+            relevance=0.60,
+            feed=feed,
+            summary="A recipe for pasta.",
+        )
+
+        run_report()
+        result = format_report_email()
+
+        assert result is not None
+        subject, body = result
+
+        assert "Wilted Morning Report" in subject
+        assert "Work" in body
+        assert "AI Trends Article" in body
+        assert "0.85" in body
+        assert "A summary about AI trends." in body
+
+    def test_format_report_email_no_report(self):
+        """Returns None when no report exists for the given date."""
+        result = format_report_email("2000-01-01")
+        assert result is None

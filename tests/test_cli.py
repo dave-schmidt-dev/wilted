@@ -15,6 +15,7 @@ from wilted.cli import (
     cmd_list,
     cmd_next,
     cmd_play,
+    cmd_playlist,
     cmd_remove,
     main,
     run_cli,
@@ -483,9 +484,78 @@ class TestPipelineSubcommands:
         assert "5 items classified" in out
 
     def test_stub_subcmds_still_exit(self):
-        """Remaining stub subcommands still exit 1."""
+        """playlist with no subcommand exits 1 (usage error)."""
         with pytest.raises(SystemExit):
             run_cli(["playlist"])
+
+
+class TestPlaylistSubcommand:
+    def test_cmd_playlist_list(self, capsys):
+        """wilted playlist list shows default playlists after ensure_default_playlists."""
+        from wilted.playlists import ensure_default_playlists
+
+        ensure_default_playlists()
+        cmd_playlist(["list"])
+        out = capsys.readouterr().out
+        assert "All" in out
+        assert "Work" in out
+
+    def test_cmd_playlist_create(self, capsys):
+        """wilted playlist create <name> creates a static playlist."""
+        cmd_playlist(["create", "My List"])
+        out = capsys.readouterr().out
+        assert "Created" in out
+        assert "My List" in out
+
+    def test_cmd_playlist_delete(self, capsys):
+        """wilted playlist delete <name> removes a static playlist."""
+        cmd_playlist(["create", "Temp List"])
+        capsys.readouterr()  # discard create output
+        cmd_playlist(["delete", "Temp List"])
+        out = capsys.readouterr().out
+        assert "Deleted" in out
+        assert "Temp List" in out
+
+    def test_cmd_playlist_add_item(self, capsys):
+        """wilted playlist add <name> <item_id> adds an item to a static playlist."""
+        from datetime import UTC, datetime
+
+        from wilted.db import Item
+
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        item = Item.create(
+            guid=f"test-playlist-add-{now}",
+            title="Playlist Test Item",
+            discovered_at=now,
+            item_type="article",
+            status="ready",
+            status_changed_at=now,
+        )
+        cmd_playlist(["create", "Test Static"])
+        capsys.readouterr()
+        cmd_playlist(["add", "Test Static", str(item.id)])
+        out = capsys.readouterr().out
+        assert "Added" in out
+        assert str(item.id) in out
+
+    def test_cmd_playlist_no_args_exits(self):
+        """wilted playlist with no args exits 1."""
+        with pytest.raises(SystemExit):
+            cmd_playlist([])
+
+    def test_cmd_playlist_unknown_action_exits(self):
+        """wilted playlist with unknown action exits 1."""
+        with pytest.raises(SystemExit):
+            cmd_playlist(["bogus"])
+
+    def test_cmd_playlist_dispatch_via_run_cli(self, capsys):
+        """run_cli(['playlist', 'list']) dispatches to cmd_playlist."""
+        from wilted.playlists import ensure_default_playlists
+
+        ensure_default_playlists()
+        run_cli(["playlist", "list"])
+        out = capsys.readouterr().out
+        assert "All" in out
 
 
 class TestMainEntrypoint:
@@ -520,3 +590,74 @@ class TestMainEntrypoint:
         mock_tqdm.get_lock.assert_called_once_with()
         mock_app_cls.assert_called_once_with()
         mock_app.run.assert_called_once_with()
+
+
+class TestCmdReportEmail:
+    def test_cmd_report_email_sends(self, capsys):
+        """wilted report --email pipes to email-alert."""
+        from wilted.db import Item
+        from wilted.playlists import _now_utc
+
+        Item.create(
+            title="Email Test",
+            item_type="article",
+            status="classified",
+            playlist_assigned="Work",
+            relevance_score=0.8,
+            discovered_at=_now_utc(),
+            status_changed_at=_now_utc(),
+        )
+
+        with (
+            patch("wilted.cli.subprocess") as mock_sub,
+            patch(
+                "wilted.cli._load_email_config",
+                return_value={"enabled": True, "to": "test@example.com"},
+            ),
+        ):
+            mock_sub.run.return_value = MagicMock(returncode=0)
+            from wilted.cli import cmd_report
+
+            cmd_report(["--email"])
+            mock_sub.run.assert_called_once()
+
+    def test_cmd_report_email_disabled(self, capsys):
+        """wilted report --email prints config message when disabled."""
+        from wilted.db import Item
+        from wilted.playlists import _now_utc
+
+        Item.create(
+            title="Test",
+            item_type="article",
+            status="classified",
+            playlist_assigned="Work",
+            discovered_at=_now_utc(),
+            status_changed_at=_now_utc(),
+        )
+
+        with patch("wilted.cli._load_email_config", return_value={"enabled": False, "to": ""}):
+            from wilted.cli import cmd_report
+
+            cmd_report(["--email"])
+            out = capsys.readouterr().out
+            assert "wilted.toml" in out
+
+
+class TestCmdDoctor:
+    def test_cmd_doctor_shows_email_info(self, capsys):
+        """cmd_doctor output includes email-alert path and email config."""
+        from wilted.cli import cmd_doctor
+
+        cmd_doctor()
+        out = capsys.readouterr().out
+        assert "email-alert" in out or "Email" in out
+
+    def test_cmd_doctor_shows_playlist_info(self, capsys):
+        """cmd_doctor output includes playlist count after ensure_default_playlists."""
+        from wilted.cli import cmd_doctor
+        from wilted.playlists import ensure_default_playlists
+
+        ensure_default_playlists()
+        cmd_doctor()
+        out = capsys.readouterr().out
+        assert "Playlist" in out or "All" in out

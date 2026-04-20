@@ -21,12 +21,6 @@ from wilted.queue import (
     remove_article,
     save_queue,
 )
-from wilted.state import (
-    clear_article_state,
-    get_article_state,
-    load_state,
-    set_article_state,
-)
 
 pytestmark = pytest.mark.usefixtures("stub_audio_modules")
 
@@ -76,45 +70,6 @@ class TestCorruptQueue:
         wilted.QUEUE_FILE.write_text("not json")
         count = clear_queue()
         assert count == 0
-
-
-# ---------------------------------------------------------------------------
-# TestCorruptState
-# ---------------------------------------------------------------------------
-
-
-class TestCorruptState:
-    """Verify state module functions survive corrupt state files."""
-
-    def test_corrupt_json_returns_empty_dict(self):
-        """Corrupt state file should produce an empty dict from load_state()."""
-        wilted.STATE_FILE.write_text("{{{bad json!!")
-        assert load_state() == {}
-
-    def test_non_dict_json_returns_empty_dict(self):
-        """Non-dict JSON types (list, string, int) should return {}."""
-        for value in ["[1, 2, 3]", '"a string"', "42"]:
-            wilted.STATE_FILE.write_text(value)
-            assert load_state() == {}, f"load_state() should return {{}} for JSON: {value}"
-
-    def test_get_article_state_on_corrupt_file(self):
-        """get_article_state() should return None when state is corrupt."""
-        wilted.STATE_FILE.write_text("not json")
-        assert get_article_state(1) is None
-
-    def test_set_article_state_on_corrupt_file(self):
-        """set_article_state() should overwrite corrupt state without crashing."""
-        wilted.STATE_FILE.write_text("corrupt!")
-        set_article_state(1, paragraph_idx=5, segment_in_paragraph=2)
-        result = get_article_state(1)
-        assert result is not None
-        assert result["paragraph_idx"] == 5
-
-    def test_clear_article_state_on_corrupt_file(self):
-        """clear_article_state() should not crash on corrupt state file."""
-        wilted.STATE_FILE.write_text("{oops")
-        clear_article_state(42)  # should not raise
-        assert load_state() == {}
 
 
 # ---------------------------------------------------------------------------

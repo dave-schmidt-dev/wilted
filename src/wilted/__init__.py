@@ -23,7 +23,6 @@ else:
 DATA_DIR = PROJECT_ROOT / "data"
 QUEUE_FILE = DATA_DIR / "queue.json"
 ARTICLES_DIR = DATA_DIR / "articles"
-STATE_FILE = DATA_DIR / "state.json"
 AUDIO_DIR = DATA_DIR / "audio"
 
 

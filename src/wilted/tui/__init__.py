@@ -1,9 +1,9 @@
 """Textual TUI package for wilted.
 
 WiltedApp is defined here (in __init__.py, not app.py) so that
-``@patch("wilted.tui.load_queue")`` and similar test patches intercept calls
-made from WiltedApp methods — Python looks up free variables in the containing
-module's __dict__ at call time, not at definition time.
+``@patch("wilted.tui.get_playlist_items")`` and similar test patches intercept
+calls made from WiltedApp methods — Python looks up free variables in the
+containing module's __dict__ at call time, not at definition time.
 
 Screens (AddArticleScreen, ConfirmScreen, etc.) are in tui/screens/.
 PlaybackBar widget is in tui/widgets/playback_bar.py.
@@ -25,18 +25,24 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.theme import Theme
-from textual.widgets import DataTable, Footer, Header, Label, Static
+from textual.widgets import Footer, Header, Label, Static, Tree
 from textual.worker import get_current_worker
 
 from wilted import ICONS, LANGUAGES, VOICES, WPM_ESTIMATE
+from wilted.playlists import (
+    clear_resume_position,
+    ensure_default_playlists,
+    get_playlist_items,
+    get_resume_position,
+    list_playlists,
+    set_resume_position,
+)
 from wilted.queue import (
     clear_queue,
     get_article_text,
-    load_queue,
     mark_completed,
     remove_article,
 )
-from wilted.state import clear_article_state, get_article_state, set_article_state
 from wilted.text import split_paragraphs
 from wilted.tui.screens.add_article import AddArticleScreen
 from wilted.tui.screens.confirm import ConfirmScreen
@@ -117,7 +123,7 @@ class WiltedApp(App):
         color: $primary;
         margin-bottom: 1;
     }
-    #queue-table {
+    #playlist-tree {
         height: 1fr;
     }
     #now-playing-title {
@@ -178,7 +184,8 @@ class WiltedApp(App):
         super().__init__(**kwargs)
         self.register_theme(SALAD_THEME)
         self.theme = "salad"
-        self._queue: list[dict] = []
+        self._playlist_items: dict[str, list[dict]] = {}
+        self._all_items: list[dict] = []
         self._engine = None
         self._current_entry: dict | None = None
         self._paragraphs: list[str] = []
@@ -206,7 +213,7 @@ class WiltedApp(App):
         with Horizontal():
             with Vertical(id="left-panel"):
                 yield Label("The Larder", classes="panel-title")
-                yield DataTable(id="queue-table")
+                yield Tree("Playlists", id="playlist-tree")
                 yield Label("", id="empty-message")
             with Vertical(id="right-panel"):
                 yield Label("The Plate", classes="panel-title")
@@ -219,16 +226,13 @@ class WiltedApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        table = self.query_one("#queue-table", DataTable)
-        table.cursor_type = "row"
-        table.add_columns("#", "Title", "Words", "Est. Time")
-        self._refresh_queue_display()
+        self._refresh_playlists()
         self._update_voice_display()
         # 1-second timer for live playback countdown
         self.set_interval(1.0, self._update_timer)
         # Preload TTS model only if there are items that need TTS synthesis.
         # Pipeline items with audio_file set already have generated audio; skip.
-        if any(not e.get("audio_file") for e in self._queue):
+        if any(not e.get("audio_file") for e in self._all_items):
             self._preload_model()
         # Check for unread report on launch
         self._check_unread_report()
@@ -264,31 +268,53 @@ class WiltedApp(App):
     def _on_report_dismissed(self, accepted: bool) -> None:
         """Called when ReportScreen is dismissed — refresh queue if items were accepted."""
         if accepted:
-            self._refresh_queue_display()
+            self._refresh_playlists()
 
-    # -- Queue display ------------------------------------------------------
+    # -- Playlist display -----------------------------------------------------
 
-    def _refresh_queue_display(self) -> None:
-        """Reload queue from disk and update the DataTable."""
-        self._queue = load_queue()
-        table = self.query_one("#queue-table", DataTable)
-        saved_cursor = table.cursor_row
-        table.clear()
+    def _refresh_playlists(self) -> None:
+        """Reload playlists and items, rebuild the Tree widget."""
+        ensure_default_playlists()
+        tree = self.query_one("#playlist-tree", Tree)
+        tree.show_root = False
+
+        # Save which playlists are expanded
+        expanded = set()
+        for node in tree.root.children:
+            if node.is_expanded:
+                expanded.add(node.data)
+
+        tree.root.remove_children()
+
+        self._playlist_items = {}
+
+        playlists = list_playlists()
+        for pl in playlists:
+            items = get_playlist_items(pl.name)
+            self._playlist_items[pl.name] = items
+            count = len(items)
+            label = f"{pl.name} ({count} items)"
+            node = tree.root.add(label, data=pl.name)
+
+            for item in items:
+                title = item.get("title", "Untitled")
+                if len(title) > 50:
+                    title = title[:47] + "..."
+                words = item.get("words", 0)
+                node.add_leaf(f"{title}  ({words}w)", data=item)
+
+            # Expand "All" by default on first load, preserve state after
+            if pl.name in expanded or (pl.name == "All" and not expanded):
+                node.expand()
+
+        self._all_items = get_playlist_items("All")
+
         empty_msg = self.query_one("#empty-message", Label)
-        if not self._queue:
+        if not self._all_items:
             empty_msg.update("The larder is empty. Press [a] to add an article.")
             empty_msg.display = True
         else:
             empty_msg.display = False
-            for i, entry in enumerate(self._queue, 1):
-                words = entry.get("words", 0)
-                minutes = max(1, round(words / (WPM_ESTIMATE * self._speed)))
-                title = entry.get("title", "Untitled")
-                if len(title) > 40:
-                    title = title[:37] + "..."
-                table.add_row(str(i), title, str(words), f"~{minutes} min")
-        if saved_cursor is not None and saved_cursor < len(self._queue):
-            table.move_cursor(row=saved_cursor)
 
     def _update_voice_display(self) -> None:
         voice_info = VOICES.get(self._voice, {})
@@ -435,7 +461,8 @@ class WiltedApp(App):
         """Background worker: generate audio cache for queued articles."""
         from wilted.cache import generate_article_cache, is_cache_valid
         from wilted.fetch import suppress_subprocess_output
-        from wilted.queue import get_article_text, load_queue
+        from wilted.playlists import get_playlist_items as _get_playlist_items
+        from wilted.queue import get_article_text
 
         worker = get_current_worker()
 
@@ -444,7 +471,11 @@ class WiltedApp(App):
         with suppress_subprocess_output():
             engine.load_model()
 
-        queue = load_queue()
+        try:
+            queue = _get_playlist_items("All")
+        except ValueError:
+            # Playlists may not be initialised yet (e.g. during tests).
+            return
         for entry in queue:
             if worker.is_cancelled:
                 break
@@ -580,7 +611,7 @@ class WiltedApp(App):
             # Periodically save state
             now = time.time()
             if now - self._last_state_save >= 30:
-                set_article_state(entry["id"], para_idx, 0)
+                set_resume_position(entry["id"], para_idx, 0)
                 self._last_state_save = now
 
             # Read voice/speed/lang at segment boundary (allows mid-playback changes)
@@ -623,11 +654,11 @@ class WiltedApp(App):
             self.call_from_thread(self._on_article_completed, entry)
         else:
             # Stopped or cancelled — save state
-            set_article_state(entry["id"], self._paragraph_idx, 0)
+            set_resume_position(entry["id"], self._paragraph_idx, 0)
 
     def _on_article_completed(self, entry: dict) -> None:
         """Handle article completion on the main thread."""
-        clear_article_state(entry["id"])
+        clear_resume_position(entry["id"])
         mark_completed(entry)
         self._playing = False
         self._paused = False
@@ -640,10 +671,10 @@ class WiltedApp(App):
             text_snippet="",
             status="Article finished",
         )
-        self._refresh_queue_display()
+        self._refresh_playlists()
         # Auto-advance to next article
-        if self._queue:
-            self._start_playback(self._queue[0])
+        if self._all_items:
+            self._start_playback(self._all_items[0])
         else:
             self._trigger_generation()
 
@@ -673,7 +704,7 @@ class WiltedApp(App):
             self._paused = True
             self._set_status("Paused", _STATUS_MEDIUM)
             if self._current_entry:
-                set_article_state(self._current_entry["id"], self._paragraph_idx, 0)
+                set_resume_position(self._current_entry["id"], self._paragraph_idx, 0)
         elif self._playing and self._paused:
             # Resume
             if self._engine:
@@ -683,11 +714,11 @@ class WiltedApp(App):
         else:
             # Start playing selected or first article
             entry = self._get_selected_entry()
-            if not entry and self._queue:
-                entry = self._queue[0]
+            if not entry and self._all_items:
+                entry = self._all_items[0]
             if entry:
                 # Check for resume state
-                saved = get_article_state(entry["id"])
+                saved = get_resume_position(entry["id"])
                 resume_para = saved["paragraph_idx"] if saved else 0
                 self._start_playback(entry, resume_para)
 
@@ -698,7 +729,7 @@ class WiltedApp(App):
         if self._playback_worker and self._playback_worker.is_running:
             self._playback_worker.cancel()
         if self._current_entry:
-            set_article_state(self._current_entry["id"], self._paragraph_idx, 0)
+            set_resume_position(self._current_entry["id"], self._paragraph_idx, 0)
         self._playing = False
         self._paused = False
         self._generation_paused = False
@@ -706,12 +737,21 @@ class WiltedApp(App):
         self._trigger_generation()
 
     def action_play_selected(self) -> None:
-        """Play the selected article from the queue list."""
-        entry = self._get_selected_entry()
-        if entry:
-            saved = get_article_state(entry["id"])
+        """Play selected item or toggle playlist expand/collapse."""
+        tree = self.query_one("#playlist-tree", Tree)
+        node = tree.cursor_node
+        if node is None:
+            return
+        data = node.data
+        if isinstance(data, dict) and "id" in data:
+            saved = get_resume_position(data["id"])
             resume_para = saved["paragraph_idx"] if saved else 0
-            self._start_playback(entry, resume_para)
+            self._start_playback(data, resume_para)
+        elif isinstance(data, str):
+            if node.is_expanded:
+                node.collapse()
+            else:
+                node.expand()
 
     def action_skip_segment(self) -> None:
         """Skip to the next paragraph."""
@@ -729,7 +769,7 @@ class WiltedApp(App):
         """Decrease playback speed by 0.1x."""
         self._speed = max(0.5, round(self._speed - 0.1, 1))
         self._update_voice_display()
-        self._refresh_queue_display()
+        self._refresh_playlists()
         msg = f"Speed: {self._speed:.1f}x"
         if self._playing:
             msg += " — next paragraph"
@@ -739,7 +779,7 @@ class WiltedApp(App):
         """Increase playback speed by 0.1x."""
         self._speed = min(2.0, round(self._speed + 0.1, 1))
         self._update_voice_display()
-        self._refresh_queue_display()
+        self._refresh_playlists()
         msg = f"Speed: {self._speed:.1f}x"
         if self._playing:
             msg += " — next paragraph"
@@ -748,24 +788,24 @@ class WiltedApp(App):
     def action_next_article(self) -> None:
         """Stop current and play next article in queue."""
         self.action_stop()
-        if len(self._queue) > 1:
+        if len(self._all_items) > 1:
             # Find current article index and advance
             if self._current_entry:
                 current_id = self._current_entry["id"]
                 idx = next(
-                    (i for i, e in enumerate(self._queue) if e["id"] == current_id),
+                    (i for i, e in enumerate(self._all_items) if e["id"] == current_id),
                     -1,
                 )
                 next_idx = idx + 1 if idx >= 0 else 0
             else:
                 next_idx = 0
-            if next_idx < len(self._queue):
-                entry = self._queue[next_idx]
-                saved = get_article_state(entry["id"])
+            if next_idx < len(self._all_items):
+                entry = self._all_items[next_idx]
+                saved = get_resume_position(entry["id"])
                 resume_para = saved["paragraph_idx"] if saved else 0
                 self._start_playback(entry, resume_para)
-        elif self._queue:
-            self._start_playback(self._queue[0])
+        elif self._all_items:
+            self._start_playback(self._all_items[0])
 
     def action_voice_settings(self) -> None:
         """Open voice/speed settings modal."""
@@ -775,7 +815,7 @@ class WiltedApp(App):
                 old_voice, old_speed, old_lang = self._voice, self._speed, self._lang
                 self._voice, self._speed, self._lang = result
                 self._update_voice_display()
-                self._refresh_queue_display()  # Update est. time column
+                self._refresh_playlists()  # Update est. time column
                 changed = old_voice != self._voice or old_speed != self._speed or old_lang != self._lang
                 if changed and self._playing:
                     self._set_status(f"Speed: {self._speed:.1f}x — takes effect next paragraph", _STATUS_MEDIUM)
@@ -790,7 +830,7 @@ class WiltedApp(App):
         def on_dismiss(result: tuple[str, dict] | None) -> None:
             if result is not None:
                 action, entry = result
-                self._refresh_queue_display()
+                self._refresh_playlists()
                 self._set_status(f"Added: {entry.get('title', 'Untitled')}", _STATUS_MEDIUM)
                 if action == "play":
                     self._start_playback(entry)
@@ -811,20 +851,25 @@ class WiltedApp(App):
 
         def on_dismiss(confirmed: bool) -> None:
             if confirmed:
-                table = self.query_one("#queue-table", DataTable)
-                row_idx = table.cursor_row
-                if row_idx is not None and 0 <= row_idx < len(self._queue):
-                    # Stop playback if deleting current article
-                    if self._current_entry and entry["id"] == self._current_entry["id"]:
-                        self.action_stop()
-                        self._current_entry = None
+                # Stop playback if deleting current article
+                if self._current_entry and entry["id"] == self._current_entry["id"]:
+                    self.action_stop()
+                    self._current_entry = None
+                # Find the item's index in the All list for remove_article
+                item_idx = next(
+                    (i for i, e in enumerate(self._all_items) if e["id"] == entry["id"]),
+                    None,
+                )
+                if item_idx is not None:
                     try:
-                        remove_article(row_idx)
-                        clear_article_state(entry["id"])
+                        remove_article(item_idx)
+                        clear_resume_position(entry["id"])
                         self._set_status(f"Deleted: {entry.get('title', 'Untitled')}", _STATUS_MEDIUM)
                     except IndexError:
                         self._set_status("Delete failed: invalid index", _STATUS_HIGH)
-                    self._refresh_queue_display()
+                else:
+                    self._set_status("Delete failed: item not found", _STATUS_HIGH)
+                self._refresh_playlists()
 
         self.push_screen(
             ConfirmScreen("Delete Article?", f'Delete "{title}"?'),
@@ -849,11 +894,11 @@ class WiltedApp(App):
 
     def action_clear_all(self) -> None:
         """Clear all articles with confirmation."""
-        if not self._queue:
+        if not self._all_items:
             self._set_status("Queue is already empty", _STATUS_MEDIUM)
             return
 
-        count = len(self._queue)
+        count = len(self._all_items)
 
         def on_dismiss(confirmed: bool) -> None:
             if confirmed:
@@ -862,7 +907,7 @@ class WiltedApp(App):
                     self._current_entry = None
                 cleared = clear_queue()
                 self._set_status(f"Cleared {cleared} article(s)", _STATUS_MEDIUM)
-                self._refresh_queue_display()
+                self._refresh_playlists()
 
         self.push_screen(
             ConfirmScreen("Clear All Articles?", f"This will remove {count} article(s) and delete all cached text."),
@@ -871,7 +916,7 @@ class WiltedApp(App):
 
     def action_refresh_queue(self) -> None:
         """Refresh queue from disk."""
-        self._refresh_queue_display()
+        self._refresh_playlists()
         self._set_status("Queue refreshed")
 
     def action_quit_app(self) -> None:
@@ -881,7 +926,7 @@ class WiltedApp(App):
         if self._playback_worker and self._playback_worker.is_running:
             self._playback_worker.cancel()
         if self._current_entry:
-            set_article_state(self._current_entry["id"], self._paragraph_idx, 0)
+            set_resume_position(self._current_entry["id"], self._paragraph_idx, 0)
         self.exit()
 
     # -- WAV export ---------------------------------------------------------
@@ -962,11 +1007,14 @@ class WiltedApp(App):
     # -- Helpers ------------------------------------------------------------
 
     def _get_selected_entry(self) -> dict | None:
-        """Get the queue entry for the currently selected DataTable row."""
-        table = self.query_one("#queue-table", DataTable)
-        row_idx = table.cursor_row
-        if row_idx is not None and 0 <= row_idx < len(self._queue):
-            return self._queue[row_idx]
+        """Get the item dict for the currently highlighted Tree node."""
+        tree = self.query_one("#playlist-tree", Tree)
+        node = tree.cursor_node
+        if node is None:
+            return None
+        data = node.data
+        if isinstance(data, dict) and "id" in data:
+            return data
         return None
 
 

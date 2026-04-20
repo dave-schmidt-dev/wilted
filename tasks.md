@@ -14,10 +14,11 @@
 
 ## Now
 
-- [ ] **Phase 5: Playlists + Polish** — dynamic/static playlists, TUI navigation, email report, nightly wrapper
+(nothing — see Next)
 
 ## Done (previously "Now")
 
+- [x] **Phase 5: Playlists + Polish** — dynamic/static playlists (`playlists.py`), `wilted playlist` CLI (list/create/delete/add/remove), `ensure_default_playlists()` called on startup, email morning report (`wilted report --email`), nightly wrapper script (`scripts/wilted-nightly.sh`), launchd integration (`make install-launchd`). 660 tests green across unit/integration/e2e/TUI lanes.
 - [x] **Phase 4: Content Preparation** — podcast download (`download.py`), three-tier transcript ingestion (`transcribe.py` — RSS VTT/SRT/JSON, web page, local Parakeet), LLM ad detection with sliding window + ffmpeg cutting (`ads.py`), article promo removal, article TTS generation, `AudioEngine.play_file()` for podcast playback, `prepare.py` orchestrator with `wilted prepare` CLI. Current suite: 596 collected tests across unit/integration/e2e/TUI lanes, all green under `make validate`.
 - [x] **Phase 3: Morning Report** — report assembly, TUI ReportScreen, selection history, source stats, CLI `wilted report` + `wilted feed stats`. Implemented by Vibe/Devstral-2, reviewed and bug-fixed by Claude Opus 4.6. Additional TUI bugs fixed 2026-04-20 (see HISTORY.md). 467 tests green.
 

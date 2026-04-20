@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import subprocess
 import sys
 
 from wilted import VOICES, WPM_ESTIMATE
@@ -38,7 +39,7 @@ _SUBCMD_TO_FLAG = {
 }
 
 # Phase 2+ pipeline and management subcommands — stubbed until implemented.
-_STUB_SUBCMDS = frozenset({"playlist"})
+_STUB_SUBCMDS = frozenset()
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:
@@ -345,6 +346,25 @@ def cmd_doctor(_argv: list[str] | None = None) -> None:
     ffmpeg = shutil.which("ffmpeg")
     print(f"  ffmpeg       : {ffmpeg or 'NOT FOUND'}")
 
+    # Email-alert check
+    email_alert = os.path.expanduser("~/.agent/bin/email-alert")
+    print(f"  email-alert  : {email_alert}  ({'exists' if os.path.exists(email_alert) else 'NOT FOUND'})")
+
+    email_config = _load_email_config()
+    email_status = "enabled" if email_config["enabled"] else "disabled"
+    email_to = email_config["to"] or "(not set)"
+    print(f"  Email        : {email_status}, to={email_to}")
+
+    # Playlist health
+    try:
+        from wilted.playlists import ensure_default_playlists, list_playlists
+
+        ensure_default_playlists()
+        playlists = list_playlists()
+        print(f"  Playlists    : {len(playlists)} ({', '.join(p.name for p in playlists)})")
+    except Exception as e:
+        print(f"  Playlists    : error — {e}")
+
 
 # ---------------------------------------------------------------------------
 # Phase 2 — Feed management subcommands
@@ -495,6 +515,117 @@ def cmd_keyword(argv: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase 2 — Playlist management subcommands
+# ---------------------------------------------------------------------------
+
+
+def cmd_playlist(argv: list[str]) -> None:
+    """Dispatch playlist subcommands: list, create, delete, add, remove."""
+    if not argv:
+        print(
+            "Usage: wilted playlist <list|create|delete|add|remove> [args]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    action = argv[0]
+
+    if action == "list":
+        from wilted.playlists import (
+            ensure_default_playlists,
+            get_playlist_items,
+            list_playlists,
+        )
+
+        ensure_default_playlists()
+        playlists = list_playlists()
+        if not playlists:
+            print("No playlists found.")
+            return
+
+        print(f"Playlists ({len(playlists)}):\n")
+        for pl in playlists:
+            items = get_playlist_items(pl.name)
+            print(f"  {pl.name} [{pl.playlist_type}] — {len(items)} item(s)")
+
+    elif action == "create":
+        if len(argv) < 2:
+            print("Usage: wilted playlist create <name>", file=sys.stderr)
+            sys.exit(1)
+
+        from wilted.playlists import create_playlist
+
+        name = " ".join(argv[1:])
+        try:
+            pl = create_playlist(name)
+            print(f"Created playlist: '{pl.name}'")
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    elif action == "delete":
+        if len(argv) < 2:
+            print("Usage: wilted playlist delete <name>", file=sys.stderr)
+            sys.exit(1)
+
+        from wilted.playlists import delete_playlist
+
+        name = " ".join(argv[1:])
+        try:
+            delete_playlist(name)
+            print(f"Deleted playlist: '{name}'")
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    elif action == "add":
+        if len(argv) < 3:
+            print(
+                "Usage: wilted playlist add <playlist_name> <item_id> [position]",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        from wilted.playlists import add_to_playlist
+
+        playlist_name = argv[1]
+        try:
+            item_id = int(argv[2])
+            position = int(argv[3]) if len(argv) >= 4 else None
+            add_to_playlist(playlist_name, item_id, position=position)
+            print(f"Added item #{item_id} to playlist '{playlist_name}'")
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    elif action == "remove":
+        if len(argv) < 3:
+            print(
+                "Usage: wilted playlist remove <playlist_name> <item_id>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        from wilted.playlists import remove_from_playlist
+
+        playlist_name = argv[1]
+        try:
+            item_id = int(argv[2])
+            remove_from_playlist(playlist_name, item_id)
+            print(f"Removed item #{item_id} from playlist '{playlist_name}'")
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    else:
+        print(
+            f"Unknown playlist action: '{action}'. Use list, create, delete, add, or remove.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Phase 2 — Pipeline subcommands
 # ---------------------------------------------------------------------------
 
@@ -527,12 +658,67 @@ def cmd_classify(argv: list[str]) -> None:
         sys.exit(1)
 
 
+def _load_email_config() -> dict:
+    """Load email config from wilted.toml. Returns {'enabled': bool, 'to': str}."""
+    import tomllib
+
+    from wilted import PROJECT_ROOT
+
+    defaults: dict = {"enabled": False, "to": ""}
+    config_path = PROJECT_ROOT / "wilted.toml"
+    if not config_path.exists():
+        return defaults
+
+    with open(config_path, "rb") as f:
+        data = tomllib.load(f)
+
+    email_section = data.get("email", {})
+    return {
+        "enabled": bool(email_section.get("enabled", False)),
+        "to": str(email_section.get("to", "")),
+    }
+
+
 def cmd_report(argv: list[str]) -> None:
     """Generate the morning report from classified items."""
     from wilted.report import get_report, run_report
 
+    parser = argparse.ArgumentParser(prog="wilted report", add_help=False)
+    parser.add_argument("--email", action="store_true", default=False)
+    args, _ = parser.parse_known_args(argv)
+
     try:
         run_report()
+
+        if args.email:
+            from wilted.report import format_report_email
+
+            result = format_report_email()
+            if result is None:
+                print("No report to email.")
+                return
+
+            subject, body = result
+            config = _load_email_config()
+            if not config["enabled"] or not config["to"]:
+                print("Email not configured. Set [email] enabled=true and to=... in wilted.toml")
+                return
+
+            subprocess.run(
+                [
+                    os.path.expanduser("~/.agent/bin/email-alert"),
+                    "--subject",
+                    subject,
+                    "--to",
+                    config["to"],
+                ],
+                input=body,
+                text=True,
+                check=True,
+            )
+            print(f"Report emailed to {config['to']}.")
+            return
+
         report_data = get_report()
 
         if report_data is None:
@@ -726,6 +912,9 @@ def run_cli(argv=None):
         if first == "ingest":
             cmd_ingest(argv[1:])
             return
+        if first == "playlist":
+            cmd_playlist(argv[1:])
+            return
         if first in _STUB_SUBCMDS:
             _run_stub(argv)
             return
@@ -821,6 +1010,10 @@ def main():
     from wilted.db import run_migrations
 
     run_migrations(DATA_DIR / "wilted.db")
+
+    from wilted.playlists import ensure_default_playlists
+
+    ensure_default_playlists()
 
     if len(sys.argv) > 1:
         run_cli()

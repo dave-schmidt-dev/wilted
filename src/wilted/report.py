@@ -263,6 +263,50 @@ def update_source_stats() -> None:
             )
 
 
+def format_report_email(report_date: str | None = None) -> tuple[str, str] | None:
+    """Format the morning report as plain text email.
+
+    Args:
+        report_date: ISO date (YYYY-MM-DD), defaults to today.
+
+    Returns:
+        (subject, body) tuple, or None if no report exists.
+        Subject format: "Wilted Morning Report -- Apr 20"
+        Body: plain text with playlist groups, titles, relevance scores, summaries.
+    """
+    data = get_report(report_date)
+    if data is None:
+        return None
+
+    # Parse the report date for the subject line
+    report_date_str = data["report"]["report_date"]
+    parsed_date = datetime.strptime(report_date_str, "%Y-%m-%d").date()
+    date_label = parsed_date.strftime("%b %-d")  # e.g. "Apr 20"
+
+    subject = f"Wilted Morning Report -- {date_label}"
+
+    # Build body
+    lines: list[str] = [f"Wilted Morning Report -- {date_label}", ""]
+
+    playlists = data["items"]
+    total = 0
+    for playlist_name, items in playlists.items():
+        lines.append(f"=== {playlist_name} ===")
+        for item in items:
+            score = item["relevance_score"]
+            score_str = f"{score:.2f}" if score is not None else "n/a"
+            lines.append(f"[{score_str}] {item['title']}")
+            if item.get("summary"):
+                lines.append(f"      {item['summary']}")
+            lines.append("")
+        total += len(items)
+
+    lines.append(f"Total items: {total}")
+
+    body = "\n".join(lines)
+    return subject, body
+
+
 def get_feed_stats(feed_id: int | None = None) -> list[dict]:
     """Get selection stats. All feeds if feed_id is None.
 
