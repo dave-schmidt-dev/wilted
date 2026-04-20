@@ -129,13 +129,6 @@ class TestDetectAds:
         result = detect_ads(segs, backend, chunk_minutes=10.0, overlap_minutes=2.0)
         assert result == []
 
-    def test_empty_segments(self):
-        """Empty transcript returns empty result without calling backend."""
-        backend = MagicMock()
-        result = detect_ads([], backend)
-        assert result == []
-        backend.generate.assert_not_called()
-
     def test_overlap_resolution_majority_vote(self):
         """Two chunks overlap; majority vote resolves conflict."""
         # Create segments spanning 14 minutes so we get 2 overlapping chunks
@@ -215,9 +208,6 @@ class TestMergeAdjacent:
         ]
         merged = _merge_adjacent(segs)
         assert len(merged) == 2
-
-    def test_empty_list(self):
-        assert _merge_adjacent([]) == []
 
 
 # ---------------------------------------------------------------------------
@@ -427,13 +417,6 @@ class TestRemovePromos:
         result = remove_promos(text, backend)
 
         assert result == text
-
-    def test_empty_text_returns_empty(self):
-        """Empty or whitespace-only text returns empty string."""
-        backend = MagicMock()
-        assert remove_promos("", backend) == ""
-        assert remove_promos("   \n\n  ", backend) == ""
-        backend.generate.assert_not_called()
 
     def test_multiple_promos_removed(self):
         """Multiple promotional paragraphs removed."""

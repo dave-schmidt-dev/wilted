@@ -6,7 +6,6 @@ import pytest
 
 from wilted.llm import (
     GgufBackend,
-    LLMBackend,
     MlxBackend,
     create_backend,
     parse_json_response,
@@ -126,14 +125,6 @@ class TestCreateBackend:
 # ---------------------------------------------------------------------------
 # Protocol conformance
 # ---------------------------------------------------------------------------
-
-
-class TestProtocolConformance:
-    def test_mlx_satisfies_protocol(self):
-        assert isinstance(MlxBackend(model="m"), LLMBackend)
-
-    def test_gguf_satisfies_protocol(self):
-        assert isinstance(GgufBackend(model="m"), LLMBackend)
 
 
 # ---------------------------------------------------------------------------

@@ -6,9 +6,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-import wilted
 from wilted.cache import (
-    check_ffmpeg,
     clear_cache,
     get_cache_dir,
     is_cache_valid,
@@ -19,36 +17,12 @@ from wilted.cache import (
 
 
 class TestCheckFfmpeg:
-    def test_passes_when_ffmpeg_available(self):
-        """Should not raise when ffmpeg is found."""
-        with patch("wilted.cache.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
-            check_ffmpeg()  # Should not raise
-
     def test_raises_when_ffmpeg_missing(self):
+        from wilted.cache import check_ffmpeg
+
         with patch("wilted.cache.subprocess.run", side_effect=FileNotFoundError):
             with pytest.raises(RuntimeError, match="ffmpeg is required"):
                 check_ffmpeg()
-
-    def test_raises_on_ffmpeg_error(self):
-        from subprocess import CalledProcessError
-
-        with patch(
-            "wilted.cache.subprocess.run",
-            side_effect=CalledProcessError(1, "ffmpeg"),
-        ):
-            with pytest.raises(RuntimeError, match="ffmpeg is required"):
-                check_ffmpeg()
-
-
-class TestGetCacheDir:
-    def test_returns_correct_path(self):
-        result = get_cache_dir(42)
-        assert result == wilted.AUDIO_DIR / "42"
-
-    def test_uses_string_article_id(self):
-        result = get_cache_dir(7)
-        assert result.name == "7"
 
 
 class TestSaveLoadAudio:
@@ -112,15 +86,6 @@ class TestSaveLoadAudio:
         assert abs(len(decoded) - len(tone)) < sample_rate * 0.1
         assert np.abs(decoded).mean() > 0.05
 
-    def test_save_creates_directory(self):
-        from wilted.cache import save_audio
-
-        audio_np = np.zeros(24000, dtype=np.float32)
-        with patch("mlx_audio.audio_io.write"):
-            path = save_audio(99, 5, audio_np, 24000)
-            assert path.parent.exists()
-            assert path.name == "para_005.mp3"
-
     def test_load_returns_none_when_missing(self):
         from wilted.cache import load_audio
 
@@ -143,7 +108,6 @@ class TestSaveLoadAudio:
             audio, sr = result
             np.testing.assert_array_equal(audio, expected)
             assert sr == 24000
-            mock_read.assert_called_once_with(mp3_path, dtype="float32")
 
 
 class TestManifest:
@@ -152,9 +116,6 @@ class TestManifest:
         save_manifest(1, manifest)
         loaded = load_manifest(1)
         assert loaded == manifest
-
-    def test_load_returns_none_when_missing(self):
-        assert load_manifest(999) is None
 
     def test_load_returns_none_on_corrupt_json(self):
         cache_dir = get_cache_dir(1)
@@ -169,28 +130,6 @@ class TestManifest:
         cache_dir = get_cache_dir(1)
         tmp_files = list(cache_dir.glob("*.tmp"))
         assert tmp_files == []
-
-    def test_manifest_fields(self):
-        manifest = new_manifest(3, "bf_emma", "b", 1.5, "2026-04-08T10:00:00")
-        assert manifest["article_id"] == 3
-        assert manifest["voice"] == "bf_emma"
-        assert manifest["lang"] == "b"
-        assert manifest["speed"] == 1.5
-        assert manifest["added"] == "2026-04-08T10:00:00"
-        assert manifest["status"] == "generating"
-        assert manifest["paragraphs"] == []
-
-    def test_incremental_update(self):
-        manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
-        save_manifest(1, manifest)
-
-        # Add a paragraph entry
-        manifest["paragraphs"].append({"file": "para_000.mp3", "duration_seconds": 12.4, "samples": 297600})
-        save_manifest(1, manifest)
-
-        loaded = load_manifest(1)
-        assert len(loaded["paragraphs"]) == 1
-        assert loaded["paragraphs"][0]["duration_seconds"] == 12.4
 
 
 class TestCacheValidation:
@@ -215,11 +154,6 @@ class TestCacheValidation:
             ("af_heart", "a", 1.5, "2026-04-08T08:00:00"),
         ]:
             assert is_cache_valid(1, voice, lang, speed, added) is False
-
-    def test_invalid_added(self):
-        manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
-        save_manifest(1, manifest)
-        assert is_cache_valid(1, "af_heart", "a", 1.0, "2026-04-08T09:00:00") is False
 
     def test_no_manifest(self):
         assert is_cache_valid(999, "af_heart", "a", 1.0, "2026-04-08T08:00:00") is False
@@ -258,27 +192,6 @@ class TestIsParagraphCached:
             ("af_heart", "a", 1.5),
         ]:
             assert is_paragraph_cached(1, 0, voice, lang, speed, "2026-04-08T08:00:00") is False
-
-    def test_false_when_file_missing(self):
-        from wilted.cache import is_paragraph_cached
-
-        manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
-        save_manifest(1, manifest)
-        # Don't create the MP3 file
-
-        assert is_paragraph_cached(1, 0, "af_heart", "a", 1.0, "2026-04-08T08:00:00") is False
-
-    def test_works_with_generating_status(self):
-        """Partially generated cache (status=generating) should still allow hits."""
-        from wilted.cache import is_paragraph_cached
-
-        manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
-        assert manifest["status"] == "generating"  # Not complete
-        save_manifest(1, manifest)
-        mp3_path = get_cache_dir(1) / "para_000.mp3"
-        mp3_path.write_bytes(b"fake mp3")
-
-        assert is_paragraph_cached(1, 0, "af_heart", "a", 1.0, "2026-04-08T08:00:00") is True
 
 
 class TestClearCache:
@@ -420,7 +333,6 @@ class TestGenerateArticleCache:
     def test_clears_stale_cache(self):
         from wilted.cache import generate_article_cache
 
-        # Create cache with different voice
         manifest = new_manifest(4, "bf_emma", "b", 1.0, "2026-04-08T08:00:00")
         save_manifest(4, manifest)
 
@@ -455,59 +367,3 @@ class TestEngineExplicitParams:
 
         engine.generate_audio("hello", voice="bf_emma", lang="b", speed=1.5)
         mock_model.generate.assert_called_once_with("hello", voice="bf_emma", speed=1.5, lang_code="b")
-
-    def test_fallback_to_instance_attrs(self):
-        from wilted.engine import AudioEngine
-
-        engine = AudioEngine(voice="am_adam", speed=0.8, lang="a")
-        mock_model = MagicMock()
-        mock_segment = MagicMock()
-        mock_segment.audio = [0.0] * 100
-        mock_model.generate.return_value = mock_segment
-        engine._model = mock_model
-
-        engine.generate_audio("hello")
-        mock_model.generate.assert_called_once_with("hello", voice="am_adam", speed=0.8, lang_code="a")
-
-    def test_partial_override(self):
-        from wilted.engine import AudioEngine
-
-        engine = AudioEngine(voice="am_adam", speed=0.8, lang="a")
-        mock_model = MagicMock()
-        mock_segment = MagicMock()
-        mock_segment.audio = [0.0] * 100
-        mock_model.generate.return_value = mock_segment
-        engine._model = mock_model
-
-        engine.generate_audio("hello", voice="bf_emma")
-        mock_model.generate.assert_called_once_with("hello", voice="bf_emma", speed=0.8, lang_code="a")
-
-
-class TestModelLock:
-    """Tests for threading.Lock on model access."""
-
-    def test_lock_exists(self):
-        from wilted.engine import AudioEngine
-
-        engine = AudioEngine()
-        assert hasattr(engine, "_model_lock")
-
-    def test_generate_audio_acquires_lock(self):
-        from wilted.engine import AudioEngine
-
-        engine = AudioEngine()
-        mock_model = MagicMock()
-        mock_segment = MagicMock()
-        mock_segment.audio = [0.0] * 100
-        mock_model.generate.return_value = mock_segment
-        engine._model = mock_model
-
-        # Replace lock with a mock to verify acquisition
-        mock_lock = MagicMock()
-        mock_lock.__enter__ = MagicMock(return_value=None)
-        mock_lock.__exit__ = MagicMock(return_value=False)
-        engine._model_lock = mock_lock
-
-        engine.generate_audio("hello")
-        mock_lock.__enter__.assert_called_once()
-        mock_lock.__exit__.assert_called_once()

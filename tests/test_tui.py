@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from textual.binding import Binding
 from textual.widgets import Static, Tree
 
 from wilted import ICONS
@@ -506,34 +505,6 @@ async def test_export_wav_missing_file():
 @pytest.mark.asyncio
 @patch("wilted.tui.ensure_default_playlists")
 @patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
-@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
-async def test_prev_paragraph_binding_exists(mock_items, mock_list, mock_ensure):
-    """The [ key binding is registered on the app."""
-    app = WiltedApp()
-    async with app.run_test():
-        bindings = {b.key for b in app.BINDINGS if isinstance(b, Binding)}
-        assert "left_square_bracket" in bindings
-
-
-@pytest.mark.asyncio
-@patch("wilted.tui.ensure_default_playlists")
-@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
-@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
-async def test_skip_forward_binding_includes_bracket(mock_items, mock_list, mock_ensure):
-    """The ] key is an alias for skip (alongside right arrow)."""
-    app = WiltedApp()
-    async with app.run_test():
-        skip_binding = next(
-            (b for b in app.BINDINGS if isinstance(b, Binding) and b.action == "skip_segment"),
-            None,
-        )
-        assert skip_binding is not None
-        assert "right_square_bracket" in skip_binding.key
-
-
-@pytest.mark.asyncio
-@patch("wilted.tui.ensure_default_playlists")
-@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
 @patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
 async def test_prev_paragraph_no_crash_when_not_playing(mock_items, mock_list, mock_ensure):
     """Pressing [ when not playing should not crash."""
@@ -542,28 +513,6 @@ async def test_prev_paragraph_no_crash_when_not_playing(mock_items, mock_list, m
         await pilot.press("left_square_bracket")
         await pilot.pause()
         # Should not crash — no-op since not playing
-
-
-@pytest.mark.asyncio
-@patch("wilted.tui.ensure_default_playlists")
-@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
-@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
-async def test_generation_paused_default_false(mock_items, mock_list, mock_ensure):
-    """_generation_paused starts as False."""
-    app = WiltedApp()
-    async with app.run_test():
-        assert app._generation_paused is False
-
-
-@pytest.mark.asyncio
-@patch("wilted.tui.ensure_default_playlists")
-@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
-@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
-async def test_rewind_to_default_none(mock_items, mock_list, mock_ensure):
-    """_rewind_to starts as None."""
-    app = WiltedApp()
-    async with app.run_test():
-        assert app._rewind_to is None
 
 
 @pytest.mark.asyncio

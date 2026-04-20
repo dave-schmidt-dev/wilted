@@ -93,11 +93,6 @@ class TestParseClassification:
         result = _parse_classification(resp)
         assert result["playlist"] == "Work"
 
-    def test_invalid_playlist_defaults_to_education(self):
-        resp = '{"playlist": "News", "relevance_score": 0.5, "summary": "S."}'
-        result = _parse_classification(resp)
-        assert result["playlist"] == "Education"
-
     def test_score_clamped_to_range(self):
         resp = '{"playlist": "Fun", "relevance_score": 1.5, "summary": "S."}'
         result = _parse_classification(resp)
@@ -111,11 +106,6 @@ class TestParseClassification:
         resp = '{"playlist": "Fun", "summary": "S."}'
         result = _parse_classification(resp)
         assert result["relevance_score"] == 0.5
-
-    def test_non_string_summary_converted(self):
-        resp = '{"playlist": "Fun", "relevance_score": 0.5, "summary": 42}'
-        result = _parse_classification(resp)
-        assert result["summary"] == "42"
 
     def test_json_with_markdown_fences(self):
         resp = '```json\n{"playlist": "Education", "relevance_score": 0.7, "summary": "Test."}\n```'

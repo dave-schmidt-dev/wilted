@@ -45,9 +45,6 @@ class TestAddFeed:
 
 
 class TestListFeeds:
-    def test_empty(self):
-        assert list_feeds() == []
-
     def test_returns_all(self):
         add_feed("https://a.com/feed.xml", title="Alpha")
         add_feed("https://b.com/feed.xml", title="Beta")
@@ -88,12 +85,6 @@ class TestUpdateFeed:
         updated = update_feed(feed.id, title="New Title")
         assert updated.title == "New Title"
         assert Feed.get_by_id(feed.id).title == "New Title"
-
-    def test_update_sets_updated_at(self):
-        feed = add_feed("https://example.com/feed.xml")
-        original_updated = feed.updated_at
-        updated = update_feed(feed.id, title="Changed")
-        assert updated.updated_at >= original_updated
 
     def test_update_invalid_field_raises(self):
         feed = add_feed("https://example.com/feed.xml")

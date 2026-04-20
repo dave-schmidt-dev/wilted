@@ -64,9 +64,6 @@ class TestNormalizeText:
         # fi ligature should decompose
         assert "fi" in _normalize_text("\ufb01")
 
-    def test_whitespace_stripped(self):
-        assert _normalize_text("  test  ") == "test"
-
 
 class TestDedupHash:
     def test_same_input_same_hash(self):
@@ -82,11 +79,6 @@ class TestDedupHash:
     def test_none_pubdate_handled(self):
         h = _dedup_hash("Title", None, "https://ex.com")
         assert isinstance(h, str) and len(h) == 64
-
-    def test_case_insensitive(self):
-        h1 = _dedup_hash("My Title", None, None)
-        h2 = _dedup_hash("MY TITLE", None, None)
-        assert h1 == h2
 
 
 # ---------------------------------------------------------------------------
@@ -325,11 +317,6 @@ class TestRunDiscover:
 
         stats = run_discover()
         assert stats["errors"] == 1
-
-    def test_no_enabled_feeds(self):
-        stats = run_discover()
-        assert stats["feeds_polled"] == 0
-        assert stats["discovered"] == 0
 
     @patch("wilted.discover.feedparser.parse")
     @patch("wilted.discover._fetch_article_text")

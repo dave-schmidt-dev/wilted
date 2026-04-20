@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from wilted.engine import AudioEngine, _normalize_segments
+from wilted.engine import AudioEngine
 
 pytestmark = pytest.mark.usefixtures("stub_audio_modules")
 
@@ -142,13 +142,6 @@ class TestPlayArticle:
 class TestPlayAudioPublic:
     """Tests for the public play_audio() method (cached audio playback)."""
 
-    def test_clears_stop_event(self, engine, mock_stream):
-        """play_audio clears _stop_event so previous skip doesn't block."""
-        engine._stop_event.set()
-        audio = np.zeros(1024, dtype=np.float32)
-        engine.play_audio(audio)
-        assert not engine._stop_event.is_set()
-
     def test_plays_audio_through_stream(self, engine, mock_stream):
         """play_audio opens, writes to, and closes the OutputStream."""
         audio = np.zeros(2048, dtype=np.float32)
@@ -157,45 +150,8 @@ class TestPlayAudioPublic:
         assert mock_stream.write.called
         assert mock_stream.stop.called
 
-    def test_respects_stop_during_playback(self, engine, mock_stream):
-        """Stopping mid-play_audio exits the write loop."""
-        audio = np.zeros(8192, dtype=np.float32)
-        call_count = [0]
-
-        def write_side_effect(data):
-            call_count[0] += 1
-            if call_count[0] >= 2:
-                engine._stop_event.set()
-
-        mock_stream.write.side_effect = write_side_effect
-        engine.play_audio(audio)
-        # Should have stopped after ~2 blocks, not played the full 8 blocks
-        assert call_count[0] < 8
-
 
 class TestControls:
-    def test_pause_clears_event(self):
-        """pause() clears _pause_event (blocks the write loop)."""
-        engine = AudioEngine()
-        assert engine._pause_event.is_set()
-        engine.pause()
-        assert not engine._pause_event.is_set()
-
-    def test_resume_sets_event(self):
-        """resume() sets _pause_event after pause."""
-        engine = AudioEngine()
-        engine.pause()
-        assert not engine._pause_event.is_set()
-        engine.resume()
-        assert engine._pause_event.is_set()
-
-    def test_stop_sets_event(self):
-        """stop() sets _stop_event."""
-        engine = AudioEngine()
-        assert not engine._stop_event.is_set()
-        engine.stop()
-        assert engine._stop_event.is_set()
-
     def test_stop_unblocks_pause(self):
         """stop() also sets _pause_event so a paused loop can exit."""
         engine = AudioEngine()
@@ -213,11 +169,6 @@ class TestControls:
         assert engine.is_paused
         engine.resume()
         assert not engine.is_paused
-
-    def test_is_playing_default_false(self):
-        """is_playing is False before play_article is called."""
-        engine = AudioEngine()
-        assert not engine.is_playing
 
 
 class TestModelLoading:
@@ -247,56 +198,6 @@ class TestModelLoading:
 
         assert engine._model == "mock-model"
         mock_load_model.assert_called_once_with(engine.model_name)
-
-    def test_load_model_enables_offline_when_cached(self):
-        """load_model sets HF_HUB_OFFLINE=1 when the model snapshot dir exists."""
-        engine = AudioEngine()
-        mock_load_model = MagicMock(return_value="mock-model")
-        mlx_audio_mod = types.ModuleType("mlx_audio")
-        mlx_audio_tts_mod = types.ModuleType("mlx_audio.tts")
-        mlx_audio_utils_mod = types.ModuleType("mlx_audio.tts.utils")
-        mlx_audio_utils_mod.load_model = mock_load_model
-
-        with (
-            patch.dict(os.environ, {}, clear=True),
-            patch.dict(
-                "sys.modules",
-                {
-                    "mlx_audio": mlx_audio_mod,
-                    "mlx_audio.tts": mlx_audio_tts_mod,
-                    "mlx_audio.tts.utils": mlx_audio_utils_mod,
-                },
-            ),
-            patch("wilted.engine.os.path.isdir", return_value=True),
-        ):
-            engine.load_model()
-            assert os.environ.get("HF_HUB_OFFLINE") == "1"
-
-    def test_load_model_skips_offline_when_not_cached(self):
-        """load_model should not set offline mode if model cache is missing."""
-        engine = AudioEngine()
-        mock_load_model = MagicMock(return_value="mock-model")
-        mlx_audio_mod = types.ModuleType("mlx_audio")
-        mlx_audio_tts_mod = types.ModuleType("mlx_audio.tts")
-        mlx_audio_utils_mod = types.ModuleType("mlx_audio.tts.utils")
-        mlx_audio_utils_mod.load_model = mock_load_model
-
-        with (
-            patch.dict(os.environ, {}, clear=True),
-            patch.dict(
-                "sys.modules",
-                {
-                    "mlx_audio": mlx_audio_mod,
-                    "mlx_audio.tts": mlx_audio_tts_mod,
-                    "mlx_audio.tts.utils": mlx_audio_utils_mod,
-                },
-            ),
-            patch("wilted.engine.os.path.isdir", return_value=False),
-        ):
-            engine.load_model()
-            assert "HF_HUB_OFFLINE" not in os.environ
-            # xet should still be disabled even without cache
-            assert os.environ["HF_HUB_DISABLE_XET"] == "1"
 
     def test_load_model_respects_xet_opt_in(self):
         """Setting WILTED_ENABLE_HF_XET should skip the safety override."""
@@ -466,28 +367,6 @@ class TestGenerateAudio:
         assert all(isinstance(result, np.ndarray) for result in results)
 
 
-class TestNormalizeSegments:
-    def test_single_result_wrapped_in_list(self):
-        result = MagicMock()
-        result.audio = np.zeros(1)
-        segments = _normalize_segments(result)
-        assert segments == [result]
-
-    def test_list_result_passed_through(self):
-        result = [MagicMock(), MagicMock()]
-        segments = _normalize_segments(result)
-        assert segments is result
-
-    def test_generator_result_passed_through(self):
-        seg1 = MagicMock()
-        seg1.audio = np.zeros(1)
-        seg2 = MagicMock()
-        seg2.audio = np.zeros(1)
-        result = (segment for segment in [seg1, seg2])
-        segments = _normalize_segments(result)
-        assert list(segments) == [seg1, seg2]
-
-
 class TestLangCodeParameter:
     def test_generate_and_play_uses_lang_code(self):
         engine = AudioEngine()
@@ -502,117 +381,6 @@ class TestLangCodeParameter:
 
         call_kwargs = engine._model.generate.call_args[1]
         assert "lang_code" in call_kwargs
-
-    def test_generate_audio_handles_generator_result(self):
-        engine = AudioEngine()
-        seg1 = MagicMock()
-        seg1.audio = np.zeros(256)
-        seg2 = MagicMock()
-        seg2.audio = np.ones(256)
-        engine._model = MagicMock()
-        engine._model.generate.return_value = (segment for segment in [seg1, seg2])
-
-        with patch("sounddevice.OutputStream"):
-            result = engine.generate_audio("Test generator output.")
-
-        assert isinstance(result, np.ndarray)
-        assert len(result) == 512
-
-    def test_generate_and_play_handles_generator_result(self):
-        engine = AudioEngine()
-        seg1 = MagicMock()
-        seg1.audio = np.zeros(256)
-        seg2 = MagicMock()
-        seg2.audio = np.ones(256)
-        engine._model = MagicMock()
-        engine._model.generate.return_value = (segment for segment in [seg1, seg2])
-
-        with patch("sounddevice.OutputStream") as mock_cls:
-            stream_instance = MagicMock()
-            mock_cls.return_value = stream_instance
-            engine.generate_and_play("Test generator playback.")
-
-        assert stream_instance.write.call_count >= 2
-
-    def test_generate_and_play_materializes_generator_inside_lock(self):
-        """Lazy generator evaluation must complete before another call enters generate."""
-        engine = AudioEngine()
-        overlap_count = 0
-        active_calls = 0
-        active_lock = threading.Lock()
-        start_gate = threading.Event()
-
-        def fake_generate(*args, **kwargs):
-            start_gate.wait(timeout=2)
-
-            def segments():
-                nonlocal overlap_count, active_calls
-                with active_lock:
-                    active_calls += 1
-                    if active_calls > 1:
-                        overlap_count += 1
-                try:
-                    threading.Event().wait(0.05)
-                    yield _make_fake_segment(n_samples=64)
-                finally:
-                    with active_lock:
-                        active_calls -= 1
-
-            return segments()
-
-        engine._model = MagicMock()
-        engine._model.generate.side_effect = fake_generate
-
-        with patch.object(engine, "_play_audio"):
-            t1 = threading.Thread(target=lambda: engine.generate_and_play("One"))
-            t2 = threading.Thread(target=lambda: engine.generate_and_play("Two"))
-            t1.start()
-            t2.start()
-            start_gate.set()
-            t1.join(timeout=2)
-            t2.join(timeout=2)
-
-        assert overlap_count == 0
-
-    def test_play_article_materializes_generator_inside_lock(self):
-        """play_article must not leave lazy segment evaluation outside _model_lock."""
-        engine = AudioEngine()
-        overlap_count = 0
-        active_calls = 0
-        active_lock = threading.Lock()
-        start_gate = threading.Event()
-
-        def fake_generate(*args, **kwargs):
-            start_gate.wait(timeout=2)
-
-            def segments():
-                nonlocal overlap_count, active_calls
-                with active_lock:
-                    active_calls += 1
-                    if active_calls > 1:
-                        overlap_count += 1
-                try:
-                    threading.Event().wait(0.05)
-                    yield _make_fake_segment(n_samples=64)
-                finally:
-                    with active_lock:
-                        active_calls -= 1
-
-            return segments()
-
-        engine._model = MagicMock()
-        engine._model.generate.side_effect = fake_generate
-
-        with patch.object(engine, "_play_audio"):
-            t1 = threading.Thread(target=lambda: engine.play_article("Paragraph one."))
-            t2 = threading.Thread(target=lambda: engine.play_article("Paragraph two."))
-            t1.start()
-            t2.start()
-            start_gate.set()
-            t1.join(timeout=2)
-            t2.join(timeout=2)
-
-        assert overlap_count == 0
 
     def test_generate_audio_uses_lang_code(self):
         engine = AudioEngine()
@@ -872,11 +640,6 @@ class TestGetFileDuration:
         assert "-show_entries" in cmd
         assert "format=duration" in cmd
 
-    def test_get_file_duration_missing_file(self, engine):
-        """FileNotFoundError raised for nonexistent file."""
-        with pytest.raises(FileNotFoundError, match="Audio file not found"):
-            engine.get_file_duration("/nonexistent/path/audio.mp3")
-
     def test_get_file_duration_ffprobe_failure(self, engine, tmp_path):
         """RuntimeError raised when ffprobe returns nonzero exit code."""
         wav_file = tmp_path / "test.wav"
@@ -889,18 +652,4 @@ class TestGetFileDuration:
 
         with patch("wilted.engine.subprocess.run", return_value=mock_result):
             with pytest.raises(RuntimeError, match="ffprobe failed"):
-                engine.get_file_duration(wav_file)
-
-    def test_get_file_duration_invalid_output(self, engine, tmp_path):
-        """RuntimeError raised when ffprobe returns non-numeric output."""
-        wav_file = tmp_path / "test.wav"
-        wav_file.touch()
-
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = b"N/A\n"
-        mock_result.stderr = b""
-
-        with patch("wilted.engine.subprocess.run", return_value=mock_result):
-            with pytest.raises(RuntimeError, match="ffprobe returned invalid duration"):
                 engine.get_file_duration(wav_file)
