@@ -28,3 +28,10 @@ uv.lock
 
 # Plans (local working documents)
 /plans
+
+# Agent tooling
+.vibe/
+.vibeignore
+.cursor/
+.cursorignore
+AGENTS.md

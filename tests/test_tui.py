@@ -705,3 +705,280 @@ async def test_transcript_escapes_brackets(mock_load):
         result = app._build_transcript(0)
         # The brackets should be escaped, not interpreted as markup
         assert "\\[brackets]" in result or "[brackets]" not in result.replace("\\[", "")
+
+
+# ---------------------------------------------------------------------------
+# TUI launch with real database (no load_queue mock)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tui_launches_with_real_db():
+    """TUI starts against the real (isolated) SQLite database, not a mocked queue."""
+    from textual.widgets import DataTable
+
+    app = WiltedApp()
+    async with app.run_test():
+        tables = app.query(DataTable)
+        assert len(tables) > 0
+        # Empty DB: the empty-message label should be visible
+        from textual.widgets import Label
+
+        empty = app.query_one("#empty-message", Label)
+        assert "empty" in empty.content.lower()
+
+
+@pytest.mark.asyncio
+async def test_tui_shows_articles_from_real_db():
+    """Add an article to the real DB, verify the TUI shows it."""
+    from wilted.queue import add_article
+
+    add_article("Test article body text for TUI display.", title="TUI DB Test")
+
+    app = WiltedApp()
+    async with app.run_test():
+        from textual.widgets import DataTable
+
+        table = app.query_one("#queue-table", DataTable)
+        assert table.row_count == 1
+        row = table.get_row_at(0)
+        assert "TUI DB Test" in str(row)
+
+
+@pytest.mark.asyncio
+async def test_tui_quit_with_real_db():
+    """TUI exits cleanly on q key with a real database."""
+    app = WiltedApp()
+    async with app.run_test() as pilot:
+        await pilot.press("q")
+        assert app._exit is not None
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — ReportScreen tests
+
+
+@pytest.fixture
+def sample_report_data():
+    """Sample report data for testing ReportScreen."""
+    return {
+        "report": {
+            "report_date": "2026-04-20",
+            "generated_at": "2026-04-20T06:00:00Z",
+            "item_count": 2,
+            "metadata": '{"playlists": {"Work": 2}, "total_items": 2}',
+        },
+        "items": {
+            "Work": [
+                {
+                    "id": 1,
+                    "title": "Test Article 1",
+                    "source_name": "Test Source",
+                    "relevance_score": 0.9,
+                    "summary": "Summary 1",
+                },
+                {
+                    "id": 2,
+                    "title": "Test Article 2",
+                    "source_name": "Test Source",
+                    "relevance_score": 0.8,
+                    "summary": "Summary 2",
+                },
+            ]
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_report_screen_renders_items():
+    """ReportScreen displays report items in the DataTable."""
+    from wilted.tui import WiltedApp
+    from wilted.tui.screens.report import ReportScreen
+
+    app = WiltedApp()
+    report_data = {
+        "report": {
+            "report_date": "2026-04-20",
+            "generated_at": "2026-04-20T06:00:00Z",
+            "item_count": 2,
+            "metadata": '{"playlists": {"Work": 2}, "total_items": 2}',
+        },
+        "items": {
+            "Work": [
+                {
+                    "id": 1,
+                    "title": "Test Article 1",
+                    "source_name": "Test Source",
+                    "relevance_score": 0.9,
+                    "summary": "Summary 1",
+                },
+                {
+                    "id": 2,
+                    "title": "Test Article 2",
+                    "source_name": "Test Source",
+                    "relevance_score": 0.8,
+                    "summary": "Summary 2",
+                },
+            ]
+        },
+    }
+    async with app.run_test() as pilot:
+        app.push_screen(ReportScreen(report_data))
+        await pilot.pause()
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#report-table", DataTable)
+        # Should have rows: header + 2 items (and possibly playlist header)
+        assert table.row_count >= 2, f"Expected at least 2 data rows, got {table.row_count}"
+
+
+@pytest.mark.asyncio
+async def test_toggle_selection():
+    """Toggling selection on an item updates its selected state."""
+    from wilted.tui import WiltedApp
+    from wilted.tui.screens.report import ReportScreen
+
+    app = WiltedApp()
+    report_data = {
+        "report": {
+            "report_date": "2026-04-20",
+            "generated_at": "2026-04-20T06:00:00Z",
+            "item_count": 1,
+            "metadata": '{"playlists": {"Work": 1}, "total_items": 1}',
+        },
+        "items": {
+            "Work": [
+                {
+                    "id": 1,
+                    "title": "Test Article",
+                    "source_name": "Test Source",
+                    "relevance_score": 0.9,
+                    "summary": "Summary",
+                },
+            ]
+        },
+    }
+    async with app.run_test() as pilot:
+        app.push_screen(ReportScreen(report_data))
+        await pilot.pause()
+        screen = app.screen
+        # Initially all items are selected
+        assert screen._selected.get(1, False) is True
+        # Toggle selection
+        await pilot.press(" ")
+        await pilot.pause()
+        # Item should now be unselected
+        assert screen._selected.get(1, True) is False
+
+
+@pytest.mark.asyncio
+async def test_accept_promotes_selected_items():
+    """Accepting promotes selected items to selected status."""
+    from datetime import UTC, datetime
+
+    from wilted.db import Feed, Item
+    from wilted.report import get_report, run_report
+    from wilted.tui import WiltedApp
+    from wilted.tui.screens.report import ReportScreen
+
+    # Create real test data
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    feed = Feed.create(
+        title="Test Feed",
+        feed_url="https://example.com/feed.xml",
+        feed_type="article",
+        enabled=True,
+        created_at=now,
+        updated_at=now,
+    )
+    item = Item.create(
+        feed=feed,
+        guid="test-accept-1",
+        title="Test Article",
+        discovered_at=now,
+        item_type="article",
+        status="classified",
+        status_changed_at=now,
+        playlist_assigned="Work",
+        relevance_score=0.9,
+        summary="Test summary",
+    )
+
+    # Generate report and get data
+    run_report()
+    report_data = get_report()
+    assert report_data is not None
+
+    app = WiltedApp()
+    async with app.run_test() as pilot:
+        app.push_screen(ReportScreen(report_data))
+        await pilot.pause()
+        # Accept (all selected by default)
+        await pilot.press("s")
+        # Wait for worker to complete
+        await pilot.pause(delay=0.5)
+
+        # Verify item status changed in DB
+        updated = Item.get_by_id(item.id)
+        assert updated.status == "selected"
+
+
+@pytest.mark.asyncio
+async def test_dismiss_without_action_preserves_state():
+    """Dismissing without accepting preserves the original item states."""
+    from wilted.tui import WiltedApp
+    from wilted.tui.screens.report import ReportScreen
+
+    app = WiltedApp()
+    report_data = {
+        "report": {
+            "report_date": "2026-04-20",
+            "generated_at": "2026-04-20T06:00:00Z",
+            "item_count": 1,
+            "metadata": '{"playlists": {"Work": 1}, "total_items": 1}',
+        },
+        "items": {
+            "Work": [
+                {
+                    "id": 1,
+                    "title": "Test Article",
+                    "source_name": "Test Source",
+                    "relevance_score": 0.9,
+                    "summary": "Summary",
+                },
+            ]
+        },
+    }
+    async with app.run_test() as pilot:
+        app.push_screen(ReportScreen(report_data))
+        await pilot.pause()
+        # Toggle to unselect
+        await pilot.press(" ")
+        await pilot.pause()
+        screen = app.screen
+        assert screen._selected.get(1, True) is False
+        # Dismiss without accepting
+        await pilot.press("q")
+        await pilot.pause()
+        # Should be back to main screen, no DB changes occurred
+        assert not isinstance(app.screen, ReportScreen)
+
+
+@pytest.mark.asyncio
+async def test_report_screen_not_shown_when_no_report():
+    """ReportScreen is not shown when there is no report."""
+    from wilted.tui import WiltedApp
+
+    with patch("wilted.tui.WiltedApp._check_unread_report_worker"):
+        app = WiltedApp()
+        # _check_unread_report calls _check_unread_report_worker which is patched
+        # so no ReportScreen should be pushed
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Main screen should be visible
+            from wilted.tui.screens.report import ReportScreen
+
+            assert not any(isinstance(screen, ReportScreen) for screen in app.screen_stack)
+
+
+# ---------------------------------------------------------------------------

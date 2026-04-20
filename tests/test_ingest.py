@@ -2,6 +2,7 @@
 
 import sys
 import types
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -16,10 +17,10 @@ from wilted.ingest import ArticleResult, resolve_article
 class TestResolveFromURL:
     def test_url_path_returns_article(self):
         """resolve_article with a URL fetches and returns text + metadata."""
-        fake_result = {"text": "Article body text.", "title": "Test Title"}
+        fake_doc = SimpleNamespace(text="Article body text.", title="Test Title")
         with (
             patch("trafilatura.fetch_url", create=True, return_value="<html>content</html>"),
-            patch("trafilatura.bare_extraction", create=True, return_value=fake_result),
+            patch("trafilatura.bare_extraction", create=True, return_value=fake_doc),
         ):
             result = resolve_article(url="https://example.com/article")
 
@@ -41,7 +42,7 @@ class TestResolveFromURL:
         """resolve_article raises ValueError when extraction returns no text."""
         with (
             patch("trafilatura.fetch_url", create=True, return_value="<html></html>"),
-            patch("trafilatura.bare_extraction", create=True, return_value={"text": ""}),
+            patch("trafilatura.bare_extraction", create=True, return_value=SimpleNamespace(text="", title=None)),
             pytest.raises(ValueError, match="Could not extract"),
         ):
             resolve_article(url="https://example.com/empty")
@@ -85,10 +86,10 @@ class TestOnStatusCallback:
     def test_on_status_called_for_url(self):
         """on_status callback receives progress messages for URL path."""
         messages = []
-        fake_result = {"text": "Article text.", "title": "T"}
+        fake_doc = SimpleNamespace(text="Article text.", title="T")
         with (
             patch("trafilatura.fetch_url", create=True, return_value="<html>x</html>"),
-            patch("trafilatura.bare_extraction", create=True, return_value=fake_result),
+            patch("trafilatura.bare_extraction", create=True, return_value=fake_doc),
         ):
             resolve_article(
                 url="https://example.com/test",

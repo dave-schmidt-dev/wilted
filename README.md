@@ -22,14 +22,19 @@ Requires Python 3.12 (Homebrew).
 
 ```bash
 python3.12 -m venv ~/.venvs/mlx-audio
-~/.venvs/mlx-audio/bin/pip install "mlx-audio[tts]" trafilatura numpy
 ```
 
-Then install the package (editable) and TUI dependencies:
+Then install the package and TUI dependencies:
 
 ```bash
 cd ~/Documents/Projects/wilted
 ~/.venvs/mlx-audio/bin/pip install -e ".[tui,test]"
+```
+
+For LLM-based classification (optional):
+
+```bash
+~/.venvs/mlx-audio/bin/pip install -e ".[llm]"
 ```
 
 Add a shell alias (e.g. in `~/.zshrc`):
@@ -205,7 +210,7 @@ src/wilted/                # shared library
     migrate.py           # queue.json -> SQLite migration
     log.py               # RotatingFileHandler setup
     tui/                 # Textual TUI (decomposed package)
-tests/                   # pytest suite (410 tests)
+tests/                   # pytest suite (461 tests, incl. subprocess e2e)
 migrations/              # numbered schema migrations
 ```
 
@@ -221,10 +226,40 @@ That runs:
 
 - `ruff` linting
 - unit/integration tests for CLI, engine, queue/cache, ingest, and TUI behavior
+- subprocess e2e tests for CLI commands, feed/keyword CRUD, article lifecycle, and RSS discovery
+- ffmpeg MP3 encode/decode round-trip
+- TUI launch and quit with real SQLite database
 - concurrency guardrails that verify MLX work stays serialized behind `_model_lock`
 - startup guardrails that verify `tqdm` lock initialization happens on the main thread before Textual starts
 
-What to avoid in future:
+### Slow tests (real TTS model)
+
+Tests that require the Kokoro model and Apple Silicon are excluded from `make validate` and run separately:
+
+```bash
+make test-slow
+```
+
+This exercises real TTS generation, speed parameter effects, and the full cache pipeline (TTS → MP3 encode → MP3 decode → verify audio).
+
+### Manual playback verification
+
+Automated tests cover everything up to `sounddevice.OutputStream.write()`. Actual speaker output requires manual verification:
+
+```bash
+wilted --add https://example.com/article    # add a real article
+wilted --next                                # play it — verify audio from speakers
+```
+
+In the TUI (`wilted` with no args):
+1. Press `a` to add an article
+2. Press `enter` to play — verify audio
+3. Press `space` to pause/resume — verify it resumes at the right spot
+4. Press `]` to skip paragraph — verify next paragraph plays
+5. Press `s` to stop
+6. Press `q` to quit
+
+### What to avoid in future
 
 - Do not add in-process tests that import or execute real MLX/Metal work inside the pytest runner.
 - Do not add “native smoke” tests to the default validation path just to probe known-bad runtime behavior.
@@ -262,13 +297,8 @@ wilted keyword remove "kubernetes"
 ## Roadmap
 
 - Near term:
-  - CI/local validation parity for lint + guarded tests
-  - packaging/install pass on the supported Python + venv path
-  - manual real-device playback verification
-- Morning report (Phase 3):
-  - report assembly grouping classified items by playlist
-  - TUI ReportScreen with checkbox selection and playlist override
-  - selection history and per-feed source stats
+  - unified content model (articles + podcasts + playlists in one schema)
+  - playlist rules (assignment, override, decay)
 - Content preparation (Phase 4):
   - podcast audio download and transcription (RSS ingest + local fallback)
   - ad detection with sliding window + ffmpeg cutting
@@ -278,9 +308,17 @@ wilted keyword remove "kubernetes"
   - dynamic/static playlists with expiry and keep flag
   - TUI playlist navigation
   - email morning report, nightly wrapper script, `wilted doctor`
+- Radio mode (Phase 6):
+  - always-on continuous playback that fills airtime from queue, feeds, and discovered content
+  - priority interrupts for breaking/important stories, then resume where you left off
+  - regular feed scanning (every ~15 min) with importance detection
+  - auto-fill when queue is empty — prefer subscribed feeds, allow broader discovery
+  - time-of-day awareness — morning news, midday light, evening education/entertainment
 - ~~Pre-generated audio for instant playback~~ (done: background MP3 caching + hybrid playback)
 - ~~RSS feed management~~ (done: feed CRUD, RSS polling, dedup, conditional GET)
 - ~~LLM classification~~ (done: playlist assignment, relevance scoring, summarization)
+- ~~Morning report~~ (done: report assembly, TUI ReportScreen, selection history, source stats, `wilted report` + `wilted feed stats`)
+- ~~E2e test coverage + playback verification~~ (done: 461 fast + 3 slow tests, manual speaker verification)
 
 ## Dependencies
 

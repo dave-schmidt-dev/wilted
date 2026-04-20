@@ -153,14 +153,15 @@ def _fetch_article_text(url: str) -> tuple[str | None, str | None]:
         if not html:
             return None, None
 
-        result = trafilatura.bare_extraction(html, include_comments=False, include_tables=False)
-        if not result or not result.get("text"):
+        doc = trafilatura.bare_extraction(html, include_comments=False, include_tables=False)
+        doc_text = getattr(doc, "text", None) if doc else None
+        if not doc_text:
             return None, None
 
         from wilted.text import clean_text
 
-        text = clean_text(result["text"])
-        title = result.get("title")
+        text = clean_text(doc_text)
+        title = getattr(doc, "title", None)
         return text, title
 
     except Exception as e:

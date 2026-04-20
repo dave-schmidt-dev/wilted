@@ -86,13 +86,15 @@ def _resolve_from_url(
     if not html:
         raise ValueError("Could not fetch article text (paywall?). Copy the text, then run: wilted --add")
 
-    # Use bare_extraction to get text + title in one pass (no double HTTP fetch)
-    result = trafilatura.bare_extraction(html, include_comments=False, include_tables=False)
-    if not result or not result.get("text"):
+    # Use bare_extraction to get text + title in one pass (no double HTTP fetch).
+    # trafilatura >=2.0 returns a Document object; older versions return a dict.
+    doc = trafilatura.bare_extraction(html, include_comments=False, include_tables=False)
+    doc_text = getattr(doc, "text", None) if doc else None
+    if not doc_text:
         raise ValueError("Could not extract article text (paywall?). Copy the text, then run: wilted --add")
 
-    text = clean_text(result["text"])
-    title = result.get("title")
+    text = clean_text(doc_text)
+    title = getattr(doc, "title", None)
 
     return ArticleResult(
         text=text,

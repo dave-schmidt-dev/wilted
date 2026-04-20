@@ -38,7 +38,7 @@ _SUBCMD_TO_FLAG = {
 }
 
 # Phase 2+ pipeline and management subcommands — stubbed until implemented.
-_STUB_SUBCMDS = frozenset({"report", "prepare", "playlist"})
+_STUB_SUBCMDS = frozenset({"prepare", "playlist"})
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:
@@ -411,8 +411,26 @@ def cmd_feed(argv: list[str]) -> None:
             print(str(e), file=sys.stderr)
             sys.exit(1)
 
+    elif action == "stats":
+        from wilted.report import get_feed_stats
+
+        stats = get_feed_stats()
+        if not stats:
+            print("No feed statistics available.")
+            return
+
+        print("Feed Stats (last 4 weeks):\n")
+        for i, stat in enumerate(stats, 1):
+            feed_title = stat.get("feed_title", "Unknown")
+            discovered = stat.get("items_discovered", 0)
+            selected = stat.get("items_selected", 0)
+            rate = stat.get("selection_rate")
+            rate_percent = f"{rate * 100:.1f}%" if rate is not None else "0.0%"
+            print(f"  #{i}  {feed_title}")
+            print(f"       Discovered: {discovered}  Selected: {selected}  Rate: {rate_percent}")
+
     else:
-        print(f"Unknown feed action: '{action}'. Use add, list, or remove.", file=sys.stderr)
+        print(f"Unknown feed action: '{action}'. Use add, list, remove, or stats.", file=sys.stderr)
         sys.exit(1)
 
 
@@ -509,6 +527,57 @@ def cmd_classify(argv: list[str]) -> None:
         sys.exit(1)
 
 
+def cmd_report(argv: list[str]) -> None:
+    """Generate the morning report from classified items."""
+    from wilted.report import get_report, run_report
+
+    try:
+        run_report()
+        report_data = get_report()
+
+        if report_data is None:
+            print("No report available. Run discovery and classification first.")
+            return
+
+        report = report_data["report"]
+        report_date = report["report_date"]
+        items_dict = report_data["items"]
+
+        print(f"Morning report for {report_date}:")
+
+        total_items = 0
+        for playlist, items in sorted(items_dict.items()):
+            item_count = len(items)
+            total_items += item_count
+            playlist_header = f"  {playlist} ({item_count} items):"
+            print(playlist_header)
+            for item in items:
+                score = item.get("relevance_score")
+                score_str = f"[{score:.2f}]" if score is not None else "[N/A]"
+                title = item.get("title", "Untitled")
+                summary = item.get("summary", "")
+                if len(title) > 60:
+                    title = title[:57] + "..."
+                if summary:
+                    summary_preview = summary[:40] + "..." if len(summary) > 40 else summary
+                    print(f"    {score_str} {title} — {summary_preview}")
+                else:
+                    print(f"    {score_str} {title}")
+
+        # Count unique feeds
+        feed_ids = set()
+        for playlist, items in items_dict.items():
+            for item in items:
+                if item.get("feed_id"):
+                    feed_ids.add(item["feed_id"])
+
+        print(f"Total: {total_items} items from {len(feed_ids)} feeds")
+
+    except Exception as e:
+        print(f"Report generation failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_benchmark(argv: list[str]) -> None:
     """Run LLM benchmarking for classification tasks."""
     if not argv:
@@ -575,6 +644,9 @@ def run_cli(argv=None):
             return
         if first == "classify":
             cmd_classify(argv[1:])
+            return
+        if first == "report":
+            cmd_report(argv[1:])
             return
         if first == "benchmark":
             cmd_benchmark(argv[1:])

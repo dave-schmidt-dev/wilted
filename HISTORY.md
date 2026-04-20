@@ -1,3 +1,33 @@
+## 2026-04-19 — Phase 3: Morning Report
+
+- **Phase 3 implementation plan** (`plans/phase3-implementation.md`): Wrote detailed handoff spec for morning report (Tasks 3.1-3.4). Covers API contracts, TUI ReportScreen UX, selection history, source stats, test requirements, quality gates, and explicit "What NOT to do" guardrails.
+- **Multi-agent tooling setup**: Configured Vibe, Cursor, Copilot CLI, and Gemini with shared instructions. Single canonical `~/.agent/AGENTS.md` (with YAML frontmatter for Cursor `.mdc` compat) symlinked to all six agents. Context7 MCP configured in Vibe, Cursor, and Copilot CLI. Project-level `AGENTS.md`, `.vibeignore`, `.cursorignore` created (all gitignored). Bash allowlists updated for `make validate`, `uv run`, `ruff` in Vibe and Cursor.
+- **v2 task tracking updated**: Marked all 16 Phase 1 tasks as done in `plans/wilted-v2-tasks.md` (were stale/pending). Updated `tasks.md` to point at Phase 3 as current work.
+- **Vibe Phase 3 implementation** (Mistral Vibe / Devstral-2): `report.py` (report assembly, selection history, source stats), `tui/screens/report.py` (ReportScreen), CLI wiring (`cmd_report`, `cmd_feed stats`), 20 unit tests, 3 e2e tests. 456 tests green, `make validate` passes.
+- **Code review** (Claude Opus 4.6): Found 4 critical, 6 important, 4 minor issues across ReportScreen and report.py.
+- **Bug fixes** (Claude Opus 4.6, parallel subagents): Fixed all critical and important issues:
+  - C1: `_rebuild_table()` duplicated DataTable columns on every toggle (called `add_columns` after `clear()` which preserves columns)
+  - C2: `get_report()` filtered items by `discovered_at` date instead of matching `run_report()`'s `status='classified'` criteria
+  - C3: `_get_item_at_cursor()` didn't guard against playlist header rows — cursor actions affected wrong items
+  - C4: `_save_selections()` always wrote `playlist_override` because `_original_playlist` was declared but never populated
+  - I1: Deleted dead `src/wilted/tui.py` (1370-line monolithic duplicate of the decomposed `tui/` package)
+  - I2: `_rebuild_table()` didn't preserve cursor position after toggle/cycle
+  - I3: `_local_date_str()` used UTC instead of local timezone for report dates
+  - I4: `test_accept_promotes_selected_items` mocked DB instead of using real SQLite per project convention
+  - I6: `_check_unread_report_worker` called `run_report()` on every TUI launch instead of only when no report exists for today
+- Total: 461 fast tests + 3 slow tests. `make validate` green.
+
+## 2026-04-19 — E2e tests, test gap closure, trafilatura 2.0 fix, dependency audit
+
+- **Subprocess e2e test suite** (`tests/test_e2e.py`): 19 tests that run `wilted` as a real subprocess with isolated `WILTED_PROJECT_ROOT`. Covers: CLI basics (version, list, voices, doctor, clear, remove), text processing (file and stdin), feed lifecycle (add/list/remove/duplicate), keyword lifecycle (add/list/remove), article lifecycle (add/list/remove/clear via local HTTP server), and discovery pipeline (no feeds, local RSS polling, dedup verification). Each test gets a fresh temp directory and SQLite database.
+- **Real TTS + cache slow tests** (`tests/test_slow.py`): 3 tests requiring the Kokoro model and Apple Silicon. Verifies real audio generation returns non-empty float32, speed parameter affects output length, and full pipeline (TTS → MP3 → read back) with manifest validation. Run via `make test-slow`, excluded from `make validate`.
+- **TUI real-DB tests**: 3 tests in `test_tui.py` that launch the TUI against a real (isolated) SQLite database without mocking `load_queue`. Verifies empty-state display, article rendering from DB, and clean quit.
+- **ffmpeg round-trip test**: Direct subprocess ffmpeg encode/decode in `test_cache.py`. Verifies PCM → MP3 → PCM preserves audio energy and approximate length.
+- **Trafilatura 2.0 compatibility fix**: `bare_extraction()` now returns a `Document` object instead of a dict. Fixed `ingest.py` and `discover.py` to use `getattr()` instead of `.get()`. Updated unit test mocks to use `SimpleNamespace` matching the new API. Bug was invisible to unit tests (mocked) but caught immediately by the e2e suite.
+- **Dependency audit**: Added `tqdm` and `rich>=13.0` to core dependencies (were relied on but only present as transitive deps). Added `[llm]` optional extra for `mlx-vlm` and `llama-cpp-python`. Simplified README install instructions.
+- **`make test-slow` target**: Runs slow tests in the mlx-audio venv with real model and hardware. `make validate` now uses `-m "not slow"` to exclude them.
+- Total: 433 fast tests + 3 slow tests. `make validate` green.
+
 ## 2026-04-17 — Phase 2: Discovery + Classification pipeline
 
 - **Feed management** (`src/wilted/feeds.py`): Full CRUD for RSS/Atom feed subscriptions. `wilted feed add/list/remove` CLI commands. Supports article and podcast feed types with optional default playlist assignment.

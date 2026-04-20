@@ -9,27 +9,26 @@
 - [x] TUI playback controls: pause/resume, skip/rewind paragraph, transcript pane, voice/speed controls
 - [x] Regression coverage for CLI, engine, ingest, cache, TUI, and configuration guardrails
 - [x] Product direction clarified: Wilted is intended to become the primary personal audio surface for news, entertainment, and learning content
-- [ ] Manual audio-device playback verification is still missing for the true speaker output path
+- [x] Subprocess e2e test suite (19 tests), real-DB TUI tests, ffmpeg round-trip, slow TTS tests
+- [x] Manual audio-device playback verified (2026-04-19): TTS engine, audio pipeline, sounddevice output all confirmed working
 
 ## Now
 
+- [ ] **Phase 4: Content Preparation** — podcast download, transcription, ad detection, article TTS for pipeline items
+
+## Done (previously "Now")
+
+- [x] **Phase 3: Morning Report** — report assembly, TUI ReportScreen, selection history, source stats, CLI `wilted report` + `wilted feed stats`. Implemented by Vibe/Devstral-2, reviewed and bug-fixed by Claude Opus 4.6. 461 tests green.
+
 - [x] **Define a repeatable validation target**: `make validate` runs lint plus the guarded fast test suite via `uv run`
-- [ ] **Run a packaging/install pass**: verify the current install flow on the supported Python/venv path and document any non-editable-install caveats cleanly
-- [ ] **Manual playback check**: verify actual speaker output, pause/resume, stop, and status updates on a machine with a working audio device
-- [ ] **Define a unified content model**: decide how articles, podcast episodes, playlists, and daily reports are represented in persistent storage before feed work begins
-- [ ] **Define playlist rules**: specify how `News`, `Entertainment`, and `Learning` are assigned, overridden, and decayed over time
+- [x] **Dependency audit and install fix**: added missing deps (tqdm, rich), created `[llm]` optional extra, simplified install docs
+- [x] **Manual playback check**: verified speaker output on 2026-04-19 — TTS generation, sounddevice playback, paragraph streaming all working
+- [x] **Define a unified content model**: answered by v2 design spec (`plans/wilted-v2-design.md` §2). Schema implemented in `db.py`.
+- [x] **Define playlist rules**: answered by v2 design spec (§7). Dynamic playlists (Work/Fun/Education) with 7-day expiry, static playlists with position ordering, keep flag on items.
 
 ## Next
 
-- [ ] **RSS/article feed Phase 1 — data model**: add `data/feeds.json` plus feed metadata (`id`, title, feed URL, site URL, last checked, etag/last-modified, enabled, default playlist`)
-- [ ] **RSS/article feed Phase 2 — fetch/sync**: poll feeds, dedupe entries by canonical URL/GUID, convert new entries into normal listenable items, and tag them into playlists
-- [ ] **RSS/article feed Phase 3 — UX**: CLI/TUI flows for add/list/remove/refresh feeds and review newly imported entries before queueing or playlist promotion
-- [ ] **Podcast ingest Phase 1**: import existing podcast subscriptions through private feeds or exported subscriptions
-- [ ] **Podcast ingest Phase 2**: store podcast episodes in the same listenable item pipeline as articles instead of a parallel subsystem
-- [ ] **Ad stripping strategy**: decide whether ad removal happens in Wilted, in a feeder/importer layer, or not at all unless there is a clean and reliable path
-- [ ] **Morning report Phase 1**: generate a daily summary of what arrived since yesterday, grouped by playlist, with direct jump targets to start playback
-- [ ] **Morning report Phase 2**: rank items inside the report so the most important or interesting entries surface first
-- [ ] **Playback observability**: add lightweight file logging under `/tmp/wilted.log` with `RotatingFileHandler` and a `--debug` path, per project conventions
+- [ ] **Phase 5: Playlists + Polish** — dynamic/static playlists, TUI navigation, email report, nightly wrapper
 - [ ] **Release hygiene**: align `README.md`, `HISTORY.md`, and task tracking after each meaningful change so roadmap drift does not recur
 
 ## Later
@@ -39,10 +38,28 @@
 - [ ] **Unified private feed**: merge saved articles, feeds, and podcast episodes into one listening system once ingest is stable
 - [ ] **Cross-device briefing/export**: evaluate whether morning reports should remain local-only or optionally export/share to another surface
 
+## Radio Mode (concept)
+
+Always-on personal radio station that plays continuously throughout the day.
+
+**Core behavior:**
+- Continuous playback — fills airtime from queue, feeds, and discovered content so it never goes silent
+- Priority interrupts — breaking/viral/important stories preempt current playback like a news bulletin, then resume where it left off
+- Regular scans — poll feeds every ~15 minutes (tunable down to ~5 min depending on resource usage) for new content
+- Auto-fill — when the queue runs dry, pull from discovered content to keep the stream going; prefer subscribed feeds, allow some broader discovery
+- Time-of-day awareness — morning = news-heavy briefing, midday = lighter content, evening = education/entertainment
+
+**Open design questions:**
+- Interrupt threshold: what makes something interrupt-worthy? Relevance score, keywords, source reputation, LLM judgment, or a combination?
+- Fill ranking: how to order auto-fill content when no explicit queue exists — freshness, relevance, source diversity?
+- Resource budget: background scanning + TTS pre-generation needs to stay within reasonable CPU/memory/Metal GPU limits
+- UI: how does the TUI represent radio mode vs. manual queue mode? Toggle? Separate screen?
+
 ## Notes
 
 - Backlog items from the April 7 code-quality pass are complete and no longer tracked here: shared ingest helper, shared WAV export, dead-code cleanup, redundant import cleanup, expanded Ruff rules, and queue/state type validation.
-- The main open risk is now actual audio-device playback verification in the TUI/CLI path, not safe-path configuration inside the codebase.
+- Audio playback verified on 2026-04-19 — TTS, sounddevice, and speaker output all confirmed working.
 - Feed and podcast work should reuse a single listenable-item pipeline instead of creating parallel article and podcast subsystems.
 - Playlisting and the morning report are now first-class roadmap items, not afterthoughts on top of a flat queue.
+- Radio mode is the long-term vision — the feature that makes Wilted a personal audio experience rather than an article reader.
 - Future tests should validate only the guarded paths we rely on. Native crash-probe tests do not belong in routine project validation.

@@ -1,5 +1,6 @@
 """Tests for wilted.cache — audio caching with MP3 storage and manifest tracking."""
 
+import shutil
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -61,6 +62,55 @@ class TestSaveLoadAudio:
             path = save_audio(1, 0, audio_np, 24000)
             assert path.name == "para_000.mp3"
             mock_write.assert_called_once_with(path, audio_np, 24000)
+
+    @pytest.mark.skipif(
+        not shutil.which("ffmpeg"),
+        reason="ffmpeg required for real MP3 encode/decode",
+    )
+    def test_real_ffmpeg_round_trip(self, tmp_path):
+        """Encode a sine wave to MP3 via ffmpeg subprocess, decode back."""
+        import subprocess
+
+        sample_rate = 24000
+        duration = 0.5
+        t = np.linspace(0, duration, int(sample_rate * duration), dtype=np.float32)
+        tone = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        pcm = (np.clip(tone, -1.0, 1.0) * 32767).astype(np.int16)
+
+        mp3_path = tmp_path / "roundtrip.mp3"
+        # Encode: raw PCM → MP3
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "s16le",
+                "-ar",
+                str(sample_rate),
+                "-ac",
+                "1",
+                "-i",
+                "pipe:0",
+                "-b:a",
+                "128k",
+                str(mp3_path),
+            ],
+            input=pcm.tobytes(),
+            capture_output=True,
+            check=True,
+        )
+        assert mp3_path.exists()
+        assert mp3_path.stat().st_size > 100
+
+        # Decode: MP3 → raw PCM
+        result = subprocess.run(
+            ["ffmpeg", "-i", str(mp3_path), "-f", "s16le", "-ar", str(sample_rate), "-ac", "1", "pipe:1"],
+            capture_output=True,
+            check=True,
+        )
+        decoded = np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32) / 32767
+        assert abs(len(decoded) - len(tone)) < sample_rate * 0.1
+        assert np.abs(decoded).mean() > 0.05
 
     def test_save_creates_directory(self):
         from wilted.cache import save_audio

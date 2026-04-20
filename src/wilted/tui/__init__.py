@@ -15,6 +15,7 @@ Backward-compat imports:
 
 from __future__ import annotations
 
+import logging
 import re
 import time
 from typing import ClassVar
@@ -39,9 +40,12 @@ from wilted.state import clear_article_state, get_article_state, set_article_sta
 from wilted.text import split_paragraphs
 from wilted.tui.screens.add_article import AddArticleScreen
 from wilted.tui.screens.confirm import ConfirmScreen
+from wilted.tui.screens.report import ReportScreen
 from wilted.tui.screens.text_preview import TextPreviewScreen
 from wilted.tui.screens.voice_settings import VoiceSettingsScreen
 from wilted.tui.widgets.playback_bar import PlaybackBar
+
+logger = logging.getLogger(__name__)
 
 # Status message priorities — higher priority messages hold for a minimum
 # duration and won't be overwritten by lower-priority routine updates.
@@ -226,6 +230,36 @@ class WiltedApp(App):
         # Pipeline items with audio_file set already have generated audio; skip.
         if any(not e.get("audio_file") for e in self._queue):
             self._preload_model()
+        # Check for unread report on launch
+        self._check_unread_report()
+
+    # -- Report check -------------------------------------------------------
+
+    def _check_unread_report(self) -> None:
+        """Check if there's an unread report and show ReportScreen if so."""
+        self._check_unread_report_worker()
+
+    @work(thread=True, exclusive=True, group="report-check")
+    def _check_unread_report_worker(self) -> None:
+        """Check for unread report in a worker thread."""
+        from wilted.db import worker_db
+        from wilted.report import get_latest_unread_report, run_report
+
+        try:
+            with worker_db():
+                from datetime import date
+
+                from wilted.db import Report
+
+                today = date.today().isoformat()
+                # Generate report only if one doesn't exist for today
+                if not Report.select().where(Report.report_date == today).exists():
+                    run_report()
+                report = get_latest_unread_report()
+                if report:
+                    self.call_from_thread(self.push_screen, ReportScreen(report))
+        except Exception as e:
+            logger.warning("Failed to check for unread report: %s", e)
 
     # -- Queue display ------------------------------------------------------
 
@@ -935,6 +969,7 @@ __all__ = [
     "WiltedApp",
     "AddArticleScreen",
     "ConfirmScreen",
+    "ReportScreen",
     "TextPreviewScreen",
     "VoiceSettingsScreen",
     "PlaybackBar",

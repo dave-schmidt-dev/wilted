@@ -15,10 +15,13 @@ dependencies = [
     "sounddevice",
     "peewee>=3.17",
     "feedparser>=6.0",
+    "tqdm",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
 tui = ["textual>=8.0"]
+llm = ["mlx-vlm", "llama-cpp-python"]
 test = ["pytest", "pytest-asyncio"]
 dev = ["ruff"]
 
@@ -30,6 +33,9 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: tests requiring real TTS model or audio hardware (deselect with -m 'not slow')",
+]
 
 [tool.ruff]
 line-length = 120
