@@ -10,7 +10,7 @@ from textual import work
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, Label
+from textual.widgets import Button, DataTable, Footer, Label
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -97,14 +97,10 @@ class ReportScreen(ModalScreen[bool]):
             yield Label("Morning Report", id="report-title")
             with VerticalScroll(id="report-scroll"):
                 yield DataTable(id="report-table")
-            yield Label(
-                "[bold]enter[/bold] toggle  [bold]a[/bold] all  "
-                "[bold]n[/bold] none  [bold]s[/bold] accept  [bold]q[/bold] dismiss",
-                id="report-help",
-            )
             with Horizontal(id="report-actions"):
                 yield Button("Accept Selected", id="accept-button", variant="primary")
                 yield Button("Dismiss", id="dismiss-button")
+        yield Footer()
 
     def on_mount(self) -> None:
         table = self.query_one("#report-table", DataTable)

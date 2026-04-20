@@ -257,9 +257,14 @@ class WiltedApp(App):
                     run_report()
                 report = get_latest_unread_report()
                 if report:
-                    self.call_from_thread(self.push_screen, ReportScreen(report))
+                    self.call_from_thread(self.push_screen, ReportScreen(report), self._on_report_dismissed)
         except Exception as e:
             logger.warning("Failed to check for unread report: %s", e)
+
+    def _on_report_dismissed(self, accepted: bool) -> None:
+        """Called when ReportScreen is dismissed — refresh queue if items were accepted."""
+        if accepted:
+            self._refresh_queue_display()
 
     # -- Queue display ------------------------------------------------------
 

@@ -117,6 +117,72 @@ class TestGetArticleText:
         assert get_article_text(entry) is None
 
 
+class TestLoadQueueSelectedStatus:
+    def test_selected_article_appears_in_queue(self):
+        """load_queue() includes articles with status='selected'."""
+        from wilted.db import Item
+
+        entry = add_article("Article text.", title="Selected Article")
+        Item.update(status="selected").where(Item.id == entry["id"]).execute()
+        queue = load_queue()
+        assert len(queue) == 1
+        assert queue[0]["title"] == "Selected Article"
+
+    def test_selected_podcast_excluded_from_queue(self):
+        """load_queue() excludes podcast episodes with status='selected' (needs Phase 4)."""
+        from datetime import UTC, datetime
+
+        from wilted.db import Feed, Item
+
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        feed = Feed.create(
+            title="Test Podcast",
+            feed_url="https://example.com/podcast.xml",
+            feed_type="podcast",
+            enabled=True,
+            created_at=now,
+            updated_at=now,
+        )
+        Item.create(
+            feed=feed,
+            guid="pod-ep-1",
+            title="Podcast Episode",
+            discovered_at=now,
+            item_type="podcast_episode",
+            status="selected",
+            status_changed_at=now,
+        )
+        assert load_queue() == []
+
+    def test_ready_podcast_included_in_queue(self):
+        """load_queue() includes podcast episodes with status='ready' (Phase 4 prepared them)."""
+        from datetime import UTC, datetime
+
+        from wilted.db import Feed, Item
+
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        feed = Feed.create(
+            title="Test Podcast",
+            feed_url="https://example.com/podcast2.xml",
+            feed_type="podcast",
+            enabled=True,
+            created_at=now,
+            updated_at=now,
+        )
+        Item.create(
+            feed=feed,
+            guid="pod-ep-ready",
+            title="Ready Podcast Episode",
+            discovered_at=now,
+            item_type="podcast_episode",
+            status="ready",
+            status_changed_at=now,
+        )
+        queue = load_queue()
+        assert len(queue) == 1
+        assert queue[0]["title"] == "Ready Podcast Episode"
+
+
 class TestMarkCompleted:
     def test_removes_from_queue(self):
         entry = add_article("Content.", title="Test")

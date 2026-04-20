@@ -96,12 +96,28 @@ def _ensure_db() -> None:
 
 
 def load_queue() -> list[dict]:
-    """Return all 'ready' articles as a list of legacy-format dicts."""
+    """Return all playable items as legacy-format dicts.
+
+    Includes:
+    - 'ready' items of any type (Phase 4 has prepared them for playback)
+    - 'selected' articles (transcript file already exists; playable immediately)
+
+    Selected podcast episodes are excluded -- they need Phase 4 (download +
+    transcription) before they can be played.
+    """
     from wilted.db import Item
 
     _ensure_db()
-    items = list(Item.select().where(Item.status == "ready").order_by(Item.discovered_at))
+    items = list(
+        Item.select()
+        .where(
+            (Item.status == "ready")
+            | ((Item.status == "selected") & (Item.item_type == "article"))
+        )
+        .order_by(Item.discovered_at)
+    )
     return [_item_to_dict(it) for it in items]
+
 
 
 def add_article(

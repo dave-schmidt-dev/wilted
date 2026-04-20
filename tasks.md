@@ -18,7 +18,7 @@
 
 ## Done (previously "Now")
 
-- [x] **Phase 3: Morning Report** — report assembly, TUI ReportScreen, selection history, source stats, CLI `wilted report` + `wilted feed stats`. Implemented by Vibe/Devstral-2, reviewed and bug-fixed by Claude Opus 4.6. 461 tests green.
+- [x] **Phase 3: Morning Report** — report assembly, TUI ReportScreen, selection history, source stats, CLI `wilted report` + `wilted feed stats`. Implemented by Vibe/Devstral-2, reviewed and bug-fixed by Claude Opus 4.6. Additional TUI bugs fixed 2026-04-20 (see HISTORY.md). 467 tests green.
 
 - [x] **Define a repeatable validation target**: `make validate` runs lint plus the guarded fast test suite via `uv run`
 - [x] **Dependency audit and install fix**: added missing deps (tqdm, rich), created `[llm]` optional extra, simplified install docs

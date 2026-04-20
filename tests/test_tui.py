@@ -981,4 +981,55 @@ async def test_report_screen_not_shown_when_no_report():
             assert not any(isinstance(screen, ReportScreen) for screen in app.screen_stack)
 
 
+@pytest.mark.asyncio
+@patch("wilted.tui.load_queue", return_value=[])
+async def test_on_report_dismissed_refreshes_queue(mock_load):
+    """_on_report_dismissed(True) calls _refresh_queue_display."""
+    app = WiltedApp()
+    async with app.run_test():
+        with patch.object(app, "_refresh_queue_display") as mock_refresh:
+            app._on_report_dismissed(True)
+            mock_refresh.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("wilted.tui.load_queue", return_value=[])
+async def test_on_report_dismissed_no_refresh_when_not_accepted(mock_load):
+    """_on_report_dismissed(False) does not refresh the queue."""
+    app = WiltedApp()
+    async with app.run_test():
+        with patch.object(app, "_refresh_queue_display") as mock_refresh:
+            app._on_report_dismissed(False)
+            mock_refresh.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_report_screen_has_footer():
+    """ReportScreen includes a Footer widget to display key bindings."""
+    from textual.widgets import Footer
+
+    from wilted.tui import WiltedApp
+    from wilted.tui.screens.report import ReportScreen
+
+    app = WiltedApp()
+    report_data = {
+        "report": {
+            "report_date": "2026-04-20",
+            "generated_at": "2026-04-20T06:00:00Z",
+            "item_count": 1,
+            "metadata": "{}",
+        },
+        "items": {
+            "Work": [
+                {"id": 1, "title": "Article", "source_name": "Src", "relevance_score": 0.8, "summary": ""},
+            ]
+        },
+    }
+    async with app.run_test() as pilot:
+        app.push_screen(ReportScreen(report_data))
+        await pilot.pause()
+        footers = app.screen.query(Footer)
+        assert len(footers) == 1, "ReportScreen should have exactly one Footer"
+
+
 # ---------------------------------------------------------------------------

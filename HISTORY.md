@@ -1,3 +1,12 @@
+## 2026-04-20 — Phase 3 TUI bug fixes: ReportScreen footer, report→queue pipeline
+
+- **ReportScreen footer missing**: Modal screen covered the main app's `Footer`. Replaced the inline `#report-help` label with a proper `yield Footer()` outside the dialog so key bindings are visible in the standard footer bar (`src/wilted/tui/screens/report.py`).
+- **Accepted stories not appearing in queue** (two-part bug):
+  1. `push_screen` was called without a dismiss callback — queue never refreshed after accepting. Added `_on_report_dismissed(accepted)` to `WiltedApp` and wired it as the callback (`src/wilted/tui/__init__.py`).
+  2. `load_queue()` only fetched `status='ready'` items. Morning-report-accepted items are set to `status='selected'` by `_save_selections`. Fixed `load_queue()` to also include `selected` articles (not podcast episodes, which need Phase 4 audio download + transcription first) (`src/wilted/queue.py`).
+- **Root cause of no transcript**: Confirmed via DB inspection that "selected" podcast episodes have `item_type='podcast_episode'` and no `transcript_file`. Article-type selected items do have transcripts from the discovery stage. The `item_type` guard in `load_queue()` prevents podcast episodes from appearing until Phase 4 prepares them.
+- **6 new tests** added to `tests/test_queue.py` and `tests/test_tui.py` covering: selected article inclusion, selected podcast exclusion, ready podcast inclusion, dismiss callback behavior, and ReportScreen Footer presence. 467 tests green.
+
 ## 2026-04-19 — Post-commit fixes: ReportScreen UX, mlx_vlm compat, podcast discovery
 
 - **ReportScreen UX overhaul**: Removed Score column (internal LLM metric, not user-facing) and empty first column. Widened dialog to 90%. Replaced `[x]`/`[ ]` checkboxes with `✓` marks. Added `priority=True` to key bindings to override parent app bindings (`s`=stop, `a`=add, `n`=next, `q`=quit were intercepting). Hooked `on_data_table_row_selected` for enter/space toggle since DataTable consumes those keys before screen bindings fire. Removed confusing Playlist cycling shortcut. Added in-dialog help line since the modal covers the app's Footer.
