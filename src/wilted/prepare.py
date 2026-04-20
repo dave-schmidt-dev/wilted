@@ -145,7 +145,9 @@ def _get_feed_xml(item) -> str | None:
         import urllib.request
 
         req = urllib.request.Request(item.feed.feed_url)
-        req.add_header("User-Agent", "Wilted/0.3")
+        import wilted
+
+        req.add_header("User-Agent", f"Wilted/{wilted.__version__}")
         with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
             return resp.read().decode("utf-8", errors="replace")
     except Exception:

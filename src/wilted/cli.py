@@ -880,11 +880,6 @@ def run_cli(argv=None):
         if first == "doctor":
             cmd_doctor(argv[1:])
             return
-        if first == "migrate":
-            from wilted.migrate import cmd_migrate
-
-            cmd_migrate(argv[1:])
-            return
         if first == "feed":
             cmd_feed(argv[1:])
             return

@@ -6,11 +6,6 @@ calls made from WiltedApp methods — Python looks up free variables in the
 containing module's __dict__ at call time, not at definition time.
 
 Screens (AddArticleScreen, ConfirmScreen, etc.) are in tui/screens/.
-PlaybackBar widget is in tui/widgets/playback_bar.py.
-
-Backward-compat imports:
-    from wilted.tui import WiltedApp
-    from wilted.tui import AddArticleScreen, ConfirmScreen, ...
 """
 
 from __future__ import annotations
@@ -49,7 +44,6 @@ from wilted.tui.screens.confirm import ConfirmScreen
 from wilted.tui.screens.report import ReportScreen
 from wilted.tui.screens.text_preview import TextPreviewScreen
 from wilted.tui.screens.voice_settings import VoiceSettingsScreen
-from wilted.tui.widgets.playback_bar import PlaybackBar
 
 logger = logging.getLogger(__name__)
 
@@ -1014,14 +1008,3 @@ class WiltedApp(App):
         if isinstance(data, dict) and "id" in data:
             return data
         return None
-
-
-__all__ = [
-    "WiltedApp",
-    "AddArticleScreen",
-    "ConfirmScreen",
-    "ReportScreen",
-    "TextPreviewScreen",
-    "VoiceSettingsScreen",
-    "PlaybackBar",
-]

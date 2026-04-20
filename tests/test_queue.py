@@ -10,17 +10,11 @@ from wilted.queue import (
     load_queue,
     mark_completed,
     remove_article,
-    save_queue,
 )
 
 
 class TestLoadSaveQueue:
     def test_empty_when_no_items(self):
-        assert load_queue() == []
-
-    def test_save_queue_is_noop(self):
-        """save_queue() is a backward-compat shim; it does not persist data."""
-        save_queue([{"id": 1, "title": "Test", "file": "test.txt"}])
         assert load_queue() == []
 
     def test_load_returns_only_ready_items(self):

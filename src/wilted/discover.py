@@ -28,13 +28,14 @@ from time import struct_time
 
 import feedparser
 
+import wilted
 from wilted.db import Feed, Item, _db
 from wilted.feeds import _ensure_db, update_feed
 
 logger = logging.getLogger(__name__)
 
 # User-Agent for feed requests
-_USER_AGENT = "Wilted/0.3 (+https://github.com/zerodel/wilted)"
+_USER_AGENT = f"Wilted/{wilted.__version__} (+https://github.com/dave-schmidt-dev/wilted)"
 
 
 def _now_utc() -> str:

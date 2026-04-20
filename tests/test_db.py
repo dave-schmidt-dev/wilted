@@ -1,8 +1,7 @@
-"""Tests for Phase 1 database layer — db.py, migrate.py, retention, timestamps."""
+"""Tests for Phase 1 database layer — db.py, retention, timestamps."""
 
 from __future__ import annotations
 
-import json
 import threading
 from datetime import UTC, datetime, timedelta
 
@@ -123,99 +122,6 @@ class TestThreadSafety:
         assert errors == [], f"Thread errors: {errors}"
         count = Item.select().count()
         assert count == 5
-
-
-# ---------------------------------------------------------------------------
-# migrate.py — field mapping and idempotency
-# ---------------------------------------------------------------------------
-
-
-class TestMigration:
-    def _write_queue(self, entries: list[dict]):
-        queue_file = wilted.DATA_DIR / "queue.json"
-        queue_file.write_text(json.dumps(entries))
-        return queue_file
-
-    def test_basic_field_mapping(self):
-        from wilted.migrate import run_migration
-
-        self._write_queue(
-            [
-                {
-                    "title": "My Article",
-                    "source_url": "https://apple.news/abc",
-                    "canonical_url": "https://example.com/article",
-                    "words": 500,
-                    "file": "1_my-article.txt",
-                    "added": "2026-04-01T10:00:00",
-                }
-            ]
-        )
-        # Create the transcript file so the migration can resolve it
-        (wilted.ARTICLES_DIR / "1_my-article.txt").write_text("body")
-
-        counts = run_migration(wilted.DATA_DIR / "queue.json", wilted.ARTICLES_DIR)
-        assert counts["imported"] == 1
-        assert counts["errors"] == 0
-
-        item = Item.select().first()
-        assert item.title == "My Article"
-        assert item.source_url == "https://apple.news/abc"
-        assert item.canonical_url == "https://example.com/article"
-        assert item.word_count == 500
-        assert item.status == "ready"
-        assert item.item_type == "article"
-        # Timestamp should be UTC (ends with Z)
-        assert item.discovered_at.endswith("Z")
-
-    def test_idempotency_by_canonical_url(self):
-        from wilted.migrate import run_migration
-
-        entry = {"title": "Dupe", "canonical_url": "https://example.com/dupe", "words": 10}
-        self._write_queue([entry])
-
-        run_migration(wilted.DATA_DIR / "queue.json", wilted.ARTICLES_DIR)
-        counts2 = run_migration(wilted.DATA_DIR / "queue.json", wilted.ARTICLES_DIR)
-
-        assert counts2["imported"] == 0
-        assert counts2["skipped"] == 1
-        assert Item.select().count() == 1
-
-    def test_idempotency_by_title_and_source(self):
-        from wilted.migrate import run_migration
-
-        entry = {"title": "No URL Article", "source_url": "https://src.com/", "words": 5}
-        self._write_queue([entry])
-
-        run_migration(wilted.DATA_DIR / "queue.json", wilted.ARTICLES_DIR)
-        counts2 = run_migration(wilted.DATA_DIR / "queue.json", wilted.ARTICLES_DIR)
-
-        assert counts2["skipped"] == 1
-        assert Item.select().count() == 1
-
-    def test_missing_queue_file(self):
-        from wilted.migrate import run_migration
-
-        counts = run_migration(wilted.DATA_DIR / "nonexistent.json", wilted.ARTICLES_DIR)
-        assert counts == {"imported": 0, "skipped": 0, "errors": 0}
-
-    def test_converts_naive_timestamp_to_utc(self):
-        from wilted.migrate import run_migration
-
-        self._write_queue([{"title": "Old Item", "added": "2026-01-15T08:30:00"}])
-        run_migration(wilted.DATA_DIR / "queue.json", wilted.ARTICLES_DIR)
-
-        item = Item.select().first()
-        assert item.discovered_at.endswith("Z"), f"Expected UTC: {item.discovered_at}"
-
-    def test_already_utc_timestamp_unchanged(self):
-        from wilted.migrate import run_migration
-
-        self._write_queue([{"title": "UTC Item", "added": "2026-01-15T08:30:00Z"}])
-        run_migration(wilted.DATA_DIR / "queue.json", wilted.ARTICLES_DIR)
-
-        item = Item.select().first()
-        assert item.discovered_at == "2026-01-15T08:30:00Z"
 
 
 # ---------------------------------------------------------------------------

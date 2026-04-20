@@ -327,14 +327,3 @@ def run_retention(retention_days: int = 30) -> int:
             logger.info("Retention cleanup: #%d %s (%d days old)", item.id, item.title, age_days)
 
     return cleaned
-
-
-# ---------------------------------------------------------------------------
-# Legacy save_queue — kept for backward compat but now a no-op
-# (state lives in SQLite; the old JSON file is superseded)
-# ---------------------------------------------------------------------------
-
-
-def save_queue(queue: list[dict]) -> None:
-    """No-op: queue is now persisted via SQLite.  Kept for import compatibility."""
-    logger.debug("save_queue() called — no-op in SQLite-backed mode")

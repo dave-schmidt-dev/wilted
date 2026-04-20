@@ -296,7 +296,9 @@ def fetch_transcript_from_rss(feed_xml: str, guid: str) -> list[TranscriptSegmen
 
         # Fetch the transcript
         try:
-            req = Request(url, headers={"User-Agent": "Wilted/0.3"})
+            import wilted
+
+            req = Request(url, headers={"User-Agent": f"Wilted/{wilted.__version__}"})
             with urlopen(req, timeout=30) as resp:  # noqa: S310
                 body = resp.read().decode("utf-8", errors="replace")
         except Exception:

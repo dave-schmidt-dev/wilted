@@ -19,7 +19,6 @@ from wilted.queue import (
     load_queue,
     mark_completed,
     remove_article,
-    save_queue,
 )
 
 pytestmark = pytest.mark.usefixtures("stub_audio_modules")
@@ -136,13 +135,6 @@ class TestConcurrentQueueAccess:
         assert len(fresh_queue) == 2
         assert fresh_queue[0]["title"] == "First"
         assert fresh_queue[1]["title"] == "Second"
-
-    def test_save_queue_is_noop(self):
-        """save_queue() is a backward-compat shim; SQLite is the source of truth."""
-        save_queue([{"id": 1, "title": "Old", "file": "old.txt"}])
-        save_queue([{"id": 2, "title": "New", "file": "new.txt"}])
-        # Both calls are no-ops; queue is empty because no add_article() was called
-        assert load_queue() == []
 
     def test_concurrent_adds_from_threads(self):
         """Two threads adding articles concurrently should not corrupt the file.
