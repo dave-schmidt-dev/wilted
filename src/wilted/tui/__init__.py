@@ -41,7 +41,7 @@ from wilted.queue import (
     clear_queue,
     get_article_text,
     mark_completed,
-    remove_article,
+    remove_article_by_id,
 )
 from wilted.text import split_paragraphs
 from wilted.tui.screens.add_article import AddArticleScreen
@@ -169,6 +169,7 @@ class WiltedApp(App):
         Binding("left_square_bracket", "prev_paragraph", "<<"),
         Binding("n", "next_article", "Next"),
         Binding("a", "add_article", "Add"),
+        Binding("m", "mark_read", "Read"),
         Binding("d", "delete_selected", "Del"),
         Binding("t", "text_preview", "Text"),
         Binding("v", "voice_settings", "Voice", show=False),
@@ -228,6 +229,7 @@ class WiltedApp(App):
     def on_mount(self) -> None:
         self._refresh_playlists()
         self._update_speed_display()
+        self.query_one("#playlist-tree", Tree).focus()
         # 1-second timer for live playback countdown
         self.set_interval(1.0, self._update_timer)
         # Preload TTS model only if there are items that need TTS synthesis.
@@ -318,14 +320,13 @@ class WiltedApp(App):
 
     def _update_speed_display(self) -> None:
         spd = f"{self._speed:.1f}x"
-        parts = [
-            f"Speed: {spd}",
-            "[@click=app.speed_down][-][@/]",
-            "[@click=app.speed_up][+][@/]",
-            "│",
-            "[@click=app.voice_settings]voice[@/]",
-        ]
-        self.query_one("#speed-display", Static).update("  ".join(parts))
+        self.query_one("#speed-display", Static).update(
+            f"Speed: {spd}  "
+            "[@click=app.speed_down]◀[/]  "
+            "[@click=app.speed_up]▶[/]  "
+            "│  "
+            "[@click=app.voice_settings]voice[/]"
+        )
 
     def _update_now_playing(
         self,
@@ -826,6 +827,23 @@ class WiltedApp(App):
 
         self.push_screen(AddArticleScreen(), on_dismiss)
 
+    def action_mark_read(self) -> None:
+        """Mark the selected item as read (completed). Keeps it in the DB for metrics."""
+        entry = self._get_selected_entry()
+        if not entry:
+            self._set_status("Nothing to mark", _STATUS_MEDIUM)
+            return
+        if self._current_entry and entry["id"] == self._current_entry["id"]:
+            self.action_stop()
+            self._current_entry = None
+        mark_completed(entry)
+        clear_resume_position(entry["id"])
+        title = entry.get("title", "Untitled")
+        if len(title) > 40:
+            title = title[:37] + "..."
+        self._set_status(f"Marked as read: {title}", _STATUS_MEDIUM)
+        self._refresh_playlists()
+
     def action_delete_selected(self) -> None:
         """Delete the selected article with confirmation."""
         entry = self._get_selected_entry()
@@ -843,24 +861,16 @@ class WiltedApp(App):
                 if self._current_entry and entry["id"] == self._current_entry["id"]:
                     self.action_stop()
                     self._current_entry = None
-                # Find the item's index in the All list for remove_article
-                item_idx = next(
-                    (i for i, e in enumerate(self._all_items) if e["id"] == entry["id"]),
-                    None,
-                )
-                if item_idx is not None:
-                    try:
-                        remove_article(item_idx)
-                        clear_resume_position(entry["id"])
-                        self._set_status(f"Deleted: {entry.get('title', 'Untitled')}", _STATUS_MEDIUM)
-                    except IndexError:
-                        self._set_status("Delete failed: invalid index", _STATUS_HIGH)
-                else:
-                    self._set_status("Delete failed: item not found", _STATUS_HIGH)
+                try:
+                    remove_article_by_id(entry["id"])
+                    clear_resume_position(entry["id"])
+                    self._set_status(f"Deleted: {entry.get('title', 'Untitled')}", _STATUS_MEDIUM)
+                except Exception as e:
+                    self._set_status(f"Delete failed: {e}", _STATUS_HIGH)
                 self._refresh_playlists()
 
         self.push_screen(
-            ConfirmScreen("Delete Article?", f'Delete "{title}"?'),
+            ConfirmScreen("Permanently Delete?", f'Permanently delete "{title}"? Use [m] to mark as read instead.'),
             on_dismiss,
         )
 

@@ -14,7 +14,13 @@
 
 ## Now
 
-(nothing — see Next)
+- [ ] **Execute simplify-and-tighten plan** (`plans/simplify-and-tighten.md`): 6 phases — commit polish, fix config, remove dead code, DRY consolidation, test suite 660→~400, docs update. Task breakdown in `plans/simplify-and-tighten-tasks.md`.
+
+## Blocked (manual verification, after plan execution)
+
+- [ ] **TTS playback verification**: confirm `p` key triggers TTS generation and plays audio through speakers with a real article
+- [ ] **Resume position verification**: pause mid-article, quit, relaunch, confirm resume works
+- [ ] **Email report with real content**: run `wilted ingest` with feeds, then `wilted report --email` to verify formatted email
 
 ## Done (previously "Now")
 
@@ -31,6 +37,7 @@
 
 ## Next
 
+- [ ] **TUI tightening**: currently-playing indicator in tree, estimated listen time instead of word count, resume progress markers, panel proportions
 - [ ] **Release hygiene**: align `README.md`, `HISTORY.md`, and task tracking after each meaningful change so roadmap drift does not recur
 
 ## Later

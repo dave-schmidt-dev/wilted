@@ -1,3 +1,23 @@
+## 2026-04-20 — Simplify & tighten plan (session 3)
+
+- **Plan created**: `plans/simplify-and-tighten.md` with task breakdown in `plans/simplify-and-tighten-tasks.md`.
+- **Scope**: Remove dead code (4 files + PlaybackBar widget + migrate.py + save_queue no-op), consolidate DRY violations (`_now_utc` x9, `_ensure_db` x7), fix project config (Makefile, pyproject.toml), reduce test suite from 660 to ~400 tests by removing mock-wiring theater.
+- **Research**: 3 parallel audit agents (test suite, dead code, config). Skeptical contrarian review of draft plan.
+- **Key decisions**: (1) Consolidate `_now_utc`/`_ensure_db` — 9 copies is real debt. (2) Delete `migrate.py` — one-time migration long complete. (3) Canonicalize on `uv` for dev deps — drop pip optional-dependencies for test/dev. (4) Drop `_item_to_dict` consolidation — overlap is only 50%, consolidation would hurt readability. (5) Coverage gate: 2% max drop per module protects against over-cutting tests.
+- **Review findings incorporated**: Keep empty `__init__.py` files (find_packages needs them). Keep engine threading tests (load-bearing — history of threading bugs). Keep CLI unit tests (not redundant with E2E — test different code paths). Added `save_queue()` no-op deletion and User-Agent bug fixes (reviewer found these). Added `migrate.py` deletion.
+- **Not started yet**: Plan is read-only, awaiting next session for execution.
+
+## 2026-04-20 — Phase 5 post-merge polish (uncommitted)
+
+- **Delete-by-ID fix**: TUI delete was using index-based `remove_article(idx)` which mapped incorrectly between the Tree view and the ready-items query. Replaced with `remove_article_by_id(item_id)` in `queue.py`. Wrong item was being deleted; now fixed.
+- **Mark as read** (`m` key): Soft-delete via `mark_completed()` — sets `status='completed'`, item disappears from playlists but stays in DB for metrics. Files retained (cleaned up after 30 days by `run_retention`, which only removes files, not the item record).
+- **Delete confirmation clarity**: Confirmation dialog now says "Permanently delete" and hints about `[m]` as an alternative.
+- **Clickable speed controls**: Fixed `@click` markup syntax (closing tag is `[/]` not `[@/]`). Speed display now shows clickable `◀` `▶` and `voice` link.
+- **Tree focus on mount**: Added `tree.focus()` so arrow keys navigate the tree instead of scrolling the container.
+- **Retention docstring**: Clarified that `run_retention` only removes files, not the item record itself.
+- **Key binding cleanup**: `p` is the dedicated play key (not Enter/Space which are handled by Tree natively). Footer trimmed to essential bindings only.
+- **DB cleaned**: Removed all stale test data from the production database.
+
 ## 2026-04-20 — Phase 5: Playlists + Polish
 
 - **Playlist module** (`src/wilted/playlists.py`): Hybrid dynamic/static playlist system. Dynamic playlists (All, Work, Fun, Education) are computed queries over the items table using `COALESCE(playlist_override, playlist_assigned)`. Static playlists use `playlist_items` join table with position ordering. "All" is the superset (no expiry, date-sorted oldest first); Work/Fun/Education have 7-day configurable expiry. Full CRUD: `ensure_default_playlists`, `list_playlists`, `create_playlist`, `delete_playlist`, `add_to_playlist`, `remove_from_playlist`, `get_playlist_items`, `run_expiry`. 54 tests.

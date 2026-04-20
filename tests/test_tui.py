@@ -146,7 +146,7 @@ async def test_quit_key(mock_items, mock_list, mock_ensure):
 @patch("wilted.tui.ensure_default_playlists")
 @patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
 @patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
-@patch("wilted.tui.remove_article")
+@patch("wilted.tui.remove_article_by_id")
 @patch("wilted.tui.clear_resume_position")
 async def test_delete_key(mock_clear_state, mock_remove, mock_items, mock_list, mock_ensure):
     """Pressing d opens ConfirmScreen, confirming calls remove_article."""
@@ -168,14 +168,14 @@ async def test_delete_key(mock_clear_state, mock_remove, mock_items, mock_list, 
         # Confirm the deletion
         confirm.action_confirm()
         await pilot.pause()
-        mock_remove.assert_called_once_with(0)
+        mock_remove.assert_called_once_with(1)
 
 
 @pytest.mark.asyncio
 @patch("wilted.tui.ensure_default_playlists")
 @patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
 @patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
-@patch("wilted.tui.remove_article")
+@patch("wilted.tui.remove_article_by_id")
 @patch("wilted.tui.clear_resume_position")
 async def test_delete_confirm_button_click(mock_clear_state, mock_remove, mock_items, mock_list, mock_ensure):
     """Clicking Confirm should delete the selected article."""
@@ -194,7 +194,7 @@ async def test_delete_confirm_button_click(mock_clear_state, mock_remove, mock_i
         assert isinstance(app.screen, ConfirmScreen)
         await pilot.click("#confirm-accept", offset=(2, 1))
         await pilot.pause()
-        mock_remove.assert_called_once_with(0)
+        mock_remove.assert_called_once_with(1)
 
 
 @pytest.mark.asyncio

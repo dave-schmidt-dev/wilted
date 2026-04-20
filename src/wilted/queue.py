@@ -110,14 +110,10 @@ def load_queue() -> list[dict]:
     _ensure_db()
     items = list(
         Item.select()
-        .where(
-            (Item.status == "ready")
-            | ((Item.status == "selected") & (Item.item_type == "article"))
-        )
+        .where((Item.status == "ready") | ((Item.status == "selected") & (Item.item_type == "article")))
         .order_by(Item.discovered_at)
     )
     return [_item_to_dict(it) for it in items]
-
 
 
 def add_article(
@@ -179,6 +175,33 @@ def remove_article(index: int) -> dict:
         raise IndexError(f"Invalid index {index}. Queue has {len(items)} article(s).")
 
     item = items[index]
+    entry = _item_to_dict(item)
+
+    if item.transcript_file:
+        tf = Path(item.transcript_file)
+        if tf.exists():
+            tf.unlink()
+
+    from wilted.cache import clear_cache
+
+    clear_cache(item.id)
+    item.delete_instance()
+    return entry
+
+
+def remove_article_by_id(item_id: int) -> dict:
+    """Remove an article by its database ID. Returns removed entry dict.
+
+    Raises ValueError if item not found.
+    """
+    from wilted.db import Item
+
+    _ensure_db()
+    try:
+        item = Item.get_by_id(item_id)
+    except Item.DoesNotExist:
+        raise ValueError(f"Item #{item_id} not found")
+
     entry = _item_to_dict(item)
 
     if item.transcript_file:
@@ -265,9 +288,13 @@ def mark_completed(entry: dict) -> None:
 
 
 def run_retention(retention_days: int = 30) -> int:
-    """Delete files for completed items older than retention_days.
+    """Remove audio/transcript files for completed items older than retention_days.
 
-    Items with ``keep=True`` are exempt.  Returns number of items cleaned up.
+    The item record itself is preserved permanently for metrics and analysis.
+    Only the on-disk files (transcript_file, audio_file) are deleted and the
+    paths nulled.  Items with ``keep=True`` are exempt.
+
+    Returns number of items whose files were cleaned up.
     """
     from wilted.db import Item
 
