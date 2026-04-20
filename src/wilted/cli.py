@@ -38,7 +38,7 @@ _SUBCMD_TO_FLAG = {
 }
 
 # Phase 2+ pipeline and management subcommands — stubbed until implemented.
-_STUB_SUBCMDS = frozenset({"prepare", "playlist"})
+_STUB_SUBCMDS = frozenset({"playlist"})
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:
@@ -605,6 +605,33 @@ def cmd_benchmark(argv: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase 4 — Content preparation
+# ---------------------------------------------------------------------------
+
+
+def cmd_prepare(argv: list[str]) -> None:
+    """Run the content preparation stage for selected items."""
+    parser = argparse.ArgumentParser(prog="wilted prepare")
+    parser.add_argument("--no-llm", action="store_true", help="Skip LLM-based ad/promo detection")
+    parser.add_argument("--model", default="mlx-community/gemma-4-e4b-it-4bit", help="LLM model for ad detection")
+    parser.add_argument("--backend", default="mlx", choices=["mlx", "gguf"], help="LLM backend type")
+    args = parser.parse_args(argv)
+
+    from wilted.prepare import run_prepare
+
+    try:
+        stats = run_prepare(
+            use_llm=not args.no_llm,
+            llm_model=args.model,
+            llm_backend_type=args.backend,
+        )
+        print(f"Prepare complete: {stats['prepared']} prepared, {stats['errors']} errors")
+    except Exception as e:
+        print(f"Prepare failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Argument parsing and dispatch
 # ---------------------------------------------------------------------------
 
@@ -650,6 +677,9 @@ def run_cli(argv=None):
             return
         if first == "benchmark":
             cmd_benchmark(argv[1:])
+            return
+        if first == "prepare":
+            cmd_prepare(argv[1:])
             return
         if first in _STUB_SUBCMDS:
             _run_stub(argv)

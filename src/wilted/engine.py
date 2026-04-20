@@ -1,9 +1,11 @@
 """Audio engine — TTS generation and playback with pause/resume/stop controls."""
 
 import os
+import subprocess
 import sys
 import threading
 from collections.abc import Callable, Iterable
+from pathlib import Path
 
 import numpy as np
 
@@ -296,6 +298,122 @@ class AudioEngine:
             all_audio = [np.array(seg.audio, dtype=np.float32) for seg in _normalize_segments(result)]
 
         return np.concatenate(all_audio) if all_audio else np.array([], dtype=np.float32)
+
+    def play_file(
+        self,
+        path: str | Path,
+        transcript_segments: list | None = None,
+        start_segment: int = 0,
+        on_progress: Callable | None = None,
+    ) -> None:
+        """Play an audio file from disk with pause/resume/stop support.
+
+        Uses ffmpeg to decode any format to raw PCM float32 at SAMPLE_RATE.
+        Tracks position against transcript_segments for TUI sync.
+
+        Args:
+            path: Path to audio file (MP3, AAC, M4A, WAV, FLAC, OGG).
+            transcript_segments: Optional list of segment objects for position
+                tracking. Each must have start_s, end_s, text attributes.
+            start_segment: Segment index to start playback from (for resume).
+            on_progress: Callback(segment_idx, total_segments, current_text)
+                called when playback crosses into a new transcript segment.
+
+        Raises:
+            FileNotFoundError: If the audio file does not exist.
+            RuntimeError: If ffmpeg decoding fails.
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Audio file not found: {path}")
+
+        # Decode audio to raw PCM float32 mono at SAMPLE_RATE via ffmpeg
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-i",
+                str(path),
+                "-f",
+                "f32le",
+                "-ar",
+                str(self.sample_rate),
+                "-ac",
+                "1",
+                "pipe:1",
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg decode failed (exit {result.returncode}): {result.stderr.decode(errors='replace')[:500]}"
+            )
+
+        audio_np = np.frombuffer(result.stdout, dtype=np.float32)
+
+        self._stop_event.clear()
+        self._playing = True
+        self._paused = False
+
+        try:
+            if transcript_segments is not None:
+                total_segments = len(transcript_segments)
+                for seg_idx in range(start_segment, total_segments):
+                    if self._stop_event.is_set():
+                        break
+
+                    seg = transcript_segments[seg_idx]
+                    start_sample = int(seg.start_s * self.sample_rate)
+                    end_sample = int(seg.end_s * self.sample_rate)
+                    segment_audio = audio_np[start_sample:end_sample]
+
+                    self.current_segment_idx = seg_idx
+                    self._play_audio(segment_audio)
+
+                    if on_progress is not None:
+                        on_progress(seg_idx, total_segments, seg.text)
+            else:
+                self._play_audio(audio_np)
+        finally:
+            self._playing = False
+
+    def get_file_duration(self, path: str | Path) -> float:
+        """Return the duration in seconds of an audio file using ffprobe.
+
+        Args:
+            path: Path to audio file.
+
+        Raises:
+            FileNotFoundError: If the audio file does not exist.
+            RuntimeError: If ffprobe fails or returns invalid output.
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Audio file not found: {path}")
+
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffprobe failed (exit {result.returncode}): {result.stderr.decode(errors='replace')[:500]}"
+            )
+
+        try:
+            return float(result.stdout.decode().strip())
+        except ValueError as e:
+            raise RuntimeError(f"ffprobe returned invalid duration: {result.stdout.decode().strip()!r}") from e
 
     def pause(self):
         """Pause playback. The write loop blocks until resume()."""

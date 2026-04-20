@@ -1,3 +1,13 @@
+## 2026-04-20 — Phase 4: Content Preparation pipeline
+
+- **Podcast audio download** (`src/wilted/download.py`): HTTP streaming download for podcast enclosures with resume support via Range headers, Content-Type validation, Content-Disposition filename extraction, and 64KB chunked streaming. `DownloadError` exception. 14 tests.
+- **Three-tier transcript ingestion** (`src/wilted/transcribe.py`): Cascading transcript sourcing — (1) RSS `podcast:transcript` tag with VTT/SRT/JSON parsers, (2) publisher website extraction via trafilatura with word-count heuristic to filter show notes, (3) local Parakeet 1.1B model fallback. `TranscriptSegment` dataclass (`start_s`, `end_s`, `text`). Save/load/text-join utilities. 36 tests.
+- **Ad detection + cutting** (`src/wilted/ads.py`): LLM-based sliding window analysis with configurable chunk size and overlap, majority-vote overlap resolution, confidence threshold filtering, and adjacent segment merging. ffmpeg lossless audio cutting with concat demuxer. Article promotional content removal via LLM paragraph classification. 29 tests.
+- **AudioEngine.play_file()** (`src/wilted/engine.py`): Multi-format podcast audio playback using ffmpeg as universal decoder to raw PCM float32 at 24kHz. Segment-level transcript tracking for TUI sync. `get_file_duration()` via ffprobe. Inherits existing pause/resume/stop controls. 7 new tests (50 total engine tests).
+- **Prepare orchestrator** (`src/wilted/prepare.py`): `wilted prepare` CLI command. Processes selected items through the content preparation pipeline — podcasts (download → transcribe → ad detect → cut) and articles (promo removal → TTS generation). LLM loaded once for all items, unloaded after. Sequential model lifecycle. Status transitions: `selected → processing → ready` (or `error`). 16 tests.
+- **CLI wiring**: `wilted prepare` command with `--no-llm`, `--model`, `--backend` flags. Removed `prepare` from stub subcommands.
+- Total: 573 tests (up from 467), `make validate` green.
+
 ## 2026-04-20 — Phase 3 TUI bug fixes: ReportScreen footer, report→queue pipeline
 
 - **ReportScreen footer missing**: Modal screen covered the main app's `Footer`. Replaced the inline `#report-help` label with a proper `yield Footer()` outside the dialog so key bindings are visible in the standard footer bar (`src/wilted/tui/screens/report.py`).

@@ -704,3 +704,217 @@ class TestExportToWav:
             )
         # Model should not have been called — cancel checked before generation
         engine._model.generate.assert_not_called()
+
+
+def _make_transcript_segment(start_s: float, end_s: float, text: str):
+    """Create a duck-typed transcript segment with start_s, end_s, text."""
+    return types.SimpleNamespace(start_s=start_s, end_s=end_s, text=text)
+
+
+def _make_ffmpeg_pcm(n_samples: int = 4800) -> bytes:
+    """Generate raw PCM float32 bytes as ffmpeg would produce."""
+    audio = np.sin(np.linspace(0, 2 * np.pi * 440, n_samples)).astype(np.float32)
+    return audio.tobytes()
+
+
+@pytest.fixture
+def mock_subprocess_ffmpeg():
+    """Patch subprocess.run to simulate ffmpeg decoding."""
+    pcm_data = _make_ffmpeg_pcm(n_samples=24000)  # 1 second at 24kHz
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = pcm_data
+    mock_result.stderr = b""
+    with patch("wilted.engine.subprocess.run", return_value=mock_result) as mock_run:
+        yield mock_run
+
+
+class TestPlayFile:
+    def test_play_file_decodes_and_plays(self, engine, mock_stream, mock_subprocess_ffmpeg, tmp_path):
+        """play_file decodes via ffmpeg and calls _play_audio with float32 array."""
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()  # File must exist for the path check
+
+        with patch.object(engine, "_play_audio") as mock_play:
+            engine.play_file(wav_file)
+
+        mock_subprocess_ffmpeg.assert_called_once()
+        cmd = mock_subprocess_ffmpeg.call_args[0][0]
+        assert cmd[0] == "ffmpeg"
+        assert "-f" in cmd
+        assert "f32le" in cmd
+
+        mock_play.assert_called_once()
+        played_audio = mock_play.call_args[0][0]
+        assert played_audio.dtype == np.float32
+        assert len(played_audio) == 24000
+
+    def test_play_file_with_segments(self, engine, mock_stream, mock_subprocess_ffmpeg, tmp_path):
+        """on_progress is called for each transcript segment."""
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        segments = [
+            _make_transcript_segment(0.0, 0.3, "First segment."),
+            _make_transcript_segment(0.3, 0.7, "Second segment."),
+            _make_transcript_segment(0.7, 1.0, "Third segment."),
+        ]
+        progress_calls = []
+
+        def on_progress(seg_idx, total, text):
+            progress_calls.append((seg_idx, total, text))
+
+        with patch.object(engine, "_play_audio"):
+            engine.play_file(wav_file, transcript_segments=segments, on_progress=on_progress)
+
+        assert len(progress_calls) == 3
+        assert progress_calls[0] == (0, 3, "First segment.")
+        assert progress_calls[1] == (1, 3, "Second segment.")
+        assert progress_calls[2] == (2, 3, "Third segment.")
+
+    def test_play_file_resume_from_segment(self, engine, mock_stream, mock_subprocess_ffmpeg, tmp_path):
+        """start_segment=2 skips earlier segments."""
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        segments = [
+            _make_transcript_segment(0.0, 0.25, "Seg 0"),
+            _make_transcript_segment(0.25, 0.5, "Seg 1"),
+            _make_transcript_segment(0.5, 0.75, "Seg 2"),
+            _make_transcript_segment(0.75, 1.0, "Seg 3"),
+        ]
+        progress_calls = []
+
+        def on_progress(seg_idx, total, text):
+            progress_calls.append((seg_idx, total, text))
+
+        with patch.object(engine, "_play_audio") as mock_play:
+            engine.play_file(wav_file, transcript_segments=segments, start_segment=2, on_progress=on_progress)
+
+        # Only segments 2 and 3 should have been played
+        assert len(progress_calls) == 2
+        assert progress_calls[0] == (2, 4, "Seg 2")
+        assert progress_calls[1] == (3, 4, "Seg 3")
+        assert mock_play.call_count == 2
+
+        # Verify segment_idx was tracked
+        assert engine.current_segment_idx == 3
+
+    def test_play_file_missing_file(self, engine):
+        """FileNotFoundError raised for nonexistent file."""
+        with pytest.raises(FileNotFoundError, match="Audio file not found"):
+            engine.play_file("/nonexistent/path/audio.mp3")
+
+    def test_play_file_stop_during_playback(self, engine, mock_stream, mock_subprocess_ffmpeg, tmp_path):
+        """Setting stop_event during segment playback causes early exit."""
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        segments = [
+            _make_transcript_segment(0.0, 0.25, "Seg 0"),
+            _make_transcript_segment(0.25, 0.5, "Seg 1"),
+            _make_transcript_segment(0.5, 0.75, "Seg 2"),
+            _make_transcript_segment(0.75, 1.0, "Seg 3"),
+        ]
+        progress_calls = []
+
+        def on_progress(seg_idx, total, text):
+            progress_calls.append(seg_idx)
+            # Stop after first segment completes
+            engine._stop_event.set()
+
+        with patch.object(engine, "_play_audio"):
+            engine.play_file(wav_file, transcript_segments=segments, on_progress=on_progress)
+
+        # Only the first segment should have completed
+        assert len(progress_calls) == 1
+        assert progress_calls[0] == 0
+        # _playing should be False after exit
+        assert not engine.is_playing
+
+    def test_play_file_sets_playing_flag(self, engine, mock_stream, mock_subprocess_ffmpeg, tmp_path):
+        """play_file sets _playing=True during playback and False after."""
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        playing_during = []
+
+        def capture_playing(audio_np):
+            playing_during.append(engine.is_playing)
+            # Don't actually play (mock_stream handles it), just stop
+            engine._stop_event.set()
+
+        with patch.object(engine, "_play_audio", side_effect=capture_playing):
+            engine.play_file(wav_file)
+
+        assert playing_during[0] is True
+        assert not engine.is_playing
+
+    def test_play_file_ffmpeg_failure(self, engine, tmp_path):
+        """RuntimeError raised when ffmpeg returns nonzero exit code."""
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = b""
+        mock_result.stderr = b"Invalid data found when processing input"
+
+        with patch("wilted.engine.subprocess.run", return_value=mock_result):
+            with pytest.raises(RuntimeError, match="ffmpeg decode failed"):
+                engine.play_file(wav_file)
+
+
+class TestGetFileDuration:
+    def test_get_file_duration(self, engine, tmp_path):
+        """get_file_duration returns correct float duration from ffprobe."""
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"42.567890\n"
+        mock_result.stderr = b""
+
+        with patch("wilted.engine.subprocess.run", return_value=mock_result) as mock_run:
+            duration = engine.get_file_duration(wav_file)
+
+        assert duration == pytest.approx(42.56789)
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "ffprobe"
+        assert "-show_entries" in cmd
+        assert "format=duration" in cmd
+
+    def test_get_file_duration_missing_file(self, engine):
+        """FileNotFoundError raised for nonexistent file."""
+        with pytest.raises(FileNotFoundError, match="Audio file not found"):
+            engine.get_file_duration("/nonexistent/path/audio.mp3")
+
+    def test_get_file_duration_ffprobe_failure(self, engine, tmp_path):
+        """RuntimeError raised when ffprobe returns nonzero exit code."""
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = b""
+        mock_result.stderr = b"No such file"
+
+        with patch("wilted.engine.subprocess.run", return_value=mock_result):
+            with pytest.raises(RuntimeError, match="ffprobe failed"):
+                engine.get_file_duration(wav_file)
+
+    def test_get_file_duration_invalid_output(self, engine, tmp_path):
+        """RuntimeError raised when ffprobe returns non-numeric output."""
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"N/A\n"
+        mock_result.stderr = b""
+
+        with patch("wilted.engine.subprocess.run", return_value=mock_result):
+            with pytest.raises(RuntimeError, match="ffprobe returned invalid duration"):
+                engine.get_file_duration(wav_file)

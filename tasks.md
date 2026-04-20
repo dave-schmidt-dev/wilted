@@ -14,10 +14,11 @@
 
 ## Now
 
-- [ ] **Phase 4: Content Preparation** — podcast download, transcription, ad detection, article TTS for pipeline items
+- [ ] **Phase 5: Playlists + Polish** — dynamic/static playlists, TUI navigation, email report, nightly wrapper
 
 ## Done (previously "Now")
 
+- [x] **Phase 4: Content Preparation** — podcast download (`download.py`), three-tier transcript ingestion (`transcribe.py` — RSS VTT/SRT/JSON, web page, local Parakeet), LLM ad detection with sliding window + ffmpeg cutting (`ads.py`), article promo removal, article TTS generation, `AudioEngine.play_file()` for podcast playback, `prepare.py` orchestrator with `wilted prepare` CLI. 573 tests green.
 - [x] **Phase 3: Morning Report** — report assembly, TUI ReportScreen, selection history, source stats, CLI `wilted report` + `wilted feed stats`. Implemented by Vibe/Devstral-2, reviewed and bug-fixed by Claude Opus 4.6. Additional TUI bugs fixed 2026-04-20 (see HISTORY.md). 467 tests green.
 
 - [x] **Define a repeatable validation target**: `make validate` runs lint plus the guarded fast test suite via `uv run`
@@ -28,7 +29,7 @@
 
 ## Next
 
-- [ ] **Phase 5: Playlists + Polish** — dynamic/static playlists, TUI navigation, email report, nightly wrapper
+- [ ] **Release hygiene**: align `README.md`, `HISTORY.md`, and task tracking after each meaningful change so roadmap drift does not recur
 - [ ] **Release hygiene**: align `README.md`, `HISTORY.md`, and task tracking after each meaningful change so roadmap drift does not recur
 
 ## Later

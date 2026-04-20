@@ -485,8 +485,6 @@ class TestPipelineSubcommands:
     def test_stub_subcmds_still_exit(self):
         """Remaining stub subcommands still exit 1."""
         with pytest.raises(SystemExit):
-            run_cli(["prepare"])
-        with pytest.raises(SystemExit):
             run_cli(["playlist"])
 
 
