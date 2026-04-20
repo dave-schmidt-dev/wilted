@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 import shutil
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 
 import wilted.ads as _ads_mod
@@ -27,6 +26,7 @@ import wilted.engine as _engine_mod
 import wilted.llm as _llm_mod
 from wilted import DATA_DIR
 from wilted.db import Item
+from wilted.db import now_utc as _now_utc
 from wilted.download import DownloadError, download_podcast
 from wilted.transcribe import (
     TranscriptionError,
@@ -36,10 +36,6 @@ from wilted.transcribe import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _now_utc() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _set_status(item, status: str, error_message: str | None = None) -> None:

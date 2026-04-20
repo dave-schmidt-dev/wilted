@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from textual import work
@@ -16,13 +15,10 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 from wilted.db import Item, Report, SelectionHistory, worker_db
+from wilted.db import now_utc as _now_utc
 from wilted.report import update_source_stats
 
 logger = logging.getLogger(__name__)
-
-
-def _now_utc() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class ReportScreen(ModalScreen[bool]):

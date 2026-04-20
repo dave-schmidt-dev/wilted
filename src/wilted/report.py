@@ -15,22 +15,13 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 
 from wilted.db import Feed, Item, Report, SelectionHistory, SourceStat
+from wilted.db import ensure_db as _ensure_db
+from wilted.db import now_utc as _now_utc
 
 logger = logging.getLogger(__name__)
-
-
-def _now_utc() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _ensure_db() -> None:
-    from wilted import DATA_DIR
-    from wilted.db import connect_db
-
-    connect_db(DATA_DIR / "wilted.db")
 
 
 def _local_date_str() -> str:

@@ -596,7 +596,7 @@ class TestCmdReportEmail:
     def test_cmd_report_email_sends(self, capsys):
         """wilted report --email pipes to email-alert."""
         from wilted.db import Item
-        from wilted.playlists import _now_utc
+        from wilted.db import now_utc as _now_utc
 
         Item.create(
             title="Email Test",
@@ -624,7 +624,7 @@ class TestCmdReportEmail:
     def test_cmd_report_email_disabled(self, capsys):
         """wilted report --email prints config message when disabled."""
         from wilted.db import Item
-        from wilted.playlists import _now_utc
+        from wilted.db import now_utc as _now_utc
 
         Item.create(
             title="Test",

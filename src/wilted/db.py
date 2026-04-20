@@ -15,6 +15,7 @@ Usage:
 import logging
 import threading
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from peewee import (
@@ -30,6 +31,19 @@ from peewee import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def now_utc() -> str:
+    """Return current UTC time as ISO 8601 string (e.g. '2026-04-20T12:00:00Z')."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def ensure_db() -> None:
+    """Connect to the database if not already connected. Safe to call multiple times."""
+    import wilted
+
+    connect_db(wilted.DATA_DIR / "wilted.db")
+
 
 # ---------------------------------------------------------------------------
 # Database instance — initialized by connect_db(); thread-local connections

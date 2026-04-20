@@ -17,17 +17,14 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import UTC, datetime
 
 from wilted.db import Item
+from wilted.db import ensure_db as _ensure_db
+from wilted.db import now_utc as _now_utc
 from wilted.llm import LLMBackend, create_backend, parse_json_response
 from wilted.preferences import get_keywords_for_prompt
 
 logger = logging.getLogger(__name__)
-
-
-def _now_utc() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # Default classification model
@@ -136,13 +133,6 @@ def _get_item_text(item: Item) -> str | None:
         return "\n".join(parts)
 
     return None
-
-
-def _ensure_db() -> None:
-    from wilted import DATA_DIR
-    from wilted.db import connect_db
-
-    connect_db(DATA_DIR / "wilted.db")
 
 
 def classify_item(backend: LLMBackend, item: Item, keywords_section: str) -> bool:

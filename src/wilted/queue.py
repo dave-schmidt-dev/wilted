@@ -18,16 +18,10 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+from wilted.db import ensure_db as _ensure_db
+from wilted.db import now_utc as _now_utc
+
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _now_utc() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def utc_to_local_date(ts: str) -> str:
@@ -80,14 +74,6 @@ def _item_to_dict(item) -> dict:
         "audio_file": item.audio_file,
         "status": item.status,
     }
-
-
-def _ensure_db() -> None:
-    """Ensure DB is connected (safe to call multiple times)."""
-    from wilted import DATA_DIR
-    from wilted.db import connect_db
-
-    connect_db(DATA_DIR / "wilted.db")
 
 
 # ---------------------------------------------------------------------------

@@ -30,16 +30,14 @@ import feedparser
 
 import wilted
 from wilted.db import Feed, Item, _db
-from wilted.feeds import _ensure_db, update_feed
+from wilted.db import ensure_db as _ensure_db
+from wilted.db import now_utc as _now_utc
+from wilted.feeds import update_feed
 
 logger = logging.getLogger(__name__)
 
 # User-Agent for feed requests
 _USER_AGENT = f"Wilted/{wilted.__version__} (+https://github.com/dave-schmidt-dev/wilted)"
-
-
-def _now_utc() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _struct_time_to_utc(st: struct_time | None) -> str | None:
