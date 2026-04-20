@@ -1,3 +1,23 @@
+## 2026-04-20 — Solidify & Simplify (session 4)
+
+- **Phase 1 — commit prior session polish**: Phase 5 TUI improvements committed (delete-by-ID fix, mark-as-read `m` key, clickable speed controls, tree focus on mount).
+- **Phase 2 — project config**: Fixed `make test` (`python -m pytest` → `pytest`). Canonicalized dev deps on `uv`: dropped `[project.optional-dependencies].test` and `.dev`, moved ruff into `[dependency-groups].dev`.
+- **Phase 3 — dead code removed** (389 lines deleted, 4 files):
+  - `tui/app.py` — re-export shim, nothing imported it
+  - `tui/screens/playback.py` — empty placeholder
+  - `tui/widgets/playback_bar.py` — superseded by inline `_update_playback_bar()` on `WiltedApp`
+  - `migrate.py` — one-time JSON→SQLite migration, long complete; `wilted migrate` CLI subcommand removed
+  - `save_queue()` no-op removed from `queue.py`
+  - **User-Agent bug fixed**: `discover.py`, `prepare.py`, `transcribe.py` had wrong version (0.3 vs 0.2.0) and wrong GitHub URL (`zerodel` → `dave-schmidt-dev`). Now use `wilted.__version__` and correct repo URL.
+- **Phase 4 — DRY consolidation**:
+  - `_now_utc()`: 9 identical copies → `now_utc()` in `db.py`. All modules import via `from wilted.db import now_utc as _now_utc`.
+  - `_ensure_db()`: 7 definition sites → `ensure_db()` in `db.py`. `discover.py` was cross-importing from `feeds.py` (now fixed too).
+- **Phase 5 — test suite** (652 → 604 tests, -48):
+  - Removed mock-wiring theater from `test_engine.py` (-17), `test_cache.py` (-11), `test_tui.py` (-4), and smaller trims to classify/ads/llm/feeds/discover.
+  - Coverage gate (≤2% drop per module) held throughout. Prevented more aggressive cuts — many "trivial" tests were actually covering real branches.
+  - Coverage baseline saved to `plans/coverage-baseline.txt` (80% overall).
+- **Phase 6 — docs**: README install instructions updated for `uv`; `[tui,test]` install command fixed (test removed from optional deps); key bindings table updated (`p` to play, `m` to mark read).
+
 ## 2026-04-20 — Simplify & tighten plan (session 3)
 
 - **Plan created**: `plans/simplify-and-tighten.md` with task breakdown in `plans/simplify-and-tighten-tasks.md`.

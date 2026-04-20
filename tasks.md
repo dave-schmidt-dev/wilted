@@ -14,16 +14,13 @@
 
 ## Now
 
-- [ ] **Execute simplify-and-tighten plan** (`plans/simplify-and-tighten.md`): 6 phases — commit polish, fix config, remove dead code, DRY consolidation, test suite 660→~400, docs update. Task breakdown in `plans/simplify-and-tighten-tasks.md`.
-
-## Blocked (manual verification, after plan execution)
-
 - [ ] **TTS playback verification**: confirm `p` key triggers TTS generation and plays audio through speakers with a real article
 - [ ] **Resume position verification**: pause mid-article, quit, relaunch, confirm resume works
 - [ ] **Email report with real content**: run `wilted ingest` with feeds, then `wilted report --email` to verify formatted email
 
 ## Done (previously "Now")
 
+- [x] **Solidify & Simplify** — dead code removed (tui/app.py, screens/playback.py, widgets/playback_bar.py, migrate.py, save_queue()), DRY consolidation (_now_utc x9 → db.now_utc(), _ensure_db x7 → db.ensure_db()), project config fixed (Makefile, pyproject.toml), test suite 660→604 (coverage gate held). See HISTORY.md 2026-04-20.
 - [x] **Phase 5: Playlists + Polish** — dynamic/static playlists (`playlists.py`), `wilted playlist` CLI (list/create/delete/add/remove), `ensure_default_playlists()` called on startup, email morning report (`wilted report --email`), nightly wrapper script (`scripts/wilted-nightly.sh`), launchd integration (`make install-launchd`). 660 tests green across unit/integration/e2e/TUI lanes.
 - [x] **Phase 4: Content Preparation** — podcast download (`download.py`), three-tier transcript ingestion (`transcribe.py` — RSS VTT/SRT/JSON, web page, local Parakeet), LLM ad detection with sliding window + ffmpeg cutting (`ads.py`), article promo removal, article TTS generation, `AudioEngine.play_file()` for podcast playback, `prepare.py` orchestrator with `wilted prepare` CLI. Current suite: 596 collected tests across unit/integration/e2e/TUI lanes, all green under `make validate`.
 - [x] **Phase 3: Morning Report** — report assembly, TUI ReportScreen, selection history, source stats, CLI `wilted report` + `wilted feed stats`. Implemented by Vibe/Devstral-2, reviewed and bug-fixed by Claude Opus 4.6. Additional TUI bugs fixed 2026-04-20 (see HISTORY.md). 467 tests green.

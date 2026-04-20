@@ -18,32 +18,33 @@ The product should feel like a private, local-first listening surface rather tha
 
 ## Install
 
-Requires Python 3.12 (Homebrew).
-
-```bash
-python3.12 -m venv ~/.venvs/mlx-audio
-```
-
-Then install the package and TUI dependencies:
+Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 cd ~/Documents/Projects/wilted
-~/.venvs/mlx-audio/bin/pip install -e ".[tui,test]"
+uv sync --extra tui
 ```
 
 For LLM-based classification (optional):
 
 ```bash
-~/.venvs/mlx-audio/bin/pip install -e ".[llm]"
+uv sync --extra tui --extra llm
 ```
 
 Add a shell alias (e.g. in `~/.zshrc`):
 
 ```bash
-alias wilted='~/.venvs/mlx-audio/bin/wilted'
+alias wilted='python3.12 -m wilted'   # or: uv run wilted
 ```
 
 First run downloads the Kokoro model from HuggingFace (~160MB, one-time).
+
+### Development
+
+```bash
+uv sync --extra tui --group dev   # install with dev/test deps
+make validate                      # lint + full test suite
+```
 
 ## Quick start
 
@@ -165,18 +166,19 @@ export NERD_FONTS=1
 
 | Key | Action |
 |-----|--------|
-| `space` | Play / Pause / Resume |
+| `p` | Play / Pause / Resume |
 | `s` | Stop playback |
-| `enter` | Play selected article |
+| `enter` / `space` | Expand/collapse tree node (Tree widget native) |
 | `]` / `right` | Skip to next paragraph |
 | `[` | Rewind to previous paragraph |
 | `+` / `=` | Speed up 0.1x |
 | `-` | Speed down 0.1x |
 | `n` | Next article |
+| `m` | Mark selected as read (stays in DB, removed from playlists) |
 | `v` | Voice / speed / language settings |
 | `a` | Add article (URL or clipboard, with fetch progress) |
 | `ctrl+p` | Add article and play immediately |
-| `d` | Delete selected (with confirmation) |
+| `d` | Delete selected permanently (with confirmation) |
 | `t` | Text preview of selected article |
 | `w` | Export selected article to WAV |
 | `c` | Clear all articles (with confirmation) |
