@@ -466,7 +466,9 @@ class WiltedApp(App):
 
         self._ensure_engine()
         engine = self._engine
-        with suppress_subprocess_output():
+        with suppress_subprocess_output(
+            on_wait=lambda: self.call_from_thread(self._set_status, "Pausing background generation...", _STATUS_MEDIUM)
+        ):
             engine.load_model()
 
         try:
@@ -544,7 +546,9 @@ class WiltedApp(App):
         self._ensure_engine()
         engine = self._engine
         # Ensure model is loaded (no-op if preload already finished)
-        with suppress_subprocess_output():
+        with suppress_subprocess_output(
+            on_wait=lambda: self.call_from_thread(self._set_status, "Waiting for audio pipeline...", _STATUS_MEDIUM)
+        ):
             engine.load_model()
 
         engine.voice = self._voice

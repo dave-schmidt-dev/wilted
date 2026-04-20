@@ -1,3 +1,45 @@
+## 2026-04-20 — Clipboard URL detection, Playwright TUI fixes (session 6)
+
+### Bug fix — clipboard URL stored as literal text
+- **Root cause**: When the URL field was left blank, `_resolve_from_clipboard` treated clipboard content as article text. If the clipboard contained a URL (bare or with shell prompt prefix like `❯`), the URL string itself was stored as the "article."
+- **Fix** (`ingest.py`): `_resolve_from_clipboard` now detects single-line clipboard text that is predominantly a URL (via `re.search` + 50% length heuristic) and redirects to `_resolve_from_url`. Handles prompt prefixes, non-breaking spaces, and other terminal artifacts.
+- **Tests**: `test_clipboard_url_redirects_to_url_fetch`, `test_clipboard_url_with_prompt_prefix_redirects`, `test_clipboard_sentence_with_url_treated_as_text`.
+
+### Bug fix — TUI frozen during article fetch
+- **Root cause**: `suppress_subprocess_output()` wrapped both `import trafilatura` and `trafilatura.fetch_url()`. Since it redirects process-wide fd 1/2 to `/dev/null`, Textual's renderer was blinded for the entire HTTP round-trip.
+- **Fix** (`ingest.py`, `fetch.py`): Moved `trafilatura.fetch_url()` outside the suppress block. Only the import (which can trigger spacy model downloads) is guarded.
+
+### Playwright browser fallback — TUI compatibility
+- **Root cause**: Browser fallback silently returned None in TUI because (a) `headless=False` opened a Chrome window that interfered with the terminal, and (b) the shell alias pointed to a separate venv (`~/.venvs/mlx-audio/`) that lacked playwright entirely.
+- **Fix** (`fetch.py`): Switched to `headless=True` with `channel="chrome"` (modern headless is undetectable by most bot checkers). Set explicit Chrome user-agent on the browser context. Added `logger.warning` with `exc_info=True` to both the `ImportError` and `Exception` paths (previously silent `return None`). Uses manual `start()`/`stop()` lifecycle for Playwright so `suppress_subprocess_output` is not needed around the browser fetch.
+
+### UX — Add Article dialog
+- Clarified label from `"URL (leave blank for clipboard):"` to `"URL (or leave blank to use article text from clipboard):"`.
+
+### Shell alias / install docs
+- **Root cause**: Shell alias pointed to `~/.venvs/mlx-audio/bin/wilted`, a separate venv without playwright.
+- **Fix**: Alias now uses `uv run --project ~/Documents/Projects/wilted wilted` so it always picks up the project's managed deps. Updated README.md install section to match.
+
+## 2026-04-20 — Bot-protection fetch, crash fixes, thread safety (session 5)
+
+### Article fetch — browser fallback
+- **Playwright integration** (`fetch.py`): `fetch_url_with_browser()` opens system Chrome (headed, 1×1px window) via `playwright>=1.58.0`. Waits up to 10 s for Cloudflare JS challenge to resolve, then waits for `networkidle` and tries to dismiss common cookie consent dialogs (OneTrust, Quantcast, Funding Choices) before returning HTML. Uses `channel="chrome"` so no Playwright browser download is needed.
+- **Consent wall detection** (`ingest.py`): `_looks_like_consent_wall()` checks the first 300 chars of extracted text for cookie/consent boilerplate markers. When triggered, `_extract_from_main()` re-runs trafilatura scoped to the `<main>` element, which contains only the article on modern CMS/SPA sites. Title is recovered from the full-page `<title>` tag with suffix stripping (` - Site Name`, ` | Site`). Validated on Axios (Cloudflare-protected, Next.js, cookie-consent overlay).
+- **Error messages**: Replaced CLI-specific `"Copy the text, then run: wilted --add"` message with context-agnostic wording. Add-article modal status label now wraps (`height: auto; overflow-y: auto`) instead of clipping.
+
+### Crash fix — `OSError: Bad file descriptor` in `_play_article`
+- **Root cause**: `suppress_subprocess_output()` manipulates process-wide FDs (1, 2) using `os.dup2`. Called from multiple Textual worker threads concurrently, threads corrupt each other's saved/restored FD state. Additionally, Playwright's async IPC teardown can close FD 2 in the parent process (OS FD reuse after Textual redirects stderr).
+- **Fix** (`fetch.py`): Added `threading.Lock` (`_suppress_lock`) that serialises all FD manipulation. Non-blocking `acquire()` first — if contended, fires an `on_wait` callback so the UI can display a waiting message before blocking. All `OSError` paths in the FD save/restore/close sequence are now caught gracefully.
+- **UI feedback** (`tui/__init__.py`): `_play_article` passes `on_wait` showing `"Waiting for audio pipeline..."` in the status bar; `_generate_cache` passes `"Pausing background generation..."`.
+
+### Tests
+- Suite: 196 → 217 unit tests (+21).
+- `test_fetch.py`: `TestSuppressSubprocessOutput` — lock contention, `on_wait` callback, bad-FD graceful handling, lock released after normal exit and after exception. `TestFetchUrlWithBrowser` — returns None on browser error, status callback invoked.
+- `test_ingest.py`: `TestLooksLikeConsentWall` (6 cases), `TestExtractFromMain` (7 cases including hyphenated-title non-regression and end-to-end consent wall → main extraction flow), `test_browser_fallback_used_when_trafilatura_blocked`.
+
+### Bug fix in title extraction regex
+- `_extract_from_main` title suffix regex was `\s*[|\-]\s*\w` (zero spaces) which would split hyphenated words like "self-made". Fixed to `(?:\s[|\-]\s|[\u2014\u2013])` — requires a space on each side of ASCII pipe/hyphen, allows em/en-dashes without spaces.
+
 ## 2026-04-20 — Solidify & Simplify (session 4)
 
 - **Phase 1 — commit prior session polish**: Phase 5 TUI improvements committed (delete-by-ID fix, mark-as-read `m` key, clickable speed controls, tree focus on mount).

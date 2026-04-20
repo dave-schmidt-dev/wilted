@@ -45,6 +45,8 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
         margin-top: 1;
         text-style: italic;
         color: $text-muted;
+        height: auto;
+        overflow-y: auto;
     }
     #add-actions {
         height: auto;
@@ -71,7 +73,7 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="add-dialog"):
             yield Label("Add Article", classes="add-title")
-            yield Label("URL (leave blank for clipboard):")
+            yield Label("URL (or leave blank to use article text from clipboard):")
             yield Input(placeholder="https://...", id="url-input")
             with Horizontal(id="add-actions"):
                 yield Button("Add to Queue", id="add-queue", variant="primary")

@@ -1,8 +1,17 @@
-"""Tests for wilted.fetch — URL resolution and title extraction."""
+"""Tests for wilted.fetch — URL resolution, title extraction, and FD suppression."""
 
+import threading
 from unittest.mock import MagicMock, patch
 
-from wilted.fetch import extract_title_from_url, resolve_apple_news_url
+import pytest
+
+from wilted.fetch import (
+    _suppress_lock,
+    extract_title_from_url,
+    fetch_url_with_browser,
+    resolve_apple_news_url,
+    suppress_subprocess_output,
+)
 
 
 class TestResolveAppleNewsUrl:
@@ -78,3 +87,71 @@ class TestExtractTitleFromUrl:
 
         result = extract_title_from_url("https://example.com")
         assert result is None
+
+
+class TestSuppressSubprocessOutput:
+    def test_on_wait_called_when_lock_is_held(self):
+        """on_wait fires when another thread already holds the lock."""
+        wait_called = threading.Event()
+        worker_done = threading.Event()
+
+        _suppress_lock.acquire()
+        try:
+
+            def worker():
+                with suppress_subprocess_output(on_wait=wait_called.set):
+                    pass
+                worker_done.set()
+
+            t = threading.Thread(target=worker)
+            t.start()
+            assert wait_called.wait(timeout=2.0), "on_wait should have been called"
+        finally:
+            _suppress_lock.release()
+            assert worker_done.wait(timeout=2.0), "worker thread should complete"
+            t.join()
+
+    def test_on_wait_not_called_when_lock_is_free(self):
+        """on_wait is not called when no contention exists."""
+        called = []
+        with suppress_subprocess_output(on_wait=lambda: called.append(True)):
+            pass
+        assert called == []
+
+    def test_no_crash_when_fd_dup_raises(self):
+        """suppress_subprocess_output survives an invalid FD gracefully."""
+        with patch("wilted.fetch.os.dup", side_effect=OSError(9, "Bad file descriptor")):
+            with suppress_subprocess_output():
+                pass  # must not raise
+
+    def test_lock_released_after_normal_exit(self):
+        """The lock is free after the context manager exits normally."""
+        with suppress_subprocess_output():
+            pass
+        acquired = _suppress_lock.acquire(blocking=False)
+        assert acquired, "lock should be free after normal exit"
+        _suppress_lock.release()
+
+    def test_lock_released_after_exception(self):
+        """The lock is free even when the body raises."""
+        with pytest.raises(RuntimeError):
+            with suppress_subprocess_output():
+                raise RuntimeError("boom")
+        acquired = _suppress_lock.acquire(blocking=False)
+        assert acquired, "lock should be free after exception"
+        _suppress_lock.release()
+
+
+class TestFetchUrlWithBrowser:
+    def test_returns_none_when_browser_raises(self):
+        """fetch_url_with_browser returns None on any browser error."""
+        with patch("playwright.sync_api.sync_playwright", side_effect=Exception("no browser")):
+            result = fetch_url_with_browser("https://example.com")
+        assert result is None
+
+    def test_status_callback_called(self):
+        """on_status receives progress messages during browser fetch."""
+        messages = []
+        with patch("playwright.sync_api.sync_playwright", side_effect=Exception("no browser")):
+            fetch_url_with_browser("https://example.com", on_status=messages.append)
+        assert any("browser" in m.lower() for m in messages)

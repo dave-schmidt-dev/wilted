@@ -17,6 +17,7 @@ dependencies = [
     "feedparser>=6.0",
     "tqdm",
     "rich>=13.0",
+    "playwright>=1.58.0",
 ]
 
 [project.optional-dependencies]

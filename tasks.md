@@ -36,6 +36,8 @@
 
 - [ ] **TUI tightening**: currently-playing indicator in tree, estimated listen time instead of word count, resume progress markers, panel proportions
 - [ ] **Release hygiene**: align `README.md`, `HISTORY.md`, and task tracking after each meaningful change so roadmap drift does not recur
+- [x] **Playwright browser window**: switched to `headless=True` with `channel="chrome"` and explicit Chrome UA. Verified on Axios (403 from trafilatura, headless Chrome succeeds). No more visible Chrome window.
+- [ ] **The Onion fetch**: `words: 1` after add — The Onion also blocks trafilatura; verify Playwright path extracts article correctly (title was set to URL, suggesting `<main>` extraction also failed or got very little text).
 
 ## Later
 

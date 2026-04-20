@@ -34,8 +34,11 @@ uv sync --extra tui --extra llm
 Add a shell alias (e.g. in `~/.zshrc`):
 
 ```bash
-alias wilted='python3.12 -m wilted'   # or: uv run wilted
+alias wilted='uv run --project ~/Documents/Projects/wilted wilted'
 ```
+
+This ensures the alias always uses the project's managed venv with all
+dependencies (including playwright for browser-based article fetching).
 
 First run downloads the Kokoro model from HuggingFace (~160MB, one-time).
 
