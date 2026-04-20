@@ -22,8 +22,6 @@ dependencies = [
 [project.optional-dependencies]
 tui = ["textual>=8.0"]
 llm = ["mlx-vlm", "llama-cpp-python"]
-test = ["pytest", "pytest-asyncio"]
-dev = ["ruff"]
 
 [project.scripts]
 wilted = "wilted.cli:main"
@@ -52,4 +50,5 @@ dev = [
     "pygments>=2.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
+    "ruff>=0.0.1",
 ]
