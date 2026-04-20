@@ -1,3 +1,27 @@
+## 2026-04-20 — Onboarding and ingestion commands
+
+- **`wilted setup`** (`src/wilted/onboard.py`): Interactive first-run onboarding. Walks through: browsable starter feed suggestions (tech, security, science, podcasts — pick by number, 'all', or 'none'), custom feed URL entry, relevance keyword configuration, and optional first ingestion run. Handles Ctrl+C gracefully.
+- **`wilted ingest`**: Runs the full nightly pipeline in sequence — discover → classify → report — with stage headers, progress output, and per-stage error isolation (one stage failing doesn't block the next). Supports `--skip-discover`, `--skip-classify`, `--skip-report` flags for partial runs.
+- **`scripts/wilted-nightly.sh`**: Cron-ready wrapper with `flock`-based locking, project root detection, and `/tmp/wilted-nightly.log` summary logging. Drop into crontab as `0 2 * * * /path/to/scripts/wilted-nightly.sh`.
+- **Starter feed catalog**: 9 curated feeds (Ars Technica, The Verge, Simon Willison, Pragmatic Engineer, Krebs, Schneier, Quanta, Darknet Diaries, Lex Fridman) with default playlist assignments.
+- 12 new tests covering: starter feed data integrity, ingest pipeline stage execution/skipping/failure isolation, CLI dispatch and flag passthrough. 580 tests green.
+
+## 2026-04-20 — Test suite audit, tiering, and native-lane isolation
+
+- **Suite review artifact**: Added `plans/test-suite-review.md` with the recorded before/after baseline, lane timings, file-by-file inventory, hotspot notes, and keep/merge/eliminate decisions.
+- **Tier markers + commands**: Added central `unit`, `integration`, `e2e`, `tui`, `slow`, and `native` markers in `tests/conftest.py` plus `Makefile` targets for `test-unit`, `test-integration`, `test-e2e`, `test-tui`, and `test-native`.
+- **Collection-time pollution removed**: Stopped `tests/test_engine.py`, `tests/test_edge_cases.py`, and `tests/test_ingest.py` from mutating `sys.modules` at import time. Replaced them with opt-in fixtures so isolated lanes behave the same way as the full suite.
+- **TUI lane fixed in isolation**: `tests/test_tui.py` now explicitly uses the audio-module stub fixture instead of depending on leaked `mlx_audio` stubs from unrelated test files.
+- **Slow/native lane made safe**: Rewrote `tests/test_slow.py` to run real MLX/Kokoro probes in subprocesses. On this machine the native stack aborts during `mlx_audio.tts.utils` import, so the slow/native lane now fails explicitly instead of crashing Python or reporting masked empty-audio failures.
+- **Minor streamlining**: Collapsed a handful of repetitive negative-case tests in `tests/test_cache.py` and `tests/test_preferences.py`, reducing the collected count from `576` to `571`.
+- **Post-change baseline**:
+  - `make validate`: `568 passed, 3 deselected` in `18.96s` wall clock
+  - `make test-unit`: `197 passed` in `1.88s`
+  - `make test-integration`: `293 passed` in `2.22s`
+  - `make test-e2e`: `22 passed` in `5.37s`
+  - `make test-tui`: `56 passed` in `11.18s`
+  - `make test-slow` / `make test-native`: explicit failures with captured native crash details
+
 ## 2026-04-20 — Phase 4: Content Preparation pipeline
 
 - **Podcast audio download** (`src/wilted/download.py`): HTTP streaming download for podcast enclosures with resume support via Range headers, Content-Type validation, Content-Disposition filename extraction, and 64KB chunked streaming. `DownloadError` exception. 14 tests.

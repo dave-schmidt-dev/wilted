@@ -632,6 +632,45 @@ def cmd_prepare(argv: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Onboarding + ingestion
+# ---------------------------------------------------------------------------
+
+
+def cmd_setup(argv: list[str]) -> None:
+    """Interactive first-run setup: feeds, keywords, first ingestion."""
+    from wilted.onboard import run_setup
+
+    try:
+        run_setup()
+    except (KeyboardInterrupt, EOFError):
+        print("\n\nSetup cancelled.")
+
+
+def cmd_ingest(argv: list[str]) -> None:
+    """Run the full nightly pipeline: discover → classify → report."""
+    parser = argparse.ArgumentParser(
+        prog="wilted ingest",
+        description="Run the content ingestion pipeline.",
+    )
+    parser.add_argument("--skip-discover", action="store_true", help="Skip feed polling")
+    parser.add_argument("--skip-classify", action="store_true", help="Skip LLM classification")
+    parser.add_argument("--skip-report", action="store_true", help="Skip report generation")
+    args = parser.parse_args(argv)
+
+    from wilted.onboard import run_ingest
+
+    try:
+        run_ingest(
+            skip_discover=args.skip_discover,
+            skip_classify=args.skip_classify,
+            skip_report=args.skip_report,
+        )
+    except KeyboardInterrupt:
+        print("\n\nIngestion interrupted.")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Argument parsing and dispatch
 # ---------------------------------------------------------------------------
 
@@ -680,6 +719,12 @@ def run_cli(argv=None):
             return
         if first == "prepare":
             cmd_prepare(argv[1:])
+            return
+        if first == "setup":
+            cmd_setup(argv[1:])
+            return
+        if first == "ingest":
+            cmd_ingest(argv[1:])
             return
         if first in _STUB_SUBCMDS:
             _run_stub(argv)
