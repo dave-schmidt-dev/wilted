@@ -210,13 +210,20 @@ src/wilted/                # shared library
     migrate.py           # queue.json -> SQLite migration
     log.py               # RotatingFileHandler setup
     tui/                 # Textual TUI (decomposed package)
-tests/                   # pytest suite (461 tests, incl. subprocess e2e)
+tests/                   # pytest suite (596 tests across unit/integration/e2e/TUI lanes)
 migrations/              # numbered schema migrations
 ```
 
 ## Validation
 
-Routine validation uses only the guarded code paths that Wilted actually relies on:
+Routine validation uses tiered lanes. The current split is:
+
+- `220` unit tests
+- `293` integration tests
+- `27` subprocess e2e tests
+- `56` TUI tests
+
+Default project validation still uses the guarded fast lane:
 
 ```bash
 make validate
@@ -232,15 +239,14 @@ That runs:
 - concurrency guardrails that verify MLX work stays serialized behind `_model_lock`
 - startup guardrails that verify `tqdm` lock initialization happens on the main thread before Textual starts
 
-### Slow tests (real TTS model)
-
-Tests that require the Kokoro model and Apple Silicon are excluded from `make validate` and run separately:
+Targeted lanes:
 
 ```bash
-make test-slow
+make test-unit
+make test-integration
+make test-e2e
+make test-tui
 ```
-
-This exercises real TTS generation, speed parameter effects, and the full cache pipeline (TTS → MP3 encode → MP3 decode → verify audio).
 
 ### Manual playback verification
 
@@ -262,7 +268,8 @@ In the TUI (`wilted` with no args):
 ### What to avoid in future
 
 - Do not add in-process tests that import or execute real MLX/Metal work inside the pytest runner.
-- Do not add “native smoke” tests to the default validation path just to probe known-bad runtime behavior.
+- Do not add standalone MLX/Metal diagnostic probes whose only purpose is to stress the native stack rather than validate Wilted behavior.
+- Do not rely on collection-time `sys.modules` stubs; keep native-module fakes inside fixtures or test-local patch scopes.
 - Do not bypass `_model_lock` for `load_model()`, `generate_audio()`, `generate_and_play()`, or `play_article()`.
 - Do not let lazy MLX generators escape the lock before converting segment audio to NumPy.
 - Do not let the first `tqdm` lock initialization happen inside a Textual worker thread.
@@ -318,7 +325,7 @@ wilted keyword remove "kubernetes"
 - ~~RSS feed management~~ (done: feed CRUD, RSS polling, dedup, conditional GET)
 - ~~LLM classification~~ (done: playlist assignment, relevance scoring, summarization)
 - ~~Morning report~~ (done: report assembly, TUI ReportScreen, selection history, source stats, `wilted report` + `wilted feed stats`)
-- ~~E2e test coverage + playback verification~~ (done: 461 fast + 3 slow tests, manual speaker verification)
+- ~~E2e test coverage + playback verification~~ (done: tiered suite with 580 app-facing tests, plus manual speaker verification)
 
 ## Dependencies
 

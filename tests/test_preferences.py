@@ -28,25 +28,19 @@ class TestAddKeyword:
         with pytest.raises(ValueError, match="already exists"):
             add_keyword("python")
 
-    def test_empty_keyword_raises(self):
-        with pytest.raises(ValueError, match="cannot be empty"):
-            add_keyword("")
-
-    def test_whitespace_only_raises(self):
-        with pytest.raises(ValueError, match="cannot be empty"):
-            add_keyword("   ")
+    def test_blank_keyword_raises(self):
+        for keyword in ["", "   "]:
+            with pytest.raises(ValueError, match="cannot be empty"):
+                add_keyword(keyword)
 
     def test_strips_whitespace(self):
         kw = add_keyword("  docker  ")
         assert kw.keyword == "docker"
 
-    def test_zero_weight_raises(self):
-        with pytest.raises(ValueError, match="positive"):
-            add_keyword("test", weight=0)
-
-    def test_negative_weight_raises(self):
-        with pytest.raises(ValueError, match="positive"):
-            add_keyword("test", weight=-1.0)
+    def test_non_positive_weight_raises(self):
+        for weight in [0, -1.0]:
+            with pytest.raises(ValueError, match="positive"):
+                add_keyword("test", weight=weight)
 
 
 class TestListKeywords:

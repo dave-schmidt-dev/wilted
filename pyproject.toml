@@ -34,7 +34,10 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "slow: tests requiring real TTS model or audio hardware (deselect with -m 'not slow')",
+    "unit: fast in-process tests with mocked boundaries",
+    "integration: multi-module tests using the real DB/filesystem or heavier wiring",
+    "e2e: subprocess CLI tests that exercise the real entrypoint",
+    "tui: Textual pilot tests for the terminal UI",
 ]
 
 [tool.ruff]

@@ -17,6 +17,8 @@ from wilted.tui import (
     WiltedApp,
 )
 
+pytestmark = pytest.mark.usefixtures("stub_audio_modules")
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

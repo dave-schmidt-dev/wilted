@@ -1,17 +1,13 @@
 """Tests for wilted.ingest — shared article ingestion."""
 
-import sys
-import types
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-# Ensure trafilatura is importable as a mock for test collection
-if "trafilatura" not in sys.modules:
-    sys.modules["trafilatura"] = types.ModuleType("trafilatura")
-
 from wilted.ingest import ArticleResult, resolve_article
+
+pytestmark = pytest.mark.usefixtures("stub_trafilatura_module")
 
 
 class TestResolveFromURL:

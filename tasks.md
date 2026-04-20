@@ -7,10 +7,10 @@
 - [x] Reading-list persistence in project-local `data/`
 - [x] Background MP3 cache generation + hybrid cached/live playback
 - [x] TUI playback controls: pause/resume, skip/rewind paragraph, transcript pane, voice/speed controls
-- [x] Tiered regression coverage (`unit`, `integration`, `e2e`, `tui`, `slow`, `native`) with explicit make targets and isolated native probes
+- [x] Tiered regression coverage (`unit`, `integration`, `e2e`, `tui`) with explicit make targets
 - [x] Product direction clarified: Wilted is intended to become the primary personal audio surface for news, entertainment, and learning content
-- [x] Subprocess e2e test suite, real-DB TUI tests, ffmpeg round-trip, and subprocess-isolated slow/native TTS probes
-- [x] Manual audio-device playback verified (2026-04-19): TTS engine, audio pipeline, sounddevice output all confirmed working
+- [x] Subprocess e2e test suite, real-DB TUI tests, ffmpeg round-trip, and app-focused engine/TUI guardrails
+- [x] Manual audio-device playback verified (2026-04-20): TTS engine, audio pipeline, sounddevice output all confirmed working
 
 ## Now
 
@@ -18,11 +18,11 @@
 
 ## Done (previously "Now")
 
-- [x] **Phase 4: Content Preparation** — podcast download (`download.py`), three-tier transcript ingestion (`transcribe.py` — RSS VTT/SRT/JSON, web page, local Parakeet), LLM ad detection with sliding window + ffmpeg cutting (`ads.py`), article promo removal, article TTS generation, `AudioEngine.play_file()` for podcast playback, `prepare.py` orchestrator with `wilted prepare` CLI. Current suite: 571 collected tests, 568 fast green; slow/native lane now fails explicitly with captured native crash details.
+- [x] **Phase 4: Content Preparation** — podcast download (`download.py`), three-tier transcript ingestion (`transcribe.py` — RSS VTT/SRT/JSON, web page, local Parakeet), LLM ad detection with sliding window + ffmpeg cutting (`ads.py`), article promo removal, article TTS generation, `AudioEngine.play_file()` for podcast playback, `prepare.py` orchestrator with `wilted prepare` CLI. Current suite: 596 collected tests across unit/integration/e2e/TUI lanes, all green under `make validate`.
 - [x] **Phase 3: Morning Report** — report assembly, TUI ReportScreen, selection history, source stats, CLI `wilted report` + `wilted feed stats`. Implemented by Vibe/Devstral-2, reviewed and bug-fixed by Claude Opus 4.6. Additional TUI bugs fixed 2026-04-20 (see HISTORY.md). 467 tests green.
 
 - [x] **Define a repeatable validation target**: `make validate` runs lint plus the guarded fast test suite via `uv run`
-- [x] **Audit and tier the test suite**: recorded before/after baseline in `plans/test-suite-review.md`, eliminated collection-time module pollution, added lane markers and `make test-unit/test-integration/test-e2e/test-tui/test-native`, and moved slow/native checks into subprocess probes so they fail explicitly instead of crashing pytest
+- [x] **Audit and tier the test suite**: recorded before/after baseline in `plans/test-suite-review.md`, eliminated collection-time module pollution, added lane markers and `make test-unit/test-integration/test-e2e/test-tui`, and removed the native diagnostic probes that were stress-testing MLX instead of validating Wilted behavior
 - [x] **Dependency audit and install fix**: added missing deps (tqdm, rich), created `[llm]` optional extra, simplified install docs
 - [x] **Manual playback check**: verified speaker output on 2026-04-19 — TTS generation, sounddevice playback, paragraph streaming all working
 - [x] **Define a unified content model**: answered by v2 design spec (`plans/wilted-v2-design.md` §2). Schema implemented in `db.py`.

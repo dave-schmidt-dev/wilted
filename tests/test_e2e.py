@@ -484,3 +484,70 @@ class TestReport:
         assert "Morning report for" in r1.stdout
         assert "Morning report for" in r2.stdout
         assert r1.stdout == r2.stdout
+
+
+# ---------------------------------------------------------------------------
+# wilted setup
+# ---------------------------------------------------------------------------
+
+
+class TestSetup:
+    def test_setup_adds_selected_starter_feed(self, wilted_home):
+        """Selecting starter feed 1 during setup persists it to the feed list."""
+        _, env = wilted_home
+        # browse=y, pick=1, custom=n, keywords=n, ingest=n
+        stdin = "y\n1\nn\nn\nn\n"
+        r = _run("setup", env=env, input_text=stdin)
+        assert r.returncode == 0
+
+        feeds = _run("feed", "list", env=env)
+        assert feeds.returncode == 0
+        assert "Ars Technica" in feeds.stdout
+
+    def test_setup_adds_keyword(self, wilted_home):
+        """Keyword entered during setup is retrievable afterwards."""
+        _, env = wilted_home
+        # browse=n, custom=n, keywords=y, kw=security, weight=default, done=blank, ingest skipped
+        stdin = "n\nn\ny\nsecurity\n\n\n"
+        r = _run("setup", env=env, input_text=stdin)
+        assert r.returncode == 0
+
+        kws = _run("keyword", "list", env=env)
+        assert kws.returncode == 0
+        assert "security" in kws.stdout
+
+    def test_setup_skips_ingest_when_declined(self, wilted_home):
+        """Declining first ingestion does not run the pipeline."""
+        _, env = wilted_home
+        # browse=y, pick=1, custom=n, keywords=n, ingest=n
+        stdin = "y\n1\nn\nn\nn\n"
+        r = _run("setup", env=env, input_text=stdin)
+        assert r.returncode == 0
+        # Pipeline output would mention "Discovery" or "Classification"
+        assert "Discovery" not in r.stdout
+        assert "Classification" not in r.stdout
+
+    def test_setup_runs_ingest_when_confirmed(self, wilted_home):
+        """Confirming first ingestion invokes the pipeline stages."""
+        _, env = wilted_home
+        # browse=y, pick=1, custom=n, keywords=n, ingest=y
+        stdin = "y\n1\nn\nn\ny\n"
+        r = _run("setup", env=env, input_text=stdin)
+        assert r.returncode == 0
+        # Pipeline should mention discovery stage header
+        assert "Discovery" in r.stdout or "Polling feeds" in r.stdout
+
+    def test_setup_exits_early_when_feeds_exist_and_declined(self, wilted_home):
+        """Re-running setup with existing feeds and declining exits without adding."""
+        _, env = wilted_home
+        # First run: add a feed
+        _run("feed", "add", "https://example.com/rss.xml", env=env)
+
+        # Second run: decline to redo setup
+        stdin = "n\n"
+        r = _run("setup", env=env, input_text=stdin)
+        assert r.returncode == 0
+
+        feeds = _run("feed", "list", env=env)
+        # Only the original feed — no duplicates added
+        assert "Feeds (1):" in feeds.stdout

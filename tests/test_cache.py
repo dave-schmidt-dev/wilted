@@ -206,20 +206,15 @@ class TestCacheValidation:
         save_manifest(1, manifest)
         assert is_cache_valid(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00") is False
 
-    def test_invalid_voice(self):
+    def test_param_mismatch_is_invalid(self):
         manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
         save_manifest(1, manifest)
-        assert is_cache_valid(1, "bf_emma", "a", 1.0, "2026-04-08T08:00:00") is False
-
-    def test_invalid_lang(self):
-        manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
-        save_manifest(1, manifest)
-        assert is_cache_valid(1, "af_heart", "b", 1.0, "2026-04-08T08:00:00") is False
-
-    def test_invalid_speed(self):
-        manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
-        save_manifest(1, manifest)
-        assert is_cache_valid(1, "af_heart", "a", 1.5, "2026-04-08T08:00:00") is False
+        for voice, lang, speed, added in [
+            ("bf_emma", "a", 1.0, "2026-04-08T08:00:00"),
+            ("af_heart", "b", 1.0, "2026-04-08T08:00:00"),
+            ("af_heart", "a", 1.5, "2026-04-08T08:00:00"),
+        ]:
+            assert is_cache_valid(1, voice, lang, speed, added) is False
 
     def test_invalid_added(self):
         manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
@@ -250,7 +245,7 @@ class TestIsParagraphCached:
 
         assert is_paragraph_cached(999, 0, "af_heart", "a", 1.0, "2026-04-08T08:00:00") is False
 
-    def test_false_when_voice_mismatch(self):
+    def test_false_when_manifest_params_mismatch(self):
         from wilted.cache import is_paragraph_cached
 
         manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
@@ -258,17 +253,11 @@ class TestIsParagraphCached:
         mp3_path = get_cache_dir(1) / "para_000.mp3"
         mp3_path.write_bytes(b"fake mp3")
 
-        assert is_paragraph_cached(1, 0, "bf_emma", "a", 1.0, "2026-04-08T08:00:00") is False
-
-    def test_false_when_speed_mismatch(self):
-        from wilted.cache import is_paragraph_cached
-
-        manifest = new_manifest(1, "af_heart", "a", 1.0, "2026-04-08T08:00:00")
-        save_manifest(1, manifest)
-        mp3_path = get_cache_dir(1) / "para_000.mp3"
-        mp3_path.write_bytes(b"fake mp3")
-
-        assert is_paragraph_cached(1, 0, "af_heart", "a", 1.5, "2026-04-08T08:00:00") is False
+        for voice, lang, speed in [
+            ("bf_emma", "a", 1.0),
+            ("af_heart", "a", 1.5),
+        ]:
+            assert is_paragraph_cached(1, 0, voice, lang, speed, "2026-04-08T08:00:00") is False
 
     def test_false_when_file_missing(self):
         from wilted.cache import is_paragraph_cached

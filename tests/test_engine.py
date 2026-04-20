@@ -1,7 +1,6 @@
 """Tests for wilted.engine — TTS playback engine with pause/resume/stop."""
 
 import os
-import sys
 import threading
 import types
 from unittest.mock import MagicMock, patch
@@ -9,22 +8,9 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-# Ensure sounddevice is mockable without triggering PortAudio initialization
-if "sounddevice" not in sys.modules:
-    _sd = types.ModuleType("sounddevice")
-    _sd.OutputStream = MagicMock()
-    _sd.PortAudioError = OSError
-    sys.modules["sounddevice"] = _sd
-
-# Ensure mlx_audio.audio_io is mockable even if mlx_audio isn't installed
-if "mlx_audio" not in sys.modules:
-    sys.modules["mlx_audio"] = types.ModuleType("mlx_audio")
-if "mlx_audio.audio_io" not in sys.modules:
-    _audio_io = types.ModuleType("mlx_audio.audio_io")
-    _audio_io.write = lambda *a, **kw: None  # stub for test_cli patching
-    sys.modules["mlx_audio.audio_io"] = _audio_io
-
 from wilted.engine import AudioEngine, _normalize_segments
+
+pytestmark = pytest.mark.usefixtures("stub_audio_modules")
 
 
 def _make_fake_segment(n_samples=1024, sample_rate=24000):
@@ -36,7 +22,7 @@ def _make_fake_segment(n_samples=1024, sample_rate=24000):
 
 
 @pytest.fixture
-def engine():
+def engine(stub_audio_modules):
     """Create an AudioEngine with a mock model pre-loaded."""
     eng = AudioEngine()
     eng._model = MagicMock()
@@ -45,7 +31,7 @@ def engine():
 
 
 @pytest.fixture
-def mock_stream():
+def mock_stream(stub_audio_modules):
     """Patch sounddevice.OutputStream to a no-op mock."""
     with patch("sounddevice.OutputStream") as mock_cls:
         stream_instance = MagicMock()

@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from wilted.onboard import STARTER_FEEDS, run_ingest
+from wilted.onboard import STARTER_FEEDS, run_ingest, run_setup
 
 # Patch targets match where the lazy imports land (source modules).
 _P_DISCOVER = "wilted.discover.run_discover"
@@ -174,3 +174,162 @@ class TestCmdSetup:
             cmd_setup([])
 
         mock.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# run_setup — interactive flow
+# ---------------------------------------------------------------------------
+
+_P_LIST_FEEDS = "wilted.feeds.list_feeds"
+_P_ADD_FEED = "wilted.feeds.add_feed"
+_P_ADD_KEYWORD = "wilted.preferences.add_keyword"
+_P_RUN_INGEST = "wilted.onboard.run_ingest"
+
+
+def _fake_feed(title: str = "Test Feed") -> MagicMock:
+    m = MagicMock()
+    m.title = title
+    return m
+
+
+class TestRunSetup:
+    def test_early_exit_when_existing_feeds_declined(self, monkeypatch):
+        """User has feeds and declines — returns without adding anything."""
+        inputs = iter(["n"])
+        with (
+            patch(_P_LIST_FEEDS, return_value=[_fake_feed("Existing")]),
+            patch(_P_ADD_FEED) as mock_add,
+        ):
+            monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+            run_setup()
+
+        mock_add.assert_not_called()
+
+    def test_existing_feeds_proceeds_when_confirmed(self, monkeypatch):
+        """User has feeds and confirms — setup continues to browsing step."""
+        existing = [_fake_feed("Existing")]
+        # y=continue, n=no browse, n=no custom, n=no keywords, n=no ingest
+        inputs = iter(["y", "n", "n", "n", "n"])
+        with (
+            patch(_P_LIST_FEEDS, side_effect=[existing, existing]),
+            patch(_P_ADD_FEED),
+        ):
+            monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+            run_setup()  # should not raise
+
+    def test_add_all_starter_feeds(self, monkeypatch):
+        """Selecting 'all' calls add_feed for every starter feed."""
+        fake = _fake_feed()
+        # y=browse, all=add all, n=no custom, n=no keywords, n=no ingest
+        inputs = iter(["y", "all", "n", "n", "n"])
+        with (
+            patch(_P_LIST_FEEDS, side_effect=[[], [fake] * len(STARTER_FEEDS)]),
+            patch(_P_ADD_FEED, return_value=fake) as mock_add,
+        ):
+            monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+            run_setup()
+
+        assert mock_add.call_count == len(STARTER_FEEDS)
+
+    def test_add_none_skips_all_starters(self, monkeypatch):
+        """Selecting 'none' makes no add_feed calls."""
+        # y=browse, none=add none, n=no custom, n=no keywords
+        inputs = iter(["y", "none", "n", "n"])
+        with (
+            patch(_P_LIST_FEEDS, return_value=[]),
+            patch(_P_ADD_FEED) as mock_add,
+        ):
+            monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+            run_setup()
+
+        mock_add.assert_not_called()
+
+    def test_add_specific_starters_by_number(self, monkeypatch):
+        """Selecting '1 3' calls add_feed for feeds at positions 1 and 3."""
+        fake = _fake_feed()
+        # y=browse, '1 3'=select, n=no custom, n=no keywords
+        inputs = iter(["y", "1 3", "n", "n"])
+        with (
+            patch(_P_LIST_FEEDS, return_value=[]),
+            patch(_P_ADD_FEED, return_value=fake) as mock_add,
+        ):
+            monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+            run_setup()
+
+        assert mock_add.call_count == 2
+        called_urls = [c.args[0] for c in mock_add.call_args_list]
+        assert STARTER_FEEDS[0]["url"] in called_urls
+        assert STARTER_FEEDS[2]["url"] in called_urls
+
+    def test_custom_feed_added(self, monkeypatch):
+        """Custom feed URL, type, title, and playlist are passed to add_feed."""
+        fake = _fake_feed("My Blog")
+        # n=no browse, y=custom, url, type, title, playlist, n=no more, n=no keywords
+        inputs = iter(
+            [
+                "n",
+                "y",
+                "https://example.com/feed.xml",
+                "article",
+                "My Blog",
+                "",
+                "n",
+                "n",
+            ]
+        )
+        with (
+            patch(_P_LIST_FEEDS, return_value=[]),
+            patch(_P_ADD_FEED, return_value=fake) as mock_add,
+        ):
+            monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+            run_setup()
+
+        mock_add.assert_called_once_with(
+            "https://example.com/feed.xml",
+            feed_type="article",
+            title="My Blog",
+            default_playlist=None,
+        )
+
+    def test_keywords_added(self, monkeypatch):
+        """Keyword and weight are passed to add_keyword."""
+        fake_kw = MagicMock()
+        fake_kw.keyword = "python"
+        fake_kw.weight = 1.5
+        # n=no browse, n=no custom, y=keywords, keyword, weight, blank=done
+        inputs = iter(["n", "n", "y", "python", "1.5", ""])
+        with (
+            patch(_P_LIST_FEEDS, return_value=[]),
+            patch(_P_ADD_KEYWORD, return_value=fake_kw) as mock_add_kw,
+        ):
+            monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+            run_setup()
+
+        mock_add_kw.assert_called_once_with("python", weight=1.5)
+
+    def test_ingest_called_when_confirmed(self, monkeypatch):
+        """run_ingest is called when user has feeds and confirms."""
+        fake = _fake_feed()
+        # n=no browse, n=no custom, n=no keywords, y=run ingest
+        inputs = iter(["n", "n", "n", "y"])
+        with (
+            patch(_P_LIST_FEEDS, side_effect=[[], [fake]]),
+            patch(_P_RUN_INGEST) as mock_ingest,
+        ):
+            monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+            run_setup()
+
+        mock_ingest.assert_called_once()
+
+    def test_ingest_skipped_when_no_feeds(self, monkeypatch):
+        """Step 3 is skipped when no feeds exist after setup."""
+        # n=no browse, n=no custom, n=no keywords
+        inputs = iter(["n", "n", "n"])
+        with (
+            patch(_P_LIST_FEEDS, return_value=[]),
+            patch(_P_RUN_INGEST) as mock_ingest,
+        ):
+            monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+            run_setup()
+
+        mock_ingest.assert_not_called()

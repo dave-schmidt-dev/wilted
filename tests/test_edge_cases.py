@@ -3,34 +3,12 @@
 import importlib
 import json
 import os
-import sys
 import threading
 import types
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-
-# Ensure sounddevice is mockable without triggering PortAudio initialization
-if "sounddevice" not in sys.modules:
-    _sd = types.ModuleType("sounddevice")
-    _sd.OutputStream = MagicMock()
-    _sd.PortAudioError = OSError
-    sys.modules["sounddevice"] = _sd
-
-# Ensure mlx_audio stubs exist for patching
-if "mlx_audio" not in sys.modules:
-    sys.modules["mlx_audio"] = types.ModuleType("mlx_audio")
-if "mlx_audio.tts" not in sys.modules:
-    sys.modules["mlx_audio.tts"] = types.ModuleType("mlx_audio.tts")
-if "mlx_audio.tts.utils" not in sys.modules:
-    _tts_utils = types.ModuleType("mlx_audio.tts.utils")
-    _tts_utils.load_model = MagicMock()
-    sys.modules["mlx_audio.tts.utils"] = _tts_utils
-if "mlx_audio.audio_io" not in sys.modules:
-    _audio_io = types.ModuleType("mlx_audio.audio_io")
-    _audio_io.write = lambda *a, **kw: None
-    sys.modules["mlx_audio.audio_io"] = _audio_io
 
 import wilted
 from wilted.engine import AudioEngine
@@ -49,6 +27,8 @@ from wilted.state import (
     load_state,
     set_article_state,
 )
+
+pytestmark = pytest.mark.usefixtures("stub_audio_modules")
 
 # ---------------------------------------------------------------------------
 # TestCorruptQueue

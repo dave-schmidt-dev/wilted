@@ -510,3 +510,97 @@ class TestRemovePromosBatch:
         assert len(results) == 2
         assert "Promo" not in results[1]
         assert results[2] == "Also good.\n\nAlso promo."  # Original returned on failure
+
+
+# ---------------------------------------------------------------------------
+# cut_ads — real ffmpeg integration
+# ---------------------------------------------------------------------------
+
+
+def _ffprobe_duration(path) -> float:
+    import subprocess
+
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return float(result.stdout.strip())
+
+
+class TestCutAdsRealFfmpeg:
+    @pytest.mark.skipif(
+        not __import__("shutil").which("ffmpeg") or not __import__("shutil").which("ffprobe"),
+        reason="ffmpeg and ffprobe required",
+    )
+    def test_cut_removes_middle_segment(self, tmp_path):
+        """Real ffmpeg cuts a middle ad segment and produces shorter output."""
+        import subprocess
+
+        mp3_path = tmp_path / "input.mp3"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=3:sample_rate=22050",
+                str(mp3_path),
+            ],
+            capture_output=True,
+            check=True,
+        )
+
+        ad = AdSegment(start_s=1.0, end_s=2.0, confidence=0.95, label="ad_break")
+        output = tmp_path / "output.mp3"
+
+        result = cut_ads(mp3_path, [ad], output, buffer_seconds=0.0)
+
+        assert result == output
+        assert output.exists()
+        assert output.stat().st_size > 0
+
+        input_dur = _ffprobe_duration(mp3_path)
+        output_dur = _ffprobe_duration(output)
+
+        assert output_dur < input_dur
+        assert abs(output_dur - 2.0) < 0.5  # ~2s remaining after 1s cut
+
+    @pytest.mark.skipif(
+        not __import__("shutil").which("ffmpeg"),
+        reason="ffmpeg required",
+    )
+    def test_no_ads_output_matches_input(self, tmp_path):
+        """No ads — output is a byte-identical copy of input."""
+        import subprocess
+
+        mp3_path = tmp_path / "input.mp3"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2:sample_rate=22050",
+                str(mp3_path),
+            ],
+            capture_output=True,
+            check=True,
+        )
+
+        output = tmp_path / "output.mp3"
+        cut_ads(mp3_path, [], output, buffer_seconds=0.0)
+
+        assert output.read_bytes() == mp3_path.read_bytes()

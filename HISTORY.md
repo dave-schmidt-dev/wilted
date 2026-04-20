@@ -1,3 +1,21 @@
+## 2026-04-20 — Pre-Phase-5 test coverage and validation gate
+
+- **`run_setup` behavioral tests** (9 tests in `test_onboard.py`): Covers all interactive branches — early exit when feeds exist and declined, continue when confirmed, add-all/add-none/add-specific starters, custom feed entry, keyword entry, ingest confirmation, and ingest skipped when no feeds added. Uses `monkeypatch` on `builtins.input` to drive the full interactive flow without a TTY.
+- **`wilted setup` e2e tests** (5 tests in `test_e2e.py`): Subprocess tests using piped stdin. Verifies starter feed persists to DB, keyword persists, ingest is skipped/invoked correctly, and no duplicate feeds on re-run.
+- **Real-ffmpeg `cut_ads` tests** (2 tests in `test_ads.py`): Generate a sine-wave MP3 via `ffmpeg -f lavfi`, run `cut_ads()` against it, verify output duration is shorter and byte-identical copy on no-ads path. Guarded with `skipif(not which("ffmpeg"))`.
+- **Conftest marker coverage**: Added `test_onboard.py` to `_TEST_MARKERS` as `unit`; tests now appear in `make test-unit`.
+- **`make lint-sh`**: Runs `shellcheck` on `scripts/wilted-nightly.sh`; prints "shellcheck: OK" on pass, explains install path when missing.
+- **Manual verification completed 2026-04-20**: shellcheck clean, `wilted setup` interactive flow verified, TTS audio playback confirmed live.
+- Suite: `596 passed` (`220` unit, `293` integration, `27` e2e, `56` TUI).
+
+## 2026-04-20 — Removed native diagnostic tests from the suite
+
+- Deleted `tests/test_slow.py` and removed the `slow` / `native` marker lanes from `pyproject.toml`, `tests/conftest.py`, and `Makefile`.
+- Narrowed the automated suite back to app-facing regression coverage only: `unit`, `integration`, `e2e`, and `tui`.
+- Kept the meaningful MLX guardrails in place: `_model_lock` serialization, in-lock materialization of generated segments, and main-thread `tqdm` lock initialization are still covered by tests.
+- Stopped treating MLX cold-start probing as a Wilted regression test. Manual speaker playback remains the real validation path for the native audio stack.
+- Validation after removal: `580 passed` in `18.73s`; lane counts are `197` unit, `293` integration, `22` e2e, `56` TUI.
+
 ## 2026-04-20 — Onboarding and ingestion commands
 
 - **`wilted setup`** (`src/wilted/onboard.py`): Interactive first-run onboarding. Walks through: browsable starter feed suggestions (tech, security, science, podcasts — pick by number, 'all', or 'none'), custom feed URL entry, relevance keyword configuration, and optional first ingestion run. Handles Ctrl+C gracefully.
