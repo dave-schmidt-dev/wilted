@@ -331,15 +331,20 @@ class WiltedApp(App):
         status: str = "",
     ) -> None:
         if title:
-            self.query_one("#now-playing-title", Label).update(title)
+            widget = self.query_one("#now-playing-title", Label)
+            widget.update(title)
+            widget.refresh()
         self._bar_progress = progress
         self._bar_time_override = time_remaining
         self._update_playback_bar()
         if text_snippet:
-            self.query_one("#current-text", Static).update(text_snippet)
+            widget = self.query_one("#current-text", Static)
+            widget.update(text_snippet)
+            widget.refresh()
             self.query_one("#text-scroll", VerticalScroll).scroll_home(animate=False)
         if status:
             self._set_status(status)
+        self.screen.refresh()
 
     def _update_playback_bar(self) -> None:
         """Render the PlaybackBar with state icon, progress, para count, and timer."""
@@ -464,7 +469,6 @@ class WiltedApp(App):
     def _generate_cache(self) -> None:
         """Background worker: generate audio cache for queued articles."""
         from wilted.cache import generate_article_cache, is_cache_valid
-        from wilted.fetch import suppress_subprocess_output
         from wilted.playlists import get_playlist_items as _get_playlist_items
         from wilted.queue import get_article_text
 
@@ -472,10 +476,7 @@ class WiltedApp(App):
 
         self._ensure_engine()
         engine = self._engine
-        with suppress_subprocess_output(
-            on_wait=lambda: self.call_from_thread(self._set_status, "Pausing background generation...", _STATUS_MEDIUM)
-        ):
-            engine.load_model()
+        engine.load_model()  # no-op if preload already finished
 
         try:
             queue = _get_playlist_items("All")
@@ -546,16 +547,10 @@ class WiltedApp(App):
         """Play an article from the given paragraph/segment position."""
         worker = get_current_worker()
 
-        from wilted.fetch import suppress_subprocess_output
-
         self.call_from_thread(self._update_now_playing, status="Loading model...")
         self._ensure_engine()
         engine = self._engine
-        # Ensure model is loaded (no-op if preload already finished)
-        with suppress_subprocess_output(
-            on_wait=lambda: self.call_from_thread(self._set_status, "Waiting for audio pipeline...", _STATUS_MEDIUM)
-        ):
-            engine.load_model()
+        engine.load_model()  # no-op if preload already finished
 
         engine.voice = self._voice
         engine.speed = self._speed
@@ -594,12 +589,20 @@ class WiltedApp(App):
             if worker.is_cancelled:
                 break
 
-            # Check for rewind request
+            # Wait while paused — spin-check so skip/rewind can break out
+            while self._paused and not worker.is_cancelled:
+                time.sleep(0.1)
+            if worker.is_cancelled:
+                break
+
+            # Pick up any position changes made while paused (skip/rewind)
+            para_idx = self._paragraph_idx
+
+            # Check for rewind request (from non-paused rewind action)
             if self._rewind_to is not None:
                 para_idx = self._rewind_to
                 self._rewind_to = None
-
-            self._paragraph_idx = para_idx
+                self._paragraph_idx = para_idx
             paragraph = paragraphs[para_idx]
 
             # Calculate progress and resync the countdown timer
@@ -762,13 +765,31 @@ class WiltedApp(App):
 
     def action_skip_segment(self) -> None:
         """Skip to the next paragraph."""
-        if self._playing and self._engine:
+        if not self._playing:
+            return
+        if self._paused:
+            # Move forward while paused — update display without resuming
+            if self._paragraph_idx < len(self._paragraphs) - 1:
+                self._paragraph_idx += 1
+                transcript = self._build_transcript(self._paragraph_idx)
+                progress = (self._paragraph_idx / len(self._paragraphs)) * 100
+                self._update_now_playing(progress=progress, text_snippet=transcript)
+        elif self._engine:
             self._engine.stop()
             # The while loop will naturally advance para_idx
 
     def action_prev_paragraph(self) -> None:
         """Rewind to the previous paragraph."""
-        if self._playing and self._engine:
+        if not self._playing:
+            return
+        if self._paused:
+            # Move backward while paused — update display without resuming
+            if self._paragraph_idx > 0:
+                self._paragraph_idx -= 1
+                transcript = self._build_transcript(self._paragraph_idx)
+                progress = (self._paragraph_idx / len(self._paragraphs)) * 100
+                self._update_now_playing(progress=progress, text_snippet=transcript)
+        elif self._engine:
             self._rewind_to = max(0, self._paragraph_idx - 1)
             self._engine.stop()  # Stop current audio; while loop picks up _rewind_to
 
