@@ -156,9 +156,7 @@ class WiltedApp(App):
     """
 
     BINDINGS: ClassVar[list[Binding | tuple]] = [
-        Binding("space", "toggle_play", "Play/Pause"),
-        Binding("p", "play_selected", "Play"),
-        Binding("s", "stop", "Stop"),
+        Binding("p,space", "toggle_play", "Play/Pause"),
         Binding("right,right_square_bracket", "skip_segment", ">>"),
         Binding("left_square_bracket", "prev_paragraph", "<<"),
         Binding("n", "next_article", "Next"),
@@ -690,6 +688,10 @@ class WiltedApp(App):
 
     def _start_playback(self, entry: dict, resume_para: int = 0) -> None:
         """Start playing an article, stopping any current playback."""
+        # Guard: if already playing this exact article, treat as toggle
+        if self._playing and self._current_entry and entry["id"] == self._current_entry["id"]:
+            self.action_toggle_play()
+            return
         if self._playing and self._engine:
             self._engine.stop()
         if self._playback_worker and self._playback_worker.is_running:

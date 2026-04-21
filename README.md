@@ -176,9 +176,8 @@ export NERD_FONTS=1
 
 | Key | Action |
 |-----|--------|
-| `p` | Play / Pause / Resume |
-| `s` | Stop playback |
-| `enter` / `space` | Expand/collapse tree node (Tree widget native) |
+| `p` / `space` | Play / Pause / Resume |
+| `enter` | Expand/collapse tree node (Tree widget native) |
 | `]` / `right` | Skip to next paragraph |
 | `[` | Rewind to previous paragraph |
 | `+` / `=` | Speed up 0.1x |
