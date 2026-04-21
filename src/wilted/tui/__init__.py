@@ -435,14 +435,20 @@ class WiltedApp(App):
 
     @work(thread=True, exclusive=True, group="preload")
     def _preload_model(self) -> None:
-        """Eagerly load the TTS model in the background at startup."""
-        from wilted.fetch import suppress_subprocess_output
+        """Eagerly load the TTS model in the background at startup.
 
+        Note: we intentionally do NOT wrap load_model() in
+        suppress_subprocess_output(). That context manager redirects OS-level
+        fd 1/2 to /dev/null, which blinds Textual's renderer for the entire
+        ~1.6 s model load and makes the UI appear frozen. The model produces
+        no stdout/stderr output when cached (the common case). First-time
+        downloads may print progress bars, but that one-time noise is
+        preferable to a frozen UI on every launch.
+        """
         try:
             self._ensure_engine()
             self.call_from_thread(self._set_status, "Loading TTS model...")
-            with suppress_subprocess_output():
-                self._engine.load_model()
+            self._engine.load_model()
             # Only clear status if it still says "Loading" — avoid clobbering
             # messages set by other actions while the model was loading.
             status_widget = self.query_one("#status-line", Label)
