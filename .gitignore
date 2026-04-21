@@ -23,8 +23,7 @@ data/
 # Python version manager
 .python-version
 
-# Lock files
-uv.lock
+# Lock files — uv.lock is intentionally tracked for reproducible installs
 
 # User config (email credentials, playback prefs)
 wilted.toml

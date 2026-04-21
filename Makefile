@@ -1,7 +1,7 @@
 .PHONY: lint lint-sh test test-unit test-integration test-e2e test-tui validate install-launchd uninstall-launchd
 
 lint:
-	UV_CACHE_DIR=.uv-cache UV_PYTHON=python3.12 uv run --group dev ruff check .
+	uv run --group dev ruff check .
 
 lint-sh:
 	@if command -v shellcheck >/dev/null 2>&1; then \
@@ -12,19 +12,19 @@ lint-sh:
 	fi
 
 test:
-	PYTHONPATH=src UV_CACHE_DIR=.uv-cache UV_PYTHON=python3.12 uv run --group dev pytest
+	PYTHONPATH=src uv run --group dev pytest
 
 test-unit:
-	PYTHONPATH=src UV_CACHE_DIR=.uv-cache UV_PYTHON=python3.12 uv run --group dev pytest -m unit
+	PYTHONPATH=src uv run --group dev pytest -m unit
 
 test-integration:
-	PYTHONPATH=src UV_CACHE_DIR=.uv-cache UV_PYTHON=python3.12 uv run --group dev pytest -m integration
+	PYTHONPATH=src uv run --group dev pytest -m integration
 
 test-e2e:
-	PYTHONPATH=src UV_CACHE_DIR=.uv-cache UV_PYTHON=python3.12 uv run --group dev pytest -m e2e
+	PYTHONPATH=src uv run --group dev pytest -m e2e
 
 test-tui:
-	PYTHONPATH=src UV_CACHE_DIR=.uv-cache UV_PYTHON=python3.12 uv run --group dev pytest -m tui
+	PYTHONPATH=src uv run --group dev pytest -m tui
 
 validate: lint test
 
