@@ -197,6 +197,48 @@ async def test_delete_confirm_button_click(mock_clear_state, mock_remove, mock_i
 
 
 @pytest.mark.asyncio
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
+@patch("wilted.tui.remove_article_by_id")
+@patch("wilted.tui.clear_resume_position")
+@patch("wilted.tui.set_resume_position")
+async def test_delete_playing_article_clears_plate(
+    mock_set_resume, mock_clear_state, mock_remove, mock_items, mock_list, mock_ensure
+):
+    """Deleting the currently-playing article should reset the Plate pane."""
+    from textual.widgets import Label
+
+    app = WiltedApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        tree = app.query_one("#playlist-tree", Tree)
+        all_node = next(n for n in tree.root.children if n.data == "All")
+        if all_node.children:
+            tree.select_node(all_node.children[0])
+        await pilot.pause()
+        # Simulate that this article is currently playing
+        app._current_entry = SAMPLE_QUEUE[0]
+        app._playing = True
+        title_label = app.query_one("#now-playing-title", Label)
+        title_label.update("The Future of AI Research")
+        app.query_one("#current-text", Static).update("Some article text")
+        await pilot.pause()
+        # Delete it
+        await pilot.press("d")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmScreen)
+        app.screen.action_confirm()
+        await pilot.pause()
+        # Plate should be cleared: state reset + progress zeroed
+        assert app._current_entry is None
+        assert app._playing is False
+        assert app._bar_progress == 0.0
+        # Title widget should show empty-state text
+        assert title_label._Static__content == "No article selected"
+
+
+@pytest.mark.asyncio
 async def test_add_screen_launches_on_a_key():
     """Pressing 'a' should open the AddArticleScreen modal."""
     with (
@@ -714,7 +756,9 @@ async def test_timer_noop_when_not_playing(mock_items, mock_list, mock_ensure):
 @patch("wilted.tui.ensure_default_playlists")
 @patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
 @patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
-async def test_speed_down_key(mock_items, mock_list, mock_ensure):
+@patch("wilted.get_default_speed", return_value=1.0)
+@patch("wilted.db.set_setting")
+async def test_speed_down_key(mock_set, mock_default, mock_items, mock_list, mock_ensure):
     """Pressing - decreases speed by 0.1x."""
     app = WiltedApp()
     async with app.run_test() as pilot:
@@ -728,7 +772,9 @@ async def test_speed_down_key(mock_items, mock_list, mock_ensure):
 @patch("wilted.tui.ensure_default_playlists")
 @patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
 @patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
-async def test_speed_up_key(mock_items, mock_list, mock_ensure):
+@patch("wilted.get_default_speed", return_value=1.0)
+@patch("wilted.db.set_setting")
+async def test_speed_up_key(mock_set, mock_default, mock_items, mock_list, mock_ensure):
     """Pressing + increases speed by 0.1x."""
     app = WiltedApp()
     async with app.run_test() as pilot:
@@ -742,7 +788,8 @@ async def test_speed_up_key(mock_items, mock_list, mock_ensure):
 @patch("wilted.tui.ensure_default_playlists")
 @patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
 @patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
-async def test_speed_clamps_to_range(mock_items, mock_list, mock_ensure):
+@patch("wilted.db.set_setting")
+async def test_speed_clamps_to_range(mock_set, mock_items, mock_list, mock_ensure):
     """Speed stays within 0.5x-2.0x bounds."""
     app = WiltedApp()
     async with app.run_test() as pilot:
@@ -761,7 +808,9 @@ async def test_speed_clamps_to_range(mock_items, mock_list, mock_ensure):
 @patch("wilted.tui.ensure_default_playlists")
 @patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
 @patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
-async def test_speed_key_shows_feedback(mock_items, mock_list, mock_ensure):
+@patch("wilted.get_default_speed", return_value=1.0)
+@patch("wilted.db.set_setting")
+async def test_speed_key_shows_feedback(mock_set, mock_default, mock_items, mock_list, mock_ensure):
     """Speed change updates the speed display."""
     app = WiltedApp()
     async with app.run_test() as pilot:

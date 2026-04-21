@@ -190,7 +190,9 @@ class WiltedApp(App):
         self._playing: bool = False
         self._paused: bool = False
         self._voice: str = "af_heart"
-        self._speed: float = 1.0
+        from wilted import get_default_speed
+
+        self._speed: float = get_default_speed()
         self._lang: str = "a"
         self._last_state_save: float = 0.0
         self._playback_worker = None
@@ -762,15 +764,23 @@ class WiltedApp(App):
             self._rewind_to = max(0, self._paragraph_idx - 1)
             self._engine.stop()  # Stop current audio; while loop picks up _rewind_to
 
+    def _save_speed(self) -> None:
+        """Persist current speed to the database for next session."""
+        from wilted.db import set_setting
+
+        set_setting("speed", str(self._speed))
+
     def action_speed_down(self) -> None:
         """Decrease playback speed by 0.1x."""
         self._speed = max(0.5, round(self._speed - 0.1, 1))
         self._update_speed_display()
+        self._save_speed()
 
     def action_speed_up(self) -> None:
         """Increase playback speed by 0.1x."""
         self._speed = min(2.0, round(self._speed + 0.1, 1))
         self._update_speed_display()
+        self._save_speed()
 
     def action_next_article(self) -> None:
         """Stop current and play next article in queue."""
@@ -804,10 +814,12 @@ class WiltedApp(App):
                 self._update_speed_display()
                 self._refresh_playlists()  # Update est. time column
                 changed = old_voice != self._voice or old_speed != self._speed or old_lang != self._lang
-                if changed and self._playing:
-                    self._set_status(f"Speed: {self._speed:.1f}x — takes effect next paragraph", _STATUS_MEDIUM)
-                elif changed and not self._playing:
-                    self._trigger_generation()
+                if changed:
+                    self._save_speed()
+                    if self._playing:
+                        self._set_status(f"Speed: {self._speed:.1f}x — takes effect next paragraph", _STATUS_MEDIUM)
+                    else:
+                        self._trigger_generation()
 
         self.push_screen(VoiceSettingsScreen(self._voice, self._speed, self._lang), on_dismiss)
 
@@ -825,6 +837,16 @@ class WiltedApp(App):
 
         self.push_screen(AddArticleScreen(), on_dismiss)
 
+    def _stop_and_clear_plate(self) -> None:
+        """Stop playback and reset the Plate pane to its empty state."""
+        self.action_stop()
+        self._current_entry = None
+        self.query_one("#now-playing-title", Label).update("No article selected")
+        self.query_one("#current-text", Static).update("")
+        self._bar_progress = 0.0
+        self._bar_time_override = ""
+        self._update_playback_bar()
+
     def action_mark_read(self) -> None:
         """Mark the selected item as read (completed). Keeps it in the DB for metrics."""
         entry = self._get_selected_entry()
@@ -832,8 +854,7 @@ class WiltedApp(App):
             self._set_status("Nothing to mark", _STATUS_MEDIUM)
             return
         if self._current_entry and entry["id"] == self._current_entry["id"]:
-            self.action_stop()
-            self._current_entry = None
+            self._stop_and_clear_plate()
         mark_completed(entry)
         clear_resume_position(entry["id"])
         title = entry.get("title", "Untitled")
@@ -857,8 +878,7 @@ class WiltedApp(App):
             if confirmed:
                 # Stop playback if deleting current article
                 if self._current_entry and entry["id"] == self._current_entry["id"]:
-                    self.action_stop()
-                    self._current_entry = None
+                    self._stop_and_clear_plate()
                 try:
                     remove_article_by_id(entry["id"])
                     clear_resume_position(entry["id"])

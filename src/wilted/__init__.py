@@ -93,6 +93,31 @@ def use_nerd_fonts() -> bool:
 ICONS = _ICONS_NERD if use_nerd_fonts() else _ICONS_UNICODE
 
 
+def load_config() -> dict:
+    """Load wilted.toml and return the full config dict. Returns {} if missing."""
+    import tomllib
+
+    config_path = PROJECT_ROOT / "wilted.toml"
+    if not config_path.exists():
+        return {}
+    with open(config_path, "rb") as f:
+        return tomllib.load(f)
+
+
+def get_default_speed() -> float:
+    """Return the playback speed: last-used (from DB) > wilted.toml > 1.0."""
+    try:
+        from wilted.db import get_setting
+
+        saved = get_setting("speed")
+        if saved is not None:
+            return max(0.5, min(2.0, float(saved)))
+    except Exception:
+        pass
+    speed = load_config().get("playback", {}).get("speed", 1.0)
+    return max(0.5, min(2.0, float(speed)))
+
+
 def ensure_data_dirs():
     """Create data directories if they don't exist."""
     ARTICLES_DIR.mkdir(parents=True, exist_ok=True)

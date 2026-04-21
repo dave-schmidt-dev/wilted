@@ -22,13 +22,13 @@ Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 cd ~/Documents/Projects/wilted
-uv sync --extra tui
+uv sync
 ```
 
 For LLM-based classification (optional):
 
 ```bash
-uv sync --extra tui --extra llm
+uv sync --extra llm
 ```
 
 Add a shell alias (e.g. in `~/.zshrc`):
@@ -45,7 +45,7 @@ First run downloads the Kokoro model from HuggingFace (~160MB, one-time).
 ### Development
 
 ```bash
-uv sync --extra tui --group dev   # install with dev/test deps
+uv sync --group dev   # install with dev/test deps
 make validate                      # lint + full test suite
 ```
 
@@ -81,6 +81,13 @@ wilted --speed 0.8            # slower
 wilted --lang b               # British English prosody
 wilted --save article.wav     # save to file instead of playing
 wilted --list-voices          # show all available voices
+```
+
+Speed persists between sessions automatically. In the TUI, `+`/`-` adjusts speed and it is remembered next launch. To set a default speed before first use, add to `wilted.toml`:
+
+```toml
+[playback]
+speed = 1.3
 ```
 
 ## Utility
@@ -214,7 +221,7 @@ src/wilted/                # shared library
     migrate.py           # queue.json -> SQLite migration
     log.py               # RotatingFileHandler setup
     tui/                 # Textual TUI (decomposed package)
-tests/                   # pytest suite (660 tests across unit/integration/e2e/TUI lanes)
+tests/                   # pytest suite (638 tests across unit/integration/e2e/TUI lanes)
 migrations/              # numbered schema migrations
 ```
 
@@ -222,10 +229,10 @@ migrations/              # numbered schema migrations
 
 Routine validation uses tiered lanes. The current split is:
 
-- `220` unit tests
-- `354` integration tests
+- `221` unit tests
+- `334` integration tests
 - `30` subprocess e2e tests
-- `56` TUI tests
+- `53` TUI tests
 
 Default project validation still uses the guarded fast lane:
 

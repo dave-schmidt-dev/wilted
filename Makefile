@@ -12,19 +12,19 @@ lint-sh:
 	fi
 
 test:
-	PYTHONPATH=src UV_CACHE_DIR=.uv-cache UV_PYTHON=python3.12 uv run --extra tui --group dev pytest
+	PYTHONPATH=src UV_CACHE_DIR=.uv-cache UV_PYTHON=python3.12 uv run --group dev pytest
 
 test-unit:
-	PYTHONPATH=src UV_CACHE_DIR=.uv-cache UV_PYTHON=python3.12 uv run --extra tui --group dev pytest -m unit
+	PYTHONPATH=src UV_CACHE_DIR=.uv-cache UV_PYTHON=python3.12 uv run --group dev pytest -m unit
 
 test-integration:
-	PYTHONPATH=src UV_CACHE_DIR=.uv-cache UV_PYTHON=python3.12 uv run --extra tui --group dev pytest -m integration
+	PYTHONPATH=src UV_CACHE_DIR=.uv-cache UV_PYTHON=python3.12 uv run --group dev pytest -m integration
 
 test-e2e:
-	PYTHONPATH=src UV_CACHE_DIR=.uv-cache UV_PYTHON=python3.12 uv run --extra tui --group dev pytest -m e2e
+	PYTHONPATH=src UV_CACHE_DIR=.uv-cache UV_PYTHON=python3.12 uv run --group dev pytest -m e2e
 
 test-tui:
-	PYTHONPATH=src UV_CACHE_DIR=.uv-cache UV_PYTHON=python3.12 uv run --extra tui --group dev pytest -m tui
+	PYTHONPATH=src UV_CACHE_DIR=.uv-cache UV_PYTHON=python3.12 uv run --group dev pytest -m tui
 
 validate: lint test
 

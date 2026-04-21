@@ -186,7 +186,10 @@ def _play_text(text, args):
     est_minutes = word_count / WPM_ESTIMATE
     print(f"  {word_count} words, ~{est_minutes:.0f} min listen time")
 
-    engine = AudioEngine(model_name=args.model, voice=args.voice, speed=args.speed, lang=args.lang)
+    from wilted import get_default_speed
+
+    speed = args.speed if args.speed is not None else get_default_speed()
+    engine = AudioEngine(model_name=args.model, voice=args.voice, speed=speed, lang=args.lang)
 
     if args.save:
         from wilted.engine import export_to_wav
@@ -660,19 +663,9 @@ def cmd_classify(argv: list[str]) -> None:
 
 def _load_email_config() -> dict:
     """Load email config from wilted.toml. Returns {'enabled': bool, 'to': str}."""
-    import tomllib
+    from wilted import load_config
 
-    from wilted import PROJECT_ROOT
-
-    defaults: dict = {"enabled": False, "to": ""}
-    config_path = PROJECT_ROOT / "wilted.toml"
-    if not config_path.exists():
-        return defaults
-
-    with open(config_path, "rb") as f:
-        data = tomllib.load(f)
-
-    email_section = data.get("email", {})
+    email_section = load_config().get("email", {})
     return {
         "enabled": bool(email_section.get("enabled", False)),
         "to": str(email_section.get("to", "")),
@@ -942,7 +935,9 @@ def run_cli(argv=None):
 
     play_group = parser.add_argument_group("playback")
     play_group.add_argument("--voice", default="af_heart", help="Voice preset (default: af_heart)")
-    play_group.add_argument("--speed", type=float, default=1.0, help="Speech speed 0.5-2.0 (default: 1.0)")
+    play_group.add_argument(
+        "--speed", type=float, default=None, help="Speech speed 0.5-2.0 (default: from wilted.toml or 1.0)"
+    )
     play_group.add_argument(
         "--model", default="mlx-community/Kokoro-82M-bf16", help="TTS model (default: mlx-community/Kokoro-82M-bf16)"
     )
@@ -1021,6 +1016,10 @@ def main():
 
         tqdm.tqdm.get_lock()
 
-        from wilted.tui import WiltedApp
+        try:
+            from wilted.tui import WiltedApp
+        except ModuleNotFoundError:
+            print("Error: textual is not installed. Run: uv sync", file=sys.stderr)
+            sys.exit(1)
 
         WiltedApp().run()

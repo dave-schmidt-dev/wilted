@@ -18,10 +18,10 @@ dependencies = [
     "tqdm",
     "rich>=13.0",
     "playwright>=1.58.0",
+    "textual>=8.0",
 ]
 
 [project.optional-dependencies]
-tui = ["textual>=8.0"]
 llm = ["mlx-vlm", "llama-cpp-python"]
 
 [project.scripts]

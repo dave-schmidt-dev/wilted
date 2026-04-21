@@ -1,3 +1,25 @@
+## 2026-04-21 — Dependency fix, Plate-clear bug, speed persistence (session 7)
+
+### Bug fix — textual not installed after venv rebuild
+- **Root cause**: `textual` was in `[project.optional-dependencies] tui`, but the default no-args `wilted` command imports it unconditionally. The shell alias (`uv run --project ... wilted`) doesn't pass `--extra tui`, so any venv rebuild dropped textual silently.
+- **Fix**: Moved `textual>=8.0` from optional `[tui]` extra to core `dependencies`. Removed all `--extra tui` flags from Makefile and README. Added graceful `ModuleNotFoundError` fallback in `cli.py:main()`.
+
+### Bug fix — Plate pane not cleared when playing article deleted or marked read
+- **Root cause**: `action_delete_selected` and `action_mark_read` called `action_stop()` when removing the currently-playing article, but `action_stop()` only resets internal state (`_playing`, `_paused`) — it does not clear the Plate pane widgets (title, text, progress bar). The stale article remained visible.
+- **Fix** (`tui/__init__.py`): Extracted `_stop_and_clear_plate()` that calls `action_stop()` then resets the title to "No article selected", clears the text display, and zeros the progress bar. Both delete and mark-read now use this method.
+- **Test**: `test_delete_playing_article_clears_plate` — simulates playing article, confirms deletion, asserts Plate state is reset.
+
+### Feature — playback speed persistence
+- **Config file** (`wilted.toml`): New `[playback] speed` setting for factory default speed. Three-tier resolution: DB last-used > config file > hardcoded 1.0.
+- **DB persistence** (`db.py`): `get_setting()`/`set_setting()` using the `_meta` table with `setting:` prefix. Speed saved on every `+`/`-` keypress and voice modal dismiss.
+- **CLI**: `--speed` default changed from hardcoded 1.0 to config-aware resolution.
+- **Shared config loader** (`__init__.py`): `load_config()` reads `wilted.toml` once; `_load_email_config()` refactored to use it.
+- **Tests**: 8 new tests covering `get_setting`/`set_setting` round-trip, overwrite, prefix isolation, `get_default_speed` from DB/config/fallback/clamping.
+- `.gitignore`: Added `wilted.toml` (contains user-specific config and may include email credentials).
+
+### Housekeeping
+- Suite: 638 passed (up from 604).
+
 ## 2026-04-20 — Clipboard URL detection, Playwright TUI fixes (session 6)
 
 ### Bug fix — clipboard URL stored as literal text

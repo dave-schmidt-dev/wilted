@@ -11,6 +11,9 @@
 - [x] Product direction clarified: Wilted is intended to become the primary personal audio surface for news, entertainment, and learning content
 - [x] Subprocess e2e test suite, real-DB TUI tests, ffmpeg round-trip, and app-focused engine/TUI guardrails
 - [x] Manual audio-device playback verified (2026-04-20): TTS engine, audio pipeline, sounddevice output all confirmed working
+- [x] Textual moved to core deps (was optional `[tui]` — caused crash on venv rebuild)
+- [x] Plate pane clears when playing article is deleted or marked read
+- [x] Playback speed persists between sessions (DB > wilted.toml > 1.0 fallback)
 
 ## Now
 

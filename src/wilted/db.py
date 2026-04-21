@@ -306,6 +306,27 @@ class _Meta(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# User settings — stored in _meta with "setting:" prefix
+# ---------------------------------------------------------------------------
+
+
+def get_setting(key: str, default: str | None = None) -> str | None:
+    """Read a user setting from the _meta table."""
+    ensure_db()
+    try:
+        row = _Meta.get_by_id(f"setting:{key}")
+        return row.value
+    except _Meta.DoesNotExist:
+        return default
+
+
+def set_setting(key: str, value: str) -> None:
+    """Write a user setting to the _meta table."""
+    ensure_db()
+    _Meta.replace(key=f"setting:{key}", value=str(value)).execute()
+
+
+# ---------------------------------------------------------------------------
 # Migration runner
 # ---------------------------------------------------------------------------
 

@@ -26,6 +26,9 @@ data/
 # Lock files
 uv.lock
 
+# User config (email credentials, playback prefs)
+wilted.toml
+
 # Plans (local working documents)
 /plans
 
