@@ -24,6 +24,10 @@ SCRIPT_DIR="$(cd "$(dirname "$REAL_SCRIPT")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export WILTED_PROJECT_ROOT="$PROJECT_ROOT"
 
+# Keep the venv outside iCloud (~/Documents is iCloud-synced, which sets UF_HIDDEN on
+# .venv and breaks Python 3.13's .pth handling). See HISTORY.md.
+export UV_PROJECT_ENVIRONMENT="${HOME}/.venvs/wilted"
+
 WILTED="uv run --project ${PROJECT_ROOT} python -m wilted.cli"
 EMAIL_ALERT="${HOME}/.agent/bin/email-alert"
 

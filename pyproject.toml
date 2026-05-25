@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
     "mlx-audio[tts]",
+    "parakeet-mlx",
     "trafilatura",
     "numpy",
     "sounddevice",

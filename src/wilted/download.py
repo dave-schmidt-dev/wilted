@@ -21,6 +21,13 @@ logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 65536  # 64 KB
 
+# Podcast tracking redirects (Podtrac, mgln.ai, pdst.fm, etc.) return 403 for
+# the default Python urllib User-Agent. A real-browser UA passes through the
+# whole redirect chain to the actual MP3 host.
+_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
+)
+
 
 class DownloadError(RuntimeError):
     """Raised when a podcast download fails."""
@@ -115,6 +122,7 @@ def download_podcast(
         # Initial HEAD-like GET to learn filename and Content-Length.
         # We use a normal GET so we can reuse the connection for streaming.
         req = urllib.request.Request(url)
+        req.add_header("User-Agent", _USER_AGENT)
 
         # Check for existing partial file — need Content-Length first
         response: HTTPResponse = urllib.request.urlopen(req, timeout=60)  # noqa: S310
@@ -148,6 +156,7 @@ def download_podcast(
             # Close the first response and make a Range request
             response.close()
             range_req = urllib.request.Request(url)
+            range_req.add_header("User-Agent", _USER_AGENT)
             range_req.add_header("Range", f"bytes={existing_size}-")
             response = urllib.request.urlopen(range_req, timeout=60)  # noqa: S310
 

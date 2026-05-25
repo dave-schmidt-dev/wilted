@@ -8,7 +8,9 @@ import pytest
 
 from wilted.cli import (
     CLIError,
+    _maybe_chain_discover_prepare,
     _play_text,
+    _prompt_yes,
     cmd_add,
     cmd_clear,
     cmd_direct,
@@ -420,6 +422,173 @@ class TestFeedSubcommand:
         """wilted feed with no action exits 1."""
         with pytest.raises(SystemExit):
             run_cli(["feed"])
+
+
+class TestFeedAddChainPrompt:
+    """`wilted feed add` offers to chain into discover and prepare."""
+
+    def test_yes_flag_skips_prompts_and_chains_both(self, capsys):
+        with (
+            patch("wilted.discover.run_discover", return_value={"discovered": 3, "feeds_polled": 1, "errors": 0}) as rd,
+            patch("wilted.prepare.run_prepare", return_value={"prepared": 3, "errors": 0, "skipped": 0}) as rp,
+        ):
+            run_cli(["feed", "add", "https://example.com/feed.xml", "--type", "podcast", "--yes"])
+        rd.assert_called_once()
+        rp.assert_called_once()
+        out = capsys.readouterr().out
+        assert "Discovered 3" in out
+        assert "Prepared 3" in out
+
+    def test_no_chain_flag_suppresses_prompts(self, capsys):
+        with (
+            patch("wilted.discover.run_discover") as rd,
+            patch("wilted.prepare.run_prepare") as rp,
+            patch("sys.stdin.isatty", return_value=True),
+        ):
+            run_cli(["feed", "add", "https://example.com/feed.xml", "--no-chain"])
+        rd.assert_not_called()
+        rp.assert_not_called()
+
+    def test_non_tty_skips_prompts_silently(self, capsys):
+        with (
+            patch("wilted.discover.run_discover") as rd,
+            patch("wilted.prepare.run_prepare") as rp,
+            patch("sys.stdin.isatty", return_value=False),
+        ):
+            run_cli(["feed", "add", "https://example.com/feed.xml"])
+        rd.assert_not_called()
+        rp.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Added feed #1" in out
+        assert "wilted discover" in out  # hint for non-interactive users
+
+    def test_tty_prompts_yes_runs_both(self, capsys):
+        with (
+            patch("wilted.discover.run_discover", return_value={"discovered": 5, "feeds_polled": 1, "errors": 0}) as rd,
+            patch("wilted.prepare.run_prepare", return_value={"prepared": 5, "errors": 0, "skipped": 0}) as rp,
+            patch("sys.stdin.isatty", return_value=True),
+            patch("builtins.input", side_effect=["y", "y"]),
+        ):
+            run_cli(["feed", "add", "https://example.com/feed.xml"])
+        rd.assert_called_once()
+        rp.assert_called_once()
+
+    def test_tty_empty_response_defaults_to_yes(self, capsys):
+        with (
+            patch("wilted.discover.run_discover", return_value={"discovered": 1, "feeds_polled": 1, "errors": 0}) as rd,
+            patch("wilted.prepare.run_prepare", return_value={"prepared": 1, "errors": 0, "skipped": 0}) as rp,
+            patch("sys.stdin.isatty", return_value=True),
+            patch("builtins.input", side_effect=["", ""]),
+        ):
+            run_cli(["feed", "add", "https://example.com/feed.xml"])
+        rd.assert_called_once()
+        rp.assert_called_once()
+
+    def test_tty_no_to_discover_skips_both(self, capsys):
+        with (
+            patch("wilted.discover.run_discover") as rd,
+            patch("wilted.prepare.run_prepare") as rp,
+            patch("sys.stdin.isatty", return_value=True),
+            patch("builtins.input", side_effect=["n"]),
+        ):
+            run_cli(["feed", "add", "https://example.com/feed.xml"])
+        rd.assert_not_called()
+        rp.assert_not_called()
+
+    def test_tty_yes_to_discover_no_to_prepare(self, capsys):
+        with (
+            patch("wilted.discover.run_discover", return_value={"discovered": 2, "feeds_polled": 1, "errors": 0}) as rd,
+            patch("wilted.prepare.run_prepare") as rp,
+            patch("sys.stdin.isatty", return_value=True),
+            patch("builtins.input", side_effect=["y", "n"]),
+        ):
+            run_cli(["feed", "add", "https://example.com/feed.xml"])
+        rd.assert_called_once()
+        rp.assert_not_called()
+
+    def test_yes_and_no_chain_together_no_chain_wins(self, capsys):
+        """--yes --no-chain: no_chain takes priority; nothing runs."""
+        with (
+            patch("wilted.discover.run_discover") as rd,
+            patch("wilted.prepare.run_prepare") as rp,
+        ):
+            _maybe_chain_discover_prepare(yes=True, no_chain=True)
+        rd.assert_not_called()
+        rp.assert_not_called()
+
+    def test_yes_flag_output_shows_errors_and_skipped(self, capsys):
+        """--yes chains both; output includes errors and skipped counts."""
+        with (
+            patch("wilted.discover.run_discover", return_value={"discovered": 1, "feeds_polled": 1, "errors": 0}),
+            patch("wilted.prepare.run_prepare", return_value={"prepared": 0, "errors": 2, "skipped": 1}),
+        ):
+            _maybe_chain_discover_prepare(yes=True, no_chain=False)
+        out = capsys.readouterr().out
+        assert "2 errors" in out
+        assert "1 skipped" in out
+
+    def test_non_tty_hint_message_content(self, capsys):
+        """Non-TTY hint includes both discover and prepare commands."""
+        with patch("sys.stdin.isatty", return_value=False):
+            _maybe_chain_discover_prepare(yes=False, no_chain=False)
+        out = capsys.readouterr().out
+        assert "discover" in out
+        assert "prepare" in out
+
+
+class TestPromptYes:
+    """`_prompt_yes` — unit tests for all accepted truthy/falsy inputs."""
+
+    def test_empty_string_is_yes(self):
+        with patch("builtins.input", return_value=""):
+            assert _prompt_yes("Continue?") is True
+
+    def test_y_is_yes(self):
+        with patch("builtins.input", return_value="y"):
+            assert _prompt_yes("Continue?") is True
+
+    def test_yes_full_word_is_yes(self):
+        with patch("builtins.input", return_value="yes"):
+            assert _prompt_yes("Continue?") is True
+
+    def test_uppercase_Y_is_yes(self):
+        """Input is lowercased before comparison; 'Y' should match."""
+        with patch("builtins.input", return_value="Y"):
+            assert _prompt_yes("Continue?") is True
+
+    def test_uppercase_YES_is_yes(self):
+        with patch("builtins.input", return_value="YES"):
+            assert _prompt_yes("Continue?") is True
+
+    def test_n_is_no(self):
+        with patch("builtins.input", return_value="n"):
+            assert _prompt_yes("Continue?") is False
+
+    def test_no_full_word_is_no(self):
+        with patch("builtins.input", return_value="no"):
+            assert _prompt_yes("Continue?") is False
+
+    def test_arbitrary_string_is_no(self):
+        with patch("builtins.input", return_value="maybe"):
+            assert _prompt_yes("Continue?") is False
+
+    def test_whitespace_only_strips_to_empty_is_yes(self):
+        """Leading/trailing whitespace is stripped; spaces alone → empty → Yes."""
+        with patch("builtins.input", return_value="   "):
+            assert _prompt_yes("Continue?") is True
+
+    def test_prompt_text_appears_in_input_call(self):
+        """The question string is included in the prompt passed to input()."""
+        with patch("builtins.input", return_value="") as mock_input:
+            _prompt_yes("Shall we proceed?")
+        call_arg = mock_input.call_args[0][0]
+        assert "Shall we proceed?" in call_arg
+        assert "[Y/n]" in call_arg
+
+    def test_eof_is_no(self):
+        """Ctrl-D (EOFError) at the prompt declines instead of crashing."""
+        with patch("builtins.input", side_effect=EOFError):
+            assert _prompt_yes("Continue?") is False
 
 
 class TestKeywordSubcommand:

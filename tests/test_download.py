@@ -93,6 +93,21 @@ class TestDownloadPodcast:
         assert "1" in str(result)
 
     @patch("wilted.download.urllib.request.urlopen")
+    def test_request_sends_browser_user_agent(self, mock_urlopen):
+        """Podcast tracking redirects (Podtrac, mgln.ai, pdst.fm) 403 default Python UA;
+        request must carry a real-browser User-Agent to reach the MP3."""
+        resp = _make_response(body=b"\xff\xfb" * 10, content_length=20)
+        mock_urlopen.return_value = resp
+
+        download_podcast(1, "https://pdst.fm/e/x/y/z.mp3")
+
+        sent_req = mock_urlopen.call_args_list[0][0][0]
+        ua = sent_req.get_header("User-agent")  # urllib normalises header name
+        assert ua is not None, "download must set a User-Agent"
+        assert "Python-urllib" not in ua, "default Python UA gets 403 at podcast trackers"
+        assert "Mozilla" in ua or "AppleCoreMedia" in ua, f"unexpected UA: {ua!r}"
+
+    @patch("wilted.download.urllib.request.urlopen")
     def test_resume_partial_download(self, mock_urlopen, tmp_path):
         """Resumes a partial file using Range header."""
         full_data = b"A" * 1000
@@ -127,6 +142,43 @@ class TestDownloadPodcast:
         # Verify Range header was sent on second request
         second_call_req = mock_urlopen.call_args_list[1][0][0]
         assert second_call_req.get_header("Range") == "bytes=400-"
+
+    @patch("wilted.download.urllib.request.urlopen")
+    def test_resume_range_request_also_sends_browser_user_agent(self, mock_urlopen, tmp_path):
+        """The Range (resume) request must also carry the browser User-Agent.
+
+        Podcast tracking redirects gate on the UA at every hop — including Range
+        requests.  Sending the Python default UA on a resume would break mid-episode
+        downloads on the same trackers that gate initial downloads.
+        """
+        full_data = b"C" * 1000
+        partial_data = b"C" * 300
+
+        podcast_dir = get_podcast_dir(11)
+        podcast_dir.mkdir(parents=True)
+        (podcast_dir / "episode.mp3").write_bytes(partial_data)
+
+        first_resp = _make_response(
+            body=b"",
+            content_length=len(full_data),
+            url="https://pdst.fm/e/example/episode.mp3",
+        )
+        range_resp = _make_response(
+            body=full_data[300:],
+            status=206,
+            content_length=len(full_data),
+            url="https://pdst.fm/e/example/episode.mp3",
+        )
+        mock_urlopen.side_effect = [first_resp, range_resp]
+
+        download_podcast(11, "https://pdst.fm/e/example/episode.mp3")
+
+        assert mock_urlopen.call_count == 2, "expected initial + range request"
+        range_req = mock_urlopen.call_args_list[1][0][0]
+        ua = range_req.get_header("User-agent")
+        assert ua is not None, "Range request must include User-Agent"
+        assert "Python-urllib" not in ua, "default Python UA would be 403'd at podcast trackers"
+        assert "Mozilla" in ua or "AppleCoreMedia" in ua, f"unexpected UA on Range request: {ua!r}"
 
     @patch("wilted.download.urllib.request.urlopen")
     def test_skip_complete_download(self, mock_urlopen, tmp_path):

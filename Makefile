@@ -1,5 +1,10 @@
 .PHONY: lint lint-sh test test-unit test-integration test-e2e test-tui validate install-launchd uninstall-launchd
 
+# Keep the project venv outside iCloud (~/Documents is iCloud-synced). iCloud sets the
+# macOS UF_HIDDEN flag on .venv contents, and Python 3.13's site module silently skips
+# hidden .pth files — which breaks the editable install. See HISTORY.md.
+export UV_PROJECT_ENVIRONMENT := $(HOME)/.venvs/wilted
+
 lint:
 	uv run --group dev ruff check .
 

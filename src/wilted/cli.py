@@ -374,6 +374,52 @@ def cmd_doctor(_argv: list[str] | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _prompt_yes(question: str) -> bool:
+    """Prompt with [Y/n]; empty/y/yes → True, anything else → False.
+
+    Ctrl-D (EOF) at the prompt is treated as a decline, matching `--no-chain`.
+    """
+    try:
+        response = input(f"{question} [Y/n] ").strip().lower()
+    except EOFError:
+        return False
+    return response in ("", "y", "yes")
+
+
+def _maybe_chain_discover_prepare(*, yes: bool, no_chain: bool) -> None:
+    """After `feed add`, optionally chain into discover and prepare.
+
+    - `--no-chain` → silent no-op.
+    - `--yes` → run both, no prompts.
+    - Interactive TTY → prompt Y/n for each stage, default Yes.
+    - Non-TTY without `--yes` → print a hint and exit.
+    """
+    if no_chain:
+        return
+
+    if not yes and not sys.stdin.isatty():
+        print("Run `wilted discover && wilted prepare` to fetch and process new items.")
+        return
+
+    run_discover_now = yes or _prompt_yes("Run discover now?")
+    if not run_discover_now:
+        return
+
+    from wilted.discover import run_discover
+
+    stats = run_discover()
+    print(f"→ Discovered {stats['discovered']} new items across {stats['feeds_polled']} feeds")
+
+    run_prepare_now = yes or _prompt_yes("Run prepare now?")
+    if not run_prepare_now:
+        return
+
+    from wilted.prepare import run_prepare
+
+    prep = run_prepare()
+    print(f"→ Prepared {prep['prepared']} items ({prep['errors']} errors, {prep['skipped']} skipped)")
+
+
 def cmd_feed(argv: list[str]) -> None:
     """Dispatch feed subcommands: add, list, remove."""
     if not argv:
@@ -388,6 +434,8 @@ def cmd_feed(argv: list[str]) -> None:
         parser.add_argument("--type", dest="feed_type", default="article", choices=["article", "podcast"])
         parser.add_argument("--title", default=None, help="Feed title (auto-detected if omitted)")
         parser.add_argument("--playlist", default=None, help="Default playlist for new items")
+        parser.add_argument("--yes", "-y", action="store_true", help="Skip prompts; chain discover + prepare")
+        parser.add_argument("--no-chain", action="store_true", help="Suppress discover/prepare prompts entirely")
         args = parser.parse_args(argv[1:])
 
         from wilted.feeds import add_feed
@@ -403,6 +451,8 @@ def cmd_feed(argv: list[str]) -> None:
         except ValueError as e:
             print(str(e), file=sys.stderr)
             sys.exit(1)
+
+        _maybe_chain_discover_prepare(yes=args.yes, no_chain=args.no_chain)
 
     elif action == "list":
         from wilted.feeds import list_feeds

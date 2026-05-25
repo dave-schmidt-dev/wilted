@@ -266,6 +266,25 @@ class TestProcessEntryPodcast:
         assert item is not None
         assert item.item_type == "podcast_episode"
         assert item.enclosure_url == "https://ex.com/ep1.mp3"
+        # Podcast subscriptions are an explicit selection signal — episodes
+        # skip the classify/morning-report selection step and go straight to
+        # `selected` so `wilted prepare` picks them up.
+        assert item.status == "selected"
+
+    def test_article_still_routed_through_classify(self):
+        """Articles keep the classify/report flow — only podcasts auto-select."""
+        from unittest.mock import patch
+
+        feed = add_feed("https://ex.com/blog.xml", feed_type="article")
+        entry = _make_parsed_entry(id="art-1", title="A blog post", link="https://ex.com/post")
+        stats = {"new": 0, "skipped": 0, "errors": 0}
+
+        with patch("wilted.discover._fetch_article_text", return_value=("Body text.", "Title")):
+            _process_entry(feed, entry, stats)
+
+        item = Item.select().where(Item.guid == "art-1").first()
+        assert item is not None
+        assert item.item_type == "article"
         assert item.status == "fetched"
 
     def test_podcast_without_enclosure_skipped(self):

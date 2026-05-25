@@ -14,12 +14,18 @@
 - [x] Textual moved to core deps (was optional `[tui]` — caused crash on venv rebuild)
 - [x] Plate pane clears when playing article is deleted or marked read
 - [x] Playback speed persists between sessions (DB > wilted.toml > 1.0 fallback)
+- [x] `wilted feed add` chains into discover + prepare (interactive `[Y/n]` prompt; `--yes` / `--no-chain` for scripts)
+- [x] Podcast episodes auto-select on discovery (subscription = selection signal); articles still route through classify/report
+- [x] Podcast downloads send real-browser User-Agent (default `Python-urllib` gets 403 from Podtrac/mgln.ai/pdst.fm tracking redirects)
+- [x] `parakeet-mlx` declared in core dependencies (transcribe.py referenced it but it was undeclared anywhere in pyproject.toml — silent install hole for every podcast user)
 
 ## Now
 
 - [ ] **TTS playback verification**: confirm `p` key triggers TTS generation and plays audio through speakers with a real article
 - [ ] **Resume position verification**: pause mid-article, quit, relaunch, confirm resume works
 - [ ] **Email report with real content**: run `wilted ingest` with feeds, then `wilted report --email` to verify formatted email
+- [ ] **Drop `PYTHONPATH=src` from Makefile test targets**: now that the editable install resolves on its own (BUG-3 fixed), this prefix is redundant and re-introduces the masking risk that hid BUG-3 — tests passed via PYTHONPATH while the real entry point broke. Removing it makes `make test` exercise the same install path users hit. See HISTORY.md 2026-05-25.
+- [x] **Durable fix for BUG-3 (hidden .pth files)** (done 2026-05-25): relocated venv to `~/.venvs/wilted` (outside iCloud) via `UV_PROJECT_ENVIRONMENT`, wired into `~/.zshrc` alias, `Makefile`, and `scripts/wilted-nightly.sh`. iCloud can't hide files outside `~/Documents`, so the bug cannot recur. See `BUGS.md` BUG-3 and HISTORY.md 2026-05-25.
 
 ## Done (previously "Now")
 

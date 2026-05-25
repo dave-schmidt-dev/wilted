@@ -6,7 +6,7 @@ Workflow:
   1. Poll all enabled feeds via feedparser (conditional GET with ETag/Last-Modified)
   2. Dedup entries against existing items (GUID, canonical URL, content hash)
   3. Articles: fetch full text via trafilatura, store transcript, status -> 'fetched'
-  4. Podcasts: metadata from RSS only, status -> 'fetched'
+  4. Podcasts: metadata from RSS only, status -> 'selected' (subscription = selection)
 
 Partial failures (single feed errors) are logged and skipped; the stage
 returns 0 if at least one item was successfully processed.
@@ -287,6 +287,10 @@ def _process_entry(feed: Feed, entry, stats: dict) -> None:
             stats["skipped"] += 1
             return
 
+        # Podcast subscriptions are an explicit selection signal — the user
+        # already opted in by adding the feed, so episodes go straight to
+        # `selected` and are picked up by `wilted prepare`. Articles still
+        # land in `fetched` and route through classify + morning report.
         item = Item.create(
             feed=feed,
             guid=guid or str(uuid.uuid4()),
@@ -298,7 +302,7 @@ def _process_entry(feed: Feed, entry, stats: dict) -> None:
             published_at=published,
             discovered_at=now,
             item_type="podcast_episode",
-            status="fetched",
+            status="selected",
             status_changed_at=now,
             enclosure_url=enclosure_url,
             enclosure_type=enclosure_type,

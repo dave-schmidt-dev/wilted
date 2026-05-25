@@ -1,3 +1,66 @@
+## 2026-05-25 — BUG-3 durable fix: venv relocated outside iCloud (session 9)
+
+### Bug fix — `ModuleNotFoundError: No module named 'wilted'` (root cause confirmed, durable fix shipped)
+- **Symptom**: `wilted` from a fresh shell crashed at `from wilted.cli import main` with `ModuleNotFoundError`. The entry-point shim `.venv/bin/wilted` existed, but the `wilted` package was not importable by the venv's own Python.
+- **Root cause (confirmed)**: the `2026-05-18` note (BUG-3 non-recurrence) hypothesized the `UF_HIDDEN` pathology was episodic rather than `uv sync`-driven. Confirmed: it's **iCloud Drive**. `~/Documents` is iCloud's synced Documents folder (`FXICloudDriveDocuments = 1`; `~/Library/Mobile Documents/com~apple~CloudDocs/Documents` symlinks to `~/Documents`). iCloud stamps `UF_HIDDEN` on the `.venv` dot-directory and its **entire subtree** — all 20,384 files were hidden, while `src/` (no leading dot) had zero hidden files. Python 3.13's `site.addpackage` (`site.py:177`) calls `os.lstat` and returns early on `st_flags & UF_HIDDEN`, so `__editable__.wilted-0.2.0.pth` was silently skipped and `src/` never reached `sys.path`. The `PYTHONPATH=src` prefix on every Makefile test target masked this — tests passed while the real entry point broke.
+- **Diagnostic trail**: `.venv/bin/python -c "import wilted"` failed; `python -m site` showed `sys.path` without `…/src`; a manual `sys.path.insert(0, '…/src')` fixed the import; `site.makepath` + `os.path.exists` on the `.pth` line both succeeded in isolation, which pointed at the `UF_HIDDEN` early-return in `addpackage`. `ls -lO` confirmed `hidden` on all four `.pth` files (`st_flags = 32832`, `UF_HIDDEN` 0x8000 set).
+- **Immediate unblock**: `chflags nohidden .venv/lib/python3.13/site-packages/*.pth` → import + `wilted --help` worked again.
+- **Durable fix** (the deferred BUG-3 follow-up): relocated the project venv to `~/.venvs/wilted`, outside iCloud, via uv's `UV_PROJECT_ENVIRONMENT`. iCloud only touches `~/Documents`/`~/Desktop`, so a venv under `~/` is never hidden — the bug **cannot recur**. Built with `UV_PROJECT_ENVIRONMENT=$HOME/.venvs/wilted uv sync` (rebuilt, not moved — venv bin shebangs hardcode absolute paths). Verified: `.pth` not hidden, `import wilted` OK, `src` on `sys.path`, `wilted --version` works via both the shim and `uv run`. Wired into three call sites: the `~/.zshrc` alias, the `Makefile` (`export UV_PROJECT_ENVIRONMENT := $(HOME)/.venvs/wilted`), and `scripts/wilted-nightly.sh`. Removed the old in-project `.venv` (20k iCloud-synced files, now superseded). This matches the user convention of shared venvs under `~/.venvs/`.
+- **Docs**: BUG-3 marked resolved in `BUGS.md`; README install section now defaults to the external-venv setup; tasks.md durable-fix item checked off.
+- **Follow-up (optional)**: the `PYTHONPATH=src` prefix on Makefile test targets is now redundant (the editable install resolves on its own) and re-introduces the masking risk — consider dropping it so tests exercise the real install path. Left in place to keep this fix focused.
+
+## 2026-05-18 — `parakeet-mlx` added to core dependencies (session 8 cont.)
+
+### Bug fix — every non-RSS-transcript podcast episode failed: `parakeet_mlx is not installed`
+- **Symptom**: after the User-Agent fix unblocked downloads, `wilted prepare` reported "2 prepared, 8 errors". The 2 successes were both 99% Invisible episodes whose RSS feed shipped pre-made transcripts (tier-1 of the three-tier transcription fallback at `transcribe.py`). The other 8 (3 more 99% Invisible + all 5 404 Media) failed at tier-3 with `Transcription failed: parakeet_mlx is not installed. Install it with: pip install parakeet-mlx`.
+- **Root cause**: `parakeet-mlx` is referenced by `transcribe.py:413` for the local-fallback transcription tier, but it was **not declared anywhere in `pyproject.toml`** — not in `dependencies`, not in any optional extra. There was no install path that lit it up. Every user who subscribed to a podcast whose feed didn't ship transcripts would silently lose 100% of their episodes to "ready" status forever.
+- **Fix** (`pyproject.toml`): added `parakeet-mlx` to core `dependencies`. Podcasts are a first-class product feature; without local transcription the podcast pipeline can't complete for most feeds. Same precedent as Kokoro TTS already being core (also a heavy ML dep, also lazy-downloaded on first use). `mlx-vlm` (ad-detection LLM) stays in the `[llm]` extra — ad detection is a quality enhancement, not a correctness requirement (prepare logs and continues without it).
+- **`uv sync`** pulled in `parakeet-mlx==0.5.1` + `dacite==1.9.2` as a transitive. Verified the model package loads (`import parakeet_mlx` succeeds without errors).
+- **One-shot recovery**: reset 8 error'd podcast items back to `selected` for retry.
+- **BUG-3 non-recurrence**: this `uv sync` did *not* re-flip the `UF_HIDDEN` flag on the `.pth` files. The flag is per-file, not auto-set on overwrite — so the earlier `chflags nohidden` survived this rebuild. That suggests the hidden-flag pathology is triggered by something episodic (iCloud / Finder event) rather than by `uv sync` itself, which makes the durable-fix conversation less urgent than it looked yesterday.
+- **Suite**: still 647 passed.
+
+## 2026-05-18 — Podcast download 403 from tracking redirects (session 8 cont.)
+
+### Bug fix — every podcast download failed with HTTP 403
+- **Symptom**: `wilted prepare` reported "0 prepared, 10 errors" with `/tmp/wilted.log` showing `HTTP 403 ... Forbidden` against each enclosure URL. URLs went through multi-hop tracking chains: `pdst.fm → clrtpod.com → pscrb.fm → arttrk.com → mgln.ai → tracking.swap.fm → traffic.megaphone.fm/*.mp3` for 404 Media, and `mgln.ai → dts.podtrac.com → stitcher.simplecastaudio.com/*.mp3` for 99% Invisible.
+- **Root cause**: `download.py` built `urllib.request.Request(url)` with no `User-Agent` header, so Python sent its default `Python-urllib/3.13`. Podtrac, mgln.ai, pdst.fm and the rest of the podcast-analytics layer routinely 403 unknown-client UAs to filter out scrapers — they only let through requests that look like real podcast clients. Reproduced with `curl`: default UA → HTTP 403 at `mgln.ai`; Mozilla/Safari UA or `AppleCoreMedia` UA → HTTP 200 with the real MP3 at `dcs-spotify.megaphone.fm`.
+- **Fix** (`download.py`): added `_USER_AGENT` constant (`Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15`, matching the UA convention `fetch.py` already uses for HTML article fetches). Set on both the initial `Request` and the resume-Range `Request`.
+- **Tests** (`test_download.py`): added `test_request_sends_browser_user_agent` — asserts the request carries a real-browser UA, not `Python-urllib`. All 15 download tests still pass.
+- **Live verification**: hit the real `pdst.fm` chain with the new UA → HTTP 200, `audio/mpeg`, 32 MB MP3 from `dcs-spotify.megaphone.fm`.
+- **One-shot recovery**: reset the 10 podcast items from `error` back to `selected` so `wilted prepare` retries them without re-discovery.
+- **Suite**: 646 → 647 passed.
+
+## 2026-05-18 — Podcast subscriptions auto-select episodes (session 8 cont.)
+
+### Bug fix — newly-discovered podcast episodes were never playable
+- **Symptom**: after `wilted feed add <podcast-rss> && wilted discover && wilted prepare`, `prepare` reported "0 prepared" and no episodes appeared in the TUI even after `r` refresh.
+- **Root cause**: the designed pipeline was `discover → fetched → classify → classified → [Morning Report selection] → selected → prepare → ready`. The `selected` status was set in exactly one place — the report selection screen at `tui/screens/report.py:273`. For *articles* this makes sense (the report filters the firehose). For *podcasts* the user already opted in by subscribing to the feed; making them re-select each episode is overhead with no signal value, and without classify+report items stayed forever in `fetched` and were invisible to both `prepare` and the TUI.
+- **Fix** (`discover.py:_process_entry`): podcast episodes now land directly in `status="selected"` at creation time. Articles still get `"fetched"` and continue routing through classify/report. Subscribing to a podcast feed is the explicit selection signal; no further triage needed.
+- **Tests** (`test_discover.py::TestProcessEntryPodcast`): updated `test_new_podcast_episode` to assert `status == "selected"`; added `test_article_still_routed_through_classify` to pin the design boundary (articles keep the old behavior).
+- **One-shot unblock** for already-discovered data: deleted broken Feed #1 (raw Apple Podcasts URL never resolved to RSS, 0 items); promoted 10 existing `fetched` podcast episodes (99% Invisible + 404 Media) to `selected` so `wilted prepare` could pick them up without re-running discovery.
+- **Suite**: 645 → 646 passed.
+
+## 2026-05-18 — `feed add` chains into discover + prepare (session 8 cont.)
+
+### Feature — interactive prompt after `wilted feed add`
+- **Motivation**: three discrete commands (`feed add` → `discover` → `prepare`) is friction for the interactive case. Adding a podcast and then having to remember the next two steps doesn't match how users actually think about subscribing.
+- **Design** (chosen from four options): interactive `[Y/n]` prompt after a successful add, defaulting to Yes. Non-TTY (cron, pipes) prints a one-line hint and exits. `--yes`/`-y` skips prompts and chains both. `--no-chain` suppresses prompts entirely.
+- **Implementation** (`cli.py`): `_prompt_yes()` helper + `_maybe_chain_discover_prepare()` orchestrator called at the end of the `feed add` branch. Uses `sys.stdin.isatty()` for the interactive-mode check. `run_discover` and `run_prepare` are imported lazily to avoid loading the LLM/discover stack for `feed list`/`remove`/`stats`.
+- **Tests** (`test_cli.py::TestFeedAddChainPrompt`): 7 cases — `--yes` chains both, `--no-chain` suppresses, non-TTY skips silently with hint, TTY+`y`/`y` runs both, empty response defaults to Yes, `n` to discover skips both, `y`+`n` runs only discover.
+- **Suite**: 638 → 645 passed.
+
+## 2026-05-18 — `ModuleNotFoundError` from hidden .pth files, venv cleanup (session 8)
+
+### Bug fix — `wilted` failed to launch with `ModuleNotFoundError: No module named 'wilted'`
+- **Symptom**: `wilted` from the shell alias exited immediately with `ModuleNotFoundError`, even though `.venv/bin/wilted` existed and `pyproject.toml` declared a `[project.scripts] wilted = "wilted.cli:main"` entry point.
+- **Diagnosis**: `python -v` showed `Skipping hidden .pth file:` for every `.pth` in `.venv/lib/python3.13/site-packages/` — `__editable__.wilted-0.2.0.pth`, `_virtualenv.pth`, `a1_coverage.pth`, `distutils-precedence.pth`. `ls -lO` confirmed all four had the macOS `UF_HIDDEN` filesystem flag set. CPython 3.13's `site.py` silently skips hidden `.pth` files (a security tightening), so the editable install pointer to `src/` was never appended to `sys.path`.
+- **Root cause (upstream)**: project lives under `~/Documents/`, which sits inside the iCloud Drive sync root. Empty `lib 2/` and `include 2/` directories inside `.venv` indicate a Finder-style "Keep Both" merge had touched the venv tree. iCloud / Finder / certain backup tooling can flip `UF_HIDDEN` on files they copy.
+- **Immediate fix**: `chflags nohidden .venv/lib/python3.13/site-packages/*.pth`. Verified `from wilted.cli import main` resolves and TUI launches.
+- **Cleanup**: removed empty `.venv/lib 2/` and `.venv/include 2/` directories; removed stale repo-root `__pycache__/` containing `lilt-tui*.pyc` artifacts (compiled under both 3.12 and 3.14 from a long-since-renamed module).
+- **Docs**: Added a Troubleshooting subsection to `README.md` Install with the symptom, the one-line fix, and the underlying cause.
+- **Logged as BUG-3** in `BUGS.md` — mitigated, not yet permanently fixed. Durable options under consideration: exclude `.venv` from iCloud, move project out of `~/Documents/`, or wrap `uv sync` in the Makefile to re-clear hidden flags after every install.
+
 ## 2026-04-21 — Dependency fix, Plate-clear bug, speed persistence (session 7)
 
 ### Bug fix — textual not installed after venv rebuild

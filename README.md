@@ -20,8 +20,15 @@ The product should feel like a private, local-first listening surface rather tha
 
 Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
 
+The project lives under `~/Documents/`, which iCloud Drive syncs. iCloud sets the
+macOS `UF_HIDDEN` flag on `.venv` contents, and Python 3.13's `site.py` silently
+skips hidden `.pth` files — which breaks the editable install (see BUG-3 in
+`BUGS.md`). The fix is to keep the venv **outside** iCloud via
+`UV_PROJECT_ENVIRONMENT`:
+
 ```bash
 cd ~/Documents/Projects/wilted
+export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/wilted"
 uv sync
 ```
 
@@ -31,16 +38,28 @@ For LLM-based classification (optional):
 uv sync --extra llm
 ```
 
-Add a shell alias (e.g. in `~/.zshrc`):
+Add a shell alias (e.g. in `~/.zshrc`) that pins the same external venv:
 
 ```bash
-alias wilted='uv run --project ~/Documents/Projects/wilted wilted'
+alias wilted='UV_PROJECT_ENVIRONMENT=$HOME/.venvs/wilted uv run --project ~/Documents/Projects/wilted wilted'
 ```
 
 This ensures the alias always uses the project's managed venv with all
-dependencies (including playwright for browser-based article fetching).
+dependencies (including playwright for browser-based article fetching), kept
+outside iCloud so it never gets re-hidden. The `Makefile` and the nightly
+launchd script set `UV_PROJECT_ENVIRONMENT` to the same path.
 
 First run downloads the Kokoro model from HuggingFace (~160MB, one-time).
+
+### Troubleshooting
+
+If `wilted` exits with `ModuleNotFoundError: No module named 'wilted'`, the venv's `.pth` files probably have the `UF_HIDDEN` filesystem flag set — Python 3.13's `site.py` silently skips hidden `.pth` files, so the editable install pointer to `src/` never lands on `sys.path`. This happens when the venv lives under `~/Documents/` (iCloud-synced) instead of `~/.venvs/`. The durable fix is the `UV_PROJECT_ENVIRONMENT` setup above; if you hit it on an in-iCloud venv, clear the flag:
+
+```bash
+chflags nohidden .venv/lib/python*/site-packages/*.pth
+```
+
+Confirm with `ls -lO ~/.venvs/wilted/lib/python*/site-packages/*.pth` — the flags column should be `-`, not `hidden`. The flag is set when something (iCloud Drive, a Finder copy/merge, certain backup tools) touches files under `~/Documents/`. Stray `lib 2/` or `include 2/` directories inside a venv are a related symptom; both can be removed safely.
 
 ### Development
 
@@ -295,6 +314,13 @@ wilted feed list
 wilted feed remove 3
 ```
 
+After a successful `feed add`, you'll be prompted to run `discover` and then `prepare` (defaults to Yes on enter). Use `--yes` / `-y` to skip prompts and chain both (good for shell aliases), or `--no-chain` to suppress them entirely (good for scripts and cron):
+
+```bash
+wilted feed add <url> --type podcast --playlist Work --yes        # chain everything
+wilted feed add <url> --type podcast --playlist Work --no-chain   # just record the subscription
+```
+
 Run the nightly pipeline stages:
 
 ```bash
@@ -364,8 +390,10 @@ to = "you@example.com"
 
 - Python 3.12+ (via Homebrew)
 - mlx-audio (Apple Silicon TTS framework)
+- parakeet-mlx (local podcast transcription, when RSS doesn't ship a transcript)
 - ffmpeg (required for MP3 audio caching; `brew install ffmpeg`)
 - Kokoro TTS model (82M params, downloaded on first use)
+- Parakeet TDT model (~600 MB, downloaded on first podcast transcription)
 - trafilatura (article text extraction)
 - peewee (SQLite ORM)
 - feedparser (RSS/Atom parsing)
