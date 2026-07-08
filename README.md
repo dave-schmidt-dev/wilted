@@ -38,6 +38,13 @@ For LLM-based classification (optional):
 uv sync --extra llm
 ```
 
+Classification and ad detection run the Gemma-4 E4B QAT (Q4_0) GGUF via
+llama.cpp (`llama-cpp-python`). The default model string
+`hf:google/gemma-4-E4B-it-qat-q4_0-gguf/gemma-4-E4B_q4_0-it.gguf` is
+downloaded into the Hugging Face cache on first `wilted classify`/`prepare`
+and resolved offline thereafter. Pass `--backend mlx --model <hf-repo>` to
+fall back to the legacy MLX path.
+
 Add a shell alias (e.g. in `~/.zshrc`) that pins the same external venv:
 
 ```bash
@@ -325,7 +332,7 @@ Run the nightly pipeline stages:
 
 ```bash
 wilted discover              # poll feeds, fetch articles, dedup
-wilted classify              # categorize, score, summarize (requires MLX LLM)
+wilted classify              # categorize, score, summarize (requires llama.cpp GGUF LLM)
 wilted benchmark classify --models "model1,model2"  # compare classification models
 ```
 

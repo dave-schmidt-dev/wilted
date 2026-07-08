@@ -6,7 +6,12 @@ Only one model loaded at a time; explicit unloading reclaims Metal GPU memory.
 Usage:
     from wilted.llm import create_backend
 
-    backend = create_backend("mlx", model="mlx-community/gemma-4-e4b-it-4bit")
+    # GGUF via llama.cpp is the default; an "hf:<repo_id>/<filename>" model
+    # string is resolved to a local cached path via huggingface_hub.
+    backend = create_backend(
+        "gguf",
+        model="hf:google/gemma-4-E4B-it-qat-q4_0-gguf/gemma-4-E4B_q4_0-it.gguf",
+    )
     backend.load()
     response, tokens = backend.generate("You are a classifier.", "Classify this text.")
     backend.close()
@@ -233,8 +238,52 @@ class GgufBackend:
         logger.info("GGUF model unloaded")
 
 
+# Prefix marking a model string as a Hugging Face GGUF spec:
+#   "hf:<repo_id>/<filename>"  ->  resolved to a local cached path.
+_HF_SPEC_PREFIX = "hf:"
+
+
+def resolve_gguf_path(repo_id: str, filename: str) -> str:
+    """Resolve a Hugging Face GGUF repo + filename to a local cached path.
+
+    Downloads the file into the HF cache on first use and returns its local
+    path; subsequent calls resolve offline from the cache. This keeps the
+    snapshot hash out of the codebase — never hardcode a cache path.
+
+    Args:
+        repo_id: Hugging Face repo id, e.g. ``google/gemma-4-E4B-it-qat-q4_0-gguf``.
+        filename: GGUF file within the repo, e.g. ``gemma-4-E4B_q4_0-it.gguf``.
+
+    Returns:
+        Absolute path to the cached GGUF file.
+    """
+    from huggingface_hub import hf_hub_download
+
+    logger.info("Resolving GGUF from Hugging Face: %s/%s", repo_id, filename)
+    return hf_hub_download(repo_id=repo_id, filename=filename)
+
+
+def _resolve_model_spec(model: str) -> str:
+    """Resolve an ``hf:<repo_id>/<filename>`` spec to a local GGUF path.
+
+    Any other string (an existing file path) is returned unchanged, so
+    ``GgufBackend`` always sees a real path internally.
+
+    Raises:
+        ValueError: If an ``hf:`` spec is malformed.
+    """
+    if not model.startswith(_HF_SPEC_PREFIX):
+        return model
+
+    spec = model[len(_HF_SPEC_PREFIX) :]
+    repo_id, _, filename = spec.rpartition("/")
+    if not repo_id or not filename:
+        raise ValueError(f"Invalid HF GGUF spec: '{model}'. Expected 'hf:<repo_id>/<filename>'.")
+    return resolve_gguf_path(repo_id, filename)
+
+
 def create_backend(
-    backend_type: str = "mlx",
+    backend_type: str = "gguf",
     *,
     model: str = "",
     max_tokens: int = 2048,
@@ -244,8 +293,10 @@ def create_backend(
     """Factory function to create an LLM backend.
 
     Args:
-        backend_type: 'mlx' or 'gguf'.
-        model: Model identifier (HF repo for MLX, file path for GGUF).
+        backend_type: 'gguf' (default, llama.cpp) or 'mlx'.
+        model: Model identifier. For MLX, a HF repo id. For GGUF, either a
+            local ``.gguf`` file path or an ``hf:<repo_id>/<filename>`` spec
+            resolved to a local cached path via :func:`resolve_gguf_path`.
         max_tokens: Maximum tokens to generate.
         temperature: Sampling temperature.
         **kwargs: Additional backend-specific arguments.
@@ -260,13 +311,13 @@ def create_backend(
         return MlxBackend(model=model, max_tokens=max_tokens, temperature=temperature)
     if backend_type == "gguf":
         return GgufBackend(
-            model=model,
+            model=_resolve_model_spec(model),
             max_tokens=max_tokens,
             temperature=temperature,
             n_gpu_layers=kwargs.get("n_gpu_layers", -1),
             n_ctx=kwargs.get("n_ctx", 4096),
         )
-    raise ValueError(f"Unknown backend type: '{backend_type}'. Use 'mlx' or 'gguf'.")
+    raise ValueError(f"Unknown backend type: '{backend_type}'. Use 'gguf' or 'mlx'.")
 
 
 def parse_json_response(response: str) -> dict | list:

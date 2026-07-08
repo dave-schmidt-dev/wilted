@@ -27,9 +27,11 @@ from wilted.preferences import get_keywords_for_prompt
 logger = logging.getLogger(__name__)
 
 
-# Default classification model
-_DEFAULT_MODEL = "mlx-community/gemma-4-e4b-it-4bit"
-_DEFAULT_BACKEND = "mlx"
+# Default classification model — Gemma-4 E4B QAT Q4_0 GGUF served via llama.cpp.
+# The "hf:<repo_id>/<filename>" form is resolved to a local cached path by
+# wilted.llm.create_backend (via huggingface_hub); never hardcode a snapshot path.
+_DEFAULT_MODEL = "hf:google/gemma-4-E4B-it-qat-q4_0-gguf/gemma-4-E4B_q4_0-it.gguf"
+_DEFAULT_BACKEND = "gguf"
 
 # Valid playlist categories
 _VALID_PLAYLISTS = {"Work", "Fun", "Education"}
@@ -336,7 +338,7 @@ _BENCHMARK_ITEMS = [
 def run_benchmark(
     *,
     models: list[str],
-    backend_type: str = "mlx",
+    backend_type: str = "gguf",
 ) -> None:
     """Run classification benchmark across multiple models.
 

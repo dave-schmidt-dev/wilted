@@ -820,7 +820,7 @@ def cmd_benchmark(argv: list[str]) -> None:
 
     parser = argparse.ArgumentParser(prog="wilted benchmark classify")
     parser.add_argument("--models", required=True, help="Comma-separated list of model identifiers")
-    parser.add_argument("--backend", default="mlx", choices=["mlx", "gguf"], help="Backend type (default: mlx)")
+    parser.add_argument("--backend", default="gguf", choices=["gguf", "mlx"], help="Backend type (default: gguf)")
     args = parser.parse_args(argv[1:])
 
     from wilted.classify import run_benchmark
@@ -842,8 +842,12 @@ def cmd_prepare(argv: list[str]) -> None:
     """Run the content preparation stage for selected items."""
     parser = argparse.ArgumentParser(prog="wilted prepare")
     parser.add_argument("--no-llm", action="store_true", help="Skip LLM-based ad/promo detection")
-    parser.add_argument("--model", default="mlx-community/gemma-4-e4b-it-4bit", help="LLM model for ad detection")
-    parser.add_argument("--backend", default="mlx", choices=["mlx", "gguf"], help="LLM backend type")
+    parser.add_argument(
+        "--model",
+        default="hf:google/gemma-4-E4B-it-qat-q4_0-gguf/gemma-4-E4B_q4_0-it.gguf",
+        help="LLM model for ad detection (GGUF path or hf:<repo_id>/<filename>)",
+    )
+    parser.add_argument("--backend", default="gguf", choices=["gguf", "mlx"], help="LLM backend type")
     args = parser.parse_args(argv)
 
     from wilted.prepare import run_prepare

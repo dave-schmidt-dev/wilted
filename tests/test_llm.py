@@ -7,8 +7,10 @@ import pytest
 from wilted.llm import (
     GgufBackend,
     MlxBackend,
+    _resolve_model_spec,
     create_backend,
     parse_json_response,
+    resolve_gguf_path,
 )
 
 # ---------------------------------------------------------------------------
@@ -89,6 +91,12 @@ class TestCreateBackend:
 
     def test_create_gguf(self):
         backend = create_backend("gguf", model="/path/to/model.gguf")
+        assert isinstance(backend, GgufBackend)
+        assert backend.model_path == "/path/to/model.gguf"
+
+    def test_default_backend_is_gguf(self):
+        # llama.cpp GGUF is the default backend after the MLX migration.
+        backend = create_backend(model="/path/to/model.gguf")
         assert isinstance(backend, GgufBackend)
         assert backend.model_path == "/path/to/model.gguf"
 
@@ -213,3 +221,65 @@ class TestMlxBackendMocked:
 
         backend.close()
         assert backend._model is None
+
+
+# ---------------------------------------------------------------------------
+# HF GGUF path resolution (hf:<repo_id>/<filename>)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGgufPath:
+    """Resolver for hf:<repo_id>/<filename> specs — hf_hub_download mocked."""
+
+    _REPO = "google/gemma-4-E4B-it-qat-q4_0-gguf"
+    _FILE = "gemma-4-E4B_q4_0-it.gguf"
+
+    def _mock_hf_hub(self, monkeypatch, calls):
+        """Inject a fake huggingface_hub so no real download occurs."""
+        import sys
+        import types
+
+        fake = types.ModuleType("huggingface_hub")
+
+        def fake_download(repo_id, filename):
+            calls.append((repo_id, filename))
+            return f"/fake/cache/{repo_id}/{filename}"
+
+        fake.hf_hub_download = fake_download
+        monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
+
+    def test_resolve_gguf_path_calls_hf_hub_download(self, monkeypatch):
+        calls = []
+        self._mock_hf_hub(monkeypatch, calls)
+
+        path = resolve_gguf_path(self._REPO, self._FILE)
+
+        assert path == f"/fake/cache/{self._REPO}/{self._FILE}"
+        assert calls == [(self._REPO, self._FILE)]
+
+    def test_hf_spec_resolved_via_factory(self, monkeypatch):
+        calls = []
+        self._mock_hf_hub(monkeypatch, calls)
+
+        backend = create_backend("gguf", model=f"hf:{self._REPO}/{self._FILE}")
+
+        assert isinstance(backend, GgufBackend)
+        assert backend.model_path == f"/fake/cache/{self._REPO}/{self._FILE}"
+        # repo_id keeps its own slash; only the last segment is the filename.
+        assert calls == [(self._REPO, self._FILE)]
+
+    def test_plain_path_is_not_resolved(self, monkeypatch):
+        calls = []
+        self._mock_hf_hub(monkeypatch, calls)
+
+        backend = create_backend("gguf", model="/path/to/model.gguf")
+
+        assert backend.model_path == "/path/to/model.gguf"
+        assert calls == []  # a real path never triggers a download
+
+    def test_resolve_model_spec_passthrough(self):
+        assert _resolve_model_spec("/local/model.gguf") == "/local/model.gguf"
+
+    def test_malformed_hf_spec_raises(self):
+        with pytest.raises(ValueError, match="Invalid HF GGUF spec"):
+            _resolve_model_spec("hf:norepoorfilename")

@@ -219,8 +219,33 @@ class TestClassifyItem:
 
 class TestRunClassify:
     def test_no_fetched_items(self):
-        stats = run_classify(model="test", backend_type="mlx")
+        stats = run_classify(model="test", backend_type="gguf")
         assert stats == {"classified": 0, "errors": 0, "total": 0}
+
+    def test_defaults_to_gguf_gemma(self, monkeypatch):
+        """With no overrides, run_classify uses the GGUF backend + Gemma GGUF spec."""
+        from wilted.classify import _DEFAULT_BACKEND, _DEFAULT_MODEL
+
+        _make_item(text="Some article.", guid="d1")
+
+        captured = {}
+        mock_backend = MockLLMBackend()
+
+        def fake_create_backend(backend_type, *, model, **kwargs):
+            captured["backend_type"] = backend_type
+            captured["model"] = model
+            return mock_backend
+
+        monkeypatch.setattr("wilted.classify.create_backend", fake_create_backend)
+
+        run_classify()  # no model/backend args -> module defaults
+
+        assert _DEFAULT_BACKEND == "gguf"
+        assert captured["backend_type"] == "gguf"
+        assert captured["model"] == _DEFAULT_MODEL
+        assert _DEFAULT_MODEL.startswith("hf:")
+        assert "gemma-4-E4B" in _DEFAULT_MODEL
+        assert _DEFAULT_MODEL.endswith(".gguf")
 
     def test_classifies_fetched_items(self, monkeypatch):
         _make_item(
@@ -241,7 +266,7 @@ class TestRunClassify:
             lambda *a, **kw: mock_backend,
         )
 
-        stats = run_classify(model="test", backend_type="mlx")
+        stats = run_classify(model="test", backend_type="gguf")
         assert stats["classified"] == 2
         assert stats["errors"] == 0
         assert stats["total"] == 2
@@ -259,7 +284,7 @@ class TestRunClassify:
             lambda *a, **kw: mock_backend,
         )
 
-        stats = run_classify(model="test", backend_type="mlx")
+        stats = run_classify(model="test", backend_type="gguf")
         assert stats["total"] == 1
         assert mock_backend.generate_calls == 1
 
@@ -285,7 +310,7 @@ class TestRunClassify:
             lambda *a, **kw: error_backend,
         )
 
-        stats = run_classify(model="test", backend_type="mlx")
+        stats = run_classify(model="test", backend_type="gguf")
         assert error_backend.closed is True
         assert stats["errors"] == 1
 
@@ -317,6 +342,6 @@ class TestRunClassify:
             lambda *a, **kw: CapturingBackend(),
         )
 
-        run_classify(model="test", backend_type="mlx")
+        run_classify(model="test", backend_type="gguf")
         assert len(captured_prompts) == 1
         assert "kubernetes" in captured_prompts[0]

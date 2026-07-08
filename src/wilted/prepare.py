@@ -242,8 +242,8 @@ class PrepareError(RuntimeError):
 def run_prepare(
     *,
     use_llm: bool = True,
-    llm_model: str = "mlx-community/gemma-4-e4b-it-4bit",
-    llm_backend_type: str = "mlx",
+    llm_model: str = "hf:google/gemma-4-E4B-it-qat-q4_0-gguf/gemma-4-E4B_q4_0-it.gguf",
+    llm_backend_type: str = "gguf",
     skip_tts: bool = False,
 ) -> dict:
     """Process all selected items through the content preparation pipeline.
