@@ -57,10 +57,16 @@ class StationState:
             mutating write. Separate from the controller lease epoch.
         active_entry: The currently playing/paused entry, if any.
         checkpoint: The most recent accepted :class:`PlaybackCheckpoint`, if any.
-        interruption_stack: Entries interrupted and not yet resumed, ordered
-            with the most-recently-interrupted last (matches
-            ``PlaybackCheckpoint.interrupted_entry_stack`` shape but holds
-            full entries so the reducer can pop back to them).
+        interruption_stack: Entries interrupted and not yet resumed, held
+            in ascending ``priority`` order (index 0 = most urgent). See
+            ``_accept_interruption``/``_resume_from_interruption``, which
+            sort on insert and pop index 0. NOTE: this is *priority-ordered*
+            resume, not strict LIFO "resume whatever you just interrupted";
+            whether priority-ordered or most-recent-first is the intended
+            product semantics is an open design question deferred to Plan A
+            (see HISTORY.md / handoff.md). Holds full entries (matches the
+            ``PlaybackCheckpoint.interrupted_entry_stack`` shape) so the
+            reducer can pop back to them.
         lease: The current :class:`ControllerLease` holder, if any. None
             means no controller currently owns the station.
         phone_epoch: The last acknowledged iPhone ownership epoch, or None
@@ -199,8 +205,10 @@ def apply(state: StationState, action: Action, requester_lease: ControllerLease)
     This is the single public entry point for mutating the station. It
     centrally enforces controller-owner-loss rejection: if ``state.lease``
     is unset, or does not match ``requester_lease`` (holder_id AND epoch),
-    the action is rejected and ``state`` is returned unchanged — the
-    caller's lease has been lost or was never held. On a lease match, the
+    the action is rejected and a new state with the meaningful fields
+    unchanged — ``station_revision`` not advanced, a diagnostic rejection
+    event appended — is returned; the caller's lease has been lost or was
+    never held. On a lease match, the
     action is dispatched to its per-action pure transition function.
 
     Args:
@@ -209,10 +217,15 @@ def apply(state: StationState, action: Action, requester_lease: ControllerLease)
         requester_lease: The lease the caller believes it holds.
 
     Returns:
-        A new ``StationState`` on success, or the identical ``state``
-        object unchanged on any expected rejection (owner-loss, stale
-        revision, stale mutation id, expired entry, incomplete media,
-        missing safe checkpoint, stale epoch, etc).
+        A new ``StationState`` on success. On any expected rejection
+        (owner-loss, stale revision, stale mutation id, expired entry,
+        incomplete media, missing safe checkpoint, stale epoch, etc) a new
+        ``StationState`` is *also* returned — with the meaningful fields
+        unchanged and a diagnostic rejection event appended.
+        ``station_revision`` does not advance on rejection, so detect a
+        rejection by comparing ``station_revision`` (or inspecting the
+        appended event), never by object identity: ``result is state`` is
+        always ``False``.
 
     Raises:
         TypeError: If ``action`` is not one of the recognized action types

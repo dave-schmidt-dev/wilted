@@ -1,6 +1,6 @@
-# ADR (DRAFT) — Wilted Mac-first Personal Radio substrate
+# ADR 0001 — Wilted Mac-first Personal Radio substrate
 
-**Status:** Provisionally **APPROVED by David 2026-07-10** — Decisions 1, 2, 3, 4, 6 approved (all "RECOMMENDED" headers below are hereby accepted as approved); Decision 5 (latency/resume/F4 targets) remains pending the Plan A hardware measurement. Full 0.7 closure also needs the deferred hardware dims (Mac UX velocity, audio-route recovery, awake/sleep). Canonical committed copy: `docs/adr/0001-mac-radio-substrate.md`.
+**Status:** Provisionally **APPROVED by David 2026-07-10** — Decisions 1, 2, 3, 4, 6 approved (their headers below read *APPROVED*); Decision 5 (latency/resume/F4 targets) remains pending the Plan A hardware measurement. Full 0.7 closure also needs the deferred hardware dims (Mac UX velocity, audio-route recovery, awake/sleep). Canonical committed copy: `docs/adr/0001-mac-radio-substrate.md`.
 **Date:** 2026-07-10 · **Plan:** `mac-first-personal-radio-2026-07-10` · **Evidence:** phase0-inventory, phase0-3-substrate-scorecard, the three disposable spikes, and the security-auditor review — all 2026-07-10.
 
 ## Context
@@ -11,7 +11,7 @@ Wilted is being repositioned from an article reader into a Mac-first personal ra
 
 ---
 
-## Decision 1 — Substrate: headless core + versioned manifest boundary *(RECOMMENDED — pending sign-off)*
+## Decision 1 — Substrate: headless core + versioned manifest boundary *(APPROVED 2026-07-10)*
 
 Adopt **candidate (a): an extracted headless station core that owns authoritative state and exposes a versioned, JSON-serializable manifest/checkpoint boundary + idempotent commands (`mutation_id` + `expected_revision`).** Clients (a Mac UI now, the iPhone later) consume the boundary; none mutate state directly.
 
@@ -31,7 +31,7 @@ Both candidates **RETAIN** every reducer rejection (owner-loss, stale revision, 
 
 ---
 
-## Decision 2 — Store & migration: versioned atomic JSON doc + `media/<sha256>` index *(RECOMMENDED — pending sign-off)*
+## Decision 2 — Store & migration: versioned atomic JSON doc + `media/<sha256>` index *(APPROVED 2026-07-10)*
 
 Authoritative state persists as a **versioned atomic JSON state document** (tempfile + `os.replace`, same pattern as `cache.py:save_manifest`) plus a **durable-media index** keyed by content SHA-256. This is the persisted form of the chosen boundary; the existing SQLite `Item` table remains an **import source, never converted in place**.
 
@@ -60,7 +60,7 @@ These depend on the alert-latency measurement that requires your hardware (0.4 r
 
 ---
 
-## Decision 6 — Native companion vs Python dependency (open-decision #1) *(RECOMMENDED — pending sign-off)*
+## Decision 6 — Native companion vs Python dependency (open-decision #1) *(APPROVED 2026-07-10)*
 
 For the **Mac-side pairing/TLS**, adopt the **Python path**: `cryptography` (cert generation) + `keyring` (Keychain), both **genuinely new top-level dependencies** (verified absent from the 161-package `uv.lock`; `keyring` also pulls `pyobjc-framework-Security`). A native companion buys Secure-Enclave non-exportable keys but isn't proportionate for a single-user LAN project **unless** Decision 1's client independently goes native Swift — in which case Keychain/mTLS come free and this is revisited. The realistic LAN adversary is already defeated by "no plaintext server." *(0.5 spike proved one-time enrollment, authenticated transport, stale-revision/asset-hash rejection, secret hygiene; TLS 1.2+ with real cert-pinning; security-auditor confirmed no false-greens/leaks.)*
 

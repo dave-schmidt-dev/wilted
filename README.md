@@ -243,11 +243,21 @@ src/wilted/                # shared library
     classify.py          # LLM-based classification + benchmark
     llm.py               # LLM backend interface (MLX, GGUF)
     preferences.py       # keyword-based relevance scoring
-    migrate.py           # queue.json -> SQLite migration
     log.py               # RotatingFileHandler setup
+    station/             # substrate-neutral station contract layer (Mac-radio Phase 0)
+        __init__.py    # export public API
+        models.py      # frozen value objects (StationEntry, MediaDescriptor, etc.)
+        protocols.py   # typing.Protocol seams (StationStore, PlaybackAdapter)
+        reducer.py     # pure state-transition reducer apply(state, action, requester_lease)
     tui/                 # Textual TUI (decomposed package)
-tests/                   # pytest suite (638 tests across unit/integration/e2e/TUI lanes)
+tests/                   # pytest suite (721 tests across unit/integration/e2e/TUI lanes)
 migrations/              # numbered schema migrations
+docs/adr/                # architecture decision records
+    0001-mac-radio-substrate.md  # Mac-first personal-radio substrate decision (candidate a: headless core)
+spikes/                  # Phase-0 feasibility prototypes (disposable, removable)
+    mac-substrate-2026-07-10/       # two candidate substrates, shared reducer fixture
+    migration-rehearsal-2026-07-10/ # versioned JSON store + media/<sha256> validation
+    pairing-security-2026-07-10/    # threat model + Python cryptography+keyring spike
 ```
 
 ## Validation

@@ -454,6 +454,42 @@ class TestInv4NoEmptyOverwrite:
         # No 0-byte file should have been created at the output path.
         assert not output.exists()
 
+    def test_cut_ads_raises_when_all_keep_segments_zero_width(self, tmp_path):
+        """cut_ads raises when keep_segments is non-empty but every segment
+        has duration <= 0 after buffer clamping, so the extraction loop
+        skips all of them and segment_files ends up empty (ads.py:493).
+        """
+        from wilted.ads import EmptyCutResultError, cut_ads
+
+        audio = tmp_path / "input.mp3"
+        audio.write_bytes(b"fake audio data with real bytes")
+
+        output = tmp_path / "output.mp3"
+        # Ad segments here are irrelevant since _compute_keep_segments is
+        # mocked directly; a non-empty list just satisfies the
+        # `if not ad_segments` short-circuit so cut_ads reaches the ffprobe
+        # call and the extraction loop.
+        ads = [_ads_ad_segment(0.0, 10.0)]
+
+        probe_result = MagicMock()
+        probe_result.stdout = "300.0\n"
+
+        with (
+            patch("wilted.ads.check_ffmpeg"),
+            patch("wilted.ads.subprocess.run", return_value=probe_result),
+            # Non-empty keep_segments (bypasses the :458 raise) but every
+            # segment is zero-width, so the extraction loop's
+            # `if duration <= 0: continue` skips all of them.
+            patch("wilted.ads._compute_keep_segments", return_value=[(5.0, 5.0), (10.0, 10.0)]),
+        ):
+            import pytest
+
+            with pytest.raises(EmptyCutResultError, match="No non-empty keep-segments"):
+                cut_ads(audio, ads, output, buffer_seconds=0.5)
+
+        # No 0-byte file should have been created at the output path.
+        assert not output.exists()
+
     def test_all_promo_preserves_original_transcript(self, tmp_path):
         """When every paragraph is promo, the original transcript survives."""
         from wilted.db import Item
