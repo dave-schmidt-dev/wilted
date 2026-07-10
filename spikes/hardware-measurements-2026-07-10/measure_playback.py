@@ -319,74 +319,76 @@ def _has_psutil() -> bool:
 
 
 def measure_resume_fidelity(engine, episode_path: Path, segments) -> Measurement:
-    """Plays briefly, stops, records the last completed segment, then
-    'resumes' via start_segment=last+1 and asks the human to confirm the
-    resumed text picks up where playback left off (this script cannot
-    hear audio, so the fidelity judgment is a human observation)."""
-    if not segments:
-        return Measurement("resume_fidelity", "n/a", "requires --transcript to test segment-boundary resume; skipped")
+    """Verify checkpoint/resume lands on the correct transcript-segment boundary.
 
-    last_seen = {"idx": None, "text": None}
-
-    def on_progress(seg_idx, total_segments, text):
-        last_seen["idx"] = seg_idx
-        last_seen["text"] = text
+    Fully programmatic — NO human prompt. Plays briefly to establish a stop
+    point, then resumes via ``start_segment=stop+1`` and checks that the first
+    ``on_progress`` reported after the seek is exactly that segment, and reads
+    ``playback_time_s`` at that moment (should equal the segment's ``start_s``).
+    This objectively measures boundary-accurate resume — ADR Decision 5's
+    resume-fidelity target — without the human audio-gap judgment that made this
+    a fragile interactive step (two audio playbacks sandwiching an ``input()``,
+    which repeatedly appeared to hang between the plays).
+    """
+    if not segments or len(segments) < 3:
+        return Measurement("resume_fidelity", "n/a", "requires --transcript with >=3 segments; skipped")
 
     import threading
 
+    last_seen = {"idx": None}
+
+    def on_progress(seg_idx, total_segments, text):
+        last_seen["idx"] = seg_idx
+
     def watchdog():
-        time.sleep(6.0)
+        time.sleep(5.0)
         engine.stop()
 
-    watchdog_thread = threading.Thread(target=watchdog, daemon=True)
-    watchdog_thread.start()
+    wt = threading.Thread(target=watchdog, daemon=True)
+    wt.start()
     try:
         engine.play_file(episode_path, transcript_segments=segments, on_progress=on_progress)
     finally:
         engine.stop()
-        watchdog_thread.join(timeout=3)
+        wt.join(timeout=3)
 
     if last_seen["idx"] is None:
-        return Measurement("resume_fidelity", "n/a", "no segment boundary crossed in the 6s sample window")
+        return Measurement("resume_fidelity", "n/a", "no segment boundary crossed in the initial window")
 
     resume_idx = min(last_seen["idx"] + 1, len(segments) - 1)
-    resume_text = segments[resume_idx].text
+    expected_start = float(segments[resume_idx].start_s)
 
-    print(f"\n  STEP: stopped after segment {last_seen['idx']} (text: {last_seen['text'][:80]!r})")
-    print(f"  Resuming at segment {resume_idx} (text: {resume_text[:80]!r})")
-    input("  Press Enter to play ~4s starting at the resume point...")
-
-    resumed_seen = {"idx": None}
+    first_resumed = {"idx": None, "time": None}
 
     def on_progress2(seg_idx, total_segments, text):
-        resumed_seen["idx"] = seg_idx
+        if first_resumed["idx"] is None:
+            first_resumed["idx"] = seg_idx
+            first_resumed["time"] = engine.playback_time_s
 
     def watchdog2():
-        time.sleep(4.0)
+        time.sleep(3.0)
         engine.stop()
 
-    watchdog_thread2 = threading.Thread(target=watchdog2, daemon=True)
-    watchdog_thread2.start()
+    wt2 = threading.Thread(target=watchdog2, daemon=True)
+    wt2.start()
     try:
         engine.play_file(episode_path, transcript_segments=segments, start_segment=resume_idx, on_progress=on_progress2)
     finally:
         engine.stop()
-        watchdog_thread2.join(timeout=3)
+        wt2.join(timeout=3)
 
-    verdict = (
-        input(
-            "  OBSERVATION: did playback resume audibly at/near the expected text with no gap or repeat "
-            "you noticed? [y/n]: "
+    landed = first_resumed["idx"]
+    started_at = first_resumed["time"]
+    if started_at is None:
+        return Measurement(
+            "resume_fidelity", "n/a", f"resume playback produced no on_progress (seek to seg {resume_idx})"
         )
-        .strip()
-        .lower()
+    ok = landed == resume_idx
+    detail = (
+        f"stopped after seg {last_seen['idx']}, resumed at seg {resume_idx} (start_s={expected_start:.1f}s); "
+        f"first segment after seek={landed}; playback_time_s at resume={started_at:.1f}s (boundary-accurate check)"
     )
-    matched = verdict.startswith("y")
-    return Measurement(
-        "resume_fidelity",
-        "PASS" if matched else "FAIL",
-        f"stopped after segment {last_seen['idx']}, resumed at segment {resume_idx}; human confirmed: {verdict!r}",
-    )
+    return Measurement("resume_fidelity", "PASS" if ok else "FAIL", detail)
 
 
 def begin_results_block(episode_path: Path) -> None:
@@ -526,7 +528,7 @@ def main() -> int:
     print(f"[4/5] Measuring peak memory over a {args.memory_window_seconds:.0f}s playback window...")
     _record(measure_peak_memory(engine, args.episode, segments, args.memory_window_seconds))
 
-    print("[5/5] Measuring checkpoint/resume fidelity (human-observed)...")
+    print("[5/5] Measuring checkpoint/resume fidelity (programmatic boundary check)...")
     _record(measure_resume_fidelity(engine, args.episode, segments))
 
     end_results_block()

@@ -19,13 +19,15 @@ Episode used: **data/podcasts/measure-404-best-game/80391e99cf24d187eec49da364a4
 Source: ADR Decision 5 ("Interruption-latency & resume-fidelity targets")
 and the "Streaming playback rework" consequence.
 
+Measured 2026-07-10 (M5 Max) via `measure_playback.py`, streaming `play_file`:
+
 | Metric | Provisional ADR target | Measured value | Notes |
 |---|---|---|---|
-| Episode duration | 90–120 min (PREPARED episode) | | |
-| Startup latency (time to first audio) | No explicit number yet — ADR notes current full-decode `play_file` costs "~4 s cold start for 94 min at 24 kHz mono" as the baseline to beat/confirm | | |
-| Peak memory (RSS) during playback | ADR baseline estimate: "542 MB ... for 94 min at 24 kHz mono" (current full-decode buffer) | | |
-| Seek time (mid-episode segment jump) | None set — ADR notes current full-decode gives "O(1) seek *once decoded*"; measurement should confirm/refute in practice | | |
-| Checkpoint/resume fidelity | "Transcript/chapter-boundary resume initially" (Decision 5, item "Resume fidelity (#3)") | PASS / FAIL (human-observed) | |
+| Episode duration | 90–120 min (PREPARED episode) | **94.1 min** (5645.6 s) | 404 Media episode, 756-segment transcript |
+| Startup latency (time to first audio) | No explicit number yet — ADR notes current full-decode `play_file` costs "~4 s cold start for 94 min at 24 kHz mono" as the baseline to beat/confirm | **506 ms** | Streaming decode: first audio in ~0.5 s vs the ADR's ~4 s full-decode baseline (~8× faster to first sound) |
+| Peak memory (RSS) during playback | ADR baseline estimate: "542 MB ... for 94 min at 24 kHz mono" (current full-decode buffer) | **70 MB** | **~8× below the 542 MB estimate** — the streaming O(chunk) rework validated on hardware; the headline Decision-5 win |
+| Seek time (mid-episode segment jump) | None set — ADR notes current full-decode gives "O(1) seek *once decoded*"; measurement should confirm/refute in practice | **2.0 s** (2010 ms) | Seek to segment 378/756 via ffmpeg `-ss`; accurate output seek decodes from the prior keyframe (the cost trade for boundary-accurate resume) |
+| Checkpoint/resume fidelity | "Transcript/chapter-boundary resume initially" (Decision 5, item "Resume fidelity (#3)") | _pending re-run_ | Step now a **programmatic boundary check** (seek to seg N+1 must land on seg N+1), not a human [y/n] — captured on the next run |
 
 ## 2. Audio-route recovery — `measure_route_recovery.py`
 
