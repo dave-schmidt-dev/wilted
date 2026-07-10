@@ -1,6 +1,7 @@
 """Tests for wilted.cli — CLI commands and argument parsing."""
 
 import argparse
+import sys
 import types
 from unittest.mock import MagicMock, patch
 
@@ -160,6 +161,58 @@ class TestCmdRemove:
         _add_test_article()
         with pytest.raises(CLIError, match="Invalid index"):
             cmd_remove(_make_args(remove=99))
+
+    def test_remove_targets_displayed_item_not_ready_only_index(self, capsys):
+        """INV-3 lock: cmd_remove deletes the item at the DISPLAYED position N,
+        resolving its id from load_queue() — the same query cmd_list shows —
+        never a positional index into the narrower ready-only query.
+
+        Divergence construction: load_queue() surfaces both 'ready' and
+        'selected'/article items ordered by discovered_at, but the legacy
+        remove_article(index) indexes a 'ready'-ONLY query. We place a 'selected'
+        article with an EARLIER discovered_at so it occupies display position 1,
+        while the only 'ready' item occupies ready-only index 0. cmd_remove(1)
+        must delete the displayed item (the selected one).
+
+        Pre-fix (remove_article(N-1)) this FAILS: index 0 of the ready-only query
+        is the 'ready' article, so the wrong (non-displayed) item is destroyed —
+        exactly the permanent data loss INV-3 forbids.
+        """
+        from wilted.db import Item, now_utc
+
+        # 'ready' article added "now" (later timestamp).
+        ready_entry = _add_test_article(title="Ready Article")
+
+        # 'selected' article with an EARLIER discovered_at → sorts first in
+        # load_queue() (display position 1) but is invisible to the ready-only
+        # query that legacy remove_article() indexes.
+        earlier = "2000-01-01T00:00:00Z"
+        selected = Item.create(
+            guid="inv3-selected-earlier",
+            title="Selected Article",
+            discovered_at=earlier,
+            item_type="article",
+            status="selected",
+            status_changed_at=now_utc(),
+            word_count=5,
+        )
+
+        queue = load_queue()
+        # Sanity: the DISPLAYED position 1 is the selected item; the ready-only
+        # index 0 is a DIFFERENT item — this is the scope divergence INV-3 guards.
+        assert queue[0]["id"] == selected.id
+        assert queue[0]["id"] != ready_entry["id"]
+
+        cmd_remove(_make_args(remove=1))
+
+        out = capsys.readouterr().out
+        assert "Removed: Selected Article" in out
+
+        # The displayed item (selected) is gone; the ready item — which the buggy
+        # ready-only index would have destroyed — survives.
+        remaining_ids = {e["id"] for e in load_queue()}
+        assert selected.id not in remaining_ids
+        assert ready_entry["id"] in remaining_ids
 
 
 # ---------------------------------------------------------------------------
@@ -759,6 +812,38 @@ class TestMainEntrypoint:
         mock_tqdm.get_lock.assert_called_once_with()
         mock_app_cls.assert_called_once_with()
         mock_app.run.assert_called_once_with()
+
+    def test_run_module_invokes_main(self, capsys):
+        """INV-6 C1 lock: `python -m wilted.cli <args>` must actually run main().
+
+        scripts/wilted-nightly.sh invokes `python -m wilted.cli`. Without an
+        `if __name__ == "__main__": main()` guard the module imports, defines
+        main(), and exits 0 having executed NOTHING — the nightly job logged
+        "completed successfully" every night while doing no work (C1).
+
+        We drive that exact entrypoint hermetically via runpy with run_name
+        "__main__" (equivalent to `python -m wilted.cli`) and argv ["wilted",
+        "list"]. main() runs the full chain (setup_logging → validate_project_root
+        → run_migrations → ensure_default_playlists → run_cli) against the
+        isolated_data tmp db, whose queue is empty, so cmd_list prints the
+        empty-queue message — an observable side effect only produced if main()
+        actually ran.
+
+        Pre-fix (no guard) this FAILS: run_module executes the module body but
+        nothing calls main(), so no output is produced and the assertion trips.
+        """
+        import runpy
+
+        with patch.object(sys, "argv", ["wilted", "list"]):
+            try:
+                runpy.run_module("wilted.cli", run_name="__main__", alter_sys=True)
+            except SystemExit:
+                # main() may sys.exit on some paths; a clean list does not, but
+                # tolerate it so the assertion below is the real gate.
+                pass
+
+        out = capsys.readouterr().out
+        assert "empty" in out.lower()
 
 
 class TestCmdReportEmail:

@@ -619,6 +619,161 @@ async def test_start_playback_pauses_generation(mock_items, mock_list, mock_ensu
 @patch("wilted.tui.ensure_default_playlists")
 @patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
 @patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
+async def test_start_playback_routes_podcast_to_play_podcast(mock_items, mock_list, mock_ensure):
+    """A podcast entry routes through _play_podcast, NOT _play_article.
+
+    Regression lock for the bug where podcasts were re-synthesized as article
+    TTS because _start_playback unconditionally called _play_article.
+    """
+    podcast_entry = {
+        "id": 99,
+        "title": "Episode 1",
+        "words": 4200,
+        "item_type": "podcast_episode",
+        "audio_file": "/tmp/data/podcasts/99/ep1.mp3",
+        "added": "2026-04-06T12:00:00",
+    }
+    app = WiltedApp()
+    async with app.run_test():
+        with (
+            patch.object(app, "_play_podcast") as mock_podcast,
+            patch.object(app, "_play_article") as mock_article,
+        ):
+            app._start_playback(podcast_entry)
+        mock_podcast.assert_called_once_with(podcast_entry, 0)
+        mock_article.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
+async def test_start_playback_routes_article_to_play_article(mock_items, mock_list, mock_ensure):
+    """An article entry routes through _play_article, NOT _play_podcast."""
+    article_entry = {
+        "id": 1,
+        "title": "An Article",
+        "words": 3000,
+        "item_type": "article",
+        "file": "1_an-article.txt",
+        "added": "2026-04-06T10:00:00",
+    }
+    app = WiltedApp()
+    async with app.run_test():
+        with (
+            patch.object(app, "_play_podcast") as mock_podcast,
+            patch.object(app, "_play_article") as mock_article,
+        ):
+            app._start_playback(article_entry)
+        mock_article.assert_called_once_with(article_entry, 0)
+        mock_podcast.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
+async def test_start_playback_routes_missing_type_to_play_article(mock_items, mock_list, mock_ensure):
+    """An entry without item_type (legacy dict) defaults to _play_article."""
+    legacy_entry = {
+        "id": 5,
+        "title": "Legacy Entry",
+        "words": 1000,
+        "file": "5_legacy.txt",
+        "added": "2026-04-06T10:00:00",
+    }
+    app = WiltedApp()
+    async with app.run_test():
+        with (
+            patch.object(app, "_play_podcast") as mock_podcast,
+            patch.object(app, "_play_article") as mock_article,
+        ):
+            app._start_playback(legacy_entry)
+        mock_article.assert_called_once_with(legacy_entry, 0)
+        mock_podcast.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items([]))
+async def test_play_podcast_plays_prepared_audio_not_tts(mock_items, mock_list, mock_ensure, tmp_path):
+    """_play_podcast plays the finalized audio artifact via engine.play_file.
+
+    Locks ADR A.2: a ready podcast is played as its finalized audio artifact,
+    not re-synthesized from article transcript text. Asserts play_file is called
+    with the podcast audio path and that the TTS/generate path is NOT touched.
+    """
+    import sys
+    import types
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    # A real file on disk so _play_podcast's existence check passes.
+    audio_path = tmp_path / "podcasts" / "77" / "ep.mp3"
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
+    audio_path.write_bytes(b"fake-mp3")
+
+    podcast_entry = {
+        "id": 77,
+        "title": "Prepared Episode",
+        "words": 4200,
+        "item_type": "podcast_episode",
+        "audio_file": str(audio_path),
+        "added": "2026-04-06T12:00:00",
+    }
+
+    app = WiltedApp()
+    async with app.run_test():
+        # Mock engine: play_file records its call; TTS methods must never fire.
+        mock_engine = MagicMock()
+        # _stop_event.is_set() True => skip the completion branch (which would
+        # marshal onto the event loop via call_from_thread and deadlock this
+        # synchronous invocation). We only need to prove routing to play_file.
+        mock_engine._stop_event.is_set.return_value = True
+        app._engine = mock_engine
+
+        fake_worker = SimpleNamespace(is_cancelled=False)
+
+        # call_from_thread would block when invoked from the loop's own thread;
+        # run the marshalled UI callbacks inline instead.
+        def _inline_cft(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        # Stub wilted.transcribe so _play_podcast's local `from wilted.transcribe
+        # import load_transcript` resolves without importing the heavy
+        # trafilatura/dateparser stack. Returns no segments.
+        fake_transcribe = types.ModuleType("wilted.transcribe")
+        fake_transcribe.load_transcript = MagicMock(return_value=[])
+
+        with (
+            patch.object(app, "_ensure_engine"),
+            patch.object(app, "call_from_thread", side_effect=_inline_cft),
+            patch("wilted.tui.get_current_worker", return_value=fake_worker),
+            patch("wilted.tui.set_resume_position"),
+            patch("wilted.tui.clear_resume_position"),
+            patch("wilted.tui.mark_completed"),
+            patch.dict(sys.modules, {"wilted.transcribe": fake_transcribe}),
+        ):
+            # Call the worker's underlying function directly (bypass the @work
+            # thread wrapper) so we can assert synchronously.
+            app._play_podcast.__wrapped__(app, podcast_entry, 0)
+
+        # play_file was called with the podcast audio path.
+        assert mock_engine.play_file.call_count == 1
+        call = mock_engine.play_file.call_args
+        assert Path(str(call.args[0])) == audio_path
+        assert call.kwargs.get("start_segment") == 0
+        # The TTS/generate path was NOT used.
+        mock_engine.generate_and_play.assert_not_called()
+        mock_engine.play_audio.assert_not_called()
+        mock_engine.play_article.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.list_playlists", return_value=MOCK_PLAYLISTS)
+@patch("wilted.tui.get_playlist_items", side_effect=_mock_get_playlist_items(SAMPLE_QUEUE))
 async def test_stop_resumes_generation(mock_items, mock_list, mock_ensure):
     """action_stop sets _generation_paused to False and triggers generation."""
     app = WiltedApp()

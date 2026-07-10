@@ -348,6 +348,88 @@ class TestPrepareLLMLifecycle:
 
 
 # ---------------------------------------------------------------------------
+# INV-2 — load is paired with close, even when processing fails mid-run
+# ---------------------------------------------------------------------------
+
+
+class TestInv2LoadCloseAlwaysPaired:
+    """Locks the load/close-pairing clause of INV-2: `run_prepare` loads the
+    LLM backend once and the `finally` block must still call `close()` when
+    something raises during item processing, so a load is never left
+    unclosed (Metal memory never leaks) on failure.
+
+    This does NOT lock the strict "at most one Metal model resident
+    simultaneously" co-residency clause -- that remediation (a
+    ModelCoordinator lease) is deferred to Plan A A.1. This test only
+    guards that every load() this module performs is paired with exactly
+    one close(), including when the `try` body raises.
+
+    If `llm_backend.close()` were moved out of the `finally` block in
+    `run_prepare` (src/wilted/prepare.py), this test fails: the mid-run
+    exception would propagate past the load without ever reaching close(),
+    leaking the resident Metal model.
+    """
+
+    def test_close_called_when_item_processing_raises_mid_run(self, tmp_path):
+        """A raise from _set_status (invoked before each item's own
+        try/except, so the exception escapes the inner per-item guard and
+        propagates to run_prepare's outer try) must still result in
+        llm_backend.close() being called via the outer `finally`.
+        """
+        _make_item(tmp_path, guid="a1")
+        _make_item(tmp_path, guid="a2")
+
+        mock_backend = MagicMock()
+        mock_backend.load = MagicMock()
+        mock_backend.close = MagicMock()
+        mock_backend.generate = MagicMock(return_value=('{"promo_indices": []}', 10))
+
+        # Raise only once "processing" status is set for the first item --
+        # this happens *before* the item's own try/except in run_prepare's
+        # loop body, so the exception is NOT swallowed there and instead
+        # propagates out of run_prepare entirely. Only the outer
+        # try/finally around the LLM lifecycle can still guarantee close().
+        def _raise_on_processing(item, status, error_message=None):
+            if status == "processing":
+                raise RuntimeError("simulated mid-run failure")
+
+        with (
+            patch("wilted.llm.create_backend", return_value=mock_backend),
+            patch("wilted.cache.generate_article_cache", return_value=True),
+            patch("wilted.prepare._set_status", side_effect=_raise_on_processing),
+        ):
+            import pytest
+
+            with pytest.raises(RuntimeError, match="simulated mid-run failure"):
+                run_prepare(use_llm=True)
+
+        # The load must have happened, and close() must STILL have run even
+        # though run_prepare itself raised out of the try body.
+        mock_backend.load.assert_called_once()
+        mock_backend.close.assert_called_once()
+
+    def test_load_and_close_are_exactly_paired_on_success(self, tmp_path):
+        """No unpaired load: a normal run calls load() exactly once and
+        close() exactly once -- never a load with zero or multiple closes.
+        """
+        _make_item(tmp_path, guid="b1")
+
+        mock_backend = MagicMock()
+        mock_backend.load = MagicMock()
+        mock_backend.close = MagicMock()
+        mock_backend.generate = MagicMock(return_value=('{"promo_indices": []}', 10))
+
+        with (
+            patch("wilted.llm.create_backend", return_value=mock_backend),
+            patch("wilted.cache.generate_article_cache", return_value=True),
+        ):
+            run_prepare(use_llm=True)
+
+        assert mock_backend.load.call_count == 1
+        assert mock_backend.close.call_count == 1
+
+
+# ---------------------------------------------------------------------------
 # Status transitions
 # ---------------------------------------------------------------------------
 
@@ -526,6 +608,89 @@ class TestInv4NoEmptyOverwrite:
         assert transcript.exists()
         assert transcript.read_text(encoding="utf-8") == original_text
         assert transcript.stat().st_size > 0
+
+
+# ---------------------------------------------------------------------------
+# INV-5 — runtime paths must resolve through the live wilted.DATA_DIR at
+# call time, never a value captured at import
+# ---------------------------------------------------------------------------
+
+
+class TestInv5LiveDataDirResolution:
+    """Locks INV-5: `download.get_podcast_dir` (and by extension every
+    prepare.py/download.py/cache.py call site) must resolve `DATA_DIR`
+    through the live `wilted.DATA_DIR` module attribute at call time.
+
+    If a module instead captured the value at import time via
+    `from wilted import DATA_DIR` and used the bare name directly in a
+    function body, this test fails: the bare name was bound to the
+    `wilted.DATA_DIR` Path object that existed when `wilted.download` was
+    first imported (which happens once, e.g. during the autouse
+    `isolated_data` fixture's own import chain or an earlier test module),
+    so re-pointing `wilted.DATA_DIR` here would never be observed by the
+    already-imported module — the returned path would still fall under the
+    stale directory instead of `new_dir`. See INVARIANTS.md INV-5.
+    """
+
+    def test_get_podcast_dir_resolves_live_data_dir(self, tmp_path, monkeypatch):
+        """After import, repointing wilted.DATA_DIR must change the path
+        returned by download.get_podcast_dir() -- proving the module reads
+        wilted.DATA_DIR at call time rather than a name bound at import.
+        """
+        import wilted
+        from wilted.download import get_podcast_dir
+
+        # Deliberately distinct from the autouse `isolated_data` tmp dir so a
+        # stale import-time capture of the *original* isolated_data dir would
+        # not accidentally satisfy this assertion.
+        new_dir = tmp_path / "distinct_new_data_dir"
+        new_dir.mkdir()
+        assert new_dir != wilted.DATA_DIR
+
+        monkeypatch.setattr(wilted, "DATA_DIR", new_dir)
+
+        result = get_podcast_dir(123)
+
+        assert result == new_dir / "podcasts" / "123"
+        assert new_dir in result.parents
+
+    def test_prepare_podcast_transcript_path_resolves_live_data_dir(self, tmp_path, monkeypatch):
+        """run_prepare's podcast path (prepare.py:93, transcript_dir) must
+        build its path under a freshly-repointed wilted.DATA_DIR, not the
+        DATA_DIR captured whenever wilted.prepare was first imported.
+        """
+        import wilted
+        from wilted.transcribe import TranscriptSegment
+
+        new_dir = tmp_path / "another_distinct_data_dir"
+        new_dir.mkdir()
+        assert new_dir != wilted.DATA_DIR
+        monkeypatch.setattr(wilted, "DATA_DIR", new_dir)
+
+        _make_podcast(tmp_path)
+
+        audio_file = new_dir / "podcasts" / "1" / "episode.mp3"
+        audio_file.parent.mkdir(parents=True, exist_ok=True)
+        audio_file.write_bytes(b"fake audio data")
+
+        segments = [TranscriptSegment(0.0, 5.0, "Hello world")]
+
+        with (
+            patch("wilted.prepare.download_podcast", return_value=audio_file),
+            patch("wilted.prepare.get_transcript", return_value=segments),
+            patch("wilted.engine.AudioEngine") as MockEngine,
+        ):
+            mock_engine = MockEngine.return_value
+            mock_engine.get_file_duration.return_value = 5.0
+            run_prepare(use_llm=False)
+
+        from wilted.db import Item
+
+        items = list(Item.select().where(Item.item_type == "podcast_episode"))
+        transcript_path = Path(items[0].transcript_file)
+        assert new_dir in transcript_path.parents
+        assert transcript_path == new_dir / "transcripts" / "1_transcript.json"
+        assert transcript_path.exists()
 
 
 # ---------------------------------------------------------------------------

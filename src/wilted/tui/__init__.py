@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from pathlib import Path
 from typing import ClassVar
 
 from textual import work
@@ -689,9 +690,123 @@ class WiltedApp(App):
         else:
             self._trigger_generation()
 
+    @work(thread=True, exclusive=True, group="playback")
+    def _play_podcast(self, entry: dict, resume_segment: int = 0) -> None:
+        """Play a prepared podcast episode from its finalized audio artifact.
+
+        Unlike ``_play_article`` (which re-synthesizes article text through TTS),
+        a ready podcast has a single prepared MP3 on disk. This worker streams
+        that file via ``engine.play_file`` and syncs the UI transcript from the
+        stored transcript segments — it never touches the TTS/generate path.
+        """
+        worker = get_current_worker()
+
+        audio_file = entry.get("audio_file")
+        if not audio_file:
+            self.call_from_thread(self._set_status, "Error: podcast audio not found", _STATUS_HIGH)
+            return
+        audio_path = Path(audio_file)
+        if not audio_path.exists():
+            self.call_from_thread(self._set_status, "Error: podcast audio not found", _STATUS_HIGH)
+            return
+
+        # Load the transcript segments saved during preparation. They are
+        # TranscriptSegment dataclasses (.start_s/.end_s/.text) — exactly the
+        # shape engine.play_file expects — so we pass them straight through.
+        from wilted import DATA_DIR
+        from wilted.transcribe import load_transcript
+
+        transcript_path = DATA_DIR / "transcripts" / f"{entry['id']}_transcript.json"
+        segments = load_transcript(transcript_path) or []
+
+        self._ensure_engine()
+        engine = self._engine
+
+        # Drive the UI transcript from segment text so the Plate mirrors the
+        # article view (previous/current/upcoming context around the cursor).
+        self._paragraphs = [seg.text for seg in segments]
+        self._total_segments = len(segments)
+        self._paragraph_idx = resume_segment
+        self._segments_played = resume_segment
+
+        title = entry.get("title", "Untitled")
+        self.call_from_thread(
+            self._update_now_playing,
+            title=title,
+            status="Playing",
+        )
+
+        def on_progress(seg_idx: int, total: int, text: str) -> None:
+            if worker.is_cancelled:
+                return
+            self._paragraph_idx = seg_idx
+            self._segments_played = seg_idx
+            progress = ((seg_idx + 1) / total) * 100 if total else 0.0
+            transcript = self._build_transcript(seg_idx)
+
+            # Periodically save resume position (segment index)
+            now = time.time()
+            if now - self._last_state_save >= 30:
+                set_resume_position(entry["id"], seg_idx, 0)
+                self._last_state_save = now
+
+            self.call_from_thread(
+                self._update_now_playing,
+                progress=progress,
+                text_snippet=transcript,
+                status="Playing",
+            )
+
+        try:
+            engine.play_file(
+                audio_path,
+                transcript_segments=segments,
+                start_segment=resume_segment,
+                on_progress=on_progress,
+            )
+        except Exception as e:
+            self.call_from_thread(self._set_status, f"Playback error: {e}", _STATUS_HIGH)
+            return
+
+        # play_file returns when the stream ends OR is stopped. A user stop sets
+        # the engine's stop event without cancelling the worker, so distinguish
+        # completion (played to the end) from an interrupted stop.
+        if not worker.is_cancelled and not self._engine._stop_event.is_set():
+            self.call_from_thread(self._on_podcast_completed, entry)
+        else:
+            set_resume_position(entry["id"], self._paragraph_idx, 0)
+
+    def _on_podcast_completed(self, entry: dict) -> None:
+        """Handle podcast completion on the main thread."""
+        clear_resume_position(entry["id"])
+        mark_completed(entry)
+        self._playing = False
+        self._paused = False
+        self._generation_paused = False
+        self._current_entry = None
+        self._update_now_playing(
+            title="Completed!",
+            progress=100,
+            time_remaining="",
+            text_snippet="",
+            status="Episode finished",
+        )
+        self._refresh_playlists()
+        # Auto-advance to next item
+        if self._all_items:
+            self._start_playback(self._all_items[0])
+        else:
+            self._trigger_generation()
+
     def _start_playback(self, entry: dict, resume_para: int = 0) -> None:
-        """Start playing an article, stopping any current playback."""
-        # Guard: if already playing this exact article, treat as toggle
+        """Start playing an item, stopping any current playback.
+
+        Routes on the item's type: podcast episodes play their prepared audio
+        artifact via ``_play_podcast`` (engine.play_file), while articles play
+        through the hybrid TTS/cache path via ``_play_article``. All playback
+        bookkeeping (toggle guard, stop/cancel, state reset) is shared.
+        """
+        # Guard: if already playing this exact item, treat as toggle
         if self._playing and self._current_entry and entry["id"] == self._current_entry["id"]:
             self.action_toggle_play()
             return
@@ -706,7 +821,11 @@ class WiltedApp(App):
         self._paused = False
         self._rewind_to = None
         self._last_state_save = time.time()
-        self._playback_worker = self._play_article(entry, resume_para)
+
+        if entry.get("item_type") == "podcast_episode":
+            self._playback_worker = self._play_podcast(entry, resume_para)
+        else:
+            self._playback_worker = self._play_article(entry, resume_para)
 
     # -- Actions (key bindings) ---------------------------------------------
 

@@ -73,6 +73,10 @@ def _item_to_dict(item) -> dict:
         # Extra fields available via SQLite (ignored by legacy code)
         "audio_file": item.audio_file,
         "status": item.status,
+        # Playback routing: 'article' | 'podcast_episode'. The TUI branches on
+        # this so a prepared podcast plays its finalized audio artifact rather
+        # than being re-synthesized through the article/TTS path.
+        "item_type": item.item_type,
     }
 
 

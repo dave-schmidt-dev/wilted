@@ -20,11 +20,11 @@ import shutil
 import time
 from pathlib import Path
 
+import wilted
 import wilted.ads as _ads_mod
 import wilted.cache as _cache_mod
 import wilted.engine as _engine_mod
 import wilted.llm as _llm_mod
-from wilted import DATA_DIR
 from wilted.db import Item
 from wilted.db import now_utc as _now_utc
 from wilted.download import DownloadError, download_podcast
@@ -90,7 +90,7 @@ def _prepare_podcast(item, llm_backend=None) -> None:
         raise PrepareError(f"Transcription failed for item {item_id}: {e}") from e
 
     # Save transcript
-    transcript_dir = DATA_DIR / "transcripts"
+    transcript_dir = wilted.DATA_DIR / "transcripts"
     transcript_dir.mkdir(parents=True, exist_ok=True)
     transcript_path = transcript_dir / f"{item_id}_transcript.json"
     save_transcript(segments, transcript_path)
@@ -216,7 +216,7 @@ def _prepare_article(item, llm_backend=None) -> None:
 
     # Step 2: Generate TTS audio
     try:
-        audio_dir = DATA_DIR / "audio" / str(item_id)
+        audio_dir = wilted.DATA_DIR / "audio" / str(item_id)
         audio_dir.mkdir(parents=True, exist_ok=True)
 
         engine = _engine_mod.AudioEngine()

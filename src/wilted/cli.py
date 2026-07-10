@@ -16,6 +16,7 @@ from wilted.queue import (
     load_queue,
     mark_completed,
     remove_article,
+    remove_article_by_id,
     utc_to_local_date,
 )
 from wilted.text import clean_text
@@ -155,11 +156,20 @@ def cmd_list(args):
 
 
 def cmd_remove(args):
-    """Remove an article from the reading list by number."""
-    try:
-        entry = remove_article(args.remove - 1)
-    except IndexError as e:
-        raise CLIError(str(e)) from e
+    """Remove an article from the reading list by its displayed number.
+
+    INV-3: resolve the stable item id from ``load_queue()`` — the same query and
+    ordering that ``cmd_list`` shows the user — then delete by id. The user-facing
+    listing includes ``selected`` articles that the legacy ``remove_article(index)``
+    (a ``ready``-only positional query) does not, so indexing into that narrower
+    query would delete a different article than the one displayed at position N.
+    """
+    queue = load_queue()
+    index = args.remove - 1
+    if index < 0 or index >= len(queue):
+        raise CLIError(f"Invalid index {args.remove}. Queue has {len(queue)} article(s).")
+
+    entry = remove_article_by_id(queue[index]["id"])
 
     print(f"Removed: {entry['title']}")
     queue = load_queue()
@@ -1077,3 +1087,12 @@ def main():
             sys.exit(1)
 
         WiltedApp().run()
+
+
+# INV-6 C1: `python -m wilted.cli` is the target of scripts/wilted-nightly.sh.
+# Without this guard the module imports, defines main(), and exits 0 having run
+# NOTHING — the nightly job logged "completed successfully" every night while
+# doing no work. This makes the module actually invoke main() and propagate its
+# real exit status (main()'s sys.exit / uncaught exceptions surface as usual).
+if __name__ == "__main__":
+    main()

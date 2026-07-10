@@ -471,40 +471,135 @@ def _make_ffmpeg_pcm(n_samples: int = 4800) -> bytes:
     return audio.tobytes()
 
 
-@pytest.fixture
-def mock_subprocess_ffmpeg():
-    """Patch subprocess.run to simulate ffmpeg decoding."""
-    pcm_data = _make_ffmpeg_pcm(n_samples=24000)  # 1 second at 24kHz
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    mock_result.stdout = pcm_data
-    mock_result.stderr = b""
-    with patch("wilted.engine.subprocess.run", return_value=mock_result) as mock_run:
-        yield mock_run
+class _FakeStdout:
+    """A fake proc.stdout that hands out a byte buffer in fixed-size reads.
+
+    Records how many read() calls occurred so tests can assert the PCM was
+    consumed incrementally (streamed), not slurped in one full-buffer capture.
+    """
+
+    def __init__(self, data: bytes):
+        self._data = data
+        self._pos = 0
+        self.read_calls = 0
+        self.closed = False
+
+    def read(self, n: int = -1) -> bytes:
+        self.read_calls += 1
+        if n is None or n < 0:
+            chunk = self._data[self._pos :]
+            self._pos = len(self._data)
+            return chunk
+        chunk = self._data[self._pos : self._pos + n]
+        self._pos += len(chunk)
+        return chunk
+
+    def close(self):
+        self.closed = True
 
 
-class TestPlayFile:
-    def test_play_file_decodes_and_plays(self, engine, mock_stream, mock_subprocess_ffmpeg, tmp_path):
-        """play_file decodes via ffmpeg and calls _play_audio with float32 array."""
+class _FakeStderr:
+    def __init__(self, data: bytes = b""):
+        self._data = data
+        self.closed = False
+
+    def read(self, n: int = -1) -> bytes:
+        return self._data
+
+    def close(self):
+        self.closed = True
+
+
+class _FakePopen:
+    """Minimal subprocess.Popen stand-in for streaming ffmpeg decode tests."""
+
+    def __init__(self, pcm: bytes, returncode: int = 0, stderr: bytes = b""):
+        self.stdout = _FakeStdout(pcm)
+        self.stderr = _FakeStderr(stderr)
+        self._returncode = returncode
+        self.returncode = None  # Set on wait(), mirroring real Popen.
+        self.killed = False
+        self.wait_calls = 0
+        self.args = None  # Populated by the patched Popen factory.
+
+    def wait(self, timeout=None):
+        self.wait_calls += 1
+        self.returncode = self._returncode
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        # A killed process is reaped by the following wait() call.
+
+
+def _patch_popen(fake: _FakePopen):
+    """Patch wilted.engine.subprocess.Popen to return `fake`, capturing argv."""
+
+    def _factory(cmd, *args, **kwargs):
+        fake.args = cmd
+        return fake
+
+    return patch("wilted.engine.subprocess.Popen", side_effect=_factory)
+
+
+class TestPlayFileStreaming:
+    def test_streams_pcm_incrementally(self, engine, mock_stream, tmp_path):
+        """play_file uses Popen and reads PCM in multiple chunk reads (not one capture)."""
         wav_file = tmp_path / "test.wav"
-        wav_file.touch()  # File must exist for the path check
+        wav_file.touch()
 
-        with patch.object(engine, "_play_audio") as mock_play:
+        n_samples = 24000  # 1 second at 24kHz
+        pcm = _make_ffmpeg_pcm(n_samples=n_samples)
+        fake = _FakePopen(pcm)
+
+        with _patch_popen(fake) as popen:
             engine.play_file(wav_file)
 
-        mock_subprocess_ffmpeg.assert_called_once()
-        cmd = mock_subprocess_ffmpeg.call_args[0][0]
+        # Popen used (streaming), not subprocess.run full-buffer capture.
+        popen.assert_called_once()
+        cmd = fake.args
         assert cmd[0] == "ffmpeg"
-        assert "-f" in cmd
-        assert "f32le" in cmd
+        assert "-f" in cmd and "f32le" in cmd
+        assert "pipe:1" in cmd
 
-        mock_play.assert_called_once()
-        played_audio = mock_play.call_args[0][0]
-        assert played_audio.dtype == np.float32
-        assert len(played_audio) == 24000
+        # PCM was consumed incrementally: more than one data read (plus the
+        # final empty read that signals EOF).
+        assert fake.stdout.read_calls > 2
 
-    def test_play_file_with_segments(self, engine, mock_stream, mock_subprocess_ffmpeg, tmp_path):
-        """on_progress is called for each transcript segment."""
+        # All samples reached the output stream (24 blocks of 1024).
+        total_written = sum(len(call.args[0]) for call in mock_stream.write.call_args_list)
+        assert total_written == n_samples
+
+    def test_peak_resident_is_chunk_sized(self, engine, mock_stream, tmp_path):
+        """Each read pulls at most one block worth of float32 (O(chunk), not O(episode))."""
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        pcm = _make_ffmpeg_pcm(n_samples=8192)
+        fake = _FakePopen(pcm)
+
+        # Instrument the read size requested from ffmpeg's stdout.
+        requested_sizes = []
+        orig_read = fake.stdout.read
+
+        def _tracking_read(n=-1):
+            requested_sizes.append(n)
+            return orig_read(n)
+
+        fake.stdout.read = _tracking_read
+
+        with _patch_popen(fake):
+            engine.play_file(wav_file)
+
+        block_bytes = 1024 * np.dtype(np.float32).itemsize
+        assert requested_sizes, "no reads issued"
+        assert all(size == block_bytes for size in requested_sizes)
+
+    def test_on_progress_fires_once_per_segment(self, engine, mock_stream, tmp_path):
+        """on_progress fires once per segment and current_segment_idx advances."""
         wav_file = tmp_path / "test.wav"
         wav_file.touch()
 
@@ -518,16 +613,19 @@ class TestPlayFile:
         def on_progress(seg_idx, total, text):
             progress_calls.append((seg_idx, total, text))
 
-        with patch.object(engine, "_play_audio"):
+        fake = _FakePopen(_make_ffmpeg_pcm(n_samples=24000))  # 1.0s covers all starts
+        with _patch_popen(fake):
             engine.play_file(wav_file, transcript_segments=segments, on_progress=on_progress)
 
-        assert len(progress_calls) == 3
-        assert progress_calls[0] == (0, 3, "First segment.")
-        assert progress_calls[1] == (1, 3, "Second segment.")
-        assert progress_calls[2] == (2, 3, "Third segment.")
+        assert progress_calls == [
+            (0, 3, "First segment."),
+            (1, 3, "Second segment."),
+            (2, 3, "Third segment."),
+        ]
+        assert engine.current_segment_idx == 2
 
-    def test_play_file_resume_from_segment(self, engine, mock_stream, mock_subprocess_ffmpeg, tmp_path):
-        """start_segment=2 skips earlier segments."""
+    def test_resume_seeks_ffmpeg_and_offsets_time(self, engine, mock_stream, tmp_path):
+        """start_segment>0 issues ffmpeg -ss to the segment start; playback_time_s starts there."""
         wav_file = tmp_path / "test.wav"
         wav_file.touch()
 
@@ -542,81 +640,141 @@ class TestPlayFile:
         def on_progress(seg_idx, total, text):
             progress_calls.append((seg_idx, total, text))
 
-        with patch.object(engine, "_play_audio") as mock_play:
+        # Short stream so the whole thing plays quickly; time starts at 0.5s.
+        fake = _FakePopen(_make_ffmpeg_pcm(n_samples=2048))
+        with _patch_popen(fake):
             engine.play_file(wav_file, transcript_segments=segments, start_segment=2, on_progress=on_progress)
 
-        # Only segments 2 and 3 should have been played
-        assert len(progress_calls) == 2
-        assert progress_calls[0] == (2, 4, "Seg 2")
-        assert progress_calls[1] == (3, 4, "Seg 3")
-        assert mock_play.call_count == 2
+        cmd = fake.args
+        # Accurate output seek: -ss appears AFTER -i, at the expected timestamp.
+        assert "-ss" in cmd
+        ss_idx = cmd.index("-ss")
+        assert cmd[ss_idx - 2] == "-i"  # -i FILE -ss T
+        assert float(cmd[ss_idx + 1]) == pytest.approx(0.5)
 
-        # Verify segment_idx was tracked
-        assert engine.current_segment_idx == 3
+        # Only segments 2 (fired at the seek offset) onward — never 0 or 1.
+        fired = [c[0] for c in progress_calls]
+        assert fired[0] == 2
+        assert 0 not in fired and 1 not in fired
 
-    def test_play_file_missing_file(self, engine):
+        # playback_time_s reflects true episode time (>= the 0.5s seek offset).
+        assert engine.playback_time_s >= 0.5
+
+    def test_ffmpeg_stderr_is_quieted_to_prevent_pipe_deadlock(self, engine, mock_stream, tmp_path):
+        """ffmpeg is invoked with banner/progress/stats suppressed so its stderr
+        pipe cannot fill and deadlock playback.
+
+        Regression lock for the streaming-decode stderr deadlock: stdout is read
+        at playback rate while stderr is drained only after the stream ends, so
+        ffmpeg's default per-second progress lines would fill the ~64 KB stderr
+        pipe, block ffmpeg's write, and stall a long episode. ``-loglevel error``
+        must remain so genuine decode errors still reach the failure path.
+        """
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        fake = _FakePopen(_make_ffmpeg_pcm(n_samples=2048))
+        with _patch_popen(fake):
+            engine.play_file(wav_file)
+
+        cmd = fake.args
+        assert "-nostats" in cmd
+        assert "-hide_banner" in cmd
+        assert "-loglevel" in cmd
+        assert cmd[cmd.index("-loglevel") + 1] == "error"
+
+    def test_ffmpeg_nonzero_exit_raises(self, engine, mock_stream, tmp_path):
+        """RuntimeError raised when ffmpeg exits non-zero after the stream ends."""
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        # Empty PCM + non-zero return code + stderr → decode failure.
+        fake = _FakePopen(b"", returncode=1, stderr=b"Invalid data found when processing input")
+        with _patch_popen(fake):
+            with pytest.raises(RuntimeError, match="ffmpeg decode failed"):
+                engine.play_file(wav_file)
+
+    def test_stop_mid_stream_reaps_process(self, engine, mock_stream, tmp_path):
+        """stop() mid-stream exits promptly and the ffmpeg process is killed and waited."""
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        # Long stream so playback is in progress when stop lands.
+        fake = _FakePopen(_make_ffmpeg_pcm(n_samples=240000))  # 10s of audio
+
+        # Stop after a couple of blocks are written.
+        block_count = [0]
+
+        def _stop_after_two(data):
+            block_count[0] += 1
+            if block_count[0] >= 2:
+                engine.stop()
+
+        mock_stream.write.side_effect = _stop_after_two
+
+        with _patch_popen(fake):
+            engine.play_file(wav_file)
+
+        # Did not drain the whole 10s stream — stopped early.
+        assert block_count[0] < 234  # << 240000/1024 ≈ 234 blocks
+        # ffmpeg reaped: kill() + wait() called, no zombie.
+        assert fake.killed is True
+        assert fake.wait_calls >= 1
+        assert fake.returncode is not None
+        assert not engine.is_playing
+
+    def test_playback_time_advances_for_checkpoint(self, engine, mock_stream, tmp_path):
+        """playback_time_s advances during playback and is readable for checkpointing."""
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        pcm = _make_ffmpeg_pcm(n_samples=24000)  # 1.0s at 24kHz
+        fake = _FakePopen(pcm)
+
+        # Sample the position AFTER each block's write completes (the engine
+        # updates _playback_time_s post-write, so read it on the next call).
+        samples = []
+
+        def _sample_time(data):
+            samples.append(engine.playback_time_s)
+
+        mock_stream.write.side_effect = _sample_time
+
+        assert engine.playback_time_s == 0.0
+        with _patch_popen(fake):
+            engine.play_file(wav_file)
+
+        # Position advanced during playback and is monotonically non-decreasing.
+        assert samples == sorted(samples)
+        assert samples[-1] > 0.0  # Time moved forward across blocks.
+        assert samples[-1] < engine.playback_time_s  # Last block updated after.
+        # Final position reflects the full ~1.0s episode, readable for checkpoint.
+        assert engine.playback_time_s == pytest.approx(1.0, abs=0.05)
+
+    def test_missing_file_raises(self, engine):
         """FileNotFoundError raised for nonexistent file."""
         with pytest.raises(FileNotFoundError, match="Audio file not found"):
             engine.play_file("/nonexistent/path/audio.mp3")
 
-    def test_play_file_stop_during_playback(self, engine, mock_stream, mock_subprocess_ffmpeg, tmp_path):
-        """Setting stop_event during segment playback causes early exit."""
-        wav_file = tmp_path / "test.wav"
-        wav_file.touch()
-
-        segments = [
-            _make_transcript_segment(0.0, 0.25, "Seg 0"),
-            _make_transcript_segment(0.25, 0.5, "Seg 1"),
-            _make_transcript_segment(0.5, 0.75, "Seg 2"),
-            _make_transcript_segment(0.75, 1.0, "Seg 3"),
-        ]
-        progress_calls = []
-
-        def on_progress(seg_idx, total, text):
-            progress_calls.append(seg_idx)
-            # Stop after first segment completes
-            engine._stop_event.set()
-
-        with patch.object(engine, "_play_audio"):
-            engine.play_file(wav_file, transcript_segments=segments, on_progress=on_progress)
-
-        # Only the first segment should have completed
-        assert len(progress_calls) == 1
-        assert progress_calls[0] == 0
-        # _playing should be False after exit
-        assert not engine.is_playing
-
-    def test_play_file_sets_playing_flag(self, engine, mock_stream, mock_subprocess_ffmpeg, tmp_path):
+    def test_sets_playing_flag(self, engine, mock_stream, tmp_path):
         """play_file sets _playing=True during playback and False after."""
         wav_file = tmp_path / "test.wav"
         wav_file.touch()
 
         playing_during = []
 
-        def capture_playing(audio_np):
+        def _capture(data):
             playing_during.append(engine.is_playing)
-            # Don't actually play (mock_stream handles it), just stop
-            engine._stop_event.set()
+            engine.stop()
 
-        with patch.object(engine, "_play_audio", side_effect=capture_playing):
+        mock_stream.write.side_effect = _capture
+
+        fake = _FakePopen(_make_ffmpeg_pcm(n_samples=24000))
+        with _patch_popen(fake):
             engine.play_file(wav_file)
 
         assert playing_during[0] is True
         assert not engine.is_playing
-
-    def test_play_file_ffmpeg_failure(self, engine, tmp_path):
-        """RuntimeError raised when ffmpeg returns nonzero exit code."""
-        wav_file = tmp_path / "test.wav"
-        wav_file.touch()
-
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stdout = b""
-        mock_result.stderr = b"Invalid data found when processing input"
-
-        with patch("wilted.engine.subprocess.run", return_value=mock_result):
-            with pytest.raises(RuntimeError, match="ffmpeg decode failed"):
-                engine.play_file(wav_file)
 
 
 class TestGetFileDuration:

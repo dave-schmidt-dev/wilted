@@ -1049,7 +1049,142 @@ class TestFailedBulletinGeneration:
 
 
 # ---------------------------------------------------------------------------
-# 8. Substrate-neutrality
+# 8. OQ-1: interruption resume order (priority-order, locked 2026-07-10)
+# ---------------------------------------------------------------------------
+
+
+class TestOq1InterruptionResumeOrder:
+    """OQ-1 resolved 2026-07-10 (David): interruption resume is PRIORITY-ORDERED,
+    not LIFO. These tests lock that choice — a change to strict most-recently-
+    interrupted (LIFO) resume must fail here."""
+
+    def test_resume_order_is_priority_not_lifo(self):
+        """Interrupt with a LESS urgent bulletin first, then a MORE urgent one.
+
+        Under LIFO ("resume whatever you most recently interrupted"), the
+        first ResumeFromInterruption would return to ``traffic`` (priority=9,
+        interrupted second/most recently). Under priority-order (the
+        reducer's actual, locked behavior), it instead returns to ``active``
+        (priority=5, more urgent than traffic's 9) even though ``active`` was
+        interrupted first/least recently. These two predictions genuinely
+        differ, so this assertion fails if the reducer is ever flipped to
+        pop the last-inserted stack entry instead of sorting by priority.
+        """
+        safe_map = SafeInterruptionMap.from_verified_windows(((0, 60_000),))
+        active_entry = _entry(entry_id="active", priority=5, media=_finalized_media(safe_interruption=safe_map))
+        state = _state_with_active_entry(active_entry)
+
+        # Interrupted 1st (least recently), but MORE urgent (priority=5 < 9).
+        traffic = _entry(
+            entry_id="traffic",
+            kind="bulletin",
+            priority=9,
+            media=_finalized_media(safe_interruption=safe_map),
+        )
+        state = apply(
+            state,
+            AcceptInterruption(bulletin=traffic, interrupt_offset_ms=1000, policy_current=True),
+            MAC,
+        )
+        assert state.active_entry.entry_id == "traffic"
+        assert [e.entry_id for e in state.interruption_stack] == ["active"]
+
+        # Interrupted 2nd (most recently), but LESS urgent than active
+        # (priority=1 is more urgent than active's 5) — irrelevant to LIFO,
+        # which only cares about recency, but relevant to priority-order.
+        breaking = _entry(
+            entry_id="breaking",
+            kind="bulletin",
+            priority=1,
+            media=_finalized_media(safe_interruption=safe_map),
+        )
+        state = apply(
+            state,
+            AcceptInterruption(bulletin=breaking, interrupt_offset_ms=2000, policy_current=True),
+            MAC,
+        )
+        assert state.active_entry.entry_id == "breaking"
+        # Stack sorted ascending by priority: active(5) before traffic(9).
+        assert [e.entry_id for e in state.interruption_stack] == ["active", "traffic"]
+
+        # First resume: priority-order must return to "active" (priority=5,
+        # the most urgent pending entry). LIFO would (incorrectly, for this
+        # locked product decision) return to "traffic" (priority=9), since
+        # traffic was interrupted more recently than active.
+        state = apply(state, ResumeFromInterruption(), MAC)
+        assert state.active_entry.entry_id == "active"  # LIFO would give "traffic" here.
+        assert [e.entry_id for e in state.interruption_stack] == ["traffic"]
+
+        # Second resume: only "traffic" remains either way, but assert it
+        # for a complete, self-consistent round trip.
+        state = apply(state, ResumeFromInterruption(), MAC)
+        assert state.active_entry.entry_id == "traffic"
+        assert state.interruption_stack == ()
+
+    def test_resume_order_diverges_from_lifo_across_three_nested_interruptions(self):
+        """Three-deep interruption chain where priority-order and LIFO
+        predict DIFFERENT resume sequences at BOTH the first and second
+        resume step (a stronger, independent check than the two-entry case
+        above).
+
+        Interrupted chronologically (oldest to most recent): active(5),
+        low(8), mid(6). Stack, sorted ascending by priority: [active(5),
+        mid(6), low(8)].
+
+          - LIFO (most-recently-interrupted-first) predicts: mid, low, active.
+          - Priority-order (most-urgent-first) predicts: active, mid, low.
+
+        The two predictions disagree at both the first and second pop, so
+        this test fails immediately if the reducer is ever changed to pop
+        the last-inserted stack entry instead of sorting by priority.
+        """
+        safe_map = SafeInterruptionMap.from_verified_windows(((0, 60_000),))
+        active_entry = _entry(entry_id="active", priority=5, media=_finalized_media(safe_interruption=safe_map))
+        state = _state_with_active_entry(active_entry)
+
+        # Interrupted 1st (oldest), mid urgency (priority=5).
+        low = _entry(entry_id="low", kind="bulletin", priority=8, media=_finalized_media(safe_interruption=safe_map))
+        state = apply(state, AcceptInterruption(bulletin=low, interrupt_offset_ms=1000, policy_current=True), MAC)
+        assert state.active_entry.entry_id == "low"
+
+        # Interrupted 2nd, LEAST urgent (priority=8).
+        mid = _entry(entry_id="mid", kind="bulletin", priority=6, media=_finalized_media(safe_interruption=safe_map))
+        state = apply(state, AcceptInterruption(bulletin=mid, interrupt_offset_ms=2000, policy_current=True), MAC)
+        assert state.active_entry.entry_id == "mid"
+
+        # Interrupted 3rd (most recent), moderately urgent (priority=6).
+        urgent = _entry(
+            entry_id="urgent",
+            kind="bulletin",
+            priority=1,
+            media=_finalized_media(safe_interruption=safe_map),
+        )
+        state = apply(state, AcceptInterruption(bulletin=urgent, interrupt_offset_ms=3000, policy_current=True), MAC)
+        assert state.active_entry.entry_id == "urgent"
+        # Sorted ascending by priority: active(5), mid(6), low(8).
+        assert [e.entry_id for e in state.interruption_stack] == ["active", "mid", "low"]
+
+        # First resume: priority-order picks "active" (priority=5, most
+        # urgent pending). LIFO would instead pick "mid" (interrupted most
+        # recently, priority=6).
+        state = apply(state, ResumeFromInterruption(), MAC)
+        assert state.active_entry.entry_id == "active"  # LIFO would give "mid" here.
+        assert [e.entry_id for e in state.interruption_stack] == ["mid", "low"]
+
+        # Second resume: priority-order picks "mid" (priority=6, more
+        # urgent than "low"'s 8). LIFO would instead pick "low" (interrupted
+        # more recently than "active", which LIFO already consumed above).
+        state = apply(state, ResumeFromInterruption(), MAC)
+        assert state.active_entry.entry_id == "mid"  # LIFO would give "low" here.
+        assert [e.entry_id for e in state.interruption_stack] == ["low"]
+
+        state = apply(state, ResumeFromInterruption(), MAC)
+        assert state.active_entry.entry_id == "low"
+        assert state.interruption_stack == ()
+
+
+# ---------------------------------------------------------------------------
+# 9. Substrate-neutrality
 # ---------------------------------------------------------------------------
 
 
