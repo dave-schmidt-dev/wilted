@@ -31,6 +31,7 @@ _TEST_MARKERS = {
     "test_prepare.py": ("integration",),
     "test_queue.py": ("integration",),
     "test_report.py": ("integration",),
+    "test_station_contracts.py": ("unit",),
     "test_text.py": ("unit",),
     "test_transcribe.py": ("unit",),
     "test_tui.py": ("tui",),
