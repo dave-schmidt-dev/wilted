@@ -1,6 +1,6 @@
 # ADR 0001 — Wilted Mac-first Personal Radio substrate
 
-**Status:** Provisionally **APPROVED by David 2026-07-10** — Decisions 1, 2, 3, 4, 6 approved (their headers below read *APPROVED*); Decision 5 (latency/resume/F4 targets) remains pending the Plan A hardware measurement. Full 0.7 closure also needs the deferred hardware dims (Mac UX velocity, audio-route recovery, awake/sleep). Canonical committed copy: `docs/adr/0001-mac-radio-substrate.md`.
+**Status:** **APPROVED by David 2026-07-10** — Decisions 1, 2, 3, 4, 6 approved (their headers below read *APPROVED*); **Decision 5 (latency/resume/F4 targets) finalized 2026-07-10** from the M5 Max hardware measurements (`spikes/hardware-measurements-2026-07-10/RESULTS-TEMPLATE.md`). Of the deferred hardware dims, audio-route recovery and awake/sleep are now measured (see Decision 5); Mac UX velocity remains the only open 0.7 dim, exercised in Plan A itself. Canonical committed copy: `docs/adr/0001-mac-radio-substrate.md`.
 **Date:** 2026-07-10 · **Plan:** `mac-first-personal-radio-2026-07-10` · **Evidence:** phase0-inventory, phase0-3-substrate-scorecard, the three disposable spikes, and the security-auditor review — all 2026-07-10.
 
 ## Context
@@ -51,12 +51,18 @@ Verified live against `api.weather.gov` (2026-07-10): ZIP 20169 = Haymarket, VA 
 
 ---
 
-## Decision 5 — Interruption-latency & resume-fidelity targets *(NEEDS the Plan A measurement — provisional)*
+## Decision 5 — Interruption-latency & resume-fidelity targets *(FINALIZED 2026-07-10 from M5 Max measurements)*
 
-These depend on the alert-latency measurement that requires your hardware (0.4 remainder), so they are **provisional starting targets, not final:**
-- **Interruption latency:** interrupt only at a safe boundary; target alert-detected→bulletin-start measured first, then set a ceiling. MVP promises a controlled safe-boundary interrupt, **not** mid-sentence preemption.
-- **Resume fidelity (#3):** transcript/chapter-boundary resume initially. Note: the current full-decode buffer gives O(1) seek *once decoded*, but the required streaming rework (below) changes this — decide second-level resume after that rework is scoped.
-- **F4 (transcript interruption tolerance):** replace the current zero-width safe windows with a small ±N ms band around segment boundaries; N is set by this decision. Until then, transcript-sourced entries are conservatively near-no-interrupt (safe, but rarely interruptible).
+Measured on David's M5 Max via `spikes/hardware-measurements-2026-07-10/` (full evidence in that dir's `RESULTS-TEMPLATE.md`). Targets are now **final**:
+
+- **Interruption latency:** measured **alert-detected→bulletin-start = 5.12 s cold** (0.97 s TTS model load + 4.15 s synthesis) / **~4.15 s warm**. TTS synthesis dominates. **Ceiling set: 6 s cold / 5 s warm** for a one-sentence bulletin interrupted at a safe boundary. MVP promises a controlled safe-boundary interrupt, **not** mid-sentence preemption. Lever to tighten later (not required for the MVP ceiling): pre-synthesize common bulletin templates, shorter bulletins, or streaming TTS.
+- **Resume fidelity (#3):** **transcript/segment-boundary resume — PASS**, boundary-accurate (resume landed exactly on the target segment; `playback_time_s` = the segment's start). The streaming `play_file` rework shipped this session (see below), so `playback_time_s` now gives a continuous-time checkpoint — **second-level resume is feasible**; the MVP target stays the proven segment-boundary resume, with second-level as a follow-up.
+- **F4 (transcript interruption tolerance):** **±250 ms band** around segment boundaries (replaces the zero-width safe windows). Conservative given ~6.7 s mean segments with natural inter-segment pauses (segmentation used a 0.5 s silence gap); widen as confidence grows. Measured startup ≈0.5 s and seek ≈2.0 s bound the real interrupt/resume cost.
+
+**Hardware consequences measured (feed Plan A):**
+- **Audio-route recovery — GAP:** playback does **not** follow output-device changes — it stays on the device active at stream-open (`sd.OutputStream` binds at open); all three route-change scenarios logged `wrong-device`. It stayed responsive and never crashed. Plan A: reopen the stream on CoreAudio default-device-change events, or document the limitation. (RESULTS §2.)
+- **Awake/sleep:** LAN reachability survived display sleep, clamshell, and system sleep (same IPv4 before/after each). Process-survival not exercised (no station was running). Implication: a phone-pairing LAN connection likely needs only a reconnect, not full re-establishment. (RESULTS §3.)
+- **Model lifecycle:** one-model-Metal-residency **holds** — the MLX Metal pool returns to baseline between LLM/TTS/transcribe, validating the `ModelCoordinator` single-lease assumption. Caveat: the GGUF LLM's ~5.4 GB RSS is retained by llama.cpp after `close()` (separate allocator) — budget MLX-Metal residency and llama.cpp RSS separately. (RESULTS §4.)
 
 ---
 
@@ -76,11 +82,11 @@ For the **Mac-side pairing/TLS**, adopt the **Python path**: `cryptography` (cer
 ## Consequences & prerequisites carried into Plan A
 
 - **Confirmed prerequisite bug:** `_start_playback` routes ready podcasts through `_play_article` (mis-routing) — fix in A.2, same class as the INV-4 fix.
-- **Streaming playback rework:** current `play_file` buffers the whole episode (542 MB / ~4 s cold start for 94 min at 24 kHz mono) — needs streaming + continuous-time checkpoint to retain the Python adapter.
+- **Streaming playback rework — SHIPPED (2026-07-10):** `play_file` now streams (ffmpeg → PCM blocks) with a `playback_time_s` continuous-time checkpoint. Measured on the M5 Max: **70 MB peak RSS** (vs the 542 MB full-decode estimate, ~8×) and **506 ms** to first audio (vs ~4 s). Seek is ~2.0 s (accurate output seek decodes from the prior keyframe). Retains the Python adapter.
 - **Invariant debt:** INV-2/3/5/6 still lack gate tests (only INV-1/INV-4 covered); A.1 must carry INV-1..6 forward covered-or-replaced.
 - **Model lifecycle:** the LLM/Parakeet co-residency remediation (W5) is a prerequisite for any reused processing module; the chosen core introduces a single `ModelCoordinator` lease.
 - **0.5 hardening backlog A–E** (in THREAT-MODEL.md) before the shipped pairing implementation.
-- **Deferred to your hardware for full 0.7 closure:** Mac UX velocity, audio-route recovery, awake/sleep availability (0.3 deferred dims) and the 0.4 ML/speaker/alert-latency measurements.
+- **Deferred hardware dims — measured 2026-07-10 (M5 Max):** audio-route recovery (GAP: does not follow device changes), awake/sleep availability (LAN survived all three), and the 0.4 ML/speaker/alert-latency measurements (residency HELD, alert→bulletin 5.12 s cold) are all captured in `spikes/hardware-measurements-2026-07-10/RESULTS-TEMPLATE.md` and folded into Decision 5. **Mac UX velocity** is the one remaining 0.7 dim — it can only be exercised by building Plan A's Mac UI, so it closes in Plan A rather than here.
 
 ## Sign-off checklist (David) — signed off 2026-07-10
 
@@ -88,5 +94,5 @@ For the **Mac-side pairing/TLS**, adopt the **Python path**: `cryptography` (cer
 - [x] Decision 2 — store + migration path — **approved**
 - [x] Decision 3 — NWS ZIP 20169 / US-only for prototype — **confirmed (verified against weather.gov)**
 - [x] Decision 4 — podcast admission: auto-admit + **14-day** freshness cap, no relevance filter — **approved**
-- [ ] Decision 5 — provisional latency/resume/F4 targets — **finalize after the Plan A hardware measurement**
+- [x] Decision 5 — latency/resume/F4 targets — **finalized 2026-07-10 from M5 Max measurements** (interruption ceiling 6 s cold / 5 s warm; resume boundary-accurate PASS; F4 ±250 ms band)
 - [x] Decision 6 — Python dependency path (`cryptography`+`keyring`) vs native companion — **approved (Python path)**

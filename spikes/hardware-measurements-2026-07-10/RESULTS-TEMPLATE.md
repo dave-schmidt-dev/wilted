@@ -100,10 +100,10 @@ on "the alert-latency measurement that requires your hardware."
 
 Once the table above is filled in:
 
-- [ ] Set the interruption-latency ceiling in Decision 5 from the measured value: **alert-detected→bulletin-start = 5.12 s cold / ~4.15 s warm** (TTS-synthesis bound). *David's call: pick the ceiling and whether pre-synth/shorter bulletins are needed to hit it.*
+- [x] Set the interruption-latency ceiling in Decision 5 from the measured value: **alert-detected→bulletin-start = 5.12 s cold / ~4.15 s warm** (TTS-synthesis bound). **Ceiling set: 6 s cold / 5 s warm** for a one-sentence safe-boundary bulletin; pre-synth/shorter bulletins/streaming TTS are the levers if a tighter ceiling is wanted later (not required for the MVP). *(2026-07-10)*
 - [x] Confirm or revise the resume-fidelity target from the measured result: **boundary-accurate resume PASS** — the "transcript-boundary resume initially" target is met by the current implementation.
-- [ ] Set F4's ±N ms safe-interruption band (Decision 5 item 3) — informed by measured startup **≈0.5 s** and seek **≈2.0 s**. *David's call.*
+- [x] Set F4's ±N ms safe-interruption band (Decision 5 item 3) — informed by measured startup **≈0.5 s** and seek **≈2.0 s**. **Set: ±250 ms band** around segment boundaries (conservative given ~6.7 s mean segments / 0.5 s segmentation silence gap; widen as confidence grows). *(2026-07-10)*
 - [x] Note the audio-route-recovery behavior as a consequence for Plan A: **wrong-device (does not follow device changes), but responsive/no-crash** — recorded in §2 with remediation options.
 - [x] Note the awake/sleep availability behavior as a consequence for Plan A: **LAN reachability survived display sleep / clamshell / system sleep**; process-survival untested (no station running) — recorded in §3.
 - [x] Confirm the one-model-residency property held (or file a follow-up if it didn't). **HELD (2026-07-10)** — MLX Metal pool returns to baseline between all three models. Follow-up noted: GGUF LLM RSS (~5.4 GB) is retained by llama.cpp after close (separate allocator); coordinator should budget MLX-Metal residency and llama.cpp RSS separately.
-- [ ] Update `docs/adr/0001-mac-radio-substrate.md` Decision 5's status line and the sign-off checklist's Decision 5 row from "NEEDS the Plan A measurement" to a dated, signed-off decision.
+- [x] Update `docs/adr/0001-mac-radio-substrate.md` Decision 5's status line and the sign-off checklist's Decision 5 row from "NEEDS the Plan A measurement" to a dated, signed-off decision. **Done 2026-07-10** — Decision 5 header now reads *FINALIZED*, body carries measured values + ceiling, status line and checklist flipped to signed-off.
