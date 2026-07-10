@@ -6,8 +6,11 @@ this table is complete, its values directly finalize ADR 0001 Decision 5
 (`docs/adr/0001-mac-radio-substrate.md`) — replace the provisional targets
 there with the measured ones and flip the sign-off checkbox.
 
-Date run: **\_\_\_\_\_\_\_\_\_\_** · Mac model / chip: **\_\_\_\_\_\_\_\_\_\_** ·
-Episode used: **\_\_\_\_\_\_\_\_\_\_** (path + duration)
+Date run: **2026-07-10** (section 4 residency) · Mac model / chip: **Mac17,6 / Apple M5 Max, 128 GB** ·
+Episode used: **data/podcasts/measure-404-best-game/80391e99cf24d187eec49da364a45858.mp3** (93.9 min, 756-segment transcript) — for sections 1–2
+
+> Status: **§4 residency filled** (automated, run 2026-07-10). §1–3 and §4 alert-latency
+> are the human-in-the-loop / audio-emitting runs — pending David's hardware session.
 
 ---
 
@@ -60,14 +63,14 @@ on "the alert-latency measurement that requires your hardware."
 
 | Metric | Provisional ADR target | Measured value | Notes |
 |---|---|---|---|
-| At most one MLX/Metal model resident at a time (LLM / TTS / transcription) | Required — zero co-residency (ADR's stated prerequisite for `ModelCoordinator`) | PASS / FAIL | Advisory auto-check in script output ("possible leaked Metal residency" flag) — confirm manually too |
-| LLM backend load time | None set | | |
-| LLM backend close time (Metal reclaim) | None set | | |
-| TTS (Kokoro) load time | None set | | |
-| TTS (Kokoro) close time (Metal reclaim) | None set | | |
-| Transcription (parakeet_mlx) load time | None set | | |
-| Transcription (parakeet_mlx) close time (Metal reclaim) | None set | | |
-| Alert-detected → bulletin-start latency | Decision 5: "target alert-detected→bulletin-start measured first, then set a ceiling" — **no ceiling exists yet; this measurement sets it** | | |
+| At most one MLX/Metal model resident at a time (LLM / TTS / transcription) | Required — zero co-residency (ADR's stated prerequisite for `ModelCoordinator`) | **PASS** | MLX Metal-pool (`mx.get_active_memory`) returns to baseline (~0) after every close, all three phases `[OK]`, drift +0 MB. **Caveat:** the GGUF LLM uses llama.cpp's separate allocator (Metal-pool reads ~0 on load), so its ~5.4 GB shows in RSS not the MLX pool — property holds for the Metal pool, not process RSS (see below). |
+| LLM backend load time | None set | **0.54 s** | Gemma-4 E4B QAT-Q4_0 GGUF via llama-cpp-python 0.3.33 (prebuilt wheel; no M5 Metal tensor-compile error). RSS 21 → 5457 MB. |
+| LLM backend close time (Metal reclaim) | None set | **0.06 s** | `del`+`gc.collect()` returns MLX pool to baseline but **RSS stays at 5472 MB** — llama.cpp retains the ~5.4 GB (mmap/allocator), not returned to OS. Harmless on 128 GB; note for the coordinator's RSS budget. |
+| TTS (Kokoro) load time | None set | **0.50 s** | mlx_audio 0.4.2; Metal pool → 312 MB on load. (First cold load of a session measured ~1.1 s.) |
+| TTS (Kokoro) close time (Metal reclaim) | None set | **0.03 s** | Metal pool → ~0 (fully reclaimed). |
+| Transcription (parakeet_mlx) load time | None set | **0.92 s** | parakeet-mlx 0.5.1 / mlx 0.31.1; Metal pool → 39 MB on load. |
+| Transcription (parakeet_mlx) close time (Metal reclaim) | None set | **0.03 s** | Metal pool → ~0 (fully reclaimed). |
+| Alert-detected → bulletin-start latency | Decision 5: "target alert-detected→bulletin-start measured first, then set a ceiling" — **no ceiling exists yet; this measurement sets it** | _pending_ | `--mode alert-latency` emits a ~3 s TTS bulletin through the speakers — deferred to David's audio session. |
 
 ---
 
@@ -80,5 +83,5 @@ Once the table above is filled in:
 - [ ] Set F4's ±N ms safe-interruption band (Decision 5 item 3) — informed by startup/seek timing, if applicable.
 - [ ] Note the audio-route-recovery behavior classification as an accepted/rejected consequence for Plan A.
 - [ ] Note the awake/sleep availability behavior as an accepted/rejected consequence for Plan A.
-- [ ] Confirm the one-model-residency property held (or file a follow-up if it didn't).
+- [x] Confirm the one-model-residency property held (or file a follow-up if it didn't). **HELD (2026-07-10)** — MLX Metal pool returns to baseline between all three models. Follow-up noted: GGUF LLM RSS (~5.4 GB) is retained by llama.cpp after close (separate allocator); coordinator should budget MLX-Metal residency and llama.cpp RSS separately.
 - [ ] Update `docs/adr/0001-mac-radio-substrate.md` Decision 5's status line and the sign-off checklist's Decision 5 row from "NEEDS the Plan A measurement" to a dated, signed-off decision.
