@@ -39,6 +39,7 @@ Idempotent: appends one timestamped block to ``results.log`` per run.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 import threading
 import time
@@ -49,6 +50,23 @@ SPIKE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SPIKE_DIR.parents[1]
 RESULTS_LOG = SPIKE_DIR / "results.log"
 FORBIDDEN_WRITE_ROOT = REPO_ROOT / "data"
+
+
+def _ask(prompt: str) -> str:
+    """Prompt for input after restoring canonical tty mode.
+
+    Playback runs in a background thread while we wait here; concurrent
+    sounddevice/CoreAudio activity can leave the terminal in raw / no-icrnl mode
+    where Enter echoes as ^M and ``input()`` never sees a completed line. Reset
+    to a sane tty right before every prompt so Enter always works. Best-effort
+    and stdin-tty-gated (a no-op when stdin isn't a terminal, e.g. piped tests).
+    """
+    if sys.stdin.isatty():
+        try:
+            subprocess.run(["stty", "sane"], check=False)  # noqa: S607 - fixed argv, no shell
+        except Exception:  # noqa: BLE001 - tty reset is best-effort, never fatal
+            pass
+    return input(prompt)
 
 
 @dataclass
@@ -104,7 +122,7 @@ def run_scenario(engine, episode_path: Path, scenario_name: str, human_prompt: s
 
     print(f"\n--- SCENARIO: {scenario_name} ---")
     print(human_prompt)
-    input("Press Enter once you have made the change and are ready to observe...")
+    _ask("Press Enter once you have made the change and are ready to observe...")
 
     print("Observing for 8 seconds -- listen to what the app does...")
     time.sleep(8.0)
@@ -112,7 +130,7 @@ def run_scenario(engine, episode_path: Path, scenario_name: str, human_prompt: s
     thread_alive = play_thread.is_alive()
 
     observation = (
-        input(
+        _ask(
             "\nOBSERVATION -- what happened? Type one of:\n"
             "  paused        (playback paused into a visible/audible no-output state)\n"
             "  crashed       (the process died or raised visibly)\n"
@@ -126,9 +144,9 @@ def run_scenario(engine, episode_path: Path, scenario_name: str, human_prompt: s
         .lower()
     )
 
-    notes = input("Additional notes (optional): ").strip()
+    notes = _ask("Additional notes (optional): ").strip()
 
-    responsive_answer = input("Did the app / terminal stay responsive (not hung)? [y/n]: ").strip().lower()
+    responsive_answer = _ask("Did the app / terminal stay responsive (not hung)? [y/n]: ").strip().lower()
     stayed_responsive = responsive_answer.startswith("y")
 
     # Stop this scenario's playback before moving to the next one.

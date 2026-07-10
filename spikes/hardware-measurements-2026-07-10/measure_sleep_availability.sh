@@ -42,6 +42,7 @@ fi
 
 RESULT_BLOCK=()
 
+# shellcheck disable=SC2329  # invoked indirectly via `trap cleanup EXIT INT TERM`
 cleanup() {
   # trap-based cleanup: always flush whatever we captured, even on Ctrl-C
   # or an unexpected exit, so a partial run still leaves a useful record
@@ -65,11 +66,20 @@ record() {
   echo "${line}"
 }
 
+sane_tty() {
+  # Restore canonical tty mode before an interactive read. Display/system sleep,
+  # lid close/wake (and any prior audio playback in a sibling step) can leave the
+  # terminal in raw / no-icrnl mode, where Enter reads as ^M and `read` never
+  # completes a line. Best-effort, gated on an interactive stdin.
+  [[ -t 0 ]] && stty sane 2>/dev/null || true
+}
+
 ask() {
   # ask <prompt-var-name> <prompt-text>
   local __resultvar="$1"
   local prompt="$2"
   local reply
+  sane_tty
   # shellcheck disable=SC2034  # reply is consumed indirectly via eval below
   read -r -p "${prompt} " reply
   eval "${__resultvar}=\"\${reply}\""
@@ -102,6 +112,7 @@ echo "If wilted (or the eventual station process) is running, start it now in an
 echo "terminal so these scenarios can observe its behavior across sleep. It's fine to"
 echo "run this without it running too -- you'll just note 'not running' for each step."
 echo ""
+sane_tty
 read -r -p "Press Enter to begin..." _
 
 # --- Scenario 1: display sleep ---------------------------------------------
@@ -113,6 +124,7 @@ echo "        or run 'pmset displaysleepnow' in another terminal)."
 pmset -g | grep -i "displaysleep" || true
 record "display-sleep" "pid_before" "$(wilted_pid_probe)"
 record "display-sleep" "ip_before" "$(network_probe)"
+sane_tty
 read -r -p "Trigger display sleep now, wait ~15s, then wake the display and press Enter..." _
 record "display-sleep" "pid_after" "$(wilted_pid_probe)"
 record "display-sleep" "ip_after" "$(network_probe)"
@@ -128,6 +140,7 @@ echo "        Otherwise this WILL suspend the Mac; you'll need to open the lid a
 echo "        wake it to continue this script."
 record "lid-close" "pid_before" "$(wilted_pid_probe)"
 record "lid-close" "ip_before" "$(network_probe)"
+sane_tty
 read -r -p "Close the lid now, wait ~15s, then reopen and wake the Mac, then press Enter..." _
 record "lid-close" "pid_after" "$(wilted_pid_probe)"
 record "lid-close" "ip_after" "$(network_probe)"
@@ -141,6 +154,7 @@ echo "STEP 3: trigger full system sleep (Apple menu > Sleep, or 'pmset sleepnow'
 echo "        another terminal), wait ~15s, then wake the Mac."
 record "system-sleep" "pid_before" "$(wilted_pid_probe)"
 record "system-sleep" "ip_before" "$(network_probe)"
+sane_tty
 read -r -p "Trigger system sleep now, wait ~15s, then wake the Mac, then press Enter..." _
 record "system-sleep" "pid_after" "$(wilted_pid_probe)"
 record "system-sleep" "ip_after" "$(network_probe)"
