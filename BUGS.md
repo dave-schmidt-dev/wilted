@@ -26,6 +26,17 @@
 - Status: **resolved (2026-05-25)** — durable fix applied. The project venv now lives at `~/.venvs/wilted` (outside iCloud) via `UV_PROJECT_ENVIRONMENT`, wired into the `~/.zshrc` alias, the `Makefile` (`export UV_PROJECT_ENVIRONMENT := $(HOME)/.venvs/wilted`), and `scripts/wilted-nightly.sh`. iCloud cannot reach `~/.venvs`, so the `.pth` files are never hidden and the bug cannot recur. The old in-project `.venv` was removed.
 - Follow-up: none. If a venv is ever recreated inside `~/Documents/` again, the `chflags nohidden` one-liner in the README remains the manual escape hatch.
 
+### BUG-4 — Local Parakeet transcription tier crashed / produced garbage on any real episode
+
+- Trigger: `transcribe_audio()` (ADR Tier 3 fallback) on a full-length podcast — i.e. any episode with no external RSS/web transcript.
+- Root cause: three compounding defects behind a code path that shipped with **zero tests**.
+  1. No chunking — `model.transcribe(str(audio_path))` decoded the whole file in one Metal computation; a 94-min episode overran GPU memory and aborted the process with a Metal command-buffer page fault (`GPU Address Fault (PageFault)`, exit 134 / SIGABRT).
+  2. Wrong result attribute — parser read `result.segments`; `parakeet-mlx` returns an `AlignedResult` whose timestamped units are `.sentences`, so every run produced 0 segments and raised "Transcription produced no segments" (exit 1).
+  3. Default split config — parakeet's default `SentenceConfig` disables all splitting (`max_words`/`silence_gap`/`max_duration` all None), returning the whole episode as ONE segment (useless for seek/resume + transcript display).
+- Diagnosis: pulling one 94-min 404 Media episode through the tier for the hardware harness reproduced all three in sequence (SIGABRT → zero segments → single segment) as each was fixed.
+- Status: **resolved (2026-07-10)**. Fixes in `src/wilted/transcribe.py`: bounded `chunk_duration=120.0` + `overlap_duration=15.0`; parser reads `.sentences` first (falls back to `.segments`/dict); new `_sentence_split_config(model)` rebuilds the model's default decoding config with `silence_gap=0.5` / `max_duration=20.0` and degrades to the library default on API drift. Verified: 756 segments over the full 93.9-min episode (15,849 words). Regression lock: `tests/test_transcribe.py::TestTranscribeAudioLocalTier` (5 tests, each fix revert-proven).
+- Follow-up: none for the tier itself. The tier now has coverage where it previously had none; treat any future `AlignedResult` shape change as a regression caught by the `.sentences`-parsing test.
+
 ## Validation Debt
 
 - The routine automated suite covers the safe, guarded paths that Wilted actually uses.

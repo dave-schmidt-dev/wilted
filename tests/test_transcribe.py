@@ -524,3 +524,158 @@ class TestSegmentsToText:
     def test_single_segment(self):
         segments = [TranscriptSegment(start_s=0.0, end_s=1.0, text="Only one.")]
         assert segments_to_text(segments) == "Only one."
+
+
+# ---------------------------------------------------------------------------
+# Tier 3: Local Parakeet transcription (transcribe_audio)
+# ---------------------------------------------------------------------------
+
+
+def _install_fake_parakeet(captured, sentences):
+    """Build a fake parakeet_mlx package mirroring the real API surface.
+
+    Returns a ``{module_name: module}`` dict suitable for ``patch.dict(sys.modules, ...)``.
+    The fake ``AlignedResult`` exposes ``.sentences`` (as the real one does), and
+    ``model.transcribe`` records the kwargs it was called with into ``captured`` so
+    a test can assert what ``transcribe_audio`` passed down.
+
+    ``DecodingConfig``/``SentenceConfig`` are REAL dataclasses so that
+    ``_sentence_split_config`` (which does ``dataclasses.is_dataclass`` +
+    ``dataclasses.replace`` on ``model.transcribe``'s ``decoding_config`` default)
+    exercises its true code path rather than the API-drift fallback.
+    """
+    import dataclasses as dc
+    import types
+
+    @dc.dataclass
+    class _SentenceConfig:
+        max_words: object = None
+        silence_gap: object = None
+        max_duration: object = None
+
+    @dc.dataclass
+    class _DecodingConfig:
+        decoding: str = "greedy"
+        sentence: object = dc.field(default_factory=_SentenceConfig)
+
+    default_cfg = _DecodingConfig()
+    # AlignedResult-shaped: .sentences holds the timestamped units (the fix reads
+    # this, not .segments); build it in the function scope so the comprehension
+    # can see `sentences` (a class body can't close over it).
+    result = SimpleNamespace(
+        text=" ".join(t for (_s, _e, t) in sentences),
+        sentences=[SimpleNamespace(start=s, end=e, text=t) for (s, e, t) in sentences],
+    )
+
+    class _Model:
+        # decoding_config's default MUST be a dataclass instance so that
+        # _sentence_split_config finds and rebuilds it (that is the fix under test).
+        def transcribe(
+            self,
+            path,
+            *,
+            chunk_duration=None,
+            overlap_duration=15.0,
+            decoding_config=default_cfg,
+        ):
+            captured["path"] = path
+            captured["chunk_duration"] = chunk_duration
+            captured["overlap_duration"] = overlap_duration
+            captured["decoding_config"] = decoding_config
+            return result
+
+    fake_pm = types.ModuleType("parakeet_mlx")
+    fake_pm.from_pretrained = lambda _name: _Model()
+    fake_pk = types.ModuleType("parakeet_mlx.parakeet")
+    fake_pk.SentenceConfig = _SentenceConfig
+    fake_pk.DecodingConfig = _DecodingConfig
+    return {"parakeet_mlx": fake_pm, "parakeet_mlx.parakeet": fake_pk}
+
+
+class TestTranscribeAudioLocalTier:
+    """Regression lock for three production bugs in the local-Parakeet tier.
+
+    All three were found by running a real 94-minute episode through
+    ``transcribe_audio`` — the tier shipped with NO test at all. Each assertion
+    below is revert-proven: undo the corresponding fix in transcribe.py and
+    exactly one assertion (or the call itself) fails.
+    """
+
+    def _run(self, tmp_path, captured, sentences):
+        import sys
+
+        modules = _install_fake_parakeet(captured, sentences)
+        audio = tmp_path / "ep.mp3"
+        audio.write_bytes(b"fake-audio")
+        with patch.dict(sys.modules, modules):
+            return transcribe_audio(audio)
+
+    def test_passes_bounded_chunk_duration(self, tmp_path):
+        """Bug 1: single-shot decode of long audio page-faulted the GPU (SIGABRT).
+
+        The fix passes a bounded ``chunk_duration`` so parakeet streams fixed
+        GPU windows. Revert to ``model.transcribe(path)`` and this fails —
+        ``chunk_duration`` falls back to the signature default (None).
+        """
+        captured: dict = {}
+        self._run(tmp_path, captured, [(0.0, 1.0, "hi")])
+        assert captured["chunk_duration"] is not None
+        assert captured["chunk_duration"] > 0
+        assert captured["overlap_duration"] is not None
+        assert captured["overlap_duration"] > 0
+
+    def test_applies_sentence_split_config(self, tmp_path):
+        """Bug 3: default SentenceConfig disables splitting → ONE giant segment.
+
+        The fix rebuilds the decoding config with real split knobs. Remove
+        ``_sentence_split_config`` (so no decoding_config is passed) and this
+        fails — the captured config is the default with both knobs None.
+        """
+        captured: dict = {}
+        self._run(tmp_path, captured, [(0.0, 1.0, "hi")])
+        sentence_cfg = captured["decoding_config"].sentence
+        assert sentence_cfg.silence_gap is not None
+        assert sentence_cfg.max_duration is not None
+
+    def test_parses_sentences_not_segments(self, tmp_path):
+        """Bug 2: parser read ``.segments`` but parakeet returns ``.sentences``.
+
+        With the old parser the AlignedResult yields zero segments and
+        ``transcribe_audio`` raises "produced no segments". The fix reads
+        ``.sentences`` first, so these two segments come through intact.
+        """
+        captured: dict = {}
+        segments = self._run(
+            tmp_path,
+            captured,
+            [(0.0, 1.0, "Hello world"), (1.0, 2.5, "Second line")],
+        )
+        assert [(s.start_s, s.end_s, s.text) for s in segments] == [
+            (0.0, 1.0, "Hello world"),
+            (1.0, 2.5, "Second line"),
+        ]
+
+    def test_raises_when_model_returns_no_sentences(self, tmp_path):
+        """Empty output still raises TranscriptionError (unchanged contract)."""
+        captured: dict = {}
+        with pytest.raises(TranscriptionError, match="produced no segments"):
+            self._run(tmp_path, captured, [])
+
+    def test_raises_when_parakeet_not_installed(self, tmp_path):
+        """Missing parakeet_mlx raises a TranscriptionError with install hint."""
+        import builtins
+
+        audio = tmp_path / "ep.mp3"
+        audio.write_bytes(b"fake-audio")
+        real_import = builtins.__import__
+
+        def _blocked_import(name, *args, **kwargs):
+            if name == "parakeet_mlx" or name.startswith("parakeet_mlx."):
+                raise ImportError("No module named 'parakeet_mlx'")
+            return real_import(name, *args, **kwargs)
+
+        with (
+            patch.object(builtins, "__import__", _blocked_import),
+            pytest.raises(TranscriptionError, match="not installed"),
+        ):
+            transcribe_audio(audio)

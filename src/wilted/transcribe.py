@@ -390,17 +390,68 @@ def extract_transcript_from_url(url: str, min_words: int = 500) -> list[Transcri
 # ---------------------------------------------------------------------------
 
 
+_SENTENCE_SILENCE_GAP_S = 0.5
+_SENTENCE_MAX_DURATION_S = 20.0
+
+
+def _sentence_split_config(model):
+    """Build a parakeet decoding config that splits into sentence-sized segments.
+
+    parakeet_mlx's default ``SentenceConfig`` leaves every split knob unset
+    (``max_words``/``silence_gap``/``max_duration`` all None), so it returns the
+    whole episode as ONE segment — useless for seek/resume and transcript
+    display. We rebuild the model's own default decoding config (preserving its
+    decoding strategy) and enable splitting on natural pauses (``silence_gap``)
+    with a length cap (``max_duration``) so continuous speech still segments.
+
+    Returns None on any parakeet API drift, in which case transcription falls
+    back to the library default (one big segment) rather than failing.
+    """
+    try:
+        import dataclasses
+        import inspect
+
+        from parakeet_mlx.parakeet import SentenceConfig
+
+        default_cfg = inspect.signature(model.transcribe).parameters["decoding_config"].default
+        if default_cfg is inspect.Parameter.empty or not dataclasses.is_dataclass(default_cfg):
+            return None
+        return dataclasses.replace(
+            default_cfg,
+            sentence=SentenceConfig(
+                silence_gap=_SENTENCE_SILENCE_GAP_S,
+                max_duration=_SENTENCE_MAX_DURATION_S,
+                max_words=None,
+            ),
+        )
+    except Exception:  # noqa: BLE001 — any API drift falls back to the library default
+        logger.warning("Could not build parakeet sentence-split config; using library default (single segment)")
+        return None
+
+
 def transcribe_audio(
     audio_path: Path,
     model_name: str = "mlx-community/parakeet-tdt-1.1b",
+    chunk_duration: float = 120.0,
+    overlap_duration: float = 15.0,
 ) -> list[TranscriptSegment]:
     """Transcribe an audio file using the local parakeet_mlx model.
 
     This is the fallback tier when no external transcript is available.
 
+    Transcription is chunked: without ``chunk_duration``, parakeet_mlx decodes
+    the whole file in a single Metal computation, which for a long episode
+    (e.g. a 90+ minute podcast) overruns GPU memory and aborts the process with
+    a Metal command-buffer page fault (SIGABRT). Passing a bounded
+    ``chunk_duration`` makes it stream fixed windows with ``overlap_duration``
+    context between them, keeping GPU memory bounded regardless of episode
+    length. The overlap lets parakeet stitch word boundaries across chunks.
+
     Args:
         audio_path: Path to the audio file (mp3, m4a, etc.).
         model_name: HuggingFace model name for parakeet_mlx.
+        chunk_duration: Seconds of audio decoded per GPU chunk (default 120s).
+        overlap_duration: Seconds of overlap between adjacent chunks (default 15s).
 
     Returns:
         List of TranscriptSegment from model output.
@@ -416,7 +467,14 @@ def transcribe_audio(
 
     try:
         model = parakeet_mlx.from_pretrained(model_name)
-        result = model.transcribe(str(audio_path))
+        transcribe_kwargs = {
+            "chunk_duration": chunk_duration,
+            "overlap_duration": overlap_duration,
+        }
+        decoding_config = _sentence_split_config(model)
+        if decoding_config is not None:
+            transcribe_kwargs["decoding_config"] = decoding_config
+        result = model.transcribe(str(audio_path), **transcribe_kwargs)
     except Exception as e:
         raise TranscriptionError(f"Transcription failed: {e}") from e
     finally:
@@ -427,10 +485,15 @@ def transcribe_audio(
             pass
 
     segments: list[TranscriptSegment] = []
-    # parakeet_mlx returns a result with .segments or similar
-    raw_segments = getattr(result, "segments", None)
+    # parakeet_mlx returns an AlignedResult whose timestamped units are
+    # `.sentences` (each an AlignedSentence with .start/.end/.text). Older
+    # shapes exposed `.segments` or a dict; accept all three so a library
+    # bump can't silently zero out the transcript again.
+    raw_segments = getattr(result, "sentences", None)
+    if raw_segments is None:
+        raw_segments = getattr(result, "segments", None)
     if raw_segments is None and isinstance(result, dict):
-        raw_segments = result.get("segments", [])
+        raw_segments = result.get("sentences") or result.get("segments") or []
     if raw_segments is None:
         raw_segments = []
 
