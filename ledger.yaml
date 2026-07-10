@@ -3,7 +3,8 @@ invariants:
   INV-1: {gate_test_status: covered}    # covered | missing
   INV-2: {gate_test_status: missing}
   INV-3: {gate_test_status: missing}
-  INV-4: {gate_test_status: missing}
+  INV-4: {gate_test_status: covered}
   INV-5: {gate_test_status: missing}
   INV-6: {gate_test_status: missing}
-resolutions: {}                          # INV-x: {resolved_at_date: "YYYY-MM-DD", note: "..."}
+resolutions:                             # INV-x: {resolved_at_date: "YYYY-MM-DD", note: "..."}
+  INV-4: {resolved_at_date: "2026-07-10", note: "Empty ad-cut/promo output can no longer overwrite a non-empty source: destructive shutil.move in prepare.py guarded on non-empty result, cut_ads raises EmptyCutResultError instead of touching a 0-byte file. Gate: tests/test_prepare.py::TestInv4NoEmptyOverwrite."}

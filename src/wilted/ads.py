@@ -51,6 +51,15 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 
+class EmptyCutResultError(ValueError):
+    """Raised when ad cutting would leave no audio content to keep.
+
+    Signals a degenerate case (the whole clip was flagged as ads) so callers
+    can preserve the original audio instead of persisting a 0-byte file over
+    it. See INV-4.
+    """
+
+
 @dataclass
 class AdSegment:
     """A detected advertisement segment in an audio transcript."""
@@ -410,6 +419,8 @@ def cut_ads(
     Raises:
         RuntimeError: If ffmpeg is not available.
         FileNotFoundError: If audio_path does not exist.
+        EmptyCutResultError: If every keep-segment is empty (nothing to keep),
+            which would otherwise produce a 0-byte file. See INV-4.
         subprocess.CalledProcessError: If ffmpeg fails.
     """
     check_ffmpeg()
@@ -444,9 +455,7 @@ def cut_ads(
     keep_segments = _compute_keep_segments(total_duration, ad_segments, buffer_seconds)
 
     if not keep_segments:
-        logger.warning("All content marked as ads, creating empty output")
-        output_path.touch()
-        return output_path
+        raise EmptyCutResultError(f"All content marked as ads for {audio_path}; nothing to keep")
 
     tmpdir = None
     try:
@@ -481,8 +490,7 @@ def cut_ads(
             segment_files.append(seg_path)
 
         if not segment_files:
-            output_path.touch()
-            return output_path
+            raise EmptyCutResultError(f"No non-empty keep-segments for {audio_path}; nothing to keep")
 
         # If only one segment, just move it
         if len(segment_files) == 1:

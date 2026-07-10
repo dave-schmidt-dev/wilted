@@ -115,9 +115,17 @@ def _prepare_podcast(item, llm_backend=None) -> None:
                 )
                 cleaned_path = audio_path.parent / f"cleaned_{audio_path.name}"
                 _ads_mod.cut_ads(audio_path, ad_segments, cleaned_path)
-                # Replace original with cleaned version
-                shutil.move(str(cleaned_path), str(audio_path))
-                logger.info("Item %d: ads cut, cleaned audio saved", item_id)
+                # INV-4: never replace the original with an empty/missing result.
+                if not cleaned_path.exists() or cleaned_path.stat().st_size == 0:
+                    logger.warning(
+                        "Item %d: ad cut produced empty output, keeping original audio",
+                        item_id,
+                    )
+                    cleaned_path.unlink(missing_ok=True)
+                else:
+                    # Replace original with cleaned version
+                    shutil.move(str(cleaned_path), str(audio_path))
+                    logger.info("Item %d: ads cut, cleaned audio saved", item_id)
             else:
                 logger.info("Item %d: no ads detected", item_id)
         except Exception:
@@ -186,7 +194,15 @@ def _prepare_article(item, llm_backend=None) -> None:
     if llm_backend:
         try:
             cleaned_text = _ads_mod.remove_promos(text, llm_backend)
-            if len(cleaned_text) < len(text):
+            if not cleaned_text.strip():
+                # INV-4: every paragraph flagged as promo yields an empty
+                # result; never overwrite the original transcript with it.
+                logger.warning(
+                    "Item %d: promo removal produced empty output, keeping original transcript",
+                    item_id,
+                )
+                cleaned_text = text
+            elif len(cleaned_text) < len(text):
                 logger.info(
                     "Item %d: removed %d chars of promotional content",
                     item_id,

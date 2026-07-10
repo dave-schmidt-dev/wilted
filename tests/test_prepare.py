@@ -1,6 +1,7 @@
 """Tests for wilted.prepare — content preparation orchestrator."""
 
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from wilted.prepare import run_prepare
@@ -8,6 +9,13 @@ from wilted.prepare import run_prepare
 
 def _now():
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _ads_ad_segment(start_s, end_s):
+    """Build an AdSegment for INV-4 tests without importing at module top."""
+    from wilted.ads import AdSegment
+
+    return AdSegment(start_s=start_s, end_s=end_s, confidence=0.95, label="ad_break")
 
 
 def _make_item(tmp_path, **kwargs):
@@ -356,6 +364,132 @@ class TestStatusTransitions:
 
         item = Item.get()
         assert item.status == "ready"
+
+
+# ---------------------------------------------------------------------------
+# INV-4 — empty pipeline output must never overwrite existing content
+# ---------------------------------------------------------------------------
+
+
+class TestInv4NoEmptyOverwrite:
+    """Guard against the data-loss path where an all-ads / all-promo result
+    (a 0-byte audio file or an empty transcript) silently replaces the
+    original non-empty source. See INVARIANTS.md INV-4.
+    """
+
+    def test_all_ads_preserves_original_audio(self, tmp_path):
+        """When ad cutting yields an empty file, the original audio survives."""
+        from wilted.db import Item
+        from wilted.transcribe import TranscriptSegment
+
+        _make_podcast(tmp_path)
+
+        original_bytes = b"ORIGINAL PODCAST AUDIO PAYLOAD" * 64
+        audio_file = tmp_path / "data" / "podcasts" / "1" / "episode.mp3"
+        audio_file.parent.mkdir(parents=True, exist_ok=True)
+        audio_file.write_bytes(original_bytes)
+
+        segments = [
+            TranscriptSegment(0.0, 5.0, "buy our sponsor"),
+            TranscriptSegment(5.0, 10.0, "and this other sponsor"),
+        ]
+        ads = [
+            _ads_ad_segment(0.0, 10.0),
+        ]
+
+        def _empty_cut(audio_path, ad_segments, output_path, *a, **k):
+            # Reproduce the pre-fix defect: return a 0-byte file as "success".
+            Path(output_path).touch()
+            return Path(output_path)
+
+        with (
+            patch("wilted.prepare.download_podcast", return_value=audio_file),
+            patch("wilted.prepare.get_transcript", return_value=segments),
+            patch("wilted.prepare.save_transcript"),
+            patch("wilted.ads.detect_ads", return_value=ads),
+            patch("wilted.ads.cut_ads", side_effect=_empty_cut),
+            patch("wilted.engine.AudioEngine") as MockEngine,
+        ):
+            mock_engine = MockEngine.return_value
+            mock_engine.get_file_duration.return_value = 10.0
+
+            mock_backend = MagicMock()
+            mock_backend.generate.return_value = ("[]", 10)
+            with patch("wilted.llm.create_backend", return_value=mock_backend):
+                run_prepare(use_llm=True)
+
+        # The original audio must be untouched: still present and byte-identical.
+        assert audio_file.exists()
+        assert audio_file.read_bytes() == original_bytes
+        assert audio_file.stat().st_size > 0
+        # No stray empty cleaned_ temp file left behind.
+        assert not (audio_file.parent / f"cleaned_{audio_file.name}").exists()
+
+        items = list(Item.select().where(Item.item_type == "podcast_episode"))
+        assert items[0].status == "ready"
+
+    def test_cut_ads_raises_when_nothing_to_keep(self, tmp_path):
+        """cut_ads no longer returns a silent 0-byte file when all is ads."""
+        from wilted.ads import EmptyCutResultError, cut_ads
+
+        audio = tmp_path / "input.mp3"
+        audio.write_bytes(b"fake audio data with real bytes")
+
+        output = tmp_path / "output.mp3"
+        # One ad spanning the whole clip -> _compute_keep_segments returns [].
+        ads = [_ads_ad_segment(0.0, 300.0)]
+
+        probe_result = MagicMock()
+        probe_result.stdout = "300.0\n"
+
+        with (
+            patch("wilted.ads.check_ffmpeg"),
+            patch("wilted.ads.subprocess.run", return_value=probe_result),
+        ):
+            import pytest
+
+            with pytest.raises(EmptyCutResultError):
+                cut_ads(audio, ads, output, buffer_seconds=0.5)
+
+        # No 0-byte file should have been created at the output path.
+        assert not output.exists()
+
+    def test_all_promo_preserves_original_transcript(self, tmp_path):
+        """When every paragraph is promo, the original transcript survives."""
+        from wilted.db import Item
+
+        articles_dir = tmp_path / "data" / "articles"
+        articles_dir.mkdir(parents=True, exist_ok=True)
+        transcript = articles_dir / "all_promo.txt"
+        original_text = "Subscribe now!\n\nFollow us on social media.\n\nBuy our merch."
+        transcript.write_text(original_text, encoding="utf-8")
+
+        Item.create(
+            feed=None,
+            guid="all-promo",
+            title="All Promo Article",
+            discovered_at=_now(),
+            item_type="article",
+            status="selected",
+            status_changed_at=_now(),
+            transcript_file=str(transcript),
+        )
+
+        mock_backend = MagicMock()
+        mock_backend.generate.return_value = ("{}", 10)
+
+        with (
+            patch("wilted.llm.create_backend", return_value=mock_backend),
+            # remove_promos flags every paragraph -> returns "".
+            patch("wilted.ads.remove_promos", return_value=""),
+            patch("wilted.cache.generate_article_cache", return_value=True),
+        ):
+            run_prepare(use_llm=True)
+
+        # The original transcript must remain intact, not truncated to empty.
+        assert transcript.exists()
+        assert transcript.read_text(encoding="utf-8") == original_text
+        assert transcript.stat().st_size > 0
 
 
 # ---------------------------------------------------------------------------
