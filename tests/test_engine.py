@@ -723,6 +723,81 @@ class TestPlayFileStreaming:
         assert fake.returncode is not None
         assert not engine.is_playing
 
+    def test_stop_interrupts_blocked_read(self, engine, mock_stream, tmp_path):
+        """stop() must break a play_file() blocked in proc.stdout.read().
+
+        Regression for the walkthrough freeze: the streaming loop only checks
+        _stop_event *between* blocks, so a read blocked on a stalled ffmpeg is
+        uninterruptible unless stop() kills the process. This fake's second
+        read() blocks until the proc is killed; on the pre-fix engine, stop()
+        does not kill the proc, so the read blocks until its own 5s timeout and
+        play_file does not return within the assertion window — the test fails.
+        With the fix, stop() kills the proc, the read returns EOF, and play_file
+        returns at once.
+        """
+        import threading
+        import time
+
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        first_read_done = threading.Event()
+        killed = threading.Event()
+
+        class _BlockingStdout:
+            def __init__(self):
+                self.closed = False
+
+            def read(self, n: int = -1) -> bytes:
+                if not first_read_done.is_set():
+                    first_read_done.set()
+                    return _make_ffmpeg_pcm(n_samples=1024)  # one block, then stall
+                killed.wait(timeout=5.0)  # block like a stalled ffmpeg until killed
+                return b""  # EOF once killed
+
+            def close(self):
+                self.closed = True
+
+        class _BlockingPopen:
+            def __init__(self):
+                self.stdout = _BlockingStdout()
+                self.stderr = _FakeStderr(b"")
+                self.returncode = None
+                self.killed = False
+                self.wait_calls = 0
+                self.args = None
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                self.returncode = -9
+                return self.returncode
+
+            def poll(self):
+                return self.returncode
+
+            def kill(self):
+                self.killed = True
+                killed.set()  # unblock the stalled read -> EOF
+
+        fake = _BlockingPopen()
+        returned = threading.Event()
+
+        def _run():
+            with _patch_popen(fake):
+                engine.play_file(wav_file)
+            returned.set()
+
+        worker = threading.Thread(target=_run, daemon=True)
+        worker.start()
+
+        assert first_read_done.wait(timeout=3.0), "playback never started"
+        time.sleep(0.1)  # ensure we are blocked inside the second read()
+        engine.stop()  # must kill the proc so the blocked read returns EOF
+
+        assert returned.wait(timeout=3.0), "play_file did not return after stop() — blocked read not interrupted"
+        assert fake.killed is True
+        worker.join(timeout=2.0)
+
     def test_playback_time_advances_for_checkpoint(self, engine, mock_stream, tmp_path):
         """playback_time_s advances during playback and is readable for checkpointing."""
         wav_file = tmp_path / "test.wav"

@@ -108,6 +108,15 @@ class AudioEngine:
         self._pause_event = threading.Event()
         self._pause_event.set()  # SET = playing (not paused)
 
+        # ffmpeg subprocess handle for the active play_file() stream. stop() kills
+        # it to interrupt a blocked stdout read: setting _stop_event alone only
+        # takes effect *between* blocks, so a read blocked on a stalled ffmpeg (or
+        # a write blocked on a wedged audio device) is otherwise uninterruptible
+        # and play_file() hangs forever. Guarded by _proc_lock for cross-thread
+        # access (stop() runs on a different thread than play_file()).
+        self._current_proc: subprocess.Popen | None = None
+        self._proc_lock = threading.Lock()
+
         # Playback position tracking
         self._playing = False
         self._paused = False
@@ -492,6 +501,8 @@ class AudioEngine:
                 seg_cursor += 1
 
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        with self._proc_lock:
+            self._current_proc = proc
         # Read one block's worth of float32 per iteration (O(chunk) resident).
         chunk_bytes = 1024 * np.dtype(np.float32).itemsize
         try:
@@ -514,9 +525,16 @@ class AudioEngine:
                     raise RuntimeError(f"ffmpeg decode failed (exit {proc.returncode}): {stderr}")
         finally:
             # Reap ffmpeg on stop OR exception — no zombies, no leaked pipes.
-            if proc.poll() is None:
-                proc.kill()
+            # Clear the handle first so a concurrent stop() can't kill a proc we
+            # are already reaping. Reap best-effort (stop() may have killed it).
+            with self._proc_lock:
+                self._current_proc = None
+            try:
+                if proc.poll() is None:
+                    proc.kill()
                 proc.wait()
+            except Exception:  # noqa: BLE001 - reaping is best-effort, never mask the real error
+                pass
             if proc.stdout is not None:
                 proc.stdout.close()
             if proc.stderr is not None:
@@ -572,10 +590,27 @@ class AudioEngine:
         self._paused = False
 
     def stop(self):
-        """Stop playback entirely. The write loop exits on next block check."""
+        """Stop playback entirely.
+
+        Sets ``_stop_event`` (the write loop exits on its next block check) and,
+        critically, kills any in-flight ``play_file`` ffmpeg process so a
+        ``proc.stdout.read()`` that is blocked on a stalled ffmpeg returns EOF at
+        once. Without the kill, ``_stop_event`` is only observed *between* blocks,
+        so a blocked read/write makes ``play_file`` hang forever regardless of
+        stop() — the bug behind the measurement-harness freeze. Safe to call from
+        any thread and never raises.
+        """
         self._stop_event.set()
         self._pause_event.set()  # Unblock if paused so the loop can exit
         self._paused = False
+        with self._proc_lock:
+            proc = self._current_proc
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+            except Exception:  # noqa: BLE001 - stop() must never raise
+                pass
 
     @property
     def playback_time_s(self) -> float:

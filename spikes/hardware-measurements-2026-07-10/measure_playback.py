@@ -389,14 +389,72 @@ def measure_resume_fidelity(engine, episode_path: Path, segments) -> Measurement
     )
 
 
-def write_results(measurements: list[Measurement], episode_path: Path) -> None:
-    block = [f"=== measure_playback.py run @ {time.strftime('%Y-%m-%dT%H:%M:%S%z')} ===", f"episode: {episode_path}"]
-    for m in measurements:
-        block.append(f"  {m.name}: {m.value}  ({m.detail})")
-    block.append("")
+def begin_results_block(episode_path: Path) -> None:
+    """Open a results block and write the header immediately.
+
+    Results are appended incrementally (one line per measurement, as each
+    completes) rather than all at the end, so a hang or Ctrl-C in a later step
+    never discards the measurements already taken.
+    """
     with RESULTS_LOG.open("a", encoding="utf-8") as f:
-        f.write("\n".join(block) + "\n")
+        f.write(f"=== measure_playback.py run @ {time.strftime('%Y-%m-%dT%H:%M:%S%z')} ===\n")
+        f.write(f"episode: {episode_path}\n")
+
+
+def append_result(m: Measurement) -> None:
+    """Append a single measurement line to the open results block."""
+    with RESULTS_LOG.open("a", encoding="utf-8") as f:
+        f.write(f"  {m.name}: {m.value}  ({m.detail})\n")
+
+
+def end_results_block() -> None:
+    """Close the results block with a trailing blank line."""
+    with RESULTS_LOG.open("a", encoding="utf-8") as f:
+        f.write("\n")
     print(f"\nResults appended to {RESULTS_LOG}")
+
+
+def install_hang_guard(engine, max_wait_s: float = 30.0) -> None:
+    """Wrap ``engine.play_file`` so no single playback can freeze the script.
+
+    Each measurement already stops playback at its intended short deadline via a
+    watchdog thread, and the engine's ``stop()`` now kills the ffmpeg process to
+    interrupt a blocked stdout read. But a ``sd.OutputStream.write()`` blocked on
+    a wedged CoreAudio device (which can happen after the rapid open/close cycling
+    these measurements do) cannot be interrupted by killing ffmpeg. This backstop
+    runs each ``play_file`` in a daemon thread and, if it has not returned within
+    ``max_wait_s`` (well beyond every watchdog deadline), calls ``stop()`` and
+    abandons it — the daemon thread dies with the process — so the walkthrough
+    always makes forward progress instead of hanging.
+    """
+    import threading
+
+    real_play_file = engine.play_file
+
+    def guarded(*args, **kwargs):
+        err: dict = {}
+
+        def _run():
+            try:
+                real_play_file(*args, **kwargs)
+            except Exception as e:  # noqa: BLE001 - surface to caller, don't kill the daemon silently
+                err["e"] = e
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=max_wait_s)
+        if t.is_alive():
+            engine.stop()
+            t.join(timeout=3.0)
+            if t.is_alive():
+                print(
+                    f"  WARNING: playback did not return within {max_wait_s:.0f}s "
+                    "(audio device may be wedged); abandoning it and continuing."
+                )
+        if "e" in err:
+            raise err["e"]
+
+    engine.play_file = guarded
 
 
 def main() -> int:
@@ -439,34 +497,43 @@ def main() -> int:
     input("STEP 0: make sure your speakers/headphones are on and at a safe volume, then press Enter to begin...")
 
     engine = load_engine()
+    install_hang_guard(engine)  # no single playback can freeze the walkthrough
     segments = load_transcript_segments(args.transcript)
     if segments:
         print(f"Loaded {len(segments)} transcript segments.")
     else:
         print("No transcript loaded -- startup/seek/resume measurements that need segment boundaries will report n/a.")
 
+    # Append each measurement to results.log the moment it completes, so a hang or
+    # Ctrl-C in a later step never discards the earlier (already-taken) numbers.
+    begin_results_block(args.episode)
     measurements: list[Measurement] = []
 
+    def _record(m: Measurement) -> None:
+        measurements.append(m)
+        append_result(m)
+        print(f"  -> {m.name}: {m.value}  ({m.detail})")
+
     print("\n[1/5] Measuring episode duration (ffprobe)...")
-    measurements.append(measure_duration(engine, args.episode))
+    _record(measure_duration(engine, args.episode))
 
     print("[2/5] Measuring startup latency (time to first audio)...")
-    measurements.append(measure_startup_latency(engine, args.episode, segments))
+    _record(measure_startup_latency(engine, args.episode, segments))
 
     print("[3/5] Measuring seek time (mid-episode segment jump)...")
-    measurements.append(measure_seek_time(engine, args.episode, segments))
+    _record(measure_seek_time(engine, args.episode, segments))
 
     print(f"[4/5] Measuring peak memory over a {args.memory_window_seconds:.0f}s playback window...")
-    measurements.append(measure_peak_memory(engine, args.episode, segments, args.memory_window_seconds))
+    _record(measure_peak_memory(engine, args.episode, segments, args.memory_window_seconds))
 
     print("[5/5] Measuring checkpoint/resume fidelity (human-observed)...")
-    measurements.append(measure_resume_fidelity(engine, args.episode, segments))
+    _record(measure_resume_fidelity(engine, args.episode, segments))
+
+    end_results_block()
 
     print("\n=== Summary ===")
     for m in measurements:
         print(f"  {m.name}: {m.value}  ({m.detail})")
-
-    write_results(measurements, args.episode)
 
     # Emit machine-readable JSON too, for easy copy into RESULTS-TEMPLATE.md.
     print("\nJSON:")

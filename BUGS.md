@@ -37,6 +37,14 @@
 - Status: **resolved (2026-07-10)**. Fixes in `src/wilted/transcribe.py`: bounded `chunk_duration=120.0` + `overlap_duration=15.0`; parser reads `.sentences` first (falls back to `.segments`/dict); new `_sentence_split_config(model)` rebuilds the model's default decoding config with `silence_gap=0.5` / `max_duration=20.0` and degrades to the library default on API drift. Verified: 756 segments over the full 93.9-min episode (15,849 words). Regression lock: `tests/test_transcribe.py::TestTranscribeAudioLocalTier` (5 tests, each fix revert-proven).
 - Follow-up: none for the tier itself. The tier now has coverage where it previously had none; treat any future `AlignedResult` shape change as a regression caught by the `.sentences`-parsing test.
 
+### BUG-5 — `play_file` hangs forever on `stop()` when a blocking syscall is in flight
+
+- Trigger: `AudioEngine.stop()` (TUI stop/skip, or a measurement watchdog) called while `play_file` is blocked inside `proc.stdout.read()` (ffmpeg stalled) or `sd.OutputStream.write()` (CoreAudio device wedged). Introduced by the 2026-07-10 streaming rework.
+- Failure mode: `play_file` never returns; the calling thread (TUI `@work` worker, or the harness main thread) freezes. Surfaced in the hardware harness `walkthrough.sh` resume-fidelity step, whose rapid OutputStream open/close cycling wedged the audio device.
+- Root cause: `_stream_pcm` only checks `_stop_event` *between* 1024-sample blocks, and `stop()` had no handle to the ffmpeg process — so a syscall blocked mid-block was uninterruptible. The test suite missed it because `_FakeStdout.read()` returns instantly and never simulates a blocking read.
+- Status: **resolved (2026-07-10)**. Engine: `stop()` now kills the tracked `self._current_proc` (guarded by `_proc_lock`), so a blocked read returns EOF and `play_file` unwinds. Regression lock: `tests/test_engine.py::TestPlayFileStreaming::test_stop_interrupts_blocked_read` (blocking-read fake; revert-proven). Harness `measure_playback.py`: incremental `results.log` writes + a daemon-thread `install_hang_guard` backstop for the write-block/device-wedge case that killing ffmpeg cannot interrupt.
+- Follow-up: killing ffmpeg does not interrupt a `stream.write()` blocked on a genuinely wedged device — the engine relies on the block-boundary check there. If the route-recovery measurement (Task 0.3) shows real-world device-wedge hangs in the TUI, consider a write-side timeout or persistent-stream design.
+
 ## Validation Debt
 
 - The routine automated suite covers the safe, guarded paths that Wilted actually uses.
