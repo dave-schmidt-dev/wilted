@@ -24,6 +24,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}" || { echo "cannot cd to repo root ${REPO_ROOT}" >&2; exit 1; }
 
+# Terminal hygiene. A previous run aborted mid-progress-bar, or Ctrl-C'd during a
+# hung playback, can leave the tty in raw / no-icrnl mode — where Enter echoes as
+# ^M and input()/read never see a completed line. Restore sane mode NOW (repairs
+# an inherited broken tty before the first prompt) and again on any exit (so we
+# never hand a broken terminal back to the shell or the next step).
+if [[ -t 0 ]]; then
+  stty sane 2>/dev/null || true
+  trap 'stty sane 2>/dev/null || true' EXIT INT TERM
+fi
+
 export UV_PROJECT_ENVIRONMENT="${HOME}/.venvs/wilted"
 
 EPISODE="data/podcasts/measure-404-best-game/80391e99cf24d187eec49da364a45858.mp3"
@@ -48,6 +58,9 @@ hr() { printf '%s\n' "───────────────────�
 # Prints the banner, then asks run/skip/quit. Returns 0 to run, 1 to skip.
 gate() {
   local letter="$1"; local title="$2"; shift 2
+  # Re-sane the tty before every prompt: the previous sub-script (audio + model
+  # progress bars) may have left it in a state where Enter reads as ^M.
+  [[ -t 0 ]] && stty sane 2>/dev/null || true
   echo
   hr
   echo "${B}STEP ${letter} — ${title}${RST}"
