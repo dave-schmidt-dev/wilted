@@ -62,6 +62,19 @@ targets should be — the scripts don't decide that for him.
 
 ## How to run
 
+**Easiest path — the guided walkthrough.** `walkthrough.sh` sequences the four
+human-in-the-loop steps (playback → route-recovery → sleep → alert-latency) with
+the prepared-episode/transcript paths pre-filled, a safety note before each, and a
+`[run / skip / quit]` gate between them. It inherits your terminal's stdin, so every
+sub-script's own prompts work normally. The automated §4 residency is not included
+(already run). Just:
+
+```bash
+spikes/hardware-measurements-2026-07-10/walkthrough.sh
+```
+
+Or run the scripts individually:
+
 All commands run from the project root. Each script's `--help` (or
 omitting the flag that would trigger real hardware access) runs a
 dry-run guard that touches no audio device, no model, and no `data/`
