@@ -40,6 +40,7 @@ _TEST_MARKERS = {
     "test_station_contracts.py": ("unit",),
     "test_station_store.py": ("unit",),
     "test_text.py": ("unit",),
+    "test_timing_map.py": ("unit",),
     "test_transcribe.py": ("unit",),
     "test_tui.py": ("tui",),
 }

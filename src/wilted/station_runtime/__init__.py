@@ -22,6 +22,9 @@ backends), and therefore must live outside ``wilted.station``:
     normalize: ``normalize_item`` — turn a durable DB ``Item`` (podcast or
         article) into a finalized ``MediaDescriptor`` resolving to immutable
         store bytes (no-transcript ⇒ NO_INTERRUPT; unfinalized ⇒ refuses).
+    timing_map: ``save_timing_map`` / ``load_timing_map`` — persist a media
+        artifact's segment offsets as a versioned, atomically-written blob
+        keyed by sha256 (refuses an unreadable/unknown-version file).
     media_store: content-addressed immutable media store + owners index
         (module-level functions ``publish``/``publish_with_owner``/
         ``get_owners``/``path_for``; import as ``from wilted.station_runtime
@@ -58,17 +61,27 @@ from wilted.station_runtime.store import (
     JsonStationStore,
     StationStoreVersionError,
 )
+from wilted.station_runtime.timing_map import (
+    TIMING_MAP_SCHEMA_VERSION,
+    TimingMapVersionError,
+    load_timing_map,
+    save_timing_map,
+)
 
 __all__ = [
     "STATION_SCHEMA_VERSION",
+    "TIMING_MAP_SCHEMA_VERSION",
     "ArticleCacheIncompleteError",
     "AssembledArticle",
     "ControllerLeaseManager",
     "EmptyMediaError",
     "ItemNotFinalizedError",
     "JsonStationStore",
+    "TimingMapVersionError",
     "assemble_article_audio",
+    "load_timing_map",
     "normalize_item",
+    "save_timing_map",
     "LeaseHeldElsewhereError",
     "LeaseHeldError",
     "LeaseReentrancyError",

@@ -32,6 +32,7 @@ from wilted.station.models import FinalizationState, MediaDescriptor, SafeInterr
 from wilted.station.models import TranscriptSegment as StationTranscriptSegment
 from wilted.station_runtime import media_store
 from wilted.station_runtime.article_assembly import assemble_article_audio
+from wilted.station_runtime.timing_map import save_timing_map
 
 if TYPE_CHECKING:
     from wilted.db import Item
@@ -218,6 +219,16 @@ def normalize_item(item: Item) -> MediaDescriptor:
         item: A ``wilted.db.Item`` instance (``item_type`` must be
             ``"article"`` or ``"podcast_episode"``).
 
+    As a final step (Task 2.5), the resolved ``(sha256, transcript_segments)``
+    pair is persisted via
+    :func:`wilted.station_runtime.timing_map.save_timing_map` — atomically,
+    content-addressed by ``sha256`` — so a later caller can reload the
+    timing map without re-deriving it. This always runs, even when
+    ``transcript_segments`` is empty (the no-transcript case): an empty
+    timing map is itself meaningful (distinct from "never normalized"), and
+    the write is idempotent, so re-normalizing the same item harmlessly
+    rewrites the same file.
+
     Returns:
         A fully-resolved, playable :class:`MediaDescriptor`.
 
@@ -244,6 +255,17 @@ def normalize_item(item: Item) -> MediaDescriptor:
         )
 
     safe_interruption = _safe_interruption_for(transcript_segments)
+
+    # Persist the timing map atomically alongside the descriptor (Task 2.5),
+    # keyed by the same sha256/segments the returned MediaDescriptor carries.
+    # Always persisted, even when transcript_segments is empty: an empty
+    # timing map is itself a meaningful, legitimate fact for a no-transcript
+    # podcast (see timing_map.py's module docstring) — persisting it means a
+    # future load_timing_map(sha256) can distinguish "normalized with zero
+    # segments" from "never normalized at all", rather than collapsing both
+    # to None. Content-addressed and idempotent: re-normalizing the same
+    # item re-derives and re-writes the same segments harmlessly.
+    save_timing_map(sha256, transcript_segments)
 
     return MediaDescriptor(
         sha256=sha256,

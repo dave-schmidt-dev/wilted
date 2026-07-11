@@ -36,6 +36,7 @@ from wilted.station_runtime.normalize import (
     _transcribe_segment_to_station_ms,
     normalize_item,
 )
+from wilted.station_runtime.timing_map import load_timing_map
 from wilted.transcribe import TranscriptSegment as SecondsTranscriptSegment
 from wilted.transcribe import save_transcript
 
@@ -198,6 +199,36 @@ def test_normalize_podcast_without_transcript_playable_but_no_interrupt(tmp_path
     assert descriptor.transcript_segments == ()
     # No transcript, so duration falls back to duration_seconds.
     assert descriptor.duration_ms == 1500
+
+
+# ---------------------------------------------------------------------------
+# Task 2.5: normalize_item persists a reloadable timing map alongside the descriptor
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(FFMPEG_MISSING, reason="ffmpeg not on PATH")
+def test_normalize_podcast_with_transcript_persists_reloadable_timing_map(tmp_path):
+    audio_path = tmp_path / "episode.mp3"
+    _make_tiny_mp3(audio_path, duration_s=2.0)
+
+    segments = [
+        SecondsTranscriptSegment(start_s=0.0, end_s=1.0, text="first"),
+        SecondsTranscriptSegment(start_s=1.0, end_s=2.0, text="second"),
+    ]
+    transcript_path = tmp_path / "transcript.json"
+    save_transcript(segments, transcript_path)
+
+    item = _make_item(
+        item_type="podcast_episode",
+        audio_file=str(audio_path),
+        transcript_file=str(transcript_path),
+        duration_seconds=2.0,
+    )
+
+    descriptor = normalize_item(item)
+
+    loaded = load_timing_map(descriptor.sha256)
+    assert loaded == descriptor.transcript_segments
 
 
 # ---------------------------------------------------------------------------
