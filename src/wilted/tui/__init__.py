@@ -62,6 +62,7 @@ from wilted.tui.screens.text_preview import TextPreviewScreen
 from wilted.tui.screens.voice_settings import VoiceSettingsScreen
 
 if TYPE_CHECKING:
+    from wilted.station.models import TranscriptSegment
     from wilted.station_runtime import CompletionReason
 
 logger = logging.getLogger(__name__)
@@ -269,6 +270,11 @@ class WiltedApp(App):
         # -- Display-only state -----------------------------------------------
         self._paragraphs: list[str] = []
         self._paragraph_idx: int = 0
+        # The currently-playing entry's transcript segments (start_ms-ordered),
+        # kept alongside _paragraphs so _update_timer can map a polled
+        # current_offset_ms() back to a segment index. See _start_playback /
+        # _update_timer / _segment_index_for_offset.
+        self._current_segments: tuple[TranscriptSegment, ...] = ()
         self._playing: bool = False
         self._paused: bool = False
         self._status_priority: int = _STATUS_LOW
@@ -578,22 +584,78 @@ class WiltedApp(App):
         self.query_one("#playback-bar", Static).update("  ".join(parts))
 
     def _update_timer(self) -> None:
-        """1-second interval: tick down the remaining estimate and refresh the bar."""
-        if not self._playing or self._paused or not self._paragraphs:
+        """1-second interval: tick down the remaining estimate, refresh the
+        bar, and (when the current entry has transcript segments) drive live
+        per-segment transcript scrolling.
+
+        ``MacPlaybackAdapter`` has no per-segment progress callback (and none
+        is added — see the class docstring / A.3.5 report), so this polls
+        the adapter's existing ``current_offset_ms()`` directly from the UI
+        thread on the app's existing 1-second timer: a plain, non-blocking
+        getter call, no new threads. The countdown/bar tick always runs while
+        playing-and-not-paused; the segment lookup only runs when
+        ``self._paragraphs`` is non-empty (entries with no transcript
+        segments simply don't scroll — see :meth:`_start_playback`).
+        """
+        if not self.is_running:
             return
+        if not self._playing or self._paused:
+            return
+
+        if self._paragraphs:
+            offset_ms = self._adapter.current_offset_ms()
+            new_idx = self._segment_index_for_offset(offset_ms)
+            if new_idx != self._paragraph_idx:
+                self._paragraph_idx = new_idx
+                self.query_one("#current-text", Static).update(self._build_transcript(new_idx))
+                self.query_one("#text-scroll", VerticalScroll).scroll_home(animate=False)
+
         self._estimated_remaining_secs = max(0, self._estimated_remaining_secs - 1)
         self._update_playback_bar()
+
+    def _segment_index_for_offset(self, offset_ms: int) -> int:
+        """Map a media offset (ms) to an index into ``self._current_segments``.
+
+        Returns the index of the LAST segment whose ``start_ms <= offset_ms``
+        (segments are ordered by ``start_ms`` per
+        :class:`~wilted.station.models.TranscriptSegment`'s contract), i.e.
+        the segment currently playing at ``offset_ms``. Returns 0 if there
+        are no segments, or if ``offset_ms`` precedes the first segment.
+        """
+        if not self._current_segments:
+            return 0
+        idx = 0
+        for i, seg in enumerate(self._current_segments):
+            if seg.start_ms <= offset_ms:
+                idx = i
+            else:
+                break
+        return idx
+
+    def _clear_transcript_state(self) -> None:
+        """Reset read-along display state so a stopped/completed track
+        doesn't keep showing (or scrolling) stale transcript text.
+
+        Called from :meth:`action_stop` and :meth:`_handle_station_completion`.
+        ``_update_timer``'s ``self._playing`` guard already prevents further
+        scrolling once playback ends, so this is display hygiene (clearing
+        the pane/paragraph-counter), not a fix for a still-running timer.
+        """
+        self._paragraphs = []
+        self._paragraph_idx = 0
+        self._current_segments = ()
+        if self.is_running:
+            self.query_one("#current-text", Static).update("")
 
     def _build_transcript(self, para_idx: int) -> str:
         """Build Rich markup showing paragraphs around the current one.
 
-        NOTE: kept as a display helper (still exercised directly by
-        ``test_transcript_markup_bold_current``/``test_transcript_escapes_brackets``)
-        but no longer fed by the station playback path — the
-        ``MacPlaybackAdapter`` has no paragraph/segment-level progress
-        callback, so live per-paragraph transcript scrolling during playback
-        was dropped in the KEYSTONE refactor (see class docstring / A.3.5
-        report for the full rationale).
+        Fed by the station playback path via :meth:`_start_playback` (initial
+        render) and :meth:`_update_timer` (live per-segment scrolling, driven
+        by polling ``current_offset_ms()`` — see that method's docstring for
+        why this is UI-thread polling rather than an adapter callback). Also
+        still exercised directly by
+        ``test_transcript_markup_bold_current``/``test_transcript_escapes_brackets``.
         """
         from rich.markup import escape
 
@@ -817,11 +879,31 @@ class WiltedApp(App):
         self._playing = True
         self._paused = False
 
+        # Read-along state, seeded from THIS entry's own transcript segments
+        # (empty tuple if it has none — no scroll for those, per
+        # _update_timer). _paragraph_idx starts at the segment containing the
+        # resume offset, not always 0, so a resumed entry doesn't visually
+        # rewind its transcript to the start.
+        self._current_segments = entry.media.transcript_segments
+        self._paragraphs = [seg.text for seg in self._current_segments]
+        self._paragraph_idx = self._segment_index_for_offset(offset_ms) if self._paragraphs else 0
+
         duration_s = entry.duration_ms / 1000 if entry.duration_ms else 0.0
         self._estimated_remaining_secs = max(0.0, duration_s - offset_ms / 1000)
         self._bar_progress = (offset_ms / entry.duration_ms * 100) if entry.duration_ms else 0.0
 
         self._update_now_playing(title=self._display_title(entry), progress=self._bar_progress, status="Playing")
+
+        # Initial transcript render so the pane isn't blank at play start;
+        # _update_timer takes over live scrolling from here. No-op display
+        # (pane cleared) for entries with no transcript segments.
+        if self.is_running:
+            current_text = self.query_one("#current-text", Static)
+            if self._paragraphs:
+                current_text.update(self._build_transcript(self._paragraph_idx))
+                self.query_one("#text-scroll", VerticalScroll).scroll_home(animate=False)
+            else:
+                current_text.update("")
 
         if not self._poller_started:
             self._poller.start()
@@ -854,6 +936,12 @@ class WiltedApp(App):
             self._controller.submit(Stop())
         self._playing = False
         self._paused = False
+        # Auto-advance (clean completion with a next entry) immediately
+        # repopulates this via _start_playback -- clearing first here is
+        # harmless (synchronous, no visible flicker) and keeps every other
+        # completion path (interrupted / queue-finished) from showing stale
+        # transcript text for an entry that is no longer playing.
+        self._clear_transcript_state()
 
         if not reason.is_clean_completion:
             self._poller.stop()
@@ -926,6 +1014,7 @@ class WiltedApp(App):
         self._playing = False
         self._paused = False
         self._generation_paused = False
+        self._clear_transcript_state()
         self._set_status("Stopped", _STATUS_MEDIUM)
         self._trigger_generation()
 

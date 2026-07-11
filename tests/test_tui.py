@@ -25,6 +25,7 @@ from wilted.station.models import (
     PlaybackCheckpoint,
     SafeInterruptionMap,
     StationEntry,
+    TranscriptSegment,
 )
 from wilted.station.reducer import StartPlayback, StationState, Stop
 from wilted.station_runtime import CompletionReason, LeaseHeldError
@@ -81,10 +82,20 @@ def _finalized_media(**overrides) -> MediaDescriptor:
     return MediaDescriptor(**defaults)
 
 
-def _station_entry(item_id, *, entry_id: str | None = None, duration_ms: int = 60_000, kind: str = "item"):
+def _station_entry(
+    item_id,
+    *,
+    entry_id: str | None = None,
+    duration_ms: int = 60_000,
+    kind: str = "item",
+    transcript_segments: tuple = (),
+):
     """Build a StationEntry. ``kind`` is always "item" for sequencer output —
     the article-vs-podcast distinction lives inside ``media``, not on
-    ``StationEntry.kind`` (the sequencer never produces "bulletin" entries)."""
+    ``StationEntry.kind`` (the sequencer never produces "bulletin" entries).
+
+    ``transcript_segments`` defaults to ``()`` (matching the pre-existing
+    default), so every caller that doesn't pass it is unaffected."""
     return StationEntry(
         entry_id=entry_id or f"item-{item_id}",
         kind=kind,
@@ -94,7 +105,7 @@ def _station_entry(item_id, *, entry_id: str | None = None, duration_ms: int = 6
         priority=5,
         expiry=None,
         duration_ms=duration_ms,
-        media=_finalized_media(duration_ms=duration_ms),
+        media=_finalized_media(duration_ms=duration_ms, transcript_segments=transcript_segments),
     )
 
 
@@ -976,6 +987,162 @@ async def test_timer_noop_when_not_playing():
         app._estimated_remaining_secs = 100
         app._update_timer()
         assert app._estimated_remaining_secs == 100
+
+
+# ---------------------------------------------------------------------------
+# Live per-segment transcript scrolling (restored A.3.5 dropped-path): driven
+# by polling the adapter's current_offset_ms() on the existing 1s UI-thread
+# timer -- no adapter callback, no new threads.
+# ---------------------------------------------------------------------------
+
+_SCROLL_SEGMENTS = (
+    TranscriptSegment(start_ms=0, end_ms=5_000, text="Segment zero."),
+    TranscriptSegment(start_ms=5_000, end_ms=10_000, text="Segment one."),
+    TranscriptSegment(start_ms=10_000, end_ms=60_000, text="Segment two."),
+)
+
+
+@pytest.mark.asyncio
+async def test_start_playback_seeds_transcript_from_entry_segments():
+    """_start_playback populates _paragraphs from the entry's own
+    transcript_segments and renders the initial (idx 0) segment into
+    #current-text so the pane isn't blank at play start."""
+    entry = _station_entry(1, transcript_segments=_SCROLL_SEGMENTS)
+    app = _make_app(entries=[entry])
+    async with app.run_test():
+        app._start_playback(entry)
+        assert app._paragraphs == ["Segment zero.", "Segment one.", "Segment two."]
+        assert app._paragraph_idx == 0
+        content = str(app.query_one("#current-text", Static).render())
+        assert "Segment zero." in content
+
+
+@pytest.mark.asyncio
+async def test_start_playback_resumes_transcript_at_checkpoint_segment():
+    """The initial _paragraph_idx is the segment containing the resume
+    offset, not always 0 -- a resumed entry shouldn't visually rewind its
+    transcript to the start."""
+    entry = _station_entry(1, transcript_segments=_SCROLL_SEGMENTS)
+    checkpoint = PlaybackCheckpoint(
+        station_revision=1,
+        entry_id=entry.entry_id,
+        media_offset_ms=7_000,  # inside segment one (index 1)
+        state="paused",
+        interrupted_entry_stack=(),
+        writer_device="mac",
+        mutation_id="m-resume",
+        timestamp="2026-07-11T00:00:00Z",
+    )
+    controller = FakeController(state=StationState(checkpoint=checkpoint))
+    adapter = FakeAdapter()
+    app = _make_app(entries=[entry], controller=controller, adapter=adapter)
+    async with app.run_test():
+        app._start_playback(entry)
+        assert app._paragraph_idx == 1
+
+
+@pytest.mark.asyncio
+async def test_timer_advances_transcript_segment_with_adapter_offset():
+    """_update_timer polls adapter.current_offset_ms() each tick and, when
+    the offset has crossed into a new segment, updates _paragraph_idx and
+    re-renders #current-text -- the core live-scrolling behavior."""
+    entry = _station_entry(1, transcript_segments=_SCROLL_SEGMENTS)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    app = _make_app(entries=[entry], controller=controller, adapter=adapter)
+    async with app.run_test():
+        app._start_playback(entry)
+        assert app._paragraph_idx == 0
+
+        adapter._offset_ms = 6_000  # segment one
+        app._update_timer()
+        assert app._paragraph_idx == 1
+        content = str(app.query_one("#current-text", Static).render())
+        assert "Segment one." in content
+
+        adapter._offset_ms = 15_000  # segment two
+        app._update_timer()
+        assert app._paragraph_idx == 2
+        content = str(app.query_one("#current-text", Static).render())
+        assert "Segment two." in content
+
+
+@pytest.mark.asyncio
+async def test_timer_noop_transcript_advance_when_offset_stays_in_same_segment():
+    """A same-segment offset change ticks the countdown but does not touch
+    _paragraph_idx or re-render the pane."""
+    entry = _station_entry(1, transcript_segments=_SCROLL_SEGMENTS)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    app = _make_app(entries=[entry], controller=controller, adapter=adapter)
+    async with app.run_test():
+        app._start_playback(entry)
+        remaining_before = app._estimated_remaining_secs
+
+        adapter._offset_ms = 1_000  # still segment zero
+        app._update_timer()
+        assert app._paragraph_idx == 0
+        assert app._estimated_remaining_secs == remaining_before - 1
+
+
+@pytest.mark.asyncio
+async def test_timer_with_no_transcript_segments_does_not_crash():
+    """An entry with empty transcript_segments: _paragraphs stays empty, the
+    pane isn't scrolled, and the 1s timer (progress bar countdown) still
+    ticks without crashing."""
+    entry = _station_entry(1, transcript_segments=())
+    controller = FakeController()
+    adapter = FakeAdapter()
+    app = _make_app(entries=[entry], controller=controller, adapter=adapter)
+    async with app.run_test():
+        app._start_playback(entry)
+        assert app._paragraphs == []
+        remaining_before = app._estimated_remaining_secs
+
+        app._update_timer()  # must not raise
+
+        assert app._paragraphs == []
+        assert app._estimated_remaining_secs == remaining_before - 1
+
+
+@pytest.mark.asyncio
+async def test_stop_clears_transcript_state():
+    """action_stop resets the read-along state so a stopped station doesn't
+    keep a stale transcript/segment count on display."""
+    entry = _station_entry(1, transcript_segments=_SCROLL_SEGMENTS)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    app = _make_app(entries=[entry], controller=controller, adapter=adapter)
+    async with app.run_test():
+        app._start_playback(entry)
+        assert app._paragraphs
+
+        app.action_stop()
+
+        assert app._paragraphs == []
+        assert app._paragraph_idx == 0
+        content = str(app.query_one("#current-text", Static).render())
+        assert "Segment" not in content
+
+
+@pytest.mark.asyncio
+async def test_clean_completion_with_no_next_entry_clears_transcript_state():
+    """A clean completion with nothing left in the backlog ("queue finished")
+    also clears the read-along state, not just an explicit stop."""
+    entry = _station_entry(1, transcript_segments=_SCROLL_SEGMENTS)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    app = _make_app(entries=[entry], controller=controller, adapter=adapter)
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        assert app._paragraphs
+
+        with patch("wilted.tui.mark_completed"):
+            app._handle_station_completion(CompletionReason.ENDED)
+
+        assert app._paragraphs == []
+        assert app._paragraph_idx == 0
 
 
 # ---------------------------------------------------------------------------
