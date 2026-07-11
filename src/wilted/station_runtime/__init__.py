@@ -16,6 +16,9 @@ backends), and therefore must live outside ``wilted.station``:
     lease: ``ControllerLeaseManager`` — OS-level (``flock``) mutual exclusion
         so exactly one live ``StationController`` process holds the writer
         lease, with a crashed/rebooted holder's lease immediately reclaimable.
+    article_assembly: ``assemble_article_audio`` — concatenate a complete
+        per-paragraph article cache into one published media-store artifact
+        plus its cumulative timing map (refuses an incomplete cache, INV-4).
     media_store: content-addressed immutable media store + owners index
         (module-level functions ``publish``/``publish_with_owner``/
         ``get_owners``/``path_for``; import as ``from wilted.station_runtime
@@ -23,6 +26,11 @@ backends), and therefore must live outside ``wilted.station``:
         convenient ``except`` sites.
 """
 
+from wilted.station_runtime.article_assembly import (
+    ArticleCacheIncompleteError,
+    AssembledArticle,
+    assemble_article_audio,
+)
 from wilted.station_runtime.coordinator import (
     LeaseHeldElsewhereError,
     LeaseReentrancyError,
@@ -46,9 +54,12 @@ from wilted.station_runtime.store import (
 
 __all__ = [
     "STATION_SCHEMA_VERSION",
+    "ArticleCacheIncompleteError",
+    "AssembledArticle",
     "ControllerLeaseManager",
     "EmptyMediaError",
     "JsonStationStore",
+    "assemble_article_audio",
     "LeaseHeldElsewhereError",
     "LeaseHeldError",
     "LeaseReentrancyError",

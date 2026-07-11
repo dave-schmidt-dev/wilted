@@ -11,6 +11,7 @@ import wilted
 
 _TEST_MARKERS = {
     "test_ads.py": ("unit",),
+    "test_article_assembly.py": ("integration",),
     "test_cache.py": ("integration",),
     "test_classify.py": ("unit",),
     "test_cli.py": ("integration",),
