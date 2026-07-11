@@ -2880,6 +2880,75 @@ async def test_bulletin_interrupts_at_safe_boundary_and_resumes_at_correct_offse
 
 
 @pytest.mark.asyncio
+async def test_bulletin_fires_with_production_built_safe_map_not_only_handcrafted_windows(tmp_path):
+    """Full-chain regression for the shipped "bulletin never interrupts real
+    playback" bug.
+
+    Every OTHER bulletin test builds the entry's safe map from
+    ``from_verified_windows`` with a hand-picked WIDE window (``SAFE_WINDOW`` =
+    [10_000, 12_000]). Production never takes that path: ``normalize.py`` builds
+    the map with ``SafeInterruptionMap.from_transcript_segments(segments,
+    band_ms=_SAFE_INTERRUPTION_BAND_MS)``. That constructor shipped with
+    ``band_ms=0``, producing ZERO-width ``(start, start)`` windows, so
+    ``safe_point_at(live_offset)`` was true only on an exact-millisecond match a
+    continuously-advancing offset never hits -- and the bulletin never fired on
+    a real Mac even though the whole suite was green.
+
+    This test drives the TUI submit path with the ACTUAL production
+    construction so a future band regression to 0 fails HERE, not on David's
+    speakers. The negative control asserts the same offset would NOT have fired
+    under the shipped zero-width map -- i.e. this test genuinely exercises the
+    fix.
+    """
+    from wilted.station_runtime.normalize import _SAFE_INTERRUPTION_BAND_MS
+
+    # Boundaries (segment starts) at 0 / 5000 / 10000 ms -- the same shape a
+    # real podcast transcript yields.
+    segments = (
+        TranscriptSegment(start_ms=0, end_ms=5_000, text="Segment zero."),
+        TranscriptSegment(start_ms=5_000, end_ms=10_000, text="Segment one."),
+        TranscriptSegment(start_ms=10_000, end_ms=60_000, text="Segment two."),
+    )
+    production_map = SafeInterruptionMap.from_transcript_segments(segments, band_ms=_SAFE_INTERRUPTION_BAND_MS)
+
+    # Negative control: the shipped (band=0) construction would NOT accept a
+    # realistic live offset a few hundred ms off the 5000 ms boundary. If this
+    # ever stops holding, the test below no longer proves anything.
+    shipped_zero_band_map = SafeInterruptionMap.from_transcript_segments(segments, band_ms=0)
+    live_offset = 5_300  # a few hundred ms past a real boundary; never exact
+    assert shipped_zero_band_map.safe_point_at(live_offset) is False
+    assert production_map.safe_point_at(live_offset) is True
+
+    entry = _station_entry(1, safe_interruption=production_map)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    weather_monitor = FakeWeatherMonitor()
+    app = _make_app(
+        entries=[entry],
+        controller=controller,
+        adapter=adapter,
+        weather_monitor=weather_monitor,
+        latency_log_path=tmp_path / "latency.jsonl",
+    )
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        bulletin = _bulletin_entry()
+        weather_monitor.fire(bulletin)
+
+        adapter._offset_ms = live_offset
+        app._update_timer()
+
+        # The bulletin fires, and HAZARD 2 holds: submitted at the LIVE offset.
+        accept_actions = [a for a in controller.actions if isinstance(a, AcceptInterruption)]
+        assert len(accept_actions) == 1
+        assert accept_actions[0].interrupt_offset_ms == live_offset
+        assert accept_actions[0].bulletin.entry_id == bulletin.entry_id
+        assert app._pending_bulletin is None
+        assert app._bulletin_playing is True
+
+
+@pytest.mark.asyncio
 async def test_poller_paused_across_bulletin_so_resume_uses_accept_time_offset(tmp_path):
     """HAZARD 1: the poller must be stopped the instant AcceptInterruption is
     accepted (before the bulletin ever plays) so it cannot checkpoint the

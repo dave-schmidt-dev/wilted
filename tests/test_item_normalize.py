@@ -173,6 +173,52 @@ def test_normalize_podcast_with_transcript_is_playable_and_windowed(tmp_path):
     assert not descriptor.safe_interruption.is_no_interrupt
 
 
+@pytest.mark.skipif(FFMPEG_MISSING, reason="ffmpeg not on PATH")
+def test_normalize_safe_windows_have_tolerance_so_live_offset_can_match(tmp_path):
+    """Regression: a real normalized map must accept a LIVE offset NEAR a
+    transcript boundary, not only an exact-millisecond match.
+
+    The bulletin interrupt gates on ``safe_point_at(adapter.current_offset_ms())``
+    in BOTH the TUI submitter and the reducer, and HAZARD 2 requires that live
+    offset (not a snapped boundary) be what is submitted. When the safe map was
+    built with a zero-width band, ``safe_point_at`` was true only at an exact
+    boundary millisecond — which a continuously-advancing playback offset never
+    hits — so the weather bulletin could never interrupt real playback. This
+    pins the tolerance: an offset a few hundred ms off a boundary is still safe,
+    while a mid-segment offset is not (the band must not widen to "safe
+    everywhere").
+    """
+    audio_path = tmp_path / "episode.mp3"
+    _make_tiny_mp3(audio_path, duration_s=7.0)
+
+    segments = [
+        SecondsTranscriptSegment(start_s=0.0, end_s=6.0, text="first"),
+        SecondsTranscriptSegment(start_s=6.0, end_s=7.0, text="second"),
+    ]
+    transcript_path = tmp_path / "transcript.json"
+    save_transcript(segments, transcript_path)
+
+    item = _make_item(
+        item_type="podcast_episode",
+        audio_file=str(audio_path),
+        transcript_file=str(transcript_path),
+        duration_seconds=7.0,
+    )
+
+    si = normalize_item(item).safe_interruption
+
+    # No window may be zero-width — that was the exact-match-only bug.
+    assert all(end > start for start, end in si.windows), f"zero-width safe window(s): {si.windows}"
+
+    # A LIVE offset a few hundred ms past the 6.0s boundary is still safe
+    # (would be False with a zero-width band — the shipped bug).
+    assert si.safe_point_at(6300) is True
+    assert si.safe_point_at(5800) is True
+    # ...but a clearly mid-segment offset (far from any boundary) is NOT safe:
+    # the tolerance must not have widened into "safe everywhere".
+    assert si.safe_point_at(3000) is False
+
+
 # ---------------------------------------------------------------------------
 # Podcast: without transcript
 # ---------------------------------------------------------------------------

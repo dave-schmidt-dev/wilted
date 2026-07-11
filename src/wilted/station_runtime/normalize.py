@@ -45,25 +45,40 @@ __all__ = [
 
 _MIME_TYPE_AUDIO_MPEG = "audio/mpeg"
 
-# The reducer (wilted/station/reducer.py:446) checks
-# `safe_interruption.safe_point_at(offset)` EXACTLY — it does not itself snap
-# a live playback offset to the nearest safe boundary before checking. Per
-# the 0.2 timing-precision spike's boundary-snap decision, interruption
-# placement is expected to call `nearest_safe_point(offset)` FIRST to obtain
-# a real transcript boundary, and only then call `safe_point_at` (or
-# AcceptInterruption) with that snapped value — that snapping is Task A.4's
-# responsibility, not this module's. A nonzero fixed band here would not by
-# itself guarantee silence (measured: only ~70% of boundaries have silence
-# within +/-250ms, some have none at any band width), so widening this band
-# does not buy real safety and would just be a false sense of tolerance
-# baked into the descriptor. Keep it 0: `from_transcript_segments` then
-# produces exact zero-width (start_ms, start_ms) windows, i.e. "safe exactly
-# at a transcript boundary", and callers snap to one of those boundaries
-# before ever calling safe_point_at/AcceptInterruption. If raw-offset
-# tolerance (interrupt anywhere within N ms of a boundary, no snap) is ever
-# wanted, this constant is the single tuning knob to change — but that is a
-# deliberate future decision, not the current one.
-_SAFE_INTERRUPTION_BAND_MS = 0
+# Matching tolerance (± ms) around each transcript-boundary safe point.
+#
+# This MUST be non-zero, and here is the closed-loop reasoning (a zero band
+# shipped a station whose weather bulletin could never interrupt real
+# playback):
+#
+# The bulletin interrupt path is pinned between two constraints that only a
+# tolerance band can satisfy together:
+#   1. The reducer (reducer.py:446) AND the TUI submitter
+#      (`_maybe_submit_pending_bulletin`) both gate on
+#      `safe_interruption.safe_point_at(offset)` against the entry's map.
+#   2. HAZARD 2 (see `_maybe_submit_pending_bulletin`'s docstring) REQUIRES the
+#      offset passed to AcceptInterruption to be the LIVE
+#      `adapter.current_offset_ms()` — never a snapped/future boundary — or the
+#      interrupted entry is checkpointed ahead of where playback actually is and
+#      resume skips audio.
+# So the live offset itself must satisfy `safe_point_at`. A zero-width
+# (start_ms, start_ms) window requires the live, continuously-advancing offset
+# to land on an EXACT millisecond — a probability-zero event — so the bulletin
+# never fires (observed: article/podcast plays straight through a fired
+# trigger). The earlier "callers snap via nearest_safe_point first" plan is
+# unimplementable here precisely because HAZARD 2 forbids submitting that
+# snapped value.
+#
+# A band makes `safe_point_at(live_offset)` true whenever playback is within
+# ±band of a real transcript boundary; the LIVE offset is still what gets
+# submitted/checkpointed, so resume stays exact. 1000 ms is chosen so the
+# window (2000 ms wide) is comfortably larger than the UI's 1 s poll tick — the
+# live offset advances ~1000 ms per tick, so a narrower window could be skipped
+# between ticks. This does NOT claim ±1000 ms is silent (measured: only ~70% of
+# boundaries have silence within ±250 ms); it lands the interrupt within ~1 s of
+# a real transcript boundary, which is the right tradeoff for an emergency
+# bulletin. This is the single tuning knob for that tolerance.
+_SAFE_INTERRUPTION_BAND_MS = 1000
 
 
 class ItemNotFinalizedError(Exception):
