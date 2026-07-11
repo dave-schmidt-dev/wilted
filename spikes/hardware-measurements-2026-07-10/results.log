@@ -1,0 +1,57 @@
+=== measure_ml_residency.py run @ 2026-07-10T14:56:45-0400 (mode=residency (MLX pair TTS+transcribe; LLM/GGUF phase skipped -- llama-cpp-python not installed)) ===
+  [TTS (AudioEngine / Kokoro via mlx_audio)] load=1.11s close=0.02s rss_before=29MB rss_after_load=469MB rss_after_close=469MB metal_before=7.62939453125e-06 metal_after_load=312.0901756286621 metal_after_close=7.62939453125e-06
+  [Transcription (parakeet_mlx)] load=0.56s close=0.03s rss_before=469MB rss_after_load=469MB rss_after_close=469MB metal_before=7.62939453125e-06 metal_after_load=39.156578063964844 metal_after_close=7.62939453125e-06
+    TTS (AudioEngine / Kokoro via mlx_audio): metal_after_close=0MB (baseline=0MB, drift=+0MB) [OK]
+    Transcription (parakeet_mlx): metal_after_close=0MB (baseline=0MB, drift=+0MB) [OK]
+
+=== measure_ml_residency.py run @ 2026-07-10T15:02:55-0400 (mode=residency) ===
+  [LLM (wilted.llm backend)] load=0.54s close=0.06s rss_before=21MB rss_after_load=5457MB rss_after_close=5472MB metal_before=7.62939453125e-06 metal_after_load=7.62939453125e-06 metal_after_close=7.62939453125e-06
+  [TTS (AudioEngine / Kokoro via mlx_audio)] load=0.50s close=0.03s rss_before=5472MB rss_after_load=5472MB rss_after_close=5472MB metal_before=7.62939453125e-06 metal_after_load=312.0901756286621 metal_after_close=7.62939453125e-06
+  [Transcription (parakeet_mlx)] load=0.92s close=0.03s rss_before=5472MB rss_after_load=5472MB rss_after_close=5472MB metal_before=7.62939453125e-06 metal_after_load=39.156578063964844 metal_after_close=7.62939453125e-06
+    LLM (wilted.llm backend): metal_after_close=0MB (baseline=0MB, drift=+0MB) [OK]
+    TTS (AudioEngine / Kokoro via mlx_audio): metal_after_close=0MB (baseline=0MB, drift=+0MB) [OK]
+    Transcription (parakeet_mlx): metal_after_close=0MB (baseline=0MB, drift=+0MB) [OK]
+
+=== measure_playback.py run @ 2026-07-10T18:14:42-0400 ===
+episode: data/podcasts/measure-404-best-game/80391e99cf24d187eec49da364a45858.mp3
+  episode_duration: 5645.6s  (94.1 min (ffprobe took 19 ms))
+  startup_latency: 506 ms  (time from play_file() call to first on_progress callback)
+  seek_time: 2010 ms  (seek to segment 378/756 (mid-episode))
+  peak_memory_rss: 70 MB  (sampled every 100ms during a 15s playback window (resource.getrusage (macOS lifetime peak)))
+=== measure_playback.py run @ 2026-07-10T18:20:02-0400 ===
+episode: data/podcasts/measure-404-best-game/80391e99cf24d187eec49da364a45858.mp3
+  episode_duration: 5645.6s  (94.1 min (ffprobe took 18 ms))
+  startup_latency: 563 ms  (time from play_file() call to first on_progress callback)
+  seek_time: 1939 ms  (seek to segment 378/756 (mid-episode))
+  peak_memory_rss: 70 MB  (sampled every 100ms during a 15s playback window (resource.getrusage (macOS lifetime peak)))
+  resume_fidelity: PASS  (stopped after seg 0, resumed at seg 1 (start_s=8.2s); first segment after seek=1; playback_time_s at resume=8.3s (boundary-accurate check))
+
+=== measure_route_recovery.py run @ 2026-07-10T18:30:43-0400 ===
+episode: data/podcasts/measure-404-best-game/80391e99cf24d187eec49da364a45858.mp3
+  [unplug-headphones] observation=wrong-device stayed_responsive=True thread_alive_after=True exception=None notes='started on macbook speakers and never left despite changing audio output to bluetooth speaker'
+  [switch-to-airpods] observation=wrong-device stayed_responsive=True thread_alive_after=True exception=None notes=''
+  [switch-back-to-builtin] observation=other stayed_responsive=True thread_alive_after=True exception=None notes='Audio has never left the macbook speakers despite whatever output I select in the mac menu'
+
+=== measure_sleep_availability.sh run @ 2026-07-10T18:34:06-0400 ===
+  [display-sleep] pid_before=(none found)
+  [display-sleep] ip_before=192.168.1.194
+  [display-sleep] pid_after=(none found)
+  [display-sleep] ip_after=192.168.1.194
+  [display-sleep] human_observation=notes
+  [lid-close] pid_before=(none found)
+  [lid-close] ip_before=192.168.1.194
+  [lid-close] pid_after=(none found)
+  [lid-close] ip_after=192.168.1.194
+  [lid-close] human_observation=clamshell mode
+  [system-sleep] pid_before=(none found)
+  [system-sleep] ip_before=192.168.1.194
+  [system-sleep] pid_after=(none found)
+  [system-sleep] ip_after=192.168.1.194
+  [system-sleep] human_observation=everything seemed fine
+
+=== measure_ml_residency.py run @ 2026-07-10T18:34:28-0400 (mode=alert-latency) ===
+  bulletin_text: 'Severe thunderstorm warning for your area until 5pm.'
+  detected_to_model_ready_s: 0.97s (included a model load)
+  tts_synthesis_s: 4.15s
+  detected_to_bulletin_start_s: 5.12s
+

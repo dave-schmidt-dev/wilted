@@ -1,0 +1,40 @@
+"""Concrete station runtime implementations.
+
+The ``wilted.station`` package is the substrate-neutral contract layer
+(value objects, reducer, Protocol seams) and by contract imports nothing
+outside itself (enforced by ``tests/test_station_contracts.py``'s
+substrate-neutrality check). This sibling package holds the CONCRETE
+implementations of those contracts — the pieces that necessarily depend on
+the rest of ``wilted`` (``DATA_DIR``, the audio engine, the LLM/transcribe
+backends), and therefore must live outside ``wilted.station``:
+
+    store: ``JsonStationStore`` — the concrete ``StationStore`` on a
+        versioned atomic JSON envelope under the live ``wilted.DATA_DIR``.
+    coordinator: ``ModelCoordinator`` + ``RuntimeBootstrap`` — the single
+        named ML lease enforcing INV-1/INV-2 (at most one model resident;
+        main-thread tqdm bootstrap before any worker model load).
+"""
+
+from wilted.station_runtime.coordinator import (
+    LeaseHeldElsewhereError,
+    LeaseReentrancyError,
+    ModelCoordinator,
+    ModelLease,
+    RuntimeBootstrap,
+)
+from wilted.station_runtime.store import (
+    STATION_SCHEMA_VERSION,
+    JsonStationStore,
+    StationStoreVersionError,
+)
+
+__all__ = [
+    "STATION_SCHEMA_VERSION",
+    "JsonStationStore",
+    "LeaseHeldElsewhereError",
+    "LeaseReentrancyError",
+    "ModelCoordinator",
+    "ModelLease",
+    "RuntimeBootstrap",
+    "StationStoreVersionError",
+]

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from wilted.station.models import ControllerLease, MediaDescriptor, PlaybackCheckpoint, StationEvent
+    from wilted.station.reducer import StationState
 
 
 class StationStore(Protocol):
@@ -23,7 +24,29 @@ class StationStore(Protocol):
     Kept minimal: only what the reducer/controller needs to read current
     state and durably record checkpoints/events/lease changes. Does not
     speculate about query/filter/pagination APIs a real store might add.
+
+    ``load_state``/``persist_state`` are the primary durable surface (a full
+    ``StationState`` envelope, compare-and-set on ``station_revision``); the
+    remaining methods (``current_checkpoint``, ``persist_checkpoint``,
+    ``append_event``, ``current_lease``, ``persist_lease``) are thin facades
+    over that full-state document, kept for callers that only care about one
+    field at a time.
     """
+
+    def load_state(self) -> StationState | None:
+        """Return the full persisted station state, or None if none exists."""
+        ...
+
+    def persist_state(self, state: StationState, *, expected_revision: int) -> bool:
+        """Durably record ``state`` if ``expected_revision`` is still current.
+
+        Returns:
+            True if the write was applied, False if ``expected_revision`` did
+            not match the on-disk ``station_revision`` (i.e. someone else
+            already advanced it) and the write was rejected. On rejection the
+            on-disk document is left unchanged.
+        """
+        ...
 
     def current_checkpoint(self) -> PlaybackCheckpoint | None:
         """Return the most recently persisted checkpoint, or None if none exists."""
