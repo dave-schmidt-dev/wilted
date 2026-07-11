@@ -37,7 +37,7 @@ from wilted.station.reducer import (
     StationState,
     Stop,
 )
-from wilted.station_runtime import CompletionReason, LeaseHeldError, RouteChangeEvent
+from wilted.station_runtime import CompletionReason, LeaseHeldError, RouteChangeEvent, media_store
 from wilted.station_runtime.controller import SubmitResult
 from wilted.tui import (
     AddArticleScreen,
@@ -2596,6 +2596,42 @@ async def test_weather_monitor_starts_on_mount_and_stops_on_unmount():
         app.on_unmount()
 
         assert weather_monitor.stop_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_expired_bulletin_does_not_survive_session_end():
+    """A.4.4/A.5.2 session-level gate: an expired weather bulletin's audio
+    must not survive a session.
+
+    ``on_unmount`` (the one hook every exit path reaches, see its docstring)
+    runs ``media_store.collect_expired_bulletins`` as its last step. This
+    proves that end-to-end -- a bulletin blob published with a past expiry
+    is gone once the session tears down, while a durable item's media
+    (``expiry=None``) is left completely untouched.
+    """
+    bulletin_hash = media_store.publish_with_owner(
+        b"expired bulletin audio",
+        kind="bulletin",
+        entry_id="wx-old",
+        expiry="2020-01-01T00:00:00Z",  # long past, regardless of wall-clock "now"
+    )
+    item_hash = media_store.publish_with_owner(
+        b"durable item audio",
+        kind="item",
+        entry_id="item-1",
+        expiry=None,
+    )
+    assert media_store.exists(bulletin_hash)
+    assert media_store.exists(item_hash)
+
+    app = _make_app()
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+
+        app.on_unmount()
+
+        assert not media_store.exists(bulletin_hash), "expired bulletin blob survived session end"
+        assert media_store.exists(item_hash), "durable item media was wrongly collected"
 
 
 @pytest.mark.asyncio
