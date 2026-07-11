@@ -38,6 +38,8 @@ from wilted.engine import AudioEngine
 from wilted.station_runtime import media_store
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from wilted.station.models import MediaDescriptor, TranscriptSegment
 
 logger = logging.getLogger(__name__)
@@ -129,6 +131,8 @@ class _EngineLike(Protocol):
 
     def pause(self) -> None: ...
 
+    def resume(self) -> None: ...
+
     def stop(self) -> None: ...
 
     @property
@@ -192,13 +196,30 @@ class MacPlaybackAdapter:
     ``start_segment`` seek.
     """
 
-    def __init__(self, engine: _EngineLike | None = None) -> None:
+    def __init__(
+        self,
+        engine: _EngineLike | None = None,
+        *,
+        on_complete: Callable[[CompletionReason], None] | None = None,
+    ) -> None:
+        """Construct the adapter, optionally wired with a completion callback.
+
+        ``on_complete``, if given, is invoked exactly once per completed
+        :meth:`play` call, but ONLY for a natural end-of-thread completion
+        (``ENDED``, ``TRUNCATED``, or ``UNKNOWN`` — see :class:`CompletionReason`)
+        — never for ``STOPPED``. It runs on the background ``play_file``
+        thread (see :meth:`_on_play_file_finished`), not the caller's thread;
+        a Textual caller must marshal back via ``call_from_thread``. This lets
+        a caller auto-advance on ``reason.is_clean_completion`` and surface a
+        warning otherwise, without polling :attr:`last_completion`.
+        """
         self._engine: _EngineLike = engine if engine is not None else AudioEngine()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._current_path: str | None = None
         self._last_completion: CompletionReason | None = None
         self._stop_requested = False
+        self.on_complete = on_complete
 
     @property
     def last_completion(self) -> CompletionReason | None:
@@ -313,6 +334,17 @@ class MacPlaybackAdapter:
         An explicit :meth:`stop` takes precedence over the truncation check:
         a caller-requested stop is reported as ``STOPPED``, not ``TRUNCATED``,
         even though it also leaves playback short of the full duration.
+
+        Completion callback: :attr:`on_complete`, if set, is invoked exactly
+        when this call COMMITS an ``outcome`` below (i.e. natural ends only —
+        ``ENDED``/``TRUNCATED``/``UNKNOWN``). The early-return STOPPED path
+        above and a stop that races in during the duration probe (caught by
+        the final ``if not self._stop_requested`` guard) both skip the
+        callback. The callback runs OUTSIDE :attr:`_lock` — it may be slow or
+        re-enter the adapter (e.g. call :meth:`play` to auto-advance) — and is
+        never allowed to escape onto this background thread: a raise there is
+        logged and swallowed so it cannot corrupt stream-thread state or leave
+        :attr:`_last_completion` unset.
         """
         with self._lock:
             if self._stop_requested:
@@ -335,13 +367,25 @@ class MacPlaybackAdapter:
         else:
             outcome = CompletionReason.ENDED
 
+        fired: CompletionReason | None = None
         with self._lock:
             if not self._stop_requested:
                 self._last_completion = outcome
+                fired = outcome
+
+        if fired is not None and self.on_complete is not None:
+            try:
+                self.on_complete(fired)
+            except Exception:  # noqa: BLE001 - a misbehaving callback must never corrupt the stream thread
+                logger.error("on_complete callback raised for completion %r", fired, exc_info=True)
 
     def pause(self) -> None:
         """Pause playback, retaining the current position."""
         self._engine.pause()
+
+    def resume(self) -> None:
+        """Resume playback previously paused with :meth:`pause`, from the retained position."""
+        self._engine.resume()
 
     def stop(self) -> None:
         """Stop playback and release any held playback resources.

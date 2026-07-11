@@ -94,6 +94,7 @@ class _FakeEngine:
     def __init__(self, *, file_duration_s: float = 10.0) -> None:
         self.play_file_calls: list[dict] = []
         self.pause_calls = 0
+        self.resume_calls = 0
         self.stop_calls = 0
         self.raise_on_duration = False  # make get_file_duration raise (probe failure)
         self._file_duration_s = file_duration_s
@@ -148,6 +149,9 @@ class _FakeEngine:
 
     def pause(self) -> None:
         self.pause_calls += 1
+
+    def resume(self) -> None:
+        self.resume_calls += 1
 
     def stop(self) -> None:
         self.stop_calls += 1
@@ -479,6 +483,133 @@ def test_resume_without_transcript_segments_warns_and_restarts_at_zero(tmp_path,
 
 
 # ---------------------------------------------------------------------------
+# on_complete completion callback.
+# ---------------------------------------------------------------------------
+
+
+def test_on_complete_fires_once_with_ended_on_clean_completion(tmp_path):
+    sha256 = _publish_media(tmp_path)
+    media = _finalized_media(sha256=sha256)
+    engine = _FakeEngine(file_duration_s=10.0)
+    engine.final_playback_time_s = 10.0  # played to the very end
+    calls: list[CompletionReason] = []
+    adapter = MacPlaybackAdapter(engine=engine, on_complete=calls.append)
+
+    adapter.play(media, offset_ms=0)
+    _wait_until(lambda: len(engine.play_file_calls) == 1)
+    engine.release_play_file()
+
+    assert _wait_until(lambda: len(calls) == 1)
+    assert calls == [CompletionReason.ENDED]
+    assert adapter.last_completion is CompletionReason.ENDED
+
+
+def test_on_complete_fires_with_truncated_when_playback_falls_short(tmp_path):
+    sha256 = _publish_media(tmp_path)
+    media = _finalized_media(sha256=sha256)
+    engine = _FakeEngine(file_duration_s=10.0)
+    engine.final_playback_time_s = 4.0  # ffmpeg died well short of the end
+    calls: list[CompletionReason] = []
+    adapter = MacPlaybackAdapter(engine=engine, on_complete=calls.append)
+
+    adapter.play(media, offset_ms=0)
+    _wait_until(lambda: len(engine.play_file_calls) == 1)
+    engine.release_play_file()
+
+    assert _wait_until(lambda: len(calls) == 1)
+    assert calls == [CompletionReason.TRUNCATED]
+
+
+def test_on_complete_fires_with_unknown_when_duration_probe_raises(tmp_path):
+    sha256 = _publish_media(tmp_path)
+    media = _finalized_media(sha256=sha256)
+    engine = _FakeEngine(file_duration_s=10.0)
+    engine.final_playback_time_s = 10.0  # would be ENDED if the duration were known
+    engine.raise_on_duration = True  # ffprobe fails -> duration unverifiable
+    calls: list[CompletionReason] = []
+    adapter = MacPlaybackAdapter(engine=engine, on_complete=calls.append)
+
+    adapter.play(media, offset_ms=0)
+    _wait_until(lambda: len(engine.play_file_calls) == 1)
+    engine.release_play_file()
+
+    assert _wait_until(lambda: len(calls) == 1)
+    assert calls == [CompletionReason.UNKNOWN]
+
+
+def test_on_complete_does_not_fire_on_explicit_stop(tmp_path):
+    sha256 = _publish_media(tmp_path)
+    media = _finalized_media(sha256=sha256)
+    engine = _FakeEngine(file_duration_s=10.0)
+    engine.final_playback_time_s = 4.0  # would look truncated if not for stop()
+    calls: list[CompletionReason] = []
+    adapter = MacPlaybackAdapter(engine=engine, on_complete=calls.append)
+
+    adapter.play(media, offset_ms=0)
+    _wait_until(lambda: len(engine.play_file_calls) == 1)
+
+    adapter.stop()  # joins the background thread; classifier has fully run
+
+    assert adapter.last_completion is CompletionReason.STOPPED
+    assert calls == []
+
+
+def test_on_complete_skips_preempted_session_but_fires_for_new_session(tmp_path):
+    """play() while a prior playback is live preempts (STOPPED, no callback)
+    the old session; the callback must fire only for the NEW session's own
+    completion, mirroring test_play_while_playing_preempts_prior_playback's
+    preempt machinery."""
+    sha256 = _publish_media(tmp_path)
+    media = _finalized_media(sha256=sha256, transcript_segments=_segments())
+    engine = _FakeEngine(file_duration_s=10.0)
+    engine.final_playback_time_s = 10.0
+    calls: list[CompletionReason] = []
+    adapter = MacPlaybackAdapter(engine=engine, on_complete=calls.append)
+
+    adapter.play(media, offset_ms=0)
+    assert _wait_until(lambda: len(engine.play_file_calls) == 1)
+
+    # Preempt: the first session's play_file is still blocked, so this stops
+    # + joins it (STOPPED, early-return path, no callback) before the second
+    # play_file starts (freshly blocked on the fake's _release event).
+    adapter.play(media, offset_ms=0)
+    assert _wait_until(lambda: len(engine.play_file_calls) == 2)
+    assert calls == []  # preempted session must not have fired
+
+    engine.release_play_file()  # let the NEW session's play_file return
+
+    assert _wait_until(lambda: len(calls) == 1)
+    assert calls == [CompletionReason.ENDED]  # exactly the new session's completion
+    assert adapter.last_completion is CompletionReason.ENDED
+
+    adapter.stop()
+
+
+def test_on_complete_exception_is_swallowed_and_last_completion_still_set(tmp_path, caplog):
+    sha256 = _publish_media(tmp_path)
+    media = _finalized_media(sha256=sha256)
+    engine = _FakeEngine(file_duration_s=10.0)
+    engine.final_playback_time_s = 10.0
+
+    def _boom(reason: CompletionReason) -> None:
+        raise RuntimeError(f"callback exploded for {reason}")
+
+    adapter = MacPlaybackAdapter(engine=engine, on_complete=_boom)
+
+    with caplog.at_level(logging.ERROR, logger="wilted.station_runtime.playback_adapter"):
+        adapter.play(media, offset_ms=0)
+        _wait_until(lambda: len(engine.play_file_calls) == 1)
+        engine.release_play_file()
+
+        assert _wait_until(lambda: adapter.last_completion is not None)
+
+    # A raising callback must not corrupt _last_completion or escape the
+    # background thread; the adapter still reports the correct classification.
+    assert adapter.last_completion is CompletionReason.ENDED
+    assert any("on_complete" in msg for msg in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
 # Single resume authority: no set_resume_position anywhere on this path.
 # ---------------------------------------------------------------------------
 
@@ -534,6 +665,15 @@ def test_pause_delegates_to_engine():
     adapter.pause()
 
     assert engine.pause_calls == 1
+
+
+def test_resume_delegates_to_engine():
+    engine = _FakeEngine()
+    adapter = MacPlaybackAdapter(engine=engine)
+
+    adapter.resume()
+
+    assert engine.resume_calls == 1
 
 
 def test_stop_delegates_to_engine_and_joins_thread(tmp_path):
