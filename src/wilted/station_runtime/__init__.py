@@ -13,6 +13,14 @@ backends), and therefore must live outside ``wilted.station``:
     coordinator: ``ModelCoordinator`` + ``RuntimeBootstrap`` — the single
         named ML lease enforcing INV-1/INV-2 (at most one model resident;
         main-thread tqdm bootstrap before any worker model load).
+    lease: ``ControllerLeaseManager`` — OS-level (``flock``) mutual exclusion
+        so exactly one live ``StationController`` process holds the writer
+        lease, with a crashed/rebooted holder's lease immediately reclaimable.
+    media_store: content-addressed immutable media store + owners index
+        (module-level functions ``publish``/``publish_with_owner``/
+        ``get_owners``/``path_for``; import as ``from wilted.station_runtime
+        import media_store``). Its exceptions are re-exported here for
+        convenient ``except`` sites.
 """
 
 from wilted.station_runtime.coordinator import (
@@ -22,6 +30,14 @@ from wilted.station_runtime.coordinator import (
     ModelLease,
     RuntimeBootstrap,
 )
+from wilted.station_runtime.lease import (
+    ControllerLeaseManager,
+    LeaseHeldError,
+)
+from wilted.station_runtime.media_store import (
+    EmptyMediaError,
+    MediaOwnersCorruptError,
+)
 from wilted.station_runtime.store import (
     STATION_SCHEMA_VERSION,
     JsonStationStore,
@@ -30,9 +46,13 @@ from wilted.station_runtime.store import (
 
 __all__ = [
     "STATION_SCHEMA_VERSION",
+    "ControllerLeaseManager",
+    "EmptyMediaError",
     "JsonStationStore",
     "LeaseHeldElsewhereError",
+    "LeaseHeldError",
     "LeaseReentrancyError",
+    "MediaOwnersCorruptError",
     "ModelCoordinator",
     "ModelLease",
     "RuntimeBootstrap",
