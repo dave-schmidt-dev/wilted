@@ -28,6 +28,7 @@ import os
 import re
 import time
 import uuid
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
 from textual import work
@@ -57,6 +58,7 @@ from wilted.station_runtime import (
     RouteMonitor,
     StationController,
     WeatherMonitor,
+    media_store,
 )
 from wilted.station_runtime.sequencer import EntrySequencer
 from wilted.text import split_paragraphs
@@ -472,6 +474,21 @@ class WiltedApp(App):
             self._controller.stop()
         except Exception:
             logger.exception("on_unmount: controller.stop() failed")
+
+        # Task 4.4: session-end bulletin GC. on_unmount is the one hook every
+        # exit path reaches exactly once (see docstring above), which is
+        # what a sweep like this needs — no partial/duplicate runs. Ordered
+        # last so it runs after every writer (controller, weather monitor)
+        # has stopped, though correctness does not actually depend on that:
+        # collect_expired_bulletins takes the same flock record_owner does,
+        # and the reducer already refuses to hand a bulletin whose expiry
+        # has passed to playback (StationEntry.is_expired), so a hash this
+        # sweep collects can never be one something is still relying on —
+        # in this session or any other live session sharing the data dir.
+        try:
+            media_store.collect_expired_bulletins(datetime.now(UTC))
+        except Exception:
+            logger.exception("on_unmount: collect_expired_bulletins() failed")
 
     def _on_controller_loss(self, exc: BaseException) -> None:
         """Invoked from the controller's drain thread if it enters terminal "lost" mode."""

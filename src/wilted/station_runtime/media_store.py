@@ -87,6 +87,7 @@ import hashlib
 import json
 import os
 import tempfile
+from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
 import wilted
@@ -371,3 +372,92 @@ def publish_with_owner(
     sha256 = publish(src)
     record_owner(sha256, kind=kind, entry_id=entry_id, expiry=expiry)
     return sha256
+
+
+# ---------------------------------------------------------------------------
+# GC (Task 4.4): bulletin garbage collection
+# ---------------------------------------------------------------------------
+
+
+def _parse_expiry(expiry: str) -> datetime:
+    """Parse a 'Z'-suffixed UTC owner ``expiry`` string into an aware ``datetime``.
+
+    Uses the ``fromisoformat(...replace("Z", "+00:00"))`` idiom already used
+    elsewhere in ``station_runtime`` (see ``sequencer._parse_utc_z``) rather
+    than ``strptime``, since every ``expiry`` reaching this module was
+    itself produced by that same family of helpers (``record_owner``'s
+    callers, ultimately ``weather_monitor._to_utc_z``).
+    """
+    return datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+
+
+def collect_expired_bulletins(now: datetime) -> list[str]:
+    """Delete station-owned bulletin blobs whose owning entries have all expired.
+
+    A hash is collectable IFF, under the current owners index:
+
+    - it has at least one recorded owner, AND
+    - it has NO ``"item"`` owner (INV-4: durable Item media must never be
+      collected, no matter what else owns the same hash), AND
+    - every ``"bulletin"`` owner on it is expired -- i.e. its ``expiry`` is
+      not ``None`` (``None`` means "never expires" and is therefore never
+      collectable) and ``expiry <= now``.
+
+    For each collectable hash, the on-disk blob is deleted (tolerating one
+    that is already missing -- e.g. a prior crash mid-GC) and its key is
+    dropped from the owners index. The scan and the index rewrite happen
+    inside a single :func:`_owners_write_lock`-held load-mutate-write, so a
+    concurrent :func:`record_owner` call can never race this pass and have
+    its write silently lost.
+
+    Args:
+        now: An aware UTC ``datetime`` to compare owner ``expiry`` values
+            against. Callers pass the real wall-clock time
+            (``datetime.now(UTC)``); tests pass a fixed value to make
+            expiry comparisons deterministic.
+
+    Returns:
+        The SHA-256 hex digests of every hash collected this pass (blob
+        deleted and owners entry removed). Empty if nothing was collectable.
+
+    Raises:
+        MediaOwnersCorruptError: If the owners index exists but cannot be
+            safely read (see :func:`_load_owners_doc`). A corrupt doc means
+            GC cannot prove a hash has no ``"item"`` owner, so -- exactly
+            like every other reader in this module -- it refuses outright
+            rather than risk deleting durable media it can no longer see.
+    """
+    collected: list[str] = []
+
+    with _owners_write_lock():
+        doc = _load_owners_doc()
+        remaining: dict[str, list[dict]] = {}
+
+        for sha256, owners in doc.items():
+            # INV-4, made structurally obvious: an "item" owner (or no
+            # owners at all, or a not-yet-fully-expired bulletin owner)
+            # always takes the "keep it" branch below. There is exactly
+            # ONE path to the delete call further down, and every one of
+            # these conditions must be false to reach it.
+            has_item_owner = any(owner["kind"] == "item" for owner in owners)
+            bulletin_owners = [owner for owner in owners if owner["kind"] == "bulletin"]
+            all_bulletins_expired = bool(bulletin_owners) and all(
+                owner["expiry"] is not None and _parse_expiry(owner["expiry"]) <= now for owner in bulletin_owners
+            )
+
+            if not owners or has_item_owner or not all_bulletins_expired:
+                remaining[sha256] = owners
+                continue
+
+            blob_path = path_for(sha256)
+            if blob_path is not None:
+                with contextlib.suppress(FileNotFoundError):
+                    blob_path.unlink()
+            collected.append(sha256)
+            # Deliberately NOT copied into `remaining` -- that omission is
+            # what drops this hash's key from the rewritten owners doc.
+
+        if collected:
+            _write_owners_doc(remaining)
+
+    return collected

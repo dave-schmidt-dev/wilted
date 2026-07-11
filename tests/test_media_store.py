@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+from datetime import UTC, datetime
 
 import pytest
 
@@ -320,3 +321,124 @@ def test_concurrent_record_owner_calls_lose_no_rows():
     expected_entry_ids = {f"item-{i}" for i in range(num_owners)}
     assert recorded_entry_ids == expected_entry_ids
     assert len(owners) == num_owners
+
+
+# ---------------------------------------------------------------------------
+# collect_expired_bulletins (Task 4.4): bulletin GC, and the INV-4 guarantee
+# that durable Item media is never touched by it.
+# ---------------------------------------------------------------------------
+
+_NOW = datetime(2026, 7, 10, 13, 0, 0, tzinfo=UTC)
+_PAST_Z = "2026-07-10T12:00:00Z"  # before _NOW: expired
+_FUTURE_Z = "2026-07-10T14:00:00Z"  # after _NOW: not yet expired
+
+
+def test_collect_expired_bulletins_deletes_blob_and_owners_entry():
+    sha256 = media_store.publish(b"fully expired bulletin audio")
+    media_store.record_owner(sha256, kind="bulletin", entry_id="wx-1", expiry=_PAST_Z)
+
+    path = media_store.path_for(sha256)
+    assert path is not None
+    assert path.exists()
+
+    collected = media_store.collect_expired_bulletins(_NOW)
+
+    assert collected == [sha256]
+    assert not path.exists()
+    assert media_store.get_owners(sha256) == []
+
+    owners_path = wilted.DATA_DIR / "media_owners.json"
+    with owners_path.open() as f:
+        on_disk = json.load(f)
+    assert sha256 not in on_disk
+
+
+def test_collect_expired_bulletins_never_deletes_hash_with_item_owner():
+    """INV-4: an item owner protects a hash even if it also carries an
+    already-expired bulletin owner -- the durable-media safety property."""
+    sha256 = media_store.publish(b"durable item audio, plus an expired bulletin owner")
+    media_store.record_owner(sha256, kind="item", entry_id="item-1", expiry=None)
+    media_store.record_owner(sha256, kind="bulletin", entry_id="wx-1", expiry=_PAST_Z)
+
+    path = media_store.path_for(sha256)
+    assert path is not None
+
+    collected = media_store.collect_expired_bulletins(_NOW)
+
+    assert collected == []
+    assert path.exists()
+    owners = media_store.get_owners(sha256)
+    assert {"kind": "item", "entry_id": "item-1", "expiry": None} in owners
+    assert {"kind": "bulletin", "entry_id": "wx-1", "expiry": _PAST_Z} in owners
+
+
+def test_collect_expired_bulletins_retains_not_yet_expired_bulletin_owner():
+    sha256 = media_store.publish(b"bulletin audio that has not expired yet")
+    media_store.record_owner(sha256, kind="bulletin", entry_id="wx-1", expiry=_FUTURE_Z)
+
+    collected = media_store.collect_expired_bulletins(_NOW)
+
+    assert collected == []
+    assert media_store.exists(sha256)
+    assert media_store.get_owners(sha256) == [{"kind": "bulletin", "entry_id": "wx-1", "expiry": _FUTURE_Z}]
+
+
+def test_collect_expired_bulletins_never_collects_expiry_none_bulletin_owner():
+    sha256 = media_store.publish(b"bulletin audio that never expires")
+    media_store.record_owner(sha256, kind="bulletin", entry_id="wx-1", expiry=None)
+
+    collected = media_store.collect_expired_bulletins(_NOW)
+
+    assert collected == []
+    assert media_store.exists(sha256)
+    assert media_store.get_owners(sha256) == [{"kind": "bulletin", "entry_id": "wx-1", "expiry": None}]
+
+
+def test_collect_expired_bulletins_multiple_hashes_only_fully_expired_collected():
+    """A mixed owners index: only the hash with nothing but expired bulletin
+    owners is collected. Item-owned, unexpired, and never-expiring hashes
+    all survive, and the return value names exactly the collected hash."""
+    expired_only = media_store.publish(b"hash A: nothing but a fully expired bulletin owner")
+    media_store.record_owner(expired_only, kind="bulletin", entry_id="wx-a", expiry=_PAST_Z)
+
+    item_and_expired_bulletin = media_store.publish(b"hash B: item owner plus an expired bulletin owner")
+    media_store.record_owner(item_and_expired_bulletin, kind="item", entry_id="item-b", expiry=None)
+    media_store.record_owner(item_and_expired_bulletin, kind="bulletin", entry_id="wx-b", expiry=_PAST_Z)
+
+    unexpired = media_store.publish(b"hash C: bulletin owner not yet expired")
+    media_store.record_owner(unexpired, kind="bulletin", entry_id="wx-c", expiry=_FUTURE_Z)
+
+    partially_expired = media_store.publish(b"hash D: one expired and one not-yet-expired bulletin owner")
+    media_store.record_owner(partially_expired, kind="bulletin", entry_id="wx-d1", expiry=_PAST_Z)
+    media_store.record_owner(partially_expired, kind="bulletin", entry_id="wx-d2", expiry=_FUTURE_Z)
+
+    collected = media_store.collect_expired_bulletins(_NOW)
+
+    assert collected == [expired_only]
+    assert media_store.path_for(expired_only) is None
+    assert media_store.get_owners(expired_only) == []
+
+    assert media_store.exists(item_and_expired_bulletin)
+    assert len(media_store.get_owners(item_and_expired_bulletin)) == 2
+
+    assert media_store.exists(unexpired)
+    assert media_store.get_owners(unexpired) == [{"kind": "bulletin", "entry_id": "wx-c", "expiry": _FUTURE_Z}]
+
+    assert media_store.exists(partially_expired)
+    assert len(media_store.get_owners(partially_expired)) == 2
+
+
+def test_collect_expired_bulletins_raises_on_corrupt_owners_doc_and_deletes_nothing():
+    sha256 = media_store.publish(b"content sitting under a soon-to-be-corrupted owners doc")
+    path = media_store.path_for(sha256)
+    assert path is not None
+
+    owners_path = wilted.DATA_DIR / "media_owners.json"
+    owners_path.write_text("{ not json")
+
+    with pytest.raises(media_store.MediaOwnersCorruptError):
+        media_store.collect_expired_bulletins(_NOW)
+
+    # Refusal must be total: the blob that was sitting on disk before the
+    # corrupt read is completely untouched.
+    assert path.exists()
