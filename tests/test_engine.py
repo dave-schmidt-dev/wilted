@@ -277,6 +277,68 @@ class TestLoadModelThreadSafety:
         assert engine._model is not None
 
 
+class TestProcessWideMetalLock:
+    """Regression: the Metal serialization lock must be PROCESS-WIDE (shared
+    across all AudioEngine instances), not per-instance (INV-1).
+
+    Root cause of a launch-time native SIGABRT ("A command encoder is already
+    encoding to this command buffer"): the briefing synth, each weather-bulletin
+    synth, and the TUI's ``_preload_model`` each use a SEPARATE ``AudioEngine``,
+    and their model loads/generates run on separate ``@work`` threads. A
+    per-instance ``_model_lock`` cannot serialize across instances, so two
+    threads encoded to the MLX/Metal GPU command buffer at once and aborted the
+    whole process (no Python traceback — caught only by faulthandler). INV-1
+    requires ALL MLX/Metal GPU work to be serialized behind ONE lock.
+    """
+
+    def test_model_lock_is_shared_across_instances(self):
+        # The direct invariant: reverting to a per-instance lock fails here.
+        assert AudioEngine()._model_lock is AudioEngine()._model_lock
+        assert AudioEngine._model_lock is AudioEngine()._model_lock
+
+    def test_generate_on_two_engines_never_overlaps(self):
+        """Two threads generating on DIFFERENT engines must never run the
+        Metal-touching section concurrently — that overlap WAS the crash.
+
+        With a per-instance lock the two ``generate`` sections would overlap
+        (and abort on real Metal); with the shared lock they serialize.
+        """
+        import time
+
+        overlaps: list[bool] = []
+        active = {"n": 0}
+        counter_lock = threading.Lock()  # guards the counter only, NOT the engines
+
+        def instrumented_generate(*_a, **_k):
+            with counter_lock:
+                active["n"] += 1
+                if active["n"] > 1:
+                    overlaps.append(True)
+            time.sleep(0.05)  # hold the Metal-touching section open
+            with counter_lock:
+                active["n"] -= 1
+            return _make_fake_segment(n_samples=1024)
+
+        e1 = AudioEngine()
+        e1._model = MagicMock()
+        e1._model.generate.side_effect = instrumented_generate
+        e2 = AudioEngine()
+        e2._model = MagicMock()
+        e2._model.generate.side_effect = instrumented_generate
+
+        t1 = threading.Thread(target=lambda: e1.generate_audio("a"))
+        t2 = threading.Thread(target=lambda: e2.generate_audio("b"))
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        assert not overlaps, (
+            "MLX/Metal generate overlapped across two AudioEngine instances — "
+            "concurrent GPU encoding, the launch-crash regression"
+        )
+
+
 class TestGenerateAudio:
     def test_returns_numpy_array(self):
         # Mock model.generate to return a single segment

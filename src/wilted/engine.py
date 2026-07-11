@@ -6,6 +6,7 @@ import sys
 import threading
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 
@@ -87,6 +88,21 @@ class AudioEngine:
     calls from a @work(thread=True) worker.
     """
 
+    # PROCESS-WIDE Metal serialization gate (INV-1). Class-level ON PURPOSE:
+    # MLX/Metal cannot have two threads encoding to the GPU command buffer at
+    # once — doing so aborts the process with "A command encoder is already
+    # encoding to this command buffer". Multiple AudioEngine instances exist by
+    # design (the app engine, the briefing synth, each weather-bulletin synth),
+    # and model loads/generates run on separate @work threads; a PER-INSTANCE
+    # lock cannot serialize across them, so concurrent loads race and crash.
+    # A single shared lock makes "all MLX/Metal GPU work is serialized behind a
+    # lock" (INV-1) an actual process-wide guarantee rather than a per-object
+    # one. Only the Metal-touching sections (load_model + _model.generate) hold
+    # it; audio OUTPUT stays outside it, so this never serializes playback
+    # behind synthesis. Never held reentrantly (load_model is always called
+    # before the generate-path acquires it), so a plain Lock is deadlock-safe.
+    _model_lock: ClassVar[threading.Lock] = threading.Lock()
+
     def __init__(
         self,
         model_name: str = "mlx-community/Kokoro-82M-bf16",
@@ -101,7 +117,8 @@ class AudioEngine:
         self.sample_rate = SAMPLE_RATE
 
         self._model = None
-        self._model_lock = threading.Lock()
+        # NOTE: _model_lock is a CLASS attribute (process-wide Metal gate) — see
+        # the class body above. Deliberately NOT reassigned per instance here.
 
         # Threading controls
         self._stop_event = threading.Event()
