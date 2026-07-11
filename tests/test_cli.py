@@ -9,6 +9,7 @@ import pytest
 
 from wilted.cli import (
     CLIError,
+    _briefing_generator_for_launch,
     _maybe_chain_discover_prepare,
     _play_text,
     _prompt_yes,
@@ -25,6 +26,7 @@ from wilted.cli import (
     run_cli,
 )
 from wilted.queue import add_article, load_queue
+from wilted.station_runtime.briefing import BriefingGenerator
 from wilted.station_runtime.weather_monitor import WeatherMonitor, _default_fetch_alerts
 
 
@@ -907,10 +909,12 @@ class TestMainEntrypoint:
         mock_app = MagicMock()
         mock_app_cls = MagicMock(return_value=mock_app)
         sentinel_monitor = object()
+        sentinel_briefing = object()
 
         with (
             patch("sys.argv", ["wilted"]),
             patch("wilted.cli._weather_monitor_for_launch", return_value=sentinel_monitor),
+            patch("wilted.cli._briefing_generator_for_launch", return_value=sentinel_briefing),
             patch.dict(
                 "sys.modules",
                 {
@@ -922,7 +926,7 @@ class TestMainEntrypoint:
             main()
 
         mock_tqdm.get_lock.assert_called_once_with()
-        mock_app_cls.assert_called_once_with(weather_monitor=sentinel_monitor)
+        mock_app_cls.assert_called_once_with(weather_monitor=sentinel_monitor, briefing_generator=sentinel_briefing)
         mock_app.run.assert_called_once_with()
 
     def test_run_module_invokes_main(self, capsys):
@@ -993,6 +997,44 @@ class TestWeatherMonitorForLaunch:
 
         assert monitor is None
         assert "failed to construct WeatherMonitor" in caplog.text
+
+
+class TestBriefingGeneratorForLaunch:
+    """``_briefing_generator_for_launch`` wires the real ``BriefingGenerator``
+    into the production TUI launch (previously never constructed at all --
+    the confirmed functional gap this task closes). Only constructs -- never
+    calls ``.generate()`` -- so these tests never touch the network or a
+    real TTS model."""
+
+    def test_returns_a_production_generator_by_default(self):
+        generator = _briefing_generator_for_launch()
+
+        assert isinstance(generator, BriefingGenerator)
+
+    def test_returns_none_when_disabled_via_config(self, monkeypatch):
+        # `_briefing_generator_for_launch` does `from wilted import load_config`
+        # INSIDE the function body (a lazy import, re-resolved on every call
+        # against the `wilted` package namespace) -- patching
+        # `wilted.cli.load_config` would have no effect, since that name was
+        # never bound at `wilted.cli` module scope in the first place.
+        import wilted as wilted_mod
+
+        monkeypatch.setattr(wilted_mod, "load_config", lambda: {"briefing": {"enabled": False}})
+
+        generator = _briefing_generator_for_launch()
+
+        assert generator is None
+
+    def test_returns_none_and_logs_when_construction_fails(self, caplog):
+        def _boom(**kwargs):
+            raise RuntimeError("optional briefing dependency missing")
+
+        with patch("wilted.station_runtime.briefing.BriefingGenerator.from_config", _boom):
+            with caplog.at_level("WARNING"):
+                generator = _briefing_generator_for_launch()
+
+        assert generator is None
+        assert "failed to construct BriefingGenerator" in caplog.text
 
 
 class TestCmdReportEmail:

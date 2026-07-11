@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -52,10 +53,12 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "Briefing",
+    "BriefingAudio",
     "BriefingGenerator",
     "BriefingItem",
     "WeatherSnapshot",
     "fetch_nws_gridpoint_forecast",
+    "synthesize_briefing_audio",
 ]
 
 # ---------------------------------------------------------------------------
@@ -124,6 +127,87 @@ def fetch_nws_gridpoint_forecast(
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - fixed https:// NWS URL
         body = resp.read().decode("utf-8")
     return json.loads(body)
+
+
+# ---------------------------------------------------------------------------
+# Production TTS synth seam (A.4.1 wiring) -- the production ``synth_fn`` a
+# caller injects into ``BriefingGenerator`` so ``Briefing.synth_result``
+# becomes a playable, publishable audio artifact. Mirrors
+# ``wilted.station_runtime.weather_monitor._default_synth_bulletin``/
+# ``BulletinAudio`` exactly -- same coordinator/engine lease discipline
+# (INV-1/INV-2), same lazy-import-heavy-deps-only-when-actually-called
+# discipline, same "encode to a temp .wav, read bytes, unlink" shape -- so
+# the TUI's briefing-publish path (``wilted.tui.WiltedApp._generate_briefing_worker``)
+# can build a ``StationEntry`` the exact same way ``WeatherMonitor._qualify``
+# does for a bulletin.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class BriefingAudio:
+    """Synthesized briefing audio, as returned by :func:`synthesize_briefing_audio`.
+
+    Mirrors ``wilted.station_runtime.weather_monitor.BulletinAudio`` exactly
+    (same two fields, same reasoning: carrying ``duration_ms`` alongside the
+    bytes avoids a second decode step just to answer "how long is this").
+
+    Attributes:
+        audio_bytes: The encoded audio file's bytes (WAV, via
+            ``mlx_audio.audio_io.write``).
+        duration_ms: Playback duration in milliseconds.
+    """
+
+    audio_bytes: bytes
+    duration_ms: int
+
+
+def synthesize_briefing_audio(
+    text: str,
+    *,
+    coordinator: ModelCoordinator | None = None,
+    engine: AudioEngine | None = None,
+) -> BriefingAudio:
+    """Real TTS synth via the coordinator's single ML lease (INV-1/INV-2).
+
+    This is the production ``synth_fn`` seam a caller injects into
+    :meth:`BriefingGenerator.generate` (via ``BriefingGenerator(synth_fn=
+    synthesize_briefing_audio)``) so ``Briefing.synth_result`` becomes a
+    :class:`BriefingAudio` rather than a raw numpy array -- the shape
+    ``wilted.tui.WiltedApp._generate_briefing_worker`` needs to publish a
+    playable bulletin ``StationEntry``, exactly like
+    ``WeatherMonitor._qualify`` does for a weather bulletin.
+
+    Lazy-imports ``mlx_audio``/``AudioEngine``/``ModelCoordinator`` so
+    importing this module never requires those (heavy, optional-at-import)
+    dependencies -- only the production launch path ever calls this; every
+    test injects its own fake ``synth_fn`` instead.
+
+    Args:
+        text: The briefing script to synthesize.
+        coordinator: Optional shared ``ModelCoordinator`` (constructed if
+            omitted -- mirrors ``_default_synth_bulletin``'s own default).
+        engine: Optional shared ``AudioEngine`` (constructed if omitted).
+    """
+    import tempfile
+    from pathlib import Path
+
+    from mlx_audio.audio_io import write as _audio_write
+
+    resolved_coordinator = coordinator if coordinator is not None else ModelCoordinator()
+    resolved_engine = engine if engine is not None else AudioEngine()
+    audio_np = resolved_coordinator.run_tts(resolved_engine, lambda e: e.generate_audio(text))
+    duration_ms = round(len(audio_np) / resolved_engine.sample_rate * 1000)
+
+    fd, tmp_name = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        _audio_write(str(tmp_path), audio_np, resolved_engine.sample_rate)
+        audio_bytes = tmp_path.read_bytes()
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    return BriefingAudio(audio_bytes=audio_bytes, duration_ms=duration_ms)
 
 
 @dataclass(frozen=True)

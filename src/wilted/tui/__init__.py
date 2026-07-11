@@ -28,7 +28,7 @@ import os
 import re
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar
 
 from textual import work
@@ -48,7 +48,13 @@ from wilted.queue import (
     mark_completed,
     remove_article_by_id,
 )
-from wilted.station.models import StationEntry, now_utc_z
+from wilted.station.models import (
+    FinalizationState,
+    MediaDescriptor,
+    SafeInterruptionMap,
+    StationEntry,
+    now_utc_z,
+)
 from wilted.station.reducer import AcceptInterruption, Checkpoint, ResumeFromInterruption, StartPlayback, Stop
 from wilted.station_runtime import (
     CheckpointPoller,
@@ -73,6 +79,7 @@ if TYPE_CHECKING:
 
     from wilted.station.models import TranscriptSegment
     from wilted.station_runtime import CompletionReason
+    from wilted.station_runtime.briefing import BriefingGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +300,7 @@ class WiltedApp(App):
         poller_factory=None,
         route_monitor_factory=None,
         weather_monitor: WeatherMonitor | None = None,
+        briefing_generator: BriefingGenerator | None = None,
         latency_log_path: Path | None = None,
         **kwargs,
     ) -> None:
@@ -344,6 +352,19 @@ class WiltedApp(App):
             self._weather_monitor.on_bulletin_ready = self._on_bulletin_ready
         self._weather_monitor_started: bool = False
         self._latency_log_path: Path = latency_log_path if latency_log_path is not None else _DEFAULT_LATENCY_LOG_PATH
+
+        # BriefingGenerator (A.4.6): mirrors `weather_monitor` immediately
+        # above -- no real-implementation default (BriefingGenerator itself
+        # has one via `from_config`/`_default_synth_fn`, but wiring a real
+        # one here by default would mean every test that forgets to pass
+        # `briefing_generator=` risks loading a real model / hitting the
+        # network the instant the app mounts). `None` (the default) means
+        # "no briefing this session" -- on_mount skips the generation worker
+        # entirely. The real embedded generator is constructed and injected
+        # by whatever launches the production TUI (wilted.cli._launch_tui).
+        self._briefing_generator = briefing_generator
+        self._briefing_entry: StationEntry | None = None
+        self._briefing_started: bool = False
 
         # -- Weather bulletin interruption state (A.4.3) ---------------------
         # `_pending_bulletin` is set by `_on_bulletin_ready` (the monitor's
@@ -451,6 +472,16 @@ class WiltedApp(App):
         if self._weather_monitor is not None and not self._station_read_only:
             self._weather_monitor.start()
             self._weather_monitor_started = True
+
+        # Briefing (A.4.6): same "only the lease-holding session" reasoning
+        # as the WeatherMonitor guard just above -- a read-only second
+        # session generating its own briefing would duplicate TTS synthesis
+        # for an entry it could never actually play first (StartPlayback
+        # would be refused by `_start_playback`'s own read-only guard).
+        if self._briefing_generator is not None and not self._station_read_only:
+            self._briefing_started = True
+            self._set_status("Preparing briefing…", _STATUS_LOW)
+            self._generate_briefing_worker()
 
         self._refresh_status_indicators()
 
@@ -632,6 +663,103 @@ class WiltedApp(App):
             else:
                 self._set_status("Added — being prepared, will appear once ready", _STATUS_MEDIUM)
 
+    # -- Briefing generation (A.4.6) ------------------------------------------
+    #
+    # Generates the spoken weather+news briefing off the UI thread (model
+    # load + TTS synth is slow, exactly like `_build_sequencer_worker`'s own
+    # ffmpeg-concat rationale) and publishes it into `media_store` using the
+    # SAME "synth -> publish_with_owner(kind='bulletin') -> MediaDescriptor
+    # -> StationEntry" sequence as `WeatherMonitor._qualify` -- so the
+    # briefing is a fully-formed, playable, GC-tracked station entry, not a
+    # special case elsewhere in this module.
+
+    @work(thread=True, exclusive=True, group="briefing")
+    def _generate_briefing_worker(self) -> None:
+        """Generate + publish the briefing in a worker thread.
+
+        A briefing failure (weather/news generation error, TTS synth error,
+        publish error) is caught, logged, and surfaced as a low-urgency
+        status message -- it must NEVER crash the app or block the rest of
+        the backlog from playing (mirrors `WeatherMonitor._qualify`'s own
+        "synthesis failed; interruption not submitted" discipline).
+        """
+        from wilted.db import worker_db
+
+        try:
+            with worker_db():
+                briefing = self._briefing_generator.generate()
+            audio = briefing.synth_result
+
+            entry_id = f"briefing-{os.getpid()}"
+            expiry = (datetime.now(UTC) + timedelta(seconds=briefing.max_age_s)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            sha256 = media_store.publish_with_owner(
+                audio.audio_bytes, kind="bulletin", entry_id=entry_id, expiry=expiry
+            )
+            published_path = media_store.path_for(sha256)
+            byte_size = published_path.stat().st_size if published_path is not None else len(audio.audio_bytes)
+
+            descriptor = MediaDescriptor(
+                sha256=sha256,
+                byte_size=byte_size,
+                mime_type="audio/wav",
+                duration_ms=audio.duration_ms,
+                transcript_segments=(),
+                # A briefing, like a weather bulletin, is not itself meant to
+                # be safely interrupted mid-play -- explicit NO_INTERRUPT.
+                safe_interruption=SafeInterruptionMap.empty(),
+                byte_range_available=False,
+                finalization=FinalizationState.complete(),
+            )
+            entry = StationEntry(
+                entry_id=entry_id,
+                kind="bulletin",
+                item_id=None,
+                source="briefing",
+                policy_id="briefing",
+                priority=0,
+                expiry=expiry,
+                duration_ms=audio.duration_ms,
+                media=descriptor,
+            )
+        except Exception:
+            logger.exception("Failed to generate briefing")
+            self.call_from_thread(self._set_status, "Briefing unavailable", _STATUS_MEDIUM)
+            return
+        self.call_from_thread(self._apply_briefing_entry, entry)
+
+    def _apply_briefing_entry(self, entry: StationEntry) -> None:
+        """Adopt the freshly-published briefing entry (main thread).
+
+        Prepends it to the backlog and auto-plays it FIRST if nothing else
+        is already playing -- the "turn on the radio and it plays" UX this
+        task exists to deliver. Guarded so a briefing that finishes
+        generating AFTER the listener has already started something else
+        never interrupts it (that would require a real
+        `AcceptInterruption`/safe-boundary path like the weather bulletin's,
+        which a briefing does not need or want -- it only ever plays first,
+        never mid-session).
+
+        No-ops if the app has begun shutting down (mirrors
+        `_apply_sequencer_result`), or if a briefing entry has already been
+        applied this session (idempotent -- the worker only ever runs once
+        per `on_mount`, but this guard keeps `_apply_briefing_entry` safe to
+        call more than once regardless).
+        """
+        if not self.is_running:
+            return
+        if self._briefing_entry is not None:
+            return
+        self._briefing_entry = entry
+        self._station_entries = [entry, *self._station_entries]
+        if self._current_index is not None:
+            self._current_index += 1
+        self._rebuild_larder_tree()
+        self._update_empty_message()
+
+        if not self._playing and not self._station_read_only:
+            self._start_playback(entry)
+
     def _rebuild_larder_tree(self) -> None:
         """Show ``self._station_entries`` as a flat list of leaves under the hidden root."""
         tree = self.query_one("#playlist-tree", Tree)
@@ -639,7 +767,10 @@ class WiltedApp(App):
         tree.root.remove_children()
         for entry in self._station_entries:
             item = self._item_lookup.get(entry.item_id or "")
-            title = item.get("title", "Untitled") if item else f"Entry {entry.entry_id}"
+            if entry.source == "briefing":
+                title = "Briefing"
+            else:
+                title = item.get("title", "Untitled") if item else f"Entry {entry.entry_id}"
             if len(title) > 50:
                 title = title[:47] + "..."
             words = item.get("words", 0) if item else 0
@@ -757,16 +888,20 @@ class WiltedApp(App):
         """Human-readable content kind for the now-playing badge.
 
         ``StationEntry.kind`` is only ever ``"item"`` or ``"bulletin"`` (see
-        its class docstring) — the finer podcast/article/briefing
-        distinction lives in the DB item's ``item_type``, resolved via
-        ``_item_lookup``. An ``"item"`` entry with no matching DB item
-        (``item_id`` unset, or not found) is displayed as "Briefing": the
-        shape a future non-Item briefing entry would take, since
-        ``Item.item_type`` only ever allows ``"article"``/``"podcast_episode"``
-        — a briefing can never BE a durable Item (see ``station_runtime.briefing``).
+        its class docstring) — the finer podcast/article distinction lives
+        in the DB item's ``item_type``, resolved via ``_item_lookup``.
+        ``"bulletin"`` covers two distinct producers, disambiguated by
+        ``source`` (never ambiguous — see ``_generate_briefing_worker`` vs.
+        ``WeatherMonitor._qualify``): the spoken weather+news briefing
+        (``source="briefing"``) generated once per session and prepended to
+        the backlog, and a live NWS weather alert (``source="monitor:nws-alerts"``)
+        that interrupts whatever is currently playing. An ``"item"`` entry
+        with no matching DB item (``item_id`` unset, or not found) falls
+        back to "Briefing" too, since ``Item.item_type`` only ever allows
+        ``"article"``/``"podcast_episode"`` — no other "item" shape exists.
         """
         if entry.kind == "bulletin":
-            return "Weather bulletin"
+            return "Briefing" if entry.source == "briefing" else "Weather bulletin"
         item = self._item_lookup.get(entry.item_id or "")
         item_type = item.get("item_type") if item is not None else None
         if item_type == "podcast_episode":

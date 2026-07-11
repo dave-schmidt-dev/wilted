@@ -26,6 +26,7 @@ from wilted.station_runtime.lease import is_station_active
 from wilted.text import clean_text
 
 if TYPE_CHECKING:
+    from wilted.station_runtime.briefing import BriefingGenerator
     from wilted.station_runtime.weather_monitor import WeatherMonitor
 
 logger = logging.getLogger(__name__)
@@ -1118,6 +1119,175 @@ def _weather_monitor_for_launch() -> "WeatherMonitor | None":
     return monitor
 
 
+def _briefing_generator_for_launch() -> "BriefingGenerator | None":
+    """Construct the production ``BriefingGenerator`` for a live TUI launch.
+
+    Respects an off switch — ``[briefing] enabled = false`` in
+    ``wilted.toml`` — so a listener who doesn't want the spoken briefing can
+    disable it without deleting wiring. Defaults to enabled (mirrors
+    ``BriefingGenerator.from_config``'s own "toml overrides builtin default"
+    precedence: the DEFAULT here is "on", same as every other knob that
+    table controls).
+
+    Construction failures (e.g. optional TTS/model dependencies missing) are
+    logged and swallowed rather than raised — the TUI must still launch even
+    when briefing wiring is unavailable, matching ``WiltedApp``'s own "no
+    briefing_generator given" default and ``_weather_monitor_for_launch``'s
+    identical discipline immediately above.
+    """
+    from wilted import load_config
+
+    if not load_config().get("briefing", {}).get("enabled", True):
+        logger.info("briefing: disabled via config")
+        return None
+
+    try:
+        from wilted.station_runtime.briefing import BriefingGenerator, synthesize_briefing_audio
+
+        generator = BriefingGenerator.from_config(synth_fn=synthesize_briefing_audio)
+    except Exception:
+        logger.warning(
+            "_briefing_generator_for_launch: failed to construct BriefingGenerator; launching without it",
+            exc_info=True,
+        )
+        return None
+    logger.info("briefing: enabled")
+    return generator
+
+
+# DEC private-mode resets that undo the terminal state a full-screen TUI driver
+# sets. Held as raw bytes so a signal handler can emit them with a single
+# async-signal-safe os.write() — no buffered-stream lock, no allocation.
+_TERMINAL_RESTORE_SEQ = (
+    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l"  # mouse reporting (all encodings)
+    b"\x1b[?1004l"  # focus reporting
+    b"\x1b[?2004l"  # bracketed paste
+    b"\x1b[?25h"  # show cursor
+    b"\x1b[?1049l"  # leave the alternate screen
+)
+
+
+def _terminal_fd() -> "int | None":
+    """Best-effort file descriptor of the controlling terminal.
+
+    Prefers the real stdout/stderr streams; falls back to opening /dev/tty so a
+    restore still lands even if the standard streams are redirected. Returns
+    None when there is no terminal to restore (e.g. piped output, cron).
+    """
+    for stream in (sys.__stdout__, sys.stdout, sys.__stderr__):
+        try:
+            if stream is not None and stream.isatty():
+                return stream.fileno()
+        except Exception:
+            pass
+    try:
+        return os.open("/dev/tty", os.O_WRONLY)
+    except OSError:
+        return None
+
+
+def _emit_terminal_restore(fd: "int | None") -> None:
+    """Raw, unbuffered write of the DEC-mode restore sequence.
+
+    A single os.write() syscall — safe to call from a signal handler, unlike
+    buffered sys.stdout.write() which can deadlock against Textual's writer
+    thread on the stream lock.
+    """
+    if fd is None:
+        return
+    try:
+        os.write(fd, _TERMINAL_RESTORE_SEQ)
+    except OSError:
+        pass
+
+
+def _restore_terminal() -> None:
+    """Best-effort undo of the terminal modes a full-screen TUI driver sets.
+
+    Textual restores these itself on a clean quit; this is the safety net for
+    the exit paths that BYPASS Textual's teardown — a native crash, or the
+    terminal tab being closed (SIGHUP) while the app runs. Without it the shell
+    is left with mouse/focus reporting on (every mouse move spews escape
+    codes), the alternate screen active, or the cursor hidden — the "Wilted is
+    broken and I can't escape the terminal" wedge. Idempotent and quiet.
+
+    Full path (normal Python exit): emit the escape bytes AND run ``stty sane``
+    to restore cooked mode/echo. The signal-handler path uses only the raw
+    ``_emit_terminal_restore`` above, since subprocess calls are not
+    async-signal-safe.
+    """
+    _emit_terminal_restore(_terminal_fd())
+    try:
+        if sys.stdin.isatty():
+            # Restore cooked mode / echo in case raw mode was left engaged.
+            subprocess.run(["stty", "sane"], stdin=sys.stdin, check=False)
+    except Exception:
+        pass
+
+
+def _launch_tui() -> None:
+    """Launch the Textual TUI with crash/kill terminal safety.
+
+    - ``faulthandler`` writes a native-crash (SIGSEGV/SIGABRT/...) C traceback
+      to a file that survives the terminal being cleared, so a hard crash that
+      leaves no Python traceback is still diagnosable in the next session.
+    - SIGTERM/SIGHUP (delivered by ``kill`` or by closing the terminal tab)
+      restore the terminal before the process dies, so an external kill can
+      never wedge it.
+    - A ``finally`` restores the terminal on every Python-level exit path, on
+      top of Textual's own (idempotent) teardown.
+    """
+    import faulthandler
+    import signal
+
+    try:
+        # Append-mode, left open for the process lifetime (closed at exit).
+        fault_log = open("/tmp/wilted-faulthandler.log", "a")  # noqa: SIM115
+        faulthandler.enable(file=fault_log)
+    except Exception:
+        pass
+
+    # Capture the terminal fd ONCE, here on the main thread before Textual takes
+    # over, so the signal handler need only do a single async-signal-safe
+    # os.write() + re-raise — no isatty()/open()/subprocess/buffered I/O in the
+    # handler, all of which are unsafe or can deadlock against Textual's writer
+    # thread on the stdout lock.
+    _restore_fd = _terminal_fd()
+
+    def _restore_and_reraise(signum, _frame):
+        _emit_terminal_restore(_restore_fd)
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    for _sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(_sig, _restore_and_reraise)
+        except (ValueError, OSError):
+            pass  # e.g. not running on the main thread / signal unsupported
+
+    # Pre-initialize tqdm's multiprocessing lock on the main thread.
+    # If the first initialization happens inside a Textual worker during
+    # Hugging Face snapshot_download(), Python's resource_tracker may spawn
+    # a subprocess with invalid pass-through FDs and raise fds_to_keep.
+    import tqdm
+
+    tqdm.tqdm.get_lock()
+
+    try:
+        from wilted.tui import WiltedApp
+    except ModuleNotFoundError:
+        print("Error: textual is not installed. Run: uv sync", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        WiltedApp(
+            weather_monitor=_weather_monitor_for_launch(),
+            briefing_generator=_briefing_generator_for_launch(),
+        ).run()
+    finally:
+        _restore_terminal()
+
+
 def main():
     """Main entry point — dispatches to TUI (no args) or CLI (with args).
 
@@ -1140,21 +1310,7 @@ def main():
     if len(sys.argv) > 1:
         run_cli()
     else:
-        # Pre-initialize tqdm's multiprocessing lock on the main thread.
-        # If the first initialization happens inside a Textual worker during
-        # Hugging Face snapshot_download(), Python's resource_tracker may spawn
-        # a subprocess with invalid pass-through FDs and raise fds_to_keep.
-        import tqdm
-
-        tqdm.tqdm.get_lock()
-
-        try:
-            from wilted.tui import WiltedApp
-        except ModuleNotFoundError:
-            print("Error: textual is not installed. Run: uv sync", file=sys.stderr)
-            sys.exit(1)
-
-        WiltedApp(weather_monitor=_weather_monitor_for_launch()).run()
+        _launch_tui()
 
 
 # INV-6 C1: `python -m wilted.cli` is the target of scripts/wilted-nightly.sh.

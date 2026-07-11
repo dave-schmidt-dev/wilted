@@ -14,6 +14,7 @@ import concurrent.futures
 import dataclasses
 import inspect
 import json
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
@@ -38,6 +39,7 @@ from wilted.station.reducer import (
     Stop,
 )
 from wilted.station_runtime import CompletionReason, LeaseHeldError, RouteChangeEvent, media_store
+from wilted.station_runtime.briefing import Briefing, BriefingAudio
 from wilted.station_runtime.controller import SubmitResult
 from wilted.tui import (
     AddArticleScreen,
@@ -533,6 +535,36 @@ class FakeWeatherMonitor:
         """Test helper: simulate the monitor handing off a bulletin."""
         assert self.on_bulletin_ready is not None, "fire() called before WiltedApp wired on_bulletin_ready"
         self.on_bulletin_ready(bulletin)
+
+
+class FakeBriefingGenerator:
+    """Stand-in for ``BriefingGenerator`` — records ``generate()`` calls and
+    returns a fixed, minimal :class:`Briefing` whose ``synth_result`` is a
+    real (non-empty-bytes) :class:`BriefingAudio`, matching what the
+    production ``synthesize_briefing_audio`` seam would hand back.
+
+    Non-empty ``audio_bytes`` is REQUIRED — ``MediaDescriptor``/INV-4 rejects
+    empty media, and ``_generate_briefing_worker`` publishes these bytes via
+    ``media_store.publish_with_owner`` exactly like a real briefing would.
+    """
+
+    def __init__(self) -> None:
+        self.generate_calls = 0
+
+    def generate(self, *, now=None) -> Briefing:
+        del now  # unused: this fake always returns the same fixed briefing
+        self.generate_calls += 1
+        return Briefing(
+            generated_at=datetime.now(UTC),
+            max_age_s=3600.0,
+            max_duration_s=300.0,
+            items=(),
+            weather=None,
+            script="Weather is currently unavailable.",
+            word_count=4,
+            estimated_duration_s=2.0,
+            synth_result=BriefingAudio(audio_bytes=b"RIFFfake-briefing-wav", duration_ms=1000),
+        )
 
 
 def _make_app(
@@ -2526,6 +2558,100 @@ async def test_playback_completion_clears_route_interrupted_state_before_next_to
             "action_toggle_play took the route-resume path (submitted a Checkpoint) instead of a normal fresh restart"
         )
         assert adapter.play_calls[-1] == (entry.media, 0)
+
+
+# ---------------------------------------------------------------------------
+# Briefing generation + first-play wiring (functional gap closed here: the
+# briefing generator existed but nothing constructed/started/published/played
+# it). Covers: the injected-generator worker runs on mount, publishes a
+# playable bulletin StationEntry exactly like WeatherMonitor._qualify does,
+# prepends it to the backlog/Larder, and auto-plays it first (never
+# interrupting something already playing); and that omitting the generator
+# (the pre-existing default) means no briefing appears at all.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_briefing_generated_prepended_and_plays_first():
+    """Injecting a briefing_generator makes on_mount generate + publish a
+    briefing, prepend it to the Larder backlog ahead of everything else, and
+    auto-play it first -- the "turn on the radio and it plays" UX this
+    wiring exists to deliver."""
+    entry = _station_entry(1)
+    generator = FakeBriefingGenerator()
+    adapter = FakeAdapter()
+    app = _make_app(entries=[entry], adapter=adapter, briefing_generator=generator)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        for _ in range(5):
+            await pilot.pause()
+
+        assert generator.generate_calls == 1
+        assert app._briefing_started is True
+
+        assert app._station_entries[0].source == "briefing"
+        assert app._station_entries[0].kind == "bulletin"
+        assert app._display_kind(app._station_entries[0]) == "Briefing"
+        # The original entry is still present, now second.
+        assert app._station_entries[1].entry_id == entry.entry_id
+
+        tree = app.query_one("#playlist-tree", Tree)
+        first_label = str(tree.root.children[0].label)
+        assert "Briefing" in first_label
+
+        # Auto-played first: the briefing is the current entry, and the
+        # fake adapter actually recorded a play() call for its media.
+        assert app._current_entry is not None
+        assert app._current_entry.source == "briefing"
+        assert app._playing is True
+        assert len(adapter.play_calls) == 1
+        assert adapter.play_calls[0][0] is app._station_entries[0].media
+
+
+@pytest.mark.asyncio
+async def test_no_briefing_generator_means_no_briefing():
+    """WiltedApp() with no briefing_generator= given (the pre-existing
+    default) wires nothing: no briefing worker runs, and the backlog is
+    exactly what the sequencer produced -- mirrors
+    test_no_weather_monitor_by_default's "nothing wired -> nothing happens"
+    contract for the analogous weather_monitor seam."""
+    entry = _station_entry(1)
+    app = _make_app(entries=[entry])
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        for _ in range(3):
+            await pilot.pause()
+
+        assert app._briefing_generator is None
+        assert app._briefing_started is False
+        assert app._briefing_entry is None
+        assert all(e.source != "briefing" for e in app._station_entries)
+        assert len(app._station_entries) == 1
+
+
+@pytest.mark.asyncio
+async def test_briefing_skipped_when_read_only():
+    """A read-only second session (lease held elsewhere) must not generate
+    its own briefing -- it could never actually play it first anyway (a
+    read-only session's _start_playback always refuses), so generating one
+    would just be wasted TTS synthesis. Mirrors how the WeatherMonitor start
+    is gated on `not self._station_read_only` in on_mount."""
+    entry = _station_entry(1)
+    generator = FakeBriefingGenerator()
+
+    class _RaisingStartController(FakeController):
+        def start(self, *, on_loss=None) -> None:
+            raise LeaseHeldError("station active elsewhere")
+
+    read_only_controller = _RaisingStartController()
+    app = _make_app(entries=[entry], controller=read_only_controller, briefing_generator=generator)
+    async with app.run_test() as pilot:
+        for _ in range(3):
+            await pilot.pause()
+
+        assert app._station_read_only is True
+        assert app._briefing_started is False
+        assert generator.generate_calls == 0
 
 
 # ---------------------------------------------------------------------------
