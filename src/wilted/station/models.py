@@ -127,18 +127,48 @@ class SafeInterruptionMap:
         return cls(mode=InterruptionMode.NO_INTERRUPT, windows=(), source="none")
 
     @classmethod
-    def from_transcript_segments(cls, segments: tuple[TranscriptSegment, ...]) -> SafeInterruptionMap:
-        """Build a safe map treating each transcript segment boundary as safe.
+    def from_transcript_segments(
+        cls, segments: tuple[TranscriptSegment, ...], *, band_ms: int = 0
+    ) -> SafeInterruptionMap:
+        """Build a safe map treating each transcript segment start as a safe boundary.
 
-        Each segment's start offset is treated as a safe interruption point;
-        the safe window is a small closed interval around that boundary
-        (the boundary itself, i.e. a zero-width-tolerant point encoded as
-        ``(start_ms, start_ms)``) so :meth:`safe_point_at` can match exact
-        segment starts. Empty ``segments`` yields :meth:`empty`.
+        Each segment's start offset is a known-safe transcript boundary.
+        ``band_ms`` is a *matching tolerance* around that boundary — the
+        window is ``(max(0, seg.start_ms - band_ms), seg.start_ms + band_ms)``
+        — NOT a promise that the audio is actually silent for the full
+        ``±band_ms``. Measured reality (0.2 timing-precision spike,
+        `spikes/timing-precision-2026-07-10/FINDINGS.md`): the distance from
+        a transcript boundary to the nearest real silence is p50~=54ms,
+        p90~=1566ms, p95~=2409ms, and only ~70% of boundaries have silence
+        within +/-250ms at all; ~1-2% of boundaries (long, continuous
+        speech with no nearby silence at any band width) have no safe point
+        near them regardless of ``band_ms``. There is no cumulative drift
+        across an episode, so this is a per-boundary tolerance, not a
+        function of position in the timeline.
+
+        Because of that, widening ``band_ms`` only widens the *candidate
+        set* considered for a match — it does not by itself guarantee an
+        interruption placed anywhere in the window lands on silence. Actual
+        interruption placement should snap to a real boundary via
+        :meth:`nearest_safe_point`, which already performs that snap; treat
+        ``band_ms`` as tuning how forgiving the match against a known
+        boundary is, not as an audio-silence guarantee.
+
+        The window's low edge is clamped to 0 (``max(0, seg.start_ms -
+        band_ms)``): a segment starting at or within ``band_ms`` of offset 0
+        would otherwise produce a negative low edge, which
+        ``SafeInterruptionMap.__post_init__`` rejects.
+
+        Default ``band_ms=0`` reproduces the exact zero-width
+        ``(start_ms, start_ms)`` window from before this parameter existed,
+        so existing callers are unaffected. Empty ``segments`` yields
+        :meth:`empty`. Raises ``ValueError`` if ``band_ms`` is negative.
         """
+        if band_ms < 0:
+            raise ValueError(f"SafeInterruptionMap.from_transcript_segments band_ms must be >= 0, got {band_ms}")
         if not segments:
             return cls.empty()
-        windows = tuple((seg.start_ms, seg.start_ms) for seg in segments)
+        windows = tuple((max(0, seg.start_ms - band_ms), seg.start_ms + band_ms) for seg in segments)
         return cls(mode=InterruptionMode.WINDOWED, windows=windows, source="transcript")
 
     @classmethod

@@ -296,7 +296,8 @@ class TestSafeInterruptionMap:
     """Transcript/chapter/window safe boundaries and the explicit no-interrupt mode."""
 
     def test_from_transcript_segments_marks_segment_starts_safe(self):
-        """A point at a segment's start offset is safe; a point mid-segment is not."""
+        """Default band_ms=0: a point at a segment's start offset is safe;
+        a point mid-segment is not (exact-boundary match only)."""
         segments = (
             TranscriptSegment(start_ms=0, end_ms=5000, text="intro"),
             TranscriptSegment(start_ms=5000, end_ms=10000, text="body"),
@@ -305,6 +306,34 @@ class TestSafeInterruptionMap:
         assert safe_map.mode is InterruptionMode.WINDOWED
         assert safe_map.safe_point_at(5000) is True
         assert safe_map.safe_point_at(7000) is False
+
+    def test_from_transcript_segments_with_band_widens_match_around_boundary(self):
+        """An explicit band_ms is a matching tolerance around a boundary: a
+        point within the band of a boundary is safe, one well outside is not."""
+        segments = (
+            TranscriptSegment(start_ms=0, end_ms=5000, text="intro"),
+            TranscriptSegment(start_ms=5000, end_ms=10000, text="body"),
+        )
+        safe_map = SafeInterruptionMap.from_transcript_segments(segments, band_ms=250)
+        assert safe_map.mode is InterruptionMode.WINDOWED
+        assert safe_map.safe_point_at(5200) is True
+        assert safe_map.safe_point_at(4800) is True
+        assert safe_map.safe_point_at(7000) is False
+
+    def test_from_transcript_segments_clamps_low_edge_at_zero(self):
+        """A segment starting at 0 with a band must not produce a negative
+        low edge (which __post_init__ would reject) — it clamps to 0."""
+        segments = (TranscriptSegment(start_ms=0, end_ms=5000, text="intro"),)
+        safe_map = SafeInterruptionMap.from_transcript_segments(segments, band_ms=250)
+        assert safe_map.windows == ((0, 250),)
+        assert safe_map.safe_point_at(0) is True
+        assert safe_map.safe_point_at(100) is True
+
+    def test_from_transcript_segments_rejects_negative_band(self):
+        """band_ms < 0 is rejected outright rather than silently misbehaving."""
+        segments = (TranscriptSegment(start_ms=0, end_ms=5000, text="intro"),)
+        with pytest.raises(ValueError, match="band_ms"):
+            SafeInterruptionMap.from_transcript_segments(segments, band_ms=-1)
 
     def test_from_rss_chapters_marks_whole_chapter_safe(self):
         """A point anywhere inside a chapter's [start, end) range is safe."""
