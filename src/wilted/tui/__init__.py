@@ -1260,15 +1260,24 @@ class WiltedApp(App):
         try:
             result = self._controller.submit_and_wait(StartPlayback(entry=entry), timeout=5.0)
         except Exception as e:
+            # Log as well as show: a UI status disappears after a few seconds
+            # and never reaches /tmp/wilted.log, leaving a failed start (e.g. the
+            # controller wedged) undiagnosable after the fact.
+            logger.warning("StartPlayback failed for entry %s: %s", entry.entry_id, e, exc_info=True)
             self._set_status(f"Station error: {e}", _STATUS_HIGH)
             return
         if not result.accepted:
+            logger.warning("StartPlayback for entry %s was not accepted by the reducer", entry.entry_id)
             self._set_status("Could not start playback", _STATUS_HIGH)
             return
 
         try:
             self._adapter.play(entry.media, offset_ms=offset_ms)
         except Exception as e:
+            # Log as well as show (see StartPlayback above): a failed adapter.play
+            # — e.g. no usable audio output device — otherwise leaves NO trace in
+            # the log, so a station that silently never plays looks like a hang.
+            logger.warning("adapter.play failed for entry %s: %s", entry.entry_id, e, exc_info=True)
             self._set_status(f"Playback error: {e}", _STATUS_HIGH)
             self._generation_paused = False  # don't leave generation paused forever on a failed start
             if self._controller.is_running:
