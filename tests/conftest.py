@@ -49,6 +49,7 @@ _TEST_MARKERS = {
     "test_timing_map.py": ("unit",),
     "test_transcribe.py": ("unit",),
     "test_tui.py": ("tui",),
+    "test_tui_snapshots.py": ("tui",),
     "test_weather_monitor.py": ("integration",),
 }
 

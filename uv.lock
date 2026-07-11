@@ -13,6 +13,9 @@ resolution-markers = [
     "python_full_version < '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+overrides = [{ name = "syrupy", specifier = ">=5.0.0" }]
+
 [[package]]
 name = "addict"
 version = "2.4.0"
@@ -2472,6 +2475,22 @@ wheels = [
 ]
 
 [[package]]
+name = "pytest-textual-snapshot"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jinja2" },
+    { name = "pytest" },
+    { name = "rich" },
+    { name = "syrupy" },
+    { name = "textual" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3e/7f/4135f87e12c1c46376971fec5ebfe71f7f8b15ac20f887c90932dedd6e78/pytest_textual_snapshot-1.1.0.tar.gz", hash = "sha256:96d48ab01306852a3b4ae165f008d5fdd7fda777e91e9d2c3ea0f7d7458544eb", size = 11391, upload-time = "2025-01-23T16:12:00.537Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1c/30/c31d800f8d40d663fc84d83548b26aecf613c9c39bd6985c813d623d7b84/pytest_textual_snapshot-1.1.0-py3-none-any.whl", hash = "sha256:fdf7727d2bc444f947554308da1b08df7a45215fe49d0621cbbc24c33e8f7b8d", size = 11451, upload-time = "2025-01-23T16:11:59.389Z" },
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 source = { registry = "https://pypi.org/simple" }
@@ -3235,6 +3254,18 @@ wheels = [
 ]
 
 [[package]]
+name = "syrupy"
+version = "5.5.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e7/39/17dde9f0c76cc5abcdeef1b2243791bb850d498f784147b8e460dd23abe8/syrupy-5.5.3.tar.gz", hash = "sha256:fa21e4ae77c89ec5abfca513338d8a7eb916da6618ca0f8db301476e0768e57a", size = 91614, upload-time = "2026-07-11T15:54:31.46Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ae/f9/617a194c1a4203279998e1859426cf2635042533a99a93d63d3ee1fb967e/syrupy-5.5.3-py3-none-any.whl", hash = "sha256:0b260a0c9dad55e1fb83818973dc36fbc1aea3fd5381592f442a986686c4171a", size = 54959, upload-time = "2026-07-11T15:54:29.836Z" },
+]
+
+[[package]]
 name = "termcolor"
 version = "3.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3608,6 +3639,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
+    { name = "pytest-textual-snapshot" },
     { name = "ruff" },
 ]
 
@@ -3635,6 +3667,7 @@ dev = [
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "pytest-cov", specifier = ">=4.0" },
+    { name = "pytest-textual-snapshot", specifier = "==1.1.0" },
     { name = "ruff", specifier = ">=0.0.1" },
 ]
 

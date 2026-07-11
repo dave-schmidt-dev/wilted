@@ -32,6 +32,17 @@ wilted = "wilted.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.uv]
+# pytest-textual-snapshot==1.1.0 hard-pins syrupy==4.8.0, which itself pins
+# pytest<9.0.0 -- incompatible with this project's pytest>=9.0.2. syrupy
+# dropped that pytest<9 ceiling starting in 5.0.0 without changing the
+# internal API surface pytest-textual-snapshot actually uses (SnapshotAssertion
+# .use_extension/.executions/.num_executions/._custom_index/._execution_name_index,
+# SingleFileSnapshotExtension, WriteMode -- verified present and unchanged in
+# syrupy 5.5.3). Overriding here is a targeted fix for that one dependency's
+# stale pin, not a general syrupy-4-vs-5 API migration.
+override-dependencies = ["syrupy>=5.0.0"]
+
 [tool.uv.sources]
 llama-cpp-python = { index = "llama-cpp-python-metal" }
 
@@ -62,5 +73,6 @@ dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=4.0",
+    "pytest-textual-snapshot==1.1.0",
     "ruff>=0.0.1",
 ]

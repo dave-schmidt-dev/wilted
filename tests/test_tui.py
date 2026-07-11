@@ -499,18 +499,35 @@ class FakeWeatherMonitor:
     instances, not factories). ``fire(bulletin)`` simulates the monitor
     handing off a bulletin exactly like the real
     ``WeatherMonitor.on_bulletin_ready`` callback would.
+
+    A.4.5: ``health()``/``last_success_at``/``last_error`` mirror the real
+    ``WeatherMonitor``'s health/heartbeat surface (see
+    ``wilted.station_runtime.weather_monitor.WeatherMonitor.health`` for the
+    real ``"unknown"``/``"healthy"``/``"stale"``/``"degraded"``/``"failed"``
+    states) that ``WiltedApp._update_source_health`` reads — settable
+    directly by a test (``monitor.fake_health = "degraded"`` etc.) rather
+    than a full state-machine reimplementation, since the source-health
+    indicator only ever reads these three surfaces, never drives monitor
+    behavior off them.
     """
 
     def __init__(self) -> None:
         self.start_calls = 0
         self.stop_calls = 0
         self.on_bulletin_ready = None
+        self.fake_health = "unknown"
+        self.last_success_at: str | None = None
+        self.last_error: str | None = None
 
     def start(self) -> None:
         self.start_calls += 1
 
     def stop(self) -> None:
         self.stop_calls += 1
+
+    def health(self, *, now: str | None = None) -> str:
+        del now  # unused: the fake's health is set directly, not computed
+        return self.fake_health
 
     def fire(self, bulletin: StationEntry) -> None:
         """Test helper: simulate the monitor handing off a bulletin."""
@@ -3050,3 +3067,311 @@ async def test_bulletin_latency_recorded_within_generous_bound(tmp_path):
         assert len(lines) == 2
         second_record = json.loads(lines[1])
         assert second_record["cold_or_warm"] == "warm"
+
+
+# ---------------------------------------------------------------------------
+# Station-state indicators (A.4.5): now-playing kind badge, persistent
+# interrupt banner, source-health line -- all display-only, driven entirely
+# by EXISTING state (no new controller round-trips; INV-8 untouched).
+# ---------------------------------------------------------------------------
+
+ARTICLE_QUEUE = [
+    {
+        "id": 1,
+        "title": "An Article",
+        "words": 1000,
+        "item_type": "article",
+        "source_url": "https://example.com/a",
+        "canonical_url": "https://example.com/a",
+        "file": "1_an-article.txt",
+        "added": "2026-04-06T10:00:00",
+    },
+]
+
+PODCAST_QUEUE = [
+    {
+        "id": 2,
+        "title": "A Podcast Episode",
+        "words": 0,
+        "item_type": "podcast_episode",
+        "source_url": "https://example.com/p",
+        "canonical_url": "https://example.com/p",
+        "file": "2_a-podcast-episode.txt",
+        "added": "2026-04-06T10:00:00",
+    },
+]
+
+
+@pytest.mark.asyncio
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.get_playlist_items", return_value=ARTICLE_QUEUE)
+async def test_now_playing_kind_shows_article(mock_items, mock_ensure):
+    """An 'item' entry whose DB item_type is 'article' badges as 'Article'."""
+    entry = _station_entry(1)
+    app = _make_app(entries=[entry])
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        assert str(app.query_one("#now-playing-kind", Label).render()) == "Article"
+
+
+@pytest.mark.asyncio
+@patch("wilted.tui.ensure_default_playlists")
+@patch("wilted.tui.get_playlist_items", return_value=PODCAST_QUEUE)
+async def test_now_playing_kind_shows_podcast(mock_items, mock_ensure):
+    """An 'item' entry whose DB item_type is 'podcast_episode' badges as 'Podcast'."""
+    entry = _station_entry(2)
+    app = _make_app(entries=[entry])
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        assert str(app.query_one("#now-playing-kind", Label).render()) == "Podcast"
+
+
+@pytest.mark.asyncio
+async def test_now_playing_kind_shows_briefing_when_no_matching_db_item():
+    """An 'item'-kind entry with no matching DB item -- the shape a future
+    non-Item briefing entry would take, since Item.item_type only ever
+    allows 'article'/'podcast_episode' (see _display_kind's docstring) --
+    badges as 'Briefing'."""
+    entry = _station_entry(99)  # id 99 is never in the (empty) mocked queue
+    app = _make_app(entries=[entry])
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        assert str(app.query_one("#now-playing-kind", Label).render()) == "Briefing"
+
+
+@pytest.mark.asyncio
+async def test_now_playing_kind_shows_weather_bulletin(tmp_path):
+    """A bulletin StationEntry (kind='bulletin') badges as 'Weather bulletin'."""
+    entry = _station_entry(1, safe_interruption=SAFE_WINDOW)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    weather_monitor = FakeWeatherMonitor()
+    app = _make_app(
+        entries=[entry],
+        controller=controller,
+        adapter=adapter,
+        weather_monitor=weather_monitor,
+        latency_log_path=tmp_path / "latency.jsonl",
+    )
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        bulletin = _bulletin_entry()
+        weather_monitor.fire(bulletin)
+        adapter._offset_ms = 11_000  # inside SAFE_WINDOW
+        app._update_timer()
+        assert app._bulletin_playing is True
+        assert str(app.query_one("#now-playing-kind", Label).render()) == "Weather bulletin"
+
+
+@pytest.mark.asyncio
+async def test_now_playing_kind_cleared_when_plate_cleared():
+    """Stopping and clearing the Plate (e.g. via delete-while-playing) clears
+    the kind badge along with the title -- no stale kind left behind."""
+    entry = _station_entry(1)
+    app = _make_app(entries=[entry])
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        assert str(app.query_one("#now-playing-kind", Label).render()) != ""
+        app._stop_and_clear_plate()
+        assert str(app.query_one("#now-playing-kind", Label).render()) == ""
+
+
+@pytest.mark.asyncio
+async def test_interrupt_indicator_hidden_when_idle():
+    """No active interruption: the banner is hidden and empty, not just blank."""
+    app = _make_app(entries=[])
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        indicator = app.query_one("#interrupt-indicator", Label)
+        assert indicator.display is False
+        assert str(indicator.render()) == ""
+
+
+@pytest.mark.asyncio
+async def test_interrupt_indicator_shows_bulletin_admission_reason(tmp_path):
+    """While a weather bulletin is interrupting, the banner shows both that
+    an interruption is active AND why it was admitted."""
+    entry = _station_entry(1, safe_interruption=SAFE_WINDOW)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    weather_monitor = FakeWeatherMonitor()
+    app = _make_app(
+        entries=[entry],
+        controller=controller,
+        adapter=adapter,
+        weather_monitor=weather_monitor,
+        latency_log_path=tmp_path / "latency.jsonl",
+    )
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        bulletin = _bulletin_entry()
+        weather_monitor.fire(bulletin)
+        adapter._offset_ms = 11_000  # inside SAFE_WINDOW
+        app._update_timer()
+        assert app._bulletin_playing is True
+
+        indicator = app.query_one("#interrupt-indicator", Label)
+        assert indicator.display is True
+        text = str(indicator.render())
+        assert "Weather bulletin" in text
+        assert "safe boundary" in text
+
+
+@pytest.mark.asyncio
+async def test_interrupt_indicator_hides_after_bulletin_completes(tmp_path):
+    """The banner clears the instant the bulletin finishes and the
+    interrupted entry resumes -- not on the next timer tick."""
+    entry = _station_entry(1, safe_interruption=SAFE_WINDOW)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    weather_monitor = FakeWeatherMonitor()
+    app = _make_app(
+        entries=[entry],
+        controller=controller,
+        adapter=adapter,
+        weather_monitor=weather_monitor,
+        latency_log_path=tmp_path / "latency.jsonl",
+    )
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        bulletin = _bulletin_entry()
+        weather_monitor.fire(bulletin)
+        adapter._offset_ms = 11_000
+        app._update_timer()
+        assert app._bulletin_playing is True
+
+        app._handle_station_completion(CompletionReason.ENDED)
+        assert app._bulletin_playing is False
+        indicator = app.query_one("#interrupt-indicator", Label)
+        assert indicator.display is False
+        assert str(indicator.render()) == ""
+
+
+@pytest.mark.asyncio
+async def test_interrupt_indicator_shows_route_interrupted_device_name():
+    """While route-interrupted (no-output floor), the banner names the
+    device and the no-output state."""
+    entry = _station_entry(1)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    route_monitor = FakeRouteMonitor()
+    app = _make_app(entries=[entry], controller=controller, adapter=adapter, route_monitor=route_monitor)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        route_monitor.fire(RouteChangeEvent(device_id=99, device_name="AirPods Pro"))
+        await pilot.pause()
+
+        indicator = app.query_one("#interrupt-indicator", Label)
+        assert indicator.display is True
+        text = str(indicator.render())
+        assert "AirPods Pro" in text
+        assert "No output" in text
+
+
+@pytest.mark.asyncio
+async def test_interrupt_indicator_hides_after_route_resume():
+    """Resuming from a route interruption ("p") clears the banner immediately."""
+    entry = _station_entry(1)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    route_monitor = FakeRouteMonitor()
+    app = _make_app(entries=[entry], controller=controller, adapter=adapter, route_monitor=route_monitor)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        route_monitor.fire(RouteChangeEvent(device_id=99, device_name="AirPods Pro"))
+        await pilot.pause()
+        assert app._route_interrupted is True
+
+        app.action_toggle_play()  # "p" is the resume affordance for this state
+        await pilot.pause()
+
+        assert app._route_interrupted is False
+        indicator = app.query_one("#interrupt-indicator", Label)
+        assert indicator.display is False
+
+
+@pytest.mark.asyncio
+async def test_source_health_degrades_gracefully_without_weather_monitor():
+    """No weather monitor wired (_weather_monitor is None, e.g. a read-only
+    second session) -- the health line shows a clear "not configured" state
+    rather than crashing."""
+    app = _make_app(entries=[])
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        text = str(app.query_one("#source-health", Label).render())
+        assert "not configured" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_source_health_shows_weather_health_and_route_monitoring():
+    entry = _station_entry(1)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    weather_monitor = FakeWeatherMonitor()
+    weather_monitor.fake_health = "healthy"
+    weather_monitor.last_success_at = "2026-07-11T00:00:00Z"
+    app = _make_app(entries=[entry], controller=controller, adapter=adapter, weather_monitor=weather_monitor)
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)  # also starts the route monitor
+
+        text = str(app.query_one("#source-health", Label).render())
+        assert "healthy" in text.lower()
+        assert "2026-07-11T00:00:00Z" in text
+        assert "monitoring" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_source_health_reflects_failed_weather_monitor_with_last_error():
+    weather_monitor = FakeWeatherMonitor()
+    weather_monitor.fake_health = "failed"
+    weather_monitor.last_error = "ConnectionError('boom')"
+    app = _make_app(entries=[], weather_monitor=weather_monitor)
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        text = str(app.query_one("#source-health", Label).render())
+        assert "failed" in text.lower()
+        assert "boom" in text
+
+
+@pytest.mark.asyncio
+async def test_source_health_shows_route_interrupted():
+    entry = _station_entry(1)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    route_monitor = FakeRouteMonitor()
+    app = _make_app(entries=[entry], controller=controller, adapter=adapter, route_monitor=route_monitor)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        route_monitor.fire(RouteChangeEvent(device_id=1, device_name="Speakers"))
+        await pilot.pause()
+
+        text = str(app.query_one("#source-health", Label).render())
+        assert "interrupted" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_source_health_refreshes_every_timer_tick_even_when_idle():
+    """The 1s timer refreshes source-health regardless of playback state --
+    a monitor health transition (e.g. to 'stale') has no discrete playback
+    event to hang a refresh off of."""
+    weather_monitor = FakeWeatherMonitor()
+    weather_monitor.fake_health = "unknown"
+    app = _make_app(entries=[], weather_monitor=weather_monitor)
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        assert "unknown" in str(app.query_one("#source-health", Label).render()).lower()
+
+        weather_monitor.fake_health = "stale"
+        app._update_timer()  # not playing -- must still refresh
+        assert "stale" in str(app.query_one("#source-health", Label).render()).lower()

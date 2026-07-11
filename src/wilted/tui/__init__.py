@@ -220,12 +220,22 @@ class WiltedApp(App):
     #now-playing-title {
         text-style: bold;
         color: $accent;
+        margin-bottom: 0;
+    }
+    #now-playing-kind {
+        color: $secondary;
         margin-bottom: 1;
     }
     #playback-bar {
         height: 1;
         margin: 1 0;
         color: $primary;
+    }
+    #interrupt-indicator {
+        height: auto;
+        text-style: bold;
+        color: $warning;
+        margin: 0 0 1 0;
     }
     #text-scroll {
         height: 1fr;
@@ -239,6 +249,10 @@ class WiltedApp(App):
     #speed-display {
         margin-top: 1;
         color: $secondary;
+    }
+    #source-health {
+        color: $text-muted;
+        margin-top: 1;
     }
     #status-line {
         text-style: italic;
@@ -401,10 +415,13 @@ class WiltedApp(App):
             with Vertical(id="right-panel"):
                 yield Label("The Plate", classes="panel-title")
                 yield Label("No article selected", id="now-playing-title")
+                yield Label("", id="now-playing-kind")
                 yield Static("", id="playback-bar")
+                yield Label("", id="interrupt-indicator")
                 with VerticalScroll(id="text-scroll"):
                     yield Static("", id="current-text", markup=True)
                 yield Static("", id="speed-display")
+                yield Label("", id="source-health")
                 yield Label("", id="status-line")
         yield Footer()
 
@@ -434,6 +451,8 @@ class WiltedApp(App):
         if self._weather_monitor is not None and not self._station_read_only:
             self._weather_monitor.start()
             self._weather_monitor_started = True
+
+        self._refresh_status_indicators()
 
         # Preload TTS model only if there are items that need TTS synthesis.
         # Pipeline items with audio_file set already have generated audio; skip.
@@ -726,6 +745,103 @@ class WiltedApp(App):
         parts = [p for p in [icon, bar_str, para_info, time_str] if p]
         self.query_one("#playback-bar", Static).update("  ".join(parts))
 
+    # -- Station-state indicators (A.4.5, display-only) ----------------------
+    #
+    # Three widgets, all pure renderers of EXISTING state (no new controller
+    # round-trips, INV-8 untouched): #now-playing-kind (content kind badge,
+    # set directly by _start_playback/_play_bulletin next to the title),
+    # #interrupt-indicator (persistent banner for the two interrupting
+    # states), and #source-health (weather/route monitor status line).
+
+    def _display_kind(self, entry: StationEntry) -> str:
+        """Human-readable content kind for the now-playing badge.
+
+        ``StationEntry.kind`` is only ever ``"item"`` or ``"bulletin"`` (see
+        its class docstring) — the finer podcast/article/briefing
+        distinction lives in the DB item's ``item_type``, resolved via
+        ``_item_lookup``. An ``"item"`` entry with no matching DB item
+        (``item_id`` unset, or not found) is displayed as "Briefing": the
+        shape a future non-Item briefing entry would take, since
+        ``Item.item_type`` only ever allows ``"article"``/``"podcast_episode"``
+        — a briefing can never BE a durable Item (see ``station_runtime.briefing``).
+        """
+        if entry.kind == "bulletin":
+            return "Weather bulletin"
+        item = self._item_lookup.get(entry.item_id or "")
+        item_type = item.get("item_type") if item is not None else None
+        if item_type == "podcast_episode":
+            return "Podcast"
+        if item_type == "article":
+            return "Article"
+        return "Briefing"
+
+    def _update_interrupt_indicator(self) -> None:
+        """Persistent interrupt banner.
+
+        Unlike ``#status-line`` (transient — holds for ``_STATUS_HOLD_SECS``
+        then is overwritten by the next routine update), this stays visible
+        for the FULL duration of an active interruption, so a glance at the
+        screen always shows whether one is in progress and why it was
+        admitted. Exactly two interrupting states exist today: a weather
+        bulletin (A.4.3) or a route/device-change no-output floor (A.3.3);
+        hidden (no space taken) otherwise.
+        """
+        if not self.is_running:
+            return
+        widget = self.query_one("#interrupt-indicator", Label)
+        if self._bulletin_playing:
+            widget.update("⚠ Weather bulletin interrupting — admitted at safe boundary")
+            widget.display = True
+        elif self._route_interrupted:
+            widget.update(f"⏸ No output — route changed to '{self._route_device_name}'. Press [p] to resume.")
+            widget.display = True
+        else:
+            widget.update("")
+            widget.display = False
+
+    def _update_source_health(self) -> None:
+        """Compact weather-monitor + route-monitor health line.
+
+        Degrades gracefully when no weather monitor is wired
+        (``_weather_monitor is None`` — e.g. a read-only second session, or
+        a launch that never wired one): shows "not configured" rather than
+        raising. Route status reads the same ``_route_interrupted``/
+        ``_route_monitor_started`` fields :meth:`_update_interrupt_indicator`
+        and :meth:`on_route_changed` already maintain — no new state.
+        """
+        if not self.is_running:
+            return
+        if self._weather_monitor is None:
+            weather_text = "Weather: not configured"
+        else:
+            health = self._weather_monitor.health()
+            last_error = self._weather_monitor.last_error
+            last_success = self._weather_monitor.last_success_at
+            if health == "failed" and last_error:
+                weather_text = f"Weather: failed ({last_error})"
+            elif last_success:
+                weather_text = f"Weather: {health} (last success {last_success})"
+            else:
+                weather_text = f"Weather: {health}"
+        if self._route_interrupted:
+            route_text = "Route: interrupted"
+        elif self._route_monitor_started:
+            route_text = "Route: monitoring"
+        else:
+            route_text = "Route: idle"
+        self.query_one("#source-health", Label).update(f"{weather_text}   {route_text}")
+
+    def _refresh_status_indicators(self) -> None:
+        """Refresh the interrupt banner + source-health line together —
+        called at every station-state transition that could affect either,
+        so both stay in sync with ``_bulletin_playing``/``_route_interrupted``/
+        ``_route_monitor_started``/``_weather_monitor`` without a dedicated
+        timer (the 1s ``_update_timer`` also refreshes source-health every
+        tick, for staleness/health transitions that happen with no discrete
+        event to hang a call off of)."""
+        self._update_interrupt_indicator()
+        self._update_source_health()
+
     def _update_timer(self) -> None:
         """1-second interval: tick down the remaining estimate, refresh the
         bar, and (when the current entry has transcript segments) drive live
@@ -742,6 +858,12 @@ class WiltedApp(App):
         """
         if not self.is_running:
             return
+
+        # Source-health (staleness/failure transitions have no discrete event
+        # to hang a call off of) refreshes every tick regardless of playback
+        # state; everything else below is playing-and-not-paused only.
+        self._update_source_health()
+
         if not self._playing or self._paused:
             return
 
@@ -1038,6 +1160,8 @@ class WiltedApp(App):
         self._bar_progress = (offset_ms / entry.duration_ms * 100) if entry.duration_ms else 0.0
 
         self._update_now_playing(title=self._display_title(entry), progress=self._bar_progress, status="Playing")
+        if self.is_running:
+            self.query_one("#now-playing-kind", Label).update(self._display_kind(entry))
 
         # Initial transcript render so the pane isn't blank at play start;
         # _update_timer takes over live scrolling from here. No-op display
@@ -1056,6 +1180,14 @@ class WiltedApp(App):
         if not self._route_monitor_started:
             self._route_monitor.start()
             self._route_monitor_started = True
+
+        # A fresh/resumed entry always supersedes any interrupting state
+        # (route-interrupted is already cleared before this call on the
+        # resume path; bulletin state is unaffected here since a bulletin
+        # is played via _play_bulletin, never _start_playback — see that
+        # method's docstring) -- refresh so the banner/health line reflect
+        # the entry that is now ACTUALLY playing.
+        self._refresh_status_indicators()
 
     # -- Weather bulletin interrupt/resume (A.4.3) ---------------------------
 
@@ -1284,6 +1416,10 @@ class WiltedApp(App):
         )
         if self.is_running:
             self.query_one("#current-text", Static).update("")
+            self.query_one("#now-playing-kind", Label).update(self._display_kind(bulletin))
+        # _bulletin_playing is now True: the interrupt banner must show
+        # immediately, not wait for the next 1s timer tick.
+        self._refresh_status_indicators()
 
     def _handle_bulletin_completion(self, bulletin: StationEntry, reason: CompletionReason | None) -> None:
         """A weather bulletin finished (cleanly, truncated, or via an
@@ -1316,6 +1452,9 @@ class WiltedApp(App):
         self._paused = False
         self._generation_paused = False
         self._clear_transcript_state()
+        # _bulletin_playing just flipped False -- hide the interrupt banner
+        # immediately, whether or not there's anything to resume below.
+        self._refresh_status_indicators()
 
         resumed_entry = self._resume_from_interruption()
         if resumed_entry is None:
@@ -1468,6 +1607,7 @@ class WiltedApp(App):
             self._route_monitor_started = False
             self._generation_paused = False
             self._set_status("Playback interrupted — not advancing", _STATUS_HIGH)
+            self._refresh_status_indicators()
             return
 
         if finished_entry is not None and finished_entry.item_id is not None:
@@ -1492,6 +1632,9 @@ class WiltedApp(App):
             self._update_now_playing(
                 title="Completed!", progress=100, time_remaining="", text_snippet="", status="Queue finished"
             )
+            if self.is_running:
+                self.query_one("#now-playing-kind", Label).update("")
+            self._refresh_status_indicators()
             self._trigger_generation()
 
         # Keep the DB item cache fresh (title/word lookups, empty-state
@@ -1578,6 +1721,10 @@ class WiltedApp(App):
         )
         if self.is_running:
             self._update_playback_bar()
+        # _route_interrupted just flipped True -- the persistent banner
+        # (unlike the status line above) must stay up until resumed, not
+        # just for _STATUS_HOLD_SECS.
+        self._refresh_status_indicators()
 
     def _resume_from_route_interruption(self) -> None:
         """Resume onto the new default device after a route interruption.
@@ -1596,6 +1743,11 @@ class WiltedApp(App):
         self._route_device_name = ""
         self._route_resume_entry = None
         self._route_resume_offset_ms = 0
+        # Hide the banner immediately -- covers both the normal resume path
+        # below (_start_playback also refreshes at its own end, harmlessly
+        # redundant) and the "nothing to resume" edge case, which returns
+        # before ever reaching _start_playback.
+        self._refresh_status_indicators()
 
         if entry is None:
             self._set_status("Nothing to resume", _STATUS_MEDIUM)
@@ -1704,6 +1856,7 @@ class WiltedApp(App):
         # eligible to interrupt the next safe boundary once playback resumes.
         self._bulletin_playing = False
         self._set_status("Stopped", _STATUS_MEDIUM)
+        self._refresh_status_indicators()
         self._trigger_generation()
 
     def action_play_selected(self) -> None:
@@ -1815,6 +1968,7 @@ class WiltedApp(App):
         self._current_entry = None
         self._current_index = None
         self.query_one("#now-playing-title", Label).update("No article selected")
+        self.query_one("#now-playing-kind", Label).update("")
         self.query_one("#current-text", Static).update("")
         self._bar_progress = 0.0
         self._bar_time_override = ""
