@@ -96,3 +96,19 @@ For the **Mac-side pairing/TLS**, adopt the **Python path**: `cryptography` (cer
 - [x] Decision 4 — podcast admission: auto-admit + **14-day** freshness cap, no relevance filter — **approved**
 - [x] Decision 5 — latency/resume/F4 targets — **finalized 2026-07-10 from M5 Max measurements** (interruption ceiling 6 s cold / 5 s warm; resume boundary-accurate PASS; F4 ±250 ms band)
 - [x] Decision 6 — Python dependency path (`cryptography`+`keyring`) vs native companion — **approved (Python path)**
+
+---
+
+## Plan A implementation outcome *(2026-07-11 — MVP landed)*
+
+Plan A (Mac Station MVP) implemented all six decisions; the substrate held under implementation. What shipped vs. what the ADR anticipated:
+
+- **Decision 1 (headless core + boundary):** shipped as `src/wilted/station/` (pure reducer) + `src/wilted/station_runtime/` (StationController single-writer, adapters, monitors). All station mutations funnel through one drain thread (INV-7) and no surface writes state directly (INV-8) — the split-brain the boundary exists to prevent is gate-tested closed.
+- **Decision 2 (versioned atomic JSON store + `media/<sha256>` index):** shipped; content-addressed media store + `media_owners.json` drives bulletin GC (A.4.4). `Item` stayed an import source, never in-place converted.
+- **Decision 3 (NWS):** in-process `WeatherMonitor` polls zone VAZ526 + county VAC153 in one request with a descriptive User-Agent; live-verified.
+- **Decision 4 (14-day freshness cap):** shipped in `EntrySequencer`; `published_at=None` admits with a warning.
+- **Decision 5 (latency/resume/F4):** interrupt/resume implemented at the ±250 ms safe band (A.2.4); the 6 s cold / 5 s warm ceiling is asserted only via a machine-independent bound in CI (stubbed TTS) — real observed latency is A.5.1, David's manual hardware gate, still pending.
+- **Decision 5 route-recovery GAP:** shipped **floor-first** per the measured gap — a device change stops playback into a visible no-output banner, then recovery replays the current entry at the exact offset on the new default device (a fresh `OutputStream`). Follow-the-device was not pursued because the measurement showed `sd.OutputStream` binds at open.
+- **Decision 6 (Python pairing path):** unchanged; not exercised by the single-process station MVP.
+
+**Gate:** `make validate` green at 1095 passed / 1 skipped / 2 snapshots (2026-07-11). New invariants INV-7 (single-writer) and INV-8 (no non-controller write) added to `INVARIANTS.md` with gate tests. The one open dimension is **A.5.1** (full mixed session on real speakers + observed interruption latency), which only physical hardware can exercise.

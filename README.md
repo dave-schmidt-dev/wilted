@@ -149,15 +149,27 @@ The script resolves the `apple.news` URL to the source site and fetches the comp
 
 For hard-paywalled articles, scroll to the bottom in Apple News first, then Cmd+A > Cmd+C and run `wilted --add`.
 
-## Product direction
+## Station mode
 
-The current implementation is article-first, but the roadmap is broader:
+The current implementation unifies content into a local personal radio station accessible through the TUI. The station mode automates playback with intelligent interruption and recovery:
 
-- saved articles and Apple News links flow into the same listening system
-- podcast subscriptions should eventually be ingested into Wilted as audio items
-- playlists should become the main organizing concept, not just a flat queue
-- articles and podcasts should coexist inside shared listening contexts like `Work`, `Fun`, and `Education`
-- the daily morning report should become the control surface for deciding what to hear first
+- **Morning briefing** — starts each session with a ≤5-min configurable NWS weather forecast and top-N classified items from the queue
+- **Continuous playback** — plays queued articles (TTS) and prepared podcasts (audio) with ad-cuts and segment-based navigation
+- **Weather bulletin interrupt** — NWS alerts interrupt playback at segment boundaries with safe-offset resume (±250 ms band around segment edges); the bulletin plays in full, then resumes the interrupted entry at the exact checkpoint
+- **Audio-route recovery** — device changes (speaker → headphones, AirPods connect/disconnect) are detected; playback stops with a no-output floor message, then resumes on the new device at the exact offset with no content loss
+- **Automatic cleanup** — weather bulletins expire and are garbage-collected at session end; no stale bulletin files accumulate
+
+The station is implemented as a headless substrate-neutral reducer (`src/wilted/station/`) with a TUI adapter that routes all mutations through a single `StationController` to ensure consistent state and prevent split-brain across concurrent clients.
+
+## Product direction (longer term)
+
+The roadmap beyond station mode includes:
+
+- always-on radio-mode playback that fills airtime from queue, feeds, and discovered content
+- priority interrupt thresholds for breaking/important stories with configurable freshness windows
+- time-of-day awareness — morning news, midday light, evening education/entertainment
+- unified private-feed surface merging saved articles, subscribed feeds, and podcast episodes
+- cross-device briefing export for sharing morning reports to another surface
 
 ## Data
 
