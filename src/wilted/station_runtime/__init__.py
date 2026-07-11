@@ -19,6 +19,9 @@ backends), and therefore must live outside ``wilted.station``:
     article_assembly: ``assemble_article_audio`` — concatenate a complete
         per-paragraph article cache into one published media-store artifact
         plus its cumulative timing map (refuses an incomplete cache, INV-4).
+    normalize: ``normalize_item`` — turn a durable DB ``Item`` (podcast or
+        article) into a finalized ``MediaDescriptor`` resolving to immutable
+        store bytes (no-transcript ⇒ NO_INTERRUPT; unfinalized ⇒ refuses).
     media_store: content-addressed immutable media store + owners index
         (module-level functions ``publish``/``publish_with_owner``/
         ``get_owners``/``path_for``; import as ``from wilted.station_runtime
@@ -46,6 +49,10 @@ from wilted.station_runtime.media_store import (
     EmptyMediaError,
     MediaOwnersCorruptError,
 )
+from wilted.station_runtime.normalize import (
+    ItemNotFinalizedError,
+    normalize_item,
+)
 from wilted.station_runtime.store import (
     STATION_SCHEMA_VERSION,
     JsonStationStore,
@@ -58,8 +65,10 @@ __all__ = [
     "AssembledArticle",
     "ControllerLeaseManager",
     "EmptyMediaError",
+    "ItemNotFinalizedError",
     "JsonStationStore",
     "assemble_article_audio",
+    "normalize_item",
     "LeaseHeldElsewhereError",
     "LeaseHeldError",
     "LeaseReentrancyError",
