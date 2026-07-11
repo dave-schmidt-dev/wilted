@@ -6,45 +6,63 @@ calls made from WiltedApp methods — Python looks up free variables in the
 containing module's __dict__ at call time, not at definition time.
 
 Screens (AddArticleScreen, ConfirmScreen, etc.) are in tui/screens/.
+
+INV-8 boundary (KEYSTONE refactor, Plan A task A.3.5): "station state" is the
+reducer's ``StationState`` (lifecycle / active_entry / checkpoint / resume
+offset). ALL writes to that state route through ``StationController.submit``/
+``submit_and_wait`` — this module never calls ``wilted.station.reducer.apply``
+directly and never writes a checkpoint itself (the ``CheckpointPoller`` does
+that on a timer). The legacy per-paragraph resume mechanism
+(``wilted.playlists.set_resume_position``/``get_resume_position``/
+``clear_resume_position``) is fully retired from this module: resume-on-start
+now comes from ``StationController.current_state().checkpoint``. Item-DB CRUD
+(add/remove/mark-complete/clear) is a *different* store and is intentionally
+NOT routed through the controller — see each action's docstring.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
-from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
 from textual.theme import Theme
 from textual.widgets import Footer, Header, Label, Static, Tree
 from textual.worker import get_current_worker
 
-from wilted import ICONS, WPM_ESTIMATE
-from wilted.playlists import (
-    clear_resume_position,
-    ensure_default_playlists,
-    get_playlist_items,
-    get_resume_position,
-    list_playlists,
-    set_resume_position,
-)
+from wilted import ICONS
+from wilted.playlists import ensure_default_playlists, get_playlist_items
 from wilted.queue import (
     clear_queue,
     get_article_text,
     mark_completed,
     remove_article_by_id,
 )
+from wilted.station.models import StationEntry
+from wilted.station.reducer import StartPlayback, Stop
+from wilted.station_runtime import (
+    CheckpointPoller,
+    LeaseHeldError,
+    MacPlaybackAdapter,
+    StationController,
+)
+from wilted.station_runtime.sequencer import EntrySequencer
 from wilted.text import split_paragraphs
 from wilted.tui.screens.add_article import AddArticleScreen
 from wilted.tui.screens.confirm import ConfirmScreen
 from wilted.tui.screens.report import ReportScreen
 from wilted.tui.screens.text_preview import TextPreviewScreen
 from wilted.tui.screens.voice_settings import VoiceSettingsScreen
+
+if TYPE_CHECKING:
+    from wilted.station_runtime import CompletionReason
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +74,10 @@ _STATUS_HIGH = 2  # Errors, important user actions
 
 # Minimum seconds a high/medium-priority message stays visible
 _STATUS_HOLD_SECS = 2.0
+
+# Shared status text for every read-only refusal (lease held by another
+# live session) — kept as one constant so all refusal sites stay in sync.
+_STATION_READ_ONLY_MSG = "Station active in another session — read-only"
 
 # ---------------------------------------------------------------------------
 # Salad Palette — custom Textual theme
@@ -88,6 +110,28 @@ _ICON_PAUSED = ICONS["paused"]
 
 # Fractional block characters for smooth progress bar fill
 _BLOCKS = " ▏▎▍▌▋▊▉█"
+
+
+class PlaybackCompleted(Message):
+    """Posted by :meth:`WiltedApp._on_adapter_completion`; handled on the UI thread.
+
+    ``MacPlaybackAdapter.on_complete`` fires on the audio background thread.
+    This MUST be marshalled to the UI thread via ``post_message`` — thread-safe
+    (uses ``loop.call_soon_threadsafe`` internally) and NON-blocking — rather
+    than ``call_from_thread``. ``call_from_thread`` blocks the calling
+    (audio) thread until the UI-thread callback returns, and a clean
+    completion's auto-advance path (``_handle_station_completion`` ->
+    ``_start_playback`` -> ``adapter.play``) preempts the current track,
+    which joins that very same still-blocked audio thread — a guaranteed
+    hang (up to the preempt's join timeout) on every natural track
+    transition. ``post_message`` queues the event and returns immediately,
+    so the audio thread has already exited by the time anything tries to
+    join it.
+    """
+
+    def __init__(self, reason: CompletionReason) -> None:
+        self.reason = reason
+        super().__init__()
 
 
 class WiltedApp(App):
@@ -174,30 +218,59 @@ class WiltedApp(App):
         Binding("q", "quit_app", "Quit"),
     ]
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(
+        self,
+        *,
+        controller: StationController | None = None,
+        adapter: MacPlaybackAdapter | None = None,
+        sequencer_factory=None,
+        poller_factory=None,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         self.register_theme(SALAD_THEME)
         self.theme = "salad"
-        self._playlist_items: dict[str, list[dict]] = {}
+
+        # -- Station runtime (INV-8 single-writer plumbing) -----------------
+        self._controller = (
+            controller if controller is not None else StationController(holder_id=f"mac-tui-{os.getpid()}")
+        )
+        self._adapter = adapter if adapter is not None else MacPlaybackAdapter()
+        # Always install the completion marshaller, for injected fakes AND
+        # the default adapter alike.
+        self._adapter.on_complete = self._on_adapter_completion
+        self._sequencer_factory = sequencer_factory if sequencer_factory is not None else EntrySequencer.build
+        self._poller_factory = poller_factory if poller_factory is not None else (lambda c, a: CheckpointPoller(c, a))
+        self._poller = self._poller_factory(self._controller, self._adapter)
+        self._poller_started: bool = False
+        self._station_read_only: bool = False
+
+        # -- Station backlog / now-playing state -----------------------------
+        self._station_entries: list[StationEntry] = []
+        self._current_entry: StationEntry | None = None
+        self._current_index: int | None = None
+        self._pending_play_item_id: str | None = None
+
+        # -- DB item cache (CRUD + display-title resolution; a DIFFERENT
+        # store than station state — see module docstring) ------------------
         self._all_items: list[dict] = []
+        self._item_lookup: dict[str, dict] = {}
+
+        # -- TTS generation feeder (unrelated to station playback) -----------
         self._engine = None
-        self._current_entry: dict | None = None
-        self._paragraphs: list[str] = []
-        self._paragraph_idx: int = 0
-        self._total_segments: int = 0
-        self._segments_played: int = 0
-        self._playing: bool = False
-        self._paused: bool = False
         self._voice: str = "af_heart"
         from wilted import get_default_speed
 
         self._speed: float = get_default_speed()
         self._lang: str = "a"
-        self._last_state_save: float = 0.0
-        self._playback_worker = None
         self._generation_paused: bool = False
         self._generation_worker = None
-        self._rewind_to: int | None = None
+
+        # -- Display-only state -----------------------------------------------
+        self._paragraphs: list[str] = []
+        self._paragraph_idx: int = 0
+        self._playing: bool = False
+        self._paused: bool = False
         self._status_priority: int = _STATUS_LOW
         self._status_time: float = 0.0
         self._estimated_remaining_secs: float = 0
@@ -222,17 +295,56 @@ class WiltedApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        self._refresh_playlists()
         self._update_speed_display()
         self.query_one("#playlist-tree", Tree).focus()
         # 1-second timer for live playback countdown
         self.set_interval(1.0, self._update_timer)
+
+        try:
+            self._controller.start(on_loss=self._on_controller_loss)
+        except LeaseHeldError:
+            # Another live session already owns the station: enter a visible
+            # read-only state rather than crash or attempt to steal the lease.
+            self._station_read_only = True
+            self._refresh_playlists()
+            self._set_status(_STATION_READ_ONLY_MSG, _STATUS_HIGH)
+        else:
+            self._rebuild_sequencer()
+
         # Preload TTS model only if there are items that need TTS synthesis.
         # Pipeline items with audio_file set already have generated audio; skip.
         if any(not e.get("audio_file") for e in self._all_items):
             self._preload_model()
         # Check for unread report on launch
         self._check_unread_report()
+
+    def on_unmount(self) -> None:
+        """Best-effort teardown so the station lease/threads never outlive this app.
+
+        A safety net for the (many) code paths that end the app without going
+        through :meth:`action_quit_app` (e.g. a test's ``run_test()`` context
+        exiting) — without this, the controller's OS-level flock and the
+        poller/heartbeat threads would leak past this app instance. All three
+        calls are documented no-ops if never started, and idempotent with
+        :meth:`action_quit_app` calling them again.
+        """
+        try:
+            self._adapter.stop()
+        except Exception:
+            logger.exception("on_unmount: adapter.stop() failed")
+        try:
+            self._poller.stop()
+        except Exception:
+            logger.exception("on_unmount: poller.stop() failed")
+        try:
+            self._controller.stop()
+        except Exception:
+            logger.exception("on_unmount: controller.stop() failed")
+
+    def _on_controller_loss(self, exc: BaseException) -> None:
+        """Invoked from the controller's drain thread if it enters terminal "lost" mode."""
+        logger.error("Station controller lost: %s", exc)
+        self.call_from_thread(self._set_status, "Station controller lost — playback unavailable", _STATUS_HIGH)
 
     # -- Report check -------------------------------------------------------
 
@@ -267,51 +379,123 @@ class WiltedApp(App):
         if accepted:
             self._refresh_playlists()
 
-    # -- Playlist display -----------------------------------------------------
+    # -- DB item cache (CRUD + display) --------------------------------------
 
     def _refresh_playlists(self) -> None:
-        """Reload playlists and items, rebuild the Tree widget."""
+        """Reload the DB item list used for CRUD lookups, display-title
+        resolution, and the empty-state message.
+
+        This does NOT touch the Larder tree — the tree is driven by the
+        station backlog (see :meth:`_rebuild_sequencer`), a different concept
+        from "everything ready/selected in the DB".
+
+        No-ops if the app is shutting down/already stopped: this may be
+        reached via ``call_from_thread`` from a background worker (e.g. the
+        generation worker's post-completion rebuild) that can legitimately
+        still be in flight after the app has begun tearing down its screen.
+        """
+        if not self.is_running:
+            return
         ensure_default_playlists()
+        self._all_items = get_playlist_items("All")
+        self._item_lookup = {str(item["id"]): item for item in self._all_items}
+        self._update_empty_message()
+
+    def _update_empty_message(self) -> None:
+        """PM-3: distinguish "nothing queued at all" from "queued but not finalized yet"."""
+        if not self.is_running:
+            return
+        empty_msg = self.query_one("#empty-message", Label)
+        if self._station_entries:
+            empty_msg.display = False
+            return
+        if self._all_items:
+            empty_msg.update("Items are being prepared — they'll appear here once ready.")
+        else:
+            empty_msg.update("The larder is empty. Press [a] to add an article.")
+        empty_msg.display = True
+
+    # -- Station backlog (Larder tree) ---------------------------------------
+
+    def _rebuild_sequencer(self) -> None:
+        """Refresh the DB item cache, then rebuild the station backlog off-thread."""
+        self._refresh_playlists()
+        self._build_sequencer_worker()
+
+    @work(thread=True, exclusive=True, group="sequencer")
+    def _build_sequencer_worker(self) -> None:
+        """Build the station backlog in a worker thread.
+
+        ``EntrySequencer.build()`` runs ffmpeg concat per article to check
+        finalization and would freeze the UI if run on the main thread.
+        """
+        from wilted.db import worker_db
+
+        try:
+            with worker_db():
+                sequencer = self._sequencer_factory()
+                entries = list(sequencer.entries)
+        except Exception:
+            logger.exception("Failed to build station backlog")
+            self.call_from_thread(self._set_status, "Error preparing station backlog", _STATUS_HIGH)
+            return
+        self.call_from_thread(self._apply_sequencer_result, entries)
+
+    def _apply_sequencer_result(self, entries: list[StationEntry]) -> None:
+        """Adopt a freshly-built backlog (main thread) and refresh the Larder tree.
+
+        No-ops if the app has begun shutting down by the time this
+        ``call_from_thread``-marshalled callback runs (see
+        :meth:`_refresh_playlists`'s docstring for why that race is real).
+        """
+        if not self.is_running:
+            return
+        self._station_entries = entries
+        self._current_index = self._index_of(self._current_entry) if self._current_entry is not None else None
+        self._rebuild_larder_tree()
+        self._update_empty_message()
+
+        if self._pending_play_item_id is not None:
+            pending_id = self._pending_play_item_id
+            self._pending_play_item_id = None
+            match = next((e for e in entries if e.item_id == pending_id), None)
+            if match is not None:
+                self._start_playback(match)
+            else:
+                self._set_status("Added — being prepared, will appear once ready", _STATUS_MEDIUM)
+
+    def _rebuild_larder_tree(self) -> None:
+        """Show ``self._station_entries`` as a flat list of leaves under the hidden root."""
         tree = self.query_one("#playlist-tree", Tree)
         tree.show_root = False
-
-        # Save which playlists are expanded
-        expanded = set()
-        for node in tree.root.children:
-            if node.is_expanded:
-                expanded.add(node.data)
-
         tree.root.remove_children()
+        for entry in self._station_entries:
+            item = self._item_lookup.get(entry.item_id or "")
+            title = item.get("title", "Untitled") if item else f"Entry {entry.entry_id}"
+            if len(title) > 50:
+                title = title[:47] + "..."
+            words = item.get("words", 0) if item else 0
+            tree.root.add_leaf(f"{title}  ({words}w)", data=entry)
 
-        self._playlist_items = {}
+    def _index_of(self, entry: StationEntry) -> int | None:
+        for idx, candidate in enumerate(self._station_entries):
+            if candidate.entry_id == entry.entry_id:
+                return idx
+        return None
 
-        playlists = list_playlists()
-        for pl in playlists:
-            items = get_playlist_items(pl.name)
-            self._playlist_items[pl.name] = items
-            count = len(items)
-            label = f"{pl.name} ({count} items)"
-            node = tree.root.add(label, data=pl.name)
+    def _display_title(self, entry: StationEntry) -> str:
+        item = self._item_lookup.get(entry.item_id or "")
+        return item.get("title", "Untitled") if item else entry.entry_id
 
-            for item in items:
-                title = item.get("title", "Untitled")
-                if len(title) > 50:
-                    title = title[:47] + "..."
-                words = item.get("words", 0)
-                node.add_leaf(f"{title}  ({words}w)", data=item)
-
-            # Expand "All" by default on first load, preserve state after
-            if pl.name in expanded or (pl.name == "All" and not expanded):
-                node.expand()
-
-        self._all_items = get_playlist_items("All")
-
-        empty_msg = self.query_one("#empty-message", Label)
-        if not self._all_items:
-            empty_msg.update("The larder is empty. Press [a] to add an article.")
-            empty_msg.display = True
-        else:
-            empty_msg.display = False
+    # NOTE: deliberately no ``on_tree_node_selected`` handler. Textual's
+    # ``Tree.select_node()`` (used throughout the test suite, and reachable
+    # via keyboard) posts a ``NodeSelected`` message on every cursor move to
+    # a node, not just an explicit "play this" gesture — wiring playback to
+    # that message would start audio as a side effect of merely navigating
+    # the Larder to delete/mark/preview an item. Playback-from-the-tree stays
+    # on the explicit ``action_play_selected`` action (see BINDINGS to bind a
+    # key to it), matching ``_get_selected_entry()``'s existing "currently
+    # highlighted node" semantics used by toggle-play/mark/delete/etc.
 
     def _update_speed_display(self) -> None:
         spd = f"{self._speed:.1f}x"
@@ -331,6 +515,10 @@ class WiltedApp(App):
         text_snippet: str = "",
         status: str = "",
     ) -> None:
+        # Reachable via a completion/teardown race (see `_refresh_playlists`'s
+        # docstring for why this is a real race, not just a test artifact).
+        if not self.is_running:
+            return
         if title:
             widget = self.query_one("#now-playing-title", Label)
             widget.update(title)
@@ -397,7 +585,16 @@ class WiltedApp(App):
         self._update_playback_bar()
 
     def _build_transcript(self, para_idx: int) -> str:
-        """Build Rich markup showing paragraphs around the current one."""
+        """Build Rich markup showing paragraphs around the current one.
+
+        NOTE: kept as a display helper (still exercised directly by
+        ``test_transcript_markup_bold_current``/``test_transcript_escapes_brackets``)
+        but no longer fed by the station playback path — the
+        ``MacPlaybackAdapter`` has no paragraph/segment-level progress
+        callback, so live per-paragraph transcript scrolling during playback
+        was dropped in the KEYSTONE refactor (see class docstring / A.3.5
+        report for the full rationale).
+        """
         from rich.markup import escape
 
         if not self._paragraphs:
@@ -420,7 +617,15 @@ class WiltedApp(App):
 
         Higher-priority messages hold for _STATUS_HOLD_SECS and won't be
         overwritten by lower-priority routine updates during that window.
+
+        No-ops if the app is shutting down: reachable via ``call_from_thread``
+        from several background workers (generation, preload, report-check,
+        export) whose tail call can legitimately still be in flight after the
+        app has begun tearing down its screen (see ``_refresh_playlists``'s
+        docstring for why this race is real, not just a test artifact).
         """
+        if not self.is_running:
+            return
         now = time.time()
         if priority < self._status_priority and now - self._status_time < _STATUS_HOLD_SECS:
             return
@@ -428,7 +633,7 @@ class WiltedApp(App):
         self._status_time = now
         self.query_one("#status-line", Label).update(msg)
 
-    # -- Engine lazy load ---------------------------------------------------
+    # -- Engine lazy load (TTS generation feeder only) -----------------------
 
     def _ensure_engine(self) -> None:
         """Lazy-load the AudioEngine on first use."""
@@ -464,11 +669,16 @@ class WiltedApp(App):
             # Non-fatal — model will load on first play instead
             pass
 
-    # -- Background generation worker ----------------------------------------
+    # -- Background generation worker (finalization feeder) ------------------
 
     @work(thread=True, exclusive=True, group="generate")
     def _generate_cache(self) -> None:
-        """Background worker: generate audio cache for queued articles."""
+        """Background worker: generate audio cache for queued articles.
+
+        This is what makes an article *finalizable* — once its per-paragraph
+        cache is complete, the next station backlog rebuild can normalize and
+        include it (see ``wilted.station_runtime.normalize.normalize_item``).
+        """
         from wilted.cache import generate_article_cache, is_cache_valid
         from wilted.playlists import get_playlist_items as _get_playlist_items
         from wilted.queue import get_article_text
@@ -532,8 +742,12 @@ class WiltedApp(App):
                 should_cancel=should_cancel,
             )
 
-        if not worker.is_cancelled and not self._playing:
-            self.call_from_thread(self._set_status, "Ready")
+        if not worker.is_cancelled:
+            # A newly-finalized article may now be eligible for the station
+            # backlog — rebuild so it appears in the Larder.
+            self.call_from_thread(self._rebuild_sequencer)
+            if not self._playing:
+                self.call_from_thread(self._set_status, "Ready")
 
     def _trigger_generation(self) -> None:
         """Start or restart the background generation worker."""
@@ -541,329 +755,174 @@ class WiltedApp(App):
             self._generation_worker.cancel()
         self._generation_worker = self._generate_cache()
 
-    # -- Playback worker ----------------------------------------------------
+    # -- Playback (INV-8 core) ------------------------------------------------
 
-    @work(thread=True, exclusive=True, group="playback")
-    def _play_article(self, entry: dict, resume_para: int = 0) -> None:
-        """Play an article from the given paragraph/segment position."""
-        worker = get_current_worker()
+    def _start_playback(self, entry: StationEntry) -> None:
+        """Start playing a station entry through the controller + adapter.
 
-        self.call_from_thread(self._update_now_playing, status="Loading model...")
-        self._ensure_engine()
-        engine = self._engine
-        engine.load_model()  # no-op if preload already finished
-
-        engine.voice = self._voice
-        engine.speed = self._speed
-        engine.lang = self._lang
-
-        text = get_article_text(entry)
-        if not text:
-            self.call_from_thread(self._set_status, "Error: article text not found", _STATUS_HIGH)
-            return
-
-        paragraphs = split_paragraphs(text)
-        if not paragraphs:
-            self.call_from_thread(self._set_status, "Error: no text to play", _STATUS_HIGH)
-            return
-
-        self._paragraphs = paragraphs
-        self._total_segments = len(paragraphs)  # approximate: 1 segment per paragraph
-        self._paragraph_idx = resume_para
-        self._segments_played = resume_para
-
-        title = entry.get("title", "Untitled")
-
-        self.call_from_thread(
-            self._update_now_playing,
-            title=title,
-            status="Playing",
-        )
-
-        from wilted.cache import is_paragraph_cached, load_audio
-
-        article_id = entry["id"]
-        added = entry.get("added", "")
-
-        para_idx = resume_para
-        while para_idx < len(paragraphs):
-            if worker.is_cancelled:
-                break
-
-            # Wait while paused — spin-check so skip/rewind can break out
-            while self._paused and not worker.is_cancelled:
-                time.sleep(0.1)
-            if worker.is_cancelled:
-                break
-
-            # Pick up any position changes made while paused (skip/rewind)
-            para_idx = self._paragraph_idx
-
-            # Check for rewind request (from non-paused rewind action)
-            if self._rewind_to is not None:
-                para_idx = self._rewind_to
-                self._rewind_to = None
-                self._paragraph_idx = para_idx
-            paragraph = paragraphs[para_idx]
-
-            # Calculate progress and resync the countdown timer
-            progress = (para_idx / len(paragraphs)) * 100
-            words_remaining = sum(len(p.split()) for p in paragraphs[para_idx:])
-            self._estimated_remaining_secs = words_remaining / (WPM_ESTIMATE * self._speed) * 60
-
-            transcript = self._build_transcript(para_idx)
-
-            self.call_from_thread(
-                self._update_now_playing,
-                progress=progress,
-                text_snippet=transcript,
-                status="Playing",
-            )
-
-            # Periodically save state
-            now = time.time()
-            if now - self._last_state_save >= 30:
-                set_resume_position(entry["id"], para_idx, 0)
-                self._last_state_save = now
-
-            # Read voice/speed/lang at segment boundary (allows mid-playback changes)
-            engine.voice = self._voice
-            engine.speed = self._speed
-            engine.lang = self._lang
-
-            try:
-                # Hybrid playback: cache hit → play_audio, miss → generate_and_play
-                if is_paragraph_cached(article_id, para_idx, self._voice, self._lang, self._speed, added):
-                    cached = load_audio(article_id, para_idx)
-                    if cached is not None:
-                        audio_np, _sr = cached
-                        self.call_from_thread(self._set_status, "Playing (cached)")
-                        engine.play_audio(audio_np)
-                    else:
-                        # File disappeared between check and load — fall through
-                        self.call_from_thread(self._set_status, "Generating audio...")
-                        engine.generate_and_play(paragraph)
-                else:
-                    self.call_from_thread(self._set_status, "Generating audio...")
-                    engine.generate_and_play(paragraph)
-            except Exception as e:
-                self.call_from_thread(self._set_status, f"Playback error: {e}", _STATUS_HIGH)
-                break
-
-            if worker.is_cancelled:
-                break
-
-            # Check for rewind before advancing
-            if self._rewind_to is not None:
-                continue
-
-            self._segments_played = para_idx + 1
-            para_idx += 1
-
-        # Finished or cancelled
-        if not worker.is_cancelled and self._segments_played >= len(paragraphs):
-            # Article completed
-            self.call_from_thread(self._on_article_completed, entry)
-        else:
-            # Stopped or cancelled — save state
-            set_resume_position(entry["id"], self._paragraph_idx, 0)
-
-    def _on_article_completed(self, entry: dict) -> None:
-        """Handle article completion on the main thread."""
-        clear_resume_position(entry["id"])
-        mark_completed(entry)
-        self._playing = False
-        self._paused = False
-        self._generation_paused = False
-        self._current_entry = None
-        self._update_now_playing(
-            title="Completed!",
-            progress=100,
-            time_remaining="",
-            text_snippet="",
-            status="Article finished",
-        )
-        self._refresh_playlists()
-        # Auto-advance to next article
-        if self._all_items:
-            self._start_playback(self._all_items[0])
-        else:
-            self._trigger_generation()
-
-    @work(thread=True, exclusive=True, group="playback")
-    def _play_podcast(self, entry: dict, resume_segment: int = 0) -> None:
-        """Play a prepared podcast episode from its finalized audio artifact.
-
-        Unlike ``_play_article`` (which re-synthesizes article text through TTS),
-        a ready podcast has a single prepared MP3 on disk. This worker streams
-        that file via ``engine.play_file`` and syncs the UI transcript from the
-        stored transcript segments — it never touches the TTS/generate path.
+        The ONLY write path for starting playback: ``StartPlayback`` is
+        submitted through :attr:`_controller` (SR-1/INV-8) before anything
+        else happens. Resume offset comes from the controller's current
+        checkpoint (only honored when it belongs to THIS entry — a stale
+        checkpoint from a different entry must never leak into a fresh
+        entry's start position); periodic checkpoints during playback are
+        written by the ``CheckpointPoller``, never by this method.
         """
-        worker = get_current_worker()
-
-        audio_file = entry.get("audio_file")
-        if not audio_file:
-            self.call_from_thread(self._set_status, "Error: podcast audio not found", _STATUS_HIGH)
-            return
-        audio_path = Path(audio_file)
-        if not audio_path.exists():
-            self.call_from_thread(self._set_status, "Error: podcast audio not found", _STATUS_HIGH)
+        if self._station_read_only:
+            self._set_status(_STATION_READ_ONLY_MSG, _STATUS_HIGH)
             return
 
-        # Load the transcript segments saved during preparation. They are
-        # TranscriptSegment dataclasses (.start_s/.end_s/.text) — exactly the
-        # shape engine.play_file expects — so we pass them straight through.
-        from wilted import DATA_DIR
-        from wilted.transcribe import load_transcript
-
-        transcript_path = DATA_DIR / "transcripts" / f"{entry['id']}_transcript.json"
-        segments = load_transcript(transcript_path) or []
-
-        self._ensure_engine()
-        engine = self._engine
-
-        # Drive the UI transcript from segment text so the Plate mirrors the
-        # article view (previous/current/upcoming context around the cursor).
-        self._paragraphs = [seg.text for seg in segments]
-        self._total_segments = len(segments)
-        self._paragraph_idx = resume_segment
-        self._segments_played = resume_segment
-
-        title = entry.get("title", "Untitled")
-        self.call_from_thread(
-            self._update_now_playing,
-            title=title,
-            status="Playing",
-        )
-
-        def on_progress(seg_idx: int, total: int, text: str) -> None:
-            if worker.is_cancelled:
-                return
-            self._paragraph_idx = seg_idx
-            self._segments_played = seg_idx
-            progress = ((seg_idx + 1) / total) * 100 if total else 0.0
-            transcript = self._build_transcript(seg_idx)
-
-            # Periodically save resume position (segment index)
-            now = time.time()
-            if now - self._last_state_save >= 30:
-                set_resume_position(entry["id"], seg_idx, 0)
-                self._last_state_save = now
-
-            self.call_from_thread(
-                self._update_now_playing,
-                progress=progress,
-                text_snippet=transcript,
-                status="Playing",
-            )
-
-        try:
-            engine.play_file(
-                audio_path,
-                transcript_segments=segments,
-                start_segment=resume_segment,
-                on_progress=on_progress,
-            )
-        except Exception as e:
-            self.call_from_thread(self._set_status, f"Playback error: {e}", _STATUS_HIGH)
-            return
-
-        # play_file returns when the stream ends OR is stopped. A user stop sets
-        # the engine's stop event without cancelling the worker, so distinguish
-        # completion (played to the end) from an interrupted stop.
-        if not worker.is_cancelled and not self._engine._stop_event.is_set():
-            self.call_from_thread(self._on_podcast_completed, entry)
-        else:
-            set_resume_position(entry["id"], self._paragraph_idx, 0)
-
-    def _on_podcast_completed(self, entry: dict) -> None:
-        """Handle podcast completion on the main thread."""
-        clear_resume_position(entry["id"])
-        mark_completed(entry)
-        self._playing = False
-        self._paused = False
-        self._generation_paused = False
-        self._current_entry = None
-        self._update_now_playing(
-            title="Completed!",
-            progress=100,
-            time_remaining="",
-            text_snippet="",
-            status="Episode finished",
-        )
-        self._refresh_playlists()
-        # Auto-advance to next item
-        if self._all_items:
-            self._start_playback(self._all_items[0])
-        else:
-            self._trigger_generation()
-
-    def _start_playback(self, entry: dict, resume_para: int = 0) -> None:
-        """Start playing an item, stopping any current playback.
-
-        Routes on the item's type: podcast episodes play their prepared audio
-        artifact via ``_play_podcast`` (engine.play_file), while articles play
-        through the hybrid TTS/cache path via ``_play_article``. All playback
-        bookkeeping (toggle guard, stop/cancel, state reset) is shared.
-        """
-        # Guard: if already playing this exact item, treat as toggle
-        if self._playing and self._current_entry and entry["id"] == self._current_entry["id"]:
+        # Guard: if already playing this exact entry, treat as toggle.
+        if self._playing and self._current_entry is not None and entry.entry_id == self._current_entry.entry_id:
             self.action_toggle_play()
             return
-        if self._playing and self._engine:
-            self._engine.stop()
-        if self._playback_worker and self._playback_worker.is_running:
-            self._playback_worker.cancel()
+
+        # Read any existing checkpoint BEFORE submitting StartPlayback. The
+        # reducer's StartPlayback transition (idle -> playing(entry))
+        # unconditionally clears the checkpoint on every call — reading it
+        # AFTER submission would always observe None, so resume would never
+        # work. The pre-submit checkpoint can still be valid for THIS entry
+        # (e.g. a checkpoint left by a prior playing session for the same
+        # entry — app restart, or re-selecting the currently-paused entry);
+        # it is only honored when it belongs to this exact entry, never a
+        # stale checkpoint from a different one.
+        prior_checkpoint = self._controller.current_state().checkpoint
+        offset_ms = (
+            prior_checkpoint.media_offset_ms
+            if (prior_checkpoint is not None and prior_checkpoint.entry_id == entry.entry_id)
+            else 0
+        )
+
+        try:
+            result = self._controller.submit_and_wait(StartPlayback(entry=entry), timeout=5.0)
+        except Exception as e:
+            self._set_status(f"Station error: {e}", _STATUS_HIGH)
+            return
+        if not result.accepted:
+            self._set_status("Could not start playback", _STATUS_HIGH)
+            return
+
+        try:
+            self._adapter.play(entry.media, offset_ms=offset_ms)
+        except Exception as e:
+            self._set_status(f"Playback error: {e}", _STATUS_HIGH)
+            self._generation_paused = False  # don't leave generation paused forever on a failed start
+            if self._controller.is_running:
+                self._controller.submit(Stop())
+            return
 
         self._generation_paused = True  # Pause background generation during playback
         self._current_entry = entry
+        self._current_index = self._index_of(entry)
         self._playing = True
         self._paused = False
-        self._rewind_to = None
-        self._last_state_save = time.time()
 
-        if entry.get("item_type") == "podcast_episode":
-            self._playback_worker = self._play_podcast(entry, resume_para)
+        duration_s = entry.duration_ms / 1000 if entry.duration_ms else 0.0
+        self._estimated_remaining_secs = max(0.0, duration_s - offset_ms / 1000)
+        self._bar_progress = (offset_ms / entry.duration_ms * 100) if entry.duration_ms else 0.0
+
+        self._update_now_playing(title=self._display_title(entry), progress=self._bar_progress, status="Playing")
+
+        if not self._poller_started:
+            self._poller.start()
+            self._poller_started = True
+
+    def _on_adapter_completion(self, reason: CompletionReason) -> None:
+        """Thin marshaller installed on the adapter — runs on the audio background thread.
+
+        Uses ``post_message`` (thread-safe, non-blocking), NOT
+        ``call_from_thread`` — see :class:`PlaybackCompleted`'s docstring for
+        the deadlock this avoids.
+        """
+        self.post_message(PlaybackCompleted(reason))
+
+    def on_playback_completed(self, message: PlaybackCompleted) -> None:
+        """UI-thread entry point for :class:`PlaybackCompleted`, dispatched by Textual's message pump."""
+        self._handle_station_completion(message.reason)
+
+    def _handle_station_completion(self, reason: CompletionReason) -> None:
+        """UI-thread completion handling (PM-10): auto-advance ONLY on a verified clean end.
+
+        ``reason.is_clean_completion`` is True only for ``ENDED`` — a
+        verified play-to-the-end. ``TRUNCATED``/``UNKNOWN`` must never
+        auto-advance or mark-complete (the PM-10 guard): the entry may not
+        have actually finished playing, so treating it as done would silently
+        skip content.
+        """
+        finished_entry = self._current_entry
+        if self._controller.is_running:
+            self._controller.submit(Stop())
+        self._playing = False
+        self._paused = False
+
+        if not reason.is_clean_completion:
+            self._poller.stop()
+            self._poller_started = False
+            self._generation_paused = False
+            self._set_status("Playback interrupted — not advancing", _STATUS_HIGH)
+            return
+
+        if finished_entry is not None and finished_entry.item_id is not None:
+            item = self._item_lookup.get(finished_entry.item_id)
+            if item is not None:
+                mark_completed(item)
+
+        # `_current_index is None` means we don't actually know where in the
+        # backlog we are (e.g. a sequencer rebuild dropped the entry that was
+        # playing) — that must fall through to "queue finished", NOT replay
+        # station_entries[0]. Only a known index advances to the next slot.
+        if self._current_index is not None and self._current_index + 1 < len(self._station_entries):
+            self._start_playback(self._station_entries[self._current_index + 1])
         else:
-            self._playback_worker = self._play_article(entry, resume_para)
+            self._current_entry = None
+            self._current_index = None
+            self._generation_paused = False
+            self._poller.stop()
+            self._poller_started = False
+            self._update_now_playing(
+                title="Completed!", progress=100, time_remaining="", text_snippet="", status="Queue finished"
+            )
+            self._trigger_generation()
+
+        # Keep the DB item cache fresh (title/word lookups, empty-state
+        # message); the Larder tree itself is refreshed on the next natural
+        # trigger (add/delete/mark/clear/manual-refresh/generation-complete)
+        # rather than synchronously here, to keep completion handling cheap.
+        self._refresh_playlists()
 
     # -- Actions (key bindings) ---------------------------------------------
 
     def action_toggle_play(self) -> None:
-        """Play, pause, or resume playback."""
+        """Play, pause, or resume playback.
+
+        Pause/resume are adapter-only (NOT a reducer state change — the
+        station stays in the PLAYING lifecycle while paused); only
+        start/stop go through the controller.
+        """
         if self._playing and not self._paused:
-            # Pause
-            if self._engine:
-                self._engine.pause()
+            self._adapter.pause()
             self._paused = True
             self._set_status("Paused", _STATUS_MEDIUM)
-            if self._current_entry:
-                set_resume_position(self._current_entry["id"], self._paragraph_idx, 0)
         elif self._playing and self._paused:
-            # Resume
-            if self._engine:
-                self._engine.resume()
+            self._adapter.resume()
             self._paused = False
             self._set_status("Playing", _STATUS_MEDIUM)
         else:
-            # Start playing selected or first article
             entry = self._get_selected_entry()
-            if not entry and self._all_items:
-                entry = self._all_items[0]
-            if entry:
-                # Check for resume state
-                saved = get_resume_position(entry["id"])
-                resume_para = saved["paragraph_idx"] if saved else 0
-                self._start_playback(entry, resume_para)
+            if entry is None and self._station_entries:
+                entry = self._station_entries[0]
+            if entry is not None:
+                self._start_playback(entry)
+            else:
+                self._set_status("Nothing to play", _STATUS_MEDIUM)
 
     def action_stop(self) -> None:
-        """Stop playback completely."""
-        if self._playing and self._engine:
-            self._engine.stop()
-        if self._playback_worker and self._playback_worker.is_running:
-            self._playback_worker.cancel()
-        if self._current_entry:
-            set_resume_position(self._current_entry["id"], self._paragraph_idx, 0)
+        """Stop playback completely (adapter stop + reducer Stop + poller stop)."""
+        self._adapter.stop()
+        if self._controller.is_running:
+            self._controller.submit(Stop())
+        self._poller.stop()
+        self._poller_started = False
         self._playing = False
         self._paused = False
         self._generation_paused = False
@@ -872,45 +931,40 @@ class WiltedApp(App):
 
     def action_play_selected(self) -> None:
         """Play the selected item from the playlist tree."""
-        tree = self.query_one("#playlist-tree", Tree)
-        node = tree.cursor_node
-        if node is None:
-            return
-        data = node.data
-        if isinstance(data, dict) and "id" in data:
-            saved = get_resume_position(data["id"])
-            resume_para = saved["paragraph_idx"] if saved else 0
-            self._start_playback(data, resume_para)
+        entry = self._get_selected_entry()
+        if entry is not None:
+            self._start_playback(entry)
 
     def action_skip_segment(self) -> None:
-        """Skip to the next paragraph."""
-        if not self._playing:
+        """Advance to the next station entry.
+
+        MVP change (A.3.5): per-paragraph skip is dropped — the
+        ``MacPlaybackAdapter`` has no in-place seek (``adapter.seek`` raises
+        ``NotImplementedError``; only ``play(media, offset_ms=...)`` at
+        start). The ">>" binding now means "next entry", entry-level.
+        """
+        if not self._playing or self._current_index is None:
             return
-        if self._paused:
-            # Move forward while paused — update display without resuming
-            if self._paragraph_idx < len(self._paragraphs) - 1:
-                self._paragraph_idx += 1
-                transcript = self._build_transcript(self._paragraph_idx)
-                progress = (self._paragraph_idx / len(self._paragraphs)) * 100
-                self._update_now_playing(progress=progress, text_snippet=transcript)
-        elif self._engine:
-            self._engine.stop()
-            # The while loop will naturally advance para_idx
+        next_index = self._current_index + 1
+        if next_index < len(self._station_entries):
+            self._start_playback(self._station_entries[next_index])
+        else:
+            self._set_status("No next item", _STATUS_MEDIUM)
 
     def action_prev_paragraph(self) -> None:
-        """Rewind to the previous paragraph."""
-        if not self._playing:
+        """Go back to the previous station entry.
+
+        MVP change (A.3.5): per-paragraph rewind is dropped for the same
+        reason as :meth:`action_skip_segment` — no in-place seek. The "<<"
+        binding now means "previous entry", entry-level.
+        """
+        if not self._playing or self._current_index is None:
             return
-        if self._paused:
-            # Move backward while paused — update display without resuming
-            if self._paragraph_idx > 0:
-                self._paragraph_idx -= 1
-                transcript = self._build_transcript(self._paragraph_idx)
-                progress = (self._paragraph_idx / len(self._paragraphs)) * 100
-                self._update_now_playing(progress=progress, text_snippet=transcript)
-        elif self._engine:
-            self._rewind_to = max(0, self._paragraph_idx - 1)
-            self._engine.stop()  # Stop current audio; while loop picks up _rewind_to
+        prev_index = self._current_index - 1
+        if prev_index >= 0:
+            self._start_playback(self._station_entries[prev_index])
+        else:
+            self._set_status("No previous item", _STATUS_MEDIUM)
 
     def _save_speed(self) -> None:
         """Persist current speed to the database for next session."""
@@ -931,26 +985,14 @@ class WiltedApp(App):
         self._save_speed()
 
     def action_next_article(self) -> None:
-        """Stop current and play next article in queue."""
-        self.action_stop()
-        if len(self._all_items) > 1:
-            # Find current article index and advance
-            if self._current_entry:
-                current_id = self._current_entry["id"]
-                idx = next(
-                    (i for i, e in enumerate(self._all_items) if e["id"] == current_id),
-                    -1,
-                )
-                next_idx = idx + 1 if idx >= 0 else 0
-            else:
-                next_idx = 0
-            if next_idx < len(self._all_items):
-                entry = self._all_items[next_idx]
-                saved = get_resume_position(entry["id"])
-                resume_para = saved["paragraph_idx"] if saved else 0
-                self._start_playback(entry, resume_para)
-        elif self._all_items:
-            self._start_playback(self._all_items[0])
+        """Advance to the next entry in the station backlog (entry-level, wraps to 0)."""
+        if not self._station_entries:
+            self._set_status("Nothing to play", _STATUS_MEDIUM)
+            return
+        next_index = (self._current_index + 1) if self._current_index is not None else 0
+        if next_index >= len(self._station_entries):
+            next_index = 0
+        self._start_playback(self._station_entries[next_index])
 
     def action_voice_settings(self) -> None:
         """Open voice/speed settings modal."""
@@ -960,7 +1002,6 @@ class WiltedApp(App):
                 old_voice, old_speed, old_lang = self._voice, self._speed, self._lang
                 self._voice, self._speed, self._lang = result
                 self._update_speed_display()
-                self._refresh_playlists()  # Update est. time column
                 changed = old_voice != self._voice or old_speed != self._speed or old_lang != self._lang
                 if changed:
                     self._save_speed()
@@ -972,15 +1013,21 @@ class WiltedApp(App):
         self.push_screen(VoiceSettingsScreen(self._voice, self._speed, self._lang), on_dismiss)
 
     def action_add_article(self) -> None:
-        """Open the add article dialog."""
+        """Open the add article dialog.
+
+        Item-DB CRUD — writes the item store directly (not station-state, no
+        controller routing). After a successful add, the sequencer is
+        rebuilt so the new item can appear once finalized; "add & play"
+        defers the actual play until that rebuild resolves whether the item
+        is already finalized (see :meth:`_apply_sequencer_result`).
+        """
 
         def on_dismiss(result: tuple[str, dict] | None) -> None:
             if result is not None:
-                action, entry = result
-                self._refresh_playlists()
-                self._set_status(f"Added: {entry.get('title', 'Untitled')}", _STATUS_MEDIUM)
-                if action == "play":
-                    self._start_playback(entry)
+                action, entry_dict = result
+                self._set_status(f"Added: {entry_dict.get('title', 'Untitled')}", _STATUS_MEDIUM)
+                self._pending_play_item_id = str(entry_dict["id"]) if action == "play" else None
+                self._rebuild_sequencer()
                 self._trigger_generation()
 
         self.push_screen(AddArticleScreen(), on_dismiss)
@@ -989,6 +1036,7 @@ class WiltedApp(App):
         """Stop playback and reset the Plate pane to its empty state."""
         self.action_stop()
         self._current_entry = None
+        self._current_index = None
         self.query_one("#now-playing-title", Label).update("No article selected")
         self.query_one("#current-text", Static).update("")
         self._bar_progress = 0.0
@@ -996,44 +1044,69 @@ class WiltedApp(App):
         self._update_playback_bar()
 
     def action_mark_read(self) -> None:
-        """Mark the selected item as read (completed). Keeps it in the DB for metrics."""
+        """Mark the selected item as read (completed). Keeps it in the DB for metrics.
+
+        Item-DB CRUD (mark_completed writes a different store than station
+        state). If the currently-playing entry is the target, stop playback
+        via the station path FIRST (:meth:`_stop_and_clear_plate`) rather
+        than poking the DB out from under an active playback session.
+
+        Data-safety guard: refused entirely in read-only mode (another live
+        session owns the station lease) — that session may be reading/
+        writing this same DB item right now.
+        """
+        if self._station_read_only:
+            self._set_status(_STATION_READ_ONLY_MSG, _STATUS_HIGH)
+            return
         entry = self._get_selected_entry()
-        if not entry:
+        if entry is None:
             self._set_status("Nothing to mark", _STATUS_MEDIUM)
             return
-        if self._current_entry and entry["id"] == self._current_entry["id"]:
+        item = self._item_lookup.get(entry.item_id or "")
+        if item is None:
+            self._set_status("Nothing to mark", _STATUS_MEDIUM)
+            return
+        if self._current_entry is not None and entry.entry_id == self._current_entry.entry_id:
             self._stop_and_clear_plate()
-        mark_completed(entry)
-        clear_resume_position(entry["id"])
-        title = entry.get("title", "Untitled")
+        mark_completed(item)
+        title = item.get("title", "Untitled")
         if len(title) > 40:
             title = title[:37] + "..."
         self._set_status(f"Marked as read: {title}", _STATUS_MEDIUM)
-        self._refresh_playlists()
+        self._rebuild_sequencer()
 
     def action_delete_selected(self) -> None:
-        """Delete the selected article with confirmation."""
+        """Delete the selected article with confirmation.
+
+        Item-DB CRUD. Stops playback via the station path first if the
+        target is currently playing (same rule as :meth:`action_mark_read`).
+
+        Data-safety guard: refused entirely in read-only mode — see
+        :meth:`action_mark_read`.
+        """
+        if self._station_read_only:
+            self._set_status(_STATION_READ_ONLY_MSG, _STATUS_HIGH)
+            return
         entry = self._get_selected_entry()
-        if not entry:
+        if entry is None:
             self._set_status("Nothing to delete", _STATUS_MEDIUM)
             return
-
-        title = entry.get("title", "Untitled")
+        item = self._item_lookup.get(entry.item_id or "")
+        title = item.get("title", "Untitled") if item else entry.entry_id
         if len(title) > 40:
             title = title[:37] + "..."
 
         def on_dismiss(confirmed: bool) -> None:
             if confirmed:
-                # Stop playback if deleting current article
-                if self._current_entry and entry["id"] == self._current_entry["id"]:
+                if self._current_entry is not None and entry.entry_id == self._current_entry.entry_id:
                     self._stop_and_clear_plate()
-                try:
-                    remove_article_by_id(entry["id"])
-                    clear_resume_position(entry["id"])
-                    self._set_status(f"Deleted: {entry.get('title', 'Untitled')}", _STATUS_MEDIUM)
-                except Exception as e:
-                    self._set_status(f"Delete failed: {e}", _STATUS_HIGH)
-                self._refresh_playlists()
+                if item is not None:
+                    try:
+                        remove_article_by_id(item["id"])
+                        self._set_status(f"Deleted: {item.get('title', 'Untitled')}", _STATUS_MEDIUM)
+                    except Exception as e:
+                        self._set_status(f"Delete failed: {e}", _STATUS_HIGH)
+                self._rebuild_sequencer()
 
         self.push_screen(
             ConfirmScreen("Permanently Delete?", f'Permanently delete "{title}"? Use [m] to mark as read instead.'),
@@ -1043,21 +1116,32 @@ class WiltedApp(App):
     def action_text_preview(self) -> None:
         """Preview the text of the selected article."""
         entry = self._get_selected_entry()
-        if not entry:
+        if entry is None:
+            self._set_status("No article selected", _STATUS_MEDIUM)
+            return
+        item = self._item_lookup.get(entry.item_id or "")
+        if item is None:
             self._set_status("No article selected", _STATUS_MEDIUM)
             return
 
-        text = get_article_text(entry)
+        text = get_article_text(item)
         if text is None:
             self._set_status("Error: article text not found", _STATUS_HIGH)
             return
 
-        title = entry.get("title", "Untitled")
-        word_count = entry.get("words", len(text.split()))
+        title = item.get("title", "Untitled")
+        word_count = item.get("words", len(text.split()))
         self.push_screen(TextPreviewScreen(title, text, word_count))
 
     def action_clear_all(self) -> None:
-        """Clear all articles with confirmation."""
+        """Clear all articles with confirmation. Item-DB CRUD.
+
+        Data-safety guard: refused entirely in read-only mode — see
+        :meth:`action_mark_read`.
+        """
+        if self._station_read_only:
+            self._set_status(_STATION_READ_ONLY_MSG, _STATUS_HIGH)
+            return
         if not self._all_items:
             self._set_status("Queue is already empty", _STATUS_MEDIUM)
             return
@@ -1068,10 +1152,11 @@ class WiltedApp(App):
             if confirmed:
                 if self._playing:
                     self.action_stop()
-                    self._current_entry = None
+                self._current_entry = None
+                self._current_index = None
                 cleared = clear_queue()
                 self._set_status(f"Cleared {cleared} article(s)", _STATUS_MEDIUM)
-                self._refresh_playlists()
+                self._rebuild_sequencer()
 
         self.push_screen(
             ConfirmScreen("Clear All Articles?", f"This will remove {count} article(s) and delete all cached text."),
@@ -1079,18 +1164,16 @@ class WiltedApp(App):
         )
 
     def action_refresh_queue(self) -> None:
-        """Refresh queue from disk."""
-        self._refresh_playlists()
+        """Refresh queue from disk and rebuild the station backlog."""
+        self._rebuild_sequencer()
         self._set_status("Queue refreshed")
 
     def action_quit_app(self) -> None:
-        """Save state and quit."""
-        if self._playing and self._engine:
-            self._engine.stop()
-        if self._playback_worker and self._playback_worker.is_running:
-            self._playback_worker.cancel()
-        if self._current_entry:
-            set_resume_position(self._current_entry["id"], self._paragraph_idx, 0)
+        """Stop playback/polling and release the station lease, then exit."""
+        self._adapter.stop()
+        self._poller.stop()
+        self._poller_started = False
+        self._controller.stop()
         self.exit()
 
     # -- WAV export ---------------------------------------------------------
@@ -1098,16 +1181,20 @@ class WiltedApp(App):
     def action_export_wav(self) -> None:
         """Export selected article to WAV file."""
         entry = self._get_selected_entry()
-        if not entry:
+        if entry is None:
+            self._set_status("No article selected", _STATUS_MEDIUM)
+            return
+        item = self._item_lookup.get(entry.item_id or "")
+        if item is None:
             self._set_status("No article selected", _STATUS_MEDIUM)
             return
 
-        text = get_article_text(entry)
+        text = get_article_text(item)
         if text is None:
             self._set_status("Error: article text not found", _STATUS_HIGH)
             return
 
-        self._export_wav(entry, text)
+        self._export_wav(item, text)
 
     @work(thread=True, exclusive=True, group="export")
     def _export_wav(self, entry: dict, text: str) -> None:
@@ -1170,13 +1257,13 @@ class WiltedApp(App):
 
     # -- Helpers ------------------------------------------------------------
 
-    def _get_selected_entry(self) -> dict | None:
-        """Get the item dict for the currently highlighted Tree node."""
+    def _get_selected_entry(self) -> StationEntry | None:
+        """Get the StationEntry for the currently highlighted Tree leaf node."""
         tree = self.query_one("#playlist-tree", Tree)
         node = tree.cursor_node
         if node is None:
             return None
         data = node.data
-        if isinstance(data, dict) and "id" in data:
+        if isinstance(data, StationEntry):
             return data
         return None

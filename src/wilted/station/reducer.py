@@ -61,10 +61,10 @@ class StationState:
             in ascending ``priority`` order (index 0 = most urgent). See
             ``_accept_interruption``/``_resume_from_interruption``, which
             sort on insert and pop index 0. NOTE: this is *priority-ordered*
-            resume, not strict LIFO "resume whatever you just interrupted";
-            whether priority-ordered or most-recent-first is the intended
-            product semantics is an open design question deferred to Plan A
-            (see HISTORY.md / handoff.md). Holds full entries (matches the
+            resume, not strict LIFO "resume whatever you just interrupted".
+            OQ-1 (priority-ordered vs most-recent-first resume) is RESOLVED
+            for Plan A to priority-ordered, locked by the reducer's
+            interruption tests. Holds full entries (matches the
             ``PlaybackCheckpoint.interrupted_entry_stack`` shape) so the
             reducer can pop back to them.
         lease: The current :class:`ControllerLease` holder, if any. None
