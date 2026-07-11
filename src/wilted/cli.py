@@ -1105,12 +1105,17 @@ def _weather_monitor_for_launch() -> "WeatherMonitor | None":
     try:
         from wilted.station_runtime.weather_monitor import build_production_monitor
 
-        return build_production_monitor(trigger_path=Path(trigger) if trigger else None)
+        monitor = build_production_monitor(trigger_path=Path(trigger) if trigger else None)
     except Exception:
         logger.warning(
             "_weather_monitor_for_launch: failed to construct WeatherMonitor; launching without it", exc_info=True
         )
         return None
+    if trigger:
+        logger.info("weather monitor ARMED with A.5.1 test trigger at %s — `touch` it to fire a bulletin", trigger)
+    else:
+        logger.info("weather monitor using live NWS fetch (no WILTED_WEATHER_TEST_TRIGGER set)")
+    return monitor
 
 
 def main():
