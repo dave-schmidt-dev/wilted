@@ -13,6 +13,7 @@ from __future__ import annotations
 import concurrent.futures
 import dataclasses
 import inspect
+import json
 from unittest.mock import patch
 
 import pytest
@@ -27,7 +28,15 @@ from wilted.station.models import (
     StationEntry,
     TranscriptSegment,
 )
-from wilted.station.reducer import Checkpoint, StartPlayback, StationLifecycle, StationState, Stop
+from wilted.station.reducer import (
+    AcceptInterruption,
+    Checkpoint,
+    ResumeFromInterruption,
+    StartPlayback,
+    StationLifecycle,
+    StationState,
+    Stop,
+)
 from wilted.station_runtime import CompletionReason, LeaseHeldError, RouteChangeEvent
 from wilted.station_runtime.controller import SubmitResult
 from wilted.tui import (
@@ -90,13 +99,18 @@ def _station_entry(
     duration_ms: int = 60_000,
     kind: str = "item",
     transcript_segments: tuple = (),
+    safe_interruption: SafeInterruptionMap | None = None,
 ):
     """Build a StationEntry. ``kind`` is always "item" for sequencer output —
     the article-vs-podcast distinction lives inside ``media``, not on
     ``StationEntry.kind`` (the sequencer never produces "bulletin" entries).
 
     ``transcript_segments`` defaults to ``()`` (matching the pre-existing
-    default), so every caller that doesn't pass it is unaffected."""
+    default), so every caller that doesn't pass it is unaffected.
+    ``safe_interruption`` defaults to ``SafeInterruptionMap.empty()``
+    (NO_INTERRUPT — matching the pre-existing default via
+    ``_finalized_media``), so every caller that doesn't pass it is
+    unaffected; A.4.3 bulletin-interruption tests pass a real windowed map."""
     return StationEntry(
         entry_id=entry_id or f"item-{item_id}",
         kind=kind,
@@ -106,7 +120,46 @@ def _station_entry(
         priority=5,
         expiry=None,
         duration_ms=duration_ms,
-        media=_finalized_media(duration_ms=duration_ms, transcript_segments=transcript_segments),
+        media=_finalized_media(
+            duration_ms=duration_ms,
+            transcript_segments=transcript_segments,
+            **({"safe_interruption": safe_interruption} if safe_interruption is not None else {}),
+        ),
+    )
+
+
+# A.4.3: a real windowed safe-interruption map, [10_000, 12_000] ms, used by
+# the weather bulletin interrupt/resume tests below.
+SAFE_WINDOW = SafeInterruptionMap.from_verified_windows(((10_000, 12_000),))
+
+
+def _bulletin_entry(
+    entry_id: str = "wx-1",
+    *,
+    duration_ms: int = 5_000,
+    playable: bool = True,
+    priority: int = 0,
+    expiry: str | None = None,
+) -> StationEntry:
+    """Build a weather bulletin StationEntry, matching
+    ``WeatherMonitor._qualify``'s real shape (kind="bulletin", no item_id,
+    no transcript, explicit NO_INTERRUPT for the bulletin's OWN media --
+    bulletins are never themselves interruptible)."""
+    return StationEntry(
+        entry_id=entry_id,
+        kind="bulletin",
+        item_id=None,
+        source="monitor:nws-alerts",
+        policy_id="weather-alert",
+        priority=priority,
+        expiry=expiry,
+        duration_ms=duration_ms,
+        media=_finalized_media(
+            duration_ms=duration_ms,
+            transcript_segments=(),
+            safe_interruption=SafeInterruptionMap.empty(),
+            finalization=FinalizationState.complete() if playable else FinalizationState(),
+        ),
     )
 
 
@@ -124,7 +177,7 @@ def _sequencer_factory(entries):
 class FakeController:
     """Records every submitted action; current_state() is settable by the test.
 
-    Mirrors the load-bearing LIFECYCLE effects of three real reducer
+    Mirrors the load-bearing LIFECYCLE effects of five real reducer
     transitions — not a full reducer reimplementation, but faithful enough
     that a regression in which action a caller submits (or in what order) can
     actually be caught by a test, rather than silently passing against a
@@ -132,9 +185,14 @@ class FakeController:
 
     - ``StartPlayback`` (``reducer._start_playback``): idle -> playing(entry).
       Sets ``lifecycle=PLAYING``, ``active_entry=action.entry``, and
-      unconditionally clears any prior checkpoint (``checkpoint=None``) — a
-      bug class this suite must catch is "read the checkpoint AFTER
-      submitting StartPlayback instead of before".
+      unconditionally clears any prior checkpoint (``checkpoint=None``) AND
+      ``interruption_stack=()`` — a bug class this suite must catch is "read
+      the checkpoint AFTER submitting StartPlayback instead of before", and
+      (A.4.3) "play a just-accepted bulletin via a fresh StartPlayback
+      instead of a dedicated play path" — the latter would silently discard
+      the just-interrupted entry (see ``WiltedApp._play_bulletin``'s
+      docstring) if this fake didn't clear ``interruption_stack`` here too,
+      exactly like the real reducer does.
     - ``Checkpoint`` (``reducer._checkpoint``): REJECTS (state left
       unchanged, revision NOT bumped) unless the station is currently
       ``PLAYING`` with an ``active_entry`` set — exactly the reducer's own
@@ -144,6 +202,25 @@ class FakeController:
       ``STOPPED`` and cause the real reducer to reject that Checkpoint too,
       silently falling back to a stale offset) — a fake that always accepted
       Checkpoint unconditionally could never catch that regression.
+    - ``AcceptInterruption`` (``reducer._accept_interruption``, A.4.3):
+      REJECTS unless ``active_entry`` exists, ``policy_current`` is True, the
+      bulletin isn't expired, ``bulletin.media.is_playable``, AND
+      ``active_entry.media.safe_interruption.safe_point_at(interrupt_offset_ms)``
+      is True — the exact ``safe_point_at`` precondition the A.4.3 hazard
+      review is about (a lenient fake that always accepted would make the
+      "no safe boundary -> no interruption" test vacuous, and would silently
+      hide HAZARD 2 — a future-offset accept — since the fake would just
+      accept whatever offset it's handed regardless of whether it's really
+      safe). On accept: checkpoints the interrupted entry at
+      ``interrupt_offset_ms``, pushes it onto ``interruption_stack`` (sorted
+      by ``priority``), and switches ``active_entry`` to the bulletin.
+    - ``ResumeFromInterruption`` (``reducer._resume_from_interruption``,
+      A.4.3): pops ``interruption_stack[0]`` into ``active_entry``; REJECTS
+      (no-op) if the stack is empty. Deliberately does NOT touch
+      ``checkpoint`` — matches the real reducer exactly, since the
+      accept-time checkpoint (still carrying the interrupted entry's exact
+      resume offset) is what ``_start_playback`` reads afterward to land the
+      precise resume position.
     - ``Stop`` (``reducer._stop``): any state -> stopped. Sets
       ``lifecycle=STOPPED`` and bumps the revision; the checkpoint field is
       left untouched (matches the real transition, which durably retains it).
@@ -193,6 +270,7 @@ class FakeController:
                 lifecycle=StationLifecycle.PLAYING,
                 active_entry=action.entry,
                 checkpoint=None,
+                interruption_stack=(),
                 station_revision=self._state.station_revision + 1,
             )
             return True
@@ -217,6 +295,10 @@ class FakeController:
             )
             self.checkpoint_outcomes.append(True)
             return True
+        if isinstance(action, AcceptInterruption):
+            return self._record_accept_interruption(action)
+        if isinstance(action, ResumeFromInterruption):
+            return self._record_resume_from_interruption(action)
         if isinstance(action, Stop):
             self._state = dataclasses.replace(
                 self._state,
@@ -224,6 +306,64 @@ class FakeController:
                 station_revision=self._state.station_revision + 1,
             )
             return True
+        return True
+
+    def _record_accept_interruption(self, action: AcceptInterruption) -> bool:
+        """Mirrors ``reducer._accept_interruption`` (see the class docstring
+        for why every precondition here is load-bearing for the A.4.3
+        hazard tests, especially ``safe_point_at``)."""
+        state = self._state
+        if state.active_entry is None:
+            return False
+        if not action.policy_current:
+            return False
+        if action.bulletin.is_expired(action.now):
+            return False
+        if not action.bulletin.media.is_playable:
+            return False
+        if not state.active_entry.media.safe_interruption.safe_point_at(action.interrupt_offset_ms):
+            return False
+
+        resume_checkpoint = PlaybackCheckpoint(
+            station_revision=state.station_revision,
+            entry_id=state.active_entry.entry_id,
+            media_offset_ms=action.interrupt_offset_ms,
+            state="paused",
+            interrupted_entry_stack=tuple(e.entry_id for e in state.interruption_stack),
+            writer_device="controller",
+            mutation_id=f"auto-interrupt-{action.bulletin.entry_id}-{action.now}",
+            timestamp=action.now,
+        )
+        new_stack = [*state.interruption_stack, state.active_entry]
+        new_stack.sort(key=lambda e: e.priority)
+        self._state = dataclasses.replace(
+            state,
+            lifecycle=StationLifecycle.PLAYING,
+            station_revision=state.station_revision + 1,
+            active_entry=action.bulletin,
+            checkpoint=resume_checkpoint,
+            interruption_stack=tuple(new_stack),
+        )
+        return True
+
+    def _record_resume_from_interruption(self, action: ResumeFromInterruption) -> bool:
+        """Mirrors ``reducer._resume_from_interruption``: pops
+        ``interruption_stack[0]`` into ``active_entry``; rejects (no-op) if
+        the stack is empty. Deliberately does NOT touch ``checkpoint`` —
+        see the class docstring."""
+        del action  # unused: ResumeFromInterruption carries only `now`
+        state = self._state
+        if not state.interruption_stack:
+            return False
+        next_entry = state.interruption_stack[0]
+        remaining = state.interruption_stack[1:]
+        self._state = dataclasses.replace(
+            state,
+            lifecycle=StationLifecycle.PLAYING,
+            station_revision=state.station_revision + 1,
+            active_entry=next_entry,
+            interruption_stack=remaining,
+        )
         return True
 
     def submit(self, action) -> concurrent.futures.Future:
@@ -347,6 +487,35 @@ def _route_monitor_factory_for(monitor: FakeRouteMonitor):
         return monitor
 
     return _factory
+
+
+class FakeWeatherMonitor:
+    """No-op weather monitor — records start()/stop() calls.
+
+    Unlike ``poller_factory``/``route_monitor_factory``, ``WiltedApp``
+    accepts an already-constructed ``weather_monitor=`` instance directly
+    (see its ``__init__`` docstring for why there's no safe default-factory
+    style here — mirrors how ``controller``/``adapter`` are injected as
+    instances, not factories). ``fire(bulletin)`` simulates the monitor
+    handing off a bulletin exactly like the real
+    ``WeatherMonitor.on_bulletin_ready`` callback would.
+    """
+
+    def __init__(self) -> None:
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.on_bulletin_ready = None
+
+    def start(self) -> None:
+        self.start_calls += 1
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+    def fire(self, bulletin: StationEntry) -> None:
+        """Test helper: simulate the monitor handing off a bulletin."""
+        assert self.on_bulletin_ready is not None, "fire() called before WiltedApp wired on_bulletin_ready"
+        self.on_bulletin_ready(bulletin)
 
 
 def _make_app(
@@ -2340,3 +2509,544 @@ async def test_playback_completion_clears_route_interrupted_state_before_next_to
             "action_toggle_play took the route-resume path (submitted a Checkpoint) instead of a normal fresh restart"
         )
         assert adapter.play_calls[-1] == (entry.media, 0)
+
+
+# ---------------------------------------------------------------------------
+# A.4.3: Weather bulletin interrupt/resume
+#
+# Covers: the monitor->TUI handoff seam (on_bulletin_ready), safe-boundary
+# orchestration (submit AcceptInterruption at the REAL current offset --
+# HAZARD 2), poller pause-across-bulletin (HAZARD 1), NO_INTERRUPT never
+# interrupting, the not-playable budget/fallback path, the completion-race
+# fix (bulletin completion routes to resume, never auto-advance), and the
+# latency artifact.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_on_bulletin_ready_sets_pending_slot():
+    """The monitor->TUI handoff seam: firing the (fake) weather monitor's
+    on_bulletin_ready callback -- exactly like the real WeatherMonitor would
+    from its own poll thread -- populates the pending-bulletin slot and arms
+    a fresh wait/fallback budget, without touching the controller at all
+    (the monitor itself never submits AcceptInterruption anymore; only the
+    TUI's own safe-boundary orchestration does)."""
+    weather_monitor = FakeWeatherMonitor()
+    controller = FakeController()
+    app = _make_app(controller=controller, weather_monitor=weather_monitor)
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        bulletin = _bulletin_entry()
+
+        weather_monitor.fire(bulletin)
+
+        assert app._pending_bulletin is bulletin
+        assert app._bulletin_pending_since_monotonic is not None
+        assert app._bulletin_wait_ticks == 0
+        assert app._bulletin_fallback_shown_this_window is False
+        # The handoff alone must never submit anything to the controller.
+        assert not any(isinstance(a, AcceptInterruption) for a in controller.actions)
+
+
+@pytest.mark.asyncio
+async def test_no_weather_monitor_by_default():
+    """WiltedApp() with no weather_monitor= given wires nothing (mirrors the
+    real production default -- see __init__'s docstring: no safe
+    auto-constructed WeatherMonitor). The app must run fine, and the 1s timer
+    driving _maybe_submit_pending_bulletin must no-op without crashing."""
+    entry = _station_entry(1, safe_interruption=SAFE_WINDOW)
+    app = _make_app(entries=[entry])
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        assert app._weather_monitor is None
+
+        app._start_playback(entry)
+        app._update_timer()  # must not raise with _pending_bulletin is None
+
+
+@pytest.mark.asyncio
+async def test_weather_monitor_starts_on_mount_and_stops_on_unmount():
+    """WiltedApp owns the monitor's lifecycle exactly like the poller/route
+    monitor: started once on_mount (session actually holds the lease), and
+    torn down via on_unmount's best-effort teardown sweep."""
+    weather_monitor = FakeWeatherMonitor()
+    app = _make_app(weather_monitor=weather_monitor)
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        assert weather_monitor.start_calls == 1
+        assert weather_monitor.stop_calls == 0
+
+        app.on_unmount()
+
+        assert weather_monitor.stop_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_bulletin_waits_when_not_at_a_safe_boundary():
+    """A pending bulletin does nothing while the current offset is outside
+    every safe window -- no AcceptInterruption submitted, bulletin stays
+    pending, playback of the interrupted entry is completely undisturbed."""
+    entry = _station_entry(1, safe_interruption=SAFE_WINDOW)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    weather_monitor = FakeWeatherMonitor()
+    app = _make_app(entries=[entry], controller=controller, adapter=adapter, weather_monitor=weather_monitor)
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        bulletin = _bulletin_entry()
+        weather_monitor.fire(bulletin)
+
+        adapter._offset_ms = 3_000  # well outside SAFE_WINDOW's [10_000, 12_000]
+        app._update_timer()
+        app._update_timer()
+        app._update_timer()
+
+        assert app._pending_bulletin is bulletin
+        assert not any(isinstance(a, AcceptInterruption) for a in controller.actions)
+        assert app._current_entry.entry_id == entry.entry_id
+        assert len(adapter.play_calls) == 1  # only the original entry, never the bulletin
+
+
+@pytest.mark.asyncio
+async def test_no_interrupt_entry_never_interrupts():
+    """An entry with NO_INTERRUPT (SafeInterruptionMap.empty(), the default
+    _station_entry() safe_interruption) never has a safe point at ANY offset
+    -- a pending bulletin must never be accepted against it, no matter how
+    many ticks elapse, and the not-playable fallback path must never even
+    trigger (there is no safe boundary to reach in the first place)."""
+    entry = _station_entry(1)  # default safe_interruption=SafeInterruptionMap.empty() => NO_INTERRUPT
+    controller = FakeController()
+    adapter = FakeAdapter()
+    weather_monitor = FakeWeatherMonitor()
+    app = _make_app(entries=[entry], controller=controller, adapter=adapter, weather_monitor=weather_monitor)
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        bulletin = _bulletin_entry()
+        weather_monitor.fire(bulletin)
+
+        adapter._offset_ms = 10_500  # would be "safe" for SAFE_WINDOW, but this entry has NO_INTERRUPT
+        for _ in range(10):
+            app._update_timer()
+
+        assert app._pending_bulletin is bulletin
+        assert not any(isinstance(a, AcceptInterruption) for a in controller.actions)
+        status = str(app.query_one("#status-line").render())
+        assert "Weather alert pending" not in status
+        assert app._bulletin_playing is False
+
+
+@pytest.mark.asyncio
+async def test_bulletin_interrupts_at_safe_boundary_and_resumes_at_correct_offset(tmp_path):
+    """The full happy path, end to end:
+
+    1. A safe boundary is reached -> AcceptInterruption submitted at the
+       REAL current offset (HAZARD 2) and accepted.
+    2. The bulletin plays via the dedicated bulletin-play path (adapter.play
+       called with the bulletin's own media at offset 0).
+    3. The bulletin's completion routes to resume (ResumeFromInterruption),
+       and the interrupted entry restarts via _start_playback -- which reads
+       the accept-time checkpoint and lands adapter.play at the EXACT offset
+       captured when AcceptInterruption was submitted, not 0 and not a
+       future safe-window bound.
+    """
+    entry = _station_entry(1, safe_interruption=SAFE_WINDOW)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    weather_monitor = FakeWeatherMonitor()
+    app = _make_app(
+        entries=[entry],
+        controller=controller,
+        adapter=adapter,
+        weather_monitor=weather_monitor,
+        latency_log_path=tmp_path / "latency.jsonl",
+    )
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        bulletin = _bulletin_entry()
+        weather_monitor.fire(bulletin)
+
+        adapter._offset_ms = 11_250  # inside SAFE_WINDOW's [10_000, 12_000]
+        app._update_timer()
+
+        # (1) Accepted at the REAL current offset -- not some other value.
+        accept_actions = [a for a in controller.actions if isinstance(a, AcceptInterruption)]
+        assert len(accept_actions) == 1
+        assert accept_actions[0].interrupt_offset_ms == 11_250
+        assert accept_actions[0].bulletin.entry_id == bulletin.entry_id
+        assert app._pending_bulletin is None
+
+        # (2) The bulletin is now playing, via its OWN play path.
+        assert app._bulletin_playing is True
+        assert app._current_entry.entry_id == bulletin.entry_id
+        assert adapter.play_calls[-1] == (bulletin.media, 0)
+        # No redundant StartPlayback was submitted for the bulletin -- only
+        # the original entry's StartPlayback exists (see _play_bulletin's
+        # docstring for why that would silently wipe interruption_stack).
+        start_playback_actions = [a for a in controller.actions if isinstance(a, StartPlayback)]
+        assert len(start_playback_actions) == 1
+        assert start_playback_actions[0].entry.entry_id == entry.entry_id
+
+        # (3) Bulletin completes -> resume, at the EXACT accept-time offset.
+        app._handle_station_completion(CompletionReason.ENDED)
+
+        resume_actions = [a for a in controller.actions if isinstance(a, ResumeFromInterruption)]
+        assert len(resume_actions) == 1
+        assert app._bulletin_playing is False
+        assert app._current_entry.entry_id == entry.entry_id
+        assert adapter.play_calls[-1] == (entry.media, 11_250)
+        assert app._playing is True
+
+
+@pytest.mark.asyncio
+async def test_poller_paused_across_bulletin_so_resume_uses_accept_time_offset(tmp_path):
+    """HAZARD 1: the poller must be stopped the instant AcceptInterruption is
+    accepted (before the bulletin ever plays) so it cannot checkpoint the
+    bulletin over the interrupted entry's carefully-recorded resume
+    checkpoint -- and it must be restarted once the interrupted entry
+    actually resumes."""
+    entry = _station_entry(1, safe_interruption=SAFE_WINDOW)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    weather_monitor = FakeWeatherMonitor()
+    poller_holder: list[FakePoller] = []
+
+    def _poller_factory(c, a):
+        poller = FakePoller()
+        poller_holder.append(poller)
+        return poller
+
+    app = _make_app(
+        entries=[entry],
+        controller=controller,
+        adapter=adapter,
+        weather_monitor=weather_monitor,
+        poller_factory=_poller_factory,
+        latency_log_path=tmp_path / "latency.jsonl",
+    )
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        poller = poller_holder[0]
+        assert poller.start_calls == 1
+        assert poller.stop_calls == 0
+
+        bulletin = _bulletin_entry()
+        weather_monitor.fire(bulletin)
+        adapter._offset_ms = 11_000
+        app._update_timer()
+
+        # Stopped the instant the bulletin starts playing -- before its
+        # completion, not after.
+        assert poller.stop_calls == 1
+        assert app._poller_started is False
+
+        # While the bulletin plays, further ticks must NOT restart or
+        # re-stop the poller (it stays stopped for the bulletin's duration).
+        app._update_timer()
+        assert poller.stop_calls == 1
+        assert poller.start_calls == 1
+
+        app._handle_station_completion(CompletionReason.ENDED)
+
+        # Resumed -> poller restarted exactly once more (via _start_playback's
+        # own "if not started" gate).
+        assert poller.start_calls == 2
+        assert poller.stop_calls == 1
+        assert app._poller_started is True
+
+
+@pytest.mark.asyncio
+async def test_route_change_during_bulletin_is_ignored_and_preserves_interrupted_entry(tmp_path):
+    """FIX-1 (A.4.3, HIGH): a device/route change that fires WHILE a weather
+    bulletin is playing must be ignored by ``on_route_changed`` -- the guard
+    ``if self._bulletin_playing: return``.
+
+    ``self._playing`` is True during a bulletin too, so without the guard the
+    route-interruption path would run against the BULLETIN: it would stop the
+    adapter, enter ``_route_interrupted`` with the bulletin as the resume
+    entry, and overwrite the accept-time resume checkpoint. Worse, the eventual
+    route-resume -> ``_start_playback(bulletin)`` clears ``interruption_stack``
+    (the reducer has no "already interrupted" precondition), permanently
+    discarding the interrupted entry -- so the bulletin's own completion would
+    have nothing correct to resume.
+
+    This test proves the guard makes the route change a no-op AND that the
+    interrupted entry survives it: when the bulletin finishes, the ORIGINAL
+    entry still resumes at the exact accept-time offset. It fails without the
+    guard (route path clobbers the interruption on both counts)."""
+    entry = _station_entry(1, safe_interruption=SAFE_WINDOW)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    weather_monitor = FakeWeatherMonitor()
+    route_monitor = FakeRouteMonitor()
+    app = _make_app(
+        entries=[entry],
+        controller=controller,
+        adapter=adapter,
+        weather_monitor=weather_monitor,
+        route_monitor=route_monitor,
+        latency_log_path=tmp_path / "latency.jsonl",
+    )
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+
+        # Drive into the bulletin-playing state at a safe boundary.
+        bulletin = _bulletin_entry()
+        weather_monitor.fire(bulletin)
+        adapter._offset_ms = 11_250  # inside SAFE_WINDOW's [10_000, 12_000]
+        app._update_timer()
+        assert app._bulletin_playing is True
+        assert app._current_entry.entry_id == bulletin.entry_id
+        assert controller.current_state().active_entry.entry_id == bulletin.entry_id
+
+        stop_calls_before = adapter.stop_calls
+        actions_before = len(controller.actions)
+
+        # A device change fires mid-bulletin -> must be a complete no-op.
+        route_monitor.fire(RouteChangeEvent(device_id=42, device_name="AirPods Pro"))
+        await pilot.pause()
+
+        # (a) The route-interruption path never ran.
+        assert app._route_interrupted is False
+        assert app._route_resume_entry is None
+        assert not app._route_device_name  # never set to the mid-bulletin device
+        # (b) No side effects: adapter not stopped, no Stop/Checkpoint submitted
+        # by the route path, station still PLAYING the bulletin.
+        assert adapter.stop_calls == stop_calls_before
+        assert len(controller.actions) == actions_before
+        assert not any(isinstance(a, Stop) for a in controller.actions)
+        assert app._bulletin_playing is True
+        assert app._current_entry.entry_id == bulletin.entry_id
+        assert controller.current_state().lifecycle is StationLifecycle.PLAYING
+        assert controller.current_state().active_entry.entry_id == bulletin.entry_id
+
+        # (c) The interrupted entry survived: on bulletin completion, the
+        # ORIGINAL entry resumes at the EXACT accept-time offset (not lost, not
+        # zero, not the bulletin). This is the assertion that fails without the
+        # guard -- interruption_stack would have been wiped.
+        app._handle_station_completion(CompletionReason.ENDED)
+
+        resume_actions = [a for a in controller.actions if isinstance(a, ResumeFromInterruption)]
+        assert len(resume_actions) == 1
+        assert app._bulletin_playing is False
+        assert app._current_entry.entry_id == entry.entry_id
+        assert adapter.play_calls[-1] == (entry.media, 11_250)
+        assert app._playing is True
+
+
+@pytest.mark.asyncio
+async def test_bulletin_not_playable_falls_back_and_retries_at_next_boundary():
+    """A safe boundary is reached but the bulletin isn't playable yet
+    (FinalizationState incomplete). The TUI must wait up to the cold budget
+    (_BULLETIN_BUDGET_COLD_TICKS ticks) before showing the audible+visual
+    fallback notice, and must NEVER submit a broken AcceptInterruption for a
+    non-playable bulletin. Leaving the safe window and re-entering a later
+    one rearms the wait/fallback gate for a fresh retry."""
+    entry = _station_entry(1, safe_interruption=SAFE_WINDOW)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    weather_monitor = FakeWeatherMonitor()
+    app = _make_app(entries=[entry], controller=controller, adapter=adapter, weather_monitor=weather_monitor)
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        bulletin = _bulletin_entry(playable=False)
+        weather_monitor.fire(bulletin)
+
+        adapter._offset_ms = 11_000  # inside the safe window the whole time
+
+        # Budget is 6 ticks cold (_BULLETIN_BUDGET_COLD_TICKS) -- no fallback
+        # and no accept for the first 5.
+        for _ in range(5):
+            app._update_timer()
+        status = str(app.query_one("#status-line").render())
+        assert "Weather alert pending" not in status
+        assert not any(isinstance(a, AcceptInterruption) for a in controller.actions)
+        assert app._pending_bulletin is bulletin
+
+        # 6th tick trips the fallback.
+        app._update_timer()
+        status = str(app.query_one("#status-line").render())
+        assert "Weather alert pending" in status
+        assert not any(isinstance(a, AcceptInterruption) for a in controller.actions)
+        assert app._pending_bulletin is bulletin  # never dropped -- still eligible to retry
+        assert app._bulletin_fallback_shown_this_window is True
+
+        # Leaving the safe window rearms the gate...
+        adapter._offset_ms = 3_000
+        app._update_timer()
+        assert app._bulletin_wait_ticks == 0
+        assert app._bulletin_fallback_shown_this_window is False
+        assert app._bulletin_boundary_detected_monotonic is None
+
+        # ...so re-entering (still not playable) gets its OWN fresh budget
+        # rather than instantly re-showing the fallback.
+        adapter._offset_ms = 11_500
+        app._update_timer()
+        assert app._bulletin_wait_ticks == 1
+        assert app._bulletin_fallback_shown_this_window is False
+
+
+@pytest.mark.asyncio
+async def test_bulletin_completion_routes_to_resume_not_auto_advance(tmp_path):
+    """A bulletin completion must never take the normal auto-advance /
+    mark-complete path (the completion-race hazard): no Stop() submitted for
+    it, no next-entry StartPlayback, the backlog index is untouched."""
+    entry = _station_entry(1, safe_interruption=SAFE_WINDOW)
+    other_entry = _station_entry(2)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    weather_monitor = FakeWeatherMonitor()
+    app = _make_app(
+        entries=[entry, other_entry],
+        controller=controller,
+        adapter=adapter,
+        weather_monitor=weather_monitor,
+        latency_log_path=tmp_path / "latency.jsonl",
+    )
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        bulletin = _bulletin_entry()
+        weather_monitor.fire(bulletin)
+        adapter._offset_ms = 10_500
+        app._update_timer()
+        assert app._bulletin_playing is True
+
+        actions_before = len(controller.actions)
+        app._handle_station_completion(CompletionReason.ENDED)
+
+        new_actions = controller.actions[actions_before:]
+        assert not any(isinstance(a, Stop) for a in new_actions)
+        assert not any(isinstance(a, StartPlayback) and a.entry.entry_id == other_entry.entry_id for a in new_actions)
+        assert any(isinstance(a, ResumeFromInterruption) for a in new_actions)
+        assert app._current_entry.entry_id == entry.entry_id
+
+
+@pytest.mark.asyncio
+async def test_bulletin_truncated_completion_still_resumes(tmp_path):
+    """A TRUNCATED (non-clean) bulletin completion must still resume the
+    interrupted entry -- unlike the normal completion path's PM-10 "not
+    advancing" guard, a bulletin has nothing to not-auto-advance into, so
+    this must NOT get stuck on the not-a-clean-completion early return."""
+    entry = _station_entry(1, safe_interruption=SAFE_WINDOW)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    weather_monitor = FakeWeatherMonitor()
+    app = _make_app(
+        entries=[entry],
+        controller=controller,
+        adapter=adapter,
+        weather_monitor=weather_monitor,
+        latency_log_path=tmp_path / "latency.jsonl",
+    )
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        bulletin = _bulletin_entry()
+        weather_monitor.fire(bulletin)
+        adapter._offset_ms = 10_500
+        app._update_timer()
+        assert app._bulletin_playing is True
+
+        app._handle_station_completion(CompletionReason.TRUNCATED)
+
+        assert any(isinstance(a, ResumeFromInterruption) for a in controller.actions)
+        assert app._bulletin_playing is False
+        assert app._current_entry.entry_id == entry.entry_id
+        assert app._playing is True
+
+
+@pytest.mark.asyncio
+async def test_action_stop_mid_bulletin_resets_bulletin_playing(tmp_path):
+    """A manual stop mid-bulletin must clear _bulletin_playing (so the NEXT
+    entry's completion doesn't misroute through the bulletin-resume path),
+    but must deliberately leave a freshly-arrived pending bulletin in place
+    -- a weather alert doesn't stop mattering just because playback was
+    stopped."""
+    entry = _station_entry(1, safe_interruption=SAFE_WINDOW)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    weather_monitor = FakeWeatherMonitor()
+    app = _make_app(
+        entries=[entry],
+        controller=controller,
+        adapter=adapter,
+        weather_monitor=weather_monitor,
+        latency_log_path=tmp_path / "latency.jsonl",
+    )
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        bulletin = _bulletin_entry()
+        weather_monitor.fire(bulletin)
+        adapter._offset_ms = 10_500
+        app._update_timer()
+        assert app._bulletin_playing is True
+
+        # A second bulletin arrives while the first is still playing.
+        next_bulletin = _bulletin_entry(entry_id="wx-2")
+        weather_monitor.fire(next_bulletin)
+        assert app._pending_bulletin is next_bulletin
+
+        app.action_stop()
+
+        assert app._bulletin_playing is False
+        assert app._pending_bulletin is next_bulletin  # deliberately left in place
+
+
+@pytest.mark.asyncio
+async def test_bulletin_latency_recorded_within_generous_bound(tmp_path):
+    """The latency artifact: one JSON-Lines record per accepted interruption,
+    written to the injected latency_log_path (never the real repo's
+    reports/ dir -- see WiltedApp.__init__'s latency_log_path docstring).
+    Only a generous, machine-independent bound is asserted (this is a fast,
+    synchronous test harness, not a timing benchmark) -- and boundary-wait is
+    reported separately from accept-to-audible, per the task's requirement
+    that they not be conflated."""
+    entry = _station_entry(1, safe_interruption=SAFE_WINDOW)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    weather_monitor = FakeWeatherMonitor()
+    log_path = tmp_path / "latency.jsonl"
+    app = _make_app(
+        entries=[entry],
+        controller=controller,
+        adapter=adapter,
+        weather_monitor=weather_monitor,
+        latency_log_path=log_path,
+    )
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        bulletin = _bulletin_entry()
+        weather_monitor.fire(bulletin)
+        adapter._offset_ms = 11_000
+        app._update_timer()
+        assert app._bulletin_playing is True
+
+        assert log_path.exists()
+        lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["bulletin_entry_id"] == bulletin.entry_id
+        assert record["cold_or_warm"] == "cold"
+        for key in ("boundary_wait_ms", "accept_to_audible_ms", "total_latency_ms"):
+            assert isinstance(record[key], int)
+            assert 0 <= record[key] < 10_000, f"{key}={record[key]} outside a generous machine-independent bound"
+
+        # A second interruption is reported "warm", not "cold".
+        app._handle_station_completion(CompletionReason.ENDED)
+        second_bulletin = _bulletin_entry(entry_id="wx-2")
+        weather_monitor.fire(second_bulletin)
+        adapter._offset_ms = 11_000
+        app._update_timer()
+
+        lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 2
+        second_record = json.loads(lines[1])
+        assert second_record["cold_or_warm"] == "warm"

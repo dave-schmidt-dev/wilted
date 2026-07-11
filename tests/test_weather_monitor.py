@@ -1,10 +1,12 @@
-"""Integration tests for ``wilted.station_runtime.weather_monitor`` (Plan A task 4.2).
+"""Integration tests for ``wilted.station_runtime.weather_monitor`` (Plan A tasks 4.2 + 4.3).
 
 Covers: combined zone+county single-request coverage, the two-tier
 escalation-aware dedup (exact-repeat guard + per-area escalation bar,
 including the reset-on-clear behavior), pre-generation happening off the
-interrupt path (synth before submit, never from inside a reducer/interrupt
-callback), the submitted ``AcceptInterruption`` action's shape, heartbeat/
+interrupt path (synth before handoff, never from inside a reducer/interrupt
+callback), the ``on_bulletin_ready`` handoff seam (Task 4.3 — this monitor no
+longer submits ``AcceptInterruption`` itself; see ``tests/test_tui.py`` for
+the safe-boundary-aware submission that now lives in the TUI), heartbeat/
 health surfacing, per-item/per-poll failure isolation (INV-6 spirit), the
 start/stop/double-start lifecycle discipline mirroring ``CheckpointPoller``,
 and the INV-6-extended wrapper truthful-run/exit gate test.
@@ -19,8 +21,6 @@ is required for a ``runpy``-driven ``__main__`` gate test to actually work.
 
 from __future__ import annotations
 
-import concurrent.futures
-import dataclasses
 import json
 import runpy
 import sys
@@ -30,14 +30,7 @@ from unittest.mock import patch
 
 import pytest
 
-from wilted.station.models import (
-    FinalizationState,
-    MediaDescriptor,
-    PlaybackCheckpoint,
-    SafeInterruptionMap,
-    StationEntry,
-)
-from wilted.station.reducer import AcceptInterruption, StationState
+from wilted.station.models import FinalizationState, MediaDescriptor, SafeInterruptionMap, StationEntry
 from wilted.station_runtime import media_store
 from wilted.station_runtime.weather_monitor import (
     DEFAULT_COUNTY,
@@ -67,22 +60,6 @@ def _finalized_media(**overrides) -> MediaDescriptor:
     )
     defaults.update(overrides)
     return MediaDescriptor(**defaults)
-
-
-def _entry(entry_id="entry-1", **overrides) -> StationEntry:
-    defaults = dict(
-        entry_id=entry_id,
-        kind="item",
-        item_id="item-1",
-        source="feed:test",
-        policy_id=None,
-        priority=5,
-        expiry=None,
-        duration_ms=60_000,
-        media=_finalized_media(),
-    )
-    defaults.update(overrides)
-    return StationEntry(**defaults)
 
 
 def _alert_feature(
@@ -127,43 +104,6 @@ def _feature_collection(*features: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@dataclasses.dataclass(frozen=True)
-class _SimpleSubmitResult:
-    accepted: bool
-    revision: int
-    state: StationState
-
-
-class _FakeController:
-    """Records every submitted action; state is a settable real ``StationState``."""
-
-    def __init__(self, state: StationState | None = None) -> None:
-        self._state = state if state is not None else StationState()
-        self.submitted: list[AcceptInterruption] = []
-        self._accepted = True
-
-    def set_state(self, state: StationState) -> None:
-        self._state = state
-
-    def set_accepted(self, accepted: bool) -> None:  # noqa: FBT001 - test helper
-        self._accepted = accepted
-
-    def current_state(self) -> StationState:
-        return self._state
-
-    def submit(self, action: AcceptInterruption) -> concurrent.futures.Future:
-        self.submitted.append(action)
-        future: concurrent.futures.Future = concurrent.futures.Future()
-        future.set_result(
-            _SimpleSubmitResult(
-                accepted=self._accepted,
-                revision=1 if self._accepted else 0,
-                state=self._state,
-            )
-        )
-        return future
-
-
 class _FixtureFetch:
     """Returns successive canned responses (or raises) on each call; records calls."""
 
@@ -183,7 +123,7 @@ class _FixtureFetch:
 
 def _fake_synth(*, calls: list | None = None, order: list | None = None) -> callable:
     """Build a synth fixture; ``calls`` records invocations, ``order`` (shared
-    with a fetch/submit spy) records cross-call ordering."""
+    with a fetch/handoff spy) records cross-call ordering."""
 
     def synth(text: str) -> BulletinAudio:
         if calls is not None:
@@ -195,19 +135,35 @@ def _fake_synth(*, calls: list | None = None, order: list | None = None) -> call
     return synth
 
 
+class _BulletinRecorder:
+    """``on_bulletin_ready`` fixture: records every handed-off bulletin, in order."""
+
+    def __init__(self, *, order: list | None = None, raise_on_call: Exception | None = None) -> None:
+        self.received: list[StationEntry] = []
+        self._order = order
+        self._raise_on_call = raise_on_call
+
+    def __call__(self, bulletin: StationEntry) -> None:
+        if self._order is not None:
+            self._order.append("handoff")
+        if self._raise_on_call is not None:
+            raise self._raise_on_call
+        self.received.append(bulletin)
+
+
 def _monitor(
-    controller,
     *,
     fetch=None,
     synth=None,
+    on_bulletin_ready=None,
     zone=DEFAULT_ZONE,
     county=DEFAULT_COUNTY,
     interval_s=30.0,
 ) -> WeatherMonitor:
     return WeatherMonitor(
-        controller,
         fetch=fetch if fetch is not None else _FixtureFetch(_feature_collection()),
         synth=synth if synth is not None else _fake_synth(),
+        on_bulletin_ready=on_bulletin_ready,
         zone=zone,
         county=county,
         interval_s=interval_s,
@@ -222,8 +178,7 @@ def _monitor(
 class TestCombinedRequest:
     def test_poll_once_fetches_zone_and_county_in_one_combined_call(self):
         fetch = _FixtureFetch(_feature_collection())
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch)
+        monitor = _monitor(fetch=fetch)
 
         monitor.poll_once()
 
@@ -237,15 +192,15 @@ class TestCombinedRequest:
         zone_alert = _alert_feature(alert_id="zone-1", area_desc="Northwest Prince William, VA")
         county_alert = _alert_feature(alert_id="county-1", area_desc="Prince William County, VA")
         fetch = _FixtureFetch(_feature_collection(zone_alert, county_alert))
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch)
+        recorder = _BulletinRecorder()
+        monitor = _monitor(fetch=fetch, on_bulletin_ready=recorder)
 
         monitor.poll_once()
 
         assert len(fetch.calls) == 1  # both covered by the ONE combined poll
-        assert len(controller.submitted) == 2
-        submitted_ids = {action.bulletin.entry_id for action in controller.submitted}
-        assert submitted_ids == {"wx-zone-1", "wx-county-1"}
+        assert len(recorder.received) == 2
+        received_ids = {bulletin.entry_id for bulletin in recorder.received}
+        assert received_ids == {"wx-zone-1", "wx-county-1"}
 
 
 # ---------------------------------------------------------------------------
@@ -256,25 +211,25 @@ class TestCombinedRequest:
 class TestDedupAndEscalation:
     def test_first_qualification_admits(self):
         fetch = _FixtureFetch(_feature_collection(_alert_feature()))
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch)
+        recorder = _BulletinRecorder()
+        monitor = _monitor(fetch=fetch, on_bulletin_ready=recorder)
 
         monitor.poll_once()
 
-        assert len(controller.submitted) == 1
+        assert len(recorder.received) == 1
 
     def test_identical_repeat_is_deduped_tier1(self):
         """The same still-active alert (unchanged id/severity/content) is
         re-served by NWS on every poll until it clears -- must dedup."""
         alert = _alert_feature()
         fetch = _FixtureFetch(_feature_collection(alert), _feature_collection(alert))
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch)
+        recorder = _BulletinRecorder()
+        monitor = _monitor(fetch=fetch, on_bulletin_ready=recorder)
 
         monitor.poll_once()
         monitor.poll_once()
 
-        assert len(controller.submitted) == 1
+        assert len(recorder.received) == 1
 
     def test_new_message_same_severity_is_deduped_tier2(self):
         """A genuine reissue (new id/content) at the SAME severity must not
@@ -282,39 +237,39 @@ class TestDedupAndEscalation:
         first = _alert_feature(alert_id="id-1", severity="Severe", description="Initial description.")
         reissued = _alert_feature(alert_id="id-2", severity="Severe", description="Updated wording, same severity.")
         fetch = _FixtureFetch(_feature_collection(first), _feature_collection(reissued))
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch)
+        recorder = _BulletinRecorder()
+        monitor = _monitor(fetch=fetch, on_bulletin_ready=recorder)
 
         monitor.poll_once()
         monitor.poll_once()
 
-        assert len(controller.submitted) == 1
-        assert controller.submitted[0].bulletin.entry_id == "wx-id-1"
+        assert len(recorder.received) == 1
+        assert recorder.received[0].entry_id == "wx-id-1"
 
     def test_escalation_to_higher_severity_requalifies(self):
         first = _alert_feature(alert_id="id-1", severity="Moderate")
         escalated = _alert_feature(alert_id="id-2", severity="Extreme")
         fetch = _FixtureFetch(_feature_collection(first), _feature_collection(escalated))
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch)
+        recorder = _BulletinRecorder()
+        monitor = _monitor(fetch=fetch, on_bulletin_ready=recorder)
 
         monitor.poll_once()
         monitor.poll_once()
 
-        assert len(controller.submitted) == 2
-        assert [a.bulletin.entry_id for a in controller.submitted] == ["wx-id-1", "wx-id-2"]
+        assert len(recorder.received) == 2
+        assert [b.entry_id for b in recorder.received] == ["wx-id-1", "wx-id-2"]
 
     def test_deescalation_does_not_requalify(self):
         first = _alert_feature(alert_id="id-1", severity="Severe")
         deescalated = _alert_feature(alert_id="id-2", severity="Minor")
         fetch = _FixtureFetch(_feature_collection(first), _feature_collection(deescalated))
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch)
+        recorder = _BulletinRecorder()
+        monitor = _monitor(fetch=fetch, on_bulletin_ready=recorder)
 
         monitor.poll_once()
         monitor.poll_once()
 
-        assert len(controller.submitted) == 1
+        assert len(recorder.received) == 1
 
     def test_area_state_resets_after_alert_clears_allowing_lower_severity_later(self):
         """Once an alert for an area clears (absent from a poll's combined
@@ -325,26 +280,26 @@ class TestDedupAndEscalation:
         cleared = _feature_collection()
         minor_new = _alert_feature(alert_id="id-2", area_desc="Area A", severity="Minor")
         fetch = _FixtureFetch(_feature_collection(severe), cleared, _feature_collection(minor_new))
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch)
+        recorder = _BulletinRecorder()
+        monitor = _monitor(fetch=fetch, on_bulletin_ready=recorder)
 
         monitor.poll_once()  # qualifies at Severe
         monitor.poll_once()  # clears -> area state reset
         monitor.poll_once()  # new Minor alert -> should qualify again
 
-        assert len(controller.submitted) == 2
-        assert [a.bulletin.entry_id for a in controller.submitted] == ["wx-id-1", "wx-id-2"]
+        assert len(recorder.received) == 2
+        assert [b.entry_id for b in recorder.received] == ["wx-id-1", "wx-id-2"]
 
     def test_distinct_areas_tracked_independently(self):
         area_a = _alert_feature(alert_id="a-1", area_desc="Area A", severity="Minor")
         area_b = _alert_feature(alert_id="b-1", area_desc="Area B", severity="Minor")
         fetch = _FixtureFetch(_feature_collection(area_a, area_b))
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch)
+        recorder = _BulletinRecorder()
+        monitor = _monitor(fetch=fetch, on_bulletin_ready=recorder)
 
         monitor.poll_once()
 
-        assert len(controller.submitted) == 2
+        assert len(recorder.received) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -353,35 +308,30 @@ class TestDedupAndEscalation:
 
 
 class TestPreGeneration:
-    def test_synth_runs_before_submit_on_qualification(self):
+    def test_synth_runs_before_handoff_on_qualification(self):
         order: list[str] = []
 
         def synth(text: str) -> BulletinAudio:
             order.append("synth")
             return BulletinAudio(audio_bytes=b"fake-wav", duration_ms=1000)
 
-        class _OrderRecordingController(_FakeController):
-            def submit(self, action):
-                order.append("submit")
-                return super().submit(action)
-
         fetch = _FixtureFetch(_feature_collection(_alert_feature()))
-        controller = _OrderRecordingController()
-        monitor = _monitor(controller, fetch=fetch, synth=synth)
+        recorder = _BulletinRecorder(order=order)
+        monitor = _monitor(fetch=fetch, synth=synth, on_bulletin_ready=recorder)
 
         monitor.poll_once()
 
-        assert order == ["synth", "submit"]
+        assert order == ["synth", "handoff"]
 
     def test_bulletin_media_is_playable_and_published(self, tmp_path):
         fetch = _FixtureFetch(_feature_collection(_alert_feature()))
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch)
+        recorder = _BulletinRecorder()
+        monitor = _monitor(fetch=fetch, on_bulletin_ready=recorder)
 
         monitor.poll_once()
 
-        assert len(controller.submitted) == 1
-        bulletin = controller.submitted[0].bulletin
+        assert len(recorder.received) == 1
+        bulletin = recorder.received[0]
         assert bulletin.kind == "bulletin"
         assert bulletin.item_id is None
         assert bulletin.media.is_playable
@@ -395,78 +345,66 @@ class TestPreGeneration:
         owners = media_store.get_owners(bulletin.media.sha256)
         assert any(o["kind"] == "bulletin" and o["entry_id"] == bulletin.entry_id for o in owners)
 
-    def test_synth_failure_skips_submission_without_raising(self):
+    def test_synth_failure_skips_handoff_without_raising(self):
         def failing_synth(text: str) -> BulletinAudio:
             raise RuntimeError("model unavailable")
 
         fetch = _FixtureFetch(_feature_collection(_alert_feature()))
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch, synth=failing_synth)
+        recorder = _BulletinRecorder()
+        monitor = _monitor(fetch=fetch, synth=failing_synth, on_bulletin_ready=recorder)
 
         monitor.poll_once()  # must not raise
 
-        assert controller.submitted == []
+        assert recorder.received == []
 
 
 # ---------------------------------------------------------------------------
-# Submitted action shape
+# on_bulletin_ready handoff seam (Task 4.3)
 # ---------------------------------------------------------------------------
 
 
-class TestSubmittedActionShape:
-    def test_uses_last_known_checkpoint_offset(self):
-        checkpoint = PlaybackCheckpoint(
-            station_revision=3,
-            entry_id="entry-1",
-            media_offset_ms=45_000,
-            state="playing",
-            interrupted_entry_stack=(),
-            writer_device="mac",
-            mutation_id="m-1",
-            timestamp="2026-07-11T12:00:00Z",
-        )
-        state = StationState(station_revision=3, active_entry=_entry(), checkpoint=checkpoint)
-        controller = _FakeController(state)
-        fetch = _FixtureFetch(_feature_collection(_alert_feature()))
-        monitor = _monitor(controller, fetch=fetch)
-
-        monitor.poll_once()
-
-        assert controller.submitted[0].interrupt_offset_ms == 45_000
-
-    def test_falls_back_to_zero_offset_with_no_checkpoint(self):
-        controller = _FakeController(StationState())
-        fetch = _FixtureFetch(_feature_collection(_alert_feature()))
-        monitor = _monitor(controller, fetch=fetch)
-
-        monitor.poll_once()
-
-        assert controller.submitted[0].interrupt_offset_ms == 0
-
-    def test_policy_current_and_source_fields(self):
+class TestBulletinReadyHandoff:
+    def test_bulletin_shape_and_priority(self):
+        """The constructed StationEntry's shape -- source/priority/kind --
+        stays the monitor's responsibility even though submission moved to
+        the TUI (Task 4.3)."""
         fetch = _FixtureFetch(_feature_collection(_alert_feature(severity="Extreme")))
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch)
+        recorder = _BulletinRecorder()
+        monitor = _monitor(fetch=fetch, on_bulletin_ready=recorder)
 
         monitor.poll_once()
 
-        action = controller.submitted[0]
-        assert action.policy_current is True
-        assert action.bulletin.source == "monitor:nws-alerts"
-        assert action.bulletin.priority == 0  # Extreme -> most urgent
+        bulletin = recorder.received[0]
+        assert bulletin.source == "monitor:nws-alerts"
+        assert bulletin.priority == 0  # Extreme -> most urgent
 
-    def test_rejected_submission_is_not_retried(self):
-        """A rejected AcceptInterruption (e.g. no safe point right now) is
-        logged but NOT retried by this monitor -- Task 4.3 owns safe-boundary
-        retry. Confirms the monitor doesn't loop/spin on a rejection."""
-        controller = _FakeController()
-        controller.set_accepted(False)
+    def test_no_consumer_wired_bulletin_is_dropped_without_raising(self):
+        """The default ``on_bulletin_ready=None`` (the standalone one-shot
+        CLI wrapper's situation, per the module docstring) must never crash
+        the poll -- a qualifying bulletin is simply logged and dropped."""
         fetch = _FixtureFetch(_feature_collection(_alert_feature()))
-        monitor = _monitor(controller, fetch=fetch)
+        monitor = _monitor(fetch=fetch)  # on_bulletin_ready defaults to None
+
+        monitor.poll_once()  # must not raise
+
+    def test_callback_exception_is_caught_and_does_not_crash_the_poll(self):
+        fetch = _FixtureFetch(_feature_collection(_alert_feature()))
+        recorder = _BulletinRecorder(raise_on_call=RuntimeError("consumer exploded"))
+        monitor = _monitor(fetch=fetch, on_bulletin_ready=recorder)
+
+        monitor.poll_once()  # must not raise
+        assert monitor.health() == "healthy"  # the poll itself still succeeded
+
+    def test_two_qualifications_hand_off_in_order(self):
+        first = _alert_feature(alert_id="id-1", area_desc="Area A", severity="Minor")
+        second = _alert_feature(alert_id="id-2", area_desc="Area B", severity="Minor")
+        fetch = _FixtureFetch(_feature_collection(first, second))
+        recorder = _BulletinRecorder()
+        monitor = _monitor(fetch=fetch, on_bulletin_ready=recorder)
 
         monitor.poll_once()
 
-        assert len(controller.submitted) == 1  # exactly one attempt, no retry loop
+        assert [b.entry_id for b in recorder.received] == ["wx-id-1", "wx-id-2"]
 
 
 # ---------------------------------------------------------------------------
@@ -476,13 +414,11 @@ class TestSubmittedActionShape:
 
 class TestFailureIsolationAndHealth:
     def test_health_is_unknown_before_first_poll(self):
-        controller = _FakeController()
-        monitor = _monitor(controller)
+        monitor = _monitor()
         assert monitor.health() == "unknown"
 
     def test_health_is_healthy_after_successful_poll(self):
-        controller = _FakeController()
-        monitor = _monitor(controller)
+        monitor = _monitor()
         monitor.poll_once()
         assert monitor.health() == "healthy"
         assert monitor.last_success_at is not None
@@ -490,8 +426,7 @@ class TestFailureIsolationAndHealth:
 
     def test_fetch_failure_never_raises_and_marks_degraded_then_failed(self):
         fetch = _FixtureFetch(RuntimeError("network down"))
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch)
+        monitor = _monitor(fetch=fetch)
 
         monitor.poll_once()  # must not raise
         assert monitor.health() == "degraded"
@@ -506,8 +441,7 @@ class TestFailureIsolationAndHealth:
 
     def test_success_after_failure_resets_consecutive_failures(self):
         fetch = _FixtureFetch(RuntimeError("blip"), _feature_collection())
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch)
+        monitor = _monitor(fetch=fetch)
 
         monitor.poll_once()
         assert monitor.consecutive_failures == 1
@@ -520,26 +454,24 @@ class TestFailureIsolationAndHealth:
         malformed = {"properties": {"event": "Missing area and id"}}
         good = _alert_feature(alert_id="good-1")
         fetch = _FixtureFetch(_feature_collection(malformed, good))
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch)
+        recorder = _BulletinRecorder()
+        monitor = _monitor(fetch=fetch, on_bulletin_ready=recorder)
 
         monitor.poll_once()  # must not raise
 
-        assert len(controller.submitted) == 1
-        assert controller.submitted[0].bulletin.entry_id == "wx-good-1"
+        assert len(recorder.received) == 1
+        assert recorder.received[0].entry_id == "wx-good-1"
 
     def test_heartbeat_updates_even_on_failure(self):
         fetch = _FixtureFetch(RuntimeError("down"))
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch)
+        monitor = _monitor(fetch=fetch)
 
         assert monitor.last_poll_at is None
         monitor.poll_once()
         assert monitor.last_poll_at is not None
 
     def test_health_is_stale_when_heartbeat_old_relative_to_interval(self):
-        controller = _FakeController()
-        monitor = _monitor(controller, interval_s=30.0)
+        monitor = _monitor(interval_s=30.0)
         monitor.poll_once()
 
         far_future = "2099-01-01T00:00:00Z"
@@ -553,9 +485,8 @@ class TestFailureIsolationAndHealth:
 
 class TestLifecycle:
     def test_interval_below_floor_raises_value_error(self):
-        controller = _FakeController()
         with pytest.raises(ValueError, match="30"):
-            _monitor(controller, interval_s=10.0)
+            _monitor(interval_s=10.0)
 
     def _wait_until(self, predicate, *, timeout_s: float = 2.0, poll_interval_s: float = 0.01) -> None:
         deadline = time.monotonic() + timeout_s
@@ -567,8 +498,7 @@ class TestLifecycle:
 
     def test_start_polls_immediately_then_stop_stops_cleanly(self):
         fetch = _FixtureFetch(_feature_collection())
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch, interval_s=30.0)
+        monitor = _monitor(fetch=fetch, interval_s=30.0)
 
         monitor.start()
         try:
@@ -583,8 +513,7 @@ class TestLifecycle:
         monitor.stop()  # second stop() is a safe no-op
 
     def test_double_start_raises_runtime_error(self):
-        controller = _FakeController()
-        monitor = _monitor(controller, interval_s=30.0)
+        monitor = _monitor(interval_s=30.0)
 
         monitor.start()
         try:
@@ -594,16 +523,14 @@ class TestLifecycle:
             monitor.stop()
 
     def test_stop_without_start_is_a_safe_noop(self):
-        controller = _FakeController()
-        monitor = _monitor(controller)
+        monitor = _monitor()
         monitor.stop()  # must not raise
 
     def test_poll_once_is_safe_when_called_concurrently(self):
         """poll_once may be invoked directly/concurrently (tests, or a manual
         call racing the poll thread); shared per-area state must not corrupt."""
         fetch = _FixtureFetch(*[_feature_collection(_alert_feature(alert_id=f"id-{i}")) for i in range(8)])
-        controller = _FakeController()
-        monitor = _monitor(controller, fetch=fetch)
+        monitor = _monitor(fetch=fetch)
 
         threads = [threading.Thread(target=monitor.poll_once) for _ in range(8)]
         for t in threads:
@@ -654,7 +581,11 @@ class TestWrapperEntrypoint:
     module is), so a patch on it is visible to the freshly re-executed
     module's real ``_default_fetch_alerts`` when it does
     ``urllib.request.urlopen(...)``. This proves the REAL production fetch
-    path actually ran (not a stub), with no live NWS call.
+    path actually ran (not a stub), with no live NWS call. ``main()`` still
+    acquires/releases a real ``StationController`` lease as a runtime-health
+    smoke test (see the module docstring) even though ``WeatherMonitor``
+    itself no longer takes a controller -- these tests exercise that real
+    lease acquisition too, unaffected by the Task 4.3 handoff-seam change.
     """
 
     def test_run_module_invokes_main_and_exits_zero_on_success(self, monkeypatch):

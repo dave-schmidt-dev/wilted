@@ -4,10 +4,12 @@ Polls the NWS active-alerts feed for the ADR-fixed forecast zone (``VAZ526``)
 AND county (``VAC153``) — a zone-only query misses county-issued
 tornado/severe-thunderstorm/flash-flood warnings (CR-1) — on a deterministic
 ``>=30``-second interval, escalation-aware-dedups qualifying alerts,
-pre-generates the bulletin audio OFF the interrupt path, and submits the
-interruption through :meth:`StationController.submit` (SR-1/INV-7: this
-monitor is a *producer*, exactly like ``CheckpointPoller``/``RouteMonitor`` —
-it never holds a lease or calls ``reducer.apply`` itself).
+pre-generates the bulletin audio OFF the interrupt path, and hands the
+finished, fully-playable bulletin off to whatever consumer is wired via
+:attr:`WeatherMonitor.on_bulletin_ready` (Task 4.3: the safe-boundary-aware
+``AcceptInterruption`` submission itself now lives in the TUI — see the
+"Seam decision" note below — so this monitor never calls
+``StationController.submit`` or holds a controller reference at all).
 
 Combined single request (SR-5)
 -------------------------------
@@ -49,22 +51,28 @@ contains ANY alert for that area (the prior warning cleared/expired) — see
 area is not compared against a stale high-water-mark left behind by an alert
 that is no longer active.
 
-Scope boundary (Task 4.2 vs 4.3)
-----------------------------------
-This module builds DETECTION + dedup/escalation + pre-generation + SUBMITTING
-one ``AcceptInterruption`` per qualification. It deliberately does NOT:
+Seam decision: the TUI orchestrates; the monitor hands off (Task 4.3)
+-----------------------------------------------------------------------
+This module builds DETECTION + dedup/escalation + pre-generation + HANDOFF.
+It deliberately does NOT:
 
-    - Wait for / retry at a genuine safe playback boundary. It submits using
-      whatever offset the controller's last-known ``PlaybackCheckpoint``
-      recorded (0 if none exists yet); ``reducer._accept_interruption``
-      itself is what rejects an offset that is not currently within a safe
-      window (``# 4.3:`` marks this exact call site below).
-    - Retry a rejected interruption. Once an area's escalation bar has
-      advanced for a qualification attempt, a later poll at the same
-      severity dedupes rather than re-attempting — even if the original
-      submit was rejected (no safe point at that moment). Safe-boundary-aware
-      retry is Task 4.3's job (``# 4.3:`` marks this too).
-    - Ever call ``ResumeFromInterruption``. Entirely Task 4.3.
+    - Wait for / retry at a genuine safe playback boundary, or decide WHEN
+      to interrupt at all. It has no live knowledge of the real playback
+      offset — only the TUI (via its adapter) does — so it cannot safely
+      pick an ``interrupt_offset_ms``. See ``wilted.tui.WiltedApp``'s
+      ``_on_bulletin_ready`` / ``_maybe_submit_pending_bulletin``, which own
+      the entire safe-boundary-detection-and-submit path, including the
+      6s-cold/5s-warm generation budget and audible+visual fallback.
+    - Submit ``AcceptInterruption`` or ``ResumeFromInterruption`` itself, or
+      hold any reference to a ``StationController``. Once a bulletin is
+      fully generated, published, and finalized, this monitor's job ends at
+      :meth:`WeatherMonitor._hand_off_bulletin` — a plain callback handoff,
+      not a station mutation.
+    - Retry a rejected/deferred interruption. Once an area's escalation bar
+      has advanced for a qualification attempt, a later poll at the same
+      severity dedupes rather than re-generating — even if the TUI never
+      found a safe boundary to interrupt at. Retry-at-the-next-safe-boundary
+      for an already-generated, still-pending bulletin is the TUI's job.
 
 Lifecycle discipline
 ---------------------
@@ -91,9 +99,14 @@ poll itself failed. See ``tests/test_weather_monitor.py``'s wrapper gate
 test. This is a standalone, single-poll health-check/manual-run path (for an
 external scheduler or manual invocation) distinct from how
 :class:`WeatherMonitor` is meant to run continuously: embedded, as a
-background thread, in the same long-running process as the
-``StationController`` (wiring that in is a later integration task, not this
-one — see the MUST NOT TOUCH list in this task's briefing).
+background thread, in the same long-running process as the TUI/adapter (the
+only place a bulletin can be safely interrupted-into) — see
+``wilted.tui.WiltedApp``'s ``on_mount``/``on_unmount`` wiring of an injected
+``weather_monitor`` instance and its ``on_bulletin_ready`` callback. This
+wrapper's ``main()`` still acquires/releases a real ``StationController``
+lease purely as a runtime-health smoke test (mirroring how the embedded
+monitor's host process would also need a controller lease); it does not pass
+that controller into :class:`WeatherMonitor`, which no longer needs one.
 """
 
 from __future__ import annotations
@@ -109,7 +122,7 @@ import threading
 import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from wilted.station.models import (
     FinalizationState,
@@ -118,15 +131,10 @@ from wilted.station.models import (
     StationEntry,
     now_utc_z,
 )
-from wilted.station.reducer import AcceptInterruption
 from wilted.station_runtime import media_store
 
 if TYPE_CHECKING:
-    import concurrent.futures
     from collections.abc import Callable
-
-    from wilted.station.reducer import StationState
-    from wilted.station_runtime.controller import SubmitResult
 
 logger = logging.getLogger(__name__)
 
@@ -401,36 +409,24 @@ def _default_synth_bulletin(text: str) -> BulletinAudio:
 
 
 # ---------------------------------------------------------------------------
-# Controller seam — structural Protocol, mirroring CheckpointPoller's
-# _ControllerLike exactly: no hard runtime dependency on the concrete
-# StationController, so tests inject a fake without inheriting from it.
-# ---------------------------------------------------------------------------
-
-
-class _ControllerLike(Protocol):
-    def submit(self, action: object) -> concurrent.futures.Future[SubmitResult]: ...
-
-    def current_state(self) -> StationState: ...
-
-
-# ---------------------------------------------------------------------------
 # WeatherMonitor
 # ---------------------------------------------------------------------------
 
 
 class WeatherMonitor:
-    """Polls NWS zone+county alerts; pre-generates + submits bulletin interruptions.
+    """Polls NWS zone+county alerts; pre-generates bulletins and hands them off.
 
     See the module docstring for the combined-request, dedup/escalation, and
-    4.2-vs-4.3 scope-boundary design. ``fetch``/``synth`` are REQUIRED
-    keyword-only seams (no real-implementation default) so a test can never
-    accidentally construct a monitor that reaches a live NWS call or loads a
-    real TTS model.
+    monitor-hands-off/TUI-orchestrates seam design. ``fetch``/``synth`` are
+    REQUIRED keyword-only seams (no real-implementation default) so a test
+    can never accidentally construct a monitor that reaches a live NWS call
+    or loads a real TTS model. This monitor holds no reference to a
+    ``StationController`` and never calls ``reducer.apply``/``submit`` —
+    see :attr:`on_bulletin_ready`.
     """
 
     def __init__(
         self,
-        controller: _ControllerLike,
         *,
         fetch: Callable[[str, str, str], dict],
         synth: Callable[[str], BulletinAudio],
@@ -438,19 +434,30 @@ class WeatherMonitor:
         county: str = DEFAULT_COUNTY,
         interval_s: float = DEFAULT_INTERVAL_SECONDS,
         user_agent: str = DEFAULT_USER_AGENT,
+        on_bulletin_ready: Callable[[StationEntry], None] | None = None,
     ) -> None:
         if interval_s < _MIN_INTERVAL_SECONDS:
             raise ValueError(
                 f"WeatherMonitor interval_s must be >= {_MIN_INTERVAL_SECONDS} "
                 f"(SR-5 reasonable-usage floor), got {interval_s}"
             )
-        self._controller = controller
         self._fetch = fetch
         self._synth = synth
         self._zone = zone
         self._county = county
         self._interval_s = interval_s
         self._user_agent = user_agent
+
+        #: Callback invoked with each fully-generated, published, playable
+        #: bulletin — settable, exactly like ``MacPlaybackAdapter.on_complete``
+        #: (see that class's docstring for the mirrored contract). ``None``
+        #: (the default) means no consumer is wired: a qualifying bulletin is
+        #: logged and dropped rather than silently lost with no trace — the
+        #: expected state for the standalone one-shot CLI wrapper (``main()``
+        #: below), which has no live TUI to hand off to. The live embedded
+        #: monitor (``wilted.tui.WiltedApp``) always wires this before
+        #: :meth:`start`.
+        self.on_bulletin_ready = on_bulletin_ready
 
         self._area_state: dict[str, _AreaState] = {}
         self._poll_lock = threading.Lock()
@@ -598,7 +605,7 @@ class WeatherMonitor:
                 continue
             seen_areas.add(record.area_desc)
             try:
-                self._handle_alert(record, now)
+                self._handle_alert(record)
             except Exception:  # noqa: BLE001 - one bad alert must not abort the batch
                 logger.exception("WeatherMonitor: failed handling alert %s (%s)", record.alert_id, record.event)
 
@@ -609,7 +616,7 @@ class WeatherMonitor:
         for area in [a for a in self._area_state if a not in seen_areas]:
             del self._area_state[area]
 
-    def _handle_alert(self, record: _AlertRecord, now: str) -> None:
+    def _handle_alert(self, record: _AlertRecord) -> None:
         state = self._area_state.setdefault(record.area_desc, _AreaState())
 
         signature = record.signature()
@@ -621,10 +628,10 @@ class WeatherMonitor:
             return  # tier 2: not an escalation over what already qualified
 
         state.max_qualified_severity = record.severity_rank
-        self._qualify(record, now)
+        self._qualify(record)
 
     # ------------------------------------------------------------------
-    # Qualification: pre-generate (off the interrupt path) + submit
+    # Qualification: pre-generate (off the interrupt path) + hand off
     # ------------------------------------------------------------------
 
     def _bulletin_text(self, record: _AlertRecord) -> str:
@@ -632,14 +639,14 @@ class WeatherMonitor:
             return record.headline
         return f"{record.event} for {record.area_desc}."
 
-    def _qualify(self, record: _AlertRecord, now: str) -> None:
-        """Pre-generate the bulletin's audio and submit the interruption.
+    def _qualify(self, record: _AlertRecord) -> None:
+        """Pre-generate the bulletin's audio and hand it off to the consumer.
 
         Synthesis happens here, synchronously, inside the poll cycle -- NOT
         triggered from within the reducer/interrupt path -- which is what
-        "off the interrupt path" means: by the time ``AcceptInterruption`` is
-        submitted below, the bulletin is already fully published and
-        playable.
+        "off the interrupt path" means: by the time
+        :meth:`_hand_off_bulletin` runs below, the bulletin is already fully
+        published and playable (``FinalizationState.complete()``).
         """
         text = self._bulletin_text(record)
         try:
@@ -684,43 +691,37 @@ class WeatherMonitor:
             duration_ms=audio.duration_ms,
             media=descriptor,
         )
-        self._submit_interruption(bulletin, now)
+        self._hand_off_bulletin(bulletin)
 
-    def _submit_interruption(self, bulletin: StationEntry, now: str) -> None:
-        # 4.3: this uses the controller's last-known checkpoint offset as a
-        # naive interrupt point -- it does NOT wait for or seek a genuine
-        # safe boundary. reducer._accept_interruption itself will reject the
-        # submission if that offset is not currently within a safe window;
-        # this monitor does not retry a rejection (the area's escalation bar
-        # has already advanced, so a later poll at the same severity dedupes
-        # rather than re-attempting). Safe-boundary-aware wait/retry, and the
-        # eventual ResumeFromInterruption, are Task 4.3's job entirely.
-        state = self._controller.current_state()
-        interrupt_offset_ms = state.checkpoint.media_offset_ms if state.checkpoint is not None else 0
+    def _hand_off_bulletin(self, bulletin: StationEntry) -> None:
+        """Hand the pre-generated, fully-playable bulletin to :attr:`on_bulletin_ready`.
 
-        action = AcceptInterruption(
-            bulletin=bulletin,
-            interrupt_offset_ms=interrupt_offset_ms,
-            policy_current=True,
-            now=now,
-        )
-        future = self._controller.submit(action)
+        Task 4.3 moved safe-boundary-aware submission (the actual
+        ``AcceptInterruption``, using the REAL live playback offset) to the
+        TUI, which is the only component with that live knowledge — see
+        ``wilted.tui.WiltedApp._on_bulletin_ready`` /
+        ``_maybe_submit_pending_bulletin``. This monitor's job ends here:
+        escalation/dedup gating already happened in :meth:`_handle_alert`,
+        and the bulletin is already published + finalized.
 
-        def _log_outcome(fut: concurrent.futures.Future[SubmitResult]) -> None:
-            try:
-                result = fut.result()
-            except Exception as exc:  # noqa: BLE001 - a done-callback must never raise
-                logger.debug("WeatherMonitor: interruption submit for %s raised: %r", bulletin.entry_id, exc)
-                return
-            if not result.accepted:
-                logger.info(
-                    "WeatherMonitor: interruption for %s was rejected (no safe point at offset %d ms, "
-                    "or policy/lease mismatch) -- not retried (Task 4.3)",
-                    bulletin.entry_id,
-                    interrupt_offset_ms,
-                )
-
-        future.add_done_callback(_log_outcome)
+        A callback exception is caught and logged, never propagated to the
+        poll loop -- the same discipline ``MacPlaybackAdapter`` applies to
+        its own ``on_complete`` callback. If no callback is wired (``None``,
+        the default -- e.g. the standalone one-shot CLI wrapper below, which
+        has no live TUI to hand off to), the bulletin is logged and dropped
+        rather than silently vanishing with no trace.
+        """
+        if self.on_bulletin_ready is None:
+            logger.info(
+                "WeatherMonitor: bulletin %s ready but no on_bulletin_ready consumer is wired -- dropped "
+                "(expected for the standalone CLI wrapper; the live embedded monitor always wires this)",
+                bulletin.entry_id,
+            )
+            return
+        try:
+            self.on_bulletin_ready(bulletin)
+        except Exception:
+            logger.error("WeatherMonitor: on_bulletin_ready callback raised for %s", bulletin.entry_id, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -786,8 +787,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
+        # `controller` above is acquired/released purely as a runtime-health
+        # smoke test (see the module docstring) -- WeatherMonitor itself no
+        # longer takes a controller; it has no on_bulletin_ready consumer in
+        # this standalone one-shot path, so a qualifying bulletin is logged
+        # and dropped (see _hand_off_bulletin).
         monitor = WeatherMonitor(
-            controller,
             fetch=_default_fetch_alerts,
             synth=_default_synth_bulletin,
             zone=args.zone,

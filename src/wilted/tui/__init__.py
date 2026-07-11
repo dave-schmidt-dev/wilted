@@ -22,6 +22,7 @@ NOT routed through the controller — see each action's docstring.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -38,7 +39,7 @@ from textual.theme import Theme
 from textual.widgets import Footer, Header, Label, Static, Tree
 from textual.worker import get_current_worker
 
-from wilted import ICONS
+from wilted import ICONS, PROJECT_ROOT
 from wilted.playlists import ensure_default_playlists, get_playlist_items
 from wilted.queue import (
     clear_queue,
@@ -46,8 +47,8 @@ from wilted.queue import (
     mark_completed,
     remove_article_by_id,
 )
-from wilted.station.models import StationEntry
-from wilted.station.reducer import Checkpoint, StartPlayback, Stop
+from wilted.station.models import StationEntry, now_utc_z
+from wilted.station.reducer import AcceptInterruption, Checkpoint, ResumeFromInterruption, StartPlayback, Stop
 from wilted.station_runtime import (
     CheckpointPoller,
     LeaseHeldError,
@@ -55,6 +56,7 @@ from wilted.station_runtime import (
     RouteChangeEvent,
     RouteMonitor,
     StationController,
+    WeatherMonitor,
 )
 from wilted.station_runtime.sequencer import EntrySequencer
 from wilted.text import split_paragraphs
@@ -65,6 +67,8 @@ from wilted.tui.screens.text_preview import TextPreviewScreen
 from wilted.tui.screens.voice_settings import VoiceSettingsScreen
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from wilted.station.models import TranscriptSegment
     from wilted.station_runtime import CompletionReason
 
@@ -82,6 +86,28 @@ _STATUS_HOLD_SECS = 2.0
 # Shared status text for every read-only refusal (lease held by another
 # live session) — kept as one constant so all refusal sites stay in sync.
 _STATION_READ_ONLY_MSG = "Station active in another session — read-only"
+
+# ---------------------------------------------------------------------------
+# Weather bulletin interrupt/resume (A.4.3)
+# ---------------------------------------------------------------------------
+
+# Generation budget once a safe boundary has actually been reached, measured
+# in _update_timer ticks (the timer fires once per nominal second in
+# production — see on_mount's set_interval(1.0, ...) — so a tick count is a
+# generous, machine-independent proxy for "N seconds", and it makes tests
+# deterministic without mocking wall-clock time). "Cold" (model not yet
+# resident) vs "warm" (resident) can't be observed directly from the TUI
+# without deeper coupling to ModelCoordinator internals that isn't wired
+# anywhere else in this module, so this uses a simple, documented proxy
+# instead: the FIRST bulletin this session is treated as cold, every
+# subsequent one as warm (see WiltedApp._bulletin_interruptions_handled).
+_BULLETIN_BUDGET_COLD_TICKS = 6
+_BULLETIN_BUDGET_WARM_TICKS = 5
+
+# Where the safe-boundary -> bulletin-audible latency artifact is appended
+# (JSON Lines, one record per completed interruption). Overridable via
+# WiltedApp(latency_log_path=...) so tests never touch the real repo tree.
+_DEFAULT_LATENCY_LOG_PATH = PROJECT_ROOT / "reports" / "weather-bulletin-latency.jsonl"
 
 # ---------------------------------------------------------------------------
 # Salad Palette — custom Textual theme
@@ -250,6 +276,8 @@ class WiltedApp(App):
         sequencer_factory=None,
         poller_factory=None,
         route_monitor_factory=None,
+        weather_monitor: WeatherMonitor | None = None,
+        latency_log_path: Path | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -282,6 +310,38 @@ class WiltedApp(App):
         self._route_monitor = self._route_monitor_factory(self._on_route_change)
         self._route_monitor_started: bool = False
         self._station_read_only: bool = False
+
+        # WeatherMonitor (A.4.3): unlike the poller/route-monitor above,
+        # there is NO safe default construction here — WeatherMonitor's own
+        # design deliberately has no real-implementation default for
+        # fetch/synth (see its class docstring: "so a test can never
+        # accidentally construct a monitor that reaches a live NWS call or
+        # loads a real TTS model"). Mirroring that here, `weather_monitor`
+        # defaults to None (no monitor wired/started at all) rather than an
+        # auto-constructed real one — the real embedded monitor is wired
+        # explicitly by whatever launches the production TUI. When given,
+        # this app wires ITS OWN `on_bulletin_ready` onto it (mirroring
+        # `self._adapter.on_complete = self._on_adapter_completion` above)
+        # and owns its start/stop lifecycle (see on_mount/on_unmount).
+        self._weather_monitor = weather_monitor
+        if self._weather_monitor is not None:
+            self._weather_monitor.on_bulletin_ready = self._on_bulletin_ready
+        self._weather_monitor_started: bool = False
+        self._latency_log_path: Path = latency_log_path if latency_log_path is not None else _DEFAULT_LATENCY_LOG_PATH
+
+        # -- Weather bulletin interruption state (A.4.3) ---------------------
+        # `_pending_bulletin` is set by `_on_bulletin_ready` (the monitor's
+        # handoff callback) and consumed by `_maybe_submit_pending_bulletin`
+        # (driven off the existing 1s `_update_timer`) once playback is
+        # actually sitting inside a real safe-interruption window. See those
+        # methods' docstrings for the full state machine.
+        self._pending_bulletin: StationEntry | None = None
+        self._bulletin_playing: bool = False
+        self._bulletin_wait_ticks: int = 0
+        self._bulletin_fallback_shown_this_window: bool = False
+        self._bulletin_interruptions_handled: int = 0
+        self._bulletin_boundary_detected_monotonic: float | None = None
+        self._bulletin_pending_since_monotonic: float | None = None
 
         # -- Station backlog / now-playing state -----------------------------
         self._station_entries: list[StationEntry] = []
@@ -363,6 +423,16 @@ class WiltedApp(App):
         else:
             self._rebuild_sequencer()
 
+        # WeatherMonitor (A.4.3): only the session actually holding the
+        # station lease may interrupt playback, so only that session runs
+        # detection/generation too — a read-only second session starting its
+        # OWN poller would duplicate NWS polling and TTS synthesis for a
+        # bulletin it could never actually submit (_maybe_submit_pending_bulletin
+        # itself also guards on _station_read_only, defense in depth).
+        if self._weather_monitor is not None and not self._station_read_only:
+            self._weather_monitor.start()
+            self._weather_monitor_started = True
+
         # Preload TTS model only if there are items that need TTS synthesis.
         # Pipeline items with audio_file set already have generated audio; skip.
         if any(not e.get("audio_file") for e in self._all_items):
@@ -376,9 +446,10 @@ class WiltedApp(App):
         A safety net for the (many) code paths that end the app without going
         through :meth:`action_quit_app` (e.g. a test's ``run_test()`` context
         exiting) — without this, the controller's OS-level flock and the
-        poller/heartbeat/route-monitor threads would leak past this app
-        instance. All four calls are documented no-ops if never started, and
-        idempotent with :meth:`action_quit_app` calling them again.
+        poller/heartbeat/route-monitor/weather-monitor threads would leak
+        past this app instance. All five calls are documented no-ops if
+        never started, and idempotent with :meth:`action_quit_app` calling
+        them again.
         """
         try:
             self._adapter.stop()
@@ -392,6 +463,11 @@ class WiltedApp(App):
             self._route_monitor.stop()
         except Exception:
             logger.exception("on_unmount: route_monitor.stop() failed")
+        if self._weather_monitor is not None:
+            try:
+                self._weather_monitor.stop()
+            except Exception:
+                logger.exception("on_unmount: weather_monitor.stop() failed")
         try:
             self._controller.stop()
         except Exception:
@@ -651,6 +727,8 @@ class WiltedApp(App):
             return
         if not self._playing or self._paused:
             return
+
+        self._maybe_submit_pending_bulletin()
 
         if self._paragraphs:
             offset_ms = self._adapter.current_offset_ms()
@@ -962,6 +1040,348 @@ class WiltedApp(App):
             self._route_monitor.start()
             self._route_monitor_started = True
 
+    # -- Weather bulletin interrupt/resume (A.4.3) ---------------------------
+
+    def _on_bulletin_ready(self, bulletin: StationEntry) -> None:
+        """Callback wired as ``WeatherMonitor.on_bulletin_ready`` (mirrors
+        ``MacPlaybackAdapter.on_complete`` / ``RouteMonitor.on_route_change``'s
+        injectable-callback seam). Runs on the monitor's OWN poll thread (see
+        ``WeatherMonitor._poll_loop``), so -- exactly like
+        :class:`PlaybackCompleted`/:class:`RouteChanged` -- this must never
+        touch Textual widgets or submit a controller action directly from
+        this thread. Unlike those two, though, there is no need to marshal
+        onto the UI thread via ``post_message``: setting
+        ``self._pending_bulletin`` is a single reference assignment (atomic
+        under the GIL), and the actual safe-boundary submit only ever
+        happens later, from :meth:`_maybe_submit_pending_bulletin` on the UI
+        thread's existing 1s timer -- so a plain attribute write here is
+        sufficient.
+
+        A second bulletin arriving while one is already pending (or already
+        playing) replaces the pending slot (last-one-wins) rather than
+        queuing: nested/queued weather bulletins are out of scope here (the
+        monitor's own escalation-aware dedup is what keeps this rare), and
+        there is no mechanism to play two pending bulletins before either
+        reaches a safe boundary.
+
+        Cross-thread smell (accepted, not fixed): a bulletin arriving here
+        and overwriting ``self._pending_bulletin`` WHILE ``_accept_pending_bulletin``
+        is already mid-flight for the previous one (on the UI thread) can be
+        silently dropped -- that method unconditionally clears
+        ``self._pending_bulletin`` on acceptance, with no check that it still
+        refers to the same bulletin it started with. Benign in practice: the
+        monitor's own dedup/escalation logic is what keeps concurrent
+        bulletins rare in the first place.
+        """
+        self._pending_bulletin = bulletin
+        self._bulletin_pending_since_monotonic = time.monotonic()
+        self._bulletin_wait_ticks = 0
+        self._bulletin_fallback_shown_this_window = False
+
+    def _maybe_submit_pending_bulletin(self) -> None:
+        """Called every tick from :meth:`_update_timer`. Submits the pending
+        weather bulletin's ``AcceptInterruption`` the instant playback is
+        ACTUALLY sitting inside a real safe-interruption window.
+
+        HAZARD 2 (real-time safe-boundary accept): the offset passed to
+        ``AcceptInterruption`` must be the LIVE ``adapter.current_offset_ms()``
+        read right now, never a precomputed/future safe-window bound --
+        otherwise the reducer would accept immediately (the static map says
+        the offset is safe) but checkpoint the interrupted entry at a FUTURE
+        offset, and resume would then skip the audio in between. Only this
+        method (via the adapter) has that live offset.
+        """
+        if (
+            self._pending_bulletin is None
+            or not self._playing
+            or self._paused
+            or self._bulletin_playing
+            or self._station_read_only
+            or self._current_entry is None
+        ):
+            return
+
+        offset_ms = self._adapter.current_offset_ms()
+        at_safe_point = self._current_entry.media.safe_interruption.safe_point_at(offset_ms)
+
+        if not at_safe_point:
+            # Not (or no longer) inside a safe window -- rearm the
+            # wait/fallback gate AND the boundary-detected timestamp so the
+            # NEXT boundary gets its own fresh budget, its own fallback
+            # notice, and an accurate boundary-wait latency measurement
+            # (without this reset, re-entering a later window would keep
+            # reporting boundary-wait from the FIRST window ever detected,
+            # not the one that actually led to the eventual accept).
+            self._bulletin_wait_ticks = 0
+            self._bulletin_fallback_shown_this_window = False
+            self._bulletin_boundary_detected_monotonic = None
+            return
+
+        if self._bulletin_boundary_detected_monotonic is None:
+            self._bulletin_boundary_detected_monotonic = time.monotonic()
+
+        bulletin = self._pending_bulletin
+        if not bulletin.media.is_playable:
+            # Defensive: the reducer would reject a non-playable bulletin
+            # anyway (see reducer._accept_interruption), but this TUI must
+            # not even attempt it -- fall back instead. In the real monitor
+            # flow a handed-off bulletin is always already fully generated
+            # and published (Task 4.2's off-the-interrupt-path pregeneration
+            # guarantees FinalizationState.complete()), so this branch is a
+            # safety net, not the expected steady state.
+            self._handle_bulletin_not_playable_at_boundary(bulletin)
+            return
+
+        self._accept_pending_bulletin(bulletin, offset_ms)
+
+    def _handle_bulletin_not_playable_at_boundary(self, bulletin: StationEntry) -> None:
+        """A safe boundary was reached but the pending bulletin still isn't
+        playable. Waits up to the cold/warm generation budget (in
+        ``_update_timer`` ticks -- see the module-level constants' docstring)
+        before taking the audible+visual fallback and deferring to the next
+        safe boundary. Never submits a broken ``AcceptInterruption``."""
+        if self._bulletin_fallback_shown_this_window:
+            return  # already notified for this boundary encounter; wait for the next one
+
+        self._bulletin_wait_ticks += 1
+        budget_ticks = (
+            _BULLETIN_BUDGET_WARM_TICKS if self._bulletin_interruptions_handled > 0 else _BULLETIN_BUDGET_COLD_TICKS
+        )
+        if self._bulletin_wait_ticks < budget_ticks:
+            return
+
+        self._bulletin_fallback_shown_this_window = True
+        logger.warning(
+            "Weather bulletin %s: still not playable %d ticks after reaching a safe boundary "
+            "(budget %d) -- falling back to a visible notice; will retry at the next safe boundary",
+            bulletin.entry_id,
+            self._bulletin_wait_ticks,
+            budget_ticks,
+        )
+        # Audible+visual fallback (no silent drop): a guaranteed-visible,
+        # held status-line banner. A synthesized spoken "canned/degraded"
+        # announcement was not implemented -- there is no existing canned
+        # audio asset/generation path to draw on -- see the task report for
+        # this documented scope call.
+        self._set_status("⚠ Weather alert pending — audio not ready, will interrupt shortly", _STATUS_HIGH)
+
+    def _accept_pending_bulletin(self, bulletin: StationEntry, offset_ms: int) -> None:
+        """Submit ``AcceptInterruption`` at the REAL current offset (hazard 2)."""
+        # HAZARD 1 (poller clobber): stop the poller BEFORE even submitting
+        # AcceptInterruption -- not just before playing the bulletin.
+        # Stopping only after a successful submit_and_wait() would leave a
+        # short race window between the accept's reducer transition landing
+        # (active_entry -> bulletin, checkpoint -> the interrupted entry's
+        # accept-time resume checkpoint) and this thread reaching
+        # poller.stop(): a poll tick landing in that window would read the
+        # NEW active_entry (the bulletin, now PLAYING) together with the
+        # adapter's OLD offset (adapter.play() for the bulletin hasn't run
+        # yet), and submit a Checkpoint that overwrites the resume checkpoint
+        # with a mismatched entry_id -- silently making _start_playback fall
+        # back to offset 0 on resume instead of the real interrupt offset.
+        # poller.stop() blocks until the poll thread has fully joined
+        # (bounded), so stopping first closes the window completely rather
+        # than merely narrowing it. Restarted below on any non-acceptance
+        # path (nothing actually got interrupted), and otherwise only once
+        # the interrupted entry is actually resumed (_start_playback in
+        # _handle_bulletin_completion below).
+        self._poller.stop()
+        self._poller_started = False
+
+        action = AcceptInterruption(
+            bulletin=bulletin,
+            interrupt_offset_ms=offset_ms,
+            policy_current=True,
+            now=now_utc_z(),
+        )
+        try:
+            result = self._controller.submit_and_wait(action, timeout=5.0)
+        except Exception:
+            logger.exception("Weather bulletin %s: AcceptInterruption submission failed", bulletin.entry_id)
+            self._poller.start()
+            self._poller_started = True
+            return
+
+        if not result.accepted:
+            logger.info(
+                "Weather bulletin %s: AcceptInterruption rejected at offset %d ms -- will retry at the "
+                "next safe boundary",
+                bulletin.entry_id,
+                offset_ms,
+            )
+            self._poller.start()
+            self._poller_started = True
+            return
+
+        self._pending_bulletin = None
+        self._bulletin_wait_ticks = 0
+        self._bulletin_fallback_shown_this_window = False
+
+        self._play_bulletin(bulletin)
+
+    def _play_bulletin(self, bulletin: StationEntry) -> None:
+        """Play an already-ACCEPTED bulletin directly via the adapter.
+
+        Deliberately bypasses :meth:`_start_playback`'s controller
+        submission. The station state was already correctly transitioned to
+        playing(bulletin) by the just-accepted ``AcceptInterruption`` --
+        which pushed the interrupted entry onto ``interruption_stack`` and
+        wrote its resume ``checkpoint``. Reusing ``_start_playback`` here
+        would submit a REDUNDANT ``StartPlayback`` action, and the reducer's
+        ``StartPlayback`` transition (``reducer._start_playback``)
+        UNCONDITIONALLY clears BOTH ``checkpoint`` AND
+        ``interruption_stack`` on every call (it has no "already
+        interrupted" precondition) -- silently discarding the just-pushed
+        interrupted entry before :class:`ResumeFromInterruption` ever gets a
+        chance to pop it back. This is the load-bearing reason a bulletin
+        needs its OWN play path instead of ``_start_playback``.
+        """
+        try:
+            self._adapter.play(bulletin.media, offset_ms=0)
+        except Exception as e:
+            logger.exception("Weather bulletin %s: adapter.play failed", bulletin.entry_id)
+            self._set_status(f"Weather bulletin playback error: {e}", _STATUS_HIGH)
+            self._handle_bulletin_completion(bulletin, reason=None)
+            return
+
+        audible_monotonic = time.monotonic()
+        self._record_bulletin_latency(bulletin, audible_monotonic)
+        self._bulletin_interruptions_handled += 1
+
+        self._current_entry = bulletin
+        self._playing = True
+        self._paused = False
+        self._generation_paused = True
+        self._bulletin_playing = True
+
+        self._current_segments = ()
+        self._paragraphs = []
+        self._paragraph_idx = 0
+
+        duration_s = bulletin.duration_ms / 1000 if bulletin.duration_ms else 0.0
+        self._estimated_remaining_secs = duration_s
+        self._bar_progress = 0.0
+
+        self._update_now_playing(
+            title="⚠ Weather Alert", progress=0.0, text_snippet="", status="Weather bulletin playing"
+        )
+        if self.is_running:
+            self.query_one("#current-text", Static).update("")
+
+    def _handle_bulletin_completion(self, bulletin: StationEntry, reason: CompletionReason | None) -> None:
+        """A weather bulletin finished (cleanly, truncated, or via an
+        adapter.play failure -- ``reason=None``) -- ALWAYS resume the
+        interrupted entry, never auto-advance/mark-complete like the normal
+        completion path does (a bulletin is never a durable Item and is
+        never part of the station backlog).
+
+        ``bulletin`` is passed explicitly (rather than read from
+        ``self._current_entry``) so the log message below is accurate even
+        when called from :meth:`_play_bulletin`'s ``adapter.play`` failure
+        path, where ``self._current_entry`` is still the INTERRUPTED entry
+        (the bulletin never got far enough to become current).
+
+        This deliberately does NOT gate on ``reason.is_clean_completion``
+        the way :meth:`_handle_station_completion` gates auto-advance
+        (PM-10): the bulletin itself has nothing further to
+        "not auto-advance into" -- it is session-scoped and one-shot, never
+        itself resumed -- so a TRUNCATED/UNKNOWN bulletin completion still
+        resumes the interrupted entry rather than stranding playback
+        indefinitely. This is the "completion race" hazard from the task
+        briefing: a bulletin completion must route HERE, never through the
+        normal auto-advance path.
+        """
+        logger.debug(
+            "Weather bulletin %s completed (reason=%r) -- resuming interrupted entry", bulletin.entry_id, reason
+        )
+        self._bulletin_playing = False
+        self._playing = False
+        self._paused = False
+        self._generation_paused = False
+        self._clear_transcript_state()
+
+        resumed_entry = self._resume_from_interruption()
+        if resumed_entry is None:
+            logger.error(
+                "Weather bulletin %s completed but ResumeFromInterruption found nothing to resume -- "
+                "station left stopped rather than silently replaying/skipping",
+                bulletin.entry_id,
+            )
+            self._current_entry = None
+            self._current_index = None
+            if self._controller.is_running:
+                self._controller.submit(Stop())
+            self._poller.stop()
+            self._poller_started = False
+            self._set_status("Weather bulletin finished — nothing to resume", _STATUS_HIGH)
+            self._trigger_generation()
+            return
+
+        # _start_playback reads the accept-time checkpoint (entry_id matches
+        # the resumed entry; untouched by ResumeFromInterruption) for the
+        # exact resume offset, and restarts the poller/route-monitor it was
+        # only ever paused across the bulletin.
+        #
+        # nesting: single-bulletin MVP -- reducer.StartPlayback unconditionally
+        # clears interruption_stack (see _play_bulletin's docstring), so this
+        # would silently drop any DEEPER queued interruption. Safe today only
+        # because _maybe_submit_pending_bulletin's `not self._bulletin_playing`
+        # guard means a second bulletin can never be accepted while one is
+        # already playing, so the stack never exceeds depth 1 in practice.
+        # Revisit this call if nested bulletin-of-bulletin interruptions are
+        # ever enabled.
+        self._start_playback(resumed_entry)
+
+    def _resume_from_interruption(self) -> StationEntry | None:
+        """Submit ``ResumeFromInterruption``; return the resumed entry (the
+        reducer's freshly-popped ``active_entry``) on acceptance, or
+        ``None`` on rejection/failure (e.g. an empty interruption stack)."""
+        action = ResumeFromInterruption(now=now_utc_z())
+        try:
+            result = self._controller.submit_and_wait(action, timeout=5.0)
+        except Exception:
+            logger.exception("ResumeFromInterruption submission failed")
+            return None
+        if not result.accepted:
+            return None
+        return result.state.active_entry
+
+    def _record_bulletin_latency(self, bulletin: StationEntry, audible_monotonic: float) -> None:
+        """Append one JSON-Lines record of this interruption's latency to
+        :attr:`_latency_log_path`. Boundary-wait (how long playback had to
+        keep going before a genuinely safe boundary showed up) is reported
+        SEPARATELY from accept-to-audible (submit + adapter.play latency,
+        the "hot path" once a boundary was found) -- these are independent
+        quantities that happen to sum to the total. Bulletin GENERATION time
+        (the monitor's TTS synth, entirely before hand-off) is not
+        observable from here and is out of scope for this artifact -- see
+        the task report.
+
+        Best-effort: a write failure is logged, never raised (a metrics
+        artifact must not be able to break playback).
+        """
+        pending_since = self._bulletin_pending_since_monotonic
+        boundary_detected = self._bulletin_boundary_detected_monotonic
+        self._bulletin_pending_since_monotonic = None
+        self._bulletin_boundary_detected_monotonic = None
+        if pending_since is None or boundary_detected is None:
+            return
+
+        record = {
+            "timestamp": now_utc_z(),
+            "bulletin_entry_id": bulletin.entry_id,
+            "boundary_wait_ms": round((boundary_detected - pending_since) * 1000),
+            "accept_to_audible_ms": round((audible_monotonic - boundary_detected) * 1000),
+            "total_latency_ms": round((audible_monotonic - pending_since) * 1000),
+            "cold_or_warm": "cold" if self._bulletin_interruptions_handled == 0 else "warm",
+        }
+        try:
+            self._latency_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._latency_log_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
+        except Exception:
+            logger.exception("Weather bulletin %s: failed to write latency artifact", bulletin.entry_id)
+
     def _on_adapter_completion(self, reason: CompletionReason) -> None:
         """Thin marshaller installed on the adapter — runs on the audio background thread.
 
@@ -983,7 +1403,22 @@ class WiltedApp(App):
         auto-advance or mark-complete (the PM-10 guard): the entry may not
         have actually finished playing, so treating it as done would silently
         skip content.
+
+        A weather bulletin's completion (A.4.3) is intercepted FIRST, before
+        any of this method's normal side effects (in particular, before the
+        unconditional ``Stop()`` submit just below): a bulletin completion
+        must route to :meth:`_handle_bulletin_completion` (resume the
+        interrupted entry), never fall through to this method's
+        auto-advance/"not advancing" logic. This ordering matters for a
+        TRUNCATED bulletin completion specifically -- the normal body below
+        returns early on ``not reason.is_clean_completion`` without ever
+        reaching the auto-advance code, so resume would silently never fire
+        if this check were placed any later.
         """
+        if self._bulletin_playing:
+            self._handle_bulletin_completion(self._current_entry, reason)
+            return
+
         finished_entry = self._current_entry
         if self._controller.is_running:
             self._controller.submit(Stop())
@@ -1080,7 +1515,28 @@ class WiltedApp(App):
         active entry — see ``wilted.station.reducer``). Only the adapter
         (releases the stale/misrouted device) and the poller (would
         otherwise checkpoint a dead stream) are stopped here.
+
+        A.4.3: ignored entirely while a weather bulletin is playing
+        (``self._bulletin_playing``) — ``self._playing`` is True for a
+        bulletin too, so without this guard a device change mid-bulletin
+        would run the route-interruption path against the BULLETIN instead
+        of the interrupted entry: it would overwrite the accept-time resume
+        checkpoint with the bulletin's own, and the eventual
+        ``_resume_from_route_interruption`` -> ``_start_playback(bulletin)``
+        would clear ``interruption_stack`` (reducer._start_playback has no
+        "already interrupted" precondition — see :meth:`_play_bulletin`'s
+        docstring), permanently discarding the interrupted entry. A bulletin
+        is short-lived and self-recovers anyway: :meth:`_resume_from_interruption`
+        -> :meth:`_start_playback` opens a fresh, unpinned stream that binds
+        to whatever the CURRENT default device is at that point (the same
+        "route-recovery via restart" mechanism :meth:`_resume_from_route_interruption`
+        itself relies on), so the interrupted entry lands on the new device
+        once it resumes. Accepted limitation: a device change DURING the
+        bulletin isn't recovered until the bulletin finishes — it may keep
+        playing to the stale/disconnected device for its remaining seconds.
         """
+        if self._bulletin_playing:
+            return
         if not self._playing:
             return
 
@@ -1222,6 +1678,14 @@ class WiltedApp(App):
         self._route_device_name = ""
         self._route_resume_entry = None
         self._route_resume_offset_ms = 0
+        # A manual stop mid-bulletin abandons the interruption cleanly rather
+        # than leaving _bulletin_playing latched True (which would otherwise
+        # misroute the NEXT entry's completion through the bulletin-resume
+        # path instead of normal auto-advance). The pending bulletin (if any)
+        # is deliberately left in place -- a weather alert doesn't stop
+        # mattering just because playback was paused/stopped, so it's still
+        # eligible to interrupt the next safe boundary once playback resumes.
+        self._bulletin_playing = False
         self._set_status("Stopped", _STATUS_MEDIUM)
         self._trigger_generation()
 
@@ -1471,6 +1935,9 @@ class WiltedApp(App):
         self._poller_started = False
         self._route_monitor.stop()
         self._route_monitor_started = False
+        if self._weather_monitor is not None:
+            self._weather_monitor.stop()
+            self._weather_monitor_started = False
         self._controller.stop()
         self.exit()
 
