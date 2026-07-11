@@ -12,6 +12,7 @@ from wilted.cli import (
     _maybe_chain_discover_prepare,
     _play_text,
     _prompt_yes,
+    _weather_monitor_for_launch,
     cmd_add,
     cmd_clear,
     cmd_direct,
@@ -24,6 +25,7 @@ from wilted.cli import (
     run_cli,
 )
 from wilted.queue import add_article, load_queue
+from wilted.station_runtime.weather_monitor import WeatherMonitor, _default_fetch_alerts
 
 
 def _make_args(**overrides):
@@ -904,9 +906,11 @@ class TestMainEntrypoint:
         mock_tqdm = MagicMock()
         mock_app = MagicMock()
         mock_app_cls = MagicMock(return_value=mock_app)
+        sentinel_monitor = object()
 
         with (
             patch("sys.argv", ["wilted"]),
+            patch("wilted.cli._weather_monitor_for_launch", return_value=sentinel_monitor),
             patch.dict(
                 "sys.modules",
                 {
@@ -918,7 +922,7 @@ class TestMainEntrypoint:
             main()
 
         mock_tqdm.get_lock.assert_called_once_with()
-        mock_app_cls.assert_called_once_with()
+        mock_app_cls.assert_called_once_with(weather_monitor=sentinel_monitor)
         mock_app.run.assert_called_once_with()
 
     def test_run_module_invokes_main(self, capsys):
@@ -952,6 +956,43 @@ class TestMainEntrypoint:
 
         out = capsys.readouterr().out
         assert "empty" in out.lower()
+
+
+class TestWeatherMonitorForLaunch:
+    """``_weather_monitor_for_launch`` wires the real ``WeatherMonitor`` into
+    the production TUI launch (was previously never constructed at all).
+    Only constructs -- never starts/polls -- so these tests never touch the
+    network or a real TTS model."""
+
+    def test_returns_a_production_monitor_by_default(self, monkeypatch):
+        monkeypatch.delenv("WILTED_WEATHER_TEST_TRIGGER", raising=False)
+
+        monitor = _weather_monitor_for_launch()
+
+        assert isinstance(monitor, WeatherMonitor)
+        assert monitor._fetch is _default_fetch_alerts
+
+    def test_wires_trigger_file_fetch_when_env_var_set(self, monkeypatch, tmp_path):
+        trigger_path = tmp_path / "trigger"
+        monkeypatch.setenv("WILTED_WEATHER_TEST_TRIGGER", str(trigger_path))
+
+        monitor = _weather_monitor_for_launch()
+
+        assert isinstance(monitor, WeatherMonitor)
+        assert monitor._fetch is not _default_fetch_alerts
+
+    def test_returns_none_and_logs_when_construction_fails(self, monkeypatch, caplog):
+        monkeypatch.delenv("WILTED_WEATHER_TEST_TRIGGER", raising=False)
+
+        def _boom(*, trigger_path=None):
+            raise RuntimeError("optional weather dependency missing")
+
+        with patch("wilted.station_runtime.weather_monitor.build_production_monitor", _boom):
+            with caplog.at_level("WARNING"):
+                monitor = _weather_monitor_for_launch()
+
+        assert monitor is None
+        assert "failed to construct WeatherMonitor" in caplog.text
 
 
 class TestCmdReportEmail:

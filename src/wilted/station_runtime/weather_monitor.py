@@ -121,7 +121,7 @@ import sys
 import threading
 import urllib.parse
 import urllib.request
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from wilted.station.models import (
@@ -135,6 +135,7 @@ from wilted.station_runtime import media_store
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -406,6 +407,85 @@ def _default_synth_bulletin(text: str) -> BulletinAudio:
         tmp_path.unlink(missing_ok=True)
 
     return BulletinAudio(audio_bytes=audio_bytes, duration_ms=duration_ms)
+
+
+# ---------------------------------------------------------------------------
+# Manual-test / QA seam (A.5.1) + the single production construction point
+# ---------------------------------------------------------------------------
+
+
+def make_trigger_file_fetch(trigger_path: Path) -> Callable[[str, str, str], dict]:
+    """Build a ``fetch`` seam for the A.5.1 manual speaker gate -- NOT a
+    production code path. This exists so a manual test session can fire a
+    real, fully-synthesized bulletin end-to-end without waiting on a live
+    NWS alert.
+
+    Returns a ``fetch(zone, county, user_agent)`` closure that, on each
+    call, checks whether ``trigger_path`` exists:
+
+        - If it exists, returns one qualifying "Severe Thunderstorm Warning"
+          GeoJSON feature -- the same shape :meth:`WeatherMonitor.poll_once`
+          expects from the real NWS response -- so it flows through the real
+          dedup/escalation/pre-generation/handoff path unmodified.
+        - If it does not exist, returns an empty ``features`` list, exactly
+          like a real "no active alerts" NWS response.
+
+    The closure is pure and non-blocking: one ``Path.exists()`` check plus
+    building a dict, no sleeping or waiting.
+    """
+
+    def fetch(zone: str, county: str, user_agent: str) -> dict:
+        if not trigger_path.exists():
+            return {"features": []}
+
+        now = datetime.now(UTC)
+        # A real NWS response's areaDesc is a human-readable place name (the
+        # zone/county args are the query UGC codes, never echoed back in the
+        # payload) -- use a natural name so the spoken bulletin reads cleanly
+        # during the A.5.1 listening test rather than reciting a UGC code.
+        area_desc = "Prince William, VA"
+        alert_id = "urn:wilted-test:severe-tstorm"
+        return {
+            "features": [
+                {
+                    "id": f"https://api.weather.gov/alerts/{alert_id}",
+                    "properties": {
+                        "id": alert_id,
+                        "event": "Severe Thunderstorm Warning",
+                        "areaDesc": area_desc,
+                        "severity": "Severe",
+                        "headline": f"Severe Thunderstorm Warning issued for {area_desc} until further notice.",
+                        "description": (
+                            "A severe thunderstorm capable of producing damaging winds "
+                            "and large hail is moving through the area."
+                        ),
+                        "instruction": "Move to an interior room on the lowest floor of a sturdy building.",
+                        "status": "Actual",
+                        "messageType": "Alert",
+                        "sent": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "expires": (now + timedelta(hours=3)).isoformat(),
+                    },
+                }
+            ]
+        }
+
+    return fetch
+
+
+def build_production_monitor(*, trigger_path: Path | None = None) -> WeatherMonitor:
+    """The single public construction point for the live TUI's ``WeatherMonitor``.
+
+    Always uses :func:`_default_synth_bulletin` for ``synth`` (the real
+    coordinator TTS). ``fetch`` is :func:`_default_fetch_alerts` (the real
+    combined NWS GET) unless ``trigger_path`` is given, in which case it is
+    :func:`make_trigger_file_fetch` bound to that path -- the A.5.1
+    manual-test hook, not a production branch. Zone/county/user_agent/
+    interval all stay at their defaults. Does not set ``on_bulletin_ready``
+    -- the caller (``wilted.tui.WiltedApp``) wires that itself, exactly like
+    every other test/production monitor construction in this module.
+    """
+    fetch = make_trigger_file_fetch(trigger_path) if trigger_path is not None else _default_fetch_alerts
+    return WeatherMonitor(fetch=fetch, synth=_default_synth_bulletin)
 
 
 # ---------------------------------------------------------------------------
@@ -830,5 +910,7 @@ __all__ = [
     "DEFAULT_ZONE",
     "BulletinAudio",
     "WeatherMonitor",
+    "build_production_monitor",
     "main",
+    "make_trigger_file_fetch",
 ]

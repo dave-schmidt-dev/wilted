@@ -1,9 +1,12 @@
 """CLI commands for wilted — extracted from the root wilted script for testability."""
 
 import argparse
+import logging
 import os
 import subprocess
 import sys
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from wilted import VOICES, WPM_ESTIMATE
 from wilted.fetch import get_text_from_clipboard, get_text_from_url
@@ -21,6 +24,11 @@ from wilted.queue import (
 )
 from wilted.station_runtime.lease import is_station_active
 from wilted.text import clean_text
+
+if TYPE_CHECKING:
+    from wilted.station_runtime.weather_monitor import WeatherMonitor
+
+logger = logging.getLogger(__name__)
 
 _STATION_ACTIVE_MESSAGE = (
     "The station is active in another wilted session — this command is unavailable "
@@ -1079,6 +1087,32 @@ def run_cli(argv=None):
 # ---------------------------------------------------------------------------
 
 
+def _weather_monitor_for_launch() -> "WeatherMonitor | None":
+    """Construct the production ``WeatherMonitor`` for a live TUI launch.
+
+    ``WILTED_WEATHER_TEST_TRIGGER``, when set, is a filesystem path passed
+    through to ``build_production_monitor(trigger_path=...)`` -- the A.5.1
+    manual-test hook that lets a QA session fire a real bulletin without a
+    live NWS alert (see ``wilted.station_runtime.weather_monitor``). Unset
+    means the real NWS fetch is used, as in normal production.
+
+    Construction failures (e.g. optional weather/TTS dependencies missing)
+    are logged and swallowed rather than raised -- the TUI must still launch
+    even when weather wiring is unavailable, matching ``WiltedApp``'s own
+    "no weather_monitor given" default.
+    """
+    trigger = os.environ.get("WILTED_WEATHER_TEST_TRIGGER")
+    try:
+        from wilted.station_runtime.weather_monitor import build_production_monitor
+
+        return build_production_monitor(trigger_path=Path(trigger) if trigger else None)
+    except Exception:
+        logger.warning(
+            "_weather_monitor_for_launch: failed to construct WeatherMonitor; launching without it", exc_info=True
+        )
+        return None
+
+
 def main():
     """Main entry point — dispatches to TUI (no args) or CLI (with args).
 
@@ -1115,7 +1149,7 @@ def main():
             print("Error: textual is not installed. Run: uv sync", file=sys.stderr)
             sys.exit(1)
 
-        WiltedApp().run()
+        WiltedApp(weather_monitor=_weather_monitor_for_launch()).run()
 
 
 # INV-6 C1: `python -m wilted.cli` is the target of scripts/wilted-nightly.sh.

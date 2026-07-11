@@ -37,6 +37,10 @@ from wilted.station_runtime.weather_monitor import (
     DEFAULT_ZONE,
     BulletinAudio,
     WeatherMonitor,
+    _default_fetch_alerts,
+    _default_synth_bulletin,
+    build_production_monitor,
+    make_trigger_file_fetch,
 )
 
 pytestmark = pytest.mark.integration
@@ -618,3 +622,82 @@ class TestWrapperEntrypoint:
                 runpy.run_module("wilted.station_runtime.weather_monitor", run_name="__main__", alter_sys=True)
 
         assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# build_production_monitor / make_trigger_file_fetch (A.5.1 launch wiring +
+# manual speaker test hook)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildProductionMonitor:
+    def test_no_trigger_path_wires_real_fetch_and_synth(self):
+        monitor = build_production_monitor()
+
+        assert isinstance(monitor, WeatherMonitor)
+        assert monitor._fetch is _default_fetch_alerts
+        assert monitor._synth is _default_synth_bulletin
+
+    def test_trigger_path_swaps_in_the_trigger_file_fetch_but_keeps_real_synth(self, tmp_path):
+        trigger_path = tmp_path / "trigger"
+
+        monitor = build_production_monitor(trigger_path=trigger_path)
+
+        assert monitor._fetch is not _default_fetch_alerts
+        assert monitor._synth is _default_synth_bulletin
+
+
+class TestMakeTriggerFileFetch:
+    def test_returns_no_features_when_trigger_file_absent(self, tmp_path):
+        trigger_path = tmp_path / "trigger"
+        fetch = make_trigger_file_fetch(trigger_path)
+
+        response = fetch(DEFAULT_ZONE, DEFAULT_COUNTY, "wilted-test-agent")
+
+        assert response == {"features": []}
+
+    def test_returns_one_qualifying_severe_feature_when_trigger_file_present(self, tmp_path):
+        trigger_path = tmp_path / "trigger"
+        trigger_path.write_text("fire")
+        fetch = make_trigger_file_fetch(trigger_path)
+
+        response = fetch(DEFAULT_ZONE, DEFAULT_COUNTY, "wilted-test-agent")
+
+        assert len(response["features"]) == 1
+        props = response["features"][0]["properties"]
+        assert props["severity"] == "Severe"
+        assert props["areaDesc"] == "Prince William, VA"  # human-readable, not the UGC code
+        assert props["status"] == "Actual"
+        assert props["messageType"] == "Alert"
+        assert props["headline"]  # becomes the spoken bulletin text
+        assert props["expires"]  # ISO-8601 offset-aware, ~3h out
+
+    def test_drives_a_real_monitor_through_fire_dedup_clear_and_requalify(self, tmp_path):
+        """End-to-end through the real WeatherMonitor -- not just the raw
+        fetch response -- proving the trigger file actually flows through
+        dedup/escalation/handoff unmodified."""
+        trigger_path = tmp_path / "trigger"
+        recorder = _BulletinRecorder()
+        monitor = WeatherMonitor(
+            fetch=make_trigger_file_fetch(trigger_path),
+            synth=_fake_synth(),
+            on_bulletin_ready=recorder,
+        )
+
+        monitor.poll_once()  # file absent -- nothing fires yet
+        assert len(recorder.received) == 0
+
+        trigger_path.write_text("fire")
+        monitor.poll_once()  # file present -- fires exactly once
+        assert len(recorder.received) == 1
+
+        monitor.poll_once()  # still present -- deduped, no re-fire
+        assert len(recorder.received) == 1
+
+        trigger_path.unlink()
+        monitor.poll_once()  # cleared -- fires nothing
+        assert len(recorder.received) == 1
+
+        trigger_path.write_text("fire again")
+        monitor.poll_once()  # re-created -- area-clear re-qualify, fires again
+        assert len(recorder.received) == 2
