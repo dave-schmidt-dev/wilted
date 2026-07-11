@@ -62,6 +62,11 @@ from wilted.station_runtime.normalize import (
     ItemNotFinalizedError,
     normalize_item,
 )
+from wilted.station_runtime.playback_adapter import (
+    CompletionReason,
+    MacPlaybackAdapter,
+    MediaNotAvailableError,
+)
 from wilted.station_runtime.sequencer import EntrySequencer
 from wilted.station_runtime.store import (
     STATION_SCHEMA_VERSION,
@@ -80,11 +85,14 @@ __all__ = [
     "TIMING_MAP_SCHEMA_VERSION",
     "ArticleCacheIncompleteError",
     "AssembledArticle",
+    "CompletionReason",
     "ControllerLeaseManager",
     "EmptyMediaError",
     "EntrySequencer",
     "ItemNotFinalizedError",
     "JsonStationStore",
+    "MacPlaybackAdapter",
+    "MediaNotAvailableError",
     "TimingMapVersionError",
     "assemble_article_audio",
     "load_timing_map",

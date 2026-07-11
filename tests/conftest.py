@@ -31,6 +31,7 @@ _TEST_MARKERS = {
     "test_llm_metal.py": ("integration",),
     "test_media_store.py": ("integration",),
     "test_onboard.py": ("unit",),
+    "test_playback_adapter.py": ("integration",),
     "test_playlists.py": ("integration",),
     "test_resume.py": ("integration",),
     "test_preferences.py": ("integration",),
