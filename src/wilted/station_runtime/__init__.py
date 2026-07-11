@@ -37,6 +37,7 @@ from wilted.station_runtime.article_assembly import (
     AssembledArticle,
     assemble_article_audio,
 )
+from wilted.station_runtime.checkpoint_poller import CheckpointPoller
 from wilted.station_runtime.controller import (
     StationController,
     StationControllerError,
@@ -85,6 +86,7 @@ __all__ = [
     "TIMING_MAP_SCHEMA_VERSION",
     "ArticleCacheIncompleteError",
     "AssembledArticle",
+    "CheckpointPoller",
     "CompletionReason",
     "ControllerLeaseManager",
     "EmptyMediaError",

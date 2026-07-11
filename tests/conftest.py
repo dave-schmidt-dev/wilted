@@ -13,6 +13,7 @@ _TEST_MARKERS = {
     "test_ads.py": ("unit",),
     "test_article_assembly.py": ("integration",),
     "test_cache.py": ("integration",),
+    "test_checkpoint_poller.py": ("unit",),
     "test_classify.py": ("unit",),
     "test_cli.py": ("integration",),
     "test_controller_lease.py": ("integration",),
