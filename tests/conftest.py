@@ -12,6 +12,7 @@ import wilted
 _TEST_MARKERS = {
     "test_ads.py": ("unit",),
     "test_article_assembly.py": ("integration",),
+    "test_briefing.py": ("unit",),
     "test_cache.py": ("integration",),
     "test_checkpoint_poller.py": ("unit",),
     "test_classify.py": ("unit",),
@@ -48,6 +49,7 @@ _TEST_MARKERS = {
     "test_timing_map.py": ("unit",),
     "test_transcribe.py": ("unit",),
     "test_tui.py": ("tui",),
+    "test_weather_monitor.py": ("integration",),
 }
 
 
