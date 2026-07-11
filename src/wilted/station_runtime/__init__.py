@@ -62,6 +62,7 @@ from wilted.station_runtime.normalize import (
     ItemNotFinalizedError,
     normalize_item,
 )
+from wilted.station_runtime.sequencer import EntrySequencer
 from wilted.station_runtime.store import (
     STATION_SCHEMA_VERSION,
     JsonStationStore,
@@ -81,6 +82,7 @@ __all__ = [
     "AssembledArticle",
     "ControllerLeaseManager",
     "EmptyMediaError",
+    "EntrySequencer",
     "ItemNotFinalizedError",
     "JsonStationStore",
     "TimingMapVersionError",
