@@ -577,6 +577,12 @@ def _request_handoff(state: StationState, action: RequestHandoff) -> StationStat
     return dataclasses.replace(
         state,
         lifecycle=StationLifecycle.HANDOFF_PENDING,
+        # Accepted mutating write => advance the revision (StationState's
+        # documented contract: bumped on every accepted mutating write). The
+        # StationController detects acceptance-vs-rejection by this delta and
+        # persists only on a bump, and the store's compare-and-set fencing
+        # token relies on every persisted write advancing the revision.
+        station_revision=state.station_revision + 1,
         events=(
             *state.events,
             StationEvent(
@@ -662,6 +668,11 @@ def _acknowledge_handoff(state: StationState, action: AcknowledgeHandoff) -> Sta
     return dataclasses.replace(
         state,
         lifecycle=StationLifecycle.OWNED_BY_IPHONE,
+        # Accepted mutating write => advance the revision (see _request_handoff
+        # / _stop). The synthesized/preserved durable checkpoint above keeps
+        # its own recorded station_revision (the revision of the entry it
+        # checkpoints), mirroring _accept_interruption's resume_checkpoint.
+        station_revision=state.station_revision + 1,
         phone_epoch=action.epoch,
         checkpoint=durable_checkpoint,
         # The Mac releases controller ownership on handoff: combined with
@@ -686,6 +697,10 @@ def _stop(state: StationState, action: Stop) -> StationState:
     return dataclasses.replace(
         state,
         lifecycle=StationLifecycle.STOPPED,
+        # Accepted mutating write => advance the revision (see _request_handoff).
+        # Without this, a controller restart would reload the pre-Stop state
+        # and resume playing after the station was durably stopped.
+        station_revision=state.station_revision + 1,
         events=(
             *state.events,
             StationEvent(

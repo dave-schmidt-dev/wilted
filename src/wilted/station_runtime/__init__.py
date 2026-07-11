@@ -37,6 +37,12 @@ from wilted.station_runtime.article_assembly import (
     AssembledArticle,
     assemble_article_audio,
 )
+from wilted.station_runtime.controller import (
+    StationController,
+    StationControllerError,
+    StationControllerLostError,
+    SubmitResult,
+)
 from wilted.station_runtime.coordinator import (
     LeaseHeldElsewhereError,
     LeaseReentrancyError,
@@ -89,5 +95,9 @@ __all__ = [
     "ModelCoordinator",
     "ModelLease",
     "RuntimeBootstrap",
+    "StationController",
+    "StationControllerError",
+    "StationControllerLostError",
     "StationStoreVersionError",
+    "SubmitResult",
 ]

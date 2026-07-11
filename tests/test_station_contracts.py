@@ -968,6 +968,108 @@ class TestMacPhoneHandoff:
         assert "playing station" in new_state.events[-1].message
 
 
+class TestAcceptedLifecycleTransitionsBumpRevision:
+    """Every *accepted* mutating write advances ``station_revision`` — the
+    contract ``StationState.station_revision`` documents ("bumped on every
+    accepted mutating write") and that ``StationController`` relies on to
+    distinguish an accepted mutation (persist it) from a rejection (do not).
+
+    Regression for the bug where ``Stop``/``RequestHandoff``/
+    ``AcknowledgeHandoff`` changed lifecycle without bumping the revision, so
+    the controller misread them as rejections, never persisted them, and a
+    restart reloaded the pre-transition state (a stopped station came back
+    playing; an acknowledged handoff was lost so the Mac still thought it
+    owned the lease). Rejections must still leave the revision unchanged.
+    """
+
+    def test_stop_bumps_revision(self):
+        entry = _entry()
+        state = _state_with_active_entry(entry)
+        before = state.station_revision
+
+        stopped = apply(state, Stop(), MAC)
+
+        assert stopped.lifecycle is StationLifecycle.STOPPED
+        assert stopped.station_revision == before + 1
+
+    def test_request_handoff_bumps_revision(self):
+        entry = _entry()
+        state = _state_with_active_entry(entry)
+        before = state.station_revision
+
+        pending = apply(
+            state,
+            RequestHandoff(phone_device_id="iphone-1", requested_epoch=1, last_known_mac_revision=before),
+            MAC,
+        )
+
+        assert pending.lifecycle is StationLifecycle.HANDOFF_PENDING
+        assert pending.station_revision == before + 1
+
+    def test_acknowledge_handoff_bumps_revision(self):
+        entry = _entry()
+        state = _state_with_active_entry(entry)
+        state = apply(
+            state,
+            RequestHandoff(
+                phone_device_id="iphone-1", requested_epoch=1, last_known_mac_revision=state.station_revision
+            ),
+            MAC,
+        )
+        before = state.station_revision
+
+        owned = apply(state, AcknowledgeHandoff(phone_device_id="iphone-1", epoch=1), MAC)
+
+        assert owned.lifecycle is StationLifecycle.OWNED_BY_IPHONE
+        assert owned.station_revision == before + 1
+        assert owned.lease is None  # Mac released the lease on handoff
+
+    def test_full_lifecycle_revision_advances_monotonically(self):
+        """Start -> Checkpoint -> RequestHandoff -> AcknowledgeHandoff:
+        revision strictly increases by exactly 1 at each accepted step, and a
+        rejected write in the middle does not perturb the sequence."""
+        entry = _entry()
+        state = _state_with_active_entry(entry)  # StartPlayback -> rev 1
+        assert state.station_revision == 1
+
+        state = apply(
+            state,
+            Checkpoint(
+                mutation_id="mut-1",
+                expected_revision=1,
+                media_offset_ms=1000,
+                state_label="playing",
+                writer_device="mac",
+            ),
+            MAC,
+        )
+        assert state.station_revision == 2
+
+        # A rejected Checkpoint (stale expected_revision) must NOT advance it.
+        rejected = apply(
+            state,
+            Checkpoint(
+                mutation_id="mut-stale",
+                expected_revision=999,
+                media_offset_ms=2000,
+                state_label="playing",
+                writer_device="mac",
+            ),
+            MAC,
+        )
+        assert rejected.station_revision == 2  # unchanged on rejection
+
+        state = apply(
+            state,
+            RequestHandoff(phone_device_id="iphone-1", requested_epoch=1, last_known_mac_revision=2),
+            MAC,
+        )
+        assert state.station_revision == 3
+
+        state = apply(state, AcknowledgeHandoff(phone_device_id="iphone-1", epoch=1), MAC)
+        assert state.station_revision == 4
+
+
 # ---------------------------------------------------------------------------
 # 7. Failed bulletin generation
 # ---------------------------------------------------------------------------
