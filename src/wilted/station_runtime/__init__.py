@@ -54,6 +54,7 @@ from wilted.station_runtime.coordinator import (
 from wilted.station_runtime.lease import (
     ControllerLeaseManager,
     LeaseHeldError,
+    is_station_active,
 )
 from wilted.station_runtime.media_store import (
     EmptyMediaError,
@@ -97,6 +98,7 @@ __all__ = [
     "MediaNotAvailableError",
     "TimingMapVersionError",
     "assemble_article_audio",
+    "is_station_active",
     "load_timing_map",
     "normalize_item",
     "save_timing_map",

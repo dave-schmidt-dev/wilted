@@ -19,7 +19,13 @@ from wilted.queue import (
     remove_article_by_id,
     utc_to_local_date,
 )
+from wilted.station_runtime.lease import is_station_active
 from wilted.text import clean_text
+
+_STATION_ACTIVE_MESSAGE = (
+    "The station is active in another wilted session — this command is unavailable "
+    "while it's running. Stop the station first."
+)
 
 
 class CLIError(Exception):
@@ -163,7 +169,14 @@ def cmd_remove(args):
     listing includes ``selected`` articles that the legacy ``remove_article(index)``
     (a ``ready``-only positional query) does not, so indexing into that narrower
     query would delete a different article than the one displayed at position N.
+
+    IA-1: refuses (rather than mutating) when a live controller lease is
+    held — see the guard at the top of this function.
     """
+    if is_station_active():
+        print(_STATION_ACTIVE_MESSAGE)
+        return
+
     queue = load_queue()
     index = args.remove - 1
     if index < 0 or index >= len(queue):
@@ -240,7 +253,15 @@ def _play_text(text, args):
 
 
 def cmd_play(args):
-    """Play all articles in the reading list sequentially."""
+    """Play all articles in the reading list sequentially.
+
+    IA-1: refuses (rather than mutating/playing) when a live controller
+    lease is held — see the guard at the top of this function.
+    """
+    if is_station_active():
+        print(_STATION_ACTIVE_MESSAGE)
+        return
+
     queue = load_queue()
     if not queue:
         print("Reading list is empty. Add articles with: wilted --add URL")
@@ -269,7 +290,15 @@ def cmd_play(args):
 
 
 def cmd_next(args):
-    """Play the next article in the reading list."""
+    """Play the next article in the reading list.
+
+    IA-1: refuses (rather than mutating/playing) when a live controller
+    lease is held — see the guard at the top of this function.
+    """
+    if is_station_active():
+        print(_STATION_ACTIVE_MESSAGE)
+        return
+
     queue = load_queue()
     if not queue:
         print("Reading list is empty. Add articles with: wilted --add URL")

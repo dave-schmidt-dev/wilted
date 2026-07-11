@@ -88,6 +88,53 @@ logger = logging.getLogger(__name__)
 
 _LOCKFILE_NAME = "controller.lock"
 
+
+def _resolve_lockfile_path(data_dir: Path | None = None) -> Path:
+    """Resolve the controller lockfile path under ``data_dir``.
+
+    This is the SINGLE place the lockfile path is computed from a data
+    directory root; :meth:`ControllerLeaseManager._lockfile_path` and
+    :func:`is_station_active` both delegate to this so there is never a
+    second, divergent path computation to keep in sync.
+
+    INV-5: when ``data_dir`` is omitted, ``wilted.DATA_DIR`` is read here, at
+    call time -- never cached -- so a caller/test that monkeypatches
+    ``wilted.DATA_DIR`` between calls (e.g. the ``isolated_data`` fixture) is
+    respected on every call, including ones made before the monkeypatch was
+    applied.
+    """
+    base = data_dir if data_dir is not None else wilted.DATA_DIR
+    return base / "station" / _LOCKFILE_NAME
+
+
+def _probe_flock_would_block(path: Path) -> bool:
+    """Return True iff a non-blocking exclusive flock on ``path`` would block.
+
+    This is the single shared flock-contention probe used by both
+    :meth:`ControllerLeaseManager.is_lease_live` and :func:`is_station_active`:
+    it opens ``path``, attempts
+    ``fcntl.flock(fd, LOCK_EX | LOCK_NB)`` purely to test contention, then
+    immediately releases and closes its OWN probe fd before returning -- it
+    never holds the lock itself, never touches any caller's fd, and never
+    mutates the file's contents. If ``path`` does not exist yet, returns
+    False without creating anything (no holder has ever acquired the lease).
+    """
+    if not path.exists():
+        return False
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+            return True
+        raise
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 3.0
 """Default interval between heartbeat refreshes while a lease is held.
 
@@ -239,8 +286,7 @@ class ControllerLeaseManager:
     # ------------------------------------------------------------------
 
     def _lockfile_path(self) -> Path:
-        base = wilted.DATA_DIR
-        return base / "station" / _LOCKFILE_NAME
+        return _resolve_lockfile_path()
 
     # ------------------------------------------------------------------
     # Heartbeat file I/O (observability only -- see module docstring)
@@ -485,21 +531,44 @@ class ControllerLeaseManager:
         heartbeat record proves nothing about liveness now that mutual
         exclusion is flock-based (see module docstring).
         """
-        path = self._lockfile_path()
-        if not path.exists():
-            return False
-        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
-                return True
-            raise
-        else:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            return False
-        finally:
-            os.close(fd)
+        return _probe_flock_would_block(self._lockfile_path())
+
+
+def is_station_active(*, data_dir: Path | None = None) -> bool:
+    """Read-only flock probe: does a LIVE controller currently hold the writer lease?
+
+    Unlike :meth:`ControllerLeaseManager.is_lease_live`, this is a free
+    function that needs no ``holder_id`` and no
+    :class:`~wilted.station_runtime.store.JsonStationStore` -- callers (e.g.
+    the CLI) that just want a yes/no answer before deciding whether to
+    proceed do not need to construct a manager to get one. It shares the
+    exact same lockfile-path resolution (:func:`_resolve_lockfile_path`) and
+    the exact same flock-contention probe (:func:`_probe_flock_would_block`)
+    that :meth:`ControllerLeaseManager.acquire`/``is_lease_live`` use, so
+    there is only one path computation and one flock-probe implementation in
+    this module, not a second, potentially divergent, copy.
+
+    ``fcntl.flock`` is the SOLE source of truth here -- the on-disk
+    heartbeat JSON is observability-only and is NEVER consulted by this
+    function. This call is entirely read-only with respect to station
+    state: it never calls :meth:`ControllerLeaseManager.acquire`, never
+    calls ``persist_state``, and never bumps a lease epoch or
+    ``station_revision``. It never leaves a flock held on return -- if it
+    opens the lockfile at all, it always unlocks and closes its own probe
+    fd before returning, in every branch. If the lockfile does not exist
+    yet, it returns False without creating anything.
+
+    Args:
+        data_dir: Override for the data directory root. If omitted,
+            resolves ``wilted.DATA_DIR`` at call time (INV-5), i.e. the
+            same default location a real ``ControllerLeaseManager``
+            constructed in this process would use.
+
+    Returns:
+        True if a live process holds the writer lease right now, False
+        otherwise.
+    """
+    return _probe_flock_would_block(_resolve_lockfile_path(data_dir))
 
 
 __all__ = [
@@ -507,4 +576,5 @@ __all__ = [
     "DEFAULT_TTL_SECONDS",
     "ControllerLeaseManager",
     "LeaseHeldError",
+    "is_station_active",
 ]

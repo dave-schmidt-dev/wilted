@@ -302,6 +302,114 @@ class TestCmdNext:
 
 
 # ---------------------------------------------------------------------------
+# IA-1: lease-awareness guard (cmd_remove / cmd_play / cmd_next)
+# ---------------------------------------------------------------------------
+
+
+class TestLeaseGuard:
+    """cmd_remove/cmd_play/cmd_next refuse (never mutate) while a live controller lease is held.
+
+    MVP scope (IA-1) is refuse-when-held, not proxy-through-controller: when
+    ``wilted.cli.is_station_active()`` reports a live holder, each of these
+    three commands must print a one-line refusal and return WITHOUT loading/
+    mutating the queue or touching playback, then behave byte-for-byte as
+    before once no holder is live.
+    """
+
+    def test_remove_refuses_when_lease_held(self, capsys):
+        """cmd_remove prints the refusal and performs no mutation when the probe reports a live holder."""
+        _add_test_article(title="Untouched")
+
+        with patch("wilted.cli.is_station_active", return_value=True):
+            cmd_remove(_make_args(remove=1))
+
+        out = capsys.readouterr().out
+        assert "station is active" in out.lower()
+        queue = load_queue()
+        assert len(queue) == 1
+        assert queue[0]["title"] == "Untouched"
+
+    def test_play_refuses_when_lease_held(self, capsys):
+        """cmd_play prints the refusal and never calls _play_text when the probe reports a live holder."""
+        _add_test_article(title="Article One")
+        args = _make_args(play=True)
+
+        with (
+            patch("wilted.cli.is_station_active", return_value=True),
+            patch("wilted.cli._play_text") as mock_play_text,
+        ):
+            cmd_play(args)
+
+        out = capsys.readouterr().out
+        assert "station is active" in out.lower()
+        mock_play_text.assert_not_called()
+        assert len(load_queue()) == 1  # nothing marked completed/removed
+
+    def test_next_refuses_when_lease_held(self, capsys):
+        """cmd_next prints the refusal and never calls _play_text when the probe reports a live holder."""
+        _add_test_article(title="First Article")
+        args = _make_args()
+
+        with (
+            patch("wilted.cli.is_station_active", return_value=True),
+            patch("wilted.cli._play_text") as mock_play_text,
+        ):
+            cmd_next(args)
+
+        out = capsys.readouterr().out
+        assert "station is active" in out.lower()
+        mock_play_text.assert_not_called()
+        assert len(load_queue()) == 1
+
+    def test_remove_proceeds_when_probe_explicitly_reports_no_holder(self, capsys):
+        """Sanity check: with the probe explicitly False, cmd_remove's happy path is unchanged."""
+        _add_test_article(title="Only Article")
+
+        with patch("wilted.cli.is_station_active", return_value=False):
+            cmd_remove(_make_args(remove=1))
+
+        assert "Removed: Only Article" in capsys.readouterr().out
+        assert load_queue() == []
+
+    def test_commands_refuse_while_a_real_controller_lease_is_held(self, capsys):
+        """End-to-end: a REAL ``ControllerLeaseManager.acquire()`` (not a monkeypatch) trips the guard.
+
+        Exercises the actual wiring between ``wilted.cli.is_station_active``
+        and the flock-based probe in ``wilted.station_runtime.lease``, not
+        just the patched symbol used by the tests above -- proves the guard
+        also fires against a real controller (e.g. the TUI) holding the
+        lease. After ``release()``, all three commands proceed normally
+        again, confirming the guard is a no-op once no holder is live.
+        """
+        from wilted.station_runtime.lease import ControllerLeaseManager
+
+        _add_test_article(title="Guarded Article")
+        manager = ControllerLeaseManager("test-controller")
+        manager.acquire()
+        try:
+            with patch("wilted.cli._play_text") as mock_play_text:
+                cmd_remove(_make_args(remove=1))
+                cmd_play(_make_args(play=True))
+                cmd_next(_make_args())
+            mock_play_text.assert_not_called()
+        finally:
+            manager.release()
+
+        out = capsys.readouterr().out
+        assert out.lower().count("station is active") == 3
+        queue = load_queue()
+        assert len(queue) == 1
+        assert queue[0]["title"] == "Guarded Article"
+
+        # Lease released -> the guard is a no-op again, same as pre-IA-1 behavior.
+        with patch("wilted.cli._play_text", return_value=True):
+            cmd_remove(_make_args(remove=1))
+
+        assert "Removed: Guarded Article" in capsys.readouterr().out
+        assert load_queue() == []
+
+
+# ---------------------------------------------------------------------------
 # cmd_direct
 # ---------------------------------------------------------------------------
 

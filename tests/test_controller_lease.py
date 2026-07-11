@@ -38,7 +38,7 @@ import pytest
 import wilted
 from wilted.station.models import ControllerLease
 from wilted.station.reducer import Stop, apply
-from wilted.station_runtime.lease import ControllerLeaseManager, LeaseHeldError, _Heartbeat
+from wilted.station_runtime.lease import ControllerLeaseManager, LeaseHeldError, _Heartbeat, is_station_active
 from wilted.station_runtime.store import JsonStationStore
 
 _SHORT_TTL = 0.05
@@ -214,6 +214,57 @@ def test_is_lease_live_reports_true_while_a_manager_holds_the_flock():
         holder.release()
 
     assert observer.is_lease_live() is False
+
+
+@pytest.mark.unit
+def test_is_station_active_probe_tracks_a_real_managers_acquire_and_release():
+    """``is_station_active()`` (the free-function CLI probe) mirrors a live flock holder.
+
+    IA-1: the CLI's lease guard calls this free function directly (no
+    manager instance) instead of ``ControllerLeaseManager.is_lease_live()``.
+    Covers the full lifecycle against a REAL manager: no holder -> held ->
+    released -> no holder again -- and asserts the probe never mutates
+    station state (no epoch bump, no revision bump, no persist_state call)
+    at any point, including while it reports True.
+    """
+    store = JsonStationStore()
+    manager = ControllerLeaseManager("probe-subject", store=store, ttl_seconds=_SHORT_TTL)
+
+    # No holder yet: fresh tmp data dir, lockfile does not exist.
+    assert store.load_state() is None
+    assert is_station_active() is False
+    assert store.load_state() is None  # the probe itself created no station state
+
+    lease = manager.acquire()
+    try:
+        state_while_held = store.load_state()
+        revision_while_held = state_while_held.station_revision
+        epoch_while_held = state_while_held.lease.epoch
+
+        assert is_station_active() is True
+
+        # The probe call above must not have mutated anything: same
+        # revision, same epoch, same lease identity as immediately after
+        # acquire() -- a read-only probe, not a second claim.
+        state_after_probe = store.load_state()
+        assert state_after_probe.station_revision == revision_while_held
+        assert state_after_probe.lease.epoch == epoch_while_held
+        assert state_after_probe.lease == lease
+    finally:
+        manager.release()
+
+    assert is_station_active() is False
+
+
+@pytest.mark.unit
+def test_is_station_active_returns_false_when_lockfile_never_created():
+    """No manager has ever acquired: the lockfile does not exist, probe returns False without creating it."""
+    lockfile_path = ControllerLeaseManager("unused", ttl_seconds=_SHORT_TTL)._lockfile_path()  # noqa: SLF001
+    assert not lockfile_path.exists()
+
+    assert is_station_active() is False
+
+    assert not lockfile_path.exists()  # the probe must not create the lockfile as a side effect
 
 
 # ---------------------------------------------------------------------------
