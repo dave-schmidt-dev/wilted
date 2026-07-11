@@ -27,13 +27,14 @@ from wilted.station.models import (
     StationEntry,
     TranscriptSegment,
 )
-from wilted.station.reducer import StartPlayback, StationState, Stop
-from wilted.station_runtime import CompletionReason, LeaseHeldError
+from wilted.station.reducer import Checkpoint, StartPlayback, StationLifecycle, StationState, Stop
+from wilted.station_runtime import CompletionReason, LeaseHeldError, RouteChangeEvent
 from wilted.station_runtime.controller import SubmitResult
 from wilted.tui import (
     AddArticleScreen,
     ConfirmScreen,
     PlaybackCompleted,
+    RouteChanged,
     TextPreviewScreen,
     VoiceSettingsScreen,
     WiltedApp,
@@ -123,15 +124,32 @@ def _sequencer_factory(entries):
 class FakeController:
     """Records every submitted action; current_state() is settable by the test.
 
-    Mirrors ONE piece of real reducer behavior — ``StartPlayback`` always
-    clears any prior checkpoint (see ``reducer._start_playback``: idle ->
-    playing(entry) starts a fresh session, ``checkpoint=None`` unconditionally)
-    — because a bug class this test suite must catch is "read the checkpoint
-    AFTER submitting StartPlayback instead of before". A fake that just
-    echoes back whatever state you handed it, untouched, can't ever fail
-    that way: it would silently pass a caller that reads post-submit. This is
-    NOT a full reducer reimplementation — every other action is a no-op on
-    state, by design.
+    Mirrors the load-bearing LIFECYCLE effects of three real reducer
+    transitions — not a full reducer reimplementation, but faithful enough
+    that a regression in which action a caller submits (or in what order) can
+    actually be caught by a test, rather than silently passing against a
+    fake that just echoes back whatever you handed it:
+
+    - ``StartPlayback`` (``reducer._start_playback``): idle -> playing(entry).
+      Sets ``lifecycle=PLAYING``, ``active_entry=action.entry``, and
+      unconditionally clears any prior checkpoint (``checkpoint=None``) — a
+      bug class this suite must catch is "read the checkpoint AFTER
+      submitting StartPlayback instead of before".
+    - ``Checkpoint`` (``reducer._checkpoint``): REJECTS (state left
+      unchanged, revision NOT bumped) unless the station is currently
+      ``PLAYING`` with an ``active_entry`` set — exactly the reducer's own
+      precondition. This is load-bearing for A.3.3: it's what lets a test
+      catch a regression where ``on_route_changed`` submits ``Stop()`` before
+      the resume ``Checkpoint`` (which would flip the REAL station to
+      ``STOPPED`` and cause the real reducer to reject that Checkpoint too,
+      silently falling back to a stale offset) — a fake that always accepted
+      Checkpoint unconditionally could never catch that regression.
+    - ``Stop`` (``reducer._stop``): any state -> stopped. Sets
+      ``lifecycle=STOPPED`` and bumps the revision; the checkpoint field is
+      left untouched (matches the real transition, which durably retains it).
+
+    Every other action type is a no-op on ``self._state`` (but is still
+    recorded in ``self.actions`` and treated as accepted), by design.
 
     ``raise_on_submit_and_wait``, if set, makes ``submit_and_wait()`` raise
     that exception instead of succeeding — for exercising the timeout/error
@@ -150,6 +168,11 @@ class FakeController:
         self.stop_calls = 0
         self.raise_on_submit_and_wait = raise_on_submit_and_wait
         self.last_timeout: float | None = None
+        # One accepted/rejected bool per Checkpoint action submitted, in
+        # order -- lets a test assert a SPECIFIC Checkpoint (e.g. the A.3.3
+        # route-resume one) was actually accepted by the PLAYING+active_entry
+        # precondition, not just that a Checkpoint action was submitted.
+        self.checkpoint_outcomes: list[bool] = []
 
     def start(self, *, on_loss=None) -> None:
         self.start_calls += 1
@@ -159,28 +182,62 @@ class FakeController:
         self.stop_calls += 1
         self.is_running = False
 
-    def _record(self, action) -> None:
+    def _record(self, action) -> bool:
+        """Apply ``action`` to ``self._state``. Returns whether it was
+        "accepted" (state advanced) vs "rejected" (state left unchanged) —
+        see the class docstring for exactly which transitions are modeled."""
         self.actions.append(action)
         if isinstance(action, StartPlayback):
             self._state = dataclasses.replace(
                 self._state,
+                lifecycle=StationLifecycle.PLAYING,
                 active_entry=action.entry,
                 checkpoint=None,
                 station_revision=self._state.station_revision + 1,
             )
+            return True
+        if isinstance(action, Checkpoint):
+            if self._state.lifecycle is not StationLifecycle.PLAYING or self._state.active_entry is None:
+                self.checkpoint_outcomes.append(False)
+                return False
+            entry_id = self._state.active_entry.entry_id
+            self._state = dataclasses.replace(
+                self._state,
+                station_revision=self._state.station_revision + 1,
+                checkpoint=PlaybackCheckpoint(
+                    station_revision=self._state.station_revision + 1,
+                    entry_id=entry_id,
+                    media_offset_ms=action.media_offset_ms,
+                    state=action.state_label,
+                    interrupted_entry_stack=(),
+                    writer_device=action.writer_device,
+                    mutation_id=action.mutation_id,
+                    timestamp=action.now,
+                ),
+            )
+            self.checkpoint_outcomes.append(True)
+            return True
+        if isinstance(action, Stop):
+            self._state = dataclasses.replace(
+                self._state,
+                lifecycle=StationLifecycle.STOPPED,
+                station_revision=self._state.station_revision + 1,
+            )
+            return True
+        return True
 
     def submit(self, action) -> concurrent.futures.Future:
-        self._record(action)
+        accepted = self._record(action)
         future: concurrent.futures.Future = concurrent.futures.Future()
-        future.set_result(SubmitResult(accepted=True, revision=len(self.actions), state=self._state))
+        future.set_result(SubmitResult(accepted=accepted, revision=self._state.station_revision, state=self._state))
         return future
 
     def submit_and_wait(self, action, timeout=None) -> SubmitResult:
         self.last_timeout = timeout
         if self.raise_on_submit_and_wait is not None:
             raise self.raise_on_submit_and_wait
-        self._record(action)
-        return SubmitResult(accepted=True, revision=len(self.actions), state=self._state)
+        accepted = self._record(action)
+        return SubmitResult(accepted=accepted, revision=self._state.station_revision, state=self._state)
 
     def current_state(self) -> StationState:
         return self._state
@@ -251,17 +308,75 @@ def _fake_poller_factory(controller, adapter):
     return FakePoller()
 
 
-def _make_app(*, entries=(), controller=None, adapter=None, poller_factory=None, **kwargs) -> WiltedApp:
+class FakeRouteMonitor:
+    """No-op route monitor — records start()/stop(); ``fire()`` simulates a
+    backend delivering a device-change event.
+
+    ``WiltedApp`` calls its ``route_monitor_factory`` as
+    ``factory(self._on_route_change)`` (mirroring ``poller_factory``'s
+    "receives what it needs as an explicit argument" convention — see
+    ``wilted.tui.WiltedApp.__init__``), so a test builds this instance FIRST
+    (to keep a handle for later ``.fire()`` calls) and supplies a tiny
+    factory closure that stashes the callback onto it once WiltedApp invokes
+    it — see :func:`_route_monitor_factory_for`.
+    """
+
+    def __init__(self) -> None:
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.on_route_change = None
+
+    def start(self) -> None:
+        self.start_calls += 1
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+    def fire(self, event: RouteChangeEvent) -> None:
+        """Test helper: simulate the backend delivering a route-change event."""
+        assert self.on_route_change is not None, "fire() called before WiltedApp wired the callback"
+        self.on_route_change(event)
+
+
+def _route_monitor_factory_for(monitor: FakeRouteMonitor):
+    """Build a ``route_monitor_factory`` that wires ``monitor`` to whatever
+    callback ``WiltedApp.__init__`` passes it (``self._on_route_change``)."""
+
+    def _factory(on_route_change):
+        monitor.on_route_change = on_route_change
+        return monitor
+
+    return _factory
+
+
+def _make_app(
+    *,
+    entries=(),
+    controller=None,
+    adapter=None,
+    poller_factory=None,
+    route_monitor=None,
+    **kwargs,
+) -> WiltedApp:
     """Construct a WiltedApp with fake station-runtime dependencies injected.
 
     Safe to use without mocking ``get_playlist_items``/``ensure_default_playlists``
     — those remain real and run against the isolated (empty) test DB.
+
+    ``route_monitor``, if given, is a pre-built :class:`FakeRouteMonitor` a
+    test wants a handle to (to call ``.fire()`` later); otherwise a fresh one
+    is built and silently discarded by the caller if unneeded — mirroring
+    how ``adapter``/``controller`` work above, rather than
+    ``poller_factory``'s bare-factory style, since a route-change test always
+    needs the instance, not just the factory.
     """
+    monitor = route_monitor if route_monitor is not None else FakeRouteMonitor()
     return WiltedApp(
         controller=controller if controller is not None else FakeController(),
         adapter=adapter if adapter is not None else FakeAdapter(),
         sequencer_factory=_sequencer_factory(list(entries)),
         poller_factory=poller_factory if poller_factory is not None else _fake_poller_factory,
+        route_monitor_factory=_route_monitor_factory_for(monitor),
         **kwargs,
     )
 
@@ -1747,6 +1862,30 @@ async def test_on_adapter_completion_marshals_via_post_message_not_call_from_thr
 
 
 @pytest.mark.asyncio
+async def test_on_route_change_marshals_via_post_message_not_call_from_thread():
+    """Same deadlock lesson as :class:`PlaybackCompleted`, for the route
+    monitor: ``on_route_changed`` calls ``adapter.stop()``, which joins the
+    adapter's background stream thread. ``RouteMonitor.on_route_change``
+    fires on the backend's own delivery thread (the real CoreAudio backend's
+    CFRunLoop pump thread) — routing through ``call_from_thread`` would block
+    that thread until the join (and everything after it) completes."""
+    app = _make_app()
+    async with app.run_test():
+        with (
+            patch.object(app, "post_message") as mock_post,
+            patch.object(app, "call_from_thread") as mock_call_from_thread,
+        ):
+            event = RouteChangeEvent(device_id=3, device_name="Bluetooth Headset")
+            app._on_route_change(event)
+
+            mock_call_from_thread.assert_not_called()
+            mock_post.assert_called_once()
+            (posted_message,), _kwargs = mock_post.call_args
+            assert isinstance(posted_message, RouteChanged)
+            assert posted_message.event == event
+
+
+@pytest.mark.asyncio
 async def test_adapter_completion_reaches_handler_through_real_message_pump():
     """End-to-end wiring check (not just that post_message was called): drives
     the ADAPTER's real ``fire_completion`` -> ``on_complete`` ->
@@ -1958,3 +2097,246 @@ async def test_read_only_mode_refuses_destructive_crud():
 
             status = str(app.query_one("#status-line").render())
             assert "read-only" in status.lower() or "another session" in status.lower()
+
+
+# ---------------------------------------------------------------------------
+# NEW (A.3.3): route-recovery — a device change interrupts playback with a
+# visible no-output state (no silent misroute, no auto-advance), and "p" (the
+# existing pause/resume key) replays the same entry at the preserved offset.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_route_monitor_starts_on_play_and_stops_on_action_stop():
+    """RouteMonitor's lifecycle mirrors the poller's exactly: started once
+    playback begins, stopped by an explicit action_stop()."""
+    entry = _station_entry(1)
+    route_monitor = FakeRouteMonitor()
+    app = _make_app(entries=[entry], route_monitor=route_monitor)
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        assert route_monitor.start_calls == 0
+
+        app._start_playback(entry)
+        assert route_monitor.start_calls == 1
+        assert route_monitor.stop_calls == 0
+
+        app.action_stop()
+        assert route_monitor.stop_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_route_change_while_playing_stops_adapter_shows_banner_no_auto_advance():
+    """Firing a route-change event while playing must: stop the adapter
+    (release the stale/misrouted device), enter the visible
+    ``_route_interrupted`` state with a banner naming the new device, and NOT
+    auto-advance to the next entry or crash."""
+    entry = _station_entry(1)
+    other_entry = _station_entry(2)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    route_monitor = FakeRouteMonitor()
+    app = _make_app(entries=[entry, other_entry], controller=controller, adapter=adapter, route_monitor=route_monitor)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        adapter._offset_ms = 17_000  # simulate 17s of playback elapsed
+
+        route_monitor.fire(RouteChangeEvent(device_id=99, device_name="AirPods Pro"))
+        await pilot.pause()
+
+        # (a) adapter stopped
+        assert adapter.stop_calls == 1
+        # (b) visible interrupted state + banner naming the device
+        assert app._route_interrupted is True
+        assert app._route_device_name == "AirPods Pro"
+        status = str(app.query_one("#status-line").render())
+        assert "AirPods Pro" in status
+        assert "paused" in status.lower()
+        # (c) no auto-advance: still only the original play() call, no
+        # StartPlayback submitted for the next entry, current entry unchanged.
+        assert len(adapter.play_calls) == 1
+        assert app._current_entry is not None
+        assert app._current_entry.entry_id == entry.entry_id
+        assert not any(
+            isinstance(a, StartPlayback) and a.entry.entry_id == other_entry.entry_id for a in controller.actions
+        )
+        # The offset captured before stopping is preserved for resume.
+        assert app._route_resume_entry is not None
+        assert app._route_resume_entry.entry_id == entry.entry_id
+        assert app._route_resume_offset_ms == 17_000
+        # (d) no crash: reaching here at all proves it, plus the app is
+        # still alive and responsive.
+        assert app.is_running
+
+
+@pytest.mark.asyncio
+async def test_route_change_while_not_playing_is_a_noop():
+    """A route change with nothing loaded/playing must be silently ignored —
+    no banner, no adapter interaction, no interrupted state."""
+    entry = _station_entry(1)
+    adapter = FakeAdapter()
+    route_monitor = FakeRouteMonitor()
+    app = _make_app(entries=[entry], adapter=adapter, route_monitor=route_monitor)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        assert app._playing is False
+
+        route_monitor.fire(RouteChangeEvent(device_id=1, device_name="Some Device"))
+        await pilot.pause()
+
+        assert adapter.stop_calls == 0
+        assert app._route_interrupted is False
+
+
+@pytest.mark.asyncio
+async def test_resume_from_route_interruption_replays_same_entry_at_exact_offset():
+    """Pressing "p" (the existing pause/resume key) from the route-interrupted
+    state must replay the SAME entry — via a fresh StartPlayback through the
+    controller (INV-8) — at the exact offset captured at interruption, not a
+    stale/zero offset. Exercises the boundary-accurate resume path: a
+    ``Checkpoint`` submitted immediately before ``_start_playback`` so its
+    matching-checkpoint read lands the precise offset (see
+    ``WiltedApp._submit_route_resume_checkpoint``)."""
+    entry = _station_entry(1)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    route_monitor = FakeRouteMonitor()
+    app = _make_app(entries=[entry], controller=controller, adapter=adapter, route_monitor=route_monitor)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        adapter._offset_ms = 33_500
+
+        route_monitor.fire(RouteChangeEvent(device_id=5, device_name="Living Room Speaker"))
+        await pilot.pause()
+        assert app._route_interrupted is True
+
+        await pilot.press("p")
+        await pilot.pause()
+
+        # Resumed state cleared.
+        assert app._route_interrupted is False
+        assert app._route_resume_entry is None
+
+        # A boundary-accurate Checkpoint was submitted for the exact offset...
+        checkpoint_actions = [a for a in controller.actions if isinstance(a, Checkpoint)]
+        assert checkpoint_actions, "expected a Checkpoint action submitted for route-resume"
+        assert checkpoint_actions[-1].media_offset_ms == 33_500
+        assert checkpoint_actions[-1].writer_device == "mac"
+        assert checkpoint_actions[-1].state_label == "playing"
+        # ...and it was genuinely ACCEPTED by the reducer-faithful
+        # PLAYING+active_entry precondition (FakeController._record), not
+        # silently rejected -- this is what makes the assertion below
+        # (adapter.play landed the exact offset) actually depend on
+        # `on_route_changed` NOT having submitted Stop() first (a Stop()
+        # regression would flip lifecycle to STOPPED and this Checkpoint
+        # would be rejected instead).
+        assert controller.checkpoint_outcomes[-1] is True, "the route-resume Checkpoint was rejected, not accepted"
+
+        # ...which the subsequent StartPlayback + adapter.play() honored: the
+        # SAME entry replayed at the exact preserved offset (not 0, not the
+        # 0-offset from the original play() call).
+        start_playback_actions = [a for a in controller.actions if isinstance(a, StartPlayback)]
+        assert start_playback_actions[-1].entry.entry_id == entry.entry_id
+        assert adapter.play_calls[-1] == (entry.media, 33_500)
+        assert app._playing is True
+
+        # Route monitoring itself was never torn down across the
+        # interruption/resume cycle -- only the adapter/poller were.
+        assert route_monitor.stop_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_on_route_changed_keeps_controller_lifecycle_playing_not_stop():
+    """Pins the no-Stop() invariant directly: `on_route_changed` must NOT
+    submit ``Stop()`` to the controller. Fails the instant someone
+    reintroduces it (mirroring `_handle_station_completion`'s pattern) --
+    against the real reducer that would flip the station to STOPPED and
+    reject the following route-resume Checkpoint (see
+    `WiltedApp.on_route_changed`'s docstring for why this precondition
+    matters)."""
+    entry = _station_entry(1)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    route_monitor = FakeRouteMonitor()
+    app = _make_app(entries=[entry], controller=controller, adapter=adapter, route_monitor=route_monitor)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        assert controller.current_state().lifecycle is StationLifecycle.PLAYING
+
+        route_monitor.fire(RouteChangeEvent(device_id=5, device_name="Living Room Speaker"))
+        await pilot.pause()
+
+        assert app._route_interrupted is True
+        assert not any(isinstance(a, Stop) for a in controller.actions)
+        assert controller.current_state().lifecycle is StationLifecycle.PLAYING
+        assert controller.current_state().active_entry is not None
+        assert controller.current_state().active_entry.entry_id == entry.entry_id
+
+
+@pytest.mark.asyncio
+async def test_playback_completion_clears_route_interrupted_state_before_next_toggle():
+    """FIX for a real race: RouteChanged and PlaybackCompleted are both
+    posted from background threads and dispatched FIFO on the UI thread. If
+    a device switch fires within ~ms of a natural track end and RouteChanged
+    is drained first, `on_route_changed` sets `_route_interrupted=True` +
+    `_route_resume_entry=<entry that just ended>` -- then
+    `_handle_station_completion` runs for the SAME entry's completion.
+
+    Without resetting the route fields there, `_route_interrupted` stays
+    latched True after the entry has already been marked complete /
+    advanced past, so the next "p"/space would hit `action_toggle_play`'s
+    route-interrupted branch and incorrectly REPLAY the completed entry via
+    the stale-offset route-resume path (a fresh `Checkpoint` submission with
+    the pre-interruption offset, not a normal fresh restart at 0).
+
+    This test drives that exact sequence directly (no real race/timing
+    needed -- just posting both messages in the vulnerable order) and
+    asserts: (1) `_route_interrupted` is cleared by the completion, and (2)
+    the next `action_toggle_play()` takes the NORMAL restart-from-idle path
+    (offset 0, no route-resume Checkpoint submitted) rather than the
+    route-interrupted resume path (stale offset, extra Checkpoint)."""
+    entry = _station_entry(1)
+    controller = FakeController()
+    adapter = FakeAdapter()
+    route_monitor = FakeRouteMonitor()
+    app = _make_app(entries=[entry], controller=controller, adapter=adapter, route_monitor=route_monitor)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+        adapter._offset_ms = 41_000  # simulate elapsed playback before the race
+
+        # RouteChanged drained first...
+        route_monitor.fire(RouteChangeEvent(device_id=9, device_name="Stray Bluetooth Speaker"))
+        await pilot.pause()
+        assert app._route_interrupted is True
+
+        # ...then PlaybackCompleted for the SAME (now-stale) entry, racing in
+        # right behind it -- both messages are posted from background
+        # threads/callbacks and drained via post_message's async queue, same
+        # as Textual's real message pump would drain two already-queued
+        # messages back to back.
+        adapter.fire_completion(CompletionReason.ENDED)
+        await pilot.pause()
+
+        # (1) The completion superseded the pending route-interruption.
+        assert app._route_interrupted is False
+        assert app._route_device_name == ""
+        assert app._route_resume_entry is None
+        assert app._route_resume_offset_ms == 0
+
+        checkpoint_count_before_toggle = len([a for a in controller.actions if isinstance(a, Checkpoint)])
+
+        # (2) The next toggle-play must NOT take the route-resume path: no
+        # new Checkpoint submitted, and the replay (this is the only queued
+        # entry, so "nothing playing -> play the first entry" legitimately
+        # restarts it) lands at offset 0, not the stale 41_000.
+        app.action_toggle_play()
+
+        checkpoint_count_after_toggle = len([a for a in controller.actions if isinstance(a, Checkpoint)])
+        assert checkpoint_count_after_toggle == checkpoint_count_before_toggle, (
+            "action_toggle_play took the route-resume path (submitted a Checkpoint) instead of a normal fresh restart"
+        )
+        assert adapter.play_calls[-1] == (entry.media, 0)

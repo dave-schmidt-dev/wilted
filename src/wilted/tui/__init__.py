@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from typing import TYPE_CHECKING, ClassVar
 
 from textual import work
@@ -46,11 +47,13 @@ from wilted.queue import (
     remove_article_by_id,
 )
 from wilted.station.models import StationEntry
-from wilted.station.reducer import StartPlayback, Stop
+from wilted.station.reducer import Checkpoint, StartPlayback, Stop
 from wilted.station_runtime import (
     CheckpointPoller,
     LeaseHeldError,
     MacPlaybackAdapter,
+    RouteChangeEvent,
+    RouteMonitor,
     StationController,
 )
 from wilted.station_runtime.sequencer import EntrySequencer
@@ -132,6 +135,26 @@ class PlaybackCompleted(Message):
 
     def __init__(self, reason: CompletionReason) -> None:
         self.reason = reason
+        super().__init__()
+
+
+class RouteChanged(Message):
+    """Posted by :meth:`WiltedApp._on_route_change`; handled on the UI thread.
+
+    ``RouteMonitor.on_route_change`` fires on the backend's own delivery
+    thread (for the real CoreAudio backend, its CFRunLoop pump thread) — see
+    ``wilted.station_runtime.route_monitor``'s module docstring. Exactly like
+    :class:`PlaybackCompleted`, this MUST be marshalled via ``post_message``,
+    NEVER ``call_from_thread``: the handler (:meth:`WiltedApp.on_route_changed`)
+    calls ``adapter.stop()``, which joins the adapter's background stream
+    thread — routing through ``call_from_thread`` would block the CoreAudio
+    delivery thread until that join (and everything after it) completes, the
+    same deadlock class ``PlaybackCompleted``'s docstring documents for the
+    audio thread.
+    """
+
+    def __init__(self, event: RouteChangeEvent) -> None:
+        self.event = event
         super().__init__()
 
 
@@ -226,6 +249,7 @@ class WiltedApp(App):
         adapter: MacPlaybackAdapter | None = None,
         sequencer_factory=None,
         poller_factory=None,
+        route_monitor_factory=None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -244,6 +268,19 @@ class WiltedApp(App):
         self._poller_factory = poller_factory if poller_factory is not None else (lambda c, a: CheckpointPoller(c, a))
         self._poller = self._poller_factory(self._controller, self._adapter)
         self._poller_started: bool = False
+        # RouteMonitor (A.3.3): mirrors _poller_factory/_poller exactly, but
+        # is called with the on_route_change callback (what it needs)
+        # instead of (controller, adapter) (what the poller needs) — same
+        # "factory receives what it needs as an explicit argument"
+        # convention, so a test factory never needs to close over `self`
+        # before this app instance exists.
+        self._route_monitor_factory = (
+            route_monitor_factory
+            if route_monitor_factory is not None
+            else (lambda on_route_change: RouteMonitor(on_route_change=on_route_change))
+        )
+        self._route_monitor = self._route_monitor_factory(self._on_route_change)
+        self._route_monitor_started: bool = False
         self._station_read_only: bool = False
 
         # -- Station backlog / now-playing state -----------------------------
@@ -251,6 +288,15 @@ class WiltedApp(App):
         self._current_entry: StationEntry | None = None
         self._current_index: int | None = None
         self._pending_play_item_id: str | None = None
+
+        # -- Route-change interruption state (A.3.3) --------------------------
+        # Set by on_route_changed when a device switch interrupts active
+        # playback; cleared on resume (_resume_from_route_interruption) or on
+        # any explicit stop (action_stop). See on_route_changed's docstring.
+        self._route_interrupted: bool = False
+        self._route_device_name: str = ""
+        self._route_resume_entry: StationEntry | None = None
+        self._route_resume_offset_ms: int = 0
 
         # -- DB item cache (CRUD + display-title resolution; a DIFFERENT
         # store than station state — see module docstring) ------------------
@@ -330,9 +376,9 @@ class WiltedApp(App):
         A safety net for the (many) code paths that end the app without going
         through :meth:`action_quit_app` (e.g. a test's ``run_test()`` context
         exiting) — without this, the controller's OS-level flock and the
-        poller/heartbeat threads would leak past this app instance. All three
-        calls are documented no-ops if never started, and idempotent with
-        :meth:`action_quit_app` calling them again.
+        poller/heartbeat/route-monitor threads would leak past this app
+        instance. All four calls are documented no-ops if never started, and
+        idempotent with :meth:`action_quit_app` calling them again.
         """
         try:
             self._adapter.stop()
@@ -342,6 +388,10 @@ class WiltedApp(App):
             self._poller.stop()
         except Exception:
             logger.exception("on_unmount: poller.stop() failed")
+        try:
+            self._route_monitor.stop()
+        except Exception:
+            logger.exception("on_unmount: route_monitor.stop() failed")
         try:
             self._controller.stop()
         except Exception:
@@ -908,6 +958,9 @@ class WiltedApp(App):
         if not self._poller_started:
             self._poller.start()
             self._poller_started = True
+        if not self._route_monitor_started:
+            self._route_monitor.start()
+            self._route_monitor_started = True
 
     def _on_adapter_completion(self, reason: CompletionReason) -> None:
         """Thin marshaller installed on the adapter — runs on the audio background thread.
@@ -942,10 +995,25 @@ class WiltedApp(App):
         # completion path (interrupted / queue-finished) from showing stale
         # transcript text for an entry that is no longer playing.
         self._clear_transcript_state()
+        # A completion supersedes any PENDING route-interruption of this same
+        # entry (same "supersede" reasoning as _clear_transcript_state above).
+        # Without this reset, a RouteChanged that races in and is dispatched
+        # just before a PlaybackCompleted for the same entry (both posted
+        # from background threads, drained FIFO on the UI thread) would leave
+        # `_route_interrupted` latched True after the entry has already been
+        # marked complete / advanced past -- so the next "p"/space would hit
+        # action_toggle_play's route-interrupted branch and incorrectly
+        # replay the already-completed entry.
+        self._route_interrupted = False
+        self._route_device_name = ""
+        self._route_resume_entry = None
+        self._route_resume_offset_ms = 0
 
         if not reason.is_clean_completion:
             self._poller.stop()
             self._poller_started = False
+            self._route_monitor.stop()
+            self._route_monitor_started = False
             self._generation_paused = False
             self._set_status("Playback interrupted — not advancing", _STATUS_HIGH)
             return
@@ -967,6 +1035,8 @@ class WiltedApp(App):
             self._generation_paused = False
             self._poller.stop()
             self._poller_started = False
+            self._route_monitor.stop()
+            self._route_monitor_started = False
             self._update_now_playing(
                 title="Completed!", progress=100, time_remaining="", text_snippet="", status="Queue finished"
             )
@@ -978,6 +1048,129 @@ class WiltedApp(App):
         # rather than synchronously here, to keep completion handling cheap.
         self._refresh_playlists()
 
+    # -- Route-change interruption (A.3.3, floor-first, spike-validated) ----
+
+    def _on_route_change(self, event: RouteChangeEvent) -> None:
+        """Thin marshaller installed on the route monitor — runs on its delivery thread.
+
+        Uses ``post_message`` (thread-safe, non-blocking), NOT
+        ``call_from_thread`` — see :class:`RouteChanged`'s docstring for the
+        deadlock this avoids (same class of bug as :class:`PlaybackCompleted`).
+        """
+        self.post_message(RouteChanged(event))
+
+    def on_route_changed(self, message: RouteChanged) -> None:
+        """UI-thread entry point for :class:`RouteChanged`, dispatched by Textual's message pump.
+
+        A device change is an INTERRUPTION, not a completion: no
+        auto-advance, no mark-complete (same discipline
+        :meth:`_handle_station_completion` applies to a non-clean
+        completion). Ignored entirely when idle/stopped (``self._playing`` is
+        False) — nothing is bound to a device to interrupt. Still handled
+        while merely paused: ``self._playing`` stays True during a
+        user-initiated pause (only ``self._paused`` toggles), and a paused
+        stream still holds the audio device open.
+
+        Deliberately does NOT submit ``Stop()`` to the controller (unlike
+        :meth:`_handle_station_completion`'s non-clean path): the station's
+        ``StationState`` stays ``PLAYING`` with ``active_entry`` unchanged,
+        which is what lets :meth:`_resume_from_route_interruption` submit a
+        boundary-accurate ``Checkpoint`` on resume (the reducer's
+        ``_checkpoint`` transition requires a ``PLAYING`` station with an
+        active entry — see ``wilted.station.reducer``). Only the adapter
+        (releases the stale/misrouted device) and the poller (would
+        otherwise checkpoint a dead stream) are stopped here.
+        """
+        if not self._playing:
+            return
+
+        event = message.event
+        offset_ms = self._adapter.current_offset_ms()
+        self._adapter.stop()
+        self._poller.stop()
+        self._poller_started = False
+
+        self._route_interrupted = True
+        self._route_device_name = event.device_name
+        self._route_resume_entry = self._current_entry
+        self._route_resume_offset_ms = offset_ms
+
+        self._playing = False
+        self._paused = False
+        self._generation_paused = False
+
+        self._set_status(
+            f"Audio output changed to '{event.device_name}' — playback paused. Press [p] to resume on the new device.",
+            _STATUS_HIGH,
+        )
+        if self.is_running:
+            self._update_playback_bar()
+
+    def _resume_from_route_interruption(self) -> None:
+        """Resume onto the new default device after a route interruption.
+
+        A fresh :meth:`_start_playback` opens a fresh ``sd.OutputStream`` with
+        no pinned ``device=`` (``engine.py``'s ``_stream_pcm``), which binds
+        to whatever is the CURRENT default output device at open time — that
+        IS the recovery onto the new device (see
+        ``spikes/route-recovery-listener-2026-07-10/`` + the A.3.3 design
+        note: "route-recovery via restart", no mid-stream engine surgery
+        needed).
+        """
+        entry = self._route_resume_entry
+        offset_ms = self._route_resume_offset_ms
+        self._route_interrupted = False
+        self._route_device_name = ""
+        self._route_resume_entry = None
+        self._route_resume_offset_ms = 0
+
+        if entry is None:
+            self._set_status("Nothing to resume", _STATUS_MEDIUM)
+            return
+
+        self._submit_route_resume_checkpoint(entry, offset_ms)
+        self._start_playback(entry)
+
+    def _submit_route_resume_checkpoint(self, entry: StationEntry, offset_ms: int) -> None:
+        """Best-effort: write a boundary-accurate ``Checkpoint`` for ``entry``
+        at ``offset_ms`` immediately before :meth:`_start_playback` reads it.
+
+        ``_start_playback`` derives its resume offset from
+        ``self._controller.current_state().checkpoint`` (only honored when
+        its ``entry_id`` matches). Without this call, that would fall back to
+        whichever ``Checkpoint`` the ``CheckpointPoller`` last wrote — up to
+        one poll interval (default 30s) stale. Submitting through the
+        controller (INV-8: the sole write path) right before the matching
+        read closes that gap to the exact captured offset.
+
+        Submitted via ``submit_and_wait`` (not fire-and-forget) so this
+        method returns only once the checkpoint the following
+        ``_start_playback`` call will read is durably in place — reusing the
+        ``CheckpointPoller``'s own field conventions (``expected_revision``
+        = current revision, ``state_label="playing"``, ``writer_device="mac"``,
+        a fresh ``mutation_id``).
+
+        A rejection (e.g. ``expected_revision`` went stale between the
+        interruption and this resume) is expected and benign, same as any
+        other checkpoint write in this codebase: ``_start_playback`` simply
+        falls back to reading whatever checkpoint IS current, at most one
+        poll interval stale — never worse than before this call existed.
+        """
+        try:
+            state = self._controller.current_state()
+            action = Checkpoint(
+                mutation_id=f"mac-route-resume-{uuid.uuid4().hex}",
+                expected_revision=state.station_revision,
+                media_offset_ms=offset_ms,
+                state_label="playing",
+                writer_device="mac",
+            )
+            self._controller.submit_and_wait(action, timeout=5.0)
+        except Exception:
+            logger.exception(
+                "route-resume: exact checkpoint submission failed; falling back to the existing checkpoint"
+            )
+
     # -- Actions (key bindings) ---------------------------------------------
 
     def action_toggle_play(self) -> None:
@@ -986,7 +1179,15 @@ class WiltedApp(App):
         Pause/resume are adapter-only (NOT a reducer state change — the
         station stays in the PLAYING lifecycle while paused); only
         start/stop go through the controller.
+
+        A route-interrupted state (see :meth:`on_route_changed`) takes
+        priority over the ordinary play/pause/resume branches below: "p"/
+        space is the resume affordance for that state too, reusing the
+        existing pause/resume key rather than adding a new binding.
         """
+        if self._route_interrupted:
+            self._resume_from_route_interruption()
+            return
         if self._playing and not self._paused:
             self._adapter.pause()
             self._paused = True
@@ -1011,10 +1212,16 @@ class WiltedApp(App):
             self._controller.submit(Stop())
         self._poller.stop()
         self._poller_started = False
+        self._route_monitor.stop()
+        self._route_monitor_started = False
         self._playing = False
         self._paused = False
         self._generation_paused = False
         self._clear_transcript_state()
+        self._route_interrupted = False
+        self._route_device_name = ""
+        self._route_resume_entry = None
+        self._route_resume_offset_ms = 0
         self._set_status("Stopped", _STATUS_MEDIUM)
         self._trigger_generation()
 
@@ -1262,6 +1469,8 @@ class WiltedApp(App):
         self._adapter.stop()
         self._poller.stop()
         self._poller_started = False
+        self._route_monitor.stop()
+        self._route_monitor_started = False
         self._controller.stop()
         self.exit()
 
