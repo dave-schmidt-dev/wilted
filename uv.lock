@@ -1178,15 +1178,17 @@ wheels = [
 
 [[package]]
 name = "llama-cpp-python"
-version = "0.3.20"
-source = { registry = "https://pypi.org/simple" }
+version = "0.3.33"
+source = { registry = "https://abetlen.github.io/llama-cpp-python/whl/metal" }
 dependencies = [
     { name = "diskcache" },
     { name = "jinja2" },
     { name = "numpy" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/45/95/c69c47c9c8dda97f712f5864688d13a22b0159aa9adae91a69067a728532/llama_cpp_python-0.3.20.tar.gz", hash = "sha256:70f01b7d915d31c617dc66610a332cb2d51cde84c8b152d09a352206323616f5", size = 59323017, upload-time = "2026-04-03T06:56:32.455Z" }
+wheels = [
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.33-metal/llama_cpp_python-0.3.33-py3-none-macosx_11_0_arm64.whl" },
+]
 
 [[package]]
 name = "llvmlite"
@@ -3595,6 +3597,8 @@ dependencies = [
 [package.optional-dependencies]
 llm = [
     { name = "llama-cpp-python" },
+]
+vlm = [
     { name = "mlx-vlm" },
 ]
 
@@ -3610,9 +3614,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "feedparser", specifier = ">=6.0" },
-    { name = "llama-cpp-python", marker = "extra == 'llm'" },
+    { name = "llama-cpp-python", marker = "extra == 'llm'", specifier = "==0.3.33", index = "https://abetlen.github.io/llama-cpp-python/whl/metal" },
     { name = "mlx-audio", extras = ["tts"] },
-    { name = "mlx-vlm", marker = "extra == 'llm'" },
+    { name = "mlx-vlm", marker = "extra == 'vlm'" },
     { name = "numpy" },
     { name = "parakeet-mlx" },
     { name = "peewee", specifier = ">=3.17" },
@@ -3623,7 +3627,7 @@ requires-dist = [
     { name = "tqdm" },
     { name = "trafilatura" },
 ]
-provides-extras = ["llm"]
+provides-extras = ["llm", "vlm"]
 
 [package.metadata.requires-dev]
 dev = [

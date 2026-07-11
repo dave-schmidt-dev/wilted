@@ -23,13 +23,22 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-llm = ["mlx-vlm", "llama-cpp-python"]
+llm = ["llama-cpp-python==0.3.33"]
+vlm = ["mlx-vlm"]
 
 [project.scripts]
 wilted = "wilted.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.uv.sources]
+llama-cpp-python = { index = "llama-cpp-python-metal" }
+
+[[tool.uv.index]]
+name = "llama-cpp-python-metal"
+url = "https://abetlen.github.io/llama-cpp-python/whl/metal"
+explicit = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

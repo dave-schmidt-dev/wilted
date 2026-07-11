@@ -26,6 +26,7 @@ _TEST_MARKERS = {
     "test_fetch.py": ("unit",),
     "test_ingest.py": ("unit",),
     "test_llm.py": ("unit",),
+    "test_llm_metal.py": ("integration",),
     "test_media_store.py": ("integration",),
     "test_onboard.py": ("unit",),
     "test_playlists.py": ("integration",),
