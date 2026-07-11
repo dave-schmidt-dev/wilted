@@ -401,11 +401,27 @@ def test_persist_state_succeeds_at_revision_zero_when_file_genuinely_absent():
 # ---------------------------------------------------------------------------
 
 
+def _snapshot_tree(root):
+    """Set of (relative-path, size) for every file under ``root``.
+
+    Returns an empty set when ``root`` is absent. Used to assert a block of
+    code caused no change to a directory that may legitimately already exist.
+    """
+    if not root.exists():
+        return frozenset()
+    return frozenset((str(p.relative_to(root)), p.stat().st_size) for p in root.rglob("*") if p.is_file())
+
+
 def test_store_writes_under_monkeypatched_data_dir_not_real_tree(tmp_path, monkeypatch):
     """Exercising the store must never write under the real project data/ tree."""
-    real_data_dir = wilted.PROJECT_ROOT / "data"
+    real_station_dir = wilted.PROJECT_ROOT / "data" / "station"
     isolated_dir = tmp_path / "isolated-data"
     monkeypatch.setattr(wilted, "DATA_DIR", isolated_dir)
+
+    # Snapshot the real station/ tree first. It may already exist from real app
+    # runs on this machine (fresh CI checkouts have none); the invariant under
+    # test is that THIS test does not create or modify it, not that it is absent.
+    before = _snapshot_tree(real_station_dir)
 
     store = JsonStationStore()
     state = _full_state()
@@ -416,9 +432,9 @@ def test_store_writes_under_monkeypatched_data_dir_not_real_tree(tmp_path, monke
     assert expected_path.exists()
     assert store.load_state() is not None
 
-    # The real data/ tree (if it exists on this machine) must be untouched
-    # by this test: no station/ subdirectory should have been created there.
-    assert not (real_data_dir / "station").exists()
+    # The monkeypatched writes landed in isolated_dir (asserted above) and left
+    # the real data/station tree byte-for-byte unchanged (INV-5).
+    assert _snapshot_tree(real_station_dir) == before
 
 
 def test_store_resolves_data_dir_at_call_time_not_construction_time(tmp_path, monkeypatch):
