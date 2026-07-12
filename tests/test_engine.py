@@ -192,6 +192,13 @@ class TestModelLoading:
                 },
             ),
             patch("wilted.engine.os.path.isdir", return_value=True),
+            # Keep the §6c memory guideline off the real mlx.core: repeated
+            # real imports of mlx.core within one pytest process (interacting
+            # with the sys.modules patching above) can abort the interpreter
+            # via a nanobind duplicate-registration error. Not a concern in
+            # production (one model load per process), only a test hazard.
+            patch("speech_stack.memory.default_memory_limit_bytes", return_value=None),
+            patch("speech_stack.memory.apply_memory_policy"),
         ):
             engine.load_model()
             assert os.environ["HF_HUB_DISABLE_XET"] == "1"
@@ -222,11 +229,85 @@ class TestModelLoading:
                     "mlx_audio.tts.utils": mlx_audio_utils_mod,
                 },
             ),
+            # See comment in test_load_model_disables_hf_xet_by_default above.
+            patch("speech_stack.memory.default_memory_limit_bytes", return_value=None),
+            patch("speech_stack.memory.apply_memory_policy"),
         ):
             engine.load_model()
             # Check inside the controlled env — the real shell may already
             # have the var from a previous wilted run.
             assert "HF_HUB_DISABLE_XET" not in os.environ
+
+        assert engine._model == "mock-model"
+        mock_load_model.assert_called_once_with(engine.model_name)
+
+    def test_load_model_applies_memory_guideline(self):
+        """§6c defense-in-depth: load_model applies the shared mlx memory
+        guideline immediately before the mlx_audio model load.
+
+        The guideline is only attempted once ``mlx.core`` is already resident
+        in ``sys.modules`` (see the comment at the call site in engine.py), so
+        this test seeds a fake ``mlx.core`` alongside the fake ``mlx_audio`` —
+        mirroring how the real ``mlx_audio`` import loads the real mlx.core as
+        a side effect in production.
+        """
+        engine = AudioEngine()
+        mock_load_model = MagicMock(return_value="mock-model")
+        mlx_audio_mod = types.ModuleType("mlx_audio")
+        mlx_audio_tts_mod = types.ModuleType("mlx_audio.tts")
+        mlx_audio_utils_mod = types.ModuleType("mlx_audio.tts.utils")
+        mlx_audio_utils_mod.load_model = mock_load_model
+        fake_mlx_core = types.ModuleType("mlx.core")
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.dict(
+                "sys.modules",
+                {
+                    "mlx_audio": mlx_audio_mod,
+                    "mlx_audio.tts": mlx_audio_tts_mod,
+                    "mlx_audio.tts.utils": mlx_audio_utils_mod,
+                    "mlx.core": fake_mlx_core,
+                },
+            ),
+            patch("wilted.engine.os.path.isdir", return_value=True),
+            patch("speech_stack.memory.default_memory_limit_bytes", return_value=12345) as mock_default,
+            patch("speech_stack.memory.apply_memory_policy") as mock_apply,
+        ):
+            engine.load_model()
+
+        mock_default.assert_called_once_with()
+        mock_apply.assert_called_once_with(memory_limit_bytes=12345)
+        assert engine._model == "mock-model"
+        mock_load_model.assert_called_once_with(engine.model_name)
+
+    def test_load_model_proceeds_when_memory_guideline_raises(self):
+        """A raising memory guideline must be swallowed — load_model still
+        succeeds. This is defense-in-depth and must never become a new
+        failure mode."""
+        engine = AudioEngine()
+        mock_load_model = MagicMock(return_value="mock-model")
+        mlx_audio_mod = types.ModuleType("mlx_audio")
+        mlx_audio_tts_mod = types.ModuleType("mlx_audio.tts")
+        mlx_audio_utils_mod = types.ModuleType("mlx_audio.tts.utils")
+        mlx_audio_utils_mod.load_model = mock_load_model
+        fake_mlx_core = types.ModuleType("mlx.core")
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.dict(
+                "sys.modules",
+                {
+                    "mlx_audio": mlx_audio_mod,
+                    "mlx_audio.tts": mlx_audio_tts_mod,
+                    "mlx_audio.tts.utils": mlx_audio_utils_mod,
+                    "mlx.core": fake_mlx_core,
+                },
+            ),
+            patch("wilted.engine.os.path.isdir", return_value=True),
+            patch("speech_stack.memory.default_memory_limit_bytes", side_effect=RuntimeError("boom")),
+        ):
+            engine.load_model()
 
         assert engine._model == "mock-model"
         mock_load_model.assert_called_once_with(engine.model_name)
@@ -264,6 +345,9 @@ class TestLoadModelThreadSafety:
                 },
             ),
             patch("wilted.engine.os.path.isdir", return_value=True),
+            # See comment in TestModelLoading above re: real mlx.core reimport hazard.
+            patch("speech_stack.memory.default_memory_limit_bytes", return_value=None),
+            patch("speech_stack.memory.apply_memory_policy"),
         ):
             t1 = threading.Thread(target=engine.load_model)
             t1.start()

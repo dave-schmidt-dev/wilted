@@ -22,6 +22,7 @@ from __future__ import annotations
 import gc
 import json
 import logging
+import sys
 import time
 from typing import Protocol, runtime_checkable
 
@@ -69,6 +70,26 @@ class MlxBackend:
         start = time.monotonic()
 
         from mlx_vlm import load as mlx_load
+
+        # §6c defense-in-depth: apply the shared mlx memory-limit guideline
+        # immediately before the model load. On mlx 0.32.0 this is only a
+        # guideline (it throws just once exceeded AND RAM+swap are exhausted)
+        # and default_memory_limit_bytes() is a no-op when it returns None —
+        # never the primary crash mitigation. Guarded so a failure here can
+        # never block the actual model load. mlx-only: the gguf/llama-cpp
+        # backend manages its own memory and is untouched by
+        # mx.set_memory_limit. Only attempted once mlx.core is already
+        # resident in sys.modules (the ``mlx_vlm`` import above loads it as a
+        # side effect) — never an independent trigger for mlx.core's first
+        # import, since mlx's nanobind bindings are not safe to import a
+        # second time after eviction/reload.
+        try:
+            if "mlx.core" in sys.modules:
+                from speech_stack.memory import apply_memory_policy, default_memory_limit_bytes
+
+                apply_memory_policy(memory_limit_bytes=default_memory_limit_bytes())
+        except Exception:
+            logger.warning("could not apply mlx memory guideline before LLM model load", exc_info=True)
 
         self._model, self._processor = mlx_load(self.model_name)
         # mlx_vlm.load returns (model, processor); tokenizer is on processor

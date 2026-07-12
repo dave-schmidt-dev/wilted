@@ -1,5 +1,6 @@
 """Audio engine — TTS generation and playback with pause/resume/stop controls."""
 
+import logging
 import os
 import subprocess
 import sys
@@ -13,6 +14,8 @@ import numpy as np
 from wilted.text import split_paragraphs
 
 SAMPLE_RATE = 24000  # Kokoro default
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_segments(result):
@@ -158,6 +161,28 @@ class AudioEngine:
             try:
                 _force_hf_offline_if_cached(self.model_name)
                 from mlx_audio.tts.utils import load_model
+
+                # §6c defense-in-depth: apply the shared mlx memory-limit
+                # guideline immediately before the model load. On mlx 0.32.0
+                # this is only a guideline (it throws just once exceeded AND
+                # RAM+swap are exhausted) and default_memory_limit_bytes() is
+                # a no-op when it returns None — never the primary crash
+                # mitigation. Guarded so a failure here can never block the
+                # actual model load. Only attempted once mlx.core is already
+                # resident in sys.modules (the ``mlx_audio`` import above
+                # loads it as a side effect): this avoids the guideline being
+                # the thing that triggers mlx.core's own first import — mlx's
+                # nanobind bindings are not safe to import a second time after
+                # eviction/reload, so we never want to be an independent
+                # trigger for that first import outside of mlx_audio's own,
+                # already-exercised import path.
+                try:
+                    if "mlx.core" in sys.modules:
+                        from speech_stack.memory import apply_memory_policy, default_memory_limit_bytes
+
+                        apply_memory_policy(memory_limit_bytes=default_memory_limit_bytes())
+                except Exception:
+                    logger.warning("could not apply mlx memory guideline before TTS model load", exc_info=True)
 
                 self._model = load_model(self.model_name)
             except Exception as e:

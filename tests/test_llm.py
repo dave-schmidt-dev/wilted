@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from wilted.llm import (
@@ -218,6 +220,72 @@ class TestMlxBackendMocked:
 
         backend.close()
         assert backend._model is None
+
+    def test_load_applies_memory_guideline(self, monkeypatch):
+        """§6c defense-in-depth: load() applies the shared mlx memory
+        guideline immediately before the mlx_vlm model load.
+
+        The guideline is only attempted once ``mlx.core`` is already resident
+        in ``sys.modules`` (see the comment at the call site in llm.py), so
+        this test seeds a fake ``mlx.core`` alongside the fake ``mlx_vlm`` —
+        mirroring how the real ``mlx_vlm`` import loads the real mlx.core as a
+        side effect in production.
+        """
+        import sys
+        import types
+
+        mock_mlx_vlm = types.ModuleType("mlx_vlm")
+
+        class MockProcessor:
+            def apply_chat_template(self, messages, **kwargs):
+                return "formatted prompt"
+
+        mock_model = object()
+        mock_processor = MockProcessor()
+        mock_mlx_vlm.load = lambda model_name: (mock_model, mock_processor)
+        monkeypatch.setitem(sys.modules, "mlx_vlm", mock_mlx_vlm)
+        monkeypatch.setitem(sys.modules, "mlx.core", types.ModuleType("mlx.core"))
+
+        mock_default = MagicMock(return_value=54321)
+        mock_apply = MagicMock()
+        monkeypatch.setattr("speech_stack.memory.default_memory_limit_bytes", mock_default)
+        monkeypatch.setattr("speech_stack.memory.apply_memory_policy", mock_apply)
+
+        backend = MlxBackend(model="test-model")
+        backend.load()
+
+        mock_default.assert_called_once_with()
+        mock_apply.assert_called_once_with(memory_limit_bytes=54321)
+        assert backend._model is not None
+
+    def test_load_proceeds_when_memory_guideline_raises(self, monkeypatch):
+        """A raising memory guideline must be swallowed — load() still
+        succeeds. This is defense-in-depth and must never become a new
+        failure mode."""
+        import sys
+        import types
+
+        mock_mlx_vlm = types.ModuleType("mlx_vlm")
+
+        class MockProcessor:
+            def apply_chat_template(self, messages, **kwargs):
+                return "formatted prompt"
+
+        mock_model = object()
+        mock_processor = MockProcessor()
+        mock_mlx_vlm.load = lambda model_name: (mock_model, mock_processor)
+        monkeypatch.setitem(sys.modules, "mlx_vlm", mock_mlx_vlm)
+        monkeypatch.setitem(sys.modules, "mlx.core", types.ModuleType("mlx.core"))
+
+        monkeypatch.setattr(
+            "speech_stack.memory.default_memory_limit_bytes",
+            MagicMock(side_effect=RuntimeError("boom")),
+        )
+
+        backend = MlxBackend(model="test-model")
+        backend.load()
+
+        assert backend._model is not None
 
 
 # ---------------------------------------------------------------------------
