@@ -694,6 +694,113 @@ class TestInv5LiveDataDirResolution:
 
 
 # ---------------------------------------------------------------------------
+# PM-5 — all Tier-3 transcription completes before the LLM is ever loaded
+# ---------------------------------------------------------------------------
+
+
+class TestPm5TranscribeBeforeLlm:
+    """Locks PM-5: the Tier-3 isolated GPU transcription child must never run
+    while the LLM is (or could be) resident.
+
+    `run_prepare` now transcribes every podcast (Phase A) BEFORE calling
+    `llm_backend.load()` (Phase B). This test records a single ordered event
+    log: each `get_transcript` call appends ``("transcribe", item_id)`` and
+    the backend's `load()` appends ``("llm_load",)``. The gate is that EVERY
+    transcribe event precedes the (single) llm_load event.
+
+    Why it bites against the OLD structure: previously `run_prepare` called
+    `llm_backend.load()` up front and held it resident across the whole
+    podcast loop, so `("llm_load",)` was appended FIRST and every
+    `("transcribe", ...)` event came AFTER it — the assertion below (all
+    transcribe indices < the llm_load index) would fail. Sanity-checked
+    below via `_llm_load_index` being 0 in that ordering.
+    """
+
+    def test_all_transcription_completes_before_llm_loads(self, tmp_path):
+        from wilted.db import Feed, Item
+        from wilted.transcribe import TranscriptSegment
+
+        # Two selected podcasts so Phase A must transcribe both before load.
+        # Distinct feed_urls: feeds.feed_url is UNIQUE.
+        now = _now()
+        for suffix in ("a", "b"):
+            feed = Feed.create(
+                title=f"Test Podcast {suffix}",
+                feed_url=f"https://example.com/feed-{suffix}.xml",
+                feed_type="podcast",
+                enabled=True,
+                created_at=now,
+                updated_at=now,
+            )
+            Item.create(
+                feed=feed,
+                guid=f"pod-{suffix}",
+                title=f"Podcast {suffix.upper()}",
+                discovered_at=now,
+                item_type="podcast_episode",
+                status="selected",
+                status_changed_at=now,
+                enclosure_url="https://example.com/episode.mp3",
+                enclosure_type="audio/mpeg",
+            )
+
+        audio_files = {}
+        for item_id in (1, 2):
+            audio_file = tmp_path / "data" / "podcasts" / str(item_id) / "episode.mp3"
+            audio_file.parent.mkdir(parents=True, exist_ok=True)
+            audio_file.write_bytes(b"fake audio data")
+            audio_files[item_id] = audio_file
+
+        events: list[tuple] = []
+
+        segments = [TranscriptSegment(0.0, 5.0, "Hello world")]
+
+        def _record_transcribe(*, item_id, **kwargs):
+            events.append(("transcribe", item_id))
+            return segments
+
+        # The LLM backend: load() records the ("llm_load",) event so its
+        # ordering relative to the transcribe events is observable.
+        mock_backend = MagicMock()
+        mock_backend.load = MagicMock(side_effect=lambda: events.append(("llm_load",)))
+        mock_backend.close = MagicMock()
+        mock_backend.generate = MagicMock(return_value=("[]", 10))
+
+        def _download(item_id, url):
+            return audio_files[item_id]
+
+        with (
+            patch("wilted.prepare.download_podcast", side_effect=_download),
+            patch("wilted.prepare.get_transcript", side_effect=_record_transcribe),
+            patch("wilted.prepare.save_transcript"),
+            patch("wilted.prepare._get_feed_xml", return_value=None),
+            patch("wilted.ads.detect_ads", return_value=[]),
+            patch("wilted.engine.AudioEngine") as MockEngine,
+            patch("wilted.llm.create_backend", return_value=mock_backend),
+        ):
+            mock_engine = MockEngine.return_value
+            mock_engine.get_file_duration.return_value = 5.0
+            stats = run_prepare(use_llm=True, skip_tts=True)
+
+        # Sanity: the log actually captured both transcribe events and exactly
+        # one llm_load event, and both podcasts were prepared.
+        transcribe_indices = [i for i, e in enumerate(events) if e[0] == "transcribe"]
+        llm_load_indices = [i for i, e in enumerate(events) if e[0] == "llm_load"]
+        assert len(transcribe_indices) == 2, events
+        assert len(llm_load_indices) == 1, events
+        assert stats["prepared"] == 2
+        assert stats["errors"] == 0
+
+        # PM-5 gate: every transcription happened strictly before the LLM
+        # loaded. Against the OLD load-LLM-first structure, llm_load would be
+        # at index 0 and this would fail.
+        llm_load_index = llm_load_indices[0]
+        assert all(t_idx < llm_load_index for t_idx in transcribe_indices), (
+            f"Transcription must complete before LLM load; got event order: {events}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # CLI dispatch
 # ---------------------------------------------------------------------------
 

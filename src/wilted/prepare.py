@@ -28,6 +28,7 @@ import wilted.llm as _llm_mod
 from wilted.db import Item
 from wilted.db import now_utc as _now_utc
 from wilted.download import DownloadError, download_podcast
+from wilted.station_runtime.coordinator import ModelCoordinator
 from wilted.transcribe import (
     TranscriptionError,
     get_transcript,
@@ -52,12 +53,22 @@ def _set_status(item, status: str, error_message: str | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _prepare_podcast(item, llm_backend=None) -> None:
-    """Prepare a podcast episode: download, transcribe, detect ads, cut.
+def _transcribe_podcast(item, coordinator) -> list:
+    """Download a podcast episode and produce its transcript (no LLM).
+
+    Steps 1-2 of podcast preparation: download the audio and get a
+    three-tier transcript, saving both audio_file and transcript_file to
+    the DB. The transcript step is wrapped in ``coordinator.run_transcribe``
+    so any Tier-3 GPU transcription holds the single ML lease — it can never
+    overlap a resident LLM (PM-5).
 
     Args:
-        item: A Peewee Item instance with status='selected', item_type='podcast_episode'.
-        llm_backend: An already-loaded LLM backend for ad detection (optional).
+        item: A Peewee Item instance with status='processing',
+            item_type='podcast_episode'.
+        coordinator: A ``ModelCoordinator`` used to lease the transcribe call.
+
+    Returns:
+        The list of transcript segments (needed by :func:`_process_podcast`).
     """
     item_id = item.id
     logger.info("Preparing podcast item %d: %s", item_id, item.title)
@@ -73,17 +84,23 @@ def _prepare_podcast(item, llm_backend=None) -> None:
         _set_status(item, "error", f"Download failed: {e}")
         raise PrepareError(f"Download failed for item {item_id}: {e}") from e
 
-    # Update audio_file in DB
+    # Update audio_file in DB and on the in-memory instance so Phase B's
+    # _process_podcast can recover audio_path via item.audio_file (a
+    # bare Item.update() does not mutate the instance).
     Item.update(audio_file=str(audio_path)).where(Item.id == item_id).execute()
+    item.audio_file = str(audio_path)
 
-    # Step 2: Get transcript (three-tier)
+    # Step 2: Get transcript (three-tier). Lease the transcribe call so the
+    # Tier-3 isolated GPU child never runs while an LLM is resident (PM-5).
     try:
-        segments = get_transcript(
-            item_id=item_id,
-            guid=item.guid,
-            feed_xml=_get_feed_xml(item),
-            episode_url=item.canonical_url or item.source_url,
-            audio_path=audio_path,
+        segments = coordinator.run_transcribe(
+            lambda: get_transcript(
+                item_id=item_id,
+                guid=item.guid,
+                feed_xml=_get_feed_xml(item),
+                episode_url=item.canonical_url or item.source_url,
+                audio_path=audio_path,
+            )
         )
     except TranscriptionError as e:
         _set_status(item, "error", f"Transcription failed: {e}")
@@ -102,6 +119,28 @@ def _prepare_podcast(item, llm_backend=None) -> None:
         transcript_file=str(transcript_path),
         word_count=word_count,
     ).where(Item.id == item_id).execute()
+
+    return segments
+
+
+def _process_podcast(item, segments, llm_backend=None) -> None:
+    """Detect and cut ads for a downloaded, transcribed podcast, then probe duration.
+
+    Steps 3-4 of podcast preparation. Runs with the LLM resident; the
+    transcription (steps 1-2, :func:`_transcribe_podcast`) has already
+    completed for every podcast before this is called, so no transcribe
+    child overlaps the resident LLM (PM-5).
+
+    Args:
+        item: A Peewee Item instance already through :func:`_transcribe_podcast`
+            (its ``audio_file`` is set).
+        segments: The transcript segments returned by :func:`_transcribe_podcast`.
+        llm_backend: An already-loaded LLM backend for ad detection (optional).
+    """
+    item_id = item.id
+    # Recover the downloaded audio path saved by _transcribe_podcast's
+    # Item.update(audio_file=...) in step 2.
+    audio_path = Path(item.audio_file)
 
     # Step 3: Ad detection + cutting (if LLM backend available)
     if llm_backend and segments:
@@ -287,7 +326,34 @@ def run_prepare(
 
     stats = {"prepared": 0, "errors": 0, "skipped": 0}
 
-    # Load LLM backend once for all items
+    podcasts = [it for it in selected_items if it.item_type == "podcast_episode"]
+    articles = [it for it in selected_items if it.item_type == "article"]
+
+    # The single ML lease shared by transcribe/LLM/TTS. Plain construction
+    # (no bootstrap) matches the nightly/CLI path (weather_monitor.py,
+    # briefing.py).
+    coordinator = ModelCoordinator()
+
+    # Phase A: transcribe every podcast BEFORE any LLM is loaded, so the
+    # Tier-3 isolated GPU child never contends with a resident LLM (PM-5).
+    # Each transcribe call holds the transcribe lease. Successfully
+    # transcribed items carry their segments forward to Phase B; items that
+    # fail here are counted as errors and excluded from Phase B.
+    transcribed_segments: dict = {}
+    for item in podcasts:
+        _set_status(item, "processing")
+        try:
+            transcribed_segments[item.id] = _transcribe_podcast(item, coordinator)
+        except PrepareError as e:
+            stats["errors"] += 1
+            logger.error("Item %d failed: %s", item.id, e)
+        except Exception:
+            stats["errors"] += 1
+            _set_status(item, "error", "Unexpected error during preparation")
+            logger.exception("Item %d failed unexpectedly", item.id)
+
+    # Phase B: load the LLM once, then process podcasts (ad detection/cutting)
+    # and articles (promo removal + TTS) with it resident.
     llm_backend = None
     if use_llm:
         try:
@@ -299,14 +365,11 @@ def run_prepare(
             llm_backend = None
 
     try:
-        # Process podcasts first (download + transcribe), then articles (TTS)
-        podcasts = [it for it in selected_items if it.item_type == "podcast_episode"]
-        articles = [it for it in selected_items if it.item_type == "article"]
-
         for item in podcasts:
-            _set_status(item, "processing")
+            if item.id not in transcribed_segments:
+                continue
             try:
-                _prepare_podcast(item, llm_backend=llm_backend)
+                _process_podcast(item, transcribed_segments[item.id], llm_backend=llm_backend)
                 _set_status(item, "ready")
                 stats["prepared"] += 1
                 logger.info("Item %d prepared successfully", item.id)
