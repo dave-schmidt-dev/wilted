@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from speech_stack import isolated
 
 from wilted.transcribe import (
+    TranscriptionAborted,
     TranscriptionError,
+    TranscriptionTimeout,
+    TranscriptionWorkerError,
     TranscriptSegment,
     extract_transcript_from_url,
     fetch_transcript_from_rss,
@@ -360,21 +363,22 @@ class TestExtractTranscriptFromUrl:
 
 
 class TestTranscribeAudio:
-    @patch.dict("sys.modules", {"parakeet_mlx": MagicMock()})
-    def test_transcribes_audio(self):
-        import sys
+    """Tier-3 now dispatches to speech-stack's isolated worker; mock that seam.
 
-        mock_parakeet = sys.modules["parakeet_mlx"]
-        mock_model = MagicMock()
-        mock_parakeet.from_pretrained.return_value = mock_model
+    The new boundary is ``wilted.transcribe.isolated.run("stt", request, ...)``,
+    which returns ``{"text", "segments", ...}`` with segments already
+    sentence-split, text-stripped, and keyed ``start_s``/``end_s``/``text``.
+    """
 
-        mock_result = SimpleNamespace(
-            segments=[
-                {"start": 0.0, "end": 3.0, "text": "Hello world."},
-                {"start": 3.5, "end": 7.0, "text": "Testing transcription."},
-            ]
-        )
-        mock_model.transcribe.return_value = mock_result
+    @patch("wilted.transcribe.isolated.run")
+    def test_transcribes_audio(self, mock_run):
+        mock_run.return_value = {
+            "text": "Hello world. Testing transcription.",
+            "segments": [
+                {"start_s": 0.0, "end_s": 3.0, "text": "Hello world."},
+                {"start_s": 3.5, "end_s": 7.0, "text": "Testing transcription."},
+            ],
+        }
 
         segments = transcribe_audio(Path("/tmp/test.mp3"))
 
@@ -382,20 +386,14 @@ class TestTranscribeAudio:
         assert segments[0].text == "Hello world."
         assert segments[1].start_s == 3.5
 
-    def test_import_error_raises_transcription_error(self):
-        with pytest.raises(TranscriptionError, match="parakeet_mlx is not installed"):
-            # Ensure parakeet_mlx is not importable
-            with patch.dict("sys.modules", {"parakeet_mlx": None}):
-                transcribe_audio(Path("/tmp/test.mp3"))
+        # Dispatched to the "stt" task with the audio path in the request.
+        (task, request), kwargs = mock_run.call_args
+        assert task == "stt"
+        assert request["audio_path"] == "/tmp/test.mp3"
 
-    @patch.dict("sys.modules", {"parakeet_mlx": MagicMock()})
-    def test_empty_segments_raises_error(self):
-        import sys
-
-        mock_parakeet = sys.modules["parakeet_mlx"]
-        mock_model = MagicMock()
-        mock_parakeet.from_pretrained.return_value = mock_model
-        mock_model.transcribe.return_value = SimpleNamespace(segments=[])
+    @patch("wilted.transcribe.isolated.run")
+    def test_empty_segments_raises_error(self, mock_run):
+        mock_run.return_value = {"text": "", "segments": []}
 
         with pytest.raises(TranscriptionError, match="no segments"):
             transcribe_audio(Path("/tmp/test.mp3"))
@@ -531,119 +529,68 @@ class TestSegmentsToText:
 # ---------------------------------------------------------------------------
 
 
-def _install_fake_parakeet(captured, sentences):
-    """Build a fake parakeet_mlx package mirroring the real API surface.
+def _canned_result(sentences):
+    """Build a speech-stack STT result dict from ``(start, end, text)`` tuples.
 
-    Returns a ``{module_name: module}`` dict suitable for ``patch.dict(sys.modules, ...)``.
-    The fake ``AlignedResult`` exposes ``.sentences`` (as the real one does), and
-    ``model.transcribe`` records the kwargs it was called with into ``captured`` so
-    a test can assert what ``transcribe_audio`` passed down.
-
-    ``DecodingConfig``/``SentenceConfig`` are REAL dataclasses so that
-    ``_sentence_split_config`` (which does ``dataclasses.is_dataclass`` +
-    ``dataclasses.replace`` on ``model.transcribe``'s ``decoding_config`` default)
-    exercises its true code path rather than the API-drift fallback.
+    Mirrors ``speech_stack.stt.transcribe``'s return shape: segments are already
+    sentence-split, text-stripped, and keyed ``start_s``/``end_s``/``text``.
     """
-    import dataclasses as dc
-    import types
-
-    @dc.dataclass
-    class _SentenceConfig:
-        max_words: object = None
-        silence_gap: object = None
-        max_duration: object = None
-
-    @dc.dataclass
-    class _DecodingConfig:
-        decoding: str = "greedy"
-        sentence: object = dc.field(default_factory=_SentenceConfig)
-
-    default_cfg = _DecodingConfig()
-    # AlignedResult-shaped: .sentences holds the timestamped units (the fix reads
-    # this, not .segments); build it in the function scope so the comprehension
-    # can see `sentences` (a class body can't close over it).
-    result = SimpleNamespace(
-        text=" ".join(t for (_s, _e, t) in sentences),
-        sentences=[SimpleNamespace(start=s, end=e, text=t) for (s, e, t) in sentences],
-    )
-
-    class _Model:
-        # decoding_config's default MUST be a dataclass instance so that
-        # _sentence_split_config finds and rebuilds it (that is the fix under test).
-        def transcribe(
-            self,
-            path,
-            *,
-            chunk_duration=None,
-            overlap_duration=15.0,
-            decoding_config=default_cfg,
-        ):
-            captured["path"] = path
-            captured["chunk_duration"] = chunk_duration
-            captured["overlap_duration"] = overlap_duration
-            captured["decoding_config"] = decoding_config
-            return result
-
-    fake_pm = types.ModuleType("parakeet_mlx")
-    fake_pm.from_pretrained = lambda _name: _Model()
-    fake_pk = types.ModuleType("parakeet_mlx.parakeet")
-    fake_pk.SentenceConfig = _SentenceConfig
-    fake_pk.DecodingConfig = _DecodingConfig
-    return {"parakeet_mlx": fake_pm, "parakeet_mlx.parakeet": fake_pk}
+    return {
+        "text": " ".join(t for (_s, _e, t) in sentences),
+        "segments": [{"start_s": s, "end_s": e, "text": t} for (s, e, t) in sentences],
+    }
 
 
 class TestTranscribeAudioLocalTier:
-    """Regression lock for three production bugs in the local-Parakeet tier.
+    """Tier-3 contract now that transcription runs in speech-stack's isolated worker.
 
-    All three were found by running a real 94-minute episode through
-    ``transcribe_audio`` — the tier shipped with NO test at all. Each assertion
-    below is revert-proven: undo the corresponding fix in transcribe.py and
-    exactly one assertion (or the call itself) fails.
+    The three original production bugs (single-shot GPU decode, disabled sentence
+    splitting, wrong result attribute) are now guarded inside ``speech_stack.stt``.
+    Wilted's remaining contract is what it PASSES to the worker (a bounded
+    ``chunk_duration``, ``overlap_duration``, ``sentence_split=True``) and how it
+    maps the returned segments — that is what these tests lock down.
     """
 
     def _run(self, tmp_path, captured, sentences):
-        import sys
-
-        modules = _install_fake_parakeet(captured, sentences)
         audio = tmp_path / "ep.mp3"
         audio.write_bytes(b"fake-audio")
-        with patch.dict(sys.modules, modules):
+
+        def _fake_run(task, request, *, timeout):
+            captured["task"] = task
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return _canned_result(sentences)
+
+        with patch("wilted.transcribe.isolated.run", side_effect=_fake_run):
             return transcribe_audio(audio)
 
     def test_passes_bounded_chunk_duration(self, tmp_path):
-        """Bug 1: single-shot decode of long audio page-faulted the GPU (SIGABRT).
+        """Wilted must request a bounded chunk_duration (the BUG-4 crash mitigation).
 
-        The fix passes a bounded ``chunk_duration`` so parakeet streams fixed
-        GPU windows. Revert to ``model.transcribe(path)`` and this fails —
-        ``chunk_duration`` falls back to the signature default (None).
+        The guard that rejects chunk_duration<=0 now lives in speech_stack.stt;
+        wilted's job is to pass a positive value. Assert the request carries a
+        bounded chunk_duration and overlap_duration.
         """
         captured: dict = {}
         self._run(tmp_path, captured, [(0.0, 1.0, "hi")])
-        assert captured["chunk_duration"] is not None
-        assert captured["chunk_duration"] > 0
-        assert captured["overlap_duration"] is not None
-        assert captured["overlap_duration"] > 0
+        request = captured["request"]
+        assert request["chunk_duration"] == 120.0
+        assert request["chunk_duration"] > 0
+        assert request["overlap_duration"] == 15.0
+        assert request["overlap_duration"] > 0
 
-    def test_applies_sentence_split_config(self, tmp_path):
-        """Bug 3: default SentenceConfig disables splitting → ONE giant segment.
+    def test_applies_sentence_split(self, tmp_path):
+        """Sentence splitting moved into speech-stack; wilted must REQUEST it.
 
-        The fix rebuilds the decoding config with real split knobs. Remove
-        ``_sentence_split_config`` (so no decoding_config is passed) and this
-        fails — the captured config is the default with both knobs None.
+        Assert the request sets ``sentence_split=True`` so the worker reproduces
+        wilted's former per-sentence segmentation.
         """
         captured: dict = {}
         self._run(tmp_path, captured, [(0.0, 1.0, "hi")])
-        sentence_cfg = captured["decoding_config"].sentence
-        assert sentence_cfg.silence_gap is not None
-        assert sentence_cfg.max_duration is not None
+        assert captured["request"]["sentence_split"] is True
 
-    def test_parses_sentences_not_segments(self, tmp_path):
-        """Bug 2: parser read ``.segments`` but parakeet returns ``.sentences``.
-
-        With the old parser the AlignedResult yields zero segments and
-        ``transcribe_audio`` raises "produced no segments". The fix reads
-        ``.sentences`` first, so these two segments come through intact.
-        """
+    def test_parses_returned_segments(self, tmp_path):
+        """Maps ``result["segments"]`` (start_s/end_s/text) to TranscriptSegment."""
         captured: dict = {}
         segments = self._run(
             tmp_path,
@@ -655,27 +602,47 @@ class TestTranscribeAudioLocalTier:
             (1.0, 2.5, "Second line"),
         ]
 
-    def test_raises_when_model_returns_no_sentences(self, tmp_path):
+    def test_raises_when_worker_returns_no_segments(self, tmp_path):
         """Empty output still raises TranscriptionError (unchanged contract)."""
         captured: dict = {}
         with pytest.raises(TranscriptionError, match="produced no segments"):
             self._run(tmp_path, captured, [])
 
-    def test_raises_when_parakeet_not_installed(self, tmp_path):
-        """Missing parakeet_mlx raises a TranscriptionError with install hint."""
-        import builtins
 
-        audio = tmp_path / "ep.mp3"
-        audio.write_bytes(b"fake-audio")
-        real_import = builtins.__import__
+class TestTranscribeAudioExceptionContract:
+    """Every isolated worker failure re-raises as a TranscriptionError subclass.
 
-        def _blocked_import(name, *args, **kwargs):
-            if name == "parakeet_mlx" or name.startswith("parakeet_mlx."):
-                raise ImportError("No module named 'parakeet_mlx'")
-            return real_import(name, *args, **kwargs)
+    So all existing ``except TranscriptionError`` handlers keep catching a
+    tier-3 GPU crash / timeout / worker error, while callers that care can
+    distinguish the cause. Construct the isolated errors directly (they are
+    plain RuntimeError subclasses).
+    """
 
-        with (
-            patch.object(builtins, "__import__", _blocked_import),
-            pytest.raises(TranscriptionError, match="not installed"),
-        ):
-            transcribe_audio(audio)
+    @pytest.mark.parametrize(
+        ("isolated_exc", "mapped"),
+        [
+            (isolated.Timeout("worker timed out after 1800s"), TranscriptionTimeout),
+            (isolated.GpuAborted("worker died: SIGABRT (Metal fault)"), TranscriptionAborted),
+            (isolated.GpuSegfault("worker died: SIGSEGV (segfault)"), TranscriptionAborted),
+            (isolated.WorkerError("worker failed: ValueError: boom"), TranscriptionWorkerError),
+        ],
+    )
+    def test_isolated_error_maps_to_transcription_subclass(self, isolated_exc, mapped):
+        with patch("wilted.transcribe.isolated.run", side_effect=isolated_exc):
+            with pytest.raises(mapped) as excinfo:
+                transcribe_audio(Path("/tmp/test.mp3"))
+        # Mapped subclass is still a TranscriptionError, so existing handlers catch it.
+        assert isinstance(excinfo.value, TranscriptionError)
+        # Original error is chained and its message is surfaced.
+        assert excinfo.value.__cause__ is isolated_exc
+        assert str(isolated_exc) in str(excinfo.value)
+
+    def test_base_isolated_error_maps_to_base_transcription_error(self):
+        """Any other IsolatedError falls back to the base TranscriptionError."""
+        exc = isolated.IsolatedError("some other isolation failure")
+        with patch("wilted.transcribe.isolated.run", side_effect=exc):
+            with pytest.raises(TranscriptionError) as excinfo:
+                transcribe_audio(Path("/tmp/test.mp3"))
+        # Not one of the specific subclasses.
+        assert type(excinfo.value) is TranscriptionError
+        assert excinfo.value.__cause__ is exc

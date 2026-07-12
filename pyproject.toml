@@ -20,6 +20,7 @@ dependencies = [
     "espeakng-loader==0.2.4",
     "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
     "parakeet-mlx",
+    "speech-stack",
     "trafilatura",
     "numpy",
     "sounddevice",
@@ -68,6 +69,13 @@ constraint-dependencies = [
 
 [tool.uv.sources]
 llama-cpp-python = { index = "llama-cpp-python-metal" }
+# EDITABLE is required, not cosmetic: speech_stack.isolated.state_dir() resolves
+# the shared GPU lock via Path(__file__).parents[2]/.state. A non-editable (copied)
+# install would resolve the lock inside wilted's site-packages, breaking the
+# cross-process "one GPU child at a time" guarantee (S-INV-3). Editable keeps
+# __file__ pointing at the speech-stack source so the lock at
+# ~/Documents/Projects/speech-stack/.state/gpu.lock is genuinely shared.
+speech-stack = { path = "/Users/dave/Documents/Projects/speech-stack", editable = true }
 
 [[tool.uv.index]]
 name = "llama-cpp-python-metal"

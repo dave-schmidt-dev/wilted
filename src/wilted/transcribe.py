@@ -2,7 +2,7 @@
 
 Tier 1: RSS podcast:transcript tag (VTT, SRT, Podcasting 2.0 JSON)
 Tier 2: Publisher website transcript via trafilatura
-Tier 3: Local transcription model (parakeet_mlx) fallback
+Tier 3: Local transcription via speech-stack's isolated GPU worker (parakeet)
 
 Usage:
     from wilted.transcribe import get_transcript, TranscriptSegment
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
@@ -20,6 +21,15 @@ from typing import TYPE_CHECKING
 from urllib.request import Request, urlopen
 
 import trafilatura  # noqa: TCH002 — used at runtime in extract_transcript_from_url
+
+try:
+    # Bind ``isolated`` at module scope so tier-3 reaches speech-stack's isolated
+    # GPU worker and tests can patch ``wilted.transcribe.isolated.run``. Guarded so a
+    # missing speech-stack doesn't break the import-time surface of tiers 1/2 —
+    # transcribe_audio re-checks and raises a clear TranscriptionError instead.
+    from speech_stack import isolated
+except ImportError:  # pragma: no cover — speech-stack is a hard dependency in practice
+    isolated = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -29,6 +39,21 @@ logger = logging.getLogger(__name__)
 
 class TranscriptionError(RuntimeError):
     """Raised when all transcript sourcing tiers fail."""
+
+
+class TranscriptionTimeout(TranscriptionError):
+    """Tier-3 worker exceeded its wall-clock timeout (``isolated.Timeout``)."""
+
+
+class TranscriptionAborted(TranscriptionError):
+    """Tier-3 worker died via a hard GPU crash — SIGABRT (Metal fault) or SIGSEGV.
+
+    Maps both ``isolated.GpuAborted`` and ``isolated.GpuSegfault``.
+    """
+
+
+class TranscriptionWorkerError(TranscriptionError):
+    """Tier-3 worker raised a caught exception / produced no result (``isolated.WorkerError``)."""
 
 
 @dataclass
@@ -386,47 +411,45 @@ def extract_transcript_from_url(url: str, min_words: int = 500) -> list[Transcri
 
 
 # ---------------------------------------------------------------------------
-# Tier 3: Local transcription model
+# Tier 3: Local transcription via speech-stack's isolated GPU worker
 # ---------------------------------------------------------------------------
 
 
-_SENTENCE_SILENCE_GAP_S = 0.5
-_SENTENCE_MAX_DURATION_S = 20.0
+# Wall-clock ceiling for one isolated transcription run. Matches speech-stt's
+# default (1800s); env-overridable via WILTED_TRANSCRIBE_TIMEOUT_S.
+_TRANSCRIBE_TIMEOUT_S = 1800.0
 
 
-def _sentence_split_config(model):
-    """Build a parakeet decoding config that splits into sentence-sized segments.
-
-    parakeet_mlx's default ``SentenceConfig`` leaves every split knob unset
-    (``max_words``/``silence_gap``/``max_duration`` all None), so it returns the
-    whole episode as ONE segment — useless for seek/resume and transcript
-    display. We rebuild the model's own default decoding config (preserving its
-    decoding strategy) and enable splitting on natural pauses (``silence_gap``)
-    with a length cap (``max_duration``) so continuous speech still segments.
-
-    Returns None on any parakeet API drift, in which case transcription falls
-    back to the library default (one big segment) rather than failing.
-    """
+def _env_float(name: str, default: float) -> float:
+    """Return env ``name`` parsed as a positive float, else ``default`` (never crashes)."""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
     try:
-        import dataclasses
-        import inspect
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid %s=%r; using default %g", name, raw, default)
+        return default
+    if value <= 0:
+        logger.warning("Ignoring non-positive %s=%r; using default %g", name, raw, default)
+        return default
+    return value
 
-        from parakeet_mlx.parakeet import SentenceConfig
 
-        default_cfg = inspect.signature(model.transcribe).parameters["decoding_config"].default
-        if default_cfg is inspect.Parameter.empty or not dataclasses.is_dataclass(default_cfg):
-            return None
-        return dataclasses.replace(
-            default_cfg,
-            sentence=SentenceConfig(
-                silence_gap=_SENTENCE_SILENCE_GAP_S,
-                max_duration=_SENTENCE_MAX_DURATION_S,
-                max_words=None,
-            ),
-        )
-    except Exception:  # noqa: BLE001 — any API drift falls back to the library default
-        logger.warning("Could not build parakeet sentence-split config; using library default (single segment)")
+def _env_int_or_none(name: str) -> int | None:
+    """Return env ``name`` parsed as a positive int, else None (never crashes)."""
+    raw = os.environ.get(name)
+    if not raw:
         return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid %s=%r; leaving memory cap unset", name, raw)
+        return None
+    if value <= 0:
+        logger.warning("Ignoring non-positive %s=%r; leaving memory cap unset", name, raw)
+        return None
+    return value
 
 
 def transcribe_audio(
@@ -435,21 +458,30 @@ def transcribe_audio(
     chunk_duration: float = 120.0,
     overlap_duration: float = 15.0,
 ) -> list[TranscriptSegment]:
-    """Transcribe an audio file using the local parakeet_mlx model.
+    """Transcribe an audio file via speech-stack's isolated parakeet worker.
 
-    This is the fallback tier when no external transcript is available.
+    This is the fallback tier when no external transcript is available. Rather
+    than importing parakeet in-process, it dispatches to
+    ``speech_stack.isolated.run("stt", ...)``, which runs the model in a child
+    process behind an exclusive GPU lock. A Metal fault (SIGABRT) or segfault in
+    the model therefore kills only that child — this process survives and gets a
+    typed error instead of dying.
 
-    Transcription is chunked: without ``chunk_duration``, parakeet_mlx decodes
-    the whole file in a single Metal computation, which for a long episode
-    (e.g. a 90+ minute podcast) overruns GPU memory and aborts the process with
-    a Metal command-buffer page fault (SIGABRT). Passing a bounded
-    ``chunk_duration`` makes it stream fixed windows with ``overlap_duration``
-    context between them, keeping GPU memory bounded regardless of episode
-    length. The overlap lets parakeet stitch word boundaries across chunks.
+    Transcription is chunked: passing a bounded ``chunk_duration`` makes parakeet
+    stream fixed GPU windows with ``overlap_duration`` context between them,
+    keeping GPU memory bounded regardless of episode length (the primary BUG-4
+    crash mitigation, enforced inside ``speech_stack.stt``). Sentence-level
+    splitting (``sentence_split=True``) reproduces wilted's former in-process
+    segmentation.
+
+    Timeout defaults to ``_TRANSCRIBE_TIMEOUT_S`` (1800s), overridable via
+    ``WILTED_TRANSCRIBE_TIMEOUT_S``. An optional GPU memory cap can be set via
+    ``WILTED_TRANSCRIBE_MEM_LIMIT`` (int bytes); default None, since chunking is
+    the primary crash mitigation.
 
     Args:
         audio_path: Path to the audio file (mp3, m4a, etc.).
-        model_name: HuggingFace model name for parakeet_mlx.
+        model_name: HuggingFace model name for parakeet.
         chunk_duration: Seconds of audio decoded per GPU chunk (default 120s).
         overlap_duration: Seconds of overlap between adjacent chunks (default 15s).
 
@@ -457,58 +489,52 @@ def transcribe_audio(
         List of TranscriptSegment from model output.
 
     Raises:
-        TranscriptionError: If parakeet_mlx is not installed or transcription
-            fails.
+        TranscriptionTimeout: The worker exceeded its wall-clock timeout.
+        TranscriptionAborted: The worker died via a hard GPU crash (SIGABRT/SIGSEGV).
+        TranscriptionWorkerError: The worker raised a caught exception / no result.
+        TranscriptionError: speech-stack is unavailable, another isolation error
+            occurred, or transcription produced no segments.
     """
-    try:
-        import parakeet_mlx  # type: ignore[import-untyped]
-    except ImportError as e:
-        raise TranscriptionError("parakeet_mlx is not installed. Install it with: pip install parakeet-mlx") from e
+    if isolated is None:
+        raise TranscriptionError("speech-stack is not installed. Install it as an editable dependency of wilted.")
+
+    timeout = _env_float("WILTED_TRANSCRIBE_TIMEOUT_S", _TRANSCRIBE_TIMEOUT_S)
+    memory_limit_bytes = _env_int_or_none("WILTED_TRANSCRIBE_MEM_LIMIT")
+
+    request = {
+        "audio_path": str(audio_path),
+        "model": model_name,
+        "chunk_duration": chunk_duration,
+        "overlap_duration": overlap_duration,
+        "sentence_split": True,
+        "budget_bytes": None,
+        "memory_limit_bytes": memory_limit_bytes,
+        "decoding": "greedy",
+        "beam_size": 5,
+        "debug": False,
+    }
 
     try:
-        model = parakeet_mlx.from_pretrained(model_name)
-        transcribe_kwargs = {
-            "chunk_duration": chunk_duration,
-            "overlap_duration": overlap_duration,
-        }
-        decoding_config = _sentence_split_config(model)
-        if decoding_config is not None:
-            transcribe_kwargs["decoding_config"] = decoding_config
-        result = model.transcribe(str(audio_path), **transcribe_kwargs)
-    except Exception as e:
+        result = isolated.run("stt", request, timeout=timeout)
+    except isolated.Timeout as e:
+        raise TranscriptionTimeout(f"Transcription timed out: {e}") from e
+    except (isolated.GpuAborted, isolated.GpuSegfault) as e:
+        raise TranscriptionAborted(f"Transcription crashed on GPU: {e}") from e
+    except isolated.WorkerError as e:
+        raise TranscriptionWorkerError(f"Transcription worker failed: {e}") from e
+    except isolated.IsolatedError as e:
         raise TranscriptionError(f"Transcription failed: {e}") from e
-    finally:
-        # Attempt to free model memory
-        try:
-            del model
-        except NameError:
-            pass
 
-    segments: list[TranscriptSegment] = []
-    # parakeet_mlx returns an AlignedResult whose timestamped units are
-    # `.sentences` (each an AlignedSentence with .start/.end/.text). Older
-    # shapes exposed `.segments` or a dict; accept all three so a library
-    # bump can't silently zero out the transcript again.
-    raw_segments = getattr(result, "sentences", None)
-    if raw_segments is None:
-        raw_segments = getattr(result, "segments", None)
-    if raw_segments is None and isinstance(result, dict):
-        raw_segments = result.get("sentences") or result.get("segments") or []
-    if raw_segments is None:
-        raw_segments = []
-
-    for seg in raw_segments:
-        if isinstance(seg, dict):
-            start = float(seg.get("start", 0))
-            end = float(seg.get("end", 0))
-            text = str(seg.get("text", "")).strip()
-        else:
-            start = float(getattr(seg, "start", 0))
-            end = float(getattr(seg, "end", 0))
-            text = str(getattr(seg, "text", "")).strip()
-
-        if text:
-            segments.append(TranscriptSegment(start_s=start, end_s=end, text=text))
+    # speech_stack.stt already returns sentence-split, text-stripped segments as
+    # list[{"start_s", "end_s", "text"}] with empties dropped.
+    segments = [
+        TranscriptSegment(
+            start_s=float(seg["start_s"]),
+            end_s=float(seg["end_s"]),
+            text=str(seg["text"]),
+        )
+        for seg in result.get("segments", [])
+    ]
 
     if not segments:
         raise TranscriptionError("Transcription produced no segments")
