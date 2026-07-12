@@ -155,11 +155,32 @@ The current implementation unifies content into a local personal radio station a
 
 - **Morning briefing** — starts each session with a ≤5-min configurable NWS weather forecast and top-N classified items from the queue
 - **Continuous playback** — plays queued articles (TTS) and prepared podcasts (audio) with ad-cuts and segment-based navigation
-- **Weather bulletin interrupt** — NWS alerts interrupt playback at segment boundaries with safe-offset resume (±250 ms band around segment edges); the bulletin plays in full, then resumes the interrupted entry at the exact checkpoint
+- **Weather bulletin interrupt** — NWS alerts interrupt playback near a transcript boundary (a ±1 s tolerance band around each segment start, so the interrupt lands within ~1 s of a real boundary — wide enough that the once-per-second offset poll reliably catches it); the *live* playback offset is what gets checkpointed, so the bulletin plays in full and then resumes the interrupted entry at the exact position with no skipped audio
 - **Audio-route recovery** — device changes (speaker → headphones, AirPods connect/disconnect) are detected; playback stops with a no-output floor message, then resumes on the new device at the exact offset with no content loss
 - **Automatic cleanup** — weather bulletins expire and are garbage-collected at session end; no stale bulletin files accumulate
 
 The station is implemented as a headless substrate-neutral reducer (`src/wilted/station/`) with a TUI adapter that routes all mutations through a single `StationController` to ensure consistent state and prevent split-brain across concurrent clients.
+
+### Launching the station
+
+```bash
+make station         # or just `wilted` — launches the TUI with the LIVE NWS weather monitor
+make station-test    # launches with the weather-bulletin TEST TRIGGER armed
+```
+
+`make station` (and the plain `wilted` alias) runs the real NWS monitor: a weather bulletin only fires when there is a genuine active Severe/Tornado alert for the configured zone.
+
+### Testing the weather bulletin on demand
+
+The weather-bulletin interrupt is the one station feature that can't fire without a real alert, so there's a manual test hook. **It only works under `make station-test`** — a plain `wilted`/`make station` launch runs live-NWS mode and ignores the trigger file entirely:
+
+```bash
+make station-test
+# in ANOTHER shell, while a transcript-backed podcast/article is playing:
+touch /tmp/wilted-fire-bulletin
+```
+
+A fully-synthesized bulletin fires and interrupts at the next safe transcript boundary (within ≤30 s: a 30 s poll interval + a few seconds of TTS + up to ~1 s to the next boundary). The weather status line shows **`TEST-TRIGGER ARMED — touch /tmp/wilted-fire-bulletin`** whenever the hook is active, so you can confirm at a glance that a `touch` will actually do something. If it does *not* say that, you launched in live-NWS mode. The bulletin lifecycle (`received and PENDING`, `INTERRUPTING`) and the armed mode are logged at WARNING in `/tmp/wilted.log`; run with `--debug` for per-tick safe-point detail.
 
 ## Product direction (longer term)
 
