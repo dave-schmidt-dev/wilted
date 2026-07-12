@@ -637,6 +637,8 @@ class TestBuildProductionMonitor:
         assert isinstance(monitor, WeatherMonitor)
         assert monitor._fetch is _default_fetch_alerts
         assert monitor._synth is _default_synth_bulletin
+        # Live-NWS mode: no test trigger recorded (drives the TUI status line).
+        assert monitor.test_trigger_path is None
 
     def test_trigger_path_swaps_in_the_trigger_file_fetch_but_keeps_real_synth(self, tmp_path):
         trigger_path = tmp_path / "trigger"
@@ -645,6 +647,9 @@ class TestBuildProductionMonitor:
 
         assert monitor._fetch is not _default_fetch_alerts
         assert monitor._synth is _default_synth_bulletin
+        # The armed path is recorded for observability so the TUI can show
+        # "TEST-TRIGGER ARMED" (the manual tester's confirmation it is armed).
+        assert monitor.test_trigger_path == trigger_path
 
 
 class TestMakeTriggerFileFetch:

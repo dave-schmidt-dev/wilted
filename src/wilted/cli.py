@@ -1112,10 +1112,22 @@ def _weather_monitor_for_launch() -> "WeatherMonitor | None":
             "_weather_monitor_for_launch: failed to construct WeatherMonitor; launching without it", exc_info=True
         )
         return None
+    # Logged at WARNING (not INFO) ON PURPOSE: which mode armed is the single
+    # most common source of "I touched the trigger and nothing happened"
+    # confusion, and the default file log is WARNING+ — an INFO line here is
+    # invisible exactly when it is needed for diagnosis. The live-NWS branch is
+    # a WARNING too so a launch that FORGOT to arm the test trigger is equally
+    # visible (it silently ignores the trigger file).
     if trigger:
-        logger.info("weather monitor ARMED with A.5.1 test trigger at %s — `touch` it to fire a bulletin", trigger)
+        logger.warning(
+            "weather monitor ARMED with A.5.1 TEST TRIGGER at %s — `touch %s` to fire a bulletin", trigger, trigger
+        )
     else:
-        logger.info("weather monitor using live NWS fetch (no WILTED_WEATHER_TEST_TRIGGER set)")
+        logger.warning(
+            "weather monitor in LIVE-NWS mode (WILTED_WEATHER_TEST_TRIGGER not set) — "
+            "touching /tmp/wilted-fire-bulletin does NOTHING in this mode; "
+            "use `make station-test` to arm the test trigger"
+        )
     return monitor
 
 

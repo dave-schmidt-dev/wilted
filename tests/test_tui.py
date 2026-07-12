@@ -520,6 +520,9 @@ class FakeWeatherMonitor:
         self.fake_health = "unknown"
         self.last_success_at: str | None = None
         self.last_error: str | None = None
+        # Mirrors the real monitor's observability attribute (set by
+        # build_production_monitor for the A.5.1 test hook); None = live-NWS.
+        self.test_trigger_path: str | None = None
 
     def start(self) -> None:
         self.start_calls += 1
@@ -3559,6 +3562,27 @@ async def test_source_health_shows_weather_health_and_route_monitoring():
         assert "healthy" in text.lower()
         assert "2026-07-11T00:00:00Z" in text
         assert "monitoring" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_source_health_shows_test_trigger_armed_when_monitor_has_trigger_path():
+    """When the weather monitor is the A.5.1 test-trigger variant, the status
+    line must say so and name the file to touch -- the manual tester's on-screen
+    confirmation that a `touch` will actually fire (vs a live-NWS launch that
+    silently ignores the trigger file). Regression for the "I touched the file
+    and nothing happened" confusion loop."""
+    entry = _station_entry(1)
+    weather_monitor = FakeWeatherMonitor()
+    weather_monitor.fake_health = "healthy"
+    weather_monitor.test_trigger_path = "/tmp/wilted-fire-bulletin"
+    app = _make_app(entries=[entry], weather_monitor=weather_monitor)
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        app._start_playback(entry)
+
+        text = str(app.query_one("#source-health", Label).render())
+        assert "TEST-TRIGGER ARMED" in text
+        assert "/tmp/wilted-fire-bulletin" in text
 
 
 @pytest.mark.asyncio

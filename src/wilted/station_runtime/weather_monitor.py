@@ -485,7 +485,9 @@ def build_production_monitor(*, trigger_path: Path | None = None) -> WeatherMoni
     every other test/production monitor construction in this module.
     """
     fetch = make_trigger_file_fetch(trigger_path) if trigger_path is not None else _default_fetch_alerts
-    return WeatherMonitor(fetch=fetch, synth=_default_synth_bulletin)
+    monitor = WeatherMonitor(fetch=fetch, synth=_default_synth_bulletin)
+    monitor.test_trigger_path = trigger_path  # None for live-NWS; the path for the A.5.1 test hook
+    return monitor
 
 
 # ---------------------------------------------------------------------------
@@ -538,6 +540,13 @@ class WeatherMonitor:
         #: monitor (``wilted.tui.WiltedApp``) always wires this before
         #: :meth:`start`.
         self.on_bulletin_ready = on_bulletin_ready
+
+        #: Observability only: set by :func:`build_production_monitor` to the
+        #: A.5.1 test-trigger path when this monitor watches a file instead of
+        #: live NWS. The TUI surfaces it in the weather status line so a manual
+        #: tester can SEE the test trigger is armed (the #1 source of "I touched
+        #: the file and nothing happened" confusion). ``None`` = live-NWS mode.
+        self.test_trigger_path: Path | None = None
 
         self._area_state: dict[str, _AreaState] = {}
         self._poll_lock = threading.Lock()

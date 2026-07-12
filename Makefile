@@ -1,4 +1,9 @@
-.PHONY: lint lint-sh test test-unit test-integration test-e2e test-tui validate install-launchd uninstall-launchd
+.PHONY: lint lint-sh test test-unit test-integration test-e2e test-tui validate station station-test install-launchd uninstall-launchd
+
+# Well-known path for the A.5.1 manual weather-bulletin test trigger. `touch`
+# this file (from another shell) while the station is running under
+# `make station-test` to fire a real, fully-synthesized weather bulletin.
+WEATHER_TEST_TRIGGER := /tmp/wilted-fire-bulletin
 
 # Keep the project venv outside iCloud (~/Documents is iCloud-synced). iCloud sets the
 # macOS UF_HIDDEN flag on .venv contents, and Python 3.13's site module silently skips
@@ -32,6 +37,21 @@ test-tui:
 	PYTHONPATH=src uv run --group dev pytest -m tui
 
 validate: lint test
+
+# Launch the interactive station TUI (live-NWS weather monitor — a real
+# Severe/Tornado NWS alert is required for a bulletin to fire).
+station:
+	PYTHONPATH=src uv run --group dev python -m wilted.cli
+
+# Launch the station with the A.5.1 weather-bulletin TEST TRIGGER armed. This
+# is the ONLY launch in which `touch $(WEATHER_TEST_TRIGGER)` fires a bulletin;
+# a plain `wilted`/`make station` launch runs live-NWS mode and ignores that
+# file entirely. The weather status line + the WARNING log line both confirm
+# "TEST TRIGGER" mode at startup.
+station-test:
+	@echo "Station arming A.5.1 test trigger. In ANOTHER shell run:  touch $(WEATHER_TEST_TRIGGER)"
+	@echo "to fire a weather bulletin (interrupts within ~30s at the next safe transcript boundary)."
+	WILTED_WEATHER_TEST_TRIGGER=$(WEATHER_TEST_TRIGGER) PYTHONPATH=src uv run --group dev python -m wilted.cli
 
 install-launchd:
 	ln -sf $(CURDIR)/scripts/wilted-nightly.sh $(HOME)/.launchd/scripts/wilted_nightly.sh

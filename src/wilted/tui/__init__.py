@@ -958,6 +958,13 @@ class WiltedApp(App):
                 weather_text = f"Weather: {health} (last success {last_success})"
             else:
                 weather_text = f"Weather: {health}"
+            # Make the A.5.1 test-trigger mode impossible to miss: a plain
+            # launch runs live-NWS and silently ignores the trigger file, which
+            # is the usual reason a manual `touch` "does nothing". When armed,
+            # say so and name the file to touch.
+            test_trigger = getattr(self._weather_monitor, "test_trigger_path", None)
+            if test_trigger is not None:
+                weather_text = f"Weather: TEST-TRIGGER ARMED — touch {test_trigger} ({health})"
         if self._route_interrupted:
             route_text = "Route: interrupted"
         elif self._route_monitor_started:
@@ -1370,6 +1377,18 @@ class WiltedApp(App):
         self._bulletin_pending_since_monotonic = time.monotonic()
         self._bulletin_wait_ticks = 0
         self._bulletin_fallback_shown_this_window = False
+        # WARNING (visible in the default WARNING+ file log) ON PURPOSE: this is
+        # the milestone that proves the monitor->handoff half of the chain
+        # reached the TUI. Paired with the "interrupting playback" log at the
+        # actual accept below, the two lines let a manual tester's log explain a
+        # stuck bulletin without needing --debug.
+        logger.warning(
+            "weather bulletin %s received and PENDING — will interrupt at the next safe boundary "
+            "(playing=%s, current=%s)",
+            bulletin.entry_id,
+            self._playing,
+            self._current_entry.entry_id if self._current_entry else None,
+        )
 
     def _maybe_submit_pending_bulletin(self) -> None:
         """Called every tick from :meth:`_update_timer`. Submits the pending
@@ -1384,18 +1403,46 @@ class WiltedApp(App):
         offset, and resume would then skip the audio in between. Only this
         method (via the adapter) has that live offset.
         """
-        if (
-            self._pending_bulletin is None
-            or not self._playing
-            or self._paused
-            or self._bulletin_playing
-            or self._station_read_only
-            or self._current_entry is None
-        ):
+        if self._pending_bulletin is None:
+            return
+
+        # A bulletin IS pending: from here on, log why it can or cannot submit
+        # this tick. A non-firing bulletin was invisible at the default
+        # WARNING+ level (poll/handoff/safe-point checks all logged below it),
+        # which is exactly how the zero-width-window stall shipped unseen (see
+        # HISTORY 2026-07-11). These are DEBUG (opt-in via --debug) but every
+        # gate is named so `--debug` fully explains a stuck bulletin.
+        blockers = []
+        if not self._playing:
+            blockers.append("not-playing")
+        if self._paused:
+            blockers.append("paused")
+        if self._bulletin_playing:
+            blockers.append("bulletin-already-playing")
+        if self._station_read_only:
+            blockers.append("read-only")
+        if self._current_entry is None:
+            blockers.append("no-current-entry")
+        if blockers:
+            logger.debug(
+                "weather bulletin %s pending but blocked this tick: %s",
+                self._pending_bulletin.entry_id,
+                ", ".join(blockers),
+            )
             return
 
         offset_ms = self._adapter.current_offset_ms()
-        at_safe_point = self._current_entry.media.safe_interruption.safe_point_at(offset_ms)
+        _si = self._current_entry.media.safe_interruption
+        at_safe_point = _si.safe_point_at(offset_ms)
+        logger.debug(
+            "weather bulletin %s pending: entry=%s offset=%dms mode=%s windows=%d at_safe_point=%s",
+            self._pending_bulletin.entry_id,
+            self._current_entry.entry_id,
+            offset_ms,
+            _si.mode.name,
+            len(_si.windows),
+            at_safe_point,
+        )
 
         if not at_safe_point:
             # Not (or no longer) inside a safe window -- rearm the
@@ -1509,6 +1556,11 @@ class WiltedApp(App):
         self._pending_bulletin = None
         self._bulletin_wait_ticks = 0
         self._bulletin_fallback_shown_this_window = False
+
+        # WARNING (visible): the accept landed — the interrupt is happening now.
+        # Pairs with the "received and PENDING" milestone above so the whole
+        # bulletin lifecycle is legible at the default log level.
+        logger.warning("weather bulletin %s INTERRUPTING playback at offset %d ms", bulletin.entry_id, offset_ms)
 
         self._play_bulletin(bulletin)
 
