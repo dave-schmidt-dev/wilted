@@ -398,6 +398,26 @@ class TestTranscribeAudio:
         with pytest.raises(TranscriptionError, match="no segments"):
             transcribe_audio(Path("/tmp/test.mp3"))
 
+    @patch("wilted.transcribe.isolated.run")
+    def test_accepts_str_audio_path(self, mock_run):
+        """Regression: the completion log does ``audio_path.name``, which
+        AttributeError'd when a caller passed a ``str`` (the CLI and the podcast
+        pipeline both do). The signature is ``str | Path`` and coerces on entry,
+        so the success path — which reaches that log line — must not crash.
+        """
+        mock_run.return_value = {
+            "text": "String path works.",
+            "segments": [{"start_s": 0.0, "end_s": 2.0, "text": "String path works."}],
+        }
+
+        segments = transcribe_audio("/tmp/episode.mp3")  # bare str, not Path
+
+        assert len(segments) == 1
+        assert segments[0].text == "String path works."
+        # The request payload still carries the stringified path unchanged.
+        (task, request), _kwargs = mock_run.call_args
+        assert request["audio_path"] == "/tmp/episode.mp3"
+
 
 # ---------------------------------------------------------------------------
 # Orchestrator

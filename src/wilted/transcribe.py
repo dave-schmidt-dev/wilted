@@ -17,7 +17,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING
+from pathlib import Path
 from urllib.request import Request, urlopen
 
 import trafilatura  # noqa: TCH002 — used at runtime in extract_transcript_from_url
@@ -30,9 +30,6 @@ try:
     from speech_stack import isolated
 except ImportError:  # pragma: no cover — speech-stack is a hard dependency in practice
     isolated = None  # type: ignore[assignment]
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -453,7 +450,7 @@ def _env_int_or_none(name: str) -> int | None:
 
 
 def transcribe_audio(
-    audio_path: Path,
+    audio_path: str | Path,
     model_name: str = "mlx-community/parakeet-tdt-1.1b",
     chunk_duration: float = 120.0,
     overlap_duration: float = 15.0,
@@ -480,7 +477,9 @@ def transcribe_audio(
     the primary crash mitigation.
 
     Args:
-        audio_path: Path to the audio file (mp3, m4a, etc.).
+        audio_path: Path to the audio file (mp3, m4a, etc.). Accepts ``str`` or
+            ``Path``; the CLI and podcast pipeline pass either, so it is coerced
+            to ``Path`` on entry.
         model_name: HuggingFace model name for parakeet.
         chunk_duration: Seconds of audio decoded per GPU chunk (default 120s).
         overlap_duration: Seconds of overlap between adjacent chunks (default 15s).
@@ -497,6 +496,10 @@ def transcribe_audio(
     """
     if isolated is None:
         raise TranscriptionError("speech-stack is not installed. Install it as an editable dependency of wilted.")
+
+    # Accept str or Path from any caller (CLI, podcast pipeline, tests). Coerce
+    # once so the request payload and the completion log agree on the type.
+    audio_path = Path(audio_path)
 
     timeout = _env_float("WILTED_TRANSCRIBE_TIMEOUT_S", _TRANSCRIBE_TIMEOUT_S)
     memory_limit_bytes = _env_int_or_none("WILTED_TRANSCRIBE_MEM_LIMIT")
