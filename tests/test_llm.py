@@ -201,12 +201,9 @@ class TestMlxBackendMocked:
         mock_mlx = types.ModuleType("mlx")
         mock_mlx_core = types.ModuleType("mlx.core")
 
-        class MockMetal:
-            @staticmethod
-            def clear_cache():
-                pass
-
-        mock_mlx_core.metal = MockMetal()
+        # close() calls the top-level mx.clear_cache() (mlx 0.32.0 canonical API;
+        # the mlx.core.metal.* shims were deprecated and replaced repo-wide).
+        mock_mlx_core.clear_cache = lambda: None
         mock_mlx.core = mock_mlx_core
         monkeypatch.setitem(sys.modules, "mlx", mock_mlx)
         monkeypatch.setitem(sys.modules, "mlx.core", mock_mlx_core)

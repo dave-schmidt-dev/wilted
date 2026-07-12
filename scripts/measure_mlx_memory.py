@@ -23,17 +23,17 @@ def measure_model(model_id: str, loader_fn) -> dict:
         Dict with keys: model_id, before_mb, loaded_mb, after_unload_mb, delta_mb.
         All memory values are in megabytes (float).
     """
-    before = mx.metal.get_active_memory()
+    before = mx.get_active_memory()
 
     model = loader_fn()
 
-    loaded = mx.metal.get_active_memory()
+    loaded = mx.get_active_memory()
 
     del model
     gc.collect()
-    mx.metal.clear_cache()
+    mx.clear_cache()
 
-    after_unload = mx.metal.get_active_memory()
+    after_unload = mx.get_active_memory()
 
     def to_mb(b):
         return round(b / 1024 / 1024, 1)

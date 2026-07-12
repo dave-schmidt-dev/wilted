@@ -146,7 +146,7 @@ class MlxBackend:
         self._model = self._tokenizer = self._processor = None
 
         gc.collect()
-        mx.metal.clear_cache()
+        mx.clear_cache()
         logger.info("Model unloaded, Metal cache cleared")
 
 

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "wilted"
 version = "0.2.0"
 description = "Local TTS article reader using Kokoro via mlx-audio on Apple Silicon"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 license = "MIT"
 dependencies = [
     "mlx-audio[tts]",
