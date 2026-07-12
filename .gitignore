@@ -42,3 +42,6 @@ TASKS.md
 history.md
 tasks.md
 handoff.md
+
+# Runtime weather-bulletin latency log (written by the live station)
+reports/weather-bulletin-latency.jsonl
