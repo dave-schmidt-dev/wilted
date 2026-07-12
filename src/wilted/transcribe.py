@@ -31,6 +31,16 @@ try:
 except ImportError:  # pragma: no cover — speech-stack is a hard dependency in practice
     isolated = None  # type: ignore[assignment]
 
+try:
+    # The resident speech daemon client, used only when WILTED_STT_BACKEND=daemon.
+    # Same guard as ``isolated`` (both live in speech-stack); tests patch
+    # ``wilted.transcribe.client.stt_path`` / ``client.evict``. The isolated spawn
+    # path never touches this, so a missing daemon client can never affect the
+    # default (frozen) behavior.
+    from speech_stack import client
+except ImportError:  # pragma: no cover — speech-stack is a hard dependency in practice
+    client = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 
@@ -416,6 +426,91 @@ def extract_transcript_from_url(url: str, min_words: int = 500) -> list[Transcri
 # default (1800s); env-overridable via WILTED_TRANSCRIBE_TIMEOUT_S.
 _TRANSCRIBE_TIMEOUT_S = 1800.0
 
+# ---------------------------------------------------------------------------
+# Tier-3 STT backend selection (additive, behind WILTED_STT_BACKEND)
+# ---------------------------------------------------------------------------
+#
+# Default preserves today's isolated spawn-per-call behavior byte-for-byte;
+# ``WILTED_STT_BACKEND=daemon`` routes tier-3 STT through the resident speech-stack
+# daemon (``speech_stack.client``) with an automatic isolated-spawn fallback when no
+# broker is listening. Rollback is a single env unset — the daemon route is purely
+# additive and the isolated path is never modified.
+_STT_BACKEND_ENV = "WILTED_STT_BACKEND"
+
+# Log the chosen backend exactly once per process, at first tier-3 use (CR-5
+# visibility). Module-level so the line is emitted once regardless of how many
+# episodes a run transcribes; tests reset it to re-observe the log.
+_stt_backend_logged = False
+
+
+def _stt_backend() -> str:
+    """Return the selected tier-3 STT backend: ``'daemon'`` or ``'isolated'``.
+
+    Defaults to ``'isolated'`` (today's spawn-per-call path) for any unset or
+    unrecognized value, so the daemon route is strictly opt-in.
+    """
+    raw = (os.environ.get(_STT_BACKEND_ENV) or "").strip().lower()
+    return "daemon" if raw == "daemon" else "isolated"
+
+
+def _log_stt_backend_once(backend: str) -> None:
+    """Emit the chosen tier-3 STT backend once per process (CR-5 startup line)."""
+    global _stt_backend_logged
+    if not _stt_backend_logged:
+        _stt_backend_logged = True
+        logger.info("Tier-3 STT backend: %s", backend)
+
+
+def _run_stt_via_daemon(request: dict, timeout: float) -> dict:
+    """Transcribe ``request`` via the resident speech daemon (WILTED_STT_BACKEND=daemon).
+
+    Routes the SAME request params through ``speech_stack.client.stt_path``; the
+    daemon's result dict is byte-identical to ``isolated.run("stt", ...)`` (Phase 2
+    parity), so :func:`transcribe_audio`'s segment construction is unchanged.
+
+    Falls back to the isolated spawn path ONLY on ``client.DaemonUnavailable`` (no
+    broker listening — a rolled-back/not-yet-started daemon). Every OTHER typed error
+    (``Timeout`` / ``GpuAborted`` / ``GpuSegfault`` / ``WorkerError`` — all the SAME
+    classes ``speech_stack.client`` re-exports from ``isolated``) is a real per-item
+    failure: it propagates unchanged to :func:`transcribe_audio`'s existing ``except``
+    ladder and surfaces as the matching ``TranscriptionError`` subclass. A genuine GPU
+    crash is therefore NEVER masked by a silent spawn retry (INV-6).
+    """
+    if client is None:  # speech-stack present but the daemon client failed to import
+        return isolated.run("stt", request, timeout=timeout)
+    # Everything except the positional audio_path rides as **params, exactly mirroring
+    # the dict isolated.run forwards to stt.transcribe (model binds to stt_path's
+    # keyword; the rest — chunk/overlap/sentence_split/budget/decoding/… — pass
+    # through). Extra keys the model ignores are swallowed by stt.transcribe(**_).
+    params = {k: v for k, v in request.items() if k != "audio_path"}
+    try:
+        return client.stt_path(request["audio_path"], timeout=timeout, **params)
+    except client.DaemonUnavailable:
+        logger.info(
+            "speech daemon unavailable; falling back to isolated spawn for STT of %s",
+            request.get("audio_path"),
+        )
+        return isolated.run("stt", request, timeout=timeout)
+
+
+def evict_stt_model() -> None:
+    """Hint the speech daemon to drop the resident STT model (PM-5/INV-2 hygiene).
+
+    Called after a batch of tier-3 transcriptions completes and BEFORE a different
+    model (the LLM) loads, so parakeet is not left co-resident in the daemon while
+    wilted loads the LLM in its own process. Only meaningful on the daemon backend;
+    a no-op on the isolated backend (the spawn child already exited after each call)
+    and a no-op if the daemon client is unavailable. Best-effort: if the daemon is
+    already gone there is nothing resident to drop, so ``DaemonUnavailable`` is
+    swallowed rather than surfaced.
+    """
+    if _stt_backend() != "daemon" or client is None:
+        return
+    try:
+        client.evict("stt")
+    except client.DaemonUnavailable:
+        logger.debug("speech daemon already gone at evict-hint time; nothing to evict")
+
 
 def _env_float(name: str, default: float) -> float:
     """Return env ``name`` parsed as a positive float, else ``default`` (never crashes)."""
@@ -463,6 +558,14 @@ def transcribe_audio(
     process behind an exclusive GPU lock. A Metal fault (SIGABRT) or segfault in
     the model therefore kills only that child — this process survives and gets a
     typed error instead of dying.
+
+    Backend (additive, opt-in): ``WILTED_STT_BACKEND=daemon`` instead routes the
+    request through the resident speech-stack daemon
+    (``speech_stack.client.stt_path``), which reuses a warm parakeet model and
+    returns a byte-identical result dict. It falls back to the isolated spawn path
+    when no broker is listening (``DaemonUnavailable``); every other typed failure
+    surfaces identically to the isolated path. Any other value (or unset) keeps the
+    isolated spawn-per-call behavior, so rollback is a single env unset.
 
     Transcription is chunked: passing a bounded ``chunk_duration`` makes parakeet
     stream fixed GPU windows with ``overlap_duration`` context between them,
@@ -517,8 +620,20 @@ def transcribe_audio(
         "debug": False,
     }
 
+    # Backend selection (additive). Default is the isolated spawn-per-call path,
+    # byte-for-byte unchanged; WILTED_STT_BACKEND=daemon routes through the resident
+    # daemon (with an isolated fallback on DaemonUnavailable). The typed-error mapping
+    # below is IDENTICAL for both: speech_stack.client re-exports the isolated error
+    # classes, so a real GPU crash surfaces the same TranscriptionError subclass
+    # whichever backend produced it (INV-6).
+    backend = _stt_backend()
+    _log_stt_backend_once(backend)
+
     try:
-        result = isolated.run("stt", request, timeout=timeout)
+        if backend == "daemon":
+            result = _run_stt_via_daemon(request, timeout)
+        else:
+            result = isolated.run("stt", request, timeout=timeout)
     except isolated.Timeout as e:
         raise TranscriptionTimeout(f"Transcription timed out: {e}") from e
     except (isolated.GpuAborted, isolated.GpuSegfault) as e:

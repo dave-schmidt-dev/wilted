@@ -250,6 +250,62 @@ class TestPreparePodcast:
 
 
 # ---------------------------------------------------------------------------
+# run_prepare — daemon STT evict hint (PM-5/INV-2 co-residency avoidance)
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareEvictHint:
+    """After Phase A (transcribe) and BEFORE Phase B (LLM load), the daemon STT
+    model is evicted so parakeet is never co-resident with the LLM in the daemon."""
+
+    def _podcast_pipeline(self, tmp_path):
+        """Set up a single podcast whose transcription is mocked to succeed."""
+        from wilted.transcribe import TranscriptSegment
+
+        _make_podcast(tmp_path)
+        audio_file = tmp_path / "data" / "podcasts" / "1" / "episode.mp3"
+        audio_file.parent.mkdir(parents=True, exist_ok=True)
+        audio_file.write_bytes(b"fake audio data")
+        segments = [TranscriptSegment(0.0, 5.0, "Hello world")]
+        return audio_file, segments
+
+    def test_daemon_backend_evicts_stt_between_phases(self, tmp_path, monkeypatch):
+        """WILTED_STT_BACKEND=daemon -> run_prepare fires client.evict('stt') once."""
+        monkeypatch.setenv("WILTED_STT_BACKEND", "daemon")
+        audio_file, segments = self._podcast_pipeline(tmp_path)
+
+        with (
+            patch("wilted.prepare.download_podcast", return_value=audio_file),
+            patch("wilted.prepare.get_transcript", return_value=segments),
+            patch("wilted.prepare.save_transcript"),
+            patch("wilted.engine.AudioEngine") as MockEngine,
+            patch("wilted.transcribe.client.evict") as mock_evict,
+        ):
+            MockEngine.return_value.get_file_duration.return_value = 5.0
+            run_prepare(use_llm=False)
+
+        # The evict hint fired exactly once, dropping the resident STT model.
+        mock_evict.assert_called_once_with("stt")
+
+    def test_isolated_backend_does_not_evict(self, tmp_path, monkeypatch):
+        """Default (isolated) backend never issues an evict — its spawn child died."""
+        monkeypatch.delenv("WILTED_STT_BACKEND", raising=False)
+        audio_file, segments = self._podcast_pipeline(tmp_path)
+
+        with (
+            patch("wilted.prepare.download_podcast", return_value=audio_file),
+            patch("wilted.prepare.get_transcript", return_value=segments),
+            patch("wilted.prepare.save_transcript"),
+            patch("wilted.engine.AudioEngine") as MockEngine,
+            patch("wilted.transcribe.client.evict") as mock_evict,
+        ):
+            MockEngine.return_value.get_file_duration.return_value = 5.0
+            run_prepare(use_llm=False)
+
+        mock_evict.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # run_prepare — mixed items
 # ---------------------------------------------------------------------------
 

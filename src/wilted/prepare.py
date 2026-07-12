@@ -31,6 +31,7 @@ from wilted.download import DownloadError, download_podcast
 from wilted.station_runtime.coordinator import ModelCoordinator
 from wilted.transcribe import (
     TranscriptionError,
+    evict_stt_model,
     get_transcript,
     save_transcript,
     segments_to_text,
@@ -351,6 +352,13 @@ def run_prepare(
             stats["errors"] += 1
             _set_status(item, "error", "Unexpected error during preparation")
             logger.exception("Item %d failed unexpectedly", item.id)
+
+    # Between phases: if tier-3 STT ran through the speech daemon, hint it to drop
+    # the resident parakeet model NOW — before the LLM loads below — so the two
+    # models are never co-resident in the daemon while wilted loads the LLM in this
+    # process (PM-5/INV-2 hygiene). Best-effort and a no-op on the isolated backend
+    # (its spawn child already exited) or if the daemon is already gone.
+    evict_stt_model()
 
     # Phase B: load the LLM once, then process podcasts (ad detection/cutting)
     # and articles (promo removal + TTS) with it resident.
