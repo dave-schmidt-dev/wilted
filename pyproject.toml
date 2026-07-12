@@ -10,6 +10,15 @@ requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
     "mlx-audio[tts]",
+    # Kokoro English g2p — mlx-audio 0.4.5 lazy-imports misaki/espeak but does NOT declare
+    # them (the same gap speech-stack pins around). Without these, Kokoro TTS ImportErrors at
+    # synthesis. Torch-free set matching pin set A (NOT misaki[en], whose extra pulls torch).
+    "misaki==0.9.4",
+    "spacy==3.8.14",
+    "num2words==0.5.14",
+    "phonemizer-fork==3.3.2",
+    "espeakng-loader==0.2.4",
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
     "parakeet-mlx",
     "trafilatura",
     "numpy",
@@ -42,6 +51,20 @@ where = ["src"]
 # syrupy 5.5.3). Overriding here is a targeted fix for that one dependency's
 # stale pin, not a general syrupy-4-vs-5 API migration.
 override-dependencies = ["syrupy>=5.0.0"]
+
+# Speech-stack consolidation (Phase 4): converge the speech-critical packages on
+# pin set A (the ~/.venvs/speech version authority, S-INV-4). mlx/mlx-metal/mlx-lm are
+# transitive; constraints pin them without adding direct deps. Roll back = revert this
+# block + rebuild the venv (`uv sync`).
+constraint-dependencies = [
+    "mlx==0.32.0",
+    "mlx-metal==0.32.0",
+    "parakeet-mlx==0.5.2",
+    "mlx-audio==0.4.5",
+    "mlx-lm==0.31.3",
+    "mlx-vlm==0.6.4",
+    "numpy==2.4.4",
+]
 
 [tool.uv.sources]
 llama-cpp-python = { index = "llama-cpp-python-metal" }
