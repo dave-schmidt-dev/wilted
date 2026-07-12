@@ -257,6 +257,10 @@ class WiltedApp(App):
         margin-top: 1;
         color: $secondary;
     }
+    #backend-indicator {
+        color: $text-muted;
+        margin-top: 1;
+    }
     #source-health {
         color: $text-muted;
         margin-top: 1;
@@ -425,6 +429,11 @@ class WiltedApp(App):
         self._estimated_remaining_secs: float = 0
         self._bar_progress: float = 0.0
         self._bar_time_override: str = ""
+        # Speech-backend indicator state (display-only). Whether the resident
+        # speech daemon's Kokoro TTS model has been pre-warmed this session, so
+        # the indicator can swap the click-to-warm affordance for a "warmed"
+        # note. Only meaningful when WILTED_TTS_BACKEND=daemon.
+        self._tts_daemon_warmed: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -442,6 +451,7 @@ class WiltedApp(App):
                 with VerticalScroll(id="text-scroll"):
                     yield Static("", id="current-text", markup=True)
                 yield Static("", id="speed-display")
+                yield Label("", id="backend-indicator")
                 yield Label("", id="source-health")
                 yield Label("", id="status-line")
         yield Footer()
@@ -973,16 +983,41 @@ class WiltedApp(App):
             route_text = "Route: idle"
         self.query_one("#source-health", Label).update(f"{weather_text}   {route_text}")
 
+    def _update_backend_indicator(self) -> None:
+        """Compact indicator of the active speech backends (daemon vs in-process).
+
+        Display-only (INV-8 untouched — no controller round-trip): reads the SAME
+        env selectors ``wilted.engine`` / ``wilted.transcribe`` read at call time
+        (``_tts_backend`` / ``_stt_backend``), so a glance shows which speech path
+        is live for TTS synthesis and tier-3 STT. When the TTS backend is the
+        daemon, a subtle click-to-warm affordance pre-loads the daemon's Kokoro
+        model for low first-audio latency — mirroring the existing clickable
+        speed/voice controls (no new keybinding, no AI-slop styling). Once warmed
+        this session it reads "warmed" instead.
+        """
+        if not self.is_running:
+            return
+        from wilted.engine import _tts_backend
+        from wilted.transcribe import _stt_backend
+
+        tts = _tts_backend()
+        stt = _stt_backend()
+        text = f"Speech: TTS {tts} · STT {stt}"
+        if tts == "daemon":
+            text += " · warmed" if self._tts_daemon_warmed else " · [@click=app.warm_daemon]warm[/]"
+        self.query_one("#backend-indicator", Label).update(text)
+
     def _refresh_status_indicators(self) -> None:
-        """Refresh the interrupt banner + source-health line together —
-        called at every station-state transition that could affect either,
-        so both stay in sync with ``_bulletin_playing``/``_route_interrupted``/
+        """Refresh the interrupt banner + source-health + backend indicator
+        together — called at every station-state transition that could affect
+        any, so all stay in sync with ``_bulletin_playing``/``_route_interrupted``/
         ``_route_monitor_started``/``_weather_monitor`` without a dedicated
         timer (the 1s ``_update_timer`` also refreshes source-health every
         tick, for staleness/health transitions that happen with no discrete
         event to hang a call off of)."""
         self._update_interrupt_indicator()
         self._update_source_health()
+        self._update_backend_indicator()
 
     def _update_timer(self) -> None:
         """1-second interval: tick down the remaining estimate, refresh the
@@ -1225,6 +1260,64 @@ class WiltedApp(App):
         if self._generation_worker and self._generation_worker.is_running:
             self._generation_worker.cancel()
         self._generation_worker = self._generate_cache()
+
+    # -- Speech-daemon pre-warm (backend indicator affordance) ----------------
+
+    def action_warm_daemon(self) -> None:
+        """Pre-warm the speech daemon's Kokoro TTS model (low first-audio latency).
+
+        Triggered by the click-to-warm affordance in the backend indicator. Only
+        meaningful on the daemon TTS backend; a short status note otherwise. The
+        actual warm runs off the UI thread (see :meth:`_warm_daemon_worker`) so
+        the model load never blocks the renderer.
+        """
+        from wilted.engine import _tts_backend
+
+        if _tts_backend() != "daemon":
+            self._set_status("Warm: daemon TTS backend not active (set WILTED_TTS_BACKEND=daemon)", _STATUS_MEDIUM)
+            return
+        if self._tts_daemon_warmed:
+            self._set_status("Speech daemon already warmed", _STATUS_LOW)
+            return
+        self._set_status("Warming speech daemon…", _STATUS_MEDIUM)
+        self._warm_daemon_worker()
+
+    @work(thread=True, exclusive=True, group="warm-daemon")
+    def _warm_daemon_worker(self) -> None:
+        """Background: force the daemon's resident Kokoro model to load, then stop.
+
+        Pulls just the FIRST ``client.tts_stream`` chunk (which is what triggers
+        the daemon-side model load) and closes the generator immediately, so the
+        broker CANCELs the rest — the model stays resident but no full synthesis
+        or playback happens. Best-effort: swallows ``DaemonUnavailable`` (no broker
+        to warm) and never surfaces a raw traceback to the UI (INV-6 typed errors
+        are logged, not crashed on).
+        """
+        from wilted.engine import client as _client
+
+        if _client is None:
+            self.call_from_thread(self._set_status, "Warm: speech client unavailable", _STATUS_MEDIUM)
+            return
+        model = self._engine.model_name if self._engine is not None else None
+        stream = _client.tts_stream(" ", voice=self._voice, speed=self._speed, model=model, lang_code=self._lang)
+        try:
+            next(stream, None)  # first chunk forces the daemon-side Kokoro load
+        except _client.DaemonUnavailable:
+            self.call_from_thread(self._set_status, "Warm: speech daemon not running", _STATUS_MEDIUM)
+            return
+        except _client.IsolatedError as e:  # typed daemon fault — log, don't crash the UI
+            logger.warning("speech daemon warm failed: %s", e)
+            self.call_from_thread(self._set_status, "Warm: speech daemon error (see log)", _STATUS_MEDIUM)
+            return
+        finally:
+            stream.close()  # broker sees EOF -> CANCEL the rest of the synthesis
+        self._tts_daemon_warmed = True
+        self.call_from_thread(self._on_daemon_warmed)
+
+    def _on_daemon_warmed(self) -> None:
+        """UI-thread callback once the daemon reports its TTS model resident."""
+        self._set_status("Speech daemon warmed", _STATUS_LOW)
+        self._update_backend_indicator()
 
     # -- Playback (INV-8 core) ------------------------------------------------
 

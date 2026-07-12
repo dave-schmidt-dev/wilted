@@ -3630,3 +3630,87 @@ async def test_source_health_refreshes_every_timer_tick_even_when_idle():
         weather_monitor.fake_health = "stale"
         app._update_timer()  # not playing -- must still refresh
         assert "stale" in str(app.query_one("#source-health", Label).render()).lower()
+
+
+# ---------------------------------------------------------------------------
+# Backend indicator + speech-daemon warm affordance (Phase 7 Build 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_backend_indicator_reflects_env_selectors(monkeypatch):
+    """The indicator reads the engine/transcribe env selectors at render time."""
+    monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
+    monkeypatch.delenv("WILTED_STT_BACKEND", raising=False)
+    app = _make_app(entries=[])
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        text = str(app.query_one("#backend-indicator", Label).render())
+        assert "TTS daemon" in text
+        assert "STT isolated" in text  # transcribe's in-process path is the isolated spawn
+        assert "warm" in text  # click-to-warm affordance shown on daemon TTS
+
+
+@pytest.mark.asyncio
+async def test_warm_daemon_action_noop_off_daemon_backend(monkeypatch):
+    """The warm affordance is a no-op (status note only) off the daemon backend —
+    the daemon client is never touched."""
+    monkeypatch.delenv("WILTED_TTS_BACKEND", raising=False)
+    app = _make_app(entries=[])
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        with patch(
+            "wilted.engine.client.tts_stream",
+            side_effect=AssertionError("must not warm off the daemon backend"),
+        ):
+            app.action_warm_daemon()
+            await pilot.pause()
+        assert app._tts_daemon_warmed is False
+
+
+@pytest.mark.asyncio
+async def test_warm_daemon_action_warms_via_client(monkeypatch):
+    """On the daemon backend the warm worker pulls ONE tts_stream chunk to force
+    the model load, then closes the generator (broker CANCEL) and marks the
+    session warmed — the indicator then reads 'warmed'."""
+    monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
+    closed = {"count": 0}
+
+    def _fake_stream(text, **kwargs):
+        try:
+            yield b"\x00\x00\x00\x00"  # one float32 sample — the load trigger
+            yield b"\x00\x00\x00\x00"  # extra — must be cancelled by close(), never pulled
+        finally:
+            closed["count"] += 1
+
+    app = _make_app(entries=[])
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        with patch("wilted.engine.client.tts_stream", side_effect=_fake_stream):
+            app.action_warm_daemon()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        assert app._tts_daemon_warmed is True
+        assert closed["count"] == 1  # generator closed (CANCEL), not fully drained
+        assert "warmed" in str(app.query_one("#backend-indicator", Label).render())
+
+
+@pytest.mark.asyncio
+async def test_warm_daemon_action_swallows_daemon_unavailable(monkeypatch):
+    """No broker -> DaemonUnavailable is swallowed (best-effort); not warmed, no crash."""
+    from speech_stack import client as _client
+
+    monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
+
+    def _no_broker(text, **kwargs):
+        raise _client.DaemonUnavailable("no broker at socket")
+        yield  # pragma: no cover — unreachable; makes this a generator function
+
+    app = _make_app(entries=[])
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        with patch("wilted.engine.client.tts_stream", side_effect=_no_broker):
+            app.action_warm_daemon()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        assert app._tts_daemon_warmed is False

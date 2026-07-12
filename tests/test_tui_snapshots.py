@@ -95,3 +95,24 @@ def test_route_interrupted_no_output_indicator(snap_compare):
         await pilot.pause()
 
     assert snap_compare(app, run_before=_drive, terminal_size=_SNAPSHOT_TERMINAL_SIZE)
+
+
+def test_backend_indicator_daemon(snap_compare, monkeypatch):
+    """Snapshot: the speech-backend indicator shows the active TTS/STT backends
+    and the subtle click-to-warm affordance when WILTED_TTS_BACKEND=daemon.
+
+    Covers the Phase 7 Build 2 indicator (mirrors Build 1's STT seam): the line
+    reads the ``_tts_backend`` / ``_stt_backend`` env selectors at render time, so
+    with both flags set to ``daemon`` it shows ``Speech: TTS daemon · STT daemon``
+    plus the ``warm`` affordance. The default (in-process) state is covered
+    incidentally by the two indicator snapshots above."""
+    monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
+    monkeypatch.setenv("WILTED_STT_BACKEND", "daemon")
+    entry = _station_entry(1)
+    app = _make_app(entries=[entry])
+
+    async def _drive(pilot):
+        await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
+
+    assert snap_compare(app, run_before=_drive, terminal_size=_SNAPSHOT_TERMINAL_SIZE)
