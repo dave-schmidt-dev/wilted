@@ -532,8 +532,26 @@ class AudioEngine:
             start_paragraph: Paragraph index to start from (for resume).
             on_progress: Callback called after each segment with
                 (paragraph_idx, segment_idx, total_paragraphs, current_text).
+
+        Backend (additive, opt-in): the default in-process Kokoro path
+        generates ALL of a paragraph's segments before playing any of them,
+        then plays each segment block by block — byte-for-byte unchanged
+        (:meth:`_play_paragraph_inprocess`). ``WILTED_TTS_BACKEND=daemon``
+        instead streams each paragraph's segments from the resident
+        speech-stack daemon (:meth:`_play_paragraph_via_daemon`):
+        ``client.tts_stream`` yields exactly one PCM blob per synthesized
+        segment (PM-7), so the paragraph->segment split and the
+        ``on_progress`` contract are preserved byte-identically.
         """
-        self.load_model()
+        backend = _tts_backend()
+        _log_tts_backend_once(backend)
+        # In-process backend loads Kokoro up front, before is_playing is set —
+        # preserving the frozen path's original ordering (load, then play). The
+        # daemon backend never loads a local model here; its rare in-process
+        # fallback loads lazily inside _play_paragraph_inprocess.
+        if backend != "daemon":
+            self.load_model()
+
         self._stop_event.clear()
         self._playing = True
         self._paused = False
@@ -549,27 +567,130 @@ class AudioEngine:
                 self.current_paragraph_idx = para_idx
                 paragraph_text = paragraphs[para_idx]
 
-                # Generate TTS for this paragraph — may yield 1+ segments
-                with self._model_lock:
-                    result = self._model.generate(
-                        paragraph_text,
-                        voice=self.voice,
-                        speed=self.speed,
-                        lang_code=self.lang,
-                    )
-                    audio_arrays = [np.array(seg.audio, dtype=np.float32) for seg in _normalize_segments(result)]
-
-                for seg_idx, audio_np in enumerate(audio_arrays):
-                    if self._stop_event.is_set():
-                        break
-
-                    self.current_segment_idx = seg_idx
-                    self._play_audio(audio_np)
-
-                    if on_progress is not None:
-                        on_progress(para_idx, seg_idx, total_paragraphs, paragraph_text)
+                if backend == "daemon":
+                    self._play_paragraph_via_daemon(paragraph_text, para_idx, total_paragraphs, on_progress)
+                else:
+                    self._play_paragraph_inprocess(paragraph_text, para_idx, total_paragraphs, on_progress)
         finally:
             self._playing = False
+
+    def _play_paragraph_inprocess(
+        self,
+        paragraph_text: str,
+        para_idx: int,
+        total_paragraphs: int,
+        on_progress: Callable | None,
+    ) -> None:
+        """In-process Kokoro playback for one paragraph (default backend) — byte-for-byte unchanged.
+
+        Generates ALL of the paragraph's segments inside the process-wide
+        Metal lock (INV-1), then plays each via :meth:`_play_audio`, firing
+        ``on_progress`` after each segment. This is the frozen default; the
+        daemon branch never modifies it.
+        """
+        self.load_model()
+
+        # Generate TTS for this paragraph — may yield 1+ segments
+        with self._model_lock:
+            result = self._model.generate(
+                paragraph_text,
+                voice=self.voice,
+                speed=self.speed,
+                lang_code=self.lang,
+            )
+            audio_arrays = [np.array(seg.audio, dtype=np.float32) for seg in _normalize_segments(result)]
+
+        for seg_idx, audio_np in enumerate(audio_arrays):
+            if self._stop_event.is_set():
+                break
+
+            self.current_segment_idx = seg_idx
+            self._play_audio(audio_np)
+
+            if on_progress is not None:
+                on_progress(para_idx, seg_idx, total_paragraphs, paragraph_text)
+
+    def _play_paragraph_via_daemon(
+        self,
+        paragraph_text: str,
+        para_idx: int,
+        total_paragraphs: int,
+        on_progress: Callable | None,
+    ) -> None:
+        """Stream one paragraph's segments through the speech daemon (WILTED_TTS_BACKEND=daemon).
+
+        ``client.tts_stream`` yields exactly one raw little-endian float32 PCM
+        blob per synthesized segment (PM-7) — the SAME segments, in the SAME
+        order, that the in-process model would produce
+        (:func:`_normalize_segments`) — so each yielded chunk IS a paragraph
+        segment and can be played + progressed exactly like
+        :meth:`_play_paragraph_inprocess`'s ``audio_arrays`` entries:
+        byte-identical ``on_progress(para_idx, seg_idx, total_paragraphs,
+        paragraph_text)`` emission, one call per segment, in order.
+
+        Fallback to the in-process path happens ONLY on
+        ``client.DaemonUnavailable`` (no broker listening) and ONLY at the
+        START of this paragraph, before any of its segments have played — the
+        same INV-6 guard as :meth:`_generate_and_play_via_daemon` (you cannot
+        fall back to in-process once audio for this paragraph is already
+        playing).
+
+        INV-6 (typed-error fidelity): every OTHER typed failure surfaces as
+        the SAME RuntimeError the in-process path raises on a generation
+        failure, with the typed error chained (``__cause__``) — never
+        silently masked by an in-process retry.
+
+        CV-2 (daemon-killed-mid-paragraph): if the broker dies between
+        segments, the typed error raises out of the segment loop BEFORE the
+        killed segment's ``_play_audio``/``on_progress`` run — ``on_progress``
+        has already fired for every segment that actually played and never
+        fires for the segment that didn't, so progress tracking cannot desync.
+        There is no carry buffer here (each daemon chunk is one complete
+        segment played in a single :meth:`_play_audio` call, unlike
+        :meth:`_stream_pcm`'s sub-block carry), so a mid-stream kill can never
+        hang on a half-filled buffer — it propagates cleanly and the daemon
+        generator is always closed in ``finally`` (broker sees EOF -> CANCEL).
+        A stop/skip mid-paragraph instead breaks the segment loop cleanly,
+        same as the in-process path.
+        """
+        if client is None:  # speech-stack present but the daemon client failed to import
+            self._play_paragraph_inprocess(paragraph_text, para_idx, total_paragraphs, on_progress)
+            return
+
+        pcm_stream = client.tts_stream(
+            paragraph_text,
+            voice=self.voice,
+            speed=self.speed,
+            model=self.model_name,
+            lang_code=self.lang,
+        )
+        try:
+            try:
+                first = next(pcm_stream)
+            except StopIteration:
+                return  # empty synthesis (no segments) — nothing to play
+            except client.DaemonUnavailable:
+                logger.info("speech daemon unavailable; falling back to in-process TTS")
+                self._play_paragraph_inprocess(paragraph_text, para_idx, total_paragraphs, on_progress)
+                return
+
+            def _segment_chunks():
+                yield first
+                yield from pcm_stream
+
+            for seg_idx, chunk in enumerate(_segment_chunks()):
+                if self._stop_event.is_set():
+                    break
+
+                self.current_segment_idx = seg_idx
+                self._play_audio(np.frombuffer(chunk, dtype=np.float32))
+
+                if on_progress is not None:
+                    on_progress(para_idx, seg_idx, total_paragraphs, paragraph_text)
+        except client.IsolatedError as e:
+            raise RuntimeError(f"TTS generation failed: {e}") from e
+        finally:
+            pcm_stream.close()
 
     def generate_audio(
         self,
@@ -587,8 +708,31 @@ class AudioEngine:
             lang: Override language (falls back to self.lang).
             speed: Override speed (falls back to self.speed).
 
-        Raises RuntimeError on model or generation failure.
+        Backend (additive, opt-in): the default in-process Kokoro path
+        materializes every segment then concatenates them — byte-for-byte
+        unchanged (:meth:`_generate_audio_inprocess`). ``WILTED_TTS_BACKEND=daemon``
+        instead concatenates the resident speech-stack daemon's streamed PCM
+        chunks (:meth:`_generate_audio_via_daemon`); the concatenation is
+        sample-identical to the in-process array (PM-7).
+
+        Raises RuntimeError on model or generation failure. Returns an empty
+        float32 array (never raises) when synthesis produces no segments (PM-11).
         """
+        backend = _tts_backend()
+        _log_tts_backend_once(backend)
+        if backend == "daemon":
+            return self._generate_audio_via_daemon(text, voice=voice, lang=lang, speed=speed)
+        return self._generate_audio_inprocess(text, voice=voice, lang=lang, speed=speed)
+
+    def _generate_audio_inprocess(
+        self,
+        text: str,
+        *,
+        voice: str | None = None,
+        lang: str | None = None,
+        speed: float | None = None,
+    ) -> np.ndarray:
+        """In-process Kokoro generation path (default backend) — byte-for-byte unchanged."""
         self.load_model()
         eff_voice = voice if voice is not None else self.voice
         eff_lang = lang if lang is not None else self.lang
@@ -602,7 +746,71 @@ class AudioEngine:
 
             all_audio = [np.array(seg.audio, dtype=np.float32) for seg in _normalize_segments(result)]
 
+        # Empty-synthesis guard (PM-11): np.concatenate([]) raises on an empty
+        # list, so return an empty float32 array instead of propagating that.
         return np.concatenate(all_audio) if all_audio else np.array([], dtype=np.float32)
+
+    def _generate_audio_via_daemon(
+        self,
+        text: str,
+        *,
+        voice: str | None = None,
+        lang: str | None = None,
+        speed: float | None = None,
+    ) -> np.ndarray:
+        """Generate TTS audio via the speech daemon (WILTED_TTS_BACKEND=daemon).
+
+        Routes the SAME voice/speed/lang/model params through
+        ``client.tts_stream`` and concatenates its raw little-endian float32 PCM
+        chunks into one array — sample-identical to the in-process path's
+        concatenation (PM-7). Unlike the playback paths there is no audio
+        device to feed lazily and the caller wants the finished array, so the
+        chunk iterator is drained eagerly here — but the empty-synthesis guard
+        still applies: zero chunks return ``np.array([], dtype=np.float32)``
+        rather than calling ``np.concatenate([])``, which raises (PM-11).
+
+        Fallback to the in-process path happens ONLY on
+        ``client.DaemonUnavailable`` and ONLY before any chunk has been
+        consumed — the same INV-6 guard as
+        :meth:`_generate_and_play_via_daemon`. Every OTHER typed failure
+        (``Timeout`` / ``GpuAborted`` / ``GpuSegfault`` / ``WorkerError`` /
+        ``ConnectionLost``) maps to the SAME RuntimeError the in-process path
+        raises on a generation failure, with the typed error chained
+        (``__cause__``) — never silently masked by a fallback.
+        """
+        if client is None:  # speech-stack present but the daemon client failed to import
+            return self._generate_audio_inprocess(text, voice=voice, lang=lang, speed=speed)
+
+        eff_voice = voice if voice is not None else self.voice
+        eff_lang = lang if lang is not None else self.lang
+        eff_speed = speed if speed is not None else self.speed
+
+        pcm_stream = client.tts_stream(
+            text,
+            voice=eff_voice,
+            speed=eff_speed,
+            model=self.model_name,
+            lang_code=eff_lang,
+        )
+        chunks: list[np.ndarray] = []
+        try:
+            try:
+                first = next(pcm_stream)
+            except StopIteration:
+                return np.array([], dtype=np.float32)  # empty synthesis (PM-11)
+            except client.DaemonUnavailable:
+                logger.info("speech daemon unavailable; falling back to in-process TTS")
+                return self._generate_audio_inprocess(text, voice=voice, lang=lang, speed=speed)
+
+            chunks.append(np.frombuffer(first, dtype=np.float32))
+            for chunk in pcm_stream:
+                chunks.append(np.frombuffer(chunk, dtype=np.float32))
+        except client.IsolatedError as e:
+            raise RuntimeError(f"TTS generation failed: {e}") from e
+        finally:
+            pcm_stream.close()
+
+        return np.concatenate(chunks) if chunks else np.array([], dtype=np.float32)
 
     def play_file(
         self,

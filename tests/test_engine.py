@@ -1305,3 +1305,411 @@ class TestGenerateAndPlayDaemonBackend:
         backend_calls = [c for c in mock_logger.info.call_args_list if c.args and "TTS backend" in str(c.args[0])]
         assert len(backend_calls) == 1
         assert backend_calls[0].args[1] == "daemon"
+
+
+class TestGenerateAudioDaemonBackend:
+    """WILTED_TTS_BACKEND=daemon routes ``generate_audio`` through
+    ``speech_stack.client.tts_stream`` and concatenates the streamed PCM chunks
+    into the returned array (Task 3.1, PM-11). Mirrors
+    ``TestGenerateAndPlayDaemonBackend``'s coverage shape; the client is always
+    mocked (never a live broker) per wilted's existing test conventions.
+    """
+
+    def test_daemon_backend_routes_through_client_tts_stream(self, engine, mock_stream, monkeypatch):
+        monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
+        # Deliberately unaligned chunk lengths (not general to 1024-block writes
+        # here since generate_audio never touches the audio device — this just
+        # proves np.frombuffer + concatenation reconstructs the samples exactly).
+        chunk_arrays = [
+            np.linspace(-1.0, 1.0, 1500, dtype=np.float32),
+            np.linspace(1.0, -1.0, 700, dtype=np.float32),
+            np.full(900, 0.25, dtype=np.float32),
+        ]
+        captured: dict = {}
+
+        def _fake_tts_stream(text, **kwargs):
+            captured["text"] = text
+            captured["kwargs"] = kwargs
+            for arr in chunk_arrays:
+                yield arr.tobytes()
+
+        with (
+            patch("wilted.engine.client.tts_stream", side_effect=_fake_tts_stream),
+            patch.object(
+                engine,
+                "_generate_audio_inprocess",
+                side_effect=AssertionError("in-process path must not run on the daemon backend"),
+            ),
+        ):
+            result = engine.generate_audio("Hello daemon.")
+
+        # Routed with the SAME params the in-process _model.generate call uses.
+        assert captured["text"] == "Hello daemon."
+        assert captured["kwargs"]["voice"] == engine.voice
+        assert captured["kwargs"]["speed"] == engine.speed
+        assert captured["kwargs"]["lang_code"] == engine.lang
+        assert captured["kwargs"]["model"] == engine.model_name
+
+        expected = np.concatenate(chunk_arrays)
+        assert result.shape == expected.shape
+        np.testing.assert_array_equal(result, expected)
+
+    def test_daemon_parity_with_inprocess_fixed_input(self, engine, mock_stream, monkeypatch):
+        """PM-11: for a FIXED input, the daemon route's concatenated array is
+        sample-identical to the in-process route's concatenated array."""
+        text = "A fixed paragraph for parity."
+        seg1 = np.linspace(-0.5, 0.5, 800, dtype=np.float32)
+        seg2 = np.full(300, -0.75, dtype=np.float32)
+
+        def _make_segment(audio):
+            seg = MagicMock()
+            seg.audio = audio
+            return seg
+
+        engine._model.generate.return_value = [_make_segment(seg1), _make_segment(seg2)]
+        monkeypatch.delenv("WILTED_TTS_BACKEND", raising=False)
+        inprocess_result = engine.generate_audio(text)
+
+        def _fake_tts_stream(_text, **kwargs):
+            yield seg1.tobytes()
+            yield seg2.tobytes()
+
+        monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
+        with patch("wilted.engine.client.tts_stream", side_effect=_fake_tts_stream):
+            daemon_result = engine.generate_audio(text)
+
+        assert daemon_result.shape == inprocess_result.shape
+        np.testing.assert_array_equal(daemon_result, inprocess_result)
+
+    def test_daemon_parity_with_inprocess_empty_input(self, engine, mock_stream, monkeypatch):
+        """PM-11: empty synthesis on EITHER backend returns an empty float32
+        array — never raises (np.concatenate([]) would)."""
+        text = "Empty."
+
+        engine._model.generate.return_value = []
+        monkeypatch.delenv("WILTED_TTS_BACKEND", raising=False)
+        inprocess_result = engine.generate_audio(text)
+        assert isinstance(inprocess_result, np.ndarray)
+        assert inprocess_result.dtype == np.float32
+        assert len(inprocess_result) == 0
+
+        def _empty_stream(_text, **kwargs):
+            return
+            yield  # pragma: no cover — unreachable; makes this a generator function
+
+        monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
+        with patch("wilted.engine.client.tts_stream", side_effect=_empty_stream):
+            daemon_result = engine.generate_audio(text)
+
+        assert isinstance(daemon_result, np.ndarray)
+        assert daemon_result.dtype == np.float32
+        assert len(daemon_result) == 0
+
+    def test_daemon_unavailable_falls_back_to_inprocess(self, engine, mock_stream, monkeypatch):
+        """No broker listening -> fall back to the in-process path, cleanly,
+        BEFORE any chunk has been consumed. DaemonUnavailable is the ONLY error
+        that falls back."""
+        monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
+
+        def _no_broker(text, **kwargs):
+            raise client.DaemonUnavailable("no broker at socket")
+            yield  # pragma: no cover — unreachable; makes this a generator function
+
+        with patch("wilted.engine.client.tts_stream", side_effect=_no_broker):
+            result = engine.generate_audio("fallback please")
+
+        # The in-process path actually ran (fixture's mocked _model.generate).
+        engine._model.generate.assert_called_once()
+        assert isinstance(result, np.ndarray)
+        assert len(result) == 4096  # fixture's default fake segment size
+
+    @pytest.mark.parametrize(
+        "daemon_exc",
+        [
+            client.Timeout("daemon tts timed out"),
+            client.GpuAborted("daemon worker died: SIGABRT"),
+            client.GpuSegfault("daemon worker died: SIGSEGV"),
+            client.WorkerError("daemon worker failed: ValueError: boom"),
+            client.ConnectionLost("broker died mid-synthesis"),
+        ],
+    )
+    def test_daemon_typed_error_surfaces_without_masking(self, engine, mock_stream, monkeypatch, daemon_exc):
+        """INV-6: a real daemon failure maps to the SAME RuntimeError the
+        in-process path raises, with the typed error chained, and is NEVER
+        retried on the in-process path once a chunk has been consumed."""
+        monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
+
+        def _raises_typed(text, **kwargs):
+            yield np.full(256, 0.1, dtype=np.float32).tobytes()
+            raise daemon_exc
+
+        with (
+            patch("wilted.engine.client.tts_stream", side_effect=_raises_typed),
+            patch.object(
+                engine,
+                "_generate_audio_inprocess",
+                side_effect=AssertionError("a real daemon crash must never fall back to in-process"),
+            ),
+        ):
+            with pytest.raises(RuntimeError) as excinfo:
+                engine.generate_audio("boom")
+
+        assert excinfo.value.__cause__ is daemon_exc
+        assert isinstance(excinfo.value.__cause__, client.IsolatedError)
+        assert str(daemon_exc) in str(excinfo.value)
+
+    def test_default_backend_never_touches_client(self, engine, mock_stream, monkeypatch):
+        """Unset flag -> in-process path only; the daemon client is never called."""
+        monkeypatch.delenv("WILTED_TTS_BACKEND", raising=False)
+
+        with patch(
+            "wilted.engine.client.tts_stream",
+            side_effect=AssertionError("client.tts_stream must not run on the default backend"),
+        ):
+            engine.generate_audio("in process")
+
+        engine._model.generate.assert_called_once()
+
+
+class TestPlayArticleDaemonBackend:
+    """WILTED_TTS_BACKEND=daemon streams each paragraph's segments through
+    ``speech_stack.client.tts_stream`` (Task 3.2, PM-7/CV-2). ``on_progress``
+    emission must stay byte-identical to the in-process path — same args, same
+    order, one call per segment actually played. The client is always mocked
+    (never a live broker).
+    """
+
+    def test_daemon_backend_routes_segments_with_progress(self, engine, mock_stream, monkeypatch):
+        monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
+        text = "Only paragraph here."
+        seg_arrays = [
+            np.linspace(-1.0, 1.0, 1200, dtype=np.float32),
+            np.full(500, 0.5, dtype=np.float32),
+        ]
+        captured: dict = {}
+
+        def _fake_tts_stream(paragraph_text, **kwargs):
+            captured["text"] = paragraph_text
+            captured["kwargs"] = kwargs
+            for arr in seg_arrays:
+                yield arr.tobytes()
+
+        progress_calls = []
+
+        def on_progress(para_idx, seg_idx, total, current_text):
+            progress_calls.append((para_idx, seg_idx, total, current_text))
+
+        with (
+            patch("wilted.engine.client.tts_stream", side_effect=_fake_tts_stream),
+            patch.object(
+                engine,
+                "_play_paragraph_inprocess",
+                side_effect=AssertionError("in-process path must not run on the daemon backend"),
+            ),
+        ):
+            engine.play_article(text, on_progress=on_progress)
+
+        assert captured["text"] == text
+        assert captured["kwargs"]["voice"] == engine.voice
+        assert captured["kwargs"]["speed"] == engine.speed
+        assert captured["kwargs"]["lang_code"] == engine.lang
+        assert captured["kwargs"]["model"] == engine.model_name
+
+        # One on_progress call per segment, byte-identical contract: (para_idx,
+        # seg_idx, total_paragraphs, current_text).
+        assert progress_calls == [(0, 0, 1, text), (0, 1, 1, text)]
+
+        # Each segment was played whole, in order (PM-7 sample parity).
+        written = np.concatenate([call.args[0].reshape(-1) for call in mock_stream.write.call_args_list])
+        expected = np.concatenate(seg_arrays)
+        np.testing.assert_array_equal(written, expected)
+
+    def test_daemon_parity_with_inprocess_fixed_input(self, engine, mock_stream, monkeypatch):
+        """PM-7/PM-11: for a FIXED two-paragraph article, the daemon route's
+        on_progress calls and written audio are byte-identical to the
+        in-process route's."""
+        text = "Para zero here.\nPara one here."
+        segments_by_para = {
+            "Para zero here.": [
+                np.linspace(-0.4, 0.4, 600, dtype=np.float32),
+                np.full(200, 0.1, dtype=np.float32),
+            ],
+            "Para one here.": [
+                np.linspace(0.9, -0.9, 400, dtype=np.float32),
+            ],
+        }
+
+        def _make_segment(audio):
+            seg = MagicMock()
+            seg.audio = audio
+            return seg
+
+        def _fake_generate(paragraph_text, **kwargs):
+            return [_make_segment(a) for a in segments_by_para[paragraph_text]]
+
+        # --- in-process run ---
+        engine._model.generate.side_effect = _fake_generate
+        monkeypatch.delenv("WILTED_TTS_BACKEND", raising=False)
+        inprocess_progress = []
+        engine.play_article(
+            text,
+            on_progress=lambda p, s, t, c: inprocess_progress.append((p, s, t, c)),
+        )
+        inprocess_written = np.concatenate([call.args[0].reshape(-1) for call in mock_stream.write.call_args_list])
+
+        # --- daemon run (fresh mock_stream call history) ---
+        mock_stream.write.reset_mock()
+
+        def _fake_tts_stream(paragraph_text, **kwargs):
+            for arr in segments_by_para[paragraph_text]:
+                yield arr.tobytes()
+
+        monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
+        daemon_progress = []
+        with patch("wilted.engine.client.tts_stream", side_effect=_fake_tts_stream):
+            engine.play_article(
+                text,
+                on_progress=lambda p, s, t, c: daemon_progress.append((p, s, t, c)),
+            )
+        daemon_written = np.concatenate([call.args[0].reshape(-1) for call in mock_stream.write.call_args_list])
+
+        assert daemon_progress == inprocess_progress
+        assert daemon_written.shape == inprocess_written.shape
+        np.testing.assert_array_equal(daemon_written, inprocess_written)
+
+    def test_mid_paragraph_daemon_kill_no_desync_no_hang(self, engine, mock_stream, monkeypatch):
+        """CV-2 fault injection: the broker dies mid-paragraph, AFTER its first
+        segment played but BEFORE its second. Assert (a) on_progress fired for
+        the segment that actually played and NEVER for the killed segment —
+        indices cannot desync; (b) the failure surfaces as a chained
+        RuntimeError instead of hanging; (c) the daemon generator is torn down
+        (broker sees EOF -> CANCEL); (d) later paragraphs are never reached."""
+        monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
+        text = "Para zero here.\nPara one here.\nPara two here."
+        torn_down = {"count": 0}
+        stream_calls = []
+
+        def _dies_in_second_paragraph(paragraph_text, **kwargs):
+            stream_calls.append(paragraph_text)
+            if paragraph_text == "Para zero here.":
+                yield np.full(300, 0.2, dtype=np.float32).tobytes()
+                return
+            if paragraph_text == "Para one here.":
+                try:
+                    # First segment plays fine...
+                    yield np.full(300, 0.3, dtype=np.float32).tobytes()
+                    # ...then the broker dies before the second segment arrives.
+                    raise client.ConnectionLost("speech daemon stream dropped")
+                finally:
+                    torn_down["count"] += 1  # generator torn down (exception or close)
+            raise AssertionError("third paragraph must never be synthesized after the kill")
+
+        progress_calls = []
+
+        def on_progress(para_idx, seg_idx, total, current_text):
+            progress_calls.append((para_idx, seg_idx, total, current_text))
+
+        with patch("wilted.engine.client.tts_stream", side_effect=_dies_in_second_paragraph):
+            with pytest.raises(RuntimeError) as excinfo:
+                engine.play_article(text, on_progress=on_progress)
+
+        # No desync: on_progress fired exactly once for paragraph 0's only
+        # segment and once for paragraph 1's FIRST segment — never for the
+        # killed segment, never for paragraph 2.
+        assert progress_calls == [(0, 0, 3, "Para zero here."), (1, 0, 3, "Para one here.")]
+
+        # The typed error surfaced (chained) instead of being swallowed.
+        assert isinstance(excinfo.value.__cause__, client.ConnectionLost)
+
+        # No hang: the call actually raised (not blocked), and the daemon
+        # generator for the killed paragraph was torn down exactly once —
+        # there is no carry buffer here to hang on (each chunk is one whole
+        # segment played via a single _play_audio call).
+        assert torn_down["count"] == 1
+        assert stream_calls == ["Para zero here.", "Para one here."]
+
+        # play_article's finally still ran despite the propagated exception.
+        assert engine.is_playing is False
+
+    def test_daemon_unavailable_falls_back_to_inprocess_mid_article(self, engine, mock_stream, monkeypatch):
+        """No broker listening -> fall back to the in-process path for that
+        paragraph, cleanly, BEFORE any of its segments have played."""
+        monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
+        text = "Only paragraph."
+
+        def _no_broker(paragraph_text, **kwargs):
+            raise client.DaemonUnavailable("no broker at socket")
+            yield  # pragma: no cover — unreachable; makes this a generator function
+
+        progress_calls = []
+
+        with patch("wilted.engine.client.tts_stream", side_effect=_no_broker):
+            engine.play_article(
+                text,
+                on_progress=lambda p, s, t, c: progress_calls.append((p, s, t, c)),
+            )
+
+        # The in-process path actually ran (fixture's mocked _model.generate,
+        # one 4096-sample segment) and produced the expected progress call.
+        engine._model.generate.assert_called_once()
+        assert progress_calls == [(0, 0, 1, text)]
+
+    def test_stop_mid_paragraph_closes_daemon_generator(self, engine, mock_stream, monkeypatch):
+        """Stop mid-paragraph breaks the segment loop cleanly and closes the
+        daemon generator, so the broker sees EOF and CANCELs synthesis."""
+        monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
+        text = "Only paragraph."
+        gen_state = {"closed": False, "yielded": 0}
+
+        def _long_stream(paragraph_text, **kwargs):
+            try:
+                while True:  # never terminates on its own — only a close() stops it
+                    gen_state["yielded"] += 1
+                    yield np.full(1024, 0.1, dtype=np.float32).tobytes()
+            except GeneratorExit:
+                gen_state["closed"] = True
+                raise
+
+        mock_stream.write.side_effect = lambda block: engine.stop()  # stop after first block
+
+        with patch("wilted.engine.client.tts_stream", side_effect=_long_stream):
+            engine.play_article(text)
+
+        assert gen_state["yielded"] < 5
+        assert gen_state["closed"] is True
+        assert engine._stop_event.is_set()
+
+    def test_daemon_backend_does_not_load_local_model(self, engine, mock_stream, monkeypatch):
+        """The daemon backend must never load the local Kokoro model in
+        play_article — the daemon owns the model, so an eager local load would
+        defeat the migration (and re-introduce the in-process load M3 removes)."""
+        monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
+        load_spy = MagicMock()
+        monkeypatch.setattr(engine, "load_model", load_spy)
+
+        def _one_segment(paragraph_text, **kwargs):
+            yield np.full(1024, 0.1, dtype=np.float32).tobytes()
+
+        with patch("wilted.engine.client.tts_stream", side_effect=_one_segment):
+            engine.play_article("Only paragraph.")
+
+        load_spy.assert_not_called()
+
+    def test_inprocess_backend_loads_before_is_playing(self, engine, mock_stream, monkeypatch):
+        """Regression (M3 load_model fix): the in-process path loads the model
+        BEFORE is_playing is set — the frozen ordering (load, then play). The
+        daemon migration had relocated the load into the per-paragraph helper,
+        so it ran with is_playing already True; this locks the ordering back."""
+        monkeypatch.delenv("WILTED_TTS_BACKEND", raising=False)
+        is_playing_at_load = []
+        real_load = engine.load_model
+
+        def _spy_load():
+            is_playing_at_load.append(engine.is_playing)
+            return real_load()
+
+        monkeypatch.setattr(engine, "load_model", _spy_load)
+        engine.play_article("Only paragraph.")
+
+        assert is_playing_at_load, "load_model was never called on the in-process path"
+        assert is_playing_at_load[0] is False, "model loaded after is_playing was set (ordering regression)"
