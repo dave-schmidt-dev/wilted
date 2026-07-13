@@ -269,9 +269,9 @@ class TestPrepareEvictHint:
         segments = [TranscriptSegment(0.0, 5.0, "Hello world")]
         return audio_file, segments
 
-    def test_daemon_backend_evicts_stt_between_phases(self, tmp_path, monkeypatch):
-        """WILTED_STT_BACKEND=daemon -> run_prepare fires client.evict('stt') once."""
-        monkeypatch.setenv("WILTED_STT_BACKEND", "daemon")
+    def test_evicts_stt_between_phases(self, tmp_path):
+        """The daemon is the only tier-3 STT route (M2 cutover), so run_prepare
+        unconditionally fires client.evict('stt') once between phases."""
         audio_file, segments = self._podcast_pipeline(tmp_path)
 
         with (
@@ -287,9 +287,12 @@ class TestPrepareEvictHint:
         # The evict hint fired exactly once, dropping the resident STT model.
         mock_evict.assert_called_once_with("stt")
 
-    def test_isolated_backend_does_not_evict(self, tmp_path, monkeypatch):
-        """Default (isolated) backend never issues an evict — its spawn child died."""
-        monkeypatch.delenv("WILTED_STT_BACKEND", raising=False)
+    def test_evict_failure_does_not_abort_prepare(self, tmp_path):
+        """A DaemonUnavailable during the between-phases evict hint must not crash
+        run_prepare (INV-6): evict_stt_model() swallows it internally, so a daemon
+        that already went away between Phase A and the evict hint is a no-op."""
+        from speech_stack import client
+
         audio_file, segments = self._podcast_pipeline(tmp_path)
 
         with (
@@ -297,12 +300,12 @@ class TestPrepareEvictHint:
             patch("wilted.prepare.get_transcript", return_value=segments),
             patch("wilted.prepare.save_transcript"),
             patch("wilted.engine.AudioEngine") as MockEngine,
-            patch("wilted.transcribe.client.evict") as mock_evict,
+            patch("wilted.transcribe.client.evict", side_effect=client.DaemonUnavailable("gone")),
         ):
             MockEngine.return_value.get_file_duration.return_value = 5.0
-            run_prepare(use_llm=False)
+            stats = run_prepare(use_llm=False)  # must not raise
 
-        mock_evict.assert_not_called()
+        assert stats["errors"] == 0
 
 
 # ---------------------------------------------------------------------------

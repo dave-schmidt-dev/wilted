@@ -3639,15 +3639,15 @@ async def test_source_health_refreshes_every_timer_tick_even_when_idle():
 
 @pytest.mark.asyncio
 async def test_backend_indicator_reflects_env_selectors(monkeypatch):
-    """The indicator reads the engine/transcribe env selectors at render time."""
+    """The indicator reads the engine env selector at render time; STT always
+    reads "daemon" since the M2 cutover removed its selector entirely."""
     monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
-    monkeypatch.delenv("WILTED_STT_BACKEND", raising=False)
     app = _make_app(entries=[])
     async with app.run_test():
         await app.workers.wait_for_complete()
         text = str(app.query_one("#backend-indicator", Label).render())
         assert "TTS daemon" in text
-        assert "STT isolated" in text  # transcribe's in-process path is the isolated spawn
+        assert "STT daemon" in text  # M2: tier-3 STT is daemon-only, no selector left
         assert "warm" in text  # click-to-warm affordance shown on daemon TTS
 
 

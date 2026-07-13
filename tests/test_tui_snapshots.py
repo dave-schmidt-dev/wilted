@@ -101,13 +101,13 @@ def test_backend_indicator_daemon(snap_compare, monkeypatch):
     """Snapshot: the speech-backend indicator shows the active TTS/STT backends
     and the subtle click-to-warm affordance when WILTED_TTS_BACKEND=daemon.
 
-    Covers the Phase 7 Build 2 indicator (mirrors Build 1's STT seam): the line
-    reads the ``_tts_backend`` / ``_stt_backend`` env selectors at render time, so
-    with both flags set to ``daemon`` it shows ``Speech: TTS daemon · STT daemon``
-    plus the ``warm`` affordance. The default (in-process) state is covered
-    incidentally by the two indicator snapshots above."""
+    Covers the Phase 7 Build 2 indicator: the line reads the ``_tts_backend`` env
+    selector at render time, so with the flag set to ``daemon`` it shows
+    ``Speech: TTS daemon · STT daemon`` plus the ``warm`` affordance. STT has no
+    selector anymore (M2 daemon cutover made tier-3 STT daemon-only) — it always
+    reads "daemon". The default (in-process TTS) state is covered incidentally by
+    the two indicator snapshots above."""
     monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
-    monkeypatch.setenv("WILTED_STT_BACKEND", "daemon")
     entry = _station_entry(1)
     app = _make_app(entries=[entry])
 

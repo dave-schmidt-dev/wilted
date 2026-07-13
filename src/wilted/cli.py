@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from speech_stack import client
+
 from wilted import VOICES, WPM_ESTIMATE
 from wilted.fetch import get_text_from_clipboard, get_text_from_url
 from wilted.ingest import resolve_article
@@ -1303,12 +1305,22 @@ def _launch_tui() -> None:
 def main():
     """Main entry point — dispatches to TUI (no args) or CLI (with args).
 
-    Startup order: logging → project root validation → migrations → tqdm lock → TUI/CLI
+    Startup order: logging → project root validation → daemon readiness →
+    migrations → tqdm lock → TUI/CLI
     """
     debug = bool(os.environ.get("WILTED_DEBUG")) or "--debug" in sys.argv
     setup_logging(debug=debug)
 
     validate_project_root()
+
+    # M2 daemon cutover: tier-3 STT (transcribe.py) and TTS (engine.py) are both
+    # daemon-only now, so a down/unreachable speech daemon means nothing in wilted
+    # can actually run. Gate here — before the TUI/CLI argv branch, so both entry
+    # points fail loudly and immediately with an actionable message (`make
+    # install-daemon`) instead of failing deep inside a random command. probe=True
+    # exercises a real minimal STT inference, not just a liveness ping, so a broker
+    # that answers but whose model is broken also fails the gate.
+    client.require_daemon_ready(probe=True)
 
     from wilted import DATA_DIR
     from wilted.db import run_migrations

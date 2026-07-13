@@ -15,7 +15,6 @@ from wilted.transcribe import (
     TranscriptionTimeout,
     TranscriptionWorkerError,
     TranscriptSegment,
-    _stt_backend,
     evict_stt_model,
     extract_transcript_from_url,
     fetch_transcript_from_rss,
@@ -365,16 +364,18 @@ class TestExtractTranscriptFromUrl:
 
 
 class TestTranscribeAudio:
-    """Tier-3 now dispatches to speech-stack's isolated worker; mock that seam.
+    """Tier-3 dispatches to the resident speech daemon; mock that seam.
 
-    The new boundary is ``wilted.transcribe.isolated.run("stt", request, ...)``,
-    which returns ``{"text", "segments", ...}`` with segments already
-    sentence-split, text-stripped, and keyed ``start_s``/``end_s``/``text``.
+    M2 daemon cutover: the ONLY boundary now is
+    ``wilted.transcribe.client.stt_path(audio_path, **params)``, which returns
+    ``{"text", "segments", ...}`` with segments already sentence-split,
+    text-stripped, and keyed ``start_s``/``end_s``/``text``. There is no
+    isolated-spawn fallback (``isolated.run`` is never called from this path).
     """
 
-    @patch("wilted.transcribe.isolated.run")
-    def test_transcribes_audio(self, mock_run):
-        mock_run.return_value = {
+    @patch("wilted.transcribe.client.stt_path")
+    def test_transcribes_audio(self, mock_stt_path):
+        mock_stt_path.return_value = {
             "text": "Hello world. Testing transcription.",
             "segments": [
                 {"start_s": 0.0, "end_s": 3.0, "text": "Hello world."},
@@ -388,26 +389,26 @@ class TestTranscribeAudio:
         assert segments[0].text == "Hello world."
         assert segments[1].start_s == 3.5
 
-        # Dispatched to the "stt" task with the audio path in the request.
-        (task, request), kwargs = mock_run.call_args
-        assert task == "stt"
-        assert request["audio_path"] == "/tmp/test.mp3"
+        # Dispatched with the audio path positional and the rest as kwargs.
+        (audio_path,), kwargs = mock_stt_path.call_args
+        assert audio_path == "/tmp/test.mp3"
+        assert kwargs["model"] == "mlx-community/parakeet-tdt-1.1b"
 
-    @patch("wilted.transcribe.isolated.run")
-    def test_empty_segments_raises_error(self, mock_run):
-        mock_run.return_value = {"text": "", "segments": []}
+    @patch("wilted.transcribe.client.stt_path")
+    def test_empty_segments_raises_error(self, mock_stt_path):
+        mock_stt_path.return_value = {"text": "", "segments": []}
 
         with pytest.raises(TranscriptionError, match="no segments"):
             transcribe_audio(Path("/tmp/test.mp3"))
 
-    @patch("wilted.transcribe.isolated.run")
-    def test_accepts_str_audio_path(self, mock_run):
+    @patch("wilted.transcribe.client.stt_path")
+    def test_accepts_str_audio_path(self, mock_stt_path):
         """Regression: the completion log does ``audio_path.name``, which
         AttributeError'd when a caller passed a ``str`` (the CLI and the podcast
         pipeline both do). The signature is ``str | Path`` and coerces on entry,
         so the success path — which reaches that log line — must not crash.
         """
-        mock_run.return_value = {
+        mock_stt_path.return_value = {
             "text": "String path works.",
             "segments": [{"start_s": 0.0, "end_s": 2.0, "text": "String path works."}],
         }
@@ -417,8 +418,32 @@ class TestTranscribeAudio:
         assert len(segments) == 1
         assert segments[0].text == "String path works."
         # The request payload still carries the stringified path unchanged.
-        (task, request), _kwargs = mock_run.call_args
-        assert request["audio_path"] == "/tmp/episode.mp3"
+        (audio_path,), _kwargs = mock_stt_path.call_args
+        assert audio_path == "/tmp/episode.mp3"
+
+    def test_daemon_client_unavailable_raises_clean_typed_error_not_attributeerror(self, monkeypatch):
+        """2.1: monkeypatch the daemon client unavailable -> a clean TranscriptionError,
+        never a raw AttributeError.
+
+        ``client`` is now a hard, unconditional import (no ``client is None`` guard
+        anywhere in transcribe.py — a failed import crashes the module load itself),
+        so "client unavailable" is a RUNTIME failure: the daemon socket is down and
+        ``client.stt_path`` raises ``DaemonUnavailable``. That must map through the
+        existing except-ladder to a clean ``TranscriptionError``, not an
+        ``AttributeError`` from calling into a missing/None client.
+        """
+        with patch("wilted.transcribe.client.stt_path", side_effect=client.DaemonUnavailable("no broker at socket")):
+            with pytest.raises(TranscriptionError) as excinfo:
+                transcribe_audio(Path("/tmp/test.mp3"))
+        assert not isinstance(excinfo.value, AttributeError)
+
+    def test_presence_check_isolated_unavailable_raises_clean_typed_error(self, monkeypatch):
+        """Same guard, other guarded import: a missing ``isolated`` module (used only
+        for the except-ladder's typed error classes) must also raise cleanly."""
+        monkeypatch.setattr("wilted.transcribe.isolated", None)
+
+        with pytest.raises(TranscriptionError, match="speech-stack is not installed"):
+            transcribe_audio(Path("/tmp/test.mp3"))
 
 
 # ---------------------------------------------------------------------------
@@ -564,11 +589,11 @@ def _canned_result(sentences):
 
 
 class TestTranscribeAudioLocalTier:
-    """Tier-3 contract now that transcription runs in speech-stack's isolated worker.
+    """Tier-3 contract now that transcription runs via the resident speech daemon.
 
     The three original production bugs (single-shot GPU decode, disabled sentence
-    splitting, wrong result attribute) are now guarded inside ``speech_stack.stt``.
-    Wilted's remaining contract is what it PASSES to the worker (a bounded
+    splitting, wrong result attribute) are guarded inside ``speech_stack.stt``.
+    Wilted's remaining contract is what it PASSES to the daemon (a bounded
     ``chunk_duration``, ``overlap_duration``, ``sentence_split=True``) and how it
     maps the returned segments — that is what these tests lock down.
     """
@@ -577,13 +602,12 @@ class TestTranscribeAudioLocalTier:
         audio = tmp_path / "ep.mp3"
         audio.write_bytes(b"fake-audio")
 
-        def _fake_run(task, request, *, timeout):
-            captured["task"] = task
-            captured["request"] = request
+        def _fake_stt_path(audio_path, *, timeout, **kwargs):
+            captured["request"] = {"audio_path": audio_path, **kwargs}
             captured["timeout"] = timeout
             return _canned_result(sentences)
 
-        with patch("wilted.transcribe.isolated.run", side_effect=_fake_run):
+        with patch("wilted.transcribe.client.stt_path", side_effect=_fake_stt_path):
             return transcribe_audio(audio)
 
     def test_passes_bounded_chunk_duration(self, tmp_path):
@@ -632,75 +656,75 @@ class TestTranscribeAudioLocalTier:
 
 
 class TestTranscribeAudioExceptionContract:
-    """Every isolated worker failure re-raises as a TranscriptionError subclass.
+    """Every daemon STT failure re-raises as a TranscriptionError subclass (INV-6).
 
-    So all existing ``except TranscriptionError`` handlers keep catching a
-    tier-3 GPU crash / timeout / worker error, while callers that care can
-    distinguish the cause. Construct the isolated errors directly (they are
-    plain RuntimeError subclasses).
+    M2 daemon cutover: the daemon is the ONLY tier-3 route, so every failure —
+    including a down/unreachable daemon (``DaemonUnavailable``) — comes back from
+    ``client.stt_path`` and must map through the SAME except-ladder that used to
+    catch the isolated spawn path's errors. ``speech_stack.client`` re-exports the
+    identical ``isolated.*`` classes, so constructing them via ``isolated.*`` here
+    (as the daemon transport would reconstruct and raise them) is equivalent to
+    using ``client.*``. All existing ``except TranscriptionError`` handlers keep
+    catching a tier-3 GPU crash / timeout / worker error / down daemon, while
+    callers that care can distinguish the cause.
     """
 
     @pytest.mark.parametrize(
-        ("isolated_exc", "mapped"),
+        ("daemon_exc", "mapped"),
         [
             (isolated.Timeout("worker timed out after 1800s"), TranscriptionTimeout),
             (isolated.GpuAborted("worker died: SIGABRT (Metal fault)"), TranscriptionAborted),
             (isolated.GpuSegfault("worker died: SIGSEGV (segfault)"), TranscriptionAborted),
             (isolated.WorkerError("worker failed: ValueError: boom"), TranscriptionWorkerError),
+            (client.DaemonUnavailable("no broker at socket"), TranscriptionError),
         ],
     )
-    def test_isolated_error_maps_to_transcription_subclass(self, isolated_exc, mapped):
-        with patch("wilted.transcribe.isolated.run", side_effect=isolated_exc):
+    def test_daemon_error_maps_to_transcription_subclass(self, daemon_exc, mapped):
+        with patch("wilted.transcribe.client.stt_path", side_effect=daemon_exc):
             with pytest.raises(mapped) as excinfo:
                 transcribe_audio(Path("/tmp/test.mp3"))
         # Mapped subclass is still a TranscriptionError, so existing handlers catch it.
         assert isinstance(excinfo.value, TranscriptionError)
         # Original error is chained and its message is surfaced.
-        assert excinfo.value.__cause__ is isolated_exc
-        assert str(isolated_exc) in str(excinfo.value)
+        assert excinfo.value.__cause__ is daemon_exc
+        assert str(daemon_exc) in str(excinfo.value)
 
     def test_base_isolated_error_maps_to_base_transcription_error(self):
         """Any other IsolatedError falls back to the base TranscriptionError."""
         exc = isolated.IsolatedError("some other isolation failure")
-        with patch("wilted.transcribe.isolated.run", side_effect=exc):
+        with patch("wilted.transcribe.client.stt_path", side_effect=exc):
             with pytest.raises(TranscriptionError) as excinfo:
                 transcribe_audio(Path("/tmp/test.mp3"))
         # Not one of the specific subclasses.
         assert type(excinfo.value) is TranscriptionError
         assert excinfo.value.__cause__ is exc
 
+    def test_daemon_down_is_never_masked_by_a_spawn_retry(self):
+        """INV-6: a down daemon must surface as a TranscriptionError, NOT be
+        silently retried via an isolated spawn (there is no fallback anymore)."""
+        with (
+            patch("wilted.transcribe.client.stt_path", side_effect=client.DaemonUnavailable("gone")),
+            patch(
+                "wilted.transcribe.isolated.run",
+                side_effect=AssertionError("isolated.run must never be called — no spawn fallback"),
+            ),
+        ):
+            with pytest.raises(TranscriptionError):
+                transcribe_audio(Path("/tmp/test.mp3"))
+
 
 # ---------------------------------------------------------------------------
-# Tier 3: daemon backend (WILTED_STT_BACKEND=daemon) — additive, opt-in
+# Tier 3: daemon-only (M2 daemon cutover — no selector, no spawn fallback)
 # ---------------------------------------------------------------------------
 
 
-class TestSttBackendSelector:
-    """The env selector is strictly opt-in and case-insensitive."""
+class TestTranscribeAudioDaemonOnly:
+    """The daemon is the ONLY tier-3 STT route; there is no env selector anymore.
 
-    def test_default_is_isolated(self, monkeypatch):
-        monkeypatch.delenv("WILTED_STT_BACKEND", raising=False)
-        assert _stt_backend() == "isolated"
-
-    def test_daemon_value_selects_daemon(self, monkeypatch):
-        monkeypatch.setenv("WILTED_STT_BACKEND", "daemon")
-        assert _stt_backend() == "daemon"
-        monkeypatch.setenv("WILTED_STT_BACKEND", "DAEMON")
-        assert _stt_backend() == "daemon"
-
-    def test_unknown_value_falls_back_to_isolated(self, monkeypatch):
-        """An unrecognized value is not a hard error — it keeps today's behavior."""
-        monkeypatch.setenv("WILTED_STT_BACKEND", "banana")
-        assert _stt_backend() == "isolated"
-
-
-class TestTranscribeAudioDaemonBackend:
-    """WILTED_STT_BACKEND=daemon routes tier-3 STT through ``speech_stack.client``.
-
-    The daemon result dict is byte-identical to ``isolated.run``'s (Phase 2 parity),
-    so these tests lock down only the additive daemon seam: routing with the same
-    params, the DaemonUnavailable-only fallback, and typed-error fidelity — a real
-    GPU crash on the daemon route is NEVER masked by a silent spawn retry (INV-6).
+    Locks down the daemon seam itself: routing through ``client.stt_path`` with
+    the expected params and a byte-identical result mapping. Typed-error fidelity
+    (a real GPU crash or a down daemon surfacing the matching TranscriptionError
+    subclass, INV-6) is covered by ``TestTranscribeAudioExceptionContract`` above.
     """
 
     _RESULT = {
@@ -708,8 +732,7 @@ class TestTranscribeAudioDaemonBackend:
         "segments": [{"start_s": 0.0, "end_s": 2.0, "text": "Hello daemon."}],
     }
 
-    def test_daemon_backend_routes_through_client_stt_path(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("WILTED_STT_BACKEND", "daemon")
+    def test_routes_through_client_stt_path(self, tmp_path):
         audio = tmp_path / "ep.mp3"
         audio.write_bytes(b"fake")
 
@@ -724,14 +747,12 @@ class TestTranscribeAudioDaemonBackend:
             patch("wilted.transcribe.client.stt_path", side_effect=_fake_stt_path),
             patch(
                 "wilted.transcribe.isolated.run",
-                side_effect=AssertionError("isolated.run must not run on the daemon backend"),
+                side_effect=AssertionError("isolated.run must never run — no spawn fallback (M2)"),
             ),
         ):
             segments = transcribe_audio(audio)
 
-        # Same segment mapping as the isolated path (byte-identical result dict).
         assert [(s.start_s, s.end_s, s.text) for s in segments] == [(0.0, 2.0, "Hello daemon.")]
-        # The SAME params the isolated request forwards ride through as keywords.
         assert captured["audio_path"] == str(audio)
         assert captured["kwargs"]["model"] == "mlx-community/parakeet-tdt-1.1b"
         assert captured["kwargs"]["chunk_duration"] == 120.0
@@ -739,126 +760,22 @@ class TestTranscribeAudioDaemonBackend:
         assert captured["kwargs"]["sentence_split"] is True
         assert "audio_path" not in captured["kwargs"]  # rides positionally only
 
-    def test_daemon_unavailable_falls_back_to_isolated(self, monkeypatch, tmp_path):
-        """No broker listening -> isolated spawn runs with the SAME request (fallback)."""
-        monkeypatch.setenv("WILTED_STT_BACKEND", "daemon")
-        audio = tmp_path / "ep.mp3"
-        audio.write_bytes(b"fake")
-
-        def _unavailable(audio_path, **kwargs):
-            raise client.DaemonUnavailable("no broker at socket")
-
-        iso_result = {
-            "text": "From spawn.",
-            "segments": [{"start_s": 0.0, "end_s": 1.0, "text": "From spawn."}],
-        }
-        with (
-            patch("wilted.transcribe.client.stt_path", side_effect=_unavailable),
-            patch("wilted.transcribe.isolated.run", return_value=iso_result) as mock_run,
-        ):
-            segments = transcribe_audio(audio)
-
-        assert [s.text for s in segments] == ["From spawn."]
-        mock_run.assert_called_once()
-        (task, request), _kwargs = mock_run.call_args
-        assert task == "stt"
-        assert request["audio_path"] == str(audio)
-        assert request["sentence_split"] is True
-
-    @pytest.mark.parametrize(
-        ("daemon_exc", "mapped"),
-        [
-            (client.Timeout("daemon worker timed out after 1800s"), TranscriptionTimeout),
-            (client.GpuAborted("daemon worker died: SIGABRT"), TranscriptionAborted),
-            (client.GpuSegfault("daemon worker died: SIGSEGV"), TranscriptionAborted),
-            (client.WorkerError("daemon worker failed: ValueError: boom"), TranscriptionWorkerError),
-            (client.ConnectionLost("broker died mid-request"), TranscriptionWorkerError),
-        ],
-    )
-    def test_daemon_typed_error_surfaces_without_masking(self, monkeypatch, tmp_path, daemon_exc, mapped):
-        """A real daemon failure maps to the SAME TranscriptionError subclass and is
-        NOT retried on the spawn path (INV-6: never mask a crash with a fallback)."""
-        monkeypatch.setenv("WILTED_STT_BACKEND", "daemon")
-        audio = tmp_path / "ep.mp3"
-        audio.write_bytes(b"fake")
-
-        with (
-            patch("wilted.transcribe.client.stt_path", side_effect=daemon_exc),
-            patch(
-                "wilted.transcribe.isolated.run",
-                side_effect=AssertionError("a real daemon crash must never fall back to isolated"),
-            ),
-        ):
-            with pytest.raises(mapped) as excinfo:
-                transcribe_audio(audio)
-
-        # Still a TranscriptionError (existing handlers keep catching it) and the
-        # original daemon error is chained, not swallowed.
-        assert isinstance(excinfo.value, TranscriptionError)
-        assert excinfo.value.__cause__ is daemon_exc
-
-    def test_default_backend_never_touches_client(self, monkeypatch, tmp_path):
-        """Unset flag -> isolated path only; the daemon client is never called."""
-        monkeypatch.delenv("WILTED_STT_BACKEND", raising=False)
-        audio = tmp_path / "ep.mp3"
-        audio.write_bytes(b"fake")
-
-        iso_result = {
-            "text": "iso.",
-            "segments": [{"start_s": 0.0, "end_s": 1.0, "text": "iso."}],
-        }
-        with (
-            patch("wilted.transcribe.isolated.run", return_value=iso_result) as mock_run,
-            patch(
-                "wilted.transcribe.client.stt_path",
-                side_effect=AssertionError("client.stt_path must not run on the default backend"),
-            ),
-        ):
-            segments = transcribe_audio(audio)
-
-        assert [s.text for s in segments] == ["iso."]
-        mock_run.assert_called_once()
-
-    def test_backend_logged_once_per_process(self, monkeypatch, tmp_path):
-        """The chosen backend is logged exactly once, at first tier-3 use (CR-5)."""
-        monkeypatch.setenv("WILTED_STT_BACKEND", "daemon")
-        monkeypatch.setattr("wilted.transcribe._stt_backend_logged", False)
-        audio = tmp_path / "ep.mp3"
-        audio.write_bytes(b"fake")
-
-        with (
-            patch("wilted.transcribe.client.stt_path", return_value=self._RESULT),
-            patch("wilted.transcribe.logger") as mock_logger,
-        ):
-            transcribe_audio(audio)
-            transcribe_audio(audio)  # second call must NOT re-log the backend
-
-        backend_calls = [
-            c for c in mock_logger.info.call_args_list if c.args and "Tier-3 STT backend" in str(c.args[0])
-        ]
-        assert len(backend_calls) == 1
-        assert backend_calls[0].args[1] == "daemon"
-
 
 class TestEvictSttModel:
-    """The post-batch evict hint (PM-5/INV-2 co-residency avoidance)."""
+    """The post-batch evict hint (PM-5/INV-2 co-residency avoidance).
 
-    def test_evicts_on_daemon_backend(self, monkeypatch):
-        monkeypatch.setenv("WILTED_STT_BACKEND", "daemon")
+    M2 daemon cutover: there is no backend guard anymore — the daemon is the
+    only route, so evict always attempts ``client.evict("stt")``, swallowing
+    ``DaemonUnavailable`` if the daemon is already gone.
+    """
+
+    def test_evicts_the_resident_model(self):
         with patch("wilted.transcribe.client.evict") as mock_evict:
             evict_stt_model()
         mock_evict.assert_called_once_with("stt")
 
-    def test_noop_on_isolated_backend(self, monkeypatch):
-        """On the isolated backend the spawn child already exited — nothing to evict."""
-        monkeypatch.delenv("WILTED_STT_BACKEND", raising=False)
-        with patch("wilted.transcribe.client.evict") as mock_evict:
-            evict_stt_model()
-        mock_evict.assert_not_called()
-
-    def test_swallows_daemon_unavailable(self, monkeypatch):
+    def test_swallows_daemon_unavailable(self):
         """If the daemon is already gone, there is nothing resident — swallow it."""
-        monkeypatch.setenv("WILTED_STT_BACKEND", "daemon")
         with patch(
             "wilted.transcribe.client.evict",
             side_effect=client.DaemonUnavailable("gone"),

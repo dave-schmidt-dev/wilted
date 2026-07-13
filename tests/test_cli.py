@@ -6,6 +6,7 @@ import types
 from unittest.mock import MagicMock, patch
 
 import pytest
+from speech_stack import client
 
 from wilted.cli import (
     CLIError,
@@ -896,6 +897,7 @@ class TestMainEntrypoint:
     def test_main_cli_mode_dispatches_without_tqdm_preinit(self):
         """CLI mode should dispatch directly to run_cli."""
         with (
+            patch("wilted.cli.client.require_daemon_ready"),
             patch("wilted.cli.run_cli") as mock_run_cli,
             patch("sys.argv", ["wilted", "--version"]),
         ):
@@ -913,6 +915,7 @@ class TestMainEntrypoint:
 
         with (
             patch("sys.argv", ["wilted"]),
+            patch("wilted.cli.client.require_daemon_ready"),
             patch("wilted.cli._weather_monitor_for_launch", return_value=sentinel_monitor),
             patch("wilted.cli._briefing_generator_for_launch", return_value=sentinel_briefing),
             patch.dict(
@@ -940,17 +943,22 @@ class TestMainEntrypoint:
         We drive that exact entrypoint hermetically via runpy with run_name
         "__main__" (equivalent to `python -m wilted.cli`) and argv ["wilted",
         "list"]. main() runs the full chain (setup_logging → validate_project_root
-        → run_migrations → ensure_default_playlists → run_cli) against the
-        isolated_data tmp db, whose queue is empty, so cmd_list prints the
-        empty-queue message — an observable side effect only produced if main()
-        actually ran.
+        → daemon readiness → run_migrations → ensure_default_playlists → run_cli)
+        against the isolated_data tmp db, whose queue is empty, so cmd_list prints
+        the empty-queue message — an observable side effect only produced if
+        main() actually ran. The daemon-readiness gate is mocked out here — it has
+        its own dedicated coverage in ``test_daemon_down_at_startup_raises_loudly``
+        below — so this test stays focused on the C1 guard.
 
         Pre-fix (no guard) this FAILS: run_module executes the module body but
         nothing calls main(), so no output is produced and the assertion trips.
         """
         import runpy
 
-        with patch.object(sys, "argv", ["wilted", "list"]):
+        with (
+            patch.object(sys, "argv", ["wilted", "list"]),
+            patch("wilted.cli.client.require_daemon_ready"),
+        ):
             try:
                 runpy.run_module("wilted.cli", run_name="__main__", alter_sys=True)
             except SystemExit:
@@ -960,6 +968,34 @@ class TestMainEntrypoint:
 
         out = capsys.readouterr().out
         assert "empty" in out.lower()
+
+    @pytest.mark.parametrize("argv", [["wilted", "--version"], ["wilted"]])
+    def test_daemon_down_at_startup_raises_loudly(self, argv):
+        """PM-9 / M2 gate: a down/unreachable speech daemon must abort startup
+        loudly for BOTH the CLI and TUI entry points — never silently continue.
+
+        ``client.require_daemon_ready(probe=True)`` is wired right after
+        ``validate_project_root()``, before the argv branch, so a daemon-down
+        failure must propagate before ``run_cli()``/the TUI ever starts —
+        regardless of which dispatch branch this invocation would have taken.
+        """
+        with (
+            patch(
+                "wilted.cli.client.require_daemon_ready",
+                side_effect=client.DaemonUnavailable(
+                    "speech daemon is not available (no broker at socket); "
+                    "run `make install-daemon` to install and start it"
+                ),
+            ),
+            patch("wilted.cli.run_cli") as mock_run_cli,
+            patch("wilted.cli._launch_tui") as mock_launch_tui,
+            patch("sys.argv", argv),
+        ):
+            with pytest.raises(client.DaemonUnavailable, match="make install-daemon"):
+                main()
+
+        mock_run_cli.assert_not_called()
+        mock_launch_tui.assert_not_called()
 
 
 class TestWeatherMonitorForLaunch:

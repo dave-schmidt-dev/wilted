@@ -987,21 +987,22 @@ class WiltedApp(App):
         """Compact indicator of the active speech backends (daemon vs in-process).
 
         Display-only (INV-8 untouched — no controller round-trip): reads the SAME
-        env selectors ``wilted.engine`` / ``wilted.transcribe`` read at call time
-        (``_tts_backend`` / ``_stt_backend``), so a glance shows which speech path
-        is live for TTS synthesis and tier-3 STT. When the TTS backend is the
-        daemon, a subtle click-to-warm affordance pre-loads the daemon's Kokoro
-        model for low first-audio latency — mirroring the existing clickable
-        speed/voice controls (no new keybinding, no AI-slop styling). Once warmed
-        this session it reads "warmed" instead.
+        env selector ``wilted.engine`` reads at call time (``_tts_backend``), so a
+        glance shows which speech path is live for TTS synthesis. Tier-3 STT has
+        no selector to read anymore — the M2 daemon cutover made it daemon-only
+        (``wilted.transcribe`` has no isolated-spawn fallback), so it always shows
+        "daemon". When the TTS backend is the daemon, a subtle click-to-warm
+        affordance pre-loads the daemon's Kokoro model for low first-audio latency
+        — mirroring the existing clickable speed/voice controls (no new
+        keybinding, no AI-slop styling). Once warmed this session it reads
+        "warmed" instead.
         """
         if not self.is_running:
             return
         from wilted.engine import _tts_backend
-        from wilted.transcribe import _stt_backend
 
         tts = _tts_backend()
-        stt = _stt_backend()
+        stt = "daemon"  # M2 cutover: tier-3 STT is daemon-only, no selector left to read.
         text = f"Speech: TTS {tts} · STT {stt}"
         if tts == "daemon":
             text += " · warmed" if self._tts_daemon_warmed else " · [@click=app.warm_daemon]warm[/]"
