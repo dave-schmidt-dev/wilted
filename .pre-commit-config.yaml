@@ -1,0 +1,16 @@
+repos:
+  - repo: local
+    hooks:
+      - id: speech-route-policy
+        name: speech-route-policy
+        entry: python3 scripts/check_repo_policy.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+      - id: ruff
+        name: ruff
+        entry: make lint
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]

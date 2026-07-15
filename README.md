@@ -48,7 +48,7 @@ fall back to the legacy MLX path.
 Add a shell alias (e.g. in `~/.zshrc`) that pins the same external venv:
 
 ```bash
-alias wilted='UV_PROJECT_ENVIRONMENT=$HOME/.venvs/wilted uv run --project ~/Documents/Projects/wilted wilted'
+alias wilted='UV_CACHE_DIR=.uv-cache UV_PROJECT_ENVIRONMENT=$HOME/.venvs/wilted uv run --project ~/Documents/Projects/wilted wilted'
 ```
 
 This ensures the alias always uses the project's managed venv with all
@@ -56,7 +56,21 @@ dependencies (including playwright for browser-based article fetching), kept
 outside iCloud so it never gets re-hidden. The `Makefile` and the nightly
 launchd script set `UV_PROJECT_ENVIRONMENT` to the same path.
 
-First run downloads the Kokoro model from HuggingFace (~160MB, one-time).
+## Launch Contract
+
+The production launch chain is:
+
+```text
+wilted alias → UV_CACHE_DIR=.uv-cache UV_PROJECT_ENVIRONMENT=$HOME/.venvs/wilted uv run --project ~/Documents/Projects/wilted wilted → wilted.cli:main
+```
+
+The exact launch venv is `~/.venvs/wilted`. The speech daemon is mandatory:
+install and start it with `make install-daemon` before launching Wilted. The
+entry point verifies daemon readiness during startup, so a stopped or unhealthy
+daemon fails loudly rather than falling back to an in-process speech model.
+
+If the launcher, speech backend, or launch venv changes, update this section
+and the alias together. The alias remains the canonical interactive command.
 
 ### Troubleshooting
 
