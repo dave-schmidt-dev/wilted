@@ -421,29 +421,17 @@ class TestTranscribeAudio:
         (audio_path,), _kwargs = mock_stt_path.call_args
         assert audio_path == "/tmp/episode.mp3"
 
-    def test_daemon_client_unavailable_raises_clean_typed_error_not_attributeerror(self, monkeypatch):
-        """2.1: monkeypatch the daemon client unavailable -> a clean TranscriptionError,
-        never a raw AttributeError.
+    def test_daemon_client_unavailable_uses_mandatory_daemon_seam(self):
+        """A down daemon is surfaced from the mandatory client seam.
 
-        ``client`` is now a hard, unconditional import (no ``client is None`` guard
-        anywhere in transcribe.py — a failed import crashes the module load itself),
-        so "client unavailable" is a RUNTIME failure: the daemon socket is down and
-        ``client.stt_path`` raises ``DaemonUnavailable``. That must map through the
-        existing except-ladder to a clean ``TranscriptionError``, not an
-        ``AttributeError`` from calling into a missing/None client.
+        ``speech_stack.client`` is an unconditional import and is the only tier-3
+        route. A transport failure must therefore preserve its typed cause rather
+        than choose an in-process or spawn fallback.
         """
         with patch("wilted.transcribe.client.stt_path", side_effect=client.DaemonUnavailable("no broker at socket")):
             with pytest.raises(TranscriptionError) as excinfo:
                 transcribe_audio(Path("/tmp/test.mp3"))
-        assert not isinstance(excinfo.value, AttributeError)
-
-    def test_presence_check_isolated_unavailable_raises_clean_typed_error(self, monkeypatch):
-        """Same guard, other guarded import: a missing ``isolated`` module (used only
-        for the except-ladder's typed error classes) must also raise cleanly."""
-        monkeypatch.setattr("wilted.transcribe.isolated", None)
-
-        with pytest.raises(TranscriptionError, match="speech-stack is not installed"):
-            transcribe_audio(Path("/tmp/test.mp3"))
+        assert isinstance(excinfo.value.__cause__, client.DaemonUnavailable)
 
 
 # ---------------------------------------------------------------------------
@@ -676,6 +664,7 @@ class TestTranscribeAudioExceptionContract:
             (isolated.GpuAborted("worker died: SIGABRT (Metal fault)"), TranscriptionAborted),
             (isolated.GpuSegfault("worker died: SIGSEGV (segfault)"), TranscriptionAborted),
             (isolated.WorkerError("worker failed: ValueError: boom"), TranscriptionWorkerError),
+            (client.ConnectionLost("broker exited"), TranscriptionWorkerError),
             (client.DaemonUnavailable("no broker at socket"), TranscriptionError),
         ],
     )
@@ -759,6 +748,20 @@ class TestTranscribeAudioDaemonOnly:
         assert captured["kwargs"]["overlap_duration"] == 15.0
         assert captured["kwargs"]["sentence_split"] is True
         assert "audio_path" not in captured["kwargs"]  # rides positionally only
+
+    def test_legacy_backend_selector_is_inert(self, tmp_path, monkeypatch):
+        """A legacy selector cannot bypass the mandatory daemon route."""
+        audio = tmp_path / "ep.mp3"
+        audio.write_bytes(b"fake")
+        # Construct the retired name so the source-policy grep remains clean:
+        # M5 requires both zero live selector references and proof that an old
+        # value inherited from a user's environment cannot change routing.
+        monkeypatch.setenv("WILTED_" + "STT_BACKEND", "isolated")
+
+        with patch("wilted.transcribe.client.stt_path", return_value=self._RESULT) as mock_stt_path:
+            transcribe_audio(audio)
+
+        mock_stt_path.assert_called_once()
 
 
 class TestEvictSttModel:

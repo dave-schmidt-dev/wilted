@@ -124,6 +124,8 @@ import urllib.request
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+from speech_stack import client
+
 from wilted.station.models import (
     FinalizationState,
     MediaDescriptor,
@@ -906,6 +908,11 @@ def main(argv: list[str] | None = None) -> int:
 # wilted-nightly.sh's `python -m wilted.cli` history documents. This makes
 # the module actually invoke main() and propagate its real exit status.
 if __name__ == "__main__":
+    # This standalone entrypoint synthesizes a qualifying bulletin, so it
+    # needs the same mandatory daemon readiness gate as the primary CLI.
+    # Probe before acquiring a controller or doing network work: a healthy
+    # socket alone is insufficient if the resident speech worker is broken.
+    client.require_daemon_ready(probe=True)
     sys.exit(main())
 
 

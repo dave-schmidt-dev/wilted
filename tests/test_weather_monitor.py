@@ -602,10 +602,14 @@ class TestWrapperEntrypoint:
         monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
         with pytest.raises(SystemExit) as exc_info:
-            with patch.object(sys, "argv", ["wilted-weather-monitor"]):
+            with (
+                patch.object(sys, "argv", ["wilted-weather-monitor"]),
+                patch("speech_stack.client.require_daemon_ready") as mock_ready,
+            ):
                 runpy.run_module("wilted.station_runtime.weather_monitor", run_name="__main__", alter_sys=True)
 
         assert exc_info.value.code == 0
+        mock_ready.assert_called_once_with(probe=True)
         assert len(captured_requests) == 1
         # Combined single request: both UGC codes present in the ONE URL.
         assert DEFAULT_ZONE in captured_requests[0].full_url
@@ -618,10 +622,27 @@ class TestWrapperEntrypoint:
         monkeypatch.setattr("urllib.request.urlopen", failing_urlopen)
 
         with pytest.raises(SystemExit) as exc_info:
-            with patch.object(sys, "argv", ["wilted-weather-monitor"]):
+            with (
+                patch.object(sys, "argv", ["wilted-weather-monitor"]),
+                patch("speech_stack.client.require_daemon_ready"),
+            ):
                 runpy.run_module("wilted.station_runtime.weather_monitor", run_name="__main__", alter_sys=True)
 
         assert exc_info.value.code == 1
+
+    def test_run_module_aborts_when_daemon_probe_fails(self):
+        """Readiness failure occurs before the one-shot monitor does any work."""
+        from speech_stack import client
+
+        with (
+            patch.object(sys, "argv", ["wilted-weather-monitor"]),
+            patch(
+                "speech_stack.client.require_daemon_ready",
+                side_effect=client.DaemonUnavailable("speech daemon unavailable"),
+            ),
+        ):
+            with pytest.raises(client.DaemonUnavailable, match="speech daemon unavailable"):
+                runpy.run_module("wilted.station_runtime.weather_monitor", run_name="__main__", alter_sys=True)
 
 
 # ---------------------------------------------------------------------------

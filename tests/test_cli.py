@@ -1,8 +1,11 @@
 """Tests for wilted.cli — CLI commands and argument parsing."""
 
 import argparse
+import os
+import subprocess
 import sys
 import types
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -894,6 +897,25 @@ class TestPlaylistSubcommand:
 
 
 class TestMainEntrypoint:
+    def test_main_validates_then_probes_daemon_before_migration_or_dispatch(self):
+        """The positive startup path keeps daemon readiness ahead of all work."""
+        calls: list[str] = []
+
+        with (
+            patch("wilted.cli.validate_project_root", side_effect=lambda: calls.append("validate")),
+            patch(
+                "wilted.cli.client.require_daemon_ready",
+                side_effect=lambda *, probe: calls.append(f"ready:{probe}"),
+            ),
+            patch("wilted.db.run_migrations", side_effect=lambda _path: calls.append("migrate")),
+            patch("wilted.playlists.ensure_default_playlists", side_effect=lambda: calls.append("playlists")),
+            patch("wilted.cli.run_cli", side_effect=lambda: calls.append("dispatch")),
+            patch("sys.argv", ["wilted", "--version"]),
+        ):
+            main()
+
+        assert calls == ["validate", "ready:True", "migrate", "playlists", "dispatch"]
+
     def test_main_cli_mode_dispatches_without_tqdm_preinit(self):
         """CLI mode should dispatch directly to run_cli."""
         with (
@@ -996,6 +1018,64 @@ class TestMainEntrypoint:
 
         mock_run_cli.assert_not_called()
         mock_launch_tui.assert_not_called()
+
+    def test_run_module_daemon_down_propagates_before_dispatch(self):
+        """The ``python -m`` entrypoint cannot turn a down daemon into success."""
+        import runpy
+
+        with (
+            patch.object(sys, "argv", ["wilted", "--version"]),
+            patch(
+                "speech_stack.client.require_daemon_ready",
+                side_effect=client.DaemonUnavailable("speech daemon unavailable"),
+            ),
+        ):
+            with pytest.raises(client.DaemonUnavailable, match="speech daemon unavailable"):
+                runpy.run_module("wilted.cli", run_name="__main__", alter_sys=True)
+
+
+class TestNightlyWrapper:
+    def test_preserves_the_failed_ingest_exit_status(self, tmp_path):
+        """A failed ingest's distinctive status is both logged and returned."""
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+
+        fake_flock = fake_bin / "flock"
+        fake_flock.write_text("#!/bin/bash\nexit 0\n")
+        fake_flock.chmod(0o755)
+
+        fake_uv = fake_bin / "uv"
+        fake_uv.write_text(
+            "#!/bin/bash\n"
+            "if [[ \"${*: -1}\" == \"ingest\" ]]; then\n"
+            "    exit 37\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        fake_uv.chmod(0o755)
+
+        home = tmp_path / "home"
+        home.mkdir()
+        script = Path(__file__).parent.parent / "scripts" / "wilted-nightly.sh"
+        env = {
+            "HOME": str(home),
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "TMPDIR": str(tmp_path),
+        }
+
+        result = subprocess.run(
+            ["/bin/bash", str(script)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 37
+        aggregate_log = home / "Library" / "Logs" / "wilted-nightly" / "wilted.log"
+        log_text = aggregate_log.read_text()
+        assert "failed with exit code 37" in log_text
+        assert "completed successfully" not in log_text
 
 
 class TestWeatherMonitorForLaunch:

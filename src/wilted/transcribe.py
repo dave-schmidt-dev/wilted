@@ -22,23 +22,11 @@ from urllib.request import Request, urlopen
 
 import trafilatura  # noqa: TCH002 — used at runtime in extract_transcript_from_url
 
-try:
-    # Bind ``isolated`` at module scope so :func:`transcribe_audio`'s except-ladder
-    # can reference its typed error classes (``isolated.Timeout``, etc.) by name.
-    # These are the SAME class objects ``speech_stack.client`` re-exports — the
-    # daemon client wraps the transport but raises the identical typed errors the
-    # isolated spawn path always raised. Guarded so a missing speech-stack doesn't
-    # break the import-time surface of tiers 1/2 — transcribe_audio re-checks and
-    # raises a clear TranscriptionError instead.
-    from speech_stack import isolated
-except ImportError:  # pragma: no cover — speech-stack is a hard dependency in practice
-    isolated = None  # type: ignore[assignment]
-
-# The resident speech daemon client — the ONLY tier-3 STT route (M2 daemon
-# cutover). Hard dependency: wilted's launch venv installs speech-stack as an
-# editable dependency, so this import is unconditional. Tests patch
-# ``wilted.transcribe.client.stt_path`` / ``client.evict``.
-from speech_stack import client
+# Hard dependency: wilted's launch venv installs speech-stack as an editable
+# dependency. ``client`` is the ONLY tier-3 STT route; ``isolated`` supplies the
+# identical typed error classes that the daemon transport reconstructs and raises.
+# Tests patch ``wilted.transcribe.client.stt_path`` / ``client.evict``.
+from speech_stack import client, isolated
 
 logger = logging.getLogger(__name__)
 
@@ -545,15 +533,10 @@ def transcribe_audio(
         TranscriptionTimeout: The worker exceeded its wall-clock timeout.
         TranscriptionAborted: The worker died via a hard GPU crash (SIGABRT/SIGSEGV).
         TranscriptionWorkerError: The worker raised a caught exception / no result.
-        TranscriptionError: speech-stack is unavailable, the daemon is unreachable
-            (``DaemonUnavailable`` — a down/rolled-back daemon; ``client`` is a hard,
-            unconditional import, so this is a runtime failure, never a ``None``
-            client), another isolation error occurred, or transcription produced no
-            segments.
+        TranscriptionError: The daemon or its transport is unavailable
+            (``DaemonUnavailable`` — for example, a down/rolled-back daemon), another
+            isolation error occurred, or transcription produced no segments.
     """
-    if isolated is None:
-        raise TranscriptionError("speech-stack is not installed. Install it as an editable dependency of wilted.")
-
     # Accept str or Path from any caller (CLI, podcast pipeline, tests). Coerce
     # once so the request payload and the completion log agree on the type.
     audio_path = Path(audio_path)
@@ -585,7 +568,7 @@ def transcribe_audio(
         raise TranscriptionTimeout(f"Transcription timed out: {e}") from e
     except (isolated.GpuAborted, isolated.GpuSegfault) as e:
         raise TranscriptionAborted(f"Transcription crashed on GPU: {e}") from e
-    except isolated.WorkerError as e:
+    except (isolated.WorkerError, client.ConnectionLost) as e:
         raise TranscriptionWorkerError(f"Transcription worker failed: {e}") from e
     except isolated.IsolatedError as e:
         raise TranscriptionError(f"Transcription failed: {e}") from e

@@ -58,14 +58,15 @@ if $WILTED ingest >> "$RUN_LOG" 2>&1; then
         log "email report sent"
     fi
 else
+    INGEST_STATUS=$?
     END_TIME=$(date +%s)
     ELAPSED=$((END_TIME - START_TIME))
-    log "failed with exit code $? after ${ELAPSED}s"
+    log "failed with exit code ${INGEST_STATUS} after ${ELAPSED}s"
 
     # Send failure notification if email-alert is available
     if [[ -x "$EMAIL_ALERT" ]]; then
         tail -20 "$RUN_LOG" | "$EMAIL_ALERT" \
             --subject "Wilted Nightly Failed" 2>/dev/null || true
     fi
-    exit 1
+    exit "$INGEST_STATUS"
 fi
