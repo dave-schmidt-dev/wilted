@@ -23,6 +23,7 @@ from wilted.db import ensure_db as _ensure_db
 from wilted.db import now_utc as _now_utc
 from wilted.llm import LLMBackend, create_backend, parse_json_response
 from wilted.preferences import get_keywords_for_prompt
+from wilted.station_runtime.coordinator import ModelCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -215,21 +216,23 @@ def run_classify(
 
     logger.info("Classifying %d items with %s (%s)", len(items), model, backend_type)
 
-    backend = create_backend(backend_type, model=model)
-    backend.load()
-
     classified = 0
     errors = 0
 
-    try:
+    backend = create_backend(backend_type, model=model)
+    coordinator = ModelCoordinator()
+
+    def _classify_loaded(loaded_backend: LLMBackend) -> None:
+        """Classify the batch while the coordinator holds the LLM lease."""
+        nonlocal classified, errors
         for item in items:
-            success = classify_item(backend, item, keywords_section)
+            success = classify_item(loaded_backend, item, keywords_section)
             if success:
                 classified += 1
             else:
                 errors += 1
-    finally:
-        backend.close()
+
+    coordinator.run_llm(backend, _classify_loaded)
 
     result = {"classified": classified, "errors": errors, "total": len(items)}
     logger.info("Classification complete: %s", result)
@@ -356,21 +359,18 @@ def run_benchmark(
     print(f"{'Model':<50} {'Accuracy':>8} {'Avg Time':>10} {'Avg Tokens':>10}")
     print("-" * 82)
 
+    coordinator = ModelCoordinator()
     for model_name in models:
         backend = create_backend(backend_type, model=model_name)
-
-        try:
-            backend.load()
-        except Exception as e:
-            print(f"{model_name:<50} {'LOAD FAIL':>8} {str(e)[:20]:>10}")
-            continue
 
         correct = 0
         total_time = 0.0
         total_tokens = 0
         errors = 0
 
-        try:
+        def _benchmark_loaded(loaded_backend: LLMBackend) -> None:
+            """Benchmark one model while the coordinator holds the LLM lease."""
+            nonlocal correct, total_time, total_tokens, errors
             for bench_item in _BENCHMARK_ITEMS:
                 user_prompt = _build_user_prompt(
                     bench_item["title"],
@@ -380,7 +380,7 @@ def run_benchmark(
 
                 start = time.monotonic()
                 try:
-                    response, tokens = backend.generate(_SYSTEM_PROMPT, user_prompt)
+                    response, tokens = loaded_backend.generate(_SYSTEM_PROMPT, user_prompt)
                     elapsed = time.monotonic() - start
 
                     result = _parse_classification(response)
@@ -393,8 +393,12 @@ def run_benchmark(
                     logger.warning("Benchmark error for '%s': %s", bench_item["title"], e)
                     errors += 1
                     total_time += time.monotonic() - start
-        finally:
-            backend.close()
+
+        try:
+            coordinator.run_llm(backend, _benchmark_loaded)
+        except Exception as e:
+            print(f"{model_name:<50} {'LOAD FAIL':>8} {str(e)[:20]:>10}")
+            continue
 
         evaluated = len(_BENCHMARK_ITEMS) - errors
         accuracy = correct / evaluated if evaluated > 0 else 0

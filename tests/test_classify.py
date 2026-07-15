@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, datetime
 
 import pytest
@@ -12,6 +13,7 @@ from wilted.classify import (
     _build_user_prompt,
     _parse_classification,
     classify_item,
+    run_benchmark,
     run_classify,
 )
 from wilted.db import Item
@@ -313,6 +315,64 @@ class TestRunClassify:
         stats = run_classify(model="test", backend_type="gguf")
         assert error_backend.closed is True
         assert stats["errors"] == 1
+
+    def test_llm_lifecycle_runs_under_coordinator_lease(self, monkeypatch):
+        """Production classification must not bypass ModelCoordinator (INV-1)."""
+        from wilted.station_runtime.coordinator import ModelCoordinator
+
+        _make_item(text="Content.", guid="leased")
+        coordinator = ModelCoordinator()
+
+        class LeaseCheckingBackend(MockLLMBackend):
+            def _assert_lease_held(self) -> None:
+                assert coordinator._owner_thread_id == threading.get_ident()
+
+            def load(self):
+                self._assert_lease_held()
+                super().load()
+
+            def generate(self, system_prompt: str, user_content: str) -> tuple[str, int]:
+                self._assert_lease_held()
+                return super().generate(system_prompt, user_content)
+
+            def close(self):
+                self._assert_lease_held()
+                super().close()
+
+        backend = LeaseCheckingBackend()
+        monkeypatch.setattr("wilted.classify.ModelCoordinator", lambda: coordinator)
+        monkeypatch.setattr("wilted.classify.create_backend", lambda *args, **kwargs: backend)
+
+        assert run_classify(model="test", backend_type="gguf")["classified"] == 1
+
+    def test_benchmark_lifecycle_runs_under_coordinator_lease(self, monkeypatch):
+        """Benchmarking is also a production LLM entry point governed by INV-1."""
+        from wilted.station_runtime.coordinator import ModelCoordinator
+
+        coordinator = ModelCoordinator()
+
+        class LeaseCheckingBackend(MockLLMBackend):
+            def _assert_lease_held(self) -> None:
+                assert coordinator._owner_thread_id == threading.get_ident()
+
+            def load(self):
+                self._assert_lease_held()
+                super().load()
+
+            def generate(self, system_prompt: str, user_content: str) -> tuple[str, int]:
+                self._assert_lease_held()
+                return super().generate(system_prompt, user_content)
+
+            def close(self):
+                self._assert_lease_held()
+                super().close()
+
+        backend = LeaseCheckingBackend()
+        monkeypatch.setattr("wilted.classify.ModelCoordinator", lambda: coordinator)
+        monkeypatch.setattr("wilted.classify.create_backend", lambda *args, **kwargs: backend)
+
+        run_benchmark(models=["test"])
+        assert backend.closed is True
 
     def test_keywords_passed_to_prompt(self, monkeypatch):
         add_keyword("kubernetes", weight=2.0)

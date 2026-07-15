@@ -1,6 +1,6 @@
 # Wilted
 
-Local-first personal audio news and entertainment system for macOS, powered by [Kokoro TTS](https://github.com/hexgrad/kokoro) via [mlx-audio](https://github.com/Blaizzy/mlx-audio) on Apple Silicon.
+Local-first personal audio news and entertainment system for macOS, with speech synthesis provided by the local speech-stack daemon on Apple Silicon.
 
 ## Vision
 
@@ -64,10 +64,10 @@ The production launch chain is:
 wilted alias → UV_CACHE_DIR=.uv-cache UV_PROJECT_ENVIRONMENT=$HOME/.venvs/wilted uv run --project ~/Documents/Projects/wilted wilted → wilted.cli:main
 ```
 
-The exact launch venv is `~/.venvs/wilted`. The speech daemon is mandatory:
-install and start it with `make install-daemon` before launching Wilted. The
-entry point verifies daemon readiness during startup, so a stopped or unhealthy
-daemon fails loudly rather than falling back to an in-process speech model.
+The exact launch venv is `~/.venvs/wilted`. The speech daemon is mandatory and
+must be installed and started with `make install-daemon` before launching
+Wilted. The entry point verifies daemon readiness during startup, so a stopped
+or unhealthy daemon fails loudly.
 
 If the launcher, speech backend, or launch venv changes, update this section
 and the alias together. The alias remains the canonical interactive command.
@@ -297,7 +297,7 @@ src/wilted/                # shared library
         protocols.py   # typing.Protocol seams (StationStore, PlaybackAdapter)
         reducer.py     # pure state-transition reducer apply(state, action, requester_lease)
     tui/                 # Textual TUI (decomposed package)
-tests/                   # pytest suite (721 tests across unit/integration/e2e/TUI lanes)
+tests/                   # pytest suite (1,144 collected tests with overlapping lane markers)
 migrations/              # numbered schema migrations
 docs/adr/                # architecture decision records
     0001-mac-radio-substrate.md  # Mac-first personal-radio substrate decision (candidate a: headless core)
@@ -309,12 +309,13 @@ spikes/                  # Phase-0 feasibility prototypes (disposable, removable
 
 ## Validation
 
-Routine validation uses tiered lanes. The current split is:
+Routine validation uses tiered lanes. The suite currently collects 1,144 tests;
+lane markers overlap, with these marker counts:
 
-- `221` unit tests
-- `334` integration tests
+- `475` unit tests
+- `546` integration tests
 - `30` subprocess e2e tests
-- `53` TUI tests
+- `126` TUI tests
 
 Default project validation still uses the guarded fast lane:
 
@@ -329,7 +330,7 @@ That runs:
 - subprocess e2e tests for CLI commands, feed/keyword CRUD, article lifecycle, and RSS discovery
 - ffmpeg MP3 encode/decode round-trip
 - TUI launch and quit with real SQLite database
-- concurrency guardrails that verify MLX work stays serialized behind `_model_lock`
+- concurrency guardrails for the optional in-process LLM coordinator lease
 - startup guardrails that verify `tqdm` lock initialization happens on the main thread before Textual starts
 
 Targeted lanes:
@@ -363,8 +364,6 @@ In the TUI (`wilted` with no args):
 - Do not add in-process tests that import or execute real MLX/Metal work inside the pytest runner.
 - Do not add standalone MLX/Metal diagnostic probes whose only purpose is to stress the native stack rather than validate Wilted behavior.
 - Do not rely on collection-time `sys.modules` stubs; keep native-module fakes inside fixtures or test-local patch scopes.
-- Do not bypass `_model_lock` for `load_model()`, `generate_audio()`, `generate_and_play()`, or `play_article()`.
-- Do not let lazy MLX generators escape the lock before converting segment audio to NumPy.
 - Do not let the first `tqdm` lock initialization happen inside a Textual worker thread.
 
 ## Feed management
@@ -433,7 +432,7 @@ to = "you@example.com"
   - unified content model (articles + podcasts + playlists in one schema)
   - playlist rules (assignment, override, decay)
 - Content preparation (Phase 4):
-  - podcast audio download and transcription (RSS ingest + local fallback)
+  - podcast audio download and transcription (RSS transcript ingest + speech-daemon transcription)
   - ad detection with sliding window + ffmpeg cutting
   - article promotional content removal
   - article TTS generation for pipeline items
@@ -447,17 +446,14 @@ to = "you@example.com"
 - ~~RSS feed management~~ (done: feed CRUD, RSS polling, dedup, conditional GET)
 - ~~LLM classification~~ (done: playlist assignment, relevance scoring, summarization)
 - ~~Morning report~~ (done: report assembly, TUI ReportScreen, selection history, source stats, `wilted report` + `wilted feed stats`)
-- ~~Playlists + Polish (Phase 5)~~ (done: dynamic/static playlists, CLI `wilted playlist`, `ensure_default_playlists` on startup, email morning report, nightly wrapper script, launchd integration. 660 tests green.)
-- ~~E2e test coverage + playback verification~~ (done: tiered suite with 580 app-facing tests, plus manual speaker verification)
+- ~~Playlists + Polish (Phase 5)~~ (done: dynamic/static playlists, CLI `wilted playlist`, `ensure_default_playlists` on startup, email morning report, nightly wrapper script, launchd integration.)
+- ~~E2e test coverage + playback verification~~ (done: tiered automated suite plus manual speaker verification)
 
 ## Dependencies
 
 - Python 3.12+ (via Homebrew)
-- mlx-audio (Apple Silicon TTS framework)
-- parakeet-mlx (local podcast transcription, when RSS doesn't ship a transcript)
 - ffmpeg (required for MP3 audio caching; `brew install ffmpeg`)
-- Kokoro TTS model (82M params, downloaded on first use)
-- Parakeet TDT model (~600 MB, downloaded on first podcast transcription)
+- speech-stack daemon (mandatory; it owns Kokoro TTS and Parakeet inference and model residency)
 - trafilatura (article text extraction)
 - peewee (SQLite ORM)
 - feedparser (RSS/Atom parsing)

@@ -360,19 +360,10 @@ def run_prepare(
     # (its spawn child already exited) or if the daemon is already gone.
     evict_stt_model()
 
-    # Phase B: load the LLM once, then process podcasts (ad detection/cutting)
-    # and articles (promo removal + TTS) with it resident.
-    llm_backend = None
-    if use_llm:
-        try:
-            llm_backend = _llm_mod.create_backend(llm_backend_type, model=llm_model)
-            llm_backend.load()
-            logger.info("LLM backend loaded: %s", llm_model)
-        except Exception:
-            logger.exception("Failed to load LLM backend — continuing without it")
-            llm_backend = None
-
-    try:
+    # Phase B: process podcasts (ad detection/cutting) and articles (promo
+    # removal + TTS). When available, the LLM remains loaded for this whole
+    # phase under the coordinator's single ML lease.
+    def _process_phase_b(llm_backend=None) -> None:
         for item in podcasts:
             if item.id not in transcribed_segments:
                 continue
@@ -412,14 +403,41 @@ def run_prepare(
                 _set_status(item, "error", "Unexpected error during preparation")
                 logger.exception("Item %d failed unexpectedly", item.id)
 
-    finally:
-        # Unload LLM backend
-        if llm_backend is not None:
+    if not use_llm:
+        _process_phase_b()
+    else:
+        try:
+            backend = _llm_mod.create_backend(llm_backend_type, model=llm_model)
+        except Exception:
+            logger.exception("Failed to load LLM backend — continuing without it")
+            _process_phase_b()
+        else:
+            loaded = False
+            phase_completed = False
+
+            def _process_with_loaded_llm(llm_backend) -> None:
+                """Process Phase B while the coordinator holds the LLM lease."""
+                nonlocal loaded, phase_completed
+                loaded = True
+                logger.info("LLM backend loaded: %s", llm_model)
+                _process_phase_b(llm_backend)
+                phase_completed = True
+
             try:
-                llm_backend.close()
-                logger.info("LLM backend unloaded")
+                coordinator.run_llm(backend, _process_with_loaded_llm)
             except Exception:
-                logger.exception("Failed to unload LLM backend")
+                if not loaded:
+                    logger.exception("Failed to load LLM backend — continuing without it")
+                    _process_phase_b()
+                elif phase_completed:
+                    # Preserve the prior best-effort unload behavior: a close
+                    # failure after otherwise successful item processing is
+                    # logged but does not turn the batch into a failure.
+                    logger.exception("Failed to unload LLM backend")
+                else:
+                    raise
+            else:
+                logger.info("LLM backend unloaded")
 
     elapsed = time.monotonic() - start
     logger.info(

@@ -1,5 +1,6 @@
 """Tests for wilted.prepare — content preparation orchestrator."""
 
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -405,6 +406,62 @@ class TestPrepareLLMLifecycle:
 
         assert stats["prepared"] == 1
 
+    def test_llm_load_failure_closes_then_continues_without_llm(self, tmp_path):
+        """A failed coordinator load still closes the backend and falls back."""
+        _make_item(tmp_path)
+        mock_backend = MagicMock()
+        mock_backend.load.side_effect = RuntimeError("Model not found")
+
+        with patch("wilted.llm.create_backend", return_value=mock_backend):
+            stats = run_prepare(use_llm=True, skip_tts=True)
+
+        assert stats["prepared"] == 1
+        mock_backend.close.assert_called_once()
+
+    def test_llm_close_failure_is_logged_without_failing_batch(self, tmp_path):
+        """A close-only failure keeps the legacy best-effort unload behavior."""
+        _make_item(tmp_path)
+        mock_backend = MagicMock()
+        mock_backend.generate.return_value = ('{"promo_indices": []}', 10)
+        mock_backend.close.side_effect = RuntimeError("close failed")
+
+        with (
+            patch("wilted.llm.create_backend", return_value=mock_backend),
+            patch("wilted.cache.generate_article_cache", return_value=True),
+        ):
+            stats = run_prepare(use_llm=True)
+
+        assert stats == {"prepared": 1, "errors": 0, "skipped": 0}
+
+    def test_llm_phase_runs_under_coordinator_lease(self, tmp_path):
+        """Production prepare LLM work must not bypass ModelCoordinator (INV-1)."""
+        from wilted.station_runtime.coordinator import ModelCoordinator
+
+        _make_item(tmp_path)
+        coordinator = ModelCoordinator()
+
+        class LeaseCheckingBackend:
+            def _assert_lease_held(self) -> None:
+                assert coordinator._owner_thread_id == threading.get_ident()
+
+            def load(self) -> None:
+                self._assert_lease_held()
+
+            def generate(self, system_prompt: str, user_content: str) -> tuple[str, int]:
+                self._assert_lease_held()
+                return ('{"promo_indices": []}', 10)
+
+            def close(self) -> None:
+                self._assert_lease_held()
+
+        backend = LeaseCheckingBackend()
+        with (
+            patch("wilted.prepare.ModelCoordinator", return_value=coordinator),
+            patch("wilted.llm.create_backend", return_value=backend),
+            patch("wilted.cache.generate_article_cache", return_value=True),
+        ):
+            assert run_prepare(use_llm=True)["prepared"] == 1
+
 
 # ---------------------------------------------------------------------------
 # INV-2 — load is paired with close, even when processing fails mid-run
@@ -412,28 +469,17 @@ class TestPrepareLLMLifecycle:
 
 
 class TestInv2LoadCloseAlwaysPaired:
-    """Locks the load/close-pairing clause of INV-2: `run_prepare` loads the
-    LLM backend once and the `finally` block must still call `close()` when
-    something raises during item processing, so a load is never left
-    unclosed (Metal memory never leaks) on failure.
+    """Lock INV-2's coordinator-managed LLM load/close pairing.
 
-    This does NOT lock the strict "at most one Metal model resident
-    simultaneously" co-residency clause -- that remediation (a
-    ModelCoordinator lease) is deferred to Plan A A.1. This test only
-    guards that every load() this module performs is paired with exactly
-    one close(), including when the `try` body raises.
-
-    If `llm_backend.close()` were moved out of the `finally` block in
-    `run_prepare` (src/wilted/prepare.py), this test fails: the mid-run
-    exception would propagate past the load without ever reaching close(),
-    leaking the resident Metal model.
+    ``ModelCoordinator.run_llm`` must close the backend when item processing
+    raises, so a loaded model cannot leak Metal memory on failure.
     """
 
     def test_close_called_when_item_processing_raises_mid_run(self, tmp_path):
         """A raise from _set_status (invoked before each item's own
         try/except, so the exception escapes the inner per-item guard and
-        propagates to run_prepare's outer try) must still result in
-        llm_backend.close() being called via the outer `finally`.
+        propagates from Phase B must still result in the coordinator closing
+        the LLM backend.
         """
         _make_item(tmp_path, guid="a1")
         _make_item(tmp_path, guid="a2")
@@ -446,8 +492,8 @@ class TestInv2LoadCloseAlwaysPaired:
         # Raise only once "processing" status is set for the first item --
         # this happens *before* the item's own try/except in run_prepare's
         # loop body, so the exception is NOT swallowed there and instead
-        # propagates out of run_prepare entirely. Only the outer
-        # try/finally around the LLM lifecycle can still guarantee close().
+        # propagates out of run_prepare entirely. The coordinator lifecycle
+        # must still guarantee close().
         def _raise_on_processing(item, status, error_message=None):
             if status == "processing":
                 raise RuntimeError("simulated mid-run failure")
