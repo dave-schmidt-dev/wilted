@@ -9,11 +9,9 @@ Covers Plan A Task 4.1:
   - ``[briefing]`` wilted.toml wiring (``BriefingGenerator.from_config``).
 
 The NWS fetch and TTS synth seams are always injected here — no live network
-call and no real model load anywhere in this file. ``test_default_synth_fn_*``
-is the one exception that exercises the REAL ``ModelCoordinator``, but still
-with a fake ``AudioEngine`` (mirrors ``tests/test_coordinator.py``'s
-``FakeAudioEngine``), so it proves the production wiring goes through the TTS
-lease without ever touching mlx_audio/sounddevice.
+call and no real daemon request anywhere in this file. ``test_default_synth_fn_*``
+uses a fake ``AudioEngine`` to prove production wiring calls its daemon-backed
+``generate_audio`` method directly.
 """
 
 from __future__ import annotations
@@ -26,7 +24,6 @@ from wilted import WPM_ESTIMATE
 from wilted.db import Item
 from wilted.station_runtime import briefing as briefing_mod
 from wilted.station_runtime.briefing import BriefingGenerator
-from wilted.station_runtime.coordinator import ModelCoordinator
 
 pytestmark = pytest.mark.unit
 
@@ -106,15 +103,12 @@ class _FakeSynth:
 
 
 class FakeAudioEngine:
-    """Mirrors ``tests/test_coordinator.py``'s ``FakeAudioEngine`` — no real model load."""
+    """Daemon-engine seam with no real synthesis."""
 
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.received_text: str | None = None
         self.received_kwargs: dict = {}
-
-    def load_model(self) -> None:
-        self.calls.append("load_model")
 
     def generate_audio(self, text: str, **kwargs) -> list[float]:
         self.calls.append("generate_audio")
@@ -332,27 +326,23 @@ class TestBudget:
 
 
 class TestSynthSeam:
-    def test_default_synth_fn_routes_through_coordinator_run_tts(self):
+    def test_default_synth_fn_uses_daemon_engine_without_a_tts_lease(self):
         _make_classified_item("Only Item", relevance=0.9)
         engine = FakeAudioEngine()
-        coordinator = ModelCoordinator()
         gen = BriefingGenerator(
             fetch_fn=_nws_payload,
-            coordinator=coordinator,
             engine=engine,
             top_n=1,
         )
 
         result = gen.generate(now=_NOW)
 
-        # load_model + generate_audio only happen via ModelLease.load/run inside
-        # coordinator.run_tts — this is the INV-1/INV-2 lease path, not a bypass.
-        assert engine.calls == ["load_model", "generate_audio"]
+        # TTS is resident in the separate daemon; Wilted calls the engine directly.
+        assert engine.calls == ["generate_audio"]
         assert engine.received_text == result.script
-        assert coordinator.peak_concurrent_residency == 1
 
-    def test_injected_synth_fn_bypasses_coordinator_entirely(self):
-        """The seam tests rely on: injecting synth_fn must mean NO coordinator/engine touched."""
+    def test_injected_synth_fn_bypasses_engine_entirely(self):
+        """Injecting synth_fn must mean no production engine is constructed."""
         synth = _FakeSynth()
         gen = BriefingGenerator(fetch_fn=_nws_payload, synth_fn=synth)
         # No coordinator/engine passed and none constructed — proven by the fact

@@ -377,9 +377,9 @@ def _default_fetch_alerts(zone: str, county: str, user_agent: str) -> dict:
 
 
 def _default_synth_bulletin(text: str) -> BulletinAudio:
-    """Real TTS synth via the coordinator's single ML lease (INV-1/INV-2).
+    """Real TTS synth via the resident speech daemon.
 
-    Lazy-imports ``AudioEngine``/``ModelCoordinator``/``mlx_audio`` so
+    Lazy-imports ``AudioEngine``/``mlx_audio`` so
     importing this module never requires those (heavy, optional-at-import)
     dependencies — only the CLI wrapper's production path (:func:`main`)
     ever calls this; every test injects its own fixture ``synth`` instead.
@@ -390,11 +390,8 @@ def _default_synth_bulletin(text: str) -> BulletinAudio:
     from mlx_audio.audio_io import write as _audio_write
 
     from wilted.engine import AudioEngine
-    from wilted.station_runtime.coordinator import ModelCoordinator
-
-    coordinator = ModelCoordinator()
     engine = AudioEngine()
-    audio_np = coordinator.run_tts(engine, lambda e: e.generate_audio(text))
+    audio_np = engine.generate_audio(text)
     duration_ms = round(len(audio_np) / engine.sample_rate * 1000)
 
     fd, tmp_name = tempfile.mkstemp(suffix=".wav")
@@ -476,7 +473,7 @@ def build_production_monitor(*, trigger_path: Path | None = None) -> WeatherMoni
     """The single public construction point for the live TUI's ``WeatherMonitor``.
 
     Always uses :func:`_default_synth_bulletin` for ``synth`` (the real
-    coordinator TTS). ``fetch`` is :func:`_default_fetch_alerts` (the real
+    daemon TTS). ``fetch`` is :func:`_default_fetch_alerts` (the real
     combined NWS GET) unless ``trigger_path`` is given, in which case it is
     :func:`make_trigger_file_fetch` bound to that path -- the A.5.1
     manual-test hook, not a production branch. Zone/county/user_agent/

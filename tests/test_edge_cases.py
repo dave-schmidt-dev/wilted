@@ -4,8 +4,7 @@ import importlib
 import json
 import os
 import threading
-import types
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -171,27 +170,6 @@ class TestConcurrentQueueAccess:
 class TestEngineErrorHandling:
     """Verify AudioEngine handles errors in model loading and playback."""
 
-    def test_model_load_failure(self):
-        """ImportError from mlx_audio should be wrapped in RuntimeError."""
-        engine = AudioEngine()
-        with patch.dict("sys.modules", {"mlx_audio": None, "mlx_audio.tts": None, "mlx_audio.tts.utils": None}):
-            # Force a fresh import attempt by ensuring _model is None
-            engine._model = None
-            with pytest.raises(RuntimeError, match="Failed to load TTS model"):
-                engine.load_model()
-
-    def test_model_load_failure_via_mock(self):
-        """Mock load_model import to raise ImportError, verify RuntimeError."""
-        engine = AudioEngine()
-
-        def _failing_load(*args, **kwargs):
-            raise ImportError("mlx_audio not available")
-
-        with patch("wilted.engine.AudioEngine.load_model") as mock_load:
-            mock_load.side_effect = RuntimeError("Failed to load TTS model 'test': mlx_audio not available")
-            with pytest.raises(RuntimeError, match="Failed to load TTS model"):
-                engine.load_model()
-
     def test_audio_device_error(self):
         """sd.OutputStream raising an exception should propagate from _play_audio().
 
@@ -200,7 +178,6 @@ class TestEngineErrorHandling:
         silently swallow the error.
         """
         engine = AudioEngine()
-        engine._model = MagicMock()
         audio = np.zeros(4096, dtype=np.float32)
 
         with patch("sounddevice.OutputStream") as mock_cls:
@@ -214,128 +191,6 @@ class TestEngineErrorHandling:
         assert hasattr(engine, "generate_and_play"), (
             "AudioEngine is missing generate_and_play — the TUI depends on this method"
         )
-
-    def test_generate_and_play_respects_stop_between_segments(self):
-        """Setting stop_event mid-playback should prevent remaining segments.
-
-        generate_and_play() clears _stop_event at entry (by design — it's called
-        per-paragraph from the TUI). Stop is checked between segments, so we set
-        stop after the first segment plays.
-        """
-        engine = AudioEngine()
-        engine._model = MagicMock()
-        seg1 = types.SimpleNamespace(audio=np.zeros(1024), sample_rate=24000)
-        seg2 = types.SimpleNamespace(audio=np.zeros(1024), sample_rate=24000)
-        engine._model.generate.return_value = [seg1, seg2]
-
-        with patch("sounddevice.OutputStream") as mock_cls:
-            stream_instance = MagicMock()
-            mock_cls.return_value = stream_instance
-
-            # Stop after first segment's audio is written
-            call_count = [0]
-
-            def write_side_effect(data):
-                call_count[0] += 1
-                if call_count[0] >= 1:
-                    engine._stop_event.set()
-
-            stream_instance.write.side_effect = write_side_effect
-
-            if hasattr(engine, "generate_and_play"):
-                engine.generate_and_play("Test paragraph.")
-                # Model should have been called (stop is cleared at entry)
-                assert engine._model.generate.called
-            else:
-                pytest.skip("generate_and_play not yet implemented")
-
-    def test_play_article_with_empty_text(self):
-        """play_article with empty string should complete without error."""
-        engine = AudioEngine()
-        engine._model = MagicMock()
-
-        with patch("sounddevice.OutputStream"):
-            engine.play_article("")
-            # No paragraphs to process, so model.generate should not be called
-            engine._model.generate.assert_not_called()
-
-    def test_play_article_stop_during_playback(self):
-        """Setting stop mid-article should prevent remaining paragraphs.
-
-        play_article() clears _stop_event at entry (by design). Stop is checked
-        between paragraphs, so we trigger it during the first paragraph's playback.
-        """
-        engine = AudioEngine()
-        engine._model = MagicMock()
-        fake_segment = types.SimpleNamespace(audio=np.zeros(1024), sample_rate=24000)
-        engine._model.generate.return_value = fake_segment
-
-        progress_calls = []
-
-        def on_progress(para_idx, seg_idx, total, text):
-            progress_calls.append(para_idx)
-            engine._stop_event.set()  # Stop after first paragraph
-
-        with patch("sounddevice.OutputStream") as mock_cls:
-            stream_instance = MagicMock()
-            mock_cls.return_value = stream_instance
-            engine.play_article(
-                "Para 0.\nPara 1.\nPara 2.",
-                on_progress=on_progress,
-            )
-
-        # Only the first paragraph should have been processed
-        assert len(progress_calls) == 1
-        assert progress_calls[0] == 0
-
-    def test_load_model_noop_when_already_loaded(self):
-        """load_model() is a no-op when _model is already set."""
-        engine = AudioEngine()
-        engine._model = MagicMock()
-        # Should not attempt to import mlx_audio
-        engine.load_model()  # no-op, should not raise
-        assert engine._model is not None
-
-
-# ---------------------------------------------------------------------------
-# TestGenerateAudioEdgeCases
-# ---------------------------------------------------------------------------
-
-
-class TestGenerateAudioEdgeCases:
-    """Edge cases for the generate_audio engine method."""
-
-    def test_empty_text_returns_empty_array(self):
-        """generate_audio with text that produces no segments returns empty array."""
-        engine = AudioEngine()
-        engine._model = MagicMock()
-        engine._model.generate.return_value = []
-
-        with patch("sounddevice.OutputStream"):
-            result = engine.generate_audio("")
-        assert isinstance(result, np.ndarray)
-        assert len(result) == 0
-
-    def test_model_not_loaded_auto_loads(self):
-        """generate_audio should auto-load model if not loaded."""
-        engine = AudioEngine()
-
-        mock_model = MagicMock()
-        mock_segment = MagicMock()
-        mock_segment.audio = np.zeros(100)
-        mock_model.generate.return_value = mock_segment
-
-        with (
-            patch("sounddevice.OutputStream"),
-            patch("mlx_audio.tts.utils.load_model", return_value=mock_model) as mock_load,
-        ):
-            engine.generate_audio("Test text.")
-            mock_load.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# TestLanguageConstants
-# ---------------------------------------------------------------------------
 
 
 class TestLanguageConstants:
@@ -367,54 +222,6 @@ class TestLanguageConstants:
 # TestLangCodeIntegration
 # ---------------------------------------------------------------------------
 
-
-class TestLangCodeIntegration:
-    """Verify lang_code is used correctly across the engine."""
-
-    def test_play_article_uses_lang_code(self):
-        """play_article should pass lang_code= to model.generate."""
-        engine = AudioEngine()
-        engine.lang = "b"
-
-        mock_segment = MagicMock()
-        mock_segment.audio = np.zeros(100)
-        engine._model = MagicMock()
-        engine._model.generate.return_value = mock_segment
-
-        progress_calls = []
-
-        def on_progress(*args):
-            progress_calls.append(args)
-
-        with patch("sounddevice.OutputStream"):
-            engine.play_article("Test paragraph.", on_progress=on_progress)
-
-        call_kwargs = engine._model.generate.call_args[1]
-        assert "lang_code" in call_kwargs
-        assert call_kwargs["lang_code"] == "b"
-        assert "lang" not in call_kwargs
-
-    def test_generate_and_play_clears_stop_event(self):
-        """generate_and_play should clear stop event at entry for skip support."""
-        engine = AudioEngine()
-        engine._stop_event.set()  # Simulate previous stop
-
-        mock_segment = MagicMock()
-        mock_segment.audio = np.zeros(100)
-        engine._model = MagicMock()
-        engine._model.generate.return_value = mock_segment
-
-        with patch("sounddevice.OutputStream"):
-            engine.generate_and_play("Test.")
-
-        # Stop event should have been cleared at entry
-        # (and may be set again by the end, but the method should have run)
-        engine._model.generate.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# TestWpmEstimateConsistency
-# ---------------------------------------------------------------------------
 
 
 class TestWpmEstimateConsistency:

@@ -2,8 +2,8 @@
 
 Produces a :class:`Briefing`: a NWS gridpoint-forecast weather line plus a
 stable, snapshotted top-N news item set, assembled into a script within a
-configurable duration budget (default 5 minutes), and synthesized via the
-coordinator TTS lease (INV-1/INV-2). Tracks a generation time + max-age so a
+configurable duration budget (default 5 minutes), and synthesized by the
+resident speech daemon. Tracks a generation time + max-age so a
 stale briefing regenerates before play (see ``Briefing.is_stale`` /
 ``BriefingGenerator.ensure_fresh``).
 
@@ -17,10 +17,8 @@ loaded model:
   ``Accept: application/geo+json``, the ADR-0001-Decision-3-fixed office/grid
   for ZIP 20169 -- Haymarket, VA).
 - ``BriefingGenerator.synth_fn``: one-arg callable ``(script_text) -> result``.
-  Defaults to routing through :meth:`wilted.station_runtime.coordinator.
-  ModelCoordinator.run_tts`, so production use goes through the single named
-  ML lease like every other TTS caller; tests inject a fake that never loads
-  a model.
+  Defaults to the resident speech daemon; tests inject a fake that never
+  performs synthesis.
 
 CR-13 (stable top-N, not re-derived from live classification): the top-N
 item set is queried from ``Item`` rows EXACTLY ONCE, inside
@@ -44,7 +42,6 @@ from typing import TYPE_CHECKING
 from wilted import WPM_ESTIMATE, load_config
 from wilted.db import Item
 from wilted.engine import AudioEngine
-from wilted.station_runtime.coordinator import ModelCoordinator
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -134,8 +131,8 @@ def fetch_nws_gridpoint_forecast(
 # caller injects into ``BriefingGenerator`` so ``Briefing.synth_result``
 # becomes a playable, publishable audio artifact. Mirrors
 # ``wilted.station_runtime.weather_monitor._default_synth_bulletin``/
-# ``BulletinAudio`` exactly -- same coordinator/engine lease discipline
-# (INV-1/INV-2), same lazy-import-heavy-deps-only-when-actually-called
+# ``BulletinAudio`` exactly -- same daemon/engine synthesis discipline, same
+# lazy-import-heavy-deps-only-when-actually-called
 # discipline, same "encode to a temp .wav, read bytes, unlink" shape -- so
 # the TUI's briefing-publish path (``wilted.tui.WiltedApp._generate_briefing_worker``)
 # can build a ``StationEntry`` the exact same way ``WeatherMonitor._qualify``
@@ -164,10 +161,9 @@ class BriefingAudio:
 def synthesize_briefing_audio(
     text: str,
     *,
-    coordinator: ModelCoordinator | None = None,
     engine: AudioEngine | None = None,
 ) -> BriefingAudio:
-    """Real TTS synth via the coordinator's single ML lease (INV-1/INV-2).
+    """Real TTS synth via the resident speech daemon.
 
     This is the production ``synth_fn`` seam a caller injects into
     :meth:`BriefingGenerator.generate` (via ``BriefingGenerator(synth_fn=
@@ -177,15 +173,13 @@ def synthesize_briefing_audio(
     playable bulletin ``StationEntry``, exactly like
     ``WeatherMonitor._qualify`` does for a weather bulletin.
 
-    Lazy-imports ``mlx_audio``/``AudioEngine``/``ModelCoordinator`` so
+    Lazy-imports ``mlx_audio``/``AudioEngine`` so
     importing this module never requires those (heavy, optional-at-import)
     dependencies -- only the production launch path ever calls this; every
     test injects its own fake ``synth_fn`` instead.
 
     Args:
         text: The briefing script to synthesize.
-        coordinator: Optional shared ``ModelCoordinator`` (constructed if
-            omitted -- mirrors ``_default_synth_bulletin``'s own default).
         engine: Optional shared ``AudioEngine`` (constructed if omitted).
     """
     import tempfile
@@ -193,9 +187,8 @@ def synthesize_briefing_audio(
 
     from mlx_audio.audio_io import write as _audio_write
 
-    resolved_coordinator = coordinator if coordinator is not None else ModelCoordinator()
     resolved_engine = engine if engine is not None else AudioEngine()
-    audio_np = resolved_coordinator.run_tts(resolved_engine, lambda e: e.generate_audio(text))
+    audio_np = resolved_engine.generate_audio(text)
     duration_ms = round(len(audio_np) / resolved_engine.sample_rate * 1000)
 
     fd, tmp_name = tempfile.mkstemp(suffix=".wav")
@@ -391,7 +384,7 @@ class Briefing:
     word_count: int
     estimated_duration_s: float
     synth_result: object = field(default=None, compare=False, repr=False)
-    """Whatever the ``synth_fn`` seam returned (default: coordinator.run_tts's
+    """Whatever the ``synth_fn`` seam returned (default: daemon TTS's
     ``generate_audio`` array). Excluded from ``__eq__``/``repr`` since it may
     be a numpy array (ambiguous truth value under tuple/dataclass equality)."""
 
@@ -436,8 +429,8 @@ class BriefingGenerator:
             payload. Defaults to :func:`fetch_nws_gridpoint_forecast` bound
             to ``nws_office``/``nws_grid_x``/``nws_grid_y``.
         synth_fn: One-arg callable ``(script_text) -> result``. Defaults to
-            routing through ``coordinator.run_tts`` against ``engine``
-            (constructed lazily -- see :meth:`_default_synth_fn`).
+            resident-daemon TTS through ``engine`` (constructed lazily -- see
+            :meth:`_default_synth_fn`).
     """
 
     max_duration_s: float = _DEFAULT_MAX_DURATION_S
@@ -456,9 +449,8 @@ class BriefingGenerator:
     synth_fn: Callable[[str], object] | None = None
 
     # Only consulted by the DEFAULT synth_fn (i.e. when synth_fn is None).
-    # Injectable so production code can share one coordinator/engine across
+    # Injectable so production code can share one engine configuration across
     # callers instead of this module constructing its own.
-    coordinator: ModelCoordinator | None = None
     engine: AudioEngine | None = None
 
     @classmethod
@@ -493,19 +485,18 @@ class BriefingGenerator:
         return lambda: fetch_nws_gridpoint_forecast(office=office, grid_x=grid_x, grid_y=grid_y)
 
     def _default_synth_fn(self) -> Callable[[str], object]:
-        """Build the default TTS synth seam: ``coordinator.run_tts`` + ``engine``.
+        """Build the default TTS synth seam with the resident speech daemon.
 
-        Constructs ``ModelCoordinator()``/``AudioEngine()`` lazily -- only
+        Constructs ``AudioEngine()`` lazily -- only
         when this is actually reached, i.e. only when the caller did NOT
         supply their own ``synth_fn`` -- so tests that inject a fake never
-        pay for (or risk) a real model load.
+        pay for real synthesis.
         """
-        coordinator = self.coordinator if self.coordinator is not None else ModelCoordinator()
         engine = self.engine if self.engine is not None else AudioEngine()
         voice, lang, speed = self.voice, self.lang, self.speed
 
         def _synth(text: str) -> object:
-            return coordinator.run_tts(engine, lambda e: e.generate_audio(text, voice=voice, lang=lang, speed=speed))
+            return engine.generate_audio(text, voice=voice, lang=lang, speed=speed)
 
         return _synth
 

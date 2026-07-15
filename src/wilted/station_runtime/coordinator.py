@@ -1,10 +1,12 @@
-"""ModelCoordinator — the single named ML lease over the three model families.
+"""ModelCoordinator — the single named lease for in-process ML work.
 
-This module is the SINGLE authority that all ML model loads (LLM, TTS,
-transcription) must route through. It exists to enforce two hard-won
+This module serializes Wilted-process LLM and transcription work. Speech
+synthesis is resident in the separate speech daemon and does not hold this
+lease. It exists to enforce two hard-won
 invariants (see ``INVARIANTS.md``):
 
-INV-1 — All MLX/Metal GPU work is serialized behind a lock, and the tqdm
+INV-1 — Remaining in-process MLX/Metal LLM work is serialized by this lease,
+    and the tqdm
     multiprocessing lock is initialized on the MAIN thread before any
     Textual worker thread touches a model. The first tqdm-lock init inside
     a Textual worker thread spawns Python's ``resource_tracker`` with a bad
@@ -18,23 +20,13 @@ INV-2 — At most ONE ML model is resident at a time, and every load is
     single named lease: acquiring it while it is held BLOCKS (waits for the
     slot) rather than co-loading a second model family.
 
-Reconciling with ``AudioEngine._model_lock``: ``engine.py`` already
-serializes its *own* Metal calls (model load + every ``generate()``) behind
-an internal ``threading.Lock``. That lock is unchanged and still does its
-job — it protects concurrent access to `AudioEngine`'s own generate calls
-from two threads sharing one `AudioEngine` instance. ``ModelCoordinator`` is
-a layer *above* that: it is the process-wide gate that ensures nothing else
-(the LLM backend, a transcribe call) runs concurrently with whatever
-`AudioEngine` is doing under its own lock. The two locks are additive, not
-duplicative — engine.py's lock is not removed or bypassed.
-
-Residency note (measured on M5 Max, 2026-07-10): the Metal allocator pool
-returns to baseline after every ``close()`` for all three model families.
-However the GGUF LLM backend (llama.cpp via ``llama-cpp-python``) retains
+Residency note (measured on M5 Max, 2026-07-10): the in-process LLM backend's
+Metal allocator pool returns to baseline after ``close()``. The transcribe
+family is a legacy daemon-request lease user, not a Wilted-process model
+resident. The GGUF LLM backend (llama.cpp via ``llama-cpp-python``) retains
 ~5.4 GB of *process RSS* after ``close()`` that is not reclaimed — this is a
 separate (non-Metal) allocator's residency, not a violation of "Metal
-memory is reclaimed on close." The one-model-at-a-time invariant holds
-regardless of which memory pool a given backend uses.
+memory is reclaimed on close."
 
 Usage:
     from wilted.station_runtime.coordinator import ModelCoordinator
@@ -59,7 +51,6 @@ from typing import TYPE_CHECKING, TypeVar
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-    from wilted.engine import AudioEngine
     from wilted.llm import LLMBackend
 
 logger = logging.getLogger(__name__)
@@ -93,11 +84,11 @@ def _run_close_without_masking(close_fn: Callable[[], None] | None) -> None:
         close_fn()
 
 
-# The three model families that ModelCoordinator arbitrates. Kept as a
+# The two model families that ModelCoordinator arbitrates. Kept as a
 # closed set (not a free-form string) so a typo in a family name fails
 # loudly instead of silently bypassing the lease accounting.
-ModelFamily = str  # "llm" | "tts" | "transcribe" — see _VALID_FAMILIES
-_VALID_FAMILIES = frozenset({"llm", "tts", "transcribe"})
+ModelFamily = str  # "llm" | "transcribe" — see _VALID_FAMILIES
+_VALID_FAMILIES = frozenset({"llm", "transcribe"})
 
 
 class LeaseHeldElsewhereError(RuntimeError):
@@ -141,7 +132,7 @@ class ModelLease:
         self._coordinator = coordinator
 
     def load(self, load_fn: Callable[[], T]) -> T:
-        """Run ``load_fn`` (e.g. ``backend.load`` or ``AudioEngine.load_model``).
+        """Run ``load_fn`` (e.g. ``backend.load``) under the lease.
 
         Marks this family as resident for the duration of the call so
         concurrent-residency assertions in tests can observe it. Does NOT
@@ -163,8 +154,7 @@ class ModelLease:
         """Run ``close_fn`` if provided.
 
         Safe to call with ``close_fn=None`` for callers that have nothing to
-        close on this family (e.g. ``transcribe_audio`` frees its model
-        internally already).
+        close in the Wilted process (for example, daemon-backed transcription).
 
         If ``close_fn`` raises while another exception is already
         propagating (i.e. this is being called from a ``finally`` after the
@@ -176,12 +166,11 @@ class ModelLease:
         _run_close_without_masking(close_fn)
 
     def run_call(self, call_fn: Callable[[], T]) -> T:
-        """Run a bare model call (e.g. ``transcribe_audio(...)``) under the lease.
+        """Run a bare call (e.g. ``transcribe_audio(...)``) under the lease.
 
-        For families with no persistent load/close handle — `transcribe.py`
-        loads parakeet internally per call and frees it before returning —
-        this still serializes the call against the other two families so a
-        transcribe run never overlaps a live LLM/TTS model.
+        Daemon-backed families have no Wilted-process model handle. This legacy
+        wrapper serializes request initiation with the LLM lease; it does not
+        represent model residency in the Wilted process.
         """
         self._coordinator._mark_resident(self.family)
         try:
@@ -191,16 +180,13 @@ class ModelLease:
 
 
 class ModelCoordinator:
-    """The single named ML lease shared by the LLM, TTS, and transcribe families.
+    """The single named ML lease shared by the LLM and transcribe families.
 
     At most one family may hold the lease (and therefore be "resident") at a
     time. A second call to :meth:`lease` blocks until the first is released
-    — never co-loads. Wraps three call shapes:
+    — never co-loads. Wraps two call shapes:
 
     - LLM: ``create_backend(...).load()`` / ``.generate()`` / ``.close()``.
-    - TTS: ``AudioEngine.load_model()`` / ``.generate_audio()`` (unload is
-      implicit — `AudioEngine` has no explicit unload method today; when one
-      exists it routes through :meth:`ModelLease.close` the same way).
     - Transcribe: ``transcribe_audio(...)`` is a flat function with no
       persistent handle, so it is serialized via :meth:`ModelLease.run_call`
       rather than load/close.
@@ -229,7 +215,7 @@ class ModelCoordinator:
         """Acquire the single ML lease for ``family``, blocking until free.
 
         Args:
-            family: One of ``"llm"``, ``"tts"``, ``"transcribe"``.
+            family: One of ``"llm"`` or ``"transcribe"``.
 
         Yields:
             A :class:`ModelLease` bound to this family. The lease is held
@@ -307,7 +293,7 @@ class ModelCoordinator:
         return self._peak_concurrent_residency
 
     # ------------------------------------------------------------------
-    # Convenience wrappers for the three concrete families. These are thin
+    # Convenience wrappers for the two concrete families. These are thin
     # sugar over `lease()` + `ModelLease` — callers may also use `lease()`
     # directly if they need finer control (e.g. multiple generate() calls
     # between load and close).
@@ -341,43 +327,12 @@ class ModelCoordinator:
             finally:
                 lease.close(backend.close)
 
-    def run_tts(
-        self,
-        engine: AudioEngine,
-        generate_fn: Callable[[AudioEngine], T],
-        *,
-        unload_fn: Callable[[], None] | None = None,
-    ) -> T:
-        """Load ``engine``'s model, run ``generate_fn(engine)``, always unload.
-
-        Args:
-            engine: An :class:`wilted.engine.AudioEngine` instance.
-            generate_fn: Callable invoked with ``engine`` after
-                ``load_model()`` succeeds, e.g.
-                ``lambda e: e.generate_audio(text, voice=voice)``.
-            unload_fn: Optional explicit unload/reclaim callable. `AudioEngine`
-                does not currently expose one (its model is process-lifetime
-                once loaded); pass one in if/when it does. Defaults to a
-                no-op so INV-2's "always close" contract is satisfied
-                trivially when there is nothing to reclaim.
-
-        Returns:
-            Whatever ``generate_fn`` returns.
-        """
-        with self.lease("tts") as lease:
-            try:
-                lease.load(engine.load_model)
-                return generate_fn(engine)
-            finally:
-                lease.close(unload_fn)
-
     def run_transcribe(self, call_fn: Callable[[], T]) -> T:
         """Serialize a transcribe call (e.g. ``transcribe_audio(...)``) under the lease.
 
-        `transcribe.py` has no persistent load/close handle — it loads
-        parakeet internally per call and frees it before returning — so
-        there is nothing to "close" here. This still guarantees the call
-        never overlaps a resident LLM or TTS model.
+        Transcription is daemon-backed and has no Wilted-process load/close
+        handle, so there is nothing to close here. This legacy wrapper only
+        serializes request initiation with the LLM lease.
 
         Args:
             call_fn: Zero-arg callable, e.g.

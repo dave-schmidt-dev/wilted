@@ -1,6 +1,5 @@
 """Shared test fixtures for wilted."""
 
-import importlib
 import sys
 import types
 from unittest.mock import MagicMock, patch
@@ -62,19 +61,6 @@ def _fake_package(name: str) -> types.ModuleType:
 
 
 @pytest.fixture(autouse=True)
-def _no_preload_model():
-    """Prevent TUI tests from loading the real TTS model."""
-    try:
-        importlib.import_module("wilted.tui")
-    except ImportError:
-        yield
-        return
-
-    with patch("wilted.tui.WiltedApp._preload_model"):
-        yield
-
-
-@pytest.fixture(autouse=True)
 def isolated_data(tmp_path, monkeypatch):
     """Redirect all data paths to a temp directory for every test."""
     data_dir = tmp_path / "data"
@@ -115,24 +101,17 @@ def stub_audio_modules():
     fake_sounddevice.PortAudioError = OSError
 
     fake_mlx_audio = _fake_package("mlx_audio")
-    fake_mlx_audio_tts = _fake_package("mlx_audio.tts")
-    fake_tts_utils = types.ModuleType("mlx_audio.tts.utils")
-    fake_tts_utils.load_model = MagicMock()
     fake_audio_io = types.ModuleType("mlx_audio.audio_io")
     fake_audio_io.write = lambda *args, **kwargs: None
     fake_audio_io.read = MagicMock()
 
-    fake_mlx_audio.tts = fake_mlx_audio_tts
     fake_mlx_audio.audio_io = fake_audio_io
-    fake_mlx_audio_tts.utils = fake_tts_utils
 
     with patch.dict(
         sys.modules,
         {
             "sounddevice": fake_sounddevice,
             "mlx_audio": fake_mlx_audio,
-            "mlx_audio.tts": fake_mlx_audio_tts,
-            "mlx_audio.tts.utils": fake_tts_utils,
             "mlx_audio.audio_io": fake_audio_io,
         },
     ):

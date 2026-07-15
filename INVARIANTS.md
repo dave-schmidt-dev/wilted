@@ -4,19 +4,19 @@
 > to invariants. Per-project convention (commit prefix, invariant refs) is declared
 > in this project's CLAUDE.md/README, not globally.
 
-### INV-1 — All MLX/Metal GPU work is serialized behind `_model_lock`, and the tqdm lock is initialized on the main thread before Textual starts
+### INV-1 — Remaining in-process MLX/Metal LLM work is serialized by ModelCoordinator's lease, and the tqdm lock is initialized on the main thread before Textual starts
 area: ["src/wilted/engine.py", "src/wilted/tui/**/*.py", "src/wilted/cli.py", "src/wilted/station_runtime/coordinator.py"]
-gate_test: tests/test_engine.py
-# Additional gate reference: tests/test_coordinator.py (RuntimeBootstrap main-thread tqdm-lock ordering; see TestRuntimeBootstrap)
+gate_test: tests/test_coordinator.py
+# Gate references: TestModelCoordinator LLM lease serialization and TestRuntimeBootstrap main-thread tqdm-lock ordering.
 threshold: 3
-rationale: Concurrent Metal access (two threads in load/generate, or a lazy MLX generator escaping the lock) crashes the process with SIGABRT/SIGSEGV (BUG-1). First tqdm-lock init inside a Textual worker spawns resource_tracker with a bad fd set (BUG-2). Both are hard-won crashes; any unlocked MLX access or worker-thread tqdm init is a regression.
+rationale: Concurrent in-process LLM Metal access crashes the process with SIGABRT/SIGSEGV (BUG-1). The speech daemon owns TTS Metal residency outside the Wilted process. First tqdm-lock init inside a Textual worker spawns resource_tracker with a bad fd set (BUG-2). Both are hard-won crashes; any unleased in-process LLM access or worker-thread tqdm init is a regression.
 
-### INV-2 — At most one ML model is resident at a time, and every load is paired with a close that reclaims Metal memory even when the load fails
+### INV-2 — At most one ML model is resident in the Wilted process at a time, and every load is paired with a close that reclaims Metal memory even when the load fails
 area: ["src/wilted/llm.py", "src/wilted/classify.py", "src/wilted/transcribe.py", "src/wilted/prepare.py", "src/wilted/ads.py", "src/wilted/engine.py", "src/wilted/station_runtime/coordinator.py"]
 gate_test: tests/test_prepare.py
 # Additional gate reference: tests/test_coordinator.py (ModelCoordinator one-lease-at-a-time + close-on-exception; see TestOneModelAtATime, TestCloseRunsOnException)
 threshold: 3
-rationale: The Phase-4 pipeline loads one model per family sequentially and unloads before the next. A load() that raises outside a try/finally, a close() that no-ops on partial load, or a second Metal model loaded while another is resident leaks GPU memory and risks OOM on Apple Silicon (M7, M8, M9, M20, M31).
+rationale: The Phase-4 pipeline loads one in-process model family sequentially and unloads before the next. Speech-daemon residency is outside the Wilted process. A load() that raises outside a try/finally, a close() that no-ops on partial load, or a second Metal model loaded while another is resident leaks GPU memory and risks OOM on Apple Silicon (M7, M8, M9, M20, M31).
 
 ### INV-3 — Destructive queue mutations target a stable item id resolved from the same query that produced the user-facing ordering — never a positional index into a differently-scoped query
 area: ["src/wilted/cli.py", "src/wilted/queue.py", "src/wilted/tui/**/*.py"]

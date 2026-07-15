@@ -354,16 +354,3 @@ class TestGenerateArticleCache:
 
 class TestEngineExplicitParams:
     """Tests for generate_audio() with explicit voice/lang/speed params."""
-
-    def test_explicit_params_used(self):
-        from wilted.engine import AudioEngine
-
-        engine = AudioEngine()
-        mock_model = MagicMock()
-        mock_segment = MagicMock()
-        mock_segment.audio = [0.0] * 100
-        mock_model.generate.return_value = mock_segment
-        engine._model = mock_model
-
-        engine.generate_audio("hello", voice="bf_emma", lang="b", speed=1.5)
-        mock_model.generate.assert_called_once_with("hello", voice="bf_emma", speed=1.5, lang_code="b")

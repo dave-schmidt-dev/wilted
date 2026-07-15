@@ -618,6 +618,28 @@ async def test_app_launches():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("items", "should_generate"),
+    [
+        ([{**SAMPLE_QUEUE[0], "audio_file": None}], True),
+        ([{**SAMPLE_QUEUE[0], "audio_file": "already-generated.wav"}], False),
+    ],
+)
+async def test_mount_starts_generation_only_for_items_without_audio(items, should_generate):
+    """Mount preserves the finalization feeder without locally preloading TTS."""
+    app = _make_app()
+    with (
+        patch("wilted.tui.get_playlist_items", return_value=items),
+        patch.object(app, "_trigger_generation") as mock_trigger,
+    ):
+        async with app.run_test():
+            if should_generate:
+                mock_trigger.assert_called_once_with()
+            else:
+                mock_trigger.assert_not_called()
+
+
+@pytest.mark.asyncio
 @patch("wilted.tui.ensure_default_playlists")
 @patch("wilted.tui.get_playlist_items", return_value=SAMPLE_QUEUE)
 async def test_queue_displayed(mock_items, mock_ensure):
@@ -3633,47 +3655,28 @@ async def test_source_health_refreshes_every_timer_tick_even_when_idle():
 
 
 # ---------------------------------------------------------------------------
-# Backend indicator + speech-daemon warm affordance (Phase 7 Build 2)
+# Backend indicator + speech-daemon warm affordance
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_backend_indicator_reflects_env_selectors(monkeypatch):
-    """The indicator reads the engine env selector at render time; STT always
-    reads "daemon" since the M2 cutover removed its selector entirely."""
-    monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
+async def test_backend_indicator_is_daemon_only():
+    """The indicator reports the mandatory resident daemon for TTS and STT."""
     app = _make_app(entries=[])
     async with app.run_test():
         await app.workers.wait_for_complete()
         text = str(app.query_one("#backend-indicator", Label).render())
         assert "TTS daemon" in text
         assert "STT daemon" in text  # M2: tier-3 STT is daemon-only, no selector left
-        assert "warm" in text  # click-to-warm affordance shown on daemon TTS
+        assert "warm" in text  # click-to-warm affordance
 
 
 @pytest.mark.asyncio
-async def test_warm_daemon_action_noop_off_daemon_backend(monkeypatch):
-    """The warm affordance is a no-op (status note only) off the daemon backend —
-    the daemon client is never touched."""
-    monkeypatch.delenv("WILTED_TTS_BACKEND", raising=False)
-    app = _make_app(entries=[])
-    async with app.run_test() as pilot:
-        await app.workers.wait_for_complete()
-        with patch(
-            "wilted.engine.client.tts_stream",
-            side_effect=AssertionError("must not warm off the daemon backend"),
-        ):
-            app.action_warm_daemon()
-            await pilot.pause()
-        assert app._tts_daemon_warmed is False
-
-
 @pytest.mark.asyncio
-async def test_warm_daemon_action_warms_via_client(monkeypatch):
-    """On the daemon backend the warm worker pulls ONE tts_stream chunk to force
+async def test_warm_daemon_action_warms_via_client():
+    """The warm worker pulls ONE tts_stream chunk to force
     the model load, then closes the generator (broker CANCEL) and marks the
     session warmed — the indicator then reads 'warmed'."""
-    monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
     closed = {"count": 0}
 
     def _fake_stream(text, **kwargs):
@@ -3696,11 +3699,10 @@ async def test_warm_daemon_action_warms_via_client(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_warm_daemon_action_swallows_daemon_unavailable(monkeypatch):
+async def test_warm_daemon_action_swallows_daemon_unavailable():
     """No broker -> DaemonUnavailable is swallowed (best-effort); not warmed, no crash."""
     from speech_stack import client as _client
 
-    monkeypatch.setenv("WILTED_TTS_BACKEND", "daemon")
 
     def _no_broker(text, **kwargs):
         raise _client.DaemonUnavailable("no broker at socket")

@@ -361,7 +361,7 @@ class WiltedApp(App):
         # above -- no real-implementation default (BriefingGenerator itself
         # has one via `from_config`/`_default_synth_fn`, but wiring a real
         # one here by default would mean every test that forgets to pass
-        # `briefing_generator=` risks loading a real model / hitting the
+        # `briefing_generator=` risks synthesis or a network request the
         # network the instant the app mounts). `None` (the default) means
         # "no briefing this session" -- on_mount skips the generation worker
         # entirely. The real embedded generator is constructed and injected
@@ -432,7 +432,7 @@ class WiltedApp(App):
         # Speech-backend indicator state (display-only). Whether the resident
         # speech daemon's Kokoro TTS model has been pre-warmed this session, so
         # the indicator can swap the click-to-warm affordance for a "warmed"
-        # note. Only meaningful when WILTED_TTS_BACKEND=daemon.
+        # note. TTS is always served by the resident speech daemon.
         self._tts_daemon_warmed: bool = False
 
     def compose(self) -> ComposeResult:
@@ -495,10 +495,13 @@ class WiltedApp(App):
 
         self._refresh_status_indicators()
 
-        # Preload TTS model only if there are items that need TTS synthesis.
-        # Pipeline items with audio_file set already have generated audio; skip.
-        if any(not e.get("audio_file") for e in self._all_items):
-            self._preload_model()
+        # Start the finalization feeder immediately for queued items that do
+        # not yet have pipeline-generated audio. This used to happen after
+        # the in-process model preload completed; the daemon-only path has no
+        # local preload phase to provide that callback.
+        if any(not item.get("audio_file") for item in self._all_items):
+            self._trigger_generation()
+
         # Check for unread report on launch
         self._check_unread_report()
 
@@ -984,14 +987,10 @@ class WiltedApp(App):
         self.query_one("#source-health", Label).update(f"{weather_text}   {route_text}")
 
     def _update_backend_indicator(self) -> None:
-        """Compact indicator of the active speech backends (daemon vs in-process).
+        """Compact indicator of the resident speech daemon backends.
 
-        Display-only (INV-8 untouched — no controller round-trip): reads the SAME
-        env selector ``wilted.engine`` reads at call time (``_tts_backend``), so a
-        glance shows which speech path is live for TTS synthesis. Tier-3 STT has
-        no selector to read anymore — the M2 daemon cutover made it daemon-only
-        (``wilted.transcribe`` has no isolated-spawn fallback), so it always shows
-        "daemon". When the TTS backend is the daemon, a subtle click-to-warm
+        Display-only (INV-8 untouched — no controller round-trip): both TTS and
+        tier-3 STT are daemon-only. A subtle click-to-warm
         affordance pre-loads the daemon's Kokoro model for low first-audio latency
         — mirroring the existing clickable speed/voice controls (no new
         keybinding, no AI-slop styling). Once warmed this session it reads
@@ -999,13 +998,8 @@ class WiltedApp(App):
         """
         if not self.is_running:
             return
-        from wilted.engine import _tts_backend
-
-        tts = _tts_backend()
-        stt = "daemon"  # M2 cutover: tier-3 STT is daemon-only, no selector left to read.
-        text = f"Speech: TTS {tts} · STT {stt}"
-        if tts == "daemon":
-            text += " · warmed" if self._tts_daemon_warmed else " · [@click=app.warm_daemon]warm[/]"
+        text = "Speech: TTS daemon · STT daemon"
+        text += " · warmed" if self._tts_daemon_warmed else " · [@click=app.warm_daemon]warm[/]"
         self.query_one("#backend-indicator", Label).update(text)
 
     def _refresh_status_indicators(self) -> None:
@@ -1140,41 +1134,12 @@ class WiltedApp(App):
         self._status_time = now
         self.query_one("#status-line", Label).update(msg)
 
-    # -- Engine lazy load (TTS generation feeder only) -----------------------
-
     def _ensure_engine(self) -> None:
         """Lazy-load the AudioEngine on first use."""
         if self._engine is None:
             from wilted.engine import AudioEngine
 
             self._engine = AudioEngine(lang=self._lang)
-
-    @work(thread=True, exclusive=True, group="preload")
-    def _preload_model(self) -> None:
-        """Eagerly load the TTS model in the background at startup.
-
-        Note: we intentionally do NOT wrap load_model() in
-        suppress_subprocess_output(). That context manager redirects OS-level
-        fd 1/2 to /dev/null, which blinds Textual's renderer for the entire
-        ~1.6 s model load and makes the UI appear frozen. The model produces
-        no stdout/stderr output when cached (the common case). First-time
-        downloads may print progress bars, but that one-time noise is
-        preferable to a frozen UI on every launch.
-        """
-        try:
-            self._ensure_engine()
-            self.call_from_thread(self._set_status, "Loading TTS model...")
-            self._engine.load_model()
-            # Only clear status if it still says "Loading" — avoid clobbering
-            # messages set by other actions while the model was loading.
-            status_widget = self.query_one("#status-line", Label)
-            if "Loading" in str(status_widget.render()):
-                self.call_from_thread(self._set_status, "Ready")
-            # Start background generation now that model is loaded
-            self.call_from_thread(self._trigger_generation)
-        except Exception:
-            # Non-fatal — model will load on first play instead
-            pass
 
     # -- Background generation worker (finalization feeder) ------------------
 
@@ -1194,7 +1159,6 @@ class WiltedApp(App):
 
         self._ensure_engine()
         engine = self._engine
-        engine.load_model()  # no-op if preload already finished
 
         try:
             queue = _get_playlist_items("All")
@@ -1267,16 +1231,10 @@ class WiltedApp(App):
     def action_warm_daemon(self) -> None:
         """Pre-warm the speech daemon's Kokoro TTS model (low first-audio latency).
 
-        Triggered by the click-to-warm affordance in the backend indicator. Only
-        meaningful on the daemon TTS backend; a short status note otherwise. The
+        Triggered by the click-to-warm affordance in the backend indicator. The
         actual warm runs off the UI thread (see :meth:`_warm_daemon_worker`) so
         the model load never blocks the renderer.
         """
-        from wilted.engine import _tts_backend
-
-        if _tts_backend() != "daemon":
-            self._set_status("Warm: daemon TTS backend not active (set WILTED_TTS_BACKEND=daemon)", _STATUS_MEDIUM)
-            return
         if self._tts_daemon_warmed:
             self._set_status("Speech daemon already warmed", _STATUS_LOW)
             return
@@ -1296,9 +1254,6 @@ class WiltedApp(App):
         """
         from wilted.engine import client as _client
 
-        if _client is None:
-            self.call_from_thread(self._set_status, "Warm: speech client unavailable", _STATUS_MEDIUM)
-            return
         model = self._engine.model_name if self._engine is not None else None
         stream = _client.tts_stream(" ", voice=self._voice, speed=self._speed, model=model, lang_code=self._lang)
         try:

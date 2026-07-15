@@ -63,18 +63,18 @@ class FakeLLMBackend:
         self.loaded = False
 
 
-class FakeAudioEngine:
-    """Fake satisfying AudioEngine's load_model()/generate_audio() shape."""
+class FakeDaemonTranscription:
+    """Fake daemon-backed transcription request."""
 
     def __init__(self, *, raise_on_load: bool = False):
         self.raise_on_load = raise_on_load
         self.loaded = False
         self.calls: list[str] = []
 
-    def load_model(self) -> None:
-        self.calls.append("load_model")
+    def transcribe(self) -> None:
+        self.calls.append("transcribe")
         if self.raise_on_load:
-            raise RuntimeError("simulated TTS load failure")
+            raise RuntimeError("simulated transcription request failure")
         self.loaded = True
 
     def generate_audio(self, text: str, **kwargs) -> list[float]:
@@ -125,8 +125,44 @@ class TestOneModelAtATime:
         assert coordinator.peak_concurrent_residency == 1
         assert backend.calls == ["load", "generate", "close"]
 
+    def test_two_llm_leases_never_overlap(self):
+        """INV-1: concurrent in-process LLM work is serialized by one lease."""
+        coordinator = ModelCoordinator()
+        start = threading.Event()
+        active = 0
+        peak = 0
+        counter_lock = threading.Lock()
+
+        def run() -> None:
+            nonlocal active, peak
+            backend = FakeLLMBackend()
+
+            def generate(_backend):
+                nonlocal active, peak
+                start.wait(timeout=2)
+                with counter_lock:
+                    active += 1
+                    peak = max(peak, active)
+                time.sleep(0.03)
+                with counter_lock:
+                    active -= 1
+                return "ok"
+
+            coordinator.run_llm(backend, generate)
+
+        first = threading.Thread(target=run)
+        second = threading.Thread(target=run)
+        first.start()
+        second.start()
+        start.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        assert not first.is_alive() and not second.is_alive()
+        assert peak == 1
+
     def test_two_families_never_resident_concurrently(self):
-        """Two threads racing on llm and tts leases never overlap residency.
+        """Two threads racing on llm and transcribe leases never overlap residency.
 
         Both threads are released to race for the coordinator's single lease
         at the same instant (via a start gate), and each fake's load() sleeps
@@ -160,25 +196,25 @@ class TestOneModelAtATime:
             except Exception as e:  # noqa: BLE001 - surfaced via errors list
                 errors.append(e)
 
-        def run_tts_thread():
+        def run_transcribe_thread():
             try:
                 start_gate.wait(timeout=5.0)
-                engine = FakeAudioEngine()
+                engine = FakeDaemonTranscription()
 
                 def _load():
-                    recorder.enter("tts")
+                    recorder.enter("transcribe")
                     time.sleep(0.05)
-                    engine.load_model()
-                    recorder.exit("tts")
+                    engine.transcribe()
+                    recorder.exit("transcribe")
 
-                with coordinator.lease("tts") as lease:
+                with coordinator.lease("transcribe") as lease:
                     lease.load(_load)
-                    results["tts"] = engine.calls
+                    results["transcribe"] = engine.calls
             except Exception as e:  # noqa: BLE001
                 errors.append(e)
 
         t1 = threading.Thread(target=run_llm_thread)
-        t2 = threading.Thread(target=run_tts_thread)
+        t2 = threading.Thread(target=run_transcribe_thread)
         t1.start()
         t2.start()
         start_gate.set()  # release both threads to race for the lease together
@@ -212,7 +248,7 @@ class TestOneModelAtATime:
         def acquire_second():
             first_holds.wait(timeout=5.0)
             order.append("second-waiting")
-            with coordinator.lease("tts"):
+            with coordinator.lease("transcribe"):
                 order.append("second-acquired")
 
         t1 = threading.Thread(target=hold_first)
@@ -258,21 +294,6 @@ class TestCloseRunsOnException:
         assert backend.closed is True
         assert backend.loaded is False
 
-    def test_tts_unload_runs_when_load_raises(self):
-        """run_tts's finally must call unload_fn even though load_model() raised."""
-        coordinator = ModelCoordinator()
-        engine = FakeAudioEngine(raise_on_load=True)
-        unload_calls = []
-
-        with pytest.raises(RuntimeError, match="simulated TTS load failure"):
-            coordinator.run_tts(
-                engine,
-                lambda e: e.generate_audio("text"),
-                unload_fn=lambda: unload_calls.append("unloaded"),
-            )
-
-        assert engine.calls == ["load_model"]
-        assert unload_calls == ["unloaded"]
 
     def test_manual_lease_close_runs_on_load_exception(self):
         """Direct lease() usage: close() still fires in a finally around load()."""
@@ -335,7 +356,7 @@ class TestCloseRunsOnException:
 @pytest.mark.unit
 class TestNestedLeaseRaisesInsteadOfHanging:
     def test_nested_lease_different_family_raises_quickly(self):
-        """A thread holding 'llm' that calls lease('tts') must raise, not block.
+        """A thread holding 'llm' that calls lease('transcribe') must raise, not block.
 
         Proven with a background-thread + join(timeout=...) harness: if this
         ever regressed to a hang, the join would time out and the assertion
@@ -349,7 +370,7 @@ class TestNestedLeaseRaisesInsteadOfHanging:
             try:
                 with coordinator.lease("llm"):
                     try:
-                        with coordinator.lease("tts"):
+                        with coordinator.lease("transcribe"):
                             pass
                     except BaseException as e:  # noqa: BLE001 - captured for assertion
                         raised.append(e)
@@ -427,7 +448,7 @@ class TestNestedLeaseRaisesInsteadOfHanging:
         acquired = threading.Event()
 
         def fresh_acquire():
-            with coordinator.lease("tts"):
+            with coordinator.lease("transcribe"):
                 acquired.set()
 
         t2 = threading.Thread(target=fresh_acquire)

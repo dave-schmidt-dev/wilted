@@ -1,4 +1,4 @@
-.PHONY: lint lint-sh test test-unit test-integration test-e2e test-tui validate station station-test install-launchd uninstall-launchd
+.PHONY: lint lint-sh test test-unit test-integration test-e2e test-tui validate station station-test install-daemon install-launchd uninstall-launchd
 
 # Well-known path for the A.5.1 manual weather-bulletin test trigger. `touch`
 # this file (from another shell) while the station is running under
@@ -37,6 +37,11 @@ test-tui:
 	PYTHONPATH=src uv run --group dev pytest -m tui
 
 validate: lint test
+
+# Keep the recovery command advertised by the daemon-only TTS error contract
+# in the sibling speech-stack project, where the launchd service is owned.
+install-daemon:
+	$(MAKE) -C $(abspath $(CURDIR)/../speech-stack) install-daemon
 
 # Launch the interactive station TUI (live-NWS weather monitor — a real
 # Severe/Tornado NWS alert is required for a bulletin to fire).

@@ -1313,7 +1313,7 @@ def main():
 
     validate_project_root()
 
-    # M2 daemon cutover: tier-3 STT (transcribe.py) and TTS (engine.py) are both
+    # M2/M4 daemon cutover: tier-3 STT (transcribe.py) and TTS (engine.py) are both
     # daemon-only now, so a down/unreachable speech daemon means nothing in wilted
     # can actually run. Gate here — before the TUI/CLI argv branch, so both entry
     # points fail loudly and immediately with an actionable message (`make
