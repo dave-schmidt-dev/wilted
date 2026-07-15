@@ -420,22 +420,32 @@ def make_trigger_file_fetch(trigger_path: Path) -> Callable[[str, str, str], dic
     NWS alert.
 
     Returns a ``fetch(zone, county, user_agent)`` closure that, on each
-    call, checks whether ``trigger_path`` exists:
+    call, atomically moves ``trigger_path`` to a private claim path, then
+    removes the claim:
 
-        - If it exists, returns one qualifying "Severe Thunderstorm Warning"
+        - If removal succeeds, returns one qualifying "Severe Thunderstorm Warning"
           GeoJSON feature -- the same shape :meth:`WeatherMonitor.poll_once`
           expects from the real NWS response -- so it flows through the real
-          dedup/escalation/pre-generation/handoff path unmodified.
-        - If it does not exist, returns an empty ``features`` list, exactly
+          dedup/escalation/pre-generation/handoff path unmodified. Consuming
+          the marker makes one ``touch`` fire at most once, including across
+          concurrent polls or a later station relaunch.
+        - If it is already absent (or another poll claimed it first), returns
+          an empty ``features`` list, exactly
           like a real "no active alerts" NWS response.
 
-    The closure is pure and non-blocking: one ``Path.exists()`` check plus
-    building a dict, no sleeping or waiting.
+    The closure is non-blocking: one atomic filesystem move and one removal
+    plus building a dict, with no sleeping or waiting. A later new ``touch``
+    creates a new marker and can fire another bulletin after the monitor
+    observes the intervening clear poll.
     """
 
     def fetch(zone: str, county: str, user_agent: str) -> dict:
-        if not trigger_path.exists():
+        claim_path = trigger_path.with_name(f".{trigger_path.name}.claimed")
+        try:
+            trigger_path.replace(claim_path)
+        except FileNotFoundError:
             return {"features": []}
+        claim_path.unlink(missing_ok=True)
 
         now = datetime.now(UTC)
         # A real NWS response's areaDesc is a human-readable place name (the

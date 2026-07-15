@@ -527,11 +527,13 @@ class TestSetup:
         assert "Discovery" not in r.stdout
         assert "Classification" not in r.stdout
 
-    def test_setup_runs_ingest_when_confirmed(self, wilted_home):
+    def test_setup_runs_ingest_when_confirmed(self, wilted_home, rss_server):
         """Confirming first ingestion invokes the pipeline stages."""
         _, env = wilted_home
-        # browse=y, pick=1, custom=n, keywords=n, ingest=y
-        stdin = "y\n1\nn\nn\ny\n"
+        # Use the local RSS fixture as a podcast feed. Its entries have no
+        # enclosures, so discovery genuinely runs without creating fetched
+        # articles that would trigger a real classification-model download.
+        stdin = f"n\ny\n{rss_server}/feed.xml\npodcast\n\n\nn\nn\ny\n"
         r = _run("setup", env=env, input_text=stdin)
         assert r.returncode == 0
         # Pipeline should mention discovery stage header

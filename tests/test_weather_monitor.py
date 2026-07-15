@@ -26,6 +26,7 @@ import runpy
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
@@ -689,6 +690,7 @@ class TestMakeTriggerFileFetch:
 
         response = fetch(DEFAULT_ZONE, DEFAULT_COUNTY, "wilted-test-agent")
 
+        assert not trigger_path.exists()
         assert len(response["features"]) == 1
         props = response["features"][0]["properties"]
         assert props["severity"] == "Severe"
@@ -697,6 +699,31 @@ class TestMakeTriggerFileFetch:
         assert props["messageType"] == "Alert"
         assert props["headline"]  # becomes the spoken bulletin text
         assert props["expires"]  # ISO-8601 offset-aware, ~3h out
+
+    def test_concurrent_fetches_atomically_consume_one_marker(self, tmp_path, monkeypatch):
+        trigger_path = tmp_path / "trigger"
+        trigger_path.write_text("fire")
+        fetch = make_trigger_file_fetch(trigger_path)
+        claim_barrier = threading.Barrier(2)
+        original_replace = type(trigger_path).replace
+
+        def synchronized_replace(path, *args, **kwargs):
+            if path == trigger_path:
+                claim_barrier.wait(timeout=1)
+            return original_replace(path, *args, **kwargs)
+
+        monkeypatch.setattr(type(trigger_path), "replace", synchronized_replace)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = list(
+                executor.map(
+                    lambda _index: fetch(DEFAULT_ZONE, DEFAULT_COUNTY, "wilted-test-agent"),
+                    range(2),
+                )
+            )
+
+        assert sorted(len(response["features"]) for response in responses) == [0, 1]
+        assert not trigger_path.exists()
 
     def test_drives_a_real_monitor_through_fire_dedup_clear_and_requalify(self, tmp_path):
         """End-to-end through the real WeatherMonitor -- not just the raw
@@ -714,16 +741,14 @@ class TestMakeTriggerFileFetch:
         assert len(recorder.received) == 0
 
         trigger_path.write_text("fire")
-        monitor.poll_once()  # file present -- fires exactly once
+        monitor.poll_once()  # file present -- fires exactly once and is consumed
         assert len(recorder.received) == 1
+        assert not trigger_path.exists()
 
-        monitor.poll_once()  # still present -- deduped, no re-fire
-        assert len(recorder.received) == 1
-
-        trigger_path.unlink()
-        monitor.poll_once()  # cleared -- fires nothing
+        monitor.poll_once()  # absent -- clears area state, no re-fire
         assert len(recorder.received) == 1
 
         trigger_path.write_text("fire again")
-        monitor.poll_once()  # re-created -- area-clear re-qualify, fires again
+        monitor.poll_once()  # new marker after clear -- re-qualifies and is consumed
         assert len(recorder.received) == 2
+        assert not trigger_path.exists()
