@@ -28,6 +28,7 @@ from wilted.execution_capability import (
     issue_execution_capability,
 )
 from wilted.handlers import (
+    handle_article_cache,
     handle_briefing,
     handle_classify,
     handle_discover,
@@ -127,7 +128,7 @@ HANDLERS: dict[JobKind, Callable[[ProcessingJobModel, ModelCoordinator], None]] 
     JobKind.DISCOVER: handle_discover,
     JobKind.CLASSIFY: handle_classify,
     JobKind.PREPARE: handle_prepare,
-    JobKind.ARTICLE_CACHE: _stub_handler,
+    JobKind.ARTICLE_CACHE: handle_article_cache,
     JobKind.REPORT_ASSEMBLY: handle_report,
     JobKind.COMPACT_BRIEFING: handle_briefing,
 }
@@ -256,6 +257,28 @@ class PipelineRunner:
             return RunResult(stats=stats.freeze(), exit_reason=RunExitReason.LOCK_BUSY)
         except Exception:
             logger.exception("Processing runner failed for %s", data_dir)
+            return RunResult(stats=stats.freeze(), exit_reason=RunExitReason.ERROR)
+
+    def run_assuming_lock_held(self, *, owner_id: str | None = None) -> RunResult:
+        """Drain jobs while the per-``DATA_DIR`` execution flock is already held.
+
+        Used by :mod:`wilted.scheduler_tick` so the tick owns one lock acquisition
+        for the due-check and bounded drain phases.
+        """
+        resolved_owner = owner_id or _default_owner_id()
+        if not resolved_owner:
+            raise ValueError("owner_id must be non-empty")
+
+        stats = _MutableRunStats()
+        data_dir = self._resolve_data_dir()
+        try:
+            return self._run_under_lock(
+                data_dir=data_dir,
+                owner_id=resolved_owner,
+                stats=stats,
+            )
+        except Exception:
+            logger.exception("Processing runner failed while holding lock for %s", data_dir)
             return RunResult(stats=stats.freeze(), exit_reason=RunExitReason.ERROR)
 
     def _run_under_lock(

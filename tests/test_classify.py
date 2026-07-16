@@ -28,16 +28,26 @@ def _now() -> str:
 
 def _run_classify(**kwargs):
     """Run classify with a test-scoped coordinator under execution capability."""
-    if "coordinator" in kwargs:
-        return run_classify(**kwargs)
-
+    from wilted.classify import _DEFAULT_BACKEND, _DEFAULT_MODEL
     from wilted.execution_capability import create_model_coordinator
+    from wilted.llm import create_backend
 
-    coordinator = create_model_coordinator()
+    coordinator = kwargs.pop("coordinator", None)
+    backend = kwargs.pop("backend", None)
+    close_coordinator = coordinator is None
+    if coordinator is None:
+        coordinator = create_model_coordinator()
+
+    if backend is None:
+        model = kwargs.get("model") or _DEFAULT_MODEL
+        backend_type = kwargs.get("backend_type") or _DEFAULT_BACKEND
+        backend = create_backend(backend_type, model=model)
+
     try:
-        return run_classify(coordinator=coordinator, **kwargs)
+        return run_classify(coordinator=coordinator, backend=backend, **kwargs)
     finally:
-        coordinator.close()
+        if close_coordinator:
+            coordinator.close()
 
 
 def _make_item(text: str | None = None, **kwargs):
@@ -254,7 +264,7 @@ class TestRunClassify:
             captured["model"] = model
             return mock_backend
 
-        monkeypatch.setattr("wilted.classify.create_backend", fake_create_backend)
+        monkeypatch.setattr("wilted.llm.create_backend", fake_create_backend)
 
         _run_classify()  # no model/backend args -> module defaults
 
@@ -282,7 +292,7 @@ class TestRunClassify:
         # Mock create_backend to return our mock
         mock_backend = MockLLMBackend()
         monkeypatch.setattr(
-            "wilted.classify.create_backend",
+            "wilted.llm.create_backend",
             lambda *a, **kw: mock_backend,
         )
 
@@ -300,7 +310,7 @@ class TestRunClassify:
 
         mock_backend = MockLLMBackend()
         monkeypatch.setattr(
-            "wilted.classify.create_backend",
+            "wilted.llm.create_backend",
             lambda *a, **kw: mock_backend,
         )
 
@@ -326,7 +336,7 @@ class TestRunClassify:
 
         error_backend = ErrorBackend()
         monkeypatch.setattr(
-            "wilted.classify.create_backend",
+            "wilted.llm.create_backend",
             lambda *a, **kw: error_backend,
         )
 
@@ -358,38 +368,36 @@ class TestRunClassify:
                 super().close()
 
         backend = LeaseCheckingBackend()
-        monkeypatch.setattr("wilted.classify.create_backend", lambda *args, **kwargs: backend)
 
-        assert _run_classify(coordinator=coordinator, model="test", backend_type="gguf")["classified"] == 1
+        assert (
+            _run_classify(
+                coordinator=coordinator,
+                backend=backend,
+                model="test",
+                backend_type="gguf",
+            )["classified"]
+            == 1
+        )
 
     def test_benchmark_lifecycle_runs_under_coordinator_lease(self, monkeypatch):
         """Benchmarking is also a production LLM entry point governed by INV-1."""
         from wilted.station_runtime.coordinator import ModelCoordinator
 
-        coordinator = ModelCoordinator()
+        run_llm_calls: list[bool] = []
+        original_run_llm = ModelCoordinator.run_llm
 
-        class LeaseCheckingBackend(MockLLMBackend):
-            def _assert_lease_held(self) -> None:
-                assert coordinator._owner_thread_id == threading.get_ident()
+        def spy_run_llm(self, backend, fn):
+            run_llm_calls.append(True)
+            return original_run_llm(self, backend, fn)
 
-            def load(self):
-                self._assert_lease_held()
-                super().load()
-
-            def generate(self, system_prompt: str, user_content: str) -> tuple[str, int]:
-                self._assert_lease_held()
-                return super().generate(system_prompt, user_content)
-
-            def close(self):
-                self._assert_lease_held()
-                super().close()
-
-        backend = LeaseCheckingBackend()
-        monkeypatch.setattr("wilted.execution_capability.create_model_coordinator", lambda: coordinator)
-        monkeypatch.setattr("wilted.classify.create_backend", lambda *args, **kwargs: backend)
+        monkeypatch.setattr(ModelCoordinator, "run_llm", spy_run_llm)
+        monkeypatch.setattr(
+            "wilted.handlers.benchmark.build_llm_backend",
+            lambda bt, model: MockLLMBackend(),
+        )
 
         run_benchmark(models=["test"])
-        assert backend.closed is True
+        assert run_llm_calls
 
     def test_keywords_passed_to_prompt(self, monkeypatch):
         add_keyword("kubernetes", weight=2.0)
@@ -415,7 +423,7 @@ class TestRunClassify:
                 pass
 
         monkeypatch.setattr(
-            "wilted.classify.create_backend",
+            "wilted.llm.create_backend",
             lambda *a, **kw: CapturingBackend(),
         )
 

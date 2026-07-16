@@ -62,10 +62,16 @@ install-launchd:
 	ln -sf $(CURDIR)/scripts/wilted-nightly.sh $(HOME)/.launchd/scripts/wilted_nightly.sh
 	cp scripts/local.wilted-nightly.plist $(HOME)/Library/LaunchAgents/local.wilted-nightly.plist
 	launchctl bootstrap gui/$$(id -u) $(HOME)/Library/LaunchAgents/local.wilted-nightly.plist || true
-	@echo "Installed: wilted nightly at 2:00 AM via launchd"
+	ln -sf $(CURDIR)/scripts/wilted-scheduler.sh $(HOME)/.launchd/scripts/wilted_scheduler.sh
+	cp scripts/local.wilted-scheduler.plist $(HOME)/Library/LaunchAgents/local.wilted-scheduler.plist
+	launchctl bootstrap gui/$$(id -u) $(HOME)/Library/LaunchAgents/local.wilted-scheduler.plist || true
+	@echo "Installed: wilted nightly at 2:00 AM and hourly scheduler tick via launchd"
 
 uninstall-launchd:
 	launchctl bootout gui/$$(id -u)/local.wilted-nightly 2>/dev/null || true
 	rm -f $(HOME)/Library/LaunchAgents/local.wilted-nightly.plist
 	rm -f $(HOME)/.launchd/scripts/wilted_nightly.sh
-	@echo "Uninstalled: wilted nightly launchd agent"
+	launchctl bootout gui/$$(id -u)/local.wilted-scheduler 2>/dev/null || true
+	rm -f $(HOME)/Library/LaunchAgents/local.wilted-scheduler.plist
+	rm -f $(HOME)/.launchd/scripts/wilted_scheduler.sh
+	@echo "Uninstalled: wilted nightly and scheduler launchd agents"

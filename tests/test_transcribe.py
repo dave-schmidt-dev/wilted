@@ -480,11 +480,11 @@ class TestGetTranscript:
         assert len(segments) == 1
         assert segments[0].text == "From web."
 
-    @patch("wilted.transcribe.transcribe_audio")
     @patch("wilted.transcribe.extract_transcript_from_url")
     @patch("wilted.transcribe.fetch_transcript_from_rss")
-    def test_rss_tier_skips_other_tiers_on_success(self, mock_rss, mock_web, mock_audio):
+    def test_rss_tier_skips_other_tiers_on_success(self, mock_rss, mock_web):
         mock_rss.return_value = [TranscriptSegment(start_s=0.0, end_s=1.0, text="RSS wins.")]
+        tier3 = MagicMock()
 
         get_transcript(
             item_id=1,
@@ -492,22 +492,24 @@ class TestGetTranscript:
             feed_xml="<rss>...</rss>",
             episode_url="https://example.com/ep",
             audio_path=Path("/tmp/test.mp3"),
+            tier3_transcribe=tier3,
         )
 
         mock_web.assert_not_called()
-        mock_audio.assert_not_called()
+        tier3.assert_not_called()
 
     def test_all_tiers_fail_raises_error(self):
         with pytest.raises(TranscriptionError, match="All transcript tiers failed"):
             get_transcript(item_id=99)
 
-    @patch("wilted.transcribe.transcribe_audio")
     @patch("wilted.transcribe.extract_transcript_from_url")
     @patch("wilted.transcribe.fetch_transcript_from_rss")
-    def test_falls_through_to_local_model(self, mock_rss, mock_web, mock_audio):
+    def test_falls_through_to_local_model(self, mock_rss, mock_web):
         mock_rss.return_value = None
         mock_web.return_value = None
-        mock_audio.return_value = [TranscriptSegment(start_s=0.0, end_s=2.0, text="From model.")]
+        tier3 = MagicMock(
+            return_value=[TranscriptSegment(start_s=0.0, end_s=2.0, text="From model.")],
+        )
 
         segments = get_transcript(
             item_id=1,
@@ -515,12 +517,13 @@ class TestGetTranscript:
             feed_xml="<rss>...</rss>",
             episode_url="https://example.com/ep",
             audio_path=Path("/tmp/test.mp3"),
+            tier3_transcribe=tier3,
         )
 
         assert segments[0].text == "From model."
         mock_rss.assert_called_once()
         mock_web.assert_called_once()
-        mock_audio.assert_called_once()
+        tier3.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

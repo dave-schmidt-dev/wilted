@@ -337,11 +337,11 @@ spikes/                  # Phase-0 feasibility prototypes (disposable, removable
 
 ## Validation
 
-Routine validation uses tiered lanes. The suite currently collects 1,660 tests
+Routine validation uses tiered lanes. The suite currently collects 1,748 tests
 with one marker per file:
 
 - `780` unit tests
-- `724` integration tests
+- `812` integration tests
 - `30` subprocess e2e tests
 - `126` TUI tests
 
@@ -421,9 +421,32 @@ wilted prepare               # transcribe/cut/TTS selected items (same runner pa
 wilted benchmark classify --models "model1,model2"  # compare classification models
 ```
 
-Classification and preparation run through the durable processing-job ledger and a bounded
-`PipelineRunner` (one execution lock and one model coordinator per invocation). Expensive ML
-construction requires runner authority.
+Classification, preparation, discovery, report assembly, briefing artifacts, and TUI article-cache
+generation all run through the durable processing-job ledger and a bounded `PipelineRunner` (one
+execution lock and one model coordinator per invocation). Expensive ML construction requires runner
+authority; **INV-10** pairs runtime capability gating with an AST guard so production modules outside
+the narrow handler allowlist cannot call gated factories directly.
+
+### Background scheduler
+
+Install launchd agents (legacy 2:00 AM email report + hourly bounded scheduler tick):
+
+```bash
+make install-launchd
+```
+
+The hourly agent runs `scripts/wilted-scheduler.sh`, which invokes one bounded tick via the same
+`wilted-runtime.sh` launch chain as interactive use. One tick acquires the Python `fcntl` lock,
+checks persisted due state, and drains at most one batch of due jobs — no shell `flock`, no orphan
+runner process.
+
+Run a tick manually:
+
+```bash
+wilted scheduler tick
+```
+
+Logs: `~/Library/Logs/wilted-scheduler/`. Uninstall with `make uninstall-launchd`.
 
 ### Database maintenance
 
@@ -467,7 +490,7 @@ enabled = true
 to = "you@example.com"
 ```
 3. Send manually: `wilted report --email`
-4. Or install the nightly schedule: `make install-launchd`
+4. Or install the launchd schedule: `make install-launchd` (2:00 AM email report + hourly scheduler tick)
 
 ## Roadmap
 

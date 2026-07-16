@@ -249,6 +249,22 @@ def _claim_next_job_under_lock_once(
         return ProcessingJob.get_by_id(candidate.id)
 
 
+def count_due_jobs(*, now: str | None = None) -> int:
+    """Return persisted queued/retry jobs whose ``not_before`` has elapsed."""
+    from wilted.background_work.contracts import ProcessingJobState
+
+    ensure_db()
+    resolved_now = now or now_utc()
+    return (
+        ProcessingJob.select()
+        .where(
+            (ProcessingJob.state.in_([ProcessingJobState.QUEUED.value, ProcessingJobState.RETRY.value]))
+            & ((ProcessingJob.not_before.is_null()) | (ProcessingJob.not_before <= resolved_now))
+        )
+        .count()
+    )
+
+
 def claim_next_job(
     *,
     data_dir: Path | None = None,

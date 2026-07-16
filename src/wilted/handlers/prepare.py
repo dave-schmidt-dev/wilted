@@ -7,7 +7,9 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from wilted.db import Item, ensure_db
+from wilted.handlers._ml import build_llm_backend
 from wilted.handlers.manifests import build_prepare_manifest
+from wilted.handlers.transcribe import transcribe_tier3
 from wilted.prepare import prepare_item
 from wilted.processing_jobs import record_job_completion
 
@@ -58,6 +60,8 @@ def handle_prepare(job: ProcessingJobModel, coordinator: ModelCoordinator) -> No
         llm_model=llm_model,
         llm_backend_type=llm_backend_type,
         skip_tts=skip_tts,
+        backend_factory=lambda backend_type, model: build_llm_backend(backend_type, model=model),
+        tier3_transcribe=transcribe_tier3,
     )
 
     item = Item.get_by_id(item.id)

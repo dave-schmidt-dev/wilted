@@ -142,14 +142,14 @@ PRODUCTION_ORCHESTRATION_SURFACES: dict[str, OrchestrationSurface] = {
     ),
     "tui.briefing_on_mount": OrchestrationSurface(
         surface_id="tui.briefing_on_mount",
-        entrypoint="wilted.tui.WiltedApp._generate_briefing_worker",
+        entrypoint="wilted.tui.WiltedApp._adopt_owed_briefing_worker",
         orchestration_kind="mount_worker",
         constructs_model_coordinator=False,
-        invokes_expensive_handler=True,
+        invokes_expensive_handler=False,
     ),
     "tui.article_cache_generation": OrchestrationSurface(
         surface_id="tui.article_cache_generation",
-        entrypoint="wilted.tui.WiltedApp._trigger_generation",
+        entrypoint="wilted.tui.WiltedApp._submit_article_cache_worker",
         orchestration_kind="mount_worker",
         constructs_model_coordinator=False,
         invokes_expensive_handler=True,
@@ -201,8 +201,8 @@ _CLI_PIPELINE_CMD_FUNCS = frozenset(
 
 _TUI_ORCHESTRATION_METHODS = frozenset(
     {
-        "wilted.tui.WiltedApp._generate_briefing_worker",
-        "wilted.tui.WiltedApp._trigger_generation",
+        "wilted.tui.WiltedApp._adopt_owed_briefing_worker",
+        "wilted.tui.WiltedApp._submit_article_cache_worker",
         "wilted.tui.WiltedApp._check_unread_report_worker",
     }
 )

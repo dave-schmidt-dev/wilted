@@ -172,6 +172,50 @@ class TestPrepareHandlerIsolation:
         assert bad_item.preparation_state == "error"
 
 
+class TestArticleCacheHandler:
+    def test_handle_article_cache_completes_item(self, monkeypatch) -> None:
+        """Article-cache handler generates cache and records completion."""
+        from unittest.mock import MagicMock
+
+        import numpy as np
+
+        from wilted.background_work.idempotency import build_idempotency_key, logical_identity_for_kind
+        from wilted.cache import is_cache_valid
+        from wilted.pipeline_submit import submit_article_cache
+        from wilted.queue import add_article
+
+        entry = add_article("Paragraph one.\n\nParagraph two.", title="Cache Handler Item")
+        added = entry["added"]
+        item_id = entry["id"]
+
+        engine = MagicMock()
+        engine.sample_rate = 24000
+        engine.generate_audio.return_value = np.zeros(24000, dtype=np.float32)
+        monkeypatch.setattr("wilted.handlers.article_cache.AudioEngine", lambda **kwargs: engine)
+        monkeypatch.setattr("mlx_audio.audio_io.write", lambda *args, **kwargs: None)
+
+        submit_article_cache(
+            item_id,
+            voice="af_heart",
+            lang="a",
+            speed=1.0,
+            added=added,
+            sync_run=False,
+        )
+
+        runner = PipelineRunner(max_jobs_per_run=1, bootstrap=_ready_bootstrap())
+        result = runner.run(owner_id="handler-article-cache")
+
+        assert result.exit_reason is RunExitReason.COMPLETED
+        assert result.stats.submitted_handled == 1
+        assert is_cache_valid(item_id, "af_heart", "a", 1.0, added)
+
+        identity = logical_identity_for_kind(JobKind.ARTICLE_CACHE, item_id=str(item_id))
+        key = build_idempotency_key(JobKind.ARTICLE_CACHE, operation_version=1, logical_identity=identity)
+        job = ProcessingJob.get(ProcessingJob.idempotency_key == key.canonical)
+        assert job.state == ProcessingJobState.COMPLETED.value
+
+
 class TestRunEntrypointsDoNotConstructCoordinator:
     @pytest.mark.parametrize("module_name", ["wilted.classify", "wilted.prepare"])
     def test_run_functions_do_not_call_create_model_coordinator(self, module_name: str) -> None:
@@ -190,16 +234,16 @@ class TestRunEntrypointsDoNotConstructCoordinator:
                         f"{module_name}.{name} must not call create_model_coordinator()"
                     )
 
-    def test_run_classify_requires_coordinator_argument(self) -> None:
-        """Direct ``run_classify`` without coordinator is a type/signature error at call sites."""
+    def test_run_classify_requires_coordinator_and_backend_arguments(self) -> None:
+        """Direct ``run_classify`` without coordinator/backend is a signature error."""
         from wilted.classify import run_classify
 
         with pytest.raises(TypeError):
             run_classify(model="test", backend_type="gguf")
 
-    def test_run_prepare_requires_coordinator_argument(self) -> None:
-        """Direct ``run_prepare`` without coordinator is a type/signature error at call sites."""
+    def test_run_prepare_requires_coordinator_and_factory_arguments(self) -> None:
+        """Direct ``run_prepare`` without coordinator/factory is a signature error."""
         from wilted.prepare import run_prepare
 
-        with pytest.raises(TypeError):
+        with pytest.raises((TypeError, ValueError)):
             run_prepare(use_llm=False, skip_tts=True)

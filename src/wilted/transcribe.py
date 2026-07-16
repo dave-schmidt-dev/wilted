@@ -18,6 +18,7 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.request import Request, urlopen
 
 import trafilatura  # noqa: TCH002 — used at runtime in extract_transcript_from_url
@@ -29,6 +30,9 @@ import trafilatura  # noqa: TCH002 — used at runtime in extract_transcript_fro
 from speech_stack import client, isolated
 
 from wilted.feed_refs import guid_matches_reference
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -630,6 +634,7 @@ def get_transcript(
     audio_path: Path | None = None,
     *,
     redact_feed_urls: bool = False,
+    tier3_transcribe: Callable[[Path], list[TranscriptSegment]] | None = None,
 ) -> list[TranscriptSegment]:
     """Get a transcript using the three-tier sourcing strategy.
 
@@ -646,6 +651,8 @@ def get_transcript(
         audio_path: Path to audio file for Tier 3 fallback.
         redact_feed_urls: Hide URLs and exception details originating in
             credentialed RSS feeds.
+        tier3_transcribe: Allowlisted tier-3 transcription callback invoked
+            when tiers 1-2 fail and ``audio_path`` is set.
 
     Returns:
         List of TranscriptSegment from the first successful tier.
@@ -685,15 +692,18 @@ def get_transcript(
 
     # Tier 3: Local transcription
     if audio_path:
-        try:
-            segments = transcribe_audio(audio_path)
-            logger.info("Item %d: transcript from local model (Tier 3)", item_id)
-            return segments
-        except TranscriptionError:
-            raise
-        except Exception as e:
-            errors.append(f"Local: {e}")
-            logger.debug("Tier 3 failed for item %d: %s", item_id, e)
+        if tier3_transcribe is None:
+            errors.append("Local: tier-3 transcribe callback not provided")
+        else:
+            try:
+                segments = tier3_transcribe(audio_path)
+                logger.info("Item %d: transcript from local model (Tier 3)", item_id)
+                return segments
+            except TranscriptionError:
+                raise
+            except Exception as e:
+                errors.append(f"Local: {e}")
+                logger.debug("Tier 3 failed for item %d: %s", item_id, e)
 
     raise TranscriptionError(f"All transcript tiers failed for item {item_id}: {'; '.join(errors)}")
 

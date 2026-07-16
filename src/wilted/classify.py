@@ -16,7 +16,6 @@ Usage:
 from __future__ import annotations
 
 import logging
-import time
 
 from wilted.background_work.contracts import (
     AnalysisState,
@@ -30,7 +29,7 @@ from wilted.background_work.contracts import (
 from wilted.content_state import items_pending_classification, read_content_state, transition_item
 from wilted.db import Item
 from wilted.db import ensure_db as _ensure_db
-from wilted.llm import DEFAULT_GGUF_MODEL, LLMBackend, create_backend, parse_json_response
+from wilted.llm import DEFAULT_GGUF_MODEL, LLMBackend, parse_json_response
 from wilted.preferences import get_keywords_for_prompt
 
 logger = logging.getLogger(__name__)
@@ -220,6 +219,7 @@ def classify_item(backend: LLMBackend, item: Item, keywords_section: str) -> boo
 def run_classify(
     *,
     coordinator,
+    backend: LLMBackend,
     items: list[Item] | None = None,
     model: str | None = None,
     backend_type: str | None = None,
@@ -231,6 +231,7 @@ def run_classify(
 
     Args:
         coordinator: Runner-owned :class:`~wilted.station_runtime.coordinator.ModelCoordinator`.
+        backend: Pre-constructed LLM backend (must be built under runner capability).
         items: Optional explicit item list; defaults to pending classification cohort.
         model: Model identifier (defaults to config or _DEFAULT_MODEL).
         backend_type: Backend type (defaults to config or _DEFAULT_BACKEND).
@@ -256,8 +257,6 @@ def run_classify(
 
     classified = 0
     errors = 0
-
-    backend = create_backend(backend_type, model=model)
 
     def _classify_loaded(loaded_backend: LLMBackend) -> None:
         """Classify the batch while the coordinator holds the LLM lease."""
@@ -375,77 +374,8 @@ _BENCHMARK_ITEMS = [
 ]
 
 
-def run_benchmark(
-    *,
-    models: list[str],
-    backend_type: str = "gguf",
-) -> None:
-    """Run classification benchmark across multiple models.
+def run_benchmark(*, models: list[str], backend_type: str = "gguf") -> None:
+    """Run classification benchmark across multiple models."""
+    from wilted.handlers.benchmark import run_benchmark as _run_benchmark
 
-    Prints a comparison table of accuracy, latency, and token counts.
-
-    Args:
-        models: List of model identifiers to benchmark.
-        backend_type: Backend type to use for all models.
-    """
-    _ensure_db()
-
-    keywords_section = get_keywords_for_prompt()
-
-    print(f"\nBenchmarking {len(models)} model(s) on {len(_BENCHMARK_ITEMS)} items\n")
-    print(f"{'Model':<50} {'Accuracy':>8} {'Avg Time':>10} {'Avg Tokens':>10}")
-    print("-" * 82)
-
-    import wilted
-    from wilted.execution_capability import create_model_coordinator, execution_capability_scope
-
-    with execution_capability_scope(owner_id="benchmark", data_dir=wilted.DATA_DIR):
-        coordinator = create_model_coordinator()
-        for model_name in models:
-            backend = create_backend(backend_type, model=model_name)
-
-            correct = 0
-            total_time = 0.0
-            total_tokens = 0
-            errors = 0
-
-            def _benchmark_loaded(loaded_backend: LLMBackend) -> None:
-                """Benchmark one model while the coordinator holds the LLM lease."""
-                nonlocal correct, total_time, total_tokens, errors
-                for bench_item in _BENCHMARK_ITEMS:
-                    user_prompt = _build_user_prompt(
-                        bench_item["title"],
-                        bench_item["text"],
-                        keywords_section,
-                    )
-
-                    start = time.monotonic()
-                    try:
-                        response, tokens = loaded_backend.generate(_SYSTEM_PROMPT, user_prompt)
-                        elapsed = time.monotonic() - start
-
-                        result = _parse_classification(response)
-                        if result["playlist"] == bench_item["expected_playlist"]:
-                            correct += 1
-
-                        total_time += elapsed
-                        total_tokens += tokens
-                    except Exception as e:
-                        logger.warning("Benchmark error for '%s': %s", bench_item["title"], e)
-                        errors += 1
-                        total_time += time.monotonic() - start
-
-            try:
-                coordinator.run_llm(backend, _benchmark_loaded)
-            except Exception as e:
-                print(f"{model_name:<50} {'LOAD FAIL':>8} {str(e)[:20]:>10}")
-                continue
-
-            evaluated = len(_BENCHMARK_ITEMS) - errors
-            accuracy = correct / evaluated if evaluated > 0 else 0
-            avg_time = total_time / len(_BENCHMARK_ITEMS)
-            avg_tokens = total_tokens // max(1, evaluated)
-
-            print(f"{model_name:<50} {accuracy:>7.0%} {avg_time:>9.1f}s {avg_tokens:>10d}")
-
-    print()
+    _run_benchmark(models=models, backend_type=backend_type)

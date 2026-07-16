@@ -41,6 +41,8 @@ log() {
 }
 
 # --- Locking ---
+# Legacy nightly path still uses shell flock; the bounded scheduler tick uses
+# Python fcntl only via processing_jobs.try_acquire_execution_lock.
 exec 200>"$LOCK_FILE"
 if ! flock -n 200; then
     log "SKIP: previous run still active"

@@ -962,7 +962,7 @@ def cmd_benchmark(argv: list[str]) -> None:
     parser.add_argument("--backend", default="gguf", choices=["gguf", "mlx"], help="Backend type (default: gguf)")
     args = parser.parse_args(argv[1:])
 
-    from wilted.classify import run_benchmark
+    from wilted.handlers.benchmark import run_benchmark
 
     models = [m.strip() for m in args.models.split(",")]
     try:
@@ -1016,6 +1016,28 @@ def cmd_setup(argv: list[str]) -> None:
         run_setup()
     except (KeyboardInterrupt, EOFError):
         print("\n\nSetup cancelled.")
+
+
+def cmd_scheduler(argv: list[str]) -> None:
+    """Run one bounded background-work scheduler tick."""
+    parser = argparse.ArgumentParser(prog="wilted scheduler")
+    subparsers = parser.add_subparsers(dest="action", required=True)
+    tick_parser = subparsers.add_parser("tick", help="Execute one bounded scheduler tick")
+    tick_parser.add_argument(
+        "--owner-id",
+        default=None,
+        help="Opaque scheduler identity recorded on claimed job leases",
+    )
+    args = parser.parse_args(argv)
+
+    if args.action != "tick":
+        parser.error(f"unknown scheduler action: {args.action}")
+
+    from wilted.scheduler_tick import run_scheduler_tick
+
+    result = run_scheduler_tick(owner_id=args.owner_id)
+    print(f"scheduler tick: outcome={result.outcome.value} jobs_due={result.jobs_due} jobs_ran={result.jobs_ran}")
+    raise SystemExit(result.exit_code)
 
 
 def cmd_ingest(argv: list[str]) -> None:
@@ -1095,6 +1117,9 @@ def run_cli(argv=None):
             return
         if first == "ingest":
             cmd_ingest(argv[1:])
+            return
+        if first == "scheduler":
+            cmd_scheduler(argv[1:])
             return
         if first == "playlist":
             cmd_playlist(argv[1:])

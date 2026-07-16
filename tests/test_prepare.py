@@ -18,10 +18,15 @@ def _now():
 
 def _run_prepare(**kwargs):
     """Run prepare with a test-scoped coordinator under execution capability."""
+    from wilted.execution_capability import create_model_coordinator
+    from wilted.handlers._ml import build_llm_backend
+    from wilted.handlers.transcribe import transcribe_tier3
+
+    kwargs.setdefault("backend_factory", lambda backend_type, model: build_llm_backend(backend_type, model=model))
+    kwargs.setdefault("tier3_transcribe", transcribe_tier3)
+
     if "coordinator" in kwargs:
         return run_prepare(**kwargs)
-
-    from wilted.execution_capability import create_model_coordinator
 
     coordinator = create_model_coordinator()
     try:
@@ -170,7 +175,7 @@ class TestPrepareArticle:
         mock_backend.generate = MagicMock(return_value=('{"promo_indices": []}', 10))
 
         with (
-            patch("wilted.llm.create_backend", return_value=mock_backend) as mock_create,
+            patch("wilted.handlers._ml.build_llm_backend", return_value=mock_backend) as mock_create,
             patch("wilted.cache.generate_article_cache", return_value=True),
         ):
             stats = _run_prepare(use_llm=True)
@@ -438,7 +443,7 @@ class TestPrepareLLMLifecycle:
         mock_backend.generate.return_value = ('{"promo_indices": []}', 10)
 
         with (
-            patch("wilted.llm.create_backend", return_value=mock_backend),
+            patch("wilted.handlers._ml.build_llm_backend", return_value=mock_backend),
             patch("wilted.cache.generate_article_cache", return_value=True),
         ):
             _run_prepare(use_llm=True)
@@ -451,7 +456,7 @@ class TestPrepareLLMLifecycle:
         _make_item(tmp_path)
 
         with patch(
-            "wilted.llm.create_backend",
+            "wilted.handlers._ml.build_llm_backend",
             side_effect=RuntimeError("Model not found"),
         ):
             stats = _run_prepare(use_llm=True, skip_tts=True)
@@ -464,7 +469,7 @@ class TestPrepareLLMLifecycle:
         mock_backend = MagicMock()
         mock_backend.load.side_effect = RuntimeError("Model not found")
 
-        with patch("wilted.llm.create_backend", return_value=mock_backend):
+        with patch("wilted.handlers._ml.build_llm_backend", return_value=mock_backend):
             stats = _run_prepare(use_llm=True, skip_tts=True)
 
         assert stats["prepared"] == 1
@@ -478,7 +483,7 @@ class TestPrepareLLMLifecycle:
         mock_backend.close.side_effect = RuntimeError("close failed")
 
         with (
-            patch("wilted.llm.create_backend", return_value=mock_backend),
+            patch("wilted.handlers._ml.build_llm_backend", return_value=mock_backend),
             patch("wilted.cache.generate_article_cache", return_value=True),
         ):
             stats = _run_prepare(use_llm=True)
@@ -508,7 +513,7 @@ class TestPrepareLLMLifecycle:
 
         backend = LeaseCheckingBackend()
         with (
-            patch("wilted.llm.create_backend", return_value=backend),
+            patch("wilted.handlers._ml.build_llm_backend", return_value=backend),
             patch("wilted.cache.generate_article_cache", return_value=True),
         ):
             assert _run_prepare(coordinator=coordinator, use_llm=True)["prepared"] == 1
@@ -550,7 +555,7 @@ class TestInv2LoadCloseAlwaysPaired:
                 raise RuntimeError("simulated mid-run failure")
 
         with (
-            patch("wilted.llm.create_backend", return_value=mock_backend),
+            patch("wilted.handlers._ml.build_llm_backend", return_value=mock_backend),
             patch("wilted.cache.generate_article_cache", return_value=True),
             patch("wilted.prepare._set_status", side_effect=_raise_on_processing),
         ):
@@ -576,7 +581,7 @@ class TestInv2LoadCloseAlwaysPaired:
         mock_backend.generate = MagicMock(return_value=('{"promo_indices": []}', 10))
 
         with (
-            patch("wilted.llm.create_backend", return_value=mock_backend),
+            patch("wilted.handlers._ml.build_llm_backend", return_value=mock_backend),
             patch("wilted.cache.generate_article_cache", return_value=True),
         ):
             _run_prepare(use_llm=True)
@@ -653,7 +658,7 @@ class TestInv4NoEmptyOverwrite:
 
             mock_backend = MagicMock()
             mock_backend.generate.return_value = ("[]", 10)
-            with patch("wilted.llm.create_backend", return_value=mock_backend):
+            with patch("wilted.handlers._ml.build_llm_backend", return_value=mock_backend):
                 _run_prepare(use_llm=True)
 
         # The original audio must be untouched: still present and byte-identical.
@@ -753,7 +758,7 @@ class TestInv4NoEmptyOverwrite:
         mock_backend.generate.return_value = ("{}", 10)
 
         with (
-            patch("wilted.llm.create_backend", return_value=mock_backend),
+            patch("wilted.handlers._ml.build_llm_backend", return_value=mock_backend),
             # remove_promos flags every paragraph -> returns "".
             patch("wilted.ads.remove_promos", return_value=""),
             patch("wilted.cache.generate_article_cache", return_value=True),
@@ -932,7 +937,7 @@ class TestPm5TranscribeBeforeLlm:
             patch("wilted.prepare._get_feed_xml", return_value=None),
             patch("wilted.ads.detect_ads", return_value=[]),
             patch("wilted.engine.AudioEngine") as MockEngine,
-            patch("wilted.llm.create_backend", return_value=mock_backend),
+            patch("wilted.handlers._ml.build_llm_backend", return_value=mock_backend),
         ):
             mock_engine = MockEngine.return_value
             mock_engine.get_file_duration.return_value = 5.0

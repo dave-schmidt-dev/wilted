@@ -485,10 +485,10 @@ class WiltedApp(App):
 
         # Briefing (A.4.6): same "only the lease-holding session" reasoning
         # as the WeatherMonitor guard just above -- a read-only second
-        # session generating its own briefing would duplicate TTS synthesis
-        # for an entry it could never actually play first (StartPlayback
+        # session adopting its own briefing would duplicate publish/play
+        # work for an entry it could never actually play first (StartPlayback
         # would be refused by `_start_playback`'s own read-only guard).
-        if self._briefing_generator is not None and not self._station_read_only:
+        if not self._station_read_only:
             self._briefing_started = True
             self._set_status("Preparing briefing…", _STATUS_LOW)
             self._adopt_owed_briefing_worker()
@@ -687,7 +687,7 @@ class WiltedApp(App):
 
     @work(thread=True, exclusive=True, group="briefing")
     def _adopt_owed_briefing_worker(self) -> None:
-        """Adopt a runner-produced briefing artifact, or generate if none owed."""
+        """Adopt a runner-produced briefing artifact when one is owed."""
         from wilted.briefing_artifacts import (
             load_briefing_from_artifact,
             load_newest_owed_briefing,
@@ -698,18 +698,13 @@ class WiltedApp(App):
         try:
             with worker_db():
                 ref = load_newest_owed_briefing()
-                if ref is not None:
-                    briefing = load_briefing_from_artifact(ref)
-                    entry = self._station_entry_from_briefing(briefing)
-                    mark_briefing_adopted(ref.artifact_id)
-                    self.call_from_thread(self._apply_briefing_entry, entry)
+                if ref is None:
                     return
-                if self._briefing_generator is None:
-                    return
-                briefing = self._briefing_generator.generate()
-            entry = self._station_entry_from_briefing(briefing)
+                briefing = load_briefing_from_artifact(ref)
+                entry = self._station_entry_from_briefing(briefing)
+                mark_briefing_adopted(ref.artifact_id)
         except Exception:
-            logger.exception("Failed to adopt or generate briefing")
+            logger.exception("Failed to adopt owed briefing")
             self.call_from_thread(self._set_status, "Briefing unavailable", _STATUS_MEDIUM)
             return
         self.call_from_thread(self._apply_briefing_entry, entry)
@@ -1171,87 +1166,60 @@ class WiltedApp(App):
     # -- Background generation worker (finalization feeder) ------------------
 
     @work(thread=True, exclusive=True, group="generate")
-    def _generate_cache(self) -> None:
-        """Background worker: generate audio cache for queued articles.
+    def _submit_article_cache_worker(self) -> None:
+        """Background worker: submit article-cache jobs for queued articles.
 
-        This is what makes an article *finalizable* — once its per-paragraph
-        cache is complete, the next station backlog rebuild can normalize and
-        include it (see ``wilted.station_runtime.normalize.normalize_item``).
+        Job submission runs off the UI thread; runner drain is scheduled back
+        onto the main thread via :meth:`_drain_article_cache_runner` because
+        :class:`~wilted.station_runtime.coordinator.RuntimeBootstrap` must
+        initialize on the main thread before the pipeline runner executes.
         """
-        from wilted.cache import generate_article_cache, is_cache_valid
-        from wilted.playlists import get_playlist_items as _get_playlist_items
-        from wilted.queue import get_article_text
+        from wilted.pipeline_submit import submit_pending_article_cache_jobs
 
         worker = get_current_worker()
 
-        self._ensure_engine()
-        engine = self._engine
+        while self._generation_paused and not worker.is_cancelled:
+            time.sleep(0.1)
+        if worker.is_cancelled:
+            return
 
         try:
-            queue = _get_playlist_items("All")
-        except ValueError:
-            # Playlists may not be initialised yet (e.g. during tests).
-            return
-        for entry in queue:
-            if worker.is_cancelled:
-                break
-
-            # Pipeline items already have pre-generated audio; skip TTS for them.
-            if entry.get("audio_file"):
-                continue
-
-            article_id = entry["id"]
-            added = entry.get("added", "")
-            voice, lang, speed = self._voice, self._lang, self._speed
-
-            if is_cache_valid(article_id, voice, lang, speed, added):
-                continue
-
-            text = get_article_text(entry)
-            if not text:
-                continue
-
-            title = entry.get("title", "Untitled")
-
-            def on_progress(para_idx, total):
-                if not self._playing:
-                    self.call_from_thread(
-                        self._set_status,
-                        f"Generating audio: {title[:30]} — para {para_idx + 1}/{total}",
-                    )
-
-            def should_cancel():
-                if worker.is_cancelled:
-                    return True
-                # Spin-wait while generation is paused (playback active)
-                while self._generation_paused and not worker.is_cancelled:
-                    time.sleep(0.1)
-                return worker.is_cancelled
-
-            generate_article_cache(
-                engine,
-                text,
-                article_id,
-                voice,
-                lang,
-                speed,
-                added,
-                on_progress=on_progress,
-                should_cancel=should_cancel,
+            submitted = submit_pending_article_cache_jobs(
+                voice=self._voice,
+                lang=self._lang,
+                speed=self._speed,
             )
+        except Exception:
+            logger.exception("Failed to submit article-cache jobs")
+            return
 
-        if not worker.is_cancelled:
-            # A newly-finalized article may now be eligible for the station
-            # backlog — rebuild so it appears in the Larder.
-            self.call_from_thread(self._rebuild_sequencer)
-            if not self._playing:
-                self.call_from_thread(self._set_status, "Ready")
+        if worker.is_cancelled or submitted == 0:
+            return
+
+        self.call_from_thread(self._drain_article_cache_runner)
+
+    def _drain_article_cache_runner(self) -> None:
+        """Drain article-cache jobs on the main thread after submission."""
+        from wilted.background_work.contracts import JobKind
+        from wilted.pipeline_submit import drain_runner
+
+        if not self.is_running:
+            return
+
+        drain_runner(
+            kind=JobKind.ARTICLE_CACHE,
+            station_active_check=lambda: self._generation_paused,
+        )
+
+        if not self._playing:
+            self._set_status("Ready")
+        self._rebuild_sequencer()
 
     def _trigger_generation(self) -> None:
-        """Start or restart the background generation worker."""
+        """Start or restart the background article-cache submission worker."""
         if self._generation_worker and self._generation_worker.is_running:
             self._generation_worker.cancel()
-        self._generation_worker = self._generate_cache()
+        self._generation_worker = self._submit_article_cache_worker()
 
     # -- Speech-daemon pre-warm (backend indicator affordance) ----------------
 

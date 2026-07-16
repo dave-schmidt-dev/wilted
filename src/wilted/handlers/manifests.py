@@ -119,6 +119,62 @@ def build_report_manifest(
     )
 
 
+def article_cache_input_digest(
+    *,
+    item_id: int,
+    voice: str,
+    lang: str,
+    speed: float,
+    added: str,
+    text: str,
+) -> str:
+    """Canonical digest of article-cache handler inputs for one item."""
+    payload = {
+        "item_id": item_id,
+        "voice": voice,
+        "lang": lang,
+        "speed": speed,
+        "added": added,
+        "text": text[:8000],
+    }
+    return _sha256_hex(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+
+
+def article_cache_output_digest(item_id: int) -> str:
+    """Digest of the on-disk per-paragraph cache manifest."""
+    from wilted.cache import load_manifest
+
+    manifest = load_manifest(item_id)
+    return _sha256_hex(json.dumps(manifest or {}, sort_keys=True, separators=(",", ":")))
+
+
+def build_article_cache_manifest(
+    *,
+    item_id: int,
+    voice: str,
+    lang: str,
+    speed: float,
+    added: str,
+    text: str,
+    operation_version: int,
+) -> ArtifactManifest:
+    """Build a completion manifest after article-cache handler work."""
+    return ArtifactManifest(
+        item_id=str(item_id),
+        input_digest=article_cache_input_digest(
+            item_id=item_id,
+            voice=voice,
+            lang=lang,
+            speed=speed,
+            added=added,
+            text=text,
+        ),
+        operation_version=operation_version,
+        output_digests=(article_cache_output_digest(item_id),),
+        completeness_checks=("cache_complete",),
+    )
+
+
 def build_briefing_manifest(
     *,
     artifact_id: str,

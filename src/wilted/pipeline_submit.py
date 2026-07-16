@@ -133,15 +133,74 @@ def _latest_result_metadata(*, kind: JobKind, logical_identity: str) -> dict[str
     return metadata if isinstance(metadata, dict) else {}
 
 
+def _article_cache_metadata(
+    *,
+    operation_version: int,
+    voice: str,
+    lang: str,
+    speed: float,
+    added: str,
+) -> dict[str, Any]:
+    return {
+        "operation_version": operation_version,
+        "voice": voice,
+        "lang": lang,
+        "speed": speed,
+        "added": added,
+    }
+
+
+def items_needing_article_cache(
+    *,
+    voice: str,
+    lang: str,
+    speed: float,
+) -> list[dict]:
+    """Return queue entries that still need per-paragraph audio cache.
+
+    Args:
+        voice: TTS voice id stored on submitted jobs.
+        lang: Language code stored on submitted jobs.
+        speed: Playback speed stored on submitted jobs.
+
+    Returns:
+        Queue entry dicts from the All playlist lacking valid cache.
+    """
+    from wilted.cache import is_cache_valid
+    from wilted.playlists import get_playlist_items
+    from wilted.queue import get_article_text
+
+    ensure_db()
+    try:
+        queue = get_playlist_items("All")
+    except ValueError:
+        return []
+
+    needing: list[dict] = []
+    for entry in queue:
+        if entry.get("audio_file"):
+            continue
+        article_id = entry["id"]
+        added = entry.get("added", "")
+        if is_cache_valid(article_id, voice, lang, speed, added):
+            continue
+        if not get_article_text(entry):
+            continue
+        needing.append(entry)
+    return needing
+
+
 def drain_runner(
     *,
     kind: JobKind | None = None,
     max_jobs_per_run: int = _DEFAULT_MAX_JOBS_PER_RUN,
+    station_active_check: Callable[[], bool] | None = None,
 ) -> RunStats:
     """Run the pipeline runner until no runnable jobs remain for ``kind``."""
     runner = PipelineRunner(
         bootstrap=_ready_bootstrap(),
         max_jobs_per_run=max_jobs_per_run,
+        station_active_check=station_active_check,
     )
     accum = RunStats()
     while _has_runnable_jobs(kind=kind):
@@ -340,6 +399,127 @@ def run_prepare_via_runner(
 
     drain_runner(kind=JobKind.PREPARE, max_jobs_per_run=max_jobs_per_run)
     return _prepare_stats_for_items(items)
+
+
+def submit_article_cache(
+    item_id: int,
+    *,
+    voice: str,
+    lang: str,
+    speed: float,
+    added: str,
+    operation_version: int = 1,
+    sync_run: bool = False,
+    max_jobs_per_run: int = _DEFAULT_MAX_JOBS_PER_RUN,
+    station_active_check: Callable[[], bool] | None = None,
+) -> SubmitResult:
+    """Submit one article-cache generation job for ``item_id``.
+
+    Args:
+        item_id: Queue article id to cache.
+        voice: TTS voice id for cache generation.
+        lang: Language code for cache generation.
+        speed: Playback speed for cache generation.
+        added: Article added timestamp used for cache invalidation.
+        operation_version: Handler/input version for idempotency.
+        sync_run: When True, drain the runner synchronously after submission.
+        max_jobs_per_run: Bounded drain batch size when ``sync_run`` is True.
+        station_active_check: Optional yield seam forwarded to the runner drain.
+
+    Returns:
+        :class:`~wilted.processing_jobs.SubmitResult` from admission.
+    """
+    ensure_db()
+    metadata = _article_cache_metadata(
+        operation_version=operation_version,
+        voice=voice,
+        lang=lang,
+        speed=speed,
+        added=added,
+    )
+    identity = logical_identity_for_kind(JobKind.ARTICLE_CACHE, item_id=str(item_id))
+    key = build_idempotency_key(
+        JobKind.ARTICLE_CACHE,
+        operation_version=operation_version,
+        logical_identity=identity,
+    )
+    result = submit_job(key, item_id=item_id, metadata=metadata)
+    if sync_run:
+        drain_runner(
+            kind=JobKind.ARTICLE_CACHE,
+            max_jobs_per_run=max_jobs_per_run,
+            station_active_check=station_active_check,
+        )
+    return result
+
+
+def submit_pending_article_cache_jobs(
+    *,
+    voice: str,
+    lang: str,
+    speed: float,
+    operation_version: int = 1,
+) -> int:
+    """Submit article-cache jobs for every queue item that still needs cache.
+
+    Returns:
+        Count of jobs submitted.
+    """
+    submitted = 0
+    for entry in items_needing_article_cache(voice=voice, lang=lang, speed=speed):
+        submit_article_cache(
+            entry["id"],
+            voice=voice,
+            lang=lang,
+            speed=speed,
+            added=entry.get("added", ""),
+            operation_version=operation_version,
+            sync_run=False,
+        )
+        submitted += 1
+    return submitted
+
+
+def _article_cache_stats_for_entries(entries: list[dict], *, voice: str, lang: str, speed: float) -> dict[str, int]:
+    from wilted.cache import is_cache_valid
+
+    cached = 0
+    errors = 0
+    for entry in entries:
+        article_id = entry["id"]
+        added = entry.get("added", "")
+        if is_cache_valid(article_id, voice, lang, speed, added):
+            cached += 1
+        else:
+            errors += 1
+    return {"cached": cached, "errors": errors, "total": len(entries)}
+
+
+def run_article_cache_via_runner(
+    *,
+    voice: str = "af_heart",
+    lang: str = "a",
+    speed: float = 1.0,
+    max_jobs_per_run: int = _DEFAULT_MAX_JOBS_PER_RUN,
+    station_active_check: Callable[[], bool] | None = None,
+) -> dict[str, int]:
+    """Submit article-cache jobs for queued items and drain the runner synchronously.
+
+    Returns:
+        Dict with ``cached``, ``errors``, and ``total`` counts.
+    """
+    entries = items_needing_article_cache(voice=voice, lang=lang, speed=speed)
+    if not entries:
+        logger.info("No queue items need article cache generation")
+        return {"cached": 0, "errors": 0, "total": 0}
+
+    submit_pending_article_cache_jobs(voice=voice, lang=lang, speed=speed, sync_run=False)
+    drain_runner(
+        kind=JobKind.ARTICLE_CACHE,
+        max_jobs_per_run=max_jobs_per_run,
+        station_active_check=station_active_check,
+    )
+    return _article_cache_stats_for_entries(entries, voice=voice, lang=lang, speed=speed)
 
 
 def _discover_metadata(*, feed_id: int, operation_version: int = 1) -> dict[str, Any]:

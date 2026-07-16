@@ -1653,13 +1653,14 @@ async def test_tui_shows_being_prepared_for_unfinalized_real_db_article():
     add_article("Test article body text for TUI display.", title="TUI DB Test")
 
     app = WiltedApp()
-    async with app.run_test():
-        await app.workers.wait_for_complete()
-        assert any(item["title"] == "TUI DB Test" for item in app._all_items)
-        tree = app.query_one("#playlist-tree", Tree)
-        assert len(tree.root.children) == 0
-        empty = app.query_one("#empty-message", Label)
-        assert "prepared" in empty.content.lower()
+    with patch.object(app, "_trigger_generation"):
+        async with app.run_test():
+            await app.workers.wait_for_complete()
+            assert any(item["title"] == "TUI DB Test" for item in app._all_items)
+            tree = app.query_one("#playlist-tree", Tree)
+            assert len(tree.root.children) == 0
+            empty = app.query_one("#empty-message", Label)
+            assert "prepared" in empty.content.lower()
 
 
 @pytest.mark.asyncio
@@ -2598,20 +2599,25 @@ async def test_playback_completion_clears_route_interrupted_state_before_next_to
 
 @pytest.mark.asyncio
 async def test_briefing_generated_prepended_and_plays_first():
-    """Injecting a briefing_generator makes on_mount generate + publish a
-    briefing, prepend it to the Larder backlog ahead of everything else, and
-    auto-play it first -- the "turn on the radio and it plays" UX this
-    wiring exists to deliver."""
+    """A runner-persisted owed briefing artifact is adopted on mount, published,
+    prepended to the Larder backlog ahead of everything else, and auto-played
+    first -- the "turn on the radio and it plays" UX this wiring delivers."""
+    from datetime import date
+
+    from wilted.briefing_artifacts import persist_briefing_artifact
+
     entry = _station_entry(1)
-    generator = FakeBriefingGenerator()
     adapter = FakeAdapter()
-    app = _make_app(entries=[entry], adapter=adapter, briefing_generator=generator)
+    briefing = FakeBriefingGenerator().generate()
+    today = date.today().isoformat()
+    persist_briefing_artifact(briefing, window_start=today, window_end=today)
+
+    app = _make_app(entries=[entry], adapter=adapter)
     async with app.run_test() as pilot:
         await app.workers.wait_for_complete()
         for _ in range(5):
             await pilot.pause()
 
-        assert generator.generate_calls == 1
         assert app._briefing_started is True
 
         assert app._station_entries[0].source == "briefing"
@@ -2635,11 +2641,8 @@ async def test_briefing_generated_prepended_and_plays_first():
 
 @pytest.mark.asyncio
 async def test_no_briefing_generator_means_no_briefing():
-    """WiltedApp() with no briefing_generator= given (the pre-existing
-    default) wires nothing: no briefing worker runs, and the backlog is
-    exactly what the sequencer produced -- mirrors
-    test_no_weather_monitor_by_default's "nothing wired -> nothing happens"
-    contract for the analogous weather_monitor seam."""
+    """With no owed briefing artifact on disk, on_mount adoption is a no-op and
+    the backlog stays exactly what the sequencer produced."""
     entry = _station_entry(1)
     app = _make_app(entries=[entry])
     async with app.run_test() as pilot:
@@ -2648,7 +2651,7 @@ async def test_no_briefing_generator_means_no_briefing():
             await pilot.pause()
 
         assert app._briefing_generator is None
-        assert app._briefing_started is False
+        assert app._briefing_started is True
         assert app._briefing_entry is None
         assert all(e.source != "briefing" for e in app._station_entries)
         assert len(app._station_entries) == 1
@@ -2656,27 +2659,33 @@ async def test_no_briefing_generator_means_no_briefing():
 
 @pytest.mark.asyncio
 async def test_briefing_skipped_when_read_only():
-    """A read-only second session (lease held elsewhere) must not generate
-    its own briefing -- it could never actually play it first anyway (a
-    read-only session's _start_playback always refuses), so generating one
-    would just be wasted TTS synthesis. Mirrors how the WeatherMonitor start
-    is gated on `not self._station_read_only` in on_mount."""
+    """A read-only second session (lease held elsewhere) must not adopt a
+    briefing -- it could never actually play it first anyway (a read-only
+    session's _start_playback always refuses). Mirrors how the WeatherMonitor
+    start is gated on `not self._station_read_only` in on_mount."""
+    from datetime import date
+
+    from wilted.briefing_artifacts import persist_briefing_artifact
+
     entry = _station_entry(1)
-    generator = FakeBriefingGenerator()
+    briefing = FakeBriefingGenerator().generate()
+    today = date.today().isoformat()
+    persist_briefing_artifact(briefing, window_start=today, window_end=today)
 
     class _RaisingStartController(FakeController):
         def start(self, *, on_loss=None) -> None:
             raise LeaseHeldError("station active elsewhere")
 
     read_only_controller = _RaisingStartController()
-    app = _make_app(entries=[entry], controller=read_only_controller, briefing_generator=generator)
+    app = _make_app(entries=[entry], controller=read_only_controller)
     async with app.run_test() as pilot:
         for _ in range(3):
             await pilot.pause()
 
         assert app._station_read_only is True
         assert app._briefing_started is False
-        assert generator.generate_calls == 0
+        assert app._briefing_entry is None
+        assert all(e.source != "briefing" for e in app._station_entries)
 
 
 # ---------------------------------------------------------------------------
@@ -3702,7 +3711,6 @@ async def test_warm_daemon_action_warms_via_client():
 async def test_warm_daemon_action_swallows_daemon_unavailable():
     """No broker -> DaemonUnavailable is swallowed (best-effort); not warmed, no crash."""
     from speech_stack import client as _client
-
 
     def _no_broker(text, **kwargs):
         raise _client.DaemonUnavailable("no broker at socket")

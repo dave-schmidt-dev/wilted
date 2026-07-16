@@ -19,6 +19,7 @@ import logging
 import shutil
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import wilted
 import wilted.ads as _ads_mod
@@ -40,11 +41,17 @@ from wilted.download import DownloadError, download_podcast
 from wilted.feed_refs import FeedReferenceError, is_bws_enclosure_reference, resolve_enclosure_url, resolve_feed_url
 from wilted.transcribe import (
     TranscriptionError,
+    TranscriptSegment,
     evict_stt_model,
     get_transcript,
     save_transcript,
     segments_to_text,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from wilted.llm import LLMBackend
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +96,12 @@ def _set_status(item, status: str, error_message: str | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _transcribe_podcast(item, coordinator) -> list:
+def _transcribe_podcast(
+    item,
+    coordinator,
+    *,
+    tier3_transcribe: Callable[[Path], list[TranscriptSegment]] | None = None,
+) -> list:
     """Download a podcast episode and produce its transcript (no LLM).
 
     Steps 1-2 of podcast preparation: download the audio and get a
@@ -154,6 +166,7 @@ def _transcribe_podcast(item, coordinator) -> list:
                 episode_url=item.canonical_url or item.source_url,
                 audio_path=audio_path,
                 redact_feed_urls=private_enclosure,
+                tier3_transcribe=tier3_transcribe,
             )
         )
     except TranscriptionError as e:
@@ -358,6 +371,8 @@ def prepare_item(
     llm_model: str | None = None,
     llm_backend_type: str = "gguf",
     skip_tts: bool = False,
+    backend_factory: Callable[[str, str], LLMBackend] | None = None,
+    tier3_transcribe: Callable[[Path], list[TranscriptSegment]] | None = None,
 ) -> bool:
     """Prepare one selected item through the content preparation pipeline.
 
@@ -386,10 +401,13 @@ def prepare_item(
 
     resolved_model = llm_model or _llm_mod.DEFAULT_GGUF_MODEL
 
+    if use_llm and backend_factory is None:
+        raise ValueError("use_llm requires backend_factory from a pipeline handler")
+
     if item.item_type == "podcast_episode":
         _set_status(item, "processing")
         try:
-            segments = _transcribe_podcast(item, coordinator)
+            segments = _transcribe_podcast(item, coordinator, tier3_transcribe=tier3_transcribe)
         except PrepareError as exc:
             logger.error("Item %d failed: %s", item.id, exc)
             return False
@@ -418,7 +436,7 @@ def prepare_item(
                 return False
 
         try:
-            backend = _llm_mod.create_backend(llm_backend_type, model=resolved_model)
+            backend = backend_factory(llm_backend_type, resolved_model)
         except Exception:
             logger.exception("Failed to load LLM backend — continuing without it")
             try:
@@ -476,7 +494,7 @@ def prepare_item(
                 return True
 
             try:
-                backend = _llm_mod.create_backend(llm_backend_type, model=resolved_model)
+                backend = backend_factory(llm_backend_type, resolved_model)
             except Exception:
                 logger.exception("Failed to load LLM backend — continuing without it")
                 _prepare_article(item, llm_backend=None)
@@ -521,6 +539,8 @@ def run_prepare(
     llm_model: str = _llm_mod.DEFAULT_GGUF_MODEL,
     llm_backend_type: str = "gguf",
     skip_tts: bool = False,
+    backend_factory: Callable[[str, str], LLMBackend] | None = None,
+    tier3_transcribe: Callable[[Path], list[TranscriptSegment]] | None = None,
 ) -> dict:
     """Process all selected items through the content preparation pipeline.
 
@@ -537,6 +557,9 @@ def run_prepare(
     Returns:
         Dict with keys: prepared, errors, skipped.
     """
+    if use_llm and backend_factory is None:
+        raise ValueError("use_llm requires backend_factory from a pipeline handler")
+
     selected_items = items_for_prepare()
 
     if not selected_items:
@@ -555,7 +578,11 @@ def run_prepare(
     for item in podcasts:
         _set_status(item, "processing")
         try:
-            transcribed_segments[item.id] = _transcribe_podcast(item, coordinator)
+            transcribed_segments[item.id] = _transcribe_podcast(
+                item,
+                coordinator,
+                tier3_transcribe=tier3_transcribe,
+            )
         except PrepareError as e:
             stats["errors"] += 1
             logger.error("Item %d failed: %s", item.id, e)
@@ -609,7 +636,7 @@ def run_prepare(
         _process_phase_b()
     else:
         try:
-            backend = _llm_mod.create_backend(llm_backend_type, model=llm_model)
+            backend = backend_factory(llm_backend_type, llm_model)
         except Exception:
             logger.exception("Failed to load LLM backend — continuing without it")
             _process_phase_b()

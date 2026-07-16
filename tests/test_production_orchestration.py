@@ -24,7 +24,6 @@ from tests.production_orchestration_registry import (
     nightly_script_path,
     registry_entrypoints,
 )
-from wilted.classify import run_benchmark
 from wilted.cli import (
     cmd_benchmark,
     cmd_classify,
@@ -35,6 +34,7 @@ from wilted.cli import (
     cmd_report,
 )
 from wilted.discover import run_discover
+from wilted.handlers.benchmark import run_benchmark
 from wilted.onboard import run_ingest
 from wilted.pipeline_submit import run_classify_via_runner, run_prepare_via_runner
 from wilted.report import run_report
@@ -230,7 +230,8 @@ class TestStageOrchestrationWiring:
     def test_run_benchmark_constructs_coordinator(self, monkeypatch, capsys) -> None:
         """``run_benchmark`` is a real LLM orchestration surface using ``ModelCoordinator``."""
         spy = _CoordinatorInitSpy(monkeypatch)
-        monkeypatch.setattr("wilted.handlers.classify.create_backend", lambda *args, **kwargs: _MockLLMBackend())
+        monkeypatch.setattr("wilted.handlers._ml.build_llm_backend", lambda *args, **kwargs: _MockLLMBackend())
+
         run_benchmark(models=["test-model"], backend_type="gguf")
         capsys.readouterr()
         assert spy.count >= 1
@@ -326,7 +327,7 @@ class TestCliOrchestrationDispatch:
         def _spy(**kwargs):
             called["value"] = True
 
-        monkeypatch.setattr("wilted.classify.run_benchmark", _spy)
+        monkeypatch.setattr("wilted.handlers.benchmark.run_benchmark", _spy)
         cmd_benchmark(["classify", "--models", "test-model"])
         assert called["value"] is True
 
@@ -469,11 +470,11 @@ class TestTuiMountOrchestration:
 
     @pytest.mark.asyncio
     async def test_trigger_generation_starts_cache_worker(self) -> None:
-        """``_trigger_generation`` reaches the ``_generate_cache`` worker."""
+        """``_trigger_generation`` reaches the article-cache submission worker."""
         from tests.test_tui import _make_app
 
         app = _make_app()
-        with patch.object(app, "_generate_cache") as mock_worker:
+        with patch.object(app, "_submit_article_cache_worker") as mock_worker:
             mock_worker.return_value = MagicMock(is_running=False)
             app._trigger_generation()
             mock_worker.assert_called_once()
