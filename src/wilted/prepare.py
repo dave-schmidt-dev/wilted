@@ -28,6 +28,7 @@ import wilted.llm as _llm_mod
 from wilted.db import Item
 from wilted.db import now_utc as _now_utc
 from wilted.download import DownloadError, download_podcast
+from wilted.feed_refs import FeedReferenceError, is_bws_enclosure_reference, resolve_enclosure_url, resolve_feed_url
 from wilted.station_runtime.coordinator import ModelCoordinator
 from wilted.transcribe import (
     TranscriptionError,
@@ -80,7 +81,24 @@ def _transcribe_podcast(item, coordinator) -> list:
         raise PrepareError(f"Item {item_id} has no enclosure_url")
 
     try:
-        audio_path = download_podcast(item_id, item.enclosure_url)
+        enclosure_url = resolve_enclosure_url(item.enclosure_url, item.feed.feed_url)
+        private_enclosure = is_bws_enclosure_reference(item.enclosure_url)
+        if private_enclosure:
+            audio_path = download_podcast(
+                item_id,
+                enclosure_url,
+                url_label=item.enclosure_url,
+                filename_override="episode.mp3",
+            )
+        else:
+            audio_path = download_podcast(item_id, enclosure_url)
+    except FeedReferenceError:
+        _set_status(
+            item,
+            "error",
+            "Could not resolve credentialed podcast episode; run Wilted through its runtime launcher",
+        )
+        raise PrepareError(f"Could not resolve credentialed podcast episode for item {item_id}") from None
     except DownloadError as e:
         _set_status(item, "error", f"Download failed: {e}")
         raise PrepareError(f"Download failed for item {item_id}: {e}") from e
@@ -101,6 +119,7 @@ def _transcribe_podcast(item, coordinator) -> list:
                 feed_xml=_get_feed_xml(item),
                 episode_url=item.canonical_url or item.source_url,
                 audio_path=audio_path,
+                redact_feed_urls=private_enclosure,
             )
         )
     except TranscriptionError as e:
@@ -188,7 +207,7 @@ def _get_feed_xml(item) -> str | None:
     try:
         import urllib.request
 
-        req = urllib.request.Request(item.feed.feed_url)
+        req = urllib.request.Request(resolve_feed_url(item.feed.feed_url))
         import wilted
 
         req.add_header("User-Agent", f"Wilted/{wilted.__version__}")

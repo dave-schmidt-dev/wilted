@@ -28,6 +28,8 @@ import trafilatura  # noqa: TCH002 — used at runtime in extract_transcript_fro
 # Tests patch ``wilted.transcribe.client.stt_path`` / ``client.evict``.
 from speech_stack import client, isolated
 
+from wilted.feed_refs import guid_matches_reference
+
 logger = logging.getLogger(__name__)
 
 
@@ -267,7 +269,12 @@ _EXT_PARSERS = {
 }
 
 
-def fetch_transcript_from_rss(feed_xml: str, guid: str) -> list[TranscriptSegment] | None:
+def fetch_transcript_from_rss(
+    feed_xml: str,
+    guid: str,
+    *,
+    redact_urls: bool = False,
+) -> list[TranscriptSegment] | None:
     """Fetch a transcript URL from the RSS podcast:transcript tag.
 
     Parses the feed XML, finds the item matching the given GUID, and fetches
@@ -276,6 +283,8 @@ def fetch_transcript_from_rss(feed_xml: str, guid: str) -> list[TranscriptSegmen
     Args:
         feed_xml: Raw RSS/Atom feed XML string.
         guid: The GUID of the episode to find.
+        redact_urls: Hide transcript URLs and exception details in logs. Use
+            for credentialed feeds whose transcript URLs may also be private.
 
     Returns:
         List of TranscriptSegment if found and parseable, None otherwise.
@@ -295,13 +304,13 @@ def fetch_transcript_from_rss(feed_xml: str, guid: str) -> list[TranscriptSegmen
         guid_el = item.find("guid")
         if guid_el is None:
             guid_el = item.find("{http://www.w3.org/2005/Atom}id")
-        if guid_el is None or (guid_el.text or "").strip() != guid:
+        if guid_el is None or not guid_matches_reference(guid_el.text or "", guid):
             continue
 
         # Found the matching item — look for podcast:transcript
         transcript_el = item.find("podcast:transcript", ns)
         if transcript_el is None:
-            logger.debug("Item %s has no podcast:transcript tag", guid)
+            logger.debug("Matched podcast item has no podcast:transcript tag")
             return None
 
         url = transcript_el.get("url")
@@ -319,8 +328,9 @@ def fetch_transcript_from_rss(feed_xml: str, guid: str) -> list[TranscriptSegmen
                     parser = p
                     break
 
+        safe_url = "[private transcript URL]" if redact_urls else url
         if parser is None:
-            logger.warning("Unknown transcript format type=%r url=%s", content_type, url)
+            logger.warning("Unknown transcript format type=%r url=%s", content_type, safe_url)
             return None
 
         # Fetch the transcript
@@ -331,17 +341,17 @@ def fetch_transcript_from_rss(feed_xml: str, guid: str) -> list[TranscriptSegmen
             with urlopen(req, timeout=30) as resp:  # noqa: S310
                 body = resp.read().decode("utf-8", errors="replace")
         except Exception:
-            logger.warning("Failed to fetch transcript from %s", url, exc_info=True)
+            logger.warning("Failed to fetch transcript from %s", safe_url, exc_info=not redact_urls)
             return None
 
         segments = parser(body)
         if segments:
-            logger.info("Fetched %d transcript segments from RSS for %s", len(segments), guid)
+            logger.info("Fetched %d transcript segments from RSS", len(segments))
             return segments
 
         return None
 
-    logger.debug("GUID %s not found in feed XML", guid)
+    logger.debug("Podcast item not found in feed XML")
     return None
 
 
@@ -613,6 +623,8 @@ def get_transcript(
     feed_xml: str | None = None,
     episode_url: str | None = None,
     audio_path: Path | None = None,
+    *,
+    redact_feed_urls: bool = False,
 ) -> list[TranscriptSegment]:
     """Get a transcript using the three-tier sourcing strategy.
 
@@ -627,6 +639,8 @@ def get_transcript(
         feed_xml: Raw RSS feed XML string.
         episode_url: Episode web page URL for Tier 2.
         audio_path: Path to audio file for Tier 3 fallback.
+        redact_feed_urls: Hide URLs and exception details originating in
+            credentialed RSS feeds.
 
     Returns:
         List of TranscriptSegment from the first successful tier.
@@ -639,14 +653,18 @@ def get_transcript(
     # Tier 1: RSS transcript tag
     if feed_xml and guid:
         try:
-            segments = fetch_transcript_from_rss(feed_xml, guid)
+            segments = fetch_transcript_from_rss(feed_xml, guid, redact_urls=redact_feed_urls)
             if segments:
                 logger.info("Item %d: transcript from RSS (Tier 1)", item_id)
                 return segments
             errors.append("RSS: no transcript tag or fetch failed")
         except Exception as e:
-            errors.append(f"RSS: {e}")
-            logger.debug("Tier 1 failed for item %d: %s", item_id, e)
+            if redact_feed_urls:
+                errors.append("RSS: private transcript lookup failed")
+                logger.debug("Tier 1 failed for item %d: %s", item_id, type(e).__name__)
+            else:
+                errors.append(f"RSS: {e}")
+                logger.debug("Tier 1 failed for item %d: %s", item_id, e)
 
     # Tier 2: Publisher website
     if episode_url:

@@ -286,6 +286,18 @@ Hello from RSS.
         assert result is None
 
     @patch("wilted.transcribe.urlopen")
+    def test_private_transcript_fetch_failure_redacts_url_and_traceback(self, mock_urlopen, caplog):
+        private_url = "https://private.example/transcript.vtt?credential=hidden"
+        mock_urlopen.side_effect = RuntimeError(private_url)
+        feed_xml = _FEED_XML_TEMPLATE.format(url=private_url, mime="text/vtt")
+
+        result = fetch_transcript_from_rss(feed_xml, "ep-1", redact_urls=True)
+
+        assert result is None
+        assert private_url not in caplog.text
+        assert "[private transcript URL]" in caplog.text
+
+    @patch("wilted.transcribe.urlopen")
     def test_detects_format_from_extension(self, mock_urlopen):
         srt_content = """\
 1

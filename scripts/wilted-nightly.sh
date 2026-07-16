@@ -7,6 +7,9 @@
 # Logs:
 #   ~/Library/Logs/wilted-nightly/wilted.log                  (aggregate)
 #   ~/Library/Logs/wilted-nightly/wilted-YYYYMMDD-HHMMSS.log  (per-run)
+#
+# Each Wilted invocation goes through wilted-runtime.sh, which retrieves only
+# the dedicated runtime token and removes BWS state before starting Wilted.
 
 set -euo pipefail
 
@@ -28,7 +31,7 @@ export WILTED_PROJECT_ROOT="$PROJECT_ROOT"
 # .venv and breaks Python 3.13's .pth handling). See HISTORY.md.
 export UV_PROJECT_ENVIRONMENT="${HOME}/.venvs/wilted"
 
-WILTED="uv run --project ${PROJECT_ROOT} python -m wilted.cli"
+WILTED_RUNTIME="${SCRIPT_DIR}/wilted-runtime.sh"
 EMAIL_ALERT="${HOME}/.agent/bin/email-alert"
 
 mkdir -p "$LOG_DIR"
@@ -48,13 +51,13 @@ log "START: nightly ingestion"
 START_TIME=$(date +%s)
 
 # --- Pipeline ---
-if $WILTED ingest >> "$RUN_LOG" 2>&1; then
+if "$WILTED_RUNTIME" ingest >> "$RUN_LOG" 2>&1; then
     END_TIME=$(date +%s)
     ELAPSED=$((END_TIME - START_TIME))
     log "completed successfully in ${ELAPSED}s"
 
     # Send email report if configured
-    if $WILTED report --email >> "$RUN_LOG" 2>&1; then
+    if "$WILTED_RUNTIME" report --email >> "$RUN_LOG" 2>&1; then
         log "email report sent"
     fi
 else

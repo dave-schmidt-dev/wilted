@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from time import gmtime
 from unittest.mock import MagicMock, patch
 
 from wilted.db import Feed, Item
@@ -271,6 +272,38 @@ class TestProcessEntryPodcast:
         # `selected` so `wilted prepare` picks them up.
         assert item.status == "selected"
 
+    def test_bws_podcast_persists_opaque_enclosure_reference(self):
+        private_url = "https://private.example/credential-material.mp3"
+        feed = add_feed("bws:WILTED_FEED_PRIVATE", feed_type="podcast")
+        entry = _make_parsed_entry(id="ep-1", enclosures=[{"href": private_url, "type": "audio/mpeg"}])
+        stats = {"new": 0, "skipped": 0, "errors": 0}
+
+        _process_entry(feed, entry, stats)
+
+        item = Item.select().where(Item.feed == feed).get()
+        assert item.guid.startswith("bws-guid:")
+        assert item.enclosure_url.startswith("bws-feed-item:WILTED_FEED_PRIVATE:")
+        assert private_url not in item.enclosure_url
+
+    def test_bws_podcast_never_persists_signed_identity_or_link(self, monkeypatch, caplog):
+        signed_url = "https://private.example/signed-identity-and-link.mp3?token=secret"
+        feed = add_feed("bws:WILTED_FEED_PRIVATE", feed_type="podcast")
+        entry = _make_parsed_entry(
+            id=signed_url,
+            link=signed_url,
+            enclosures=[{"href": signed_url, "type": "audio/mpeg"}],
+        )
+        stats = {"new": 0, "skipped": 0, "errors": 0}
+
+        _process_entry(feed, entry, stats)
+
+        item = Item.select().where(Item.feed == feed).get()
+        assert signed_url not in item.guid
+        assert item.source_url is None
+        assert item.canonical_url is None
+        assert signed_url not in (item.metadata or "")
+        assert signed_url not in caplog.text
+
     def test_article_still_routed_through_classify(self):
         """Articles keep the classify/report flow — only podcasts auto-select."""
         from unittest.mock import patch
@@ -304,6 +337,15 @@ class TestProcessEntryPodcast:
 
 
 class TestRunDiscover:
+    @staticmethod
+    def _podcast_entry(episode_id: str):
+        return _make_parsed_entry(
+            id=episode_id,
+            title=f"Episode {episode_id}",
+            link=f"https://example.com/{episode_id}",
+            enclosures=[{"href": f"https://example.com/{episode_id}.mp3", "type": "audio/mpeg"}],
+        )
+
     @patch("wilted.discover.feedparser.parse")
     @patch("wilted.discover._fetch_article_text")
     def test_polls_enabled_feeds(self, mock_fetch, mock_parse):
@@ -395,3 +437,67 @@ class TestRunDiscover:
 
         updated = Feed.get_by_id(feed.id)
         assert updated.title == "Real Feed Name"
+
+    @patch("wilted.discover.feedparser.parse")
+    def test_bws_fetch_error_does_not_log_resolved_url(self, mock_parse, monkeypatch, caplog):
+        private_url = "https://private.example/credential-material.xml"
+        monkeypatch.setenv("WILTED_FEED_PRIVATE", private_url)
+        mock_parse.side_effect = RuntimeError(private_url)
+        add_feed("bws:WILTED_FEED_PRIVATE", feed_type="podcast")
+
+        stats = run_discover()
+
+        assert stats["errors"] == 1
+        assert private_url not in caplog.text
+        assert "bws:WILTED_FEED_PRIVATE" in caplog.text
+
+    @patch("wilted.discover.feedparser.parse")
+    def test_second_podcast_poll_never_backfills_archive(self, mock_parse):
+        feed = add_feed("https://example.com/podcast.xml", feed_type="podcast")
+        newest_five = [self._podcast_entry(f"recent-{index}") for index in range(5)]
+        archive = [self._podcast_entry(f"archive-{index}") for index in range(100)]
+        mock_parse.side_effect = [
+            _make_feed_result(entries=newest_five),
+            _make_feed_result(entries=[*newest_five, *archive]),
+        ]
+
+        first_stats = run_discover()
+        second_stats = run_discover()
+
+        assert first_stats["discovered"] == 5
+        assert second_stats["discovered"] == 0
+        assert Item.select().where(Item.feed == feed).count() == 5
+
+    @patch("wilted.discover.feedparser.parse")
+    def test_new_podcast_episode_in_top_five_is_discovered(self, mock_parse):
+        feed = add_feed("https://example.com/podcast.xml", feed_type="podcast")
+        original_five = [self._podcast_entry(f"recent-{index}") for index in range(5)]
+        next_five = [self._podcast_entry("brand-new"), *original_five[:4]]
+        mock_parse.side_effect = [
+            _make_feed_result(entries=original_five),
+            _make_feed_result(entries=[*next_five, *[self._podcast_entry("old-archive")]]),
+        ]
+
+        run_discover()
+        second_stats = run_discover()
+
+        assert second_stats["discovered"] == 1
+        assert Item.select().where(Item.feed == feed).count() == 6
+        assert Item.select().where(Item.feed == feed, Item.guid == "brand-new").exists()
+
+    @patch("wilted.discover.feedparser.parse")
+    def test_podcast_window_uses_publication_date_not_feed_order(self, mock_parse):
+        feed = add_feed("https://example.com/podcast.xml", feed_type="podcast")
+        entries = [
+            self._podcast_entry("oldest"),
+            *[self._podcast_entry(f"new-{index}") for index in range(5)],
+        ]
+        entries[0]["published_parsed"] = gmtime(1)
+        for index, entry in enumerate(entries[1:], start=2):
+            entry["published_parsed"] = gmtime(index)
+        mock_parse.return_value = _make_feed_result(entries=entries)
+
+        stats = run_discover()
+
+        assert stats["discovered"] == 5
+        assert not Item.select().where(Item.feed == feed, Item.guid == "oldest").exists()

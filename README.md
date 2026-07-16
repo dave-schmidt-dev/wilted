@@ -56,7 +56,7 @@ legacy MLX path explicitly.
 Add a shell alias (e.g. in `~/.zshrc`) that pins the same external venv:
 
 ```bash
-alias wilted='UV_CACHE_DIR=.uv-cache UV_PROJECT_ENVIRONMENT=$HOME/.venvs/wilted uv run --project ~/Documents/Projects/wilted wilted'
+alias wilted='~/Documents/Projects/wilted/scripts/wilted-runtime.sh'
 ```
 
 This ensures the alias always uses the project's managed venv with all
@@ -69,13 +69,24 @@ launchd script set `UV_PROJECT_ENVIRONMENT` to the same path.
 The production launch chain is:
 
 ```text
-wilted alias → UV_CACHE_DIR=.uv-cache UV_PROJECT_ENVIRONMENT=$HOME/.venvs/wilted uv run --project ~/Documents/Projects/wilted wilted → wilted.cli:main
+wilted alias → wilted-runtime.sh → /usr/local/bin/bws run → allowlisted environment → wilted.cli:main
 ```
 
 The exact launch venv is `~/.venvs/wilted`. The speech daemon is mandatory and
 must be installed and started with `make install-daemon` before launching
 Wilted. The entry point verifies daemon readiness during startup, so a stopped
 or unhealthy daemon fails loudly.
+
+Credentialed podcast feeds are stored as `bws:UPPERCASE_SNAKE_CASE` references
+rather than URLs. Add the URL to Bitwarden Secrets Manager under that name, then run
+Wilted through the alias above (or reinstall the nightly launchd job). The
+launcher reads its dedicated `wilted-runtime` Keychain token only for the
+outer BWS process, then starts Wilted with exactly the three feed values and
+no BWS credentials or unrelated secrets. Its non-secret allowlist retains
+terminal/locale settings plus `WILTED_DEBUG`, `WILTED_WEATHER_TEST_TRIGGER`,
+`NERD_FONTS`, `WILTED_TRANSCRIBE_TIMEOUT_S`, and
+`WILTED_TRANSCRIBE_MEM_LIMIT`. SQLite stores an opaque per-episode reference
+instead.
 
 If the launcher, speech backend, or launch venv changes, update this section
 and the alias together. The alias remains the canonical interactive command.

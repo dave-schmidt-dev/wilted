@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from wilted.db import Feed
+from wilted.feed_refs import FeedReferenceError, resolve_enclosure_url, resolve_feed_url
 from wilted.feeds import add_feed, get_feed, list_feeds, remove_feed, update_feed
 
 
@@ -42,6 +43,23 @@ class TestAddFeed:
     def test_invalid_feed_type_raises(self):
         with pytest.raises(ValueError, match="feed_type"):
             add_feed("https://example.com/feed.xml", feed_type="video")
+
+    def test_add_bws_reference(self):
+        feed = add_feed("bws:WILTED_FEED_PRIVATE", feed_type="podcast")
+        assert feed.feed_url == "bws:WILTED_FEED_PRIVATE"
+
+    def test_bws_reference_requires_podcast_type(self):
+        with pytest.raises(ValueError, match="only for podcast"):
+            add_feed("bws:WILTED_FEED_PRIVATE")
+
+    @pytest.mark.parametrize("value", ["ftp://example.com/feed.xml", "bws:lowercase", "not-a-url"])
+    def test_rejects_invalid_feed_reference(self, value):
+        with pytest.raises(FeedReferenceError, match="http\\(s\\)"):
+            add_feed(value)
+
+    def test_rejects_feed_url_with_userinfo(self):
+        with pytest.raises(FeedReferenceError):
+            add_feed("https://username:password@example.com/feed.xml")
 
 
 class TestListFeeds:
@@ -104,6 +122,60 @@ class TestUpdateFeed:
         )
         assert updated.etag == '"abc123"'
         assert updated.last_modified == "Thu, 17 Apr 2026 00:00:00 GMT"
+
+    def test_bws_reference_updates_use_combined_feed_state(self):
+        podcast = add_feed("bws:WILTED_FEED_PRIVATE", feed_type="podcast")
+        with pytest.raises(ValueError, match="only for podcast"):
+            update_feed(podcast.id, feed_type="article")
+
+        article = add_feed("https://example.com/article.xml", feed_type="article")
+        with pytest.raises(ValueError, match="only for podcast"):
+            update_feed(article.id, feed_url="bws:WILTED_FEED_OTHER")
+
+
+class TestFeedReferences:
+    def test_resolves_bws_reference_from_environment(self, monkeypatch):
+        monkeypatch.setenv("WILTED_FEED_PRIVATE", "https://private.example/feed.xml")
+        assert resolve_feed_url("bws:WILTED_FEED_PRIVATE") == "https://private.example/feed.xml"
+
+    def test_invalid_resolved_bws_value_never_exposes_value(self, monkeypatch):
+        private_value = "not-a-public-url-with-private-material"
+        monkeypatch.setenv("WILTED_FEED_PRIVATE", private_value)
+        with pytest.raises(FeedReferenceError) as exc_info:
+            resolve_feed_url("bws:WILTED_FEED_PRIVATE")
+        assert private_value not in str(exc_info.value)
+
+    def test_enclosure_reference_re_resolves_without_persisting_url(self, monkeypatch):
+        from wilted.feed_refs import make_bws_enclosure_reference
+
+        private_url = "https://private.example/credential-material.mp3"
+        monkeypatch.setenv("WILTED_FEED_PRIVATE", "https://private.example/feed.xml")
+        private_guid = "episode-guid-with-private-material"
+        reference = make_bws_enclosure_reference("bws:WILTED_FEED_PRIVATE", private_guid)
+        entry = {"id": private_guid, "enclosures": [{"href": private_url, "type": "audio/mpeg"}]}
+        parsed = type("Parsed", (), {"entries": [entry]})
+        monkeypatch.setattr("wilted.feed_refs.feedparser.parse", lambda _: parsed)
+
+        assert private_url not in reference
+        assert private_guid not in reference
+        assert resolve_enclosure_url(reference, "bws:WILTED_FEED_PRIVATE") == private_url
+
+    def test_enclosure_refresh_exception_drops_secret_bearing_cause(self, monkeypatch):
+        from wilted.feed_refs import make_bws_enclosure_reference
+
+        private_url = "https://private.example/feed.xml?credential=hidden"
+        monkeypatch.setenv("WILTED_FEED_PRIVATE", private_url)
+        reference = make_bws_enclosure_reference("bws:WILTED_FEED_PRIVATE", "episode-guid")
+
+        def fail_parse(_url):
+            raise RuntimeError(private_url)
+
+        monkeypatch.setattr("wilted.feed_refs.feedparser.parse", fail_parse)
+        with pytest.raises(FeedReferenceError) as exc_info:
+            resolve_enclosure_url(reference, "bws:WILTED_FEED_PRIVATE")
+
+        assert private_url not in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
 
 
 class TestGetFeed:

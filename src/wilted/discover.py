@@ -32,6 +32,13 @@ import wilted
 from wilted.db import Feed, Item, _db
 from wilted.db import ensure_db as _ensure_db
 from wilted.db import now_utc as _now_utc
+from wilted.feed_refs import (
+    bws_secret_name,
+    display_feed_reference,
+    make_bws_enclosure_reference,
+    make_bws_guid,
+    resolve_feed_url,
+)
 from wilted.feeds import update_feed
 
 logger = logging.getLogger(__name__)
@@ -51,6 +58,20 @@ def _struct_time_to_utc(st: struct_time | None) -> str | None:
         return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     except (ValueError, OverflowError, OSError):
         return None
+
+
+def _entry_timestamp(entry) -> int:
+    """Return a sortable publication/update timestamp, keeping missing dates last."""
+    from calendar import timegm
+
+    for field in ("published_parsed", "updated_parsed"):
+        parsed = entry.get(field)
+        if parsed:
+            try:
+                return timegm(parsed)
+            except (OverflowError, TypeError, ValueError):
+                continue
+    return -1
 
 
 def _normalize_text(text: str) -> str:
@@ -190,7 +211,7 @@ def _poll_feed(feed: Feed) -> dict:
     """
     stats = {"new": 0, "skipped": 0, "errors": 0}
 
-    logger.info("Polling feed #%d: %s", feed.id, feed.feed_url)
+    logger.info("Polling feed #%d: %s", feed.id, display_feed_reference(feed.feed_url))
 
     # feedparser handles conditional GET via etag and modified
     kwargs = {"agent": _USER_AGENT}
@@ -199,7 +220,7 @@ def _poll_feed(feed: Feed) -> dict:
     if feed.last_modified:
         kwargs["modified"] = feed.last_modified
 
-    parsed = feedparser.parse(feed.feed_url, **kwargs)
+    parsed = feedparser.parse(resolve_feed_url(feed.feed_url), **kwargs)
 
     # Check for HTTP status
     http_status = getattr(parsed, "status", 200)
@@ -234,14 +255,12 @@ def _poll_feed(feed: Feed) -> dict:
 
     update_feed(feed.id, **update_fields)
 
-    # For podcast feeds, limit to the most recent episodes on initial discovery.
-    # RSS feeds list entries newest-first; cap at 5 to avoid ingesting a backlog
-    # of hundreds of episodes from long-running shows.
+    # RSS feeds list podcast episodes newest-first. Always inspect only the
+    # newest five: limiting only the first poll lets a later poll backfill the
+    # entire archive after those first episodes exist in the database.
     entries = parsed.entries
     if feed.feed_type == "podcast":
-        existing_count = Item.select().where(Item.feed == feed).count()
-        if existing_count == 0:
-            entries = entries[:5]
+        entries = sorted(entries, key=_entry_timestamp, reverse=True)[:5]
 
     # Process entries
     for entry in entries:
@@ -271,10 +290,12 @@ def _process_entry(feed: Feed, entry, stats: dict) -> None:
     published = _struct_time_to_utc(entry.get("published_parsed"))
     author = getattr(entry, "author", None) or entry.get("author")
 
-    # Compute dedup hash
-    content_hash = _dedup_hash(title, published, link)
+    is_bws_feed = bws_secret_name(feed.feed_url) is not None
+    stored_guid = make_bws_guid(guid) if is_bws_feed and guid else guid
+    safe_link = None if is_bws_feed else link
+    content_hash = _dedup_hash(title, published, safe_link)
 
-    if _is_duplicate(feed, guid, link, content_hash):
+    if _is_duplicate(feed, stored_guid, safe_link, content_hash):
         stats["skipped"] += 1
         return
 
@@ -291,14 +312,21 @@ def _process_entry(feed: Feed, entry, stats: dict) -> None:
         # already opted in by adding the feed, so episodes go straight to
         # `selected` and are picked up by `wilted prepare`. Articles still
         # land in `fetched` and route through classify + morning report.
+        if is_bws_feed:
+            if not guid:
+                logger.warning("Skipping BWS-backed podcast entry without a stable GUID in feed #%d", feed.id)
+                stats["skipped"] += 1
+                return
+            enclosure_url = make_bws_enclosure_reference(feed.feed_url, guid)
+
         item = Item.create(
             feed=feed,
-            guid=guid or str(uuid.uuid4()),
+            guid=stored_guid or str(uuid.uuid4()),
             title=title,
             author=author,
             source_name=feed.title,
-            source_url=link,
-            canonical_url=link,
+            source_url=safe_link,
+            canonical_url=safe_link,
             published_at=published,
             discovered_at=now,
             item_type="podcast_episode",
@@ -393,7 +421,12 @@ def run_discover() -> dict:
             total_new += stats["new"]
             total_errors += stats["errors"]
         except Exception as e:
-            logger.error("Failed to poll feed #%d (%s): %s", feed.id, feed.feed_url, e)
+            logger.error(
+                "Failed to poll feed #%d (%s): %s",
+                feed.id,
+                display_feed_reference(feed.feed_url),
+                type(e).__name__,
+            )
             total_errors += 1
 
     result = {

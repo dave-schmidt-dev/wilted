@@ -575,6 +575,15 @@ class TestFeedSubcommand:
         out = capsys.readouterr().out
         assert "example.com" in out
 
+    def test_feed_list_shows_bws_reference_not_resolved_url(self, monkeypatch, capsys):
+        private_url = "https://private.example/credential-material.xml"
+        monkeypatch.setenv("WILTED_FEED_PRIVATE", private_url)
+        run_cli(["feed", "add", "bws:WILTED_FEED_PRIVATE", "--type", "podcast", "--no-chain"])
+        run_cli(["feed", "list"])
+        out = capsys.readouterr().out
+        assert "bws:WILTED_FEED_PRIVATE" in out
+        assert private_url not in out
+
     def test_feed_remove(self, capsys):
         """wilted feed remove deletes a feed."""
         run_cli(["feed", "add", "https://example.com/feed.xml"])
@@ -1044,19 +1053,26 @@ class TestNightlyWrapper:
         fake_flock.write_text("#!/bin/bash\nexit 0\n")
         fake_flock.chmod(0o755)
 
-        fake_uv = fake_bin / "uv"
-        fake_uv.write_text(
+        project_root = tmp_path / "project"
+        scripts_dir = project_root / "scripts"
+        scripts_dir.mkdir(parents=True)
+        script = scripts_dir / "wilted-nightly.sh"
+        source_script = Path(__file__).parent.parent / "scripts" / "wilted-nightly.sh"
+        script.write_text(source_script.read_text(encoding="utf-8"), encoding="utf-8")
+        script.chmod(0o755)
+
+        fake_runtime = scripts_dir / "wilted-runtime.sh"
+        fake_runtime.write_text(
             "#!/bin/bash\n"
             "if [[ \"${*: -1}\" == \"ingest\" ]]; then\n"
             "    exit 37\n"
             "fi\n"
             "exit 0\n"
         )
-        fake_uv.chmod(0o755)
+        fake_runtime.chmod(0o755)
 
         home = tmp_path / "home"
         home.mkdir()
-        script = Path(__file__).parent.parent / "scripts" / "wilted-nightly.sh"
         env = {
             "HOME": str(home),
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -1076,6 +1092,14 @@ class TestNightlyWrapper:
         log_text = aggregate_log.read_text()
         assert "failed with exit code 37" in log_text
         assert "completed successfully" not in log_text
+
+    def test_uses_fixed_runtime_launcher(self):
+        """Nightly uses the repo launcher, never a broad BWS shell helper."""
+        script = Path(__file__).parent.parent / "scripts" / "wilted-nightly.sh"
+        source = script.read_text(encoding="utf-8")
+        assert 'WILTED_RUNTIME="${SCRIPT_DIR}/wilted-runtime.sh"' in source
+        assert '"$WILTED_RUNTIME" ingest' in source
+        assert "bws-run" not in source
 
 
 class TestWeatherMonitorForLaunch:

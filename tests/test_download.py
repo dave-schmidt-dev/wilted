@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
 
 import pytest
 
@@ -73,6 +74,54 @@ class TestGetPodcastDir:
 
 
 class TestDownloadPodcast:
+
+    @patch("wilted.download.urllib.request.urlopen")
+    def test_filename_override_ignores_credentialed_redirect_and_header(self, mock_urlopen, tmp_path):
+        private_name = "credential-material-very-private.mp3"
+        body = b"audio"
+        mock_urlopen.return_value = _make_response(
+            body=body,
+            content_length=len(body),
+            disposition=f'attachment; filename="{private_name}"',
+            url=f"https://private.example/{private_name}",
+        )
+
+        result = download_podcast(
+            77,
+            f"https://private.example/{private_name}",
+            dest_dir=tmp_path,
+            url_label="bws-feed-item:WILTED_FEED_PRIVATE:" + "a" * 64,
+            filename_override="episode.mp3",
+        )
+
+        assert result.name == "episode.mp3"
+        assert private_name not in str(result)
+        assert result.read_bytes() == body
+
+    @patch("wilted.download.urllib.request.urlopen")
+    def test_credentialed_url_label_redacts_logs_and_errors(self, mock_urlopen, caplog):
+        private_url = "https://private.example/credential-material.mp3"
+        reference = "bws-feed-item:WILTED_FEED_PRIVATE:" + "a" * 64
+        mock_urlopen.side_effect = HTTPError(private_url, 403, "Forbidden", MagicMock(), None)
+
+        with pytest.raises(DownloadError) as exc_info:
+            download_podcast(99, private_url, url_label=reference)
+
+        assert private_url not in str(exc_info.value)
+        assert private_url not in caplog.text
+        assert reference in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
+
+    @patch("wilted.download.urllib.request.urlopen")
+    def test_credentialed_unexpected_exception_is_redacted(self, mock_urlopen):
+        private_url = "https://private.example/credential-material.mp3"
+        mock_urlopen.side_effect = RuntimeError(private_url)
+
+        with pytest.raises(DownloadError) as exc_info:
+            download_podcast(99, private_url, url_label="bws-feed-item:WILTED_FEED_PRIVATE:" + "a" * 64)
+
+        assert private_url not in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
     @patch("wilted.download.urllib.request.urlopen")
     def test_successful_download(self, mock_urlopen, tmp_path):
         """Full download writes correct content to expected path."""

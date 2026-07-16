@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from wilted.prepare import run_prepare
+from wilted.prepare import _transcribe_podcast, run_prepare
 
 
 def _now():
@@ -195,6 +195,40 @@ class TestPreparePodcast:
         assert items[0].status == "error"
         assert "Download failed" in (items[0].error_message or "")
         assert stats["errors"] == 1
+
+    def test_bws_podcast_resolves_enclosure_only_for_download(self, tmp_path, monkeypatch):
+        from wilted.feed_refs import make_bws_enclosure_reference
+
+        private_url = "https://private.example/credential-material.mp3"
+        item = _make_podcast(tmp_path)
+        item.feed.feed_url = "bws:WILTED_FEED_PRIVATE"
+        item.feed.save()
+        item.enclosure_url = make_bws_enclosure_reference("bws:WILTED_FEED_PRIVATE", item.guid)
+        item.save()
+        monkeypatch.setenv("WILTED_FEED_PRIVATE", "https://private.example/feed.xml")
+        parsed = type(
+            "Parsed",
+            (),
+            {"entries": [{"id": item.guid, "enclosures": [{"href": private_url, "type": "audio/mpeg"}]}]},
+        )
+        audio_file = tmp_path / "episode.mp3"
+        audio_file.write_bytes(b"audio")
+        coordinator = MagicMock()
+        coordinator.run_transcribe.return_value = []
+
+        with (
+            patch("wilted.feed_refs.feedparser.parse", return_value=parsed),
+            patch("wilted.prepare.download_podcast", return_value=audio_file) as download,
+        ):
+            _transcribe_podcast(item, coordinator)
+
+        assert private_url not in item.enclosure_url
+        download.assert_called_once_with(
+            item.id,
+            private_url,
+            url_label=item.enclosure_url,
+            filename_override="episode.mp3",
+        )
 
     def test_podcast_full_pipeline(self, tmp_path):
         """Podcast goes through download → transcribe → ready."""

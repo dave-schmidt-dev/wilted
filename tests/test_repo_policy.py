@@ -14,6 +14,7 @@ def _policy_fixture(tmp_path: Path) -> Path:
     for relative_path in (
         Path("README.md"),
         Path("Makefile"),
+        Path("scripts/wilted-runtime.sh"),
         Path("src/wilted/engine.py"),
         Path("src/wilted/transcribe.py"),
     ):

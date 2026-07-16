@@ -102,6 +102,9 @@ def download_podcast(
     item_id: int,
     url: str,
     dest_dir: Path | None = None,
+    *,
+    url_label: str | None = None,
+    filename_override: str | None = None,
 ) -> Path:
     """Download a podcast episode audio file, with resume support.
 
@@ -113,8 +116,11 @@ def download_podcast(
     Args:
         item_id: Database ID of the item (used for the directory name).
         url: Enclosure URL to download.
-        dest_dir: Override the destination directory.  Defaults to
+        dest_dir: Override the destination directory. Defaults to
             ``get_podcast_dir(item_id)``.
+        url_label: Safe label for logs and errors when URL is credentialed.
+        filename_override: Safe filename to use instead of response headers or
+            redirected URL paths.
 
     Returns:
         Absolute path to the downloaded audio file.
@@ -126,7 +132,8 @@ def download_podcast(
         dest_dir = get_podcast_dir(item_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Starting podcast download: item_id=%d url=%s", item_id, url)
+    safe_url = url_label or url
+    logger.info("Starting podcast download: item_id=%d url=%s", item_id, safe_url)
     start_time = time.monotonic()
 
     try:
@@ -141,11 +148,14 @@ def download_podcast(
         content_type = response.headers.get("Content-Type", "")
         final_url = response.url  # after redirects
 
-        filename = _extract_filename(final_url, response)
+        if filename_override:
+            filename = _sanitise_filename(filename_override)
+        else:
+            filename = _extract_filename(final_url, response)
         dest_path = dest_dir / filename
 
         # Validate content type (warn only)
-        _check_content_type(content_type, url)
+        _check_content_type(content_type, safe_url)
 
         # If file exists and is already complete, skip download
         if dest_path.exists() and content_length is not None:
@@ -201,11 +211,21 @@ def download_podcast(
         return dest_path
 
     except HTTPError as exc:
-        raise DownloadError(f"HTTP {exc.code} downloading {url}: {exc.reason}") from exc
+        if url_label:
+            raise DownloadError(f"HTTP {exc.code} downloading {safe_url}") from None
+        raise DownloadError(f"HTTP {exc.code} downloading {safe_url}: {exc.reason}") from exc
     except URLError as exc:
-        raise DownloadError(f"URL error downloading {url}: {exc.reason}") from exc
+        if url_label:
+            raise DownloadError(f"URL error downloading {safe_url}") from None
+        raise DownloadError(f"URL error downloading {safe_url}: {exc.reason}") from exc
     except OSError as exc:
-        raise DownloadError(f"I/O error downloading {url}: {exc}") from exc
+        if url_label:
+            raise DownloadError(f"I/O error downloading {safe_url}") from None
+        raise DownloadError(f"I/O error downloading {safe_url}: {exc}") from exc
+    except Exception:
+        if url_label:
+            raise DownloadError(f"Podcast download failed for {safe_url}") from None
+        raise
 
 
 def _parse_content_length(response: HTTPResponse) -> int | None:

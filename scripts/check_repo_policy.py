@@ -71,9 +71,8 @@ def check_launch_contract(root: Path = REPO_ROOT) -> list[str]:
 
     required_readme_fragments = (
         "## Launch Contract",
-        "alias wilted='UV_CACHE_DIR=.uv-cache "
-        "UV_PROJECT_ENVIRONMENT=$HOME/.venvs/wilted "
-        "uv run --project ~/Documents/Projects/wilted wilted'",
+        "alias wilted='~/Documents/Projects/wilted/scripts/wilted-runtime.sh'",
+        "wilted-runtime.sh → /usr/local/bin/bws run → allowlisted environment",
         "wilted.cli:main",
         "~/.venvs/wilted",
         "make install-daemon",

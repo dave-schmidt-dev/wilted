@@ -17,8 +17,15 @@ from peewee import IntegrityError
 from wilted.db import Feed
 from wilted.db import ensure_db as _ensure_db
 from wilted.db import now_utc as _now_utc
+from wilted.feed_refs import bws_secret_name, validate_feed_reference
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_bws_feed_type(feed_url: str, feed_type: str) -> None:
+    """Require credentialed feed references to use the podcast pipeline."""
+    if bws_secret_name(feed_url) and feed_type != "podcast":
+        raise ValueError("BWS feed references are supported only for podcast feeds")
 
 
 def add_feed(
@@ -32,7 +39,7 @@ def add_feed(
     """Add a new feed subscription.
 
     Args:
-        feed_url: URL of the RSS/Atom feed.
+        feed_url: Public RSS/Atom URL or a ``bws:SECRET_NAME`` reference.
         feed_type: 'article' or 'podcast'.
         title: Human-readable feed title. Defaults to feed_url if not provided.
         site_url: URL of the website (not the feed).
@@ -45,9 +52,11 @@ def add_feed(
         ValueError: If feed_type is invalid or feed_url already exists.
     """
     _ensure_db()
+    feed_url = validate_feed_reference(feed_url)
 
     if feed_type not in ("article", "podcast"):
         raise ValueError(f"feed_type must be 'article' or 'podcast', got '{feed_type}'")
+    _validate_bws_feed_type(feed_url, feed_type)
 
     now = _now_utc()
 
@@ -141,11 +150,17 @@ def update_feed(feed_id: int, **kwargs) -> Feed:
     invalid = set(kwargs) - allowed
     if invalid:
         raise ValueError(f"Invalid feed fields: {invalid}")
+    if "feed_url" in kwargs:
+        kwargs["feed_url"] = validate_feed_reference(kwargs["feed_url"])
 
     try:
         feed = Feed.get_by_id(feed_id)
     except Feed.DoesNotExist:
         raise ValueError(f"No feed with ID {feed_id}") from None
+
+    effective_url = kwargs.get("feed_url", feed.feed_url)
+    effective_type = kwargs.get("feed_type", feed.feed_type)
+    _validate_bws_feed_type(effective_url, effective_type)
 
     for key, value in kwargs.items():
         setattr(feed, key, value)

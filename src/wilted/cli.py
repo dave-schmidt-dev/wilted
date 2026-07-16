@@ -506,6 +506,7 @@ def cmd_feed(argv: list[str]) -> None:
         _maybe_chain_discover_prepare(yes=args.yes, no_chain=args.no_chain)
 
     elif action == "list":
+        from wilted.feed_refs import display_feed_reference
         from wilted.feeds import list_feeds
 
         feeds = list_feeds()
@@ -518,7 +519,7 @@ def cmd_feed(argv: list[str]) -> None:
             status = "enabled" if f.enabled else "disabled"
             playlist = f" -> {f.default_playlist}" if f.default_playlist else ""
             print(f"  #{f.id}  {f.title} [{f.feed_type}] ({status}){playlist}")
-            print(f"       {f.feed_url}")
+            print(f"       {display_feed_reference(f.feed_url)}")
 
     elif action == "remove":
         if len(argv) < 2:
