@@ -13,6 +13,7 @@ from speech_stack import client
 from wilted import VOICES, WPM_ESTIMATE
 from wilted.fetch import get_text_from_clipboard, get_text_from_url
 from wilted.ingest import resolve_article
+from wilted.llm import DEFAULT_GGUF_MODEL
 from wilted.log import setup_logging
 from wilted.queue import (
     add_article,
@@ -894,7 +895,7 @@ def cmd_prepare(argv: list[str]) -> None:
     parser.add_argument("--no-llm", action="store_true", help="Skip LLM-based ad/promo detection")
     parser.add_argument(
         "--model",
-        default="hf:google/gemma-4-E4B-it-qat-q4_0-gguf/gemma-4-E4B_q4_0-it.gguf",
+        default=DEFAULT_GGUF_MODEL,
         help="LLM model for ad detection (GGUF path or hf:<repo_id>/<filename>)",
     )
     parser.add_argument("--backend", default="gguf", choices=["gguf", "mlx"], help="LLM backend type")

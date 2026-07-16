@@ -782,17 +782,15 @@ wheels = [
 
 [[package]]
 name = "llama-cpp-python"
-version = "0.3.33"
-source = { registry = "https://abetlen.github.io/llama-cpp-python/whl/metal" }
+version = "0.3.34"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "diskcache" },
     { name = "jinja2" },
     { name = "numpy" },
     { name = "typing-extensions" },
 ]
-wheels = [
-    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.33-metal/llama_cpp_python-0.3.33-py3-none-macosx_11_0_arm64.whl" },
-]
+sdist = { url = "https://files.pythonhosted.org/packages/c1/2f/46487e949da42b31847853793ddbfd44c7414e94d4364c9a41f91f30af27/llama_cpp_python-0.3.34.tar.gz", hash = "sha256:d849d286d808284f1d3ec1bd6875572430d29d1f9574a010232caa4e9cef0e35", size = 71617302, upload-time = "2026-07-12T04:33:41.928Z" }
 
 [[package]]
 name = "llguidance"
@@ -2420,6 +2418,7 @@ dependencies = [
     { name = "en-core-web-sm" },
     { name = "espeakng-loader" },
     { name = "feedparser" },
+    { name = "llama-cpp-python" },
     { name = "misaki" },
     { name = "mlx-audio", extra = ["tts"] },
     { name = "num2words" },
@@ -2438,9 +2437,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-llm = [
-    { name = "llama-cpp-python" },
-]
 vlm = [
     { name = "mlx-vlm" },
 ]
@@ -2460,7 +2456,7 @@ requires-dist = [
     { name = "en-core-web-sm", url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" },
     { name = "espeakng-loader", specifier = "==0.2.4" },
     { name = "feedparser", specifier = ">=6.0" },
-    { name = "llama-cpp-python", marker = "extra == 'llm'", specifier = "==0.3.33", index = "https://abetlen.github.io/llama-cpp-python/whl/metal" },
+    { name = "llama-cpp-python", specifier = "==0.3.34" },
     { name = "misaki", specifier = "==0.9.4" },
     { name = "mlx-audio", extras = ["tts"] },
     { name = "mlx-vlm", marker = "extra == 'vlm'" },
@@ -2478,7 +2474,7 @@ requires-dist = [
     { name = "tqdm" },
     { name = "trafilatura" },
 ]
-provides-extras = ["llm", "vlm"]
+provides-extras = ["vlm"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -127,9 +127,22 @@ class TestCreateBackend:
             model="/path/m.gguf",
             n_gpu_layers=0,
             n_ctx=8192,
+            seed=17,
         )
         assert backend.n_gpu_layers == 0
         assert backend.n_ctx == 8192
+        assert backend.seed == 17
+
+    def test_gguf_default_seed_is_fixed(self):
+        backend = create_backend("gguf", model="/path/m.gguf")
+
+        assert backend.seed == 0
+
+    def test_mlx_factory_ignores_gguf_seed_without_changing_protocol(self):
+        backend = create_backend("mlx", model="m", seed=17)
+
+        assert isinstance(backend, MlxBackend)
+        assert not hasattr(backend, "seed")
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +181,53 @@ class TestGgufBackendNoModel:
         backend = GgufBackend(model="test.gguf")
         backend.close()  # Should not raise
 
+    def test_missing_default_model_fails_with_in_repo_repair_instructions(self, monkeypatch, tmp_path):
+        missing_default = tmp_path / "missing-repaired.gguf"
+        monkeypatch.setattr("wilted.llm.DEFAULT_GGUF_MODEL", str(missing_default))
+        backend = GgufBackend(model=str(missing_default))
+
+        with pytest.raises(FileNotFoundError, match="README.md#default-gguf-model-setup") as exc_info:
+            backend.load()
+
+        assert "python -m wilted.gguf_repair" in str(exc_info.value)
+        assert "known tokenizer defect" in str(exc_info.value)
+
+    def test_missing_custom_model_fails_before_llama_import(self, tmp_path):
+        backend = GgufBackend(model=str(tmp_path / "missing.gguf"))
+
+        with pytest.raises(FileNotFoundError, match="GGUF model file not found"):
+            backend.load()
+
+    def test_generate_forwards_optional_response_format(self):
+        backend = GgufBackend(model="test.gguf")
+        backend._llm = MagicMock()
+        backend._llm.create_chat_completion.return_value = {
+            "choices": [{"message": {"content": '{"ads":[]}'}}],
+            "usage": {"completion_tokens": 2},
+        }
+        response_format = {"type": "json_object", "schema": {"type": "object"}}
+
+        assert backend.generate("system", "user", response_format=response_format) == ('{"ads":[]}', 2)
+        backend._llm.create_chat_completion.assert_called_once_with(
+            messages=[{"role": "system", "content": "system"}, {"role": "user", "content": "user"}],
+            max_tokens=2048,
+            temperature=0.1,
+            seed=0,
+            response_format=response_format,
+        )
+
+    def test_generate_forwards_custom_seed(self):
+        backend = GgufBackend(model="test.gguf", seed=23)
+        backend._llm = MagicMock()
+        backend._llm.create_chat_completion.return_value = {
+            "choices": [{"message": {"content": "classified"}}],
+            "usage": {"completion_tokens": 3},
+        }
+
+        assert backend.generate("system", "user") == ("classified", 3)
+        assert backend._llm.create_chat_completion.call_args.kwargs["seed"] == 23
+        assert backend._llm.create_chat_completion.call_args.kwargs["temperature"] == 0.1
+
 
 # ---------------------------------------------------------------------------
 # Mock-based integration test
@@ -175,29 +235,32 @@ class TestGgufBackendNoModel:
 
 
 class TestMlxBackendMocked:
-    """Test MlxBackend with mocked mlx_vlm imports."""
+    """Test MlxBackend with mocked mlx_lm imports."""
 
     def test_load_generate_close_cycle(self, monkeypatch):
         """Full lifecycle with mocked model."""
         import sys
         import types
 
-        # Create mock mlx_vlm module
-        mock_mlx_vlm = types.ModuleType("mlx_vlm")
+        mock_mlx_lm = types.ModuleType("mlx_lm")
+        mock_mlx_lm.__path__ = []
+        mock_sample_utils = types.ModuleType("mlx_lm.sample_utils")
 
-        class MockProcessor:
+        class MockTokenizer:
             def apply_chat_template(self, messages, **kwargs):
                 return "formatted prompt"
 
         mock_model = object()
-        mock_processor = MockProcessor()
+        mock_tokenizer = MockTokenizer()
 
-        mock_mlx_vlm.load = lambda model_name: (mock_model, mock_processor)
-        mock_mlx_vlm.generate = lambda model, proc, **kwargs: (
+        mock_mlx_lm.load = lambda model_name: (mock_model, mock_tokenizer)
+        mock_mlx_lm.generate = lambda model, tokenizer, **kwargs: (
             '{"playlist": "Work", "relevance_score": 0.9, "summary": "Test."}'
         )
+        mock_sample_utils.make_sampler = lambda **kwargs: object()
 
-        monkeypatch.setitem(sys.modules, "mlx_vlm", mock_mlx_vlm)
+        monkeypatch.setitem(sys.modules, "mlx_lm", mock_mlx_lm)
+        monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mock_sample_utils)
 
         # Create mock mlx.core module for close()
         mock_mlx = types.ModuleType("mlx")
@@ -221,29 +284,71 @@ class TestMlxBackendMocked:
         backend.close()
         assert backend._model is None
 
+    def test_generate_uses_tokenizer_template_and_sampler(self, monkeypatch):
+        """MLX-LM generation formats text chat and forwards its sampler."""
+        import sys
+        import types
+
+        mock_mlx_lm = types.ModuleType("mlx_lm")
+        mock_mlx_lm.__path__ = []
+        mock_sample_utils = types.ModuleType("mlx_lm.sample_utils")
+        mock_generate = MagicMock(return_value="classified")
+        mock_sampler = object()
+        mock_make_sampler = MagicMock(return_value=mock_sampler)
+        mock_mlx_lm.generate = mock_generate
+        mock_sample_utils.make_sampler = mock_make_sampler
+        monkeypatch.setitem(sys.modules, "mlx_lm", mock_mlx_lm)
+        monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mock_sample_utils)
+
+        backend = MlxBackend(model="test-model", max_tokens=321, temperature=0.25)
+        backend._model = object()
+        backend._tokenizer = MagicMock()
+        backend._tokenizer.apply_chat_template.return_value = "formatted prompt"
+
+        response, tokens = backend.generate("system", "user")
+
+        assert (response, tokens) == ("classified", 2)
+        backend._tokenizer.apply_chat_template.assert_called_once_with(
+            [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "user"},
+            ],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        mock_make_sampler.assert_called_once_with(temp=0.25)
+        mock_generate.assert_called_once_with(
+            backend._model,
+            backend._tokenizer,
+            prompt="formatted prompt",
+            sampler=mock_sampler,
+            max_tokens=321,
+            verbose=False,
+        )
+
     def test_load_applies_memory_guideline(self, monkeypatch):
         """§6c defense-in-depth: load() applies the shared mlx memory
-        guideline immediately before the mlx_vlm model load.
+        guideline immediately before the mlx_lm model load.
 
         The guideline is only attempted once ``mlx.core`` is already resident
         in ``sys.modules`` (see the comment at the call site in llm.py), so
-        this test seeds a fake ``mlx.core`` alongside the fake ``mlx_vlm`` —
-        mirroring how the real ``mlx_vlm`` import loads the real mlx.core as a
+        this test seeds a fake ``mlx.core`` alongside the fake ``mlx_lm`` —
+        mirroring how the real ``mlx_lm`` import loads the real mlx.core as a
         side effect in production.
         """
         import sys
         import types
 
-        mock_mlx_vlm = types.ModuleType("mlx_vlm")
+        mock_mlx_lm = types.ModuleType("mlx_lm")
 
-        class MockProcessor:
+        class MockTokenizer:
             def apply_chat_template(self, messages, **kwargs):
                 return "formatted prompt"
 
         mock_model = object()
-        mock_processor = MockProcessor()
-        mock_mlx_vlm.load = lambda model_name: (mock_model, mock_processor)
-        monkeypatch.setitem(sys.modules, "mlx_vlm", mock_mlx_vlm)
+        mock_tokenizer = MockTokenizer()
+        mock_mlx_lm.load = lambda model_name: (mock_model, mock_tokenizer)
+        monkeypatch.setitem(sys.modules, "mlx_lm", mock_mlx_lm)
         monkeypatch.setitem(sys.modules, "mlx.core", types.ModuleType("mlx.core"))
 
         mock_default = MagicMock(return_value=54321)
@@ -265,16 +370,16 @@ class TestMlxBackendMocked:
         import sys
         import types
 
-        mock_mlx_vlm = types.ModuleType("mlx_vlm")
+        mock_mlx_lm = types.ModuleType("mlx_lm")
 
-        class MockProcessor:
+        class MockTokenizer:
             def apply_chat_template(self, messages, **kwargs):
                 return "formatted prompt"
 
         mock_model = object()
-        mock_processor = MockProcessor()
-        mock_mlx_vlm.load = lambda model_name: (mock_model, mock_processor)
-        monkeypatch.setitem(sys.modules, "mlx_vlm", mock_mlx_vlm)
+        mock_tokenizer = MockTokenizer()
+        mock_mlx_lm.load = lambda model_name: (mock_model, mock_tokenizer)
+        monkeypatch.setitem(sys.modules, "mlx_lm", mock_mlx_lm)
         monkeypatch.setitem(sys.modules, "mlx.core", types.ModuleType("mlx.core"))
 
         monkeypatch.setattr(

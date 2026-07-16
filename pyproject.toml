@@ -30,10 +30,10 @@ dependencies = [
     "rich>=13.0",
     "playwright>=1.58.0",
     "textual>=8.0",
+    "llama-cpp-python==0.3.34",
 ]
 
 [project.optional-dependencies]
-llm = ["llama-cpp-python==0.3.33"]
 vlm = ["mlx-vlm"]
 
 [project.scripts]
@@ -52,6 +52,8 @@ where = ["src"]
 # syrupy 5.5.3). Overriding here is a targeted fix for that one dependency's
 # stale pin, not a general syrupy-4-vs-5 API migration.
 override-dependencies = ["syrupy>=5.0.0"]
+no-binary-package = ["llama-cpp-python"]
+extra-build-variables = { llama-cpp-python = { CMAKE_ARGS = "-DGGML_METAL=on" } }
 
 # Speech-stack consolidation (Phase 4): converge the speech-critical packages on
 # pin set A (the ~/.venvs/speech version authority, S-INV-4). mlx/mlx-metal/mlx-lm are
@@ -68,7 +70,6 @@ constraint-dependencies = [
 ]
 
 [tool.uv.sources]
-llama-cpp-python = { index = "llama-cpp-python-metal" }
 # EDITABLE is required, not cosmetic: speech_stack.isolated.state_dir() resolves
 # the shared GPU lock via Path(__file__).parents[2]/.state. A non-editable (copied)
 # install would resolve the lock inside wilted's site-packages, breaking the
@@ -76,11 +77,6 @@ llama-cpp-python = { index = "llama-cpp-python-metal" }
 # __file__ pointing at the speech-stack source so the lock at
 # ~/Documents/Projects/speech-stack/.state/gpu.lock is genuinely shared.
 speech-stack = { path = "/Users/dave/Documents/Projects/speech-stack", editable = true }
-
-[[tool.uv.index]]
-name = "llama-cpp-python-metal"
-url = "https://abetlen.github.io/llama-cpp-python/whl/metal"
-explicit = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

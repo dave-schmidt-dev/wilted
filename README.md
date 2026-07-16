@@ -32,18 +32,26 @@ export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/wilted"
 uv sync
 ```
 
-For LLM-based classification (optional):
+Classification and ad detection are core features and run the Gemma-4 E4B QAT (Q4_0) GGUF via
+llama.cpp (`llama-cpp-python`). By default, the repaired model file is served from
+`data/models/gemma-4-E4B_q4_0-it-2026-07-15-repaired.gguf`. The affected upstream GGUF is never used
+as an automatic fallback because its duplicate tokenizer entries fail during llama.cpp loading.
+
+### Default GGUF model setup
+
+Model files are intentionally not committed. Given a local copy of the affected E4B source GGUF,
+create the validated repaired default without modifying the source:
 
 ```bash
-uv sync --extra llm
+uv run python -m wilted.gguf_repair --variant e4b \
+  /path/to/gemma-4-E4B_q4_0-it.gguf \
+  data/models/gemma-4-E4B_q4_0-it-2026-07-15-repaired.gguf
 ```
 
-Classification and ad detection run the Gemma-4 E4B QAT (Q4_0) GGUF via
-llama.cpp (`llama-cpp-python`). The default model string
-`hf:google/gemma-4-E4B-it-qat-q4_0-gguf/gemma-4-E4B_q4_0-it.gguf` is
-downloaded into the Hugging Face cache on first `wilted classify`/`prepare`
-and resolved offline thereafter. Pass `--backend mlx --model <hf-repo>` to
-fall back to the legacy MLX path.
+The repair command validates the exact model identity, tokenizer defect, metadata layout, and tensor
+bytes before publishing the destination. If the repaired default is absent, Wilted fails before model
+loading with this setup reference. Alternatively, pass `--backend mlx --model <hf-repo>` to use the
+legacy MLX path explicitly.
 
 Add a shell alias (e.g. in `~/.zshrc`) that pins the same external venv:
 

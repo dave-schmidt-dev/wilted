@@ -21,17 +21,16 @@ import time
 from wilted.db import Item
 from wilted.db import ensure_db as _ensure_db
 from wilted.db import now_utc as _now_utc
-from wilted.llm import LLMBackend, create_backend, parse_json_response
+from wilted.llm import DEFAULT_GGUF_MODEL, LLMBackend, create_backend, parse_json_response
 from wilted.preferences import get_keywords_for_prompt
 from wilted.station_runtime.coordinator import ModelCoordinator
 
 logger = logging.getLogger(__name__)
 
 
-# Default classification model — Gemma-4 E4B QAT Q4_0 GGUF served via llama.cpp.
-# The "hf:<repo_id>/<filename>" form is resolved to a local cached path by
-# wilted.llm.create_backend (via huggingface_hub); never hardcode a snapshot path.
-_DEFAULT_MODEL = "hf:google/gemma-4-E4B-it-qat-q4_0-gguf/gemma-4-E4B_q4_0-it.gguf"
+# Default classification model — the canonical repaired Gemma-4 E4B QAT GGUF
+# (see wilted.llm.DEFAULT_GGUF_MODEL and LLM/GEMMA4_GGUF_REPAIR.md).
+_DEFAULT_MODEL = DEFAULT_GGUF_MODEL
 _DEFAULT_BACKEND = "gguf"
 
 # Valid playlist categories

@@ -4,14 +4,15 @@ Follows scarecrow's architecture: load once, generate many, close once.
 Only one model loaded at a time; explicit unloading reclaims Metal GPU memory.
 
 Usage:
-    from wilted.llm import create_backend
+    from wilted.llm import DEFAULT_GGUF_MODEL, create_backend
 
-    # GGUF via llama.cpp is the default; an "hf:<repo_id>/<filename>" model
-    # string is resolved to a local cached path via huggingface_hub.
-    backend = create_backend(
-        "gguf",
-        model="hf:google/gemma-4-E4B-it-qat-q4_0-gguf/gemma-4-E4B_q4_0-it.gguf",
-    )
+    # GGUF via llama.cpp is the default. `create_backend` accepts a local .gguf
+    # path or an "hf:<repo_id>/<filename>" spec (resolved to a cached path via
+    # huggingface_hub). `DEFAULT_GGUF_MODEL` is the repaired local Gemma-4 E4B
+    # GGUF. The July-2026 upstream QAT snapshot has a broken tokenizer, so a
+    # missing repaired file fails with setup instructions instead of downloading
+    # the known-broken snapshot.
+    backend = create_backend("gguf", model=DEFAULT_GGUF_MODEL)
     backend.load()
     response, tokens = backend.generate("You are a classifier.", "Classify this text.")
     backend.close()
@@ -24,9 +25,19 @@ import json
 import logging
 import sys
 import time
-from typing import Protocol, runtime_checkable
+from pathlib import Path
+from typing import Any, Protocol, runtime_checkable
+
+import wilted
 
 logger = logging.getLogger(__name__)
+
+# Canonical default GGUF classification model. Google's July-2026 Gemma-4 QAT
+# snapshots ship a broken tokenizer (duplicate tokens trip llama.cpp's vocabulary
+# assertion), so the default is only the repaired copy in data/models. Never
+# silently download the known-broken upstream file on a fresh checkout.
+_REPAIRED_E4B_MODEL = wilted.DATA_DIR / "models" / "gemma-4-E4B_q4_0-it-2026-07-15-repaired.gguf"
+DEFAULT_GGUF_MODEL = str(_REPAIRED_E4B_MODEL)
 
 
 @runtime_checkable
@@ -41,15 +52,17 @@ class LLMBackend(Protocol):
 
     def load(self) -> None: ...
 
-    def generate(self, system_prompt: str, user_content: str) -> tuple[str, int]: ...
+    def generate(
+        self, system_prompt: str, user_content: str, *, response_format: dict[str, Any] | None = None
+    ) -> tuple[str, int]: ...
 
     def close(self) -> None: ...
 
 
 class MlxBackend:
-    """MLX-based LLM backend using mlx-vlm (or mlx-lm).
+    """MLX-based text LLM backend using mlx-lm.
 
-    Loads a Hugging Face model via mlx_vlm.generate and manages Metal GPU memory.
+    Loads a Hugging Face model via mlx_lm and manages Metal GPU memory.
     """
 
     def __init__(self, model: str, max_tokens: int = 2048, temperature: float = 0.1):
@@ -58,7 +71,6 @@ class MlxBackend:
         self.temperature = temperature
         self._model = None
         self._tokenizer = None
-        self._processor = None
 
     def load(self) -> None:
         """Load the model into Metal GPU memory."""
@@ -69,7 +81,7 @@ class MlxBackend:
         logger.info("Loading MLX model: %s", self.model_name)
         start = time.monotonic()
 
-        from mlx_vlm import load as mlx_load
+        from mlx_lm import load as mlx_load
 
         # §6c defense-in-depth: apply the shared mlx memory-limit guideline
         # immediately before the model load. On mlx 0.32.0 this is only a
@@ -79,7 +91,7 @@ class MlxBackend:
         # never block the actual model load. mlx-only: the gguf/llama-cpp
         # backend manages its own memory and is untouched by
         # mx.set_memory_limit. Only attempted once mlx.core is already
-        # resident in sys.modules (the ``mlx_vlm`` import above loads it as a
+        # resident in sys.modules (the ``mlx_lm`` import above loads it as a
         # side effect) — never an independent trigger for mlx.core's first
         # import, since mlx's nanobind bindings are not safe to import a
         # second time after eviction/reload.
@@ -91,19 +103,21 @@ class MlxBackend:
         except Exception:
             logger.warning("could not apply mlx memory guideline before LLM model load", exc_info=True)
 
-        self._model, self._processor = mlx_load(self.model_name)
-        # mlx_vlm.load returns (model, processor); tokenizer is on processor
-        self._tokenizer = self._processor
+        self._model, self._tokenizer = mlx_load(self.model_name)
 
         elapsed = time.monotonic() - start
         logger.info("Model loaded in %.1fs: %s", elapsed, self.model_name)
 
-    def generate(self, system_prompt: str, user_content: str) -> tuple[str, int]:
+    def generate(
+        self, system_prompt: str, user_content: str, *, response_format: dict[str, Any] | None = None
+    ) -> tuple[str, int]:
         """Generate a response from the loaded model.
 
         Args:
             system_prompt: System instruction for the model.
             user_content: User message content.
+            response_format: Optional backend-specific structured-output request.
+                MLX does not support constrained decoding, so it is ignored.
 
         Returns:
             Tuple of (response_text, token_count).
@@ -114,34 +128,30 @@ class MlxBackend:
         if self._model is None:
             raise RuntimeError("Model not loaded. Call load() first.")
 
-        from mlx_vlm import generate as mlx_generate
+        from mlx_lm import generate as mlx_generate
+        from mlx_lm.sample_utils import make_sampler
 
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ]
 
-        # Apply chat template via processor/tokenizer
-        prompt = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        prompt = self._tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        sampler = make_sampler(temp=self.temperature)
 
         start = time.monotonic()
         result = mlx_generate(
             self._model,
-            self._processor,
+            self._tokenizer,
             prompt=prompt,
+            sampler=sampler,
             max_tokens=self.max_tokens,
-            temp=self.temperature,
             verbose=False,
         )
         elapsed = time.monotonic() - start
 
-        # mlx_vlm >=0.2 returns a GenerationResult dataclass; older versions return str
-        if hasattr(result, "text"):
-            response = result.text
-            token_count = getattr(result, "total_tokens", None) or max(1, len(response) // 4)
-        else:
-            response = str(result)
-            token_count = max(1, len(response) // 4)
+        response = str(result)
+        token_count = max(1, len(response) // 4)
         logger.debug(
             "Generated %d tokens in %.1fs (%.0f tok/s)",
             token_count,
@@ -159,12 +169,9 @@ class MlxBackend:
         import mlx.core as mx
 
         logger.info("Unloading model: %s", self.model_name)
-        # Delete processor first — _tokenizer is an alias for the same object,
-        # so we must drop the real reference before gc can reclaim Metal memory.
-        del self._processor
         del self._tokenizer
         del self._model
-        self._model = self._tokenizer = self._processor = None
+        self._model = self._tokenizer = None
 
         gc.collect()
         mx.clear_cache()
@@ -182,12 +189,14 @@ class GgufBackend:
         model: str,
         max_tokens: int = 2048,
         temperature: float = 0.1,
+        seed: int = 0,
         n_gpu_layers: int = -1,
         n_ctx: int = 4096,
     ):
         self.model_path = model
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.seed = seed
         self.n_gpu_layers = n_gpu_layers
         self.n_ctx = n_ctx
         self._llm = None
@@ -197,6 +206,16 @@ class GgufBackend:
         if self._llm is not None:
             logger.debug("Model already loaded: %s", self.model_path)
             return
+
+        if not Path(self.model_path).is_file():
+            if self.model_path == DEFAULT_GGUF_MODEL:
+                raise FileNotFoundError(
+                    f"Default repaired GGUF model not found: {self.model_path}. "
+                    "The upstream Gemma-4 GGUF has a known tokenizer defect and is not downloaded automatically. "
+                    "See README.md#default-gguf-model-setup and run `python -m wilted.gguf_repair` "
+                    "with a source GGUF, or explicitly select the MLX backend."
+                )
+            raise FileNotFoundError(f"GGUF model file not found: {self.model_path}")
 
         logger.info("Loading GGUF model: %s", self.model_path)
         start = time.monotonic()
@@ -213,7 +232,9 @@ class GgufBackend:
         elapsed = time.monotonic() - start
         logger.info("GGUF model loaded in %.1fs: %s", elapsed, self.model_path)
 
-    def generate(self, system_prompt: str, user_content: str) -> tuple[str, int]:
+    def generate(
+        self, system_prompt: str, user_content: str, *, response_format: dict[str, Any] | None = None
+    ) -> tuple[str, int]:
         """Generate a response from the loaded GGUF model.
 
         Returns:
@@ -226,13 +247,19 @@ class GgufBackend:
             raise RuntimeError("Model not loaded. Call load() first.")
 
         start = time.monotonic()
-        result = self._llm.create_chat_completion(
-            messages=[
+        completion_args: dict[str, Any] = {
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "seed": self.seed,
+        }
+        if response_format is not None:
+            completion_args["response_format"] = response_format
+        result = self._llm.create_chat_completion(
+            **completion_args,
         )
         elapsed = time.monotonic() - start
 
@@ -335,6 +362,7 @@ def create_backend(
             model=_resolve_model_spec(model),
             max_tokens=max_tokens,
             temperature=temperature,
+            seed=kwargs.get("seed", 0),
             n_gpu_layers=kwargs.get("n_gpu_layers", -1),
             n_ctx=kwargs.get("n_ctx", 4096),
         )

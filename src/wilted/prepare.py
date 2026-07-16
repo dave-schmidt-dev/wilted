@@ -298,7 +298,7 @@ class PrepareError(RuntimeError):
 def run_prepare(
     *,
     use_llm: bool = True,
-    llm_model: str = "hf:google/gemma-4-E4B-it-qat-q4_0-gguf/gemma-4-E4B_q4_0-it.gguf",
+    llm_model: str = _llm_mod.DEFAULT_GGUF_MODEL,
     llm_backend_type: str = "gguf",
     skip_tts: bool = False,
 ) -> dict:

@@ -51,12 +51,22 @@ class TranscriptionWorkerError(TranscriptionError):
 
 
 @dataclass
+class TranscriptToken:
+    """One aligned transcript token with second-resolution timing."""
+
+    text: str
+    start_s: float
+    end_s: float
+
+
+@dataclass
 class TranscriptSegment:
-    """A segment of transcript with timestamps."""
+    """A segment of transcript with timestamps and optional aligned tokens."""
 
     start_s: float
     end_s: float
     text: str
+    tokens: tuple[TranscriptToken, ...] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -580,6 +590,7 @@ def transcribe_audio(
             start_s=float(seg["start_s"]),
             end_s=float(seg["end_s"]),
             text=str(seg["text"]),
+            tokens=_parse_aligned_tokens(seg.get("tokens")),
         )
         for seg in result.get("segments", [])
     ]
@@ -700,12 +711,29 @@ def load_transcript(path: Path) -> list[TranscriptSegment] | None:
                 start_s=float(item["start_s"]),
                 end_s=float(item["end_s"]),
                 text=str(item["text"]),
+                tokens=_parse_aligned_tokens(item.get("tokens")),
             )
             for item in data
         ]
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         logger.warning("Failed to load transcript cache from %s", path)
         return None
+
+
+def _parse_aligned_tokens(raw_tokens: object) -> tuple[TranscriptToken, ...] | None:
+    """Decode optional Tier-3 aligned tokens while accepting old cache files."""
+    if raw_tokens is None:
+        return None
+    if not isinstance(raw_tokens, list):
+        raise TypeError("transcript tokens must be a list")
+    return tuple(
+        TranscriptToken(
+            text=str(token["text"]),
+            start_s=float(token["start_s"]),
+            end_s=float(token["end_s"]),
+        )
+        for token in raw_tokens
+    )
 
 
 def segments_to_text(segments: list[TranscriptSegment]) -> str:

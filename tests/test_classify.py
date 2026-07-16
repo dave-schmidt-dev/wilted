@@ -245,7 +245,9 @@ class TestRunClassify:
         assert _DEFAULT_BACKEND == "gguf"
         assert captured["backend_type"] == "gguf"
         assert captured["model"] == _DEFAULT_MODEL
-        assert _DEFAULT_MODEL.startswith("hf:")
+        # Prefer the repaired local GGUF (Google's July-2026 QAT tokenizer is
+        # broken); fall back to the hf: cache spec only when it is absent.
+        assert _DEFAULT_MODEL.endswith("-repaired.gguf") or _DEFAULT_MODEL.startswith("hf:")
         assert "gemma-4-E4B" in _DEFAULT_MODEL
         assert _DEFAULT_MODEL.endswith(".gguf")
 

@@ -535,6 +535,35 @@ class TestSaveLoadTranscript:
         result = load_transcript(tmp_path / "missing.json")
         assert result is None
 
+    def test_round_trip_preserves_tokens_and_old_cache_remains_readable(self, tmp_path):
+        from wilted.transcribe import TranscriptToken
+
+        path = tmp_path / "transcript.json"
+        save_transcript(
+            [
+                TranscriptSegment(
+                    start_s=1.0,
+                    end_s=2.0,
+                    text="Hello",
+                    tokens=(TranscriptToken("Hello", 1.0, 2.0),),
+                )
+            ],
+            path,
+        )
+        assert load_transcript(path) == [
+            TranscriptSegment(
+                start_s=1.0,
+                end_s=2.0,
+                text="Hello",
+                tokens=(TranscriptToken("Hello", 1.0, 2.0),),
+            )
+        ]
+
+        path.write_text('[{"start_s": 3.0, "end_s": 4.0, "text": "Old cache"}]')
+        loaded = load_transcript(path)
+        assert loaded is not None
+        assert loaded[0].tokens is None
+
     def test_load_corrupt_json_returns_none(self, tmp_path):
         path = tmp_path / "bad.json"
         path.write_text("not valid json {{{")
@@ -634,6 +663,31 @@ class TestTranscribeAudioLocalTier:
         assert [(s.start_s, s.end_s, s.text) for s in segments] == [
             (0.0, 1.0, "Hello world"),
             (1.0, 2.5, "Second line"),
+        ]
+
+    @patch("wilted.transcribe.client.stt_path")
+    def test_preserves_tier3_aligned_tokens(self, mock_stt_path):
+        mock_stt_path.return_value = {
+            "text": "This episode is brought to you by Acme.",
+            "segments": [
+                {
+                    "start_s": 10.0,
+                    "end_s": 13.0,
+                    "text": "This episode is brought to you by Acme.",
+                    "tokens": [
+                        {"text": "This", "start_s": 10.0, "end_s": 10.3},
+                        {"text": " episode", "start_s": 10.3, "end_s": 11.0},
+                    ],
+                }
+            ],
+        }
+
+        segment = transcribe_audio(Path("/tmp/test.mp3"))[0]
+
+        assert segment.tokens is not None
+        assert [(token.text, token.start_s, token.end_s) for token in segment.tokens] == [
+            ("This", 10.0, 10.3),
+            (" episode", 10.3, 11.0),
         ]
 
     def test_raises_when_worker_returns_no_segments(self, tmp_path):
