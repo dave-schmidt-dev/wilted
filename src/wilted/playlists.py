@@ -27,6 +27,18 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
+from wilted.background_work.contracts import (
+    ContentState,
+    RetentionFacts,
+    RetentionState,
+)
+from wilted.content_state import (
+    items_for_playlist_all,
+    items_for_playlist_dynamic,
+    legacy_display_status,
+    read_content_state,
+    transition_item,
+)
 from wilted.db import ensure_db as _ensure_db
 from wilted.db import now_utc as _now_utc
 
@@ -84,7 +96,7 @@ def _item_to_dict(item) -> dict:
         "file": file_field,
         "added": item.discovered_at or _now_utc(),
         "audio_file": item.audio_file,
-        "status": item.status,
+        "status": legacy_display_status(item),
         "playlist_assigned": item.playlist_assigned,
         "playlist_override": item.playlist_override,
         "relevance_score": item.relevance_score,
@@ -272,8 +284,6 @@ def get_playlist_items(playlist_name: str) -> list[dict]:
     Raises:
         ValueError: If no playlist with *playlist_name* exists.
     """
-    from peewee import fn
-
     from wilted.db import Item, Playlist, PlaylistItem
 
     _ensure_db()
@@ -282,19 +292,11 @@ def get_playlist_items(playlist_name: str) -> list[dict]:
     except Playlist.DoesNotExist:
         raise ValueError(f"Playlist '{playlist_name}' not found")
 
-    ready_statuses = ("ready", "selected")
-
     if playlist_name == "All":
-        items = list(Item.select().where(Item.status.in_(ready_statuses)).order_by(Item.discovered_at.asc()))
+        items = items_for_playlist_all()
 
     elif playlist.playlist_type == "dynamic":
-        # COALESCE(playlist_override, playlist_assigned) = name
-        effective = fn.COALESCE(Item.playlist_override, Item.playlist_assigned)
-        items = list(
-            Item.select()
-            .where(Item.status.in_(ready_statuses) & (effective == playlist_name))
-            .order_by(Item.relevance_score.desc())
-        )
+        items = items_for_playlist_dynamic(playlist_name)
 
     else:
         # Static: join through playlist_items, order by position
@@ -320,7 +322,7 @@ def run_expiry() -> int:
     Returns:
         Number of items expired.
     """
-    from wilted.db import Item, Playlist
+    from wilted.db import Playlist
 
     _ensure_db()
     now = datetime.now(UTC)
@@ -331,21 +333,10 @@ def run_expiry() -> int:
     )
 
     for playlist in dynamic_playlists:
-        # Collect names that map to this playlist (via assigned or override)
-        from peewee import fn
-
-        effective = fn.COALESCE(Item.playlist_override, Item.playlist_assigned)
-        candidates = list(
-            Item.select().where(
-                Item.status.in_(("ready", "selected"))
-                & Item.keep.is_null(False)
-                & (Item.keep == False)  # noqa: E712
-                & (effective == playlist.name)
-            )
-        )
+        candidates = items_for_playlist_dynamic(playlist.name)
+        candidates = [item for item in candidates if not item.keep]
 
         cutoff_days = playlist.expiry_days
-        status_now = _now_utc()
 
         for item in candidates:
             if not item.discovered_at:
@@ -357,8 +348,21 @@ def run_expiry() -> int:
 
             age_days = (now - discovered).days
             if age_days >= cutoff_days:
-                item.status = "expired"
-                item.status_changed_at = status_now
+                current = read_content_state(item)
+                if current is None:
+                    continue
+                transition_item(
+                    item,
+                    ContentState(
+                        fetch=current.fetch,
+                        analysis=current.analysis,
+                        preparation=current.preparation,
+                        playback=current.playback,
+                        retention=RetentionFacts(state=RetentionState.EXPIRED),
+                    ),
+                    legacy_status="expired",
+                )
+                item.keep = False
                 item.save()
                 expired_count += 1
                 logger.info(

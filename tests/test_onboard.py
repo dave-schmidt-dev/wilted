@@ -6,7 +6,7 @@ from wilted.onboard import STARTER_FEEDS, run_ingest, run_setup
 
 # Patch targets match where the lazy imports land (source modules).
 _P_DISCOVER = "wilted.discover.run_discover"
-_P_CLASSIFY = "wilted.classify.run_classify"
+_P_CLASSIFY = "wilted.pipeline_submit.run_classify_via_runner"
 _P_RUN_REPORT = "wilted.report.run_report"
 _P_GET_REPORT = "wilted.report.get_report"
 
@@ -33,7 +33,7 @@ class TestRunIngest:
     def test_full_pipeline_runs_all_stages(self):
         """run_ingest calls discover, classify, and report in sequence."""
         mock_discover = MagicMock(return_value={"discovered": 5, "feeds_polled": 3, "errors": 0})
-        mock_classify = MagicMock(return_value={"classified": 5, "errors": 0})
+        mock_classify = MagicMock(return_value={"classified": 5, "errors": 0, "total": 5})
         mock_run_report = MagicMock()
         mock_get_report = MagicMock(
             return_value={
@@ -59,7 +59,7 @@ class TestRunIngest:
 
     def test_skip_discover(self):
         """skip_discover=True skips feed polling."""
-        mock_classify = MagicMock(return_value={"classified": 0, "errors": 0})
+        mock_classify = MagicMock(return_value={"classified": 0, "errors": 0, "total": 0})
         mock_run_report = MagicMock()
         mock_get_report = MagicMock(return_value=None)
 
@@ -92,7 +92,7 @@ class TestRunIngest:
     def test_skip_report(self):
         """skip_report=True skips report generation."""
         mock_discover = MagicMock(return_value={"discovered": 0, "feeds_polled": 0, "errors": 0})
-        mock_classify = MagicMock(return_value={"classified": 0, "errors": 0})
+        mock_classify = MagicMock(return_value={"classified": 0, "errors": 0, "total": 0})
 
         with (
             patch(_P_DISCOVER, mock_discover),
@@ -106,7 +106,7 @@ class TestRunIngest:
     def test_discover_failure_continues_pipeline(self):
         """If discovery fails, classify and report still run."""
         mock_discover = MagicMock(side_effect=RuntimeError("Network error"))
-        mock_classify = MagicMock(return_value={"classified": 0, "errors": 0})
+        mock_classify = MagicMock(return_value={"classified": 0, "errors": 0, "total": 0})
         mock_run_report = MagicMock()
         mock_get_report = MagicMock(return_value=None)
 
@@ -124,7 +124,7 @@ class TestRunIngest:
     def test_returns_stats_dict(self):
         """run_ingest returns a dict with per-stage results."""
         mock_discover = MagicMock(return_value={"discovered": 2, "feeds_polled": 1, "errors": 0})
-        mock_classify = MagicMock(return_value={"classified": 2, "errors": 0})
+        mock_classify = MagicMock(return_value={"classified": 2, "errors": 0, "total": 2})
         mock_run_report = MagicMock()
         mock_get_report = MagicMock(return_value=None)
 

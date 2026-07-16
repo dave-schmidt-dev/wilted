@@ -8,8 +8,10 @@ call connect_db() or use the worker_db() context manager before touching models.
 
 Usage:
     from wilted.db import connect_db, worker_db, Item, Feed
+    from wilted.content_state import items_playable_ready_only
+
     connect_db(DATA_DIR / "wilted.db")
-    items = list(Item.select().where(Item.status == "ready"))
+    items = items_playable_ready_only()
 """
 
 import logging
@@ -98,7 +100,9 @@ def worker_db(path: Path | str | None = None):
 
         def _load_items(self) -> None:
             with worker_db():
-                items = list(Item.select().where(Item.status == "ready"))
+                from wilted.content_state import items_playable_ready_only
+
+                items = items_playable_ready_only()
     """
     if path is not None and _db.database is None:
         _db.init(str(path))
@@ -184,6 +188,37 @@ class Item(BaseModel):
         ]
     )
     status_changed_at = CharField()
+    fetch_state = CharField(
+        null=True,
+        constraints=[
+            SQL("CHECK(fetch_state IS NULL OR fetch_state IN ('metadata', 'content_ready', 'error'))"),
+        ],
+    )
+    analysis_state = CharField(
+        null=True,
+        constraints=[
+            SQL("CHECK(analysis_state IS NULL OR analysis_state IN ('pending', 'ready', 'error'))"),
+        ],
+    )
+    preparation_state = CharField(
+        null=True,
+        constraints=[
+            SQL("CHECK(preparation_state IS NULL OR preparation_state IN ('not_queued', 'queued', 'ready', 'error'))"),
+        ],
+    )
+    playback_state = CharField(
+        null=True,
+        constraints=[
+            SQL("CHECK(playback_state IS NULL OR playback_state IN ('unplayed', 'playing', 'paused', 'completed'))"),
+        ],
+    )
+    retention_state = CharField(
+        null=True,
+        constraints=[
+            SQL("CHECK(retention_state IS NULL OR retention_state IN ('active', 'expired'))"),
+        ],
+    )
+    retention_expires_at = CharField(null=True)
     error_message = TextField(null=True)
     word_count = IntegerField(null=True)
     duration_seconds = FloatField(null=True)
@@ -207,6 +242,8 @@ class Item(BaseModel):
         constraints = [SQL("UNIQUE(feed_id, guid)")]
         indexes = (
             (("status", "discovered_at"), False),
+            (("preparation_state", "discovered_at"), False),
+            (("analysis_state", "relevance_score"), False),
             (("feed_id",), False),
         )
 
@@ -248,6 +285,32 @@ class SelectionHistory(BaseModel):
         table_name = "selection_history"
 
 
+class ReportItem(BaseModel):
+    """Ordered report membership with a report-scoped user decision.
+
+    Replaces :class:`SelectionHistory` for new code paths. Legacy
+    ``selection_history`` rows remain until the destructive cutover in Task 2.2.
+    """
+
+    report = ForeignKeyField(Report, backref="report_items", on_delete="CASCADE")
+    item = ForeignKeyField(Item, backref="report_memberships", on_delete="CASCADE")
+    rank = IntegerField()
+    decision = CharField(
+        constraints=[
+            SQL(
+                "CHECK(decision IN ('pending', 'accepted', 'deferred', 'dismissed'))",
+            ),
+        ],
+    )
+    defer_until = CharField(null=True)
+    created_at = CharField()
+
+    class Meta:
+        table_name = "report_items"
+        constraints = [SQL("UNIQUE(report_id, item_id)")]
+        indexes = ((("report_id", "rank"), False),)
+
+
 class Keyword(BaseModel):
     """A user-defined relevance keyword with optional weight."""
 
@@ -274,6 +337,60 @@ class SourceStat(BaseModel):
         constraints = [SQL("UNIQUE(feed_id, period_start)")]
 
 
+class ProcessingJob(BaseModel):
+    """Durable background-work queue row with idempotent admission."""
+
+    idempotency_key = CharField(unique=True)
+    kind = CharField(
+        constraints=[
+            SQL(
+                "CHECK(kind IN ("
+                "'discover', 'classify', 'prepare', 'article_cache', "
+                "'report_assembly', 'compact_briefing'"
+                "))",
+            ),
+        ],
+    )
+    item = ForeignKeyField(Item, backref="processing_jobs", null=True, on_delete="SET NULL")
+    state = CharField(
+        constraints=[
+            SQL(
+                "CHECK(state IN ('queued', 'running', 'retry', 'deferred', 'completed', 'failed', 'cancelled'))",
+            ),
+        ],
+    )
+    priority = IntegerField(default=0)
+    not_before = CharField(null=True)
+    attempt_count = IntegerField(default=0)
+    max_attempts = IntegerField(default=3)
+    created_at = CharField()
+    updated_at = CharField()
+    started_at = CharField(null=True)
+    completed_at = CharField(null=True)
+    lease_owner = CharField(null=True)
+    lease_expires_at = CharField(null=True)
+    cancel_requested = BooleanField(default=False)
+    checkpoint_json = TextField(
+        null=True,
+        constraints=[SQL("CHECK(checkpoint_json IS NULL OR json_valid(checkpoint_json))")],
+    )
+    result_json = TextField(
+        null=True,
+        constraints=[SQL("CHECK(result_json IS NULL OR json_valid(result_json))")],
+    )
+    error_json = TextField(
+        null=True,
+        constraints=[SQL("CHECK(error_json IS NULL OR json_valid(error_json))")],
+    )
+
+    class Meta:
+        table_name = "processing_jobs"
+        indexes = (
+            (("state", "priority", "not_before"), False),
+            (("item_id",), False),
+        )
+
+
 # ---------------------------------------------------------------------------
 # All models — used by migration runner and tests
 # ---------------------------------------------------------------------------
@@ -285,8 +402,10 @@ ALL_MODELS = [
     Playlist,
     PlaylistItem,
     SelectionHistory,
+    ReportItem,
     Keyword,
     SourceStat,
+    ProcessingJob,
 ]
 
 
@@ -331,7 +450,12 @@ def set_setting(key: str, value: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def run_migrations(db_path: Path | str, migrations_dir: Path | None = None) -> None:
+def run_migrations(
+    db_path: Path | str,
+    migrations_dir: Path | None = None,
+    *,
+    allow_destructive: bool = False,
+) -> None:
     """Run pending schema migrations against the database at *db_path*.
 
     Migrations are Python files in *migrations_dir* named ``NNN_*.py``
@@ -339,13 +463,23 @@ def run_migrations(db_path: Path | str, migrations_dir: Path | None = None) -> N
     Already-applied migrations are skipped; the runner is safe to call on
     every startup.
 
+    Destructive schema changes (legacy content-state cutover) are **not**
+    applied here. Migrations above :func:`max_auto_migration_version` are skipped
+    unless *allow_destructive* is True. Use :func:`wilted.legacy_cutover.apply_legacy_cutover`
+    for the maintenance-only cutover.
+
     Startup order guaranteed by cli.py: logging → run_migrations → tqdm lock → TUI.
 
     Args:
         db_path:        Path to wilted.db (created if absent).
         migrations_dir: Directory containing migration scripts.  Defaults to
                         ``migrations/`` adjacent to the project root.
+        allow_destructive: When False (default), skip migrations above the
+                          auto-applied version cap.
     """
+    from wilted.legacy_cutover import max_auto_migration_version
+
+    max_version = None if allow_destructive else max_auto_migration_version()
     connect_db(db_path)
 
     if migrations_dir is None:
@@ -372,6 +506,14 @@ def run_migrations(db_path: Path | str, migrations_dir: Path | None = None) -> N
             continue
 
         if version <= current_version:
+            continue
+
+        if max_version is not None and version > max_version:
+            logger.info(
+                "Skipping migration %03d (%s); destructive migrations require explicit cutover",
+                version,
+                mig_file.name,
+            )
             continue
 
         logger.info("Applying migration %03d: %s", version, mig_file.name)

@@ -608,7 +608,9 @@ class TestFeedAddChainPrompt:
     def test_yes_flag_skips_prompts_and_chains_both(self, capsys):
         with (
             patch("wilted.discover.run_discover", return_value={"discovered": 3, "feeds_polled": 1, "errors": 0}) as rd,
-            patch("wilted.prepare.run_prepare", return_value={"prepared": 3, "errors": 0, "skipped": 0}) as rp,
+            patch(
+                "wilted.pipeline_submit.run_prepare_via_runner", return_value={"prepared": 3, "errors": 0, "skipped": 0}
+            ) as rp,
         ):
             run_cli(["feed", "add", "https://example.com/feed.xml", "--type", "podcast", "--yes"])
         rd.assert_called_once()
@@ -620,7 +622,7 @@ class TestFeedAddChainPrompt:
     def test_no_chain_flag_suppresses_prompts(self, capsys):
         with (
             patch("wilted.discover.run_discover") as rd,
-            patch("wilted.prepare.run_prepare") as rp,
+            patch("wilted.pipeline_submit.run_prepare_via_runner") as rp,
             patch("sys.stdin.isatty", return_value=True),
         ):
             run_cli(["feed", "add", "https://example.com/feed.xml", "--no-chain"])
@@ -630,7 +632,7 @@ class TestFeedAddChainPrompt:
     def test_non_tty_skips_prompts_silently(self, capsys):
         with (
             patch("wilted.discover.run_discover") as rd,
-            patch("wilted.prepare.run_prepare") as rp,
+            patch("wilted.pipeline_submit.run_prepare_via_runner") as rp,
             patch("sys.stdin.isatty", return_value=False),
         ):
             run_cli(["feed", "add", "https://example.com/feed.xml"])
@@ -643,7 +645,9 @@ class TestFeedAddChainPrompt:
     def test_tty_prompts_yes_runs_both(self, capsys):
         with (
             patch("wilted.discover.run_discover", return_value={"discovered": 5, "feeds_polled": 1, "errors": 0}) as rd,
-            patch("wilted.prepare.run_prepare", return_value={"prepared": 5, "errors": 0, "skipped": 0}) as rp,
+            patch(
+                "wilted.pipeline_submit.run_prepare_via_runner", return_value={"prepared": 5, "errors": 0, "skipped": 0}
+            ) as rp,
             patch("sys.stdin.isatty", return_value=True),
             patch("builtins.input", side_effect=["y", "y"]),
         ):
@@ -654,7 +658,9 @@ class TestFeedAddChainPrompt:
     def test_tty_empty_response_defaults_to_yes(self, capsys):
         with (
             patch("wilted.discover.run_discover", return_value={"discovered": 1, "feeds_polled": 1, "errors": 0}) as rd,
-            patch("wilted.prepare.run_prepare", return_value={"prepared": 1, "errors": 0, "skipped": 0}) as rp,
+            patch(
+                "wilted.pipeline_submit.run_prepare_via_runner", return_value={"prepared": 1, "errors": 0, "skipped": 0}
+            ) as rp,
             patch("sys.stdin.isatty", return_value=True),
             patch("builtins.input", side_effect=["", ""]),
         ):
@@ -665,7 +671,7 @@ class TestFeedAddChainPrompt:
     def test_tty_no_to_discover_skips_both(self, capsys):
         with (
             patch("wilted.discover.run_discover") as rd,
-            patch("wilted.prepare.run_prepare") as rp,
+            patch("wilted.pipeline_submit.run_prepare_via_runner") as rp,
             patch("sys.stdin.isatty", return_value=True),
             patch("builtins.input", side_effect=["n"]),
         ):
@@ -676,7 +682,7 @@ class TestFeedAddChainPrompt:
     def test_tty_yes_to_discover_no_to_prepare(self, capsys):
         with (
             patch("wilted.discover.run_discover", return_value={"discovered": 2, "feeds_polled": 1, "errors": 0}) as rd,
-            patch("wilted.prepare.run_prepare") as rp,
+            patch("wilted.pipeline_submit.run_prepare_via_runner") as rp,
             patch("sys.stdin.isatty", return_value=True),
             patch("builtins.input", side_effect=["y", "n"]),
         ):
@@ -688,7 +694,7 @@ class TestFeedAddChainPrompt:
         """--yes --no-chain: no_chain takes priority; nothing runs."""
         with (
             patch("wilted.discover.run_discover") as rd,
-            patch("wilted.prepare.run_prepare") as rp,
+            patch("wilted.pipeline_submit.run_prepare_via_runner") as rp,
         ):
             _maybe_chain_discover_prepare(yes=True, no_chain=True)
         rd.assert_not_called()
@@ -698,7 +704,9 @@ class TestFeedAddChainPrompt:
         """--yes chains both; output includes errors and skipped counts."""
         with (
             patch("wilted.discover.run_discover", return_value={"discovered": 1, "feeds_polled": 1, "errors": 0}),
-            patch("wilted.prepare.run_prepare", return_value={"prepared": 0, "errors": 2, "skipped": 1}),
+            patch(
+                "wilted.pipeline_submit.run_prepare_via_runner", return_value={"prepared": 0, "errors": 2, "skipped": 1}
+            ),
         ):
             _maybe_chain_discover_prepare(yes=True, no_chain=False)
         out = capsys.readouterr().out
@@ -821,10 +829,10 @@ class TestPipelineSubcommands:
         assert "3 new items" in out
 
     def test_classify_dispatch(self, monkeypatch, capsys):
-        """wilted classify dispatches to run_classify."""
+        """wilted classify dispatches to run_classify_via_runner."""
         monkeypatch.setattr(
-            "wilted.classify.run_classify",
-            lambda: {"classified": 5, "errors": 0},
+            "wilted.pipeline_submit.run_classify_via_runner",
+            lambda **kwargs: {"classified": 5, "errors": 0, "total": 5},
         )
         run_cli(["classify"])
         out = capsys.readouterr().out
@@ -1062,13 +1070,7 @@ class TestNightlyWrapper:
         script.chmod(0o755)
 
         fake_runtime = scripts_dir / "wilted-runtime.sh"
-        fake_runtime.write_text(
-            "#!/bin/bash\n"
-            "if [[ \"${*: -1}\" == \"ingest\" ]]; then\n"
-            "    exit 37\n"
-            "fi\n"
-            "exit 0\n"
-        )
+        fake_runtime.write_text('#!/bin/bash\nif [[ "${*: -1}" == "ingest" ]]; then\n    exit 37\nfi\nexit 0\n')
         fake_runtime.chmod(0o755)
 
         home = tmp_path / "home"

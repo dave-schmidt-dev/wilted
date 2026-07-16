@@ -378,6 +378,92 @@ def cmd_list_voices():
             print(f"  {accent}: {', '.join(voices)}")
 
 
+def cmd_db(argv: list[str]) -> None:
+    """Database maintenance commands."""
+    if not argv or argv[0] != "cutover":
+        print("Usage: wilted db cutover [--dry-run] [--backup-dir PATH] [--force]", file=sys.stderr)
+        sys.exit(1)
+
+    parser = argparse.ArgumentParser(prog="wilted db cutover")
+    parser.add_argument("--dry-run", action="store_true", help="Plan cutover without mutating the database")
+    parser.add_argument(
+        "--backup-dir",
+        type=Path,
+        default=None,
+        help="Directory for verified SQLite backups (required for live cutover)",
+    )
+    parser.add_argument("--force", action="store_true", help="Skip interactive confirmation prompt")
+    args = parser.parse_args(argv[1:])
+
+    from wilted import DATA_DIR
+    from wilted.db import Item, connect_db
+    from wilted.legacy_cutover import (
+        CutoverError,
+        apply_legacy_cutover,
+        cutover_complete,
+        cutover_required,
+        restore_instructions,
+    )
+
+    db_path = DATA_DIR / "wilted.db"
+    connect_db(db_path)
+
+    if cutover_complete() and not cutover_required(Item._meta.database):
+        print("Legacy cutover already complete.")
+        return
+
+    if not cutover_required(Item._meta.database) and not args.dry_run:
+        print("Legacy cutover is not required for this database.")
+        return
+
+    if not args.dry_run and not args.force:
+        answer = input("Apply destructive legacy cutover? Type 'yes' to continue: ").strip().lower()
+        if answer != "yes":
+            print("Cutover cancelled.")
+            return
+
+    backup_dir = args.backup_dir or (DATA_DIR / "backups")
+
+    try:
+        report = apply_legacy_cutover(
+            db_path,
+            dry_run=args.dry_run,
+            backup_dir=None if args.dry_run else backup_dir,
+        )
+    except CutoverError as exc:
+        print(f"Cutover failed: {exc}", file=sys.stderr)
+        print(file=sys.stderr)
+        print(restore_instructions(), file=sys.stderr)
+        sys.exit(1)
+
+    print(report.message)
+    print(f"  items mapped     : {report.items_mapped}")
+    print(f"  items quarantined: {report.items_quarantined}")
+    print(f"  report_items new : {report.report_items_created}")
+    if report.backup_path is not None:
+        print(f"  backup           : {report.backup_path}")
+    if report.completed_at is not None:
+        print(f"  completed_at     : {report.completed_at}")
+
+    if report.quarantine_rows:
+        print("\nQuarantine report:")
+        for row in report.quarantine_rows:
+            print(
+                f"  item #{row['item_id']} "
+                f"({row['legacy_status']}/{row['item_type']}/{row['artifact_cohort']}): "
+                f"{row['reason']}"
+            )
+
+    if report.cohort_reconciliation:
+        print("\nCohort reconciliation:")
+        for row in report.cohort_reconciliation:
+            status = "ok" if row.matches else "MISMATCH"
+            print(
+                f"  {row.legacy_status}/{row.item_type}/{row.artifact_cohort}: "
+                f"legacy={len(row.legacy_ids)} new={len(row.new_ids)} [{status}]"
+            )
+
+
 def cmd_doctor(_argv: list[str] | None = None) -> None:
     """Print diagnostic path and configuration info."""
     import shutil
@@ -465,9 +551,9 @@ def _maybe_chain_discover_prepare(*, yes: bool, no_chain: bool) -> None:
     if not run_prepare_now:
         return
 
-    from wilted.prepare import run_prepare
+    from wilted.pipeline_submit import run_prepare_via_runner
 
-    prep = run_prepare()
+    prep = run_prepare_via_runner()
     print(f"→ Prepared {prep['prepared']} items ({prep['errors']} errors, {prep['skipped']} skipped)")
 
 
@@ -751,10 +837,10 @@ def cmd_discover(argv: list[str]) -> None:
 
 def cmd_classify(argv: list[str]) -> None:
     """Run the classification stage: categorize, score, summarize fetched items."""
-    from wilted.classify import run_classify
+    from wilted.pipeline_submit import run_classify_via_runner
 
     try:
-        stats = run_classify()
+        stats = run_classify_via_runner()
         print(f"Classification complete: {stats['classified']} items classified")
         if stats["errors"]:
             print(f"  {stats['errors']} item(s) had errors (see /tmp/wilted.log)")
@@ -902,10 +988,10 @@ def cmd_prepare(argv: list[str]) -> None:
     parser.add_argument("--backend", default="gguf", choices=["gguf", "mlx"], help="LLM backend type")
     args = parser.parse_args(argv)
 
-    from wilted.prepare import run_prepare
+    from wilted.pipeline_submit import run_prepare_via_runner
 
     try:
-        stats = run_prepare(
+        stats = run_prepare_via_runner(
             use_llm=not args.no_llm,
             llm_model=args.model,
             llm_backend_type=args.backend,
@@ -978,6 +1064,9 @@ def run_cli(argv=None):
         first = argv[0]
         if first == "doctor":
             cmd_doctor(argv[1:])
+            return
+        if first == "db":
+            cmd_db(argv[1:])
             return
         if first == "feed":
             cmd_feed(argv[1:])
@@ -1325,9 +1414,23 @@ def main():
     client.require_daemon_ready(probe=True)
 
     from wilted import DATA_DIR
-    from wilted.db import run_migrations
+    from wilted.content_state import backfill_items_with_null_fetch_state
+    from wilted.db import Item, connect_db, run_migrations
+    from wilted.legacy_cutover import cutover_in_progress, restore_instructions
 
-    run_migrations(DATA_DIR / "wilted.db")
+    db_path = DATA_DIR / "wilted.db"
+    run_migrations(db_path)
+    connect_db(db_path)
+    backfill_items_with_null_fetch_state()
+    if cutover_in_progress(Item._meta.database):
+        print(
+            "Legacy content-state cutover was interrupted and must be resolved before startup.\n"
+            "Run `wilted db cutover` after restoring from backup, or complete the cutover manually.",
+            file=sys.stderr,
+        )
+        print(file=sys.stderr)
+        print(restore_instructions(), file=sys.stderr)
+        sys.exit(1)
 
     from wilted.playlists import ensure_default_playlists
 

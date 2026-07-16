@@ -267,10 +267,10 @@ class TestProcessEntryPodcast:
         assert item is not None
         assert item.item_type == "podcast_episode"
         assert item.enclosure_url == "https://ex.com/ep1.mp3"
-        # Podcast subscriptions are an explicit selection signal — episodes
-        # skip the classify/morning-report selection step and go straight to
-        # `selected` so `wilted prepare` picks them up.
-        assert item.status == "selected"
+        assert item.fetch_state == "metadata"
+        assert item.analysis_state == "pending"
+        assert item.preparation_state == "not_queued"
+        assert item.status == "discovered"
 
     def test_bws_podcast_persists_opaque_enclosure_reference(self):
         private_url = "https://private.example/credential-material.mp3"
@@ -305,7 +305,7 @@ class TestProcessEntryPodcast:
         assert signed_url not in caplog.text
 
     def test_article_still_routed_through_classify(self):
-        """Articles keep the classify/report flow — only podcasts auto-select."""
+        """Articles keep the classify/report flow — podcasts are pending candidates."""
         from unittest.mock import patch
 
         feed = add_feed("https://ex.com/blog.xml", feed_type="article")

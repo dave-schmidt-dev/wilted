@@ -31,12 +31,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from wilted.db import Item
+from wilted.content_state import items_for_playlist_all
 from wilted.station.models import StationEntry
 from wilted.station_runtime.normalize import normalize_item
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from wilted.db import Item
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +48,9 @@ __all__ = ["EntrySequencer"]
 # "now" are excluded from the backlog outright.
 _FRESHNESS_CAP_DAYS = 14
 
-# Same statuses the "All" playlist admits (wilted.playlists.get_playlist_items),
+# Same cohort the "All" playlist admits (wilted.playlists.get_playlist_items),
 # ordered the same way (Item.discovered_at ascending) — the sequencer follows
 # that EXISTING ordering rather than inventing a new one.
-_READY_STATUSES = ("ready", "selected")
 
 _DEFAULT_PRIORITY = 5
 
@@ -189,11 +190,10 @@ class EntrySequencer:
                 parameter (rather than calling a bare clock internally) keeps
                 the freshness decision deterministic and testable.
 
-        Ordering: follows the EXISTING "All" playlist/queue order — Item rows
-        with ``status`` in ``("ready", "selected")``, sorted by
-        ``discovered_at`` ascending (oldest discovered first). See
-        ``wilted.playlists.get_playlist_items`` and ``wilted.queue``'s
-        analogous query.
+        Ordering: follows the EXISTING "All" playlist/queue order — active
+        preparation cohort sorted by ``discovered_at`` ascending (oldest
+        discovered first). See ``wilted.playlists.get_playlist_items`` and
+        ``wilted.queue``'s analogous query.
 
         Admission: each item is first checked against the freshness cap /
         PM-11 admit-with-warning rule (see :func:`_admit`). Admitted items are
@@ -208,9 +208,7 @@ class EntrySequencer:
         """
         resolved_now = now if now is not None else datetime.now(UTC)
 
-        items: Sequence[Item] = list(
-            Item.select().where(Item.status.in_(_READY_STATUSES)).order_by(Item.discovered_at.asc())
-        )
+        items: Sequence[Item] = items_for_playlist_all()
 
         entries: list[StationEntry] = []
         for item in items:

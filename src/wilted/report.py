@@ -17,6 +17,7 @@ import json
 import logging
 from datetime import date, datetime
 
+from wilted.content_state import items_for_report, legacy_display_status, predicate_report_candidates
 from wilted.db import Feed, Item, Report, SelectionHistory, SourceStat
 from wilted.db import ensure_db as _ensure_db
 from wilted.db import now_utc as _now_utc
@@ -48,9 +49,7 @@ def run_report() -> dict:
 
     # Get classified items that haven't been selected or skipped yet
     # Exclude items with status != 'classified'
-    classified_items = list(
-        Item.select().where(Item.status == "classified").order_by(Item.relevance_score.desc(nulls="last"))
-    )
+    classified_items = items_for_report()
 
     # Group items by playlist_assigned
     playlists: dict[str, list[Item]] = {}
@@ -127,9 +126,7 @@ def get_report(report_date: str | None = None) -> dict | None:
         return None
 
     # Get all classified items — same criteria as run_report()
-    all_classified = list(
-        Item.select().where(Item.status == "classified").order_by(Item.relevance_score.desc(nulls="last"))
-    )
+    all_classified = items_for_report()
 
     # Group by playlist
     playlists: dict[str, list[dict]] = {}
@@ -145,7 +142,7 @@ def get_report(report_date: str | None = None) -> dict | None:
                 "relevance_score": item.relevance_score,
                 "summary": item.summary,
                 "feed_id": item.feed.id if item.feed else None,
-                "status": item.status,
+                "status": legacy_display_status(item),
             }
         )
 
@@ -180,7 +177,7 @@ def get_latest_unread_report() -> dict | None:
     unread_items = (
         Item.select()
         .where(
-            (Item.status == "classified")
+            predicate_report_candidates()
             & ~(Item.id << SelectionHistory.select(SelectionHistory.item).where(SelectionHistory.item.is_null(False)))
         )
         .exists()

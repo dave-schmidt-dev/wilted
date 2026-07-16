@@ -113,11 +113,33 @@ class TestGetArticleText:
 
 class TestLoadQueueSelectedStatus:
     def test_selected_article_appears_in_queue(self):
-        """load_queue() includes articles with status='selected'."""
+        """load_queue() includes articles with preparation=queued."""
+        from wilted.background_work.contracts import (
+            AnalysisState,
+            ContentState,
+            FetchState,
+            PlaybackState,
+            PreparationState,
+            RetentionFacts,
+            RetentionState,
+        )
+        from wilted.content_state import read_content_state, transition_item
         from wilted.db import Item
 
         entry = add_article("Article text.", title="Selected Article")
-        Item.update(status="selected").where(Item.id == entry["id"]).execute()
+        item = Item.get_by_id(entry["id"])
+        current = read_content_state(item)
+        transition_item(
+            item,
+            ContentState(
+                fetch=current.fetch if current else FetchState.CONTENT_READY,
+                analysis=current.analysis if current else AnalysisState.READY,
+                preparation=PreparationState.QUEUED,
+                playback=current.playback if current else PlaybackState.UNPLAYED,
+                retention=current.retention if current else RetentionFacts(state=RetentionState.ACTIVE),
+            ),
+            legacy_status="selected",
+        )
         queue = load_queue()
         assert len(queue) == 1
         assert queue[0]["title"] == "Selected Article"

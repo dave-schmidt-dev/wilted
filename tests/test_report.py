@@ -139,20 +139,31 @@ class TestRunReport:
         assert result2["items"] == 2
 
     def test_excludes_already_selected_items(self):
-        """Items with status != 'classified' are excluded from new report."""
+        """Items moved out of the report candidate cohort are excluded."""
+        from wilted.background_work.contracts import ContentState, PreparationState
+        from wilted.content_state import read_content_state, transition_item
+
         feed = _create_feed()
         _create_classified_item("Item 1", playlist="Work", feed=feed)
         _create_classified_item("Item 2", playlist="Work", feed=feed)
 
-        # Mark first item as selected
         item1 = Item.get(Item.title == "Item 1")
-        item1.status = "selected"
-        item1.status_changed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        item1.save()
+        current = read_content_state(item1)
+        assert current is not None
+        transition_item(
+            item1,
+            ContentState(
+                fetch=current.fetch,
+                analysis=current.analysis,
+                preparation=PreparationState.QUEUED,
+                playback=current.playback,
+                retention=current.retention,
+            ),
+            legacy_status="selected",
+        )
 
         result = run_report()
 
-        # Only item2 should be counted (item1 is selected, not classified)
         assert result["items"] == 1
 
     def test_report_stores_item_count(self):

@@ -25,11 +25,19 @@ import wilted.ads as _ads_mod
 import wilted.cache as _cache_mod
 import wilted.engine as _engine_mod
 import wilted.llm as _llm_mod
+from wilted.background_work.contracts import (
+    AnalysisState,
+    ContentState,
+    FetchState,
+    PlaybackState,
+    PreparationState,
+    RetentionFacts,
+    RetentionState,
+)
+from wilted.content_state import items_for_prepare, read_content_state, transition_item
 from wilted.db import Item
-from wilted.db import now_utc as _now_utc
 from wilted.download import DownloadError, download_podcast
 from wilted.feed_refs import FeedReferenceError, is_bws_enclosure_reference, resolve_enclosure_url, resolve_feed_url
-from wilted.station_runtime.coordinator import ModelCoordinator
 from wilted.transcribe import (
     TranscriptionError,
     evict_stt_model,
@@ -42,12 +50,38 @@ logger = logging.getLogger(__name__)
 
 
 def _set_status(item, status: str, error_message: str | None = None) -> None:
-    """Update an item's status and persist to DB."""
-    Item.update(
-        status=status,
-        status_changed_at=_now_utc(),
+    """Update an item's orthogonal state and persist to DB."""
+    current = read_content_state(item)
+    base_fetch = current.fetch if current else FetchState.CONTENT_READY
+    base_analysis = current.analysis if current else AnalysisState.READY
+    base_playback = current.playback if current else PlaybackState.UNPLAYED
+    base_retention = current.retention if current else RetentionFacts(state=RetentionState.ACTIVE)
+
+    if status == "processing":
+        prep = PreparationState.QUEUED
+        legacy = "processing"
+    elif status == "ready":
+        prep = PreparationState.READY
+        legacy = "ready"
+    elif status == "error":
+        prep = PreparationState.ERROR
+        legacy = "error"
+    else:
+        prep = PreparationState.NOT_QUEUED
+        legacy = status
+
+    transition_item(
+        item,
+        ContentState(
+            fetch=base_fetch,
+            analysis=base_analysis,
+            preparation=prep,
+            playback=base_playback,
+            retention=base_retention,
+        ),
+        legacy_status=legacy,
         error_message=error_message,
-    ).where(Item.id == item.id).execute()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +173,8 @@ def _transcribe_podcast(item, coordinator) -> list:
         transcript_file=str(transcript_path),
         word_count=word_count,
     ).where(Item.id == item_id).execute()
+    item.transcript_file = str(transcript_path)
+    item.word_count = word_count
 
     return segments
 
@@ -314,8 +350,173 @@ class PrepareError(RuntimeError):
     """Raised when content preparation fails for an item."""
 
 
+def prepare_item(
+    item: Item,
+    coordinator,
+    *,
+    use_llm: bool = True,
+    llm_model: str | None = None,
+    llm_backend_type: str = "gguf",
+    skip_tts: bool = False,
+) -> bool:
+    """Prepare one selected item through the content preparation pipeline.
+
+    Args:
+        item: Item row to prepare.
+        coordinator: Runner-owned model coordinator for ML leasing.
+        use_llm: Whether to load an LLM for ad detection and promo removal.
+        llm_model: Model identifier for the LLM backend.
+        llm_backend_type: Backend type ('mlx' or 'gguf').
+        skip_tts: If True, skip TTS generation for articles (for testing).
+
+    Returns:
+        True when preparation completed successfully, False otherwise.
+    """
+    from wilted.background_work.contracts import PlaybackState, PreparationState
+    from wilted.content_state import read_content_state
+
+    current = read_content_state(item)
+    if current is not None:
+        if current.preparation is PreparationState.READY:
+            logger.debug("Item %d already prepared; skipping", item.id)
+            return True
+        if current.playback is PlaybackState.COMPLETED:
+            logger.debug("Item %d already completed; skipping preparation", item.id)
+            return True
+
+    resolved_model = llm_model or _llm_mod.DEFAULT_GGUF_MODEL
+
+    if item.item_type == "podcast_episode":
+        _set_status(item, "processing")
+        try:
+            segments = _transcribe_podcast(item, coordinator)
+        except PrepareError as exc:
+            logger.error("Item %d failed: %s", item.id, exc)
+            return False
+        except Exception:
+            _set_status(item, "error", "Unexpected error during preparation")
+            logger.exception("Item %d failed unexpectedly", item.id)
+            return False
+
+        evict_stt_model()
+
+        def _process_phase_b(llm_backend=None) -> None:
+            _process_podcast(item, segments, llm_backend=llm_backend)
+            _set_status(item, "ready")
+            logger.info("Item %d prepared successfully", item.id)
+
+        if not use_llm:
+            try:
+                _process_phase_b()
+                return True
+            except PrepareError as exc:
+                logger.error("Item %d failed: %s", item.id, exc)
+                return False
+            except Exception:
+                _set_status(item, "error", "Unexpected error during preparation")
+                logger.exception("Item %d failed unexpectedly", item.id)
+                return False
+
+        try:
+            backend = _llm_mod.create_backend(llm_backend_type, model=resolved_model)
+        except Exception:
+            logger.exception("Failed to load LLM backend — continuing without it")
+            try:
+                _process_phase_b()
+                return True
+            except PrepareError as exc:
+                logger.error("Item %d failed: %s", item.id, exc)
+                return False
+            except Exception:
+                _set_status(item, "error", "Unexpected error during preparation")
+                logger.exception("Item %d failed unexpectedly", item.id)
+                return False
+
+        prepared = False
+
+        def _process_with_loaded_llm(llm_backend) -> None:
+            nonlocal prepared
+            _process_phase_b(llm_backend)
+            prepared = True
+
+        try:
+            coordinator.run_llm(backend, _process_with_loaded_llm)
+        except Exception:
+            if prepared:
+                logger.exception("Failed to unload LLM backend")
+                return True
+            logger.exception("Failed to load LLM backend — continuing without it")
+            try:
+                _process_phase_b()
+                return True
+            except PrepareError as exc:
+                logger.error("Item %d failed: %s", item.id, exc)
+                return False
+            except Exception:
+                _set_status(item, "error", "Unexpected error during preparation")
+                logger.exception("Item %d failed unexpectedly", item.id)
+                return False
+        return True
+
+    if item.item_type == "article":
+        _set_status(item, "processing")
+        try:
+            if skip_tts:
+                if not item.transcript_file:
+                    _set_status(item, "error", "No transcript file")
+                    raise PrepareError(f"Item {item.id} has no transcript_file")
+                _set_status(item, "ready")
+                logger.info("Item %d prepared successfully", item.id)
+                return True
+
+            if not use_llm:
+                _prepare_article(item, llm_backend=None)
+                _set_status(item, "ready")
+                logger.info("Item %d prepared successfully", item.id)
+                return True
+
+            try:
+                backend = _llm_mod.create_backend(llm_backend_type, model=resolved_model)
+            except Exception:
+                logger.exception("Failed to load LLM backend — continuing without it")
+                _prepare_article(item, llm_backend=None)
+                _set_status(item, "ready")
+                logger.info("Item %d prepared successfully", item.id)
+                return True
+
+            prepared = False
+
+            def _prepare_with_loaded_llm(llm_backend) -> None:
+                nonlocal prepared
+                _prepare_article(item, llm_backend=llm_backend)
+                _set_status(item, "ready")
+                prepared = True
+                logger.info("Item %d prepared successfully", item.id)
+
+            try:
+                coordinator.run_llm(backend, _prepare_with_loaded_llm)
+            except Exception:
+                if prepared:
+                    logger.exception("Failed to unload LLM backend")
+                    return True
+                raise
+            return True
+        except PrepareError as exc:
+            logger.error("Item %d failed: %s", item.id, exc)
+            return False
+        except Exception:
+            _set_status(item, "error", "Unexpected error during preparation")
+            logger.exception("Item %d failed unexpectedly", item.id)
+            return False
+
+    logger.warning("Item %d has unsupported item_type %r", item.id, item.item_type)
+    _set_status(item, "error", f"Unsupported item type: {item.item_type}")
+    return False
+
+
 def run_prepare(
     *,
+    coordinator,
     use_llm: bool = True,
     llm_model: str = _llm_mod.DEFAULT_GGUF_MODEL,
     llm_backend_type: str = "gguf",
@@ -323,10 +524,11 @@ def run_prepare(
 ) -> dict:
     """Process all selected items through the content preparation pipeline.
 
-    Loads each model family once, processes all relevant items, then unloads.
-    Items transition: selected → processing → ready (or error).
+    Internal entrypoint for tests and batch helpers. Production CLI paths use
+    :func:`~wilted.pipeline_submit.run_prepare_via_runner`.
 
     Args:
+        coordinator: Runner-owned :class:`~wilted.station_runtime.coordinator.ModelCoordinator`.
         use_llm: Whether to load an LLM for ad detection and promo removal.
         llm_model: Model identifier for the LLM backend.
         llm_backend_type: Backend type ('mlx' or 'gguf').
@@ -335,7 +537,7 @@ def run_prepare(
     Returns:
         Dict with keys: prepared, errors, skipped.
     """
-    selected_items = list(Item.select().where(Item.status == "selected").order_by(Item.discovered_at))
+    selected_items = items_for_prepare()
 
     if not selected_items:
         logger.info("No selected items to prepare")
@@ -349,16 +551,6 @@ def run_prepare(
     podcasts = [it for it in selected_items if it.item_type == "podcast_episode"]
     articles = [it for it in selected_items if it.item_type == "article"]
 
-    # The single ML lease shared by transcribe/LLM/TTS. Plain construction
-    # (no bootstrap) matches the nightly/CLI path (weather_monitor.py,
-    # briefing.py).
-    coordinator = ModelCoordinator()
-
-    # Phase A: transcribe every podcast BEFORE any LLM is loaded, so the
-    # Tier-3 isolated GPU child never contends with a resident LLM (PM-5).
-    # Each transcribe call holds the transcribe lease. Successfully
-    # transcribed items carry their segments forward to Phase B; items that
-    # fail here are counted as errors and excluded from Phase B.
     transcribed_segments: dict = {}
     for item in podcasts:
         _set_status(item, "processing")
@@ -372,16 +564,8 @@ def run_prepare(
             _set_status(item, "error", "Unexpected error during preparation")
             logger.exception("Item %d failed unexpectedly", item.id)
 
-    # Between phases: if tier-3 STT ran through the speech daemon, hint it to drop
-    # the resident parakeet model NOW — before the LLM loads below — so the two
-    # models are never co-resident in the daemon while wilted loads the LLM in this
-    # process (PM-5/INV-2 hygiene). Best-effort and a no-op on the isolated backend
-    # (its spawn child already exited) or if the daemon is already gone.
     evict_stt_model()
 
-    # Phase B: process podcasts (ad detection/cutting) and articles (promo
-    # removal + TTS). When available, the LLM remains loaded for this whole
-    # phase under the coordinator's single ML lease.
     def _process_phase_b(llm_backend=None) -> None:
         for item in podcasts:
             if item.id not in transcribed_segments:
@@ -403,7 +587,6 @@ def run_prepare(
             _set_status(item, "processing")
             try:
                 if skip_tts:
-                    # In test/dry-run mode, validate prerequisites but skip TTS
                     if not item.transcript_file:
                         _set_status(item, "error", "No transcript file")
                         raise PrepareError(f"Item {item.id} has no transcript_file")
@@ -435,7 +618,6 @@ def run_prepare(
             phase_completed = False
 
             def _process_with_loaded_llm(llm_backend) -> None:
-                """Process Phase B while the coordinator holds the LLM lease."""
                 nonlocal loaded, phase_completed
                 loaded = True
                 logger.info("LLM backend loaded: %s", llm_model)
@@ -449,9 +631,6 @@ def run_prepare(
                     logger.exception("Failed to load LLM backend — continuing without it")
                     _process_phase_b()
                 elif phase_completed:
-                    # Preserve the prior best-effort unload behavior: a close
-                    # failure after otherwise successful item processing is
-                    # logged but does not turn the batch into a failure.
                     logger.exception("Failed to unload LLM backend")
                 else:
                     raise

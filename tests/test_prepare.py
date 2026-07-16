@@ -5,11 +5,29 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from wilted.prepare import _transcribe_podcast, run_prepare
+
+pytestmark = pytest.mark.usefixtures("execution_capability")
 
 
 def _now():
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _run_prepare(**kwargs):
+    """Run prepare with a test-scoped coordinator under execution capability."""
+    if "coordinator" in kwargs:
+        return run_prepare(**kwargs)
+
+    from wilted.execution_capability import create_model_coordinator
+
+    coordinator = create_model_coordinator()
+    try:
+        return run_prepare(coordinator=coordinator, **kwargs)
+    finally:
+        coordinator.close()
 
 
 def _ads_ad_segment(start_s, end_s):
@@ -81,7 +99,7 @@ def _make_podcast(tmp_path, **kwargs):
 class TestRunPrepareEmpty:
     def test_no_selected_items(self, tmp_path):
         """run_prepare returns zeros when nothing is selected."""
-        stats = run_prepare(use_llm=False)
+        stats = _run_prepare(use_llm=False)
         assert stats == {"prepared": 0, "errors": 0, "skipped": 0}
 
 
@@ -94,7 +112,7 @@ class TestPrepareArticle:
     def test_article_skip_tts_marks_ready(self, tmp_path):
         """With skip_tts=True, articles are marked ready without TTS generation."""
         item = _make_item(tmp_path)
-        stats = run_prepare(use_llm=False, skip_tts=True)
+        stats = _run_prepare(use_llm=False, skip_tts=True)
 
         from wilted.db import Item
 
@@ -117,7 +135,7 @@ class TestPrepareArticle:
             status_changed_at=_now(),
             transcript_file=None,
         )
-        stats = run_prepare(use_llm=False)
+        stats = _run_prepare(use_llm=False)
         refreshed = Item.get_by_id(item.id)
         assert refreshed.status == "error"
         assert "No transcript file" in (refreshed.error_message or "")
@@ -137,7 +155,7 @@ class TestPrepareArticle:
             status_changed_at=_now(),
             transcript_file="/nonexistent/path.txt",
         )
-        stats = run_prepare(use_llm=False)
+        stats = _run_prepare(use_llm=False)
         refreshed = Item.get_by_id(item.id)
         assert refreshed.status == "error"
         assert stats["errors"] == 1
@@ -155,7 +173,7 @@ class TestPrepareArticle:
             patch("wilted.llm.create_backend", return_value=mock_backend) as mock_create,
             patch("wilted.cache.generate_article_cache", return_value=True),
         ):
-            stats = run_prepare(use_llm=True)
+            stats = _run_prepare(use_llm=True)
 
         assert stats["prepared"] == 1
         mock_create.assert_called_once()
@@ -172,7 +190,7 @@ class TestPreparePodcast:
     def test_podcast_no_enclosure_url_errors(self, tmp_path):
         """Podcast without enclosure_url transitions to error."""
         _make_podcast(tmp_path, enclosure_url=None)
-        stats = run_prepare(use_llm=False)
+        stats = _run_prepare(use_llm=False)
 
         from wilted.db import Item
 
@@ -187,7 +205,7 @@ class TestPreparePodcast:
         _make_podcast(tmp_path)
 
         with patch("wilted.prepare.download_podcast", side_effect=DownloadError("HTTP 404")):
-            stats = run_prepare(use_llm=False)
+            stats = _run_prepare(use_llm=False)
 
         from wilted.db import Item
 
@@ -253,7 +271,7 @@ class TestPreparePodcast:
         ):
             mock_engine = MockEngine.return_value
             mock_engine.get_file_duration.return_value = 10.0
-            stats = run_prepare(use_llm=False)
+            stats = _run_prepare(use_llm=False)
 
         from wilted.db import Item
 
@@ -275,7 +293,7 @@ class TestPreparePodcast:
             patch("wilted.prepare.download_podcast", return_value=audio_file),
             patch("wilted.prepare.get_transcript", side_effect=TranscriptionError("No transcript")),
         ):
-            run_prepare(use_llm=False)
+            _run_prepare(use_llm=False)
 
         from wilted.db import Item
 
@@ -317,7 +335,7 @@ class TestPrepareEvictHint:
             patch("wilted.transcribe.client.evict") as mock_evict,
         ):
             MockEngine.return_value.get_file_duration.return_value = 5.0
-            run_prepare(use_llm=False)
+            _run_prepare(use_llm=False)
 
         # The evict hint fired exactly once, dropping the resident STT model.
         mock_evict.assert_called_once_with("stt")
@@ -338,7 +356,7 @@ class TestPrepareEvictHint:
             patch("wilted.transcribe.client.evict", side_effect=client.DaemonUnavailable("gone")),
         ):
             MockEngine.return_value.get_file_duration.return_value = 5.0
-            stats = run_prepare(use_llm=False)  # must not raise
+            stats = _run_prepare(use_llm=False)  # must not raise
 
         assert stats["errors"] == 0
 
@@ -372,7 +390,7 @@ class TestPrepareMixed:
             mock_engine.get_file_duration.return_value = 5.0
 
             # Skip TTS for article to keep test fast
-            stats = run_prepare(use_llm=False, skip_tts=True)
+            stats = _run_prepare(use_llm=False, skip_tts=True)
 
         assert stats["prepared"] == 2
         assert stats["errors"] == 0
@@ -395,7 +413,7 @@ class TestPrepareMixed:
         # Good article
         _make_item(tmp_path, guid="good-article", title="Good Article")
 
-        stats = run_prepare(use_llm=False, skip_tts=True)
+        stats = _run_prepare(use_llm=False, skip_tts=True)
 
         assert stats["prepared"] == 1
         assert stats["errors"] == 1
@@ -423,7 +441,7 @@ class TestPrepareLLMLifecycle:
             patch("wilted.llm.create_backend", return_value=mock_backend),
             patch("wilted.cache.generate_article_cache", return_value=True),
         ):
-            run_prepare(use_llm=True)
+            _run_prepare(use_llm=True)
 
         mock_backend.load.assert_called_once()
         mock_backend.close.assert_called_once()
@@ -436,7 +454,7 @@ class TestPrepareLLMLifecycle:
             "wilted.llm.create_backend",
             side_effect=RuntimeError("Model not found"),
         ):
-            stats = run_prepare(use_llm=True, skip_tts=True)
+            stats = _run_prepare(use_llm=True, skip_tts=True)
 
         assert stats["prepared"] == 1
 
@@ -447,7 +465,7 @@ class TestPrepareLLMLifecycle:
         mock_backend.load.side_effect = RuntimeError("Model not found")
 
         with patch("wilted.llm.create_backend", return_value=mock_backend):
-            stats = run_prepare(use_llm=True, skip_tts=True)
+            stats = _run_prepare(use_llm=True, skip_tts=True)
 
         assert stats["prepared"] == 1
         mock_backend.close.assert_called_once()
@@ -463,7 +481,7 @@ class TestPrepareLLMLifecycle:
             patch("wilted.llm.create_backend", return_value=mock_backend),
             patch("wilted.cache.generate_article_cache", return_value=True),
         ):
-            stats = run_prepare(use_llm=True)
+            stats = _run_prepare(use_llm=True)
 
         assert stats == {"prepared": 1, "errors": 0, "skipped": 0}
 
@@ -490,11 +508,10 @@ class TestPrepareLLMLifecycle:
 
         backend = LeaseCheckingBackend()
         with (
-            patch("wilted.prepare.ModelCoordinator", return_value=coordinator),
             patch("wilted.llm.create_backend", return_value=backend),
             patch("wilted.cache.generate_article_cache", return_value=True),
         ):
-            assert run_prepare(use_llm=True)["prepared"] == 1
+            assert _run_prepare(coordinator=coordinator, use_llm=True)["prepared"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +557,7 @@ class TestInv2LoadCloseAlwaysPaired:
             import pytest
 
             with pytest.raises(RuntimeError, match="simulated mid-run failure"):
-                run_prepare(use_llm=True)
+                _run_prepare(use_llm=True)
 
         # The load must have happened, and close() must STILL have run even
         # though run_prepare itself raised out of the try body.
@@ -562,7 +579,7 @@ class TestInv2LoadCloseAlwaysPaired:
             patch("wilted.llm.create_backend", return_value=mock_backend),
             patch("wilted.cache.generate_article_cache", return_value=True),
         ):
-            run_prepare(use_llm=True)
+            _run_prepare(use_llm=True)
 
         assert mock_backend.load.call_count == 1
         assert mock_backend.close.call_count == 1
@@ -577,7 +594,7 @@ class TestStatusTransitions:
     def test_processing_status_set_during_run(self, tmp_path):
         """Items transition through 'processing' before 'ready'."""
         _make_item(tmp_path)
-        run_prepare(use_llm=False, skip_tts=True)
+        _run_prepare(use_llm=False, skip_tts=True)
 
         # After run, item should be 'ready' — the intermediate 'processing'
         # status is set and then overwritten to 'ready' in the same call
@@ -637,7 +654,7 @@ class TestInv4NoEmptyOverwrite:
             mock_backend = MagicMock()
             mock_backend.generate.return_value = ("[]", 10)
             with patch("wilted.llm.create_backend", return_value=mock_backend):
-                run_prepare(use_llm=True)
+                _run_prepare(use_llm=True)
 
         # The original audio must be untouched: still present and byte-identical.
         assert audio_file.exists()
@@ -741,7 +758,7 @@ class TestInv4NoEmptyOverwrite:
             patch("wilted.ads.remove_promos", return_value=""),
             patch("wilted.cache.generate_article_cache", return_value=True),
         ):
-            run_prepare(use_llm=True)
+            _run_prepare(use_llm=True)
 
         # The original transcript must remain intact, not truncated to empty.
         assert transcript.exists()
@@ -821,7 +838,7 @@ class TestInv5LiveDataDirResolution:
         ):
             mock_engine = MockEngine.return_value
             mock_engine.get_file_duration.return_value = 5.0
-            run_prepare(use_llm=False)
+            _run_prepare(use_llm=False)
 
         from wilted.db import Item
 
@@ -919,7 +936,7 @@ class TestPm5TranscribeBeforeLlm:
         ):
             mock_engine = MockEngine.return_value
             mock_engine.get_file_duration.return_value = 5.0
-            stats = run_prepare(use_llm=True, skip_tts=True)
+            stats = _run_prepare(use_llm=True, skip_tts=True)
 
         # Sanity: the log actually captured both transcribe events and exactly
         # one llm_load event, and both podcasts were prepared.
@@ -945,20 +962,20 @@ class TestPm5TranscribeBeforeLlm:
 
 
 class TestCmdPrepare:
-    def test_cmd_prepare_calls_run_prepare(self):
-        """cmd_prepare dispatches to run_prepare."""
+    def test_cmd_prepare_calls_run_prepare_via_runner(self):
+        """cmd_prepare dispatches to run_prepare_via_runner."""
         from wilted.cli import cmd_prepare
 
-        with patch("wilted.prepare.run_prepare", return_value={"prepared": 2, "errors": 0}) as mock:
+        with patch("wilted.pipeline_submit.run_prepare_via_runner", return_value={"prepared": 2, "errors": 0}) as mock:
             cmd_prepare([])
 
         mock.assert_called_once()
 
     def test_cmd_prepare_no_llm_flag(self):
-        """--no-llm flag passed through to run_prepare."""
+        """--no-llm flag passed through to run_prepare_via_runner."""
         from wilted.cli import cmd_prepare
 
-        with patch("wilted.prepare.run_prepare", return_value={"prepared": 0, "errors": 0}) as mock:
+        with patch("wilted.pipeline_submit.run_prepare_via_runner", return_value={"prepared": 0, "errors": 0}) as mock:
             cmd_prepare(["--no-llm"])
 
         _, kwargs = mock.call_args

@@ -354,7 +354,12 @@ def create_backend(
 
     Raises:
         ValueError: If backend_type is not recognized.
+        ExecutionCapabilityError: When called without PipelineRunner authority.
     """
+    from wilted.execution_capability import require_execution_capability
+
+    require_execution_capability()
+
     if backend_type == "mlx":
         return MlxBackend(model=model, max_tokens=max_tokens, temperature=temperature)
     if backend_type == "gguf":

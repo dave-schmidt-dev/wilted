@@ -14,7 +14,18 @@ from textual.widgets import Button, DataTable, Footer, Label
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
-from wilted.db import Item, Report, SelectionHistory, worker_db
+from wilted.background_work.contracts import (
+    AnalysisState,
+    ContentState,
+    FetchState,
+    PlaybackState,
+    PreparationState,
+    ReportDecision,
+    RetentionFacts,
+    RetentionState,
+)
+from wilted.content_state import read_content_state, transition_item
+from wilted.db import Item, Report, ReportItem, SelectionHistory, worker_db
 from wilted.db import now_utc as _now_utc
 from wilted.report import update_source_stats
 
@@ -264,14 +275,42 @@ class ReportScreen(ModalScreen[bool]):
 
             now = _now_utc()
 
-            for item in self._items:
+            for rank, item in enumerate(self._items):
                 item_id = item["id"]
                 selected = self._selected.get(item_id, True)
 
                 try:
                     db_item = Item.get_by_id(item_id)
-                    db_item.status = "selected" if selected else "skipped"
-                    db_item.status_changed_at = now
+                    current = read_content_state(db_item)
+                    base_fetch = current.fetch if current else FetchState.CONTENT_READY
+                    base_analysis = current.analysis if current else AnalysisState.READY
+                    base_playback = current.playback if current else PlaybackState.UNPLAYED
+                    base_retention = current.retention if current else RetentionFacts(state=RetentionState.ACTIVE)
+
+                    if selected:
+                        transition_item(
+                            db_item,
+                            ContentState(
+                                fetch=base_fetch,
+                                analysis=base_analysis,
+                                preparation=PreparationState.QUEUED,
+                                playback=base_playback,
+                                retention=base_retention,
+                            ),
+                            legacy_status="selected",
+                        )
+                    else:
+                        transition_item(
+                            db_item,
+                            ContentState(
+                                fetch=base_fetch,
+                                analysis=base_analysis,
+                                preparation=PreparationState.NOT_QUEUED,
+                                playback=base_playback,
+                                retention=base_retention,
+                            ),
+                            legacy_status="skipped",
+                        )
 
                     # Apply playlist override only if changed from original
                     playlist_idx = self._playlist_index.get(item_id, 0)
@@ -282,6 +321,24 @@ class ReportScreen(ModalScreen[bool]):
                             db_item.playlist_override = new_playlist
 
                     db_item.save()
+
+                    if report is not None:
+                        decision = ReportDecision.ACCEPTED if selected else ReportDecision.DISMISSED
+                        row, created = ReportItem.get_or_create(
+                            report=report,
+                            item=db_item,
+                            defaults={
+                                "rank": rank,
+                                "decision": decision.value,
+                                "defer_until": None,
+                                "created_at": now,
+                            },
+                        )
+                        if not created:
+                            row.rank = rank
+                            row.decision = decision.value
+                            row.defer_until = None
+                            row.save()
 
                     SelectionHistory.create(
                         item=db_item,

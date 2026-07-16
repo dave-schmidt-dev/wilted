@@ -556,7 +556,12 @@ def transcribe_audio(
         TranscriptionError: The daemon or its transport is unavailable
             (``DaemonUnavailable`` — for example, a down/rolled-back daemon), another
             isolation error occurred, or transcription produced no segments.
+        ExecutionCapabilityError: When called without PipelineRunner authority.
     """
+    from wilted.execution_capability import require_execution_capability
+
+    require_execution_capability()
+
     # Accept str or Path from any caller (CLI, podcast pipeline, tests). Coerce
     # once so the request payload and the completion log agree on the type.
     audio_path = Path(audio_path)

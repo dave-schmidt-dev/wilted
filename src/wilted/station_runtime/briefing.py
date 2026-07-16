@@ -40,7 +40,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from wilted import WPM_ESTIMATE, load_config
-from wilted.db import Item
+from wilted.content_state import items_for_report
 from wilted.engine import AudioEngine
 
 if TYPE_CHECKING:
@@ -281,17 +281,18 @@ def _select_top_n(n: int) -> tuple[BriefingItem, ...]:
     """Snapshot the current top-N classified items, ranked like ``report.py``.
 
     Mirrors the exact filter/sort ``report.py``'s ``run_report``/``get_report``
-    use for their relevance ranking (``status == "classified"``, ``relevance_
-    score`` descending with NULLs last -- see ``report.py:51-53``/``:130-131``),
-    rather than depending on a persisted ``Report`` row: ``Report`` is a
-    separate, date-scoped nightly-digest concept that may not exist yet when
-    the station starts (nothing here should have to call ``run_report()`` as
-    a side effect just to read the briefing's item set). This function is
+    use for their relevance ranking (orthogonal report-candidate cohort —
+    ``analysis=ready``, ``preparation=not_queued``, ``retention=active``,
+    ``relevance_score`` descending with NULLs last), rather than depending on
+    a persisted ``Report`` row: ``Report`` is a separate, date-scoped
+    nightly-digest concept that may not exist yet when the station starts
+    (nothing here should have to call ``run_report()`` as a side effect just
+    to read the briefing's item set). This function is
     called EXACTLY ONCE per :meth:`BriefingGenerator.generate` call -- the
     returned tuple is copied plain data, not a live queryset, which is what
     gives the briefing its CR-13 stability once embedded in a ``Briefing``.
     """
-    query = Item.select().where(Item.status == "classified").order_by(Item.relevance_score.desc(nulls="last")).limit(n)
+    classified = items_for_report()
     return tuple(
         BriefingItem(
             item_id=str(item.id),
@@ -301,7 +302,7 @@ def _select_top_n(n: int) -> tuple[BriefingItem, ...]:
             relevance_score=item.relevance_score,
             playlist=item.playlist_assigned,
         )
-        for item in query
+        for item in classified[:n]
     )
 
 

@@ -86,6 +86,8 @@ class TestParseJsonResponse:
 
 
 class TestCreateBackend:
+    pytestmark = pytest.mark.usefixtures("execution_capability")
+
     def test_create_mlx(self):
         backend = create_backend("mlx", model="test-model")
         assert isinstance(backend, MlxBackend)
@@ -400,6 +402,8 @@ class TestMlxBackendMocked:
 
 class TestResolveGgufPath:
     """Resolver for hf:<repo_id>/<filename> specs — hf_hub_download mocked."""
+
+    pytestmark = pytest.mark.usefixtures("execution_capability")
 
     _REPO = "google/gemma-4-E4B-it-qat-q4_0-gguf"
     _FILE = "gemma-4-E4B_q4_0-it.gguf"

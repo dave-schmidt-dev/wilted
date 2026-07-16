@@ -290,9 +290,9 @@ def run_ingest(
         _print_stage("Stage 2/3: Classification")
         print("Loading LLM and classifying new items...")
         try:
-            from wilted.classify import run_classify
+            from wilted.pipeline_submit import run_classify_via_runner
 
-            stats = run_classify()
+            stats = run_classify_via_runner()
             results["classify"] = stats
             print(f"  Classified {stats['classified']} items")
             if stats["errors"]:

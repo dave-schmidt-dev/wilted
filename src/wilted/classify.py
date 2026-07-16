@@ -18,12 +18,20 @@ from __future__ import annotations
 import logging
 import time
 
+from wilted.background_work.contracts import (
+    AnalysisState,
+    ContentState,
+    FetchState,
+    PlaybackState,
+    PreparationState,
+    RetentionFacts,
+    RetentionState,
+)
+from wilted.content_state import items_pending_classification, read_content_state, transition_item
 from wilted.db import Item
 from wilted.db import ensure_db as _ensure_db
-from wilted.db import now_utc as _now_utc
 from wilted.llm import DEFAULT_GGUF_MODEL, LLMBackend, create_backend, parse_json_response
 from wilted.preferences import get_keywords_for_prompt
-from wilted.station_runtime.coordinator import ModelCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -148,10 +156,18 @@ def classify_item(backend: LLMBackend, item: Item, keywords_section: str) -> boo
     text = _get_item_text(item)
     if not text:
         logger.warning("No text available for item #%d: %s", item.id, item.title)
-        item.status = "error"
-        item.error_message = "No text available for classification"
-        item.status_changed_at = _now_utc()
-        item.save()
+        current = read_content_state(item)
+        transition_item(
+            item,
+            ContentState(
+                fetch=current.fetch if current else FetchState.CONTENT_READY,
+                analysis=AnalysisState.ERROR,
+                preparation=current.preparation if current else PreparationState.NOT_QUEUED,
+                playback=current.playback if current else PlaybackState.UNPLAYED,
+                retention=current.retention if current else RetentionFacts(state=RetentionState.ACTIVE),
+            ),
+            error_message="No text available for classification",
+        )
         return False
 
     user_prompt = _build_user_prompt(item.title, text, keywords_section)
@@ -161,19 +177,35 @@ def classify_item(backend: LLMBackend, item: Item, keywords_section: str) -> boo
         result = _parse_classification(response)
     except Exception as e:
         logger.error("Classification failed for item #%d: %s", item.id, e)
-        item.status = "error"
-        item.error_message = f"Classification error: {e}"
-        item.status_changed_at = _now_utc()
-        item.save()
+        current = read_content_state(item)
+        transition_item(
+            item,
+            ContentState(
+                fetch=current.fetch if current else FetchState.CONTENT_READY,
+                analysis=AnalysisState.ERROR,
+                preparation=current.preparation if current else PreparationState.NOT_QUEUED,
+                playback=current.playback if current else PlaybackState.UNPLAYED,
+                retention=current.retention if current else RetentionFacts(state=RetentionState.ACTIVE),
+            ),
+            error_message=f"Classification error: {e}",
+        )
         return False
 
     # Apply classification results — respect any existing playlist override
     item.playlist_assigned = result["playlist"]
     item.relevance_score = result["relevance_score"]
     item.summary = result["summary"]
-    item.status = "classified"
-    item.status_changed_at = _now_utc()
-    item.save()
+    current = read_content_state(item)
+    transition_item(
+        item,
+        ContentState(
+            fetch=current.fetch if current else FetchState.CONTENT_READY,
+            analysis=AnalysisState.READY,
+            preparation=PreparationState.NOT_QUEUED,
+            playback=current.playback if current else PlaybackState.UNPLAYED,
+            retention=current.retention if current else RetentionFacts(state=RetentionState.ACTIVE),
+        ),
+    )
 
     logger.info(
         "Classified #%d: %s -> %s (%.2f)",
@@ -187,12 +219,19 @@ def classify_item(backend: LLMBackend, item: Item, keywords_section: str) -> boo
 
 def run_classify(
     *,
+    coordinator,
+    items: list[Item] | None = None,
     model: str | None = None,
     backend_type: str | None = None,
 ) -> dict:
-    """Run classification on all fetched items.
+    """Run classification on fetched items using a runner-owned coordinator.
+
+    Internal entrypoint for tests and batch helpers. Production CLI paths use
+    :func:`~wilted.pipeline_submit.run_classify_via_runner`.
 
     Args:
+        coordinator: Runner-owned :class:`~wilted.station_runtime.coordinator.ModelCoordinator`.
+        items: Optional explicit item list; defaults to pending classification cohort.
         model: Model identifier (defaults to config or _DEFAULT_MODEL).
         backend_type: Backend type (defaults to config or _DEFAULT_BACKEND).
 
@@ -201,8 +240,8 @@ def run_classify(
     """
     _ensure_db()
 
-    items = list(Item.select().where(Item.status == "fetched"))
-    if not items:
+    resolved_items = items if items is not None else items_pending_classification()
+    if not resolved_items:
         logger.info("No fetched items to classify")
         return {"classified": 0, "errors": 0, "total": 0}
 
@@ -213,18 +252,17 @@ def run_classify(
     # Get user keywords for relevance scoring
     keywords_section = get_keywords_for_prompt()
 
-    logger.info("Classifying %d items with %s (%s)", len(items), model, backend_type)
+    logger.info("Classifying %d items with %s (%s)", len(resolved_items), model, backend_type)
 
     classified = 0
     errors = 0
 
     backend = create_backend(backend_type, model=model)
-    coordinator = ModelCoordinator()
 
     def _classify_loaded(loaded_backend: LLMBackend) -> None:
         """Classify the batch while the coordinator holds the LLM lease."""
         nonlocal classified, errors
-        for item in items:
+        for item in resolved_items:
             success = classify_item(loaded_backend, item, keywords_section)
             if success:
                 classified += 1
@@ -233,7 +271,7 @@ def run_classify(
 
     coordinator.run_llm(backend, _classify_loaded)
 
-    result = {"classified": classified, "errors": errors, "total": len(items)}
+    result = {"classified": classified, "errors": errors, "total": len(resolved_items)}
     logger.info("Classification complete: %s", result)
     return result
 
@@ -358,52 +396,56 @@ def run_benchmark(
     print(f"{'Model':<50} {'Accuracy':>8} {'Avg Time':>10} {'Avg Tokens':>10}")
     print("-" * 82)
 
-    coordinator = ModelCoordinator()
-    for model_name in models:
-        backend = create_backend(backend_type, model=model_name)
+    import wilted
+    from wilted.execution_capability import create_model_coordinator, execution_capability_scope
 
-        correct = 0
-        total_time = 0.0
-        total_tokens = 0
-        errors = 0
+    with execution_capability_scope(owner_id="benchmark", data_dir=wilted.DATA_DIR):
+        coordinator = create_model_coordinator()
+        for model_name in models:
+            backend = create_backend(backend_type, model=model_name)
 
-        def _benchmark_loaded(loaded_backend: LLMBackend) -> None:
-            """Benchmark one model while the coordinator holds the LLM lease."""
-            nonlocal correct, total_time, total_tokens, errors
-            for bench_item in _BENCHMARK_ITEMS:
-                user_prompt = _build_user_prompt(
-                    bench_item["title"],
-                    bench_item["text"],
-                    keywords_section,
-                )
+            correct = 0
+            total_time = 0.0
+            total_tokens = 0
+            errors = 0
 
-                start = time.monotonic()
-                try:
-                    response, tokens = loaded_backend.generate(_SYSTEM_PROMPT, user_prompt)
-                    elapsed = time.monotonic() - start
+            def _benchmark_loaded(loaded_backend: LLMBackend) -> None:
+                """Benchmark one model while the coordinator holds the LLM lease."""
+                nonlocal correct, total_time, total_tokens, errors
+                for bench_item in _BENCHMARK_ITEMS:
+                    user_prompt = _build_user_prompt(
+                        bench_item["title"],
+                        bench_item["text"],
+                        keywords_section,
+                    )
 
-                    result = _parse_classification(response)
-                    if result["playlist"] == bench_item["expected_playlist"]:
-                        correct += 1
+                    start = time.monotonic()
+                    try:
+                        response, tokens = loaded_backend.generate(_SYSTEM_PROMPT, user_prompt)
+                        elapsed = time.monotonic() - start
 
-                    total_time += elapsed
-                    total_tokens += tokens
-                except Exception as e:
-                    logger.warning("Benchmark error for '%s': %s", bench_item["title"], e)
-                    errors += 1
-                    total_time += time.monotonic() - start
+                        result = _parse_classification(response)
+                        if result["playlist"] == bench_item["expected_playlist"]:
+                            correct += 1
 
-        try:
-            coordinator.run_llm(backend, _benchmark_loaded)
-        except Exception as e:
-            print(f"{model_name:<50} {'LOAD FAIL':>8} {str(e)[:20]:>10}")
-            continue
+                        total_time += elapsed
+                        total_tokens += tokens
+                    except Exception as e:
+                        logger.warning("Benchmark error for '%s': %s", bench_item["title"], e)
+                        errors += 1
+                        total_time += time.monotonic() - start
 
-        evaluated = len(_BENCHMARK_ITEMS) - errors
-        accuracy = correct / evaluated if evaluated > 0 else 0
-        avg_time = total_time / len(_BENCHMARK_ITEMS)
-        avg_tokens = total_tokens // max(1, evaluated)
+            try:
+                coordinator.run_llm(backend, _benchmark_loaded)
+            except Exception as e:
+                print(f"{model_name:<50} {'LOAD FAIL':>8} {str(e)[:20]:>10}")
+                continue
 
-        print(f"{model_name:<50} {accuracy:>7.0%} {avg_time:>9.1f}s {avg_tokens:>10d}")
+            evaluated = len(_BENCHMARK_ITEMS) - errors
+            accuracy = correct / evaluated if evaluated > 0 else 0
+            avg_time = total_time / len(_BENCHMARK_ITEMS)
+            avg_tokens = total_tokens // max(1, evaluated)
+
+            print(f"{model_name:<50} {accuracy:>7.0%} {avg_time:>9.1f}s {avg_tokens:>10d}")
 
     print()

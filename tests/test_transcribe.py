@@ -28,6 +28,8 @@ from wilted.transcribe import (
     transcribe_audio,
 )
 
+pytestmark = pytest.mark.usefixtures("execution_capability")
+
 # ---------------------------------------------------------------------------
 # VTT parsing
 # ---------------------------------------------------------------------------

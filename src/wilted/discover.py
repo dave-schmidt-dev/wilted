@@ -5,8 +5,8 @@ Stage 1 of the nightly pipeline. Network-bound, no models loaded.
 Workflow:
   1. Poll all enabled feeds via feedparser (conditional GET with ETag/Last-Modified)
   2. Dedup entries against existing items (GUID, canonical URL, content hash)
-  3. Articles: fetch full text via trafilatura, store transcript, status -> 'fetched'
-  4. Podcasts: metadata from RSS only, status -> 'selected' (subscription = selection)
+  3. Articles: fetch full text via trafilatura, store transcript, analysis pending
+  4. Podcasts: metadata from RSS only — report pending candidates (not auto-selected)
 
 Partial failures (single feed errors) are logged and skipped; the stage
 returns 0 if at least one item was successfully processed.
@@ -29,6 +29,16 @@ from time import struct_time
 import feedparser
 
 import wilted
+from wilted.background_work.contracts import (
+    AnalysisState,
+    ContentState,
+    FetchState,
+    PlaybackState,
+    PreparationState,
+    RetentionFacts,
+    RetentionState,
+)
+from wilted.content_state import transition_item
 from wilted.db import Feed, Item, _db
 from wilted.db import ensure_db as _ensure_db
 from wilted.db import now_utc as _now_utc
@@ -308,10 +318,8 @@ def _process_entry(feed: Feed, entry, stats: dict) -> None:
             stats["skipped"] += 1
             return
 
-        # Podcast subscriptions are an explicit selection signal — the user
-        # already opted in by adding the feed, so episodes go straight to
-        # `selected` and are picked up by `wilted prepare`. Articles still
-        # land in `fetched` and route through classify + morning report.
+        # Podcast episodes are report pending candidates — the user opts in via
+        # the morning report, not by subscribing to the feed alone.
         if is_bws_feed:
             if not guid:
                 logger.warning("Skipping BWS-backed podcast entry without a stable GUID in feed #%d", feed.id)
@@ -330,12 +338,23 @@ def _process_entry(feed: Feed, entry, stats: dict) -> None:
             published_at=published,
             discovered_at=now,
             item_type="podcast_episode",
-            status="selected",
+            status="discovered",
             status_changed_at=now,
             enclosure_url=enclosure_url,
             enclosure_type=enclosure_type,
             playlist_assigned=feed.default_playlist,
             metadata=json.dumps({"content_hash": content_hash}),
+        )
+        transition_item(
+            item,
+            ContentState(
+                fetch=FetchState.METADATA,
+                analysis=AnalysisState.PENDING,
+                preparation=PreparationState.NOT_QUEUED,
+                playback=PlaybackState.UNPLAYED,
+                retention=RetentionFacts(state=RetentionState.ACTIVE),
+            ),
+            sync_legacy_status=True,
         )
         logger.debug("Discovered podcast episode #%d: %s", item.id, title)
         stats["new"] += 1
@@ -394,6 +413,17 @@ def _process_entry(feed: Feed, entry, stats: dict) -> None:
             transcript_path = _save_transcript(item.id, article_title, article_text)
             item.transcript_file = transcript_path
             item.save()
+
+            transition_item(
+                item,
+                ContentState(
+                    fetch=FetchState.CONTENT_READY,
+                    analysis=AnalysisState.PENDING,
+                    preparation=PreparationState.NOT_QUEUED,
+                    playback=PlaybackState.UNPLAYED,
+                    retention=RetentionFacts(state=RetentionState.ACTIVE),
+                ),
+            )
 
         logger.debug("Discovered article #%d: %s (%d words)", item.id, article_title, word_count)
         stats["new"] += 1

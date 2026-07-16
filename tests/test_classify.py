@@ -19,9 +19,25 @@ from wilted.classify import (
 from wilted.db import Item
 from wilted.preferences import add_keyword
 
+pytestmark = pytest.mark.usefixtures("execution_capability")
+
 
 def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _run_classify(**kwargs):
+    """Run classify with a test-scoped coordinator under execution capability."""
+    if "coordinator" in kwargs:
+        return run_classify(**kwargs)
+
+    from wilted.execution_capability import create_model_coordinator
+
+    coordinator = create_model_coordinator()
+    try:
+        return run_classify(coordinator=coordinator, **kwargs)
+    finally:
+        coordinator.close()
 
 
 def _make_item(text: str | None = None, **kwargs):
@@ -221,7 +237,7 @@ class TestClassifyItem:
 
 class TestRunClassify:
     def test_no_fetched_items(self):
-        stats = run_classify(model="test", backend_type="gguf")
+        stats = _run_classify(model="test", backend_type="gguf")
         assert stats == {"classified": 0, "errors": 0, "total": 0}
 
     def test_defaults_to_gguf_gemma(self, monkeypatch):
@@ -240,7 +256,7 @@ class TestRunClassify:
 
         monkeypatch.setattr("wilted.classify.create_backend", fake_create_backend)
 
-        run_classify()  # no model/backend args -> module defaults
+        _run_classify()  # no model/backend args -> module defaults
 
         assert _DEFAULT_BACKEND == "gguf"
         assert captured["backend_type"] == "gguf"
@@ -270,7 +286,7 @@ class TestRunClassify:
             lambda *a, **kw: mock_backend,
         )
 
-        stats = run_classify(model="test", backend_type="gguf")
+        stats = _run_classify(model="test", backend_type="gguf")
         assert stats["classified"] == 2
         assert stats["errors"] == 0
         assert stats["total"] == 2
@@ -288,7 +304,7 @@ class TestRunClassify:
             lambda *a, **kw: mock_backend,
         )
 
-        stats = run_classify(model="test", backend_type="gguf")
+        stats = _run_classify(model="test", backend_type="gguf")
         assert stats["total"] == 1
         assert mock_backend.generate_calls == 1
 
@@ -314,7 +330,7 @@ class TestRunClassify:
             lambda *a, **kw: error_backend,
         )
 
-        stats = run_classify(model="test", backend_type="gguf")
+        stats = _run_classify(model="test", backend_type="gguf")
         assert error_backend.closed is True
         assert stats["errors"] == 1
 
@@ -342,10 +358,9 @@ class TestRunClassify:
                 super().close()
 
         backend = LeaseCheckingBackend()
-        monkeypatch.setattr("wilted.classify.ModelCoordinator", lambda: coordinator)
         monkeypatch.setattr("wilted.classify.create_backend", lambda *args, **kwargs: backend)
 
-        assert run_classify(model="test", backend_type="gguf")["classified"] == 1
+        assert _run_classify(coordinator=coordinator, model="test", backend_type="gguf")["classified"] == 1
 
     def test_benchmark_lifecycle_runs_under_coordinator_lease(self, monkeypatch):
         """Benchmarking is also a production LLM entry point governed by INV-1."""
@@ -370,7 +385,7 @@ class TestRunClassify:
                 super().close()
 
         backend = LeaseCheckingBackend()
-        monkeypatch.setattr("wilted.classify.ModelCoordinator", lambda: coordinator)
+        monkeypatch.setattr("wilted.execution_capability.create_model_coordinator", lambda: coordinator)
         monkeypatch.setattr("wilted.classify.create_backend", lambda *args, **kwargs: backend)
 
         run_benchmark(models=["test"])
@@ -404,6 +419,6 @@ class TestRunClassify:
             lambda *a, **kw: CapturingBackend(),
         )
 
-        run_classify(model="test", backend_type="gguf")
+        _run_classify(model="test", backend_type="gguf")
         assert len(captured_prompts) == 1
         assert "kubernetes" in captured_prompts[0]

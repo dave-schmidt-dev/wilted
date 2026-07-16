@@ -292,6 +292,15 @@ class ModelCoordinator:
         """
         return self._peak_concurrent_residency
 
+    def close(self) -> None:
+        """Release runner-owned coordinator resources at end of a bounded run.
+
+        Stub handlers in Task 4.1 do not load models; this hook exists so the
+        pipeline runner can pair one construction with one close on every exit
+        path before Task 5.1 wires real handler lifecycles.
+        """
+        logger.debug("ModelCoordinator closed")
+
     # ------------------------------------------------------------------
     # Convenience wrappers for the two concrete families. These are thin
     # sugar over `lease()` + `ModelLease` — callers may also use `lease()`

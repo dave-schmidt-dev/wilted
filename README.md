@@ -309,6 +309,13 @@ src/wilted/                # shared library
     feeds.py             # feed subscription CRUD
     discover.py          # RSS polling, dedup, article fetch
     classify.py          # LLM-based classification + benchmark
+    content_state.py     # orthogonal content facts, query predicates, transitions
+    pipeline_runner.py   # bounded runner (one lock, one coordinator, per-job isolation)
+    pipeline_submit.py   # submit classify/prepare jobs to the processing ledger
+    processing_jobs.py   # ProcessingJob admission, claim, cancellation, recovery
+    legacy_cutover.py    # explicit maintenance-only status → orthogonal cutover
+    background_work/     # contracts, transitions, idempotency, legacy mapping
+    handlers/            # pipeline stage handlers invoked by PipelineRunner
     llm.py               # LLM backend interface (MLX, GGUF)
     preferences.py       # keyword-based relevance scoring
     log.py               # RotatingFileHandler setup
@@ -318,7 +325,7 @@ src/wilted/                # shared library
         protocols.py   # typing.Protocol seams (StationStore, PlaybackAdapter)
         reducer.py     # pure state-transition reducer apply(state, action, requester_lease)
     tui/                 # Textual TUI (decomposed package)
-tests/                   # pytest suite (1,144 collected tests with overlapping lane markers)
+tests/                   # pytest suite (1,660 collected tests with overlapping lane markers)
 migrations/              # numbered schema migrations
 docs/adr/                # architecture decision records
     0001-mac-radio-substrate.md  # Mac-first personal-radio substrate decision (candidate a: headless core)
@@ -330,11 +337,11 @@ spikes/                  # Phase-0 feasibility prototypes (disposable, removable
 
 ## Validation
 
-Routine validation uses tiered lanes. The suite currently collects 1,144 tests;
-lane markers overlap, with these marker counts:
+Routine validation uses tiered lanes. The suite currently collects 1,660 tests
+with one marker per file:
 
-- `475` unit tests
-- `546` integration tests
+- `780` unit tests
+- `724` integration tests
 - `30` subprocess e2e tests
 - `126` TUI tests
 
@@ -409,8 +416,23 @@ Run the nightly pipeline stages:
 
 ```bash
 wilted discover              # poll feeds, fetch articles, dedup
-wilted classify              # categorize, score, summarize (requires llama.cpp GGUF LLM)
+wilted classify              # categorize, score, summarize (submitted to bounded pipeline runner)
+wilted prepare               # transcribe/cut/TTS selected items (same runner path)
 wilted benchmark classify --models "model1,model2"  # compare classification models
+```
+
+Classification and preparation run through the durable processing-job ledger and a bounded
+`PipelineRunner` (one execution lock and one model coordinator per invocation). Expensive ML
+construction requires runner authority.
+
+### Database maintenance
+
+Orthogonal content state (fetch, analysis, preparation, playback, retention) replaces the legacy
+monolithic `Item.status` after an explicit maintenance cutover — ordinary startup does not apply it:
+
+```bash
+wilted db cutover --dry-run              # plan mapping and cohort reconciliation
+wilted db cutover --backup-dir data/backups   # verified backup, then destructive cutover
 ```
 
 Manage relevance keywords:

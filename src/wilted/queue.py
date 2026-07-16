@@ -18,6 +18,23 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+from wilted.background_work.contracts import (
+    AnalysisState,
+    ContentState,
+    FetchState,
+    PlaybackState,
+    PreparationState,
+    RetentionFacts,
+    RetentionState,
+)
+from wilted.content_state import (
+    items_for_retention_cleanup,
+    items_playable_in_queue,
+    items_playable_ready_only,
+    legacy_display_status,
+    read_content_state,
+    transition_item,
+)
 from wilted.db import ensure_db as _ensure_db
 from wilted.db import now_utc as _now_utc
 
@@ -72,7 +89,7 @@ def _item_to_dict(item) -> dict:
         "added": item.discovered_at or _now_utc(),
         # Extra fields available via SQLite (ignored by legacy code)
         "audio_file": item.audio_file,
-        "status": item.status,
+        "status": legacy_display_status(item),
         # Playback routing: 'article' | 'podcast_episode'. The TUI branches on
         # this so a prepared podcast plays its finalized audio artifact rather
         # than being re-synthesized through the article/TTS path.
@@ -95,14 +112,9 @@ def load_queue() -> list[dict]:
     Selected podcast episodes are excluded -- they need Phase 4 (download +
     transcription) before they can be played.
     """
-    from wilted.db import Item
 
     _ensure_db()
-    items = list(
-        Item.select()
-        .where((Item.status == "ready") | ((Item.status == "selected") & (Item.item_type == "article")))
-        .order_by(Item.discovered_at)
-    )
+    items = items_playable_in_queue()
     return [_item_to_dict(it) for it in items]
 
 
@@ -148,6 +160,17 @@ def add_article(
     item.transcript_file = str(article_path)
     item.save()
 
+    transition_item(
+        item,
+        ContentState(
+            fetch=FetchState.CONTENT_READY,
+            analysis=AnalysisState.READY,
+            preparation=PreparationState.READY,
+            playback=PlaybackState.UNPLAYED,
+            retention=RetentionFacts(state=RetentionState.ACTIVE),
+        ),
+    )
+
     logger.info("Added article #%d: %s", item.id, title)
     return _item_to_dict(item)
 
@@ -157,10 +180,9 @@ def remove_article(index: int) -> dict:
 
     Raises IndexError if index is out of range.
     """
-    from wilted.db import Item
 
     _ensure_db()
-    items = list(Item.select().where(Item.status == "ready").order_by(Item.discovered_at))
+    items = items_playable_in_queue()
     if index < 0 or index >= len(items):
         raise IndexError(f"Invalid index {index}. Queue has {len(items)} article(s).")
 
@@ -208,10 +230,9 @@ def remove_article_by_id(item_id: int) -> dict:
 
 def clear_queue() -> int:
     """Remove all 'ready' articles. Returns count removed."""
-    from wilted.db import Item
 
     _ensure_db()
-    items = list(Item.select().where(Item.status == "ready"))
+    items = items_playable_ready_only()
     if not items:
         return 0
 
@@ -261,12 +282,19 @@ def mark_completed(entry: dict) -> None:
     from wilted.db import Item
 
     _ensure_db()
-    now = _now_utc()
     try:
         item = Item.get_by_id(entry["id"])
-        item.status = "completed"
-        item.status_changed_at = now
-        item.save()
+        current = read_content_state(item)
+        transition_item(
+            item,
+            ContentState(
+                fetch=current.fetch if current else FetchState.CONTENT_READY,
+                analysis=current.analysis if current else AnalysisState.READY,
+                preparation=current.preparation if current else PreparationState.READY,
+                playback=PlaybackState.COMPLETED,
+                retention=current.retention if current else RetentionFacts(state=RetentionState.ACTIVE),
+            ),
+        )
         logger.info("Marked completed: #%d %s", item.id, item.title)
     except Item.DoesNotExist:
         logger.warning("mark_completed: item #%d not found", entry.get("id"))
@@ -286,13 +314,12 @@ def run_retention(retention_days: int = 30) -> int:
 
     Returns number of items whose files were cleaned up.
     """
-    from wilted.db import Item
 
     _ensure_db()
     cutoff = datetime.now(UTC)
 
     cleaned = 0
-    for item in Item.select().where(Item.status == "completed", Item.keep == False):  # noqa: E712
+    for item in items_for_retention_cleanup():
         if not item.status_changed_at:
             continue
         try:
