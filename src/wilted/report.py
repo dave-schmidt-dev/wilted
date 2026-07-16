@@ -17,7 +17,14 @@ import json
 import logging
 from datetime import date, datetime
 
-from wilted.content_state import items_for_report, legacy_display_status, predicate_report_candidates
+from wilted.background_work.contracts import ReportDecision
+from wilted.background_work.contracts import ReportItem as ReportItemContract
+from wilted.content_state import (
+    items_for_report,
+    legacy_display_status,
+    predicate_report_candidates,
+    regenerate_report_membership,
+)
 from wilted.db import Feed, Item, Report, SelectionHistory, SourceStat
 from wilted.db import ensure_db as _ensure_db
 from wilted.db import now_utc as _now_utc
@@ -30,52 +37,41 @@ def _local_date_str() -> str:
     return date.today().isoformat()
 
 
-def run_report() -> dict:
-    """Assemble a morning report from classified items.
+def assemble_report(report_date: str | None = None) -> dict:
+    """Assemble a morning report snapshot with stable ReportItem membership.
 
-    Groups classified items by playlist, sorts by relevance, stores
-    a Report record. Idempotent per day — regenerates if called again
-    on the same date.
+    Groups classified candidates by playlist, sorts by relevance, persists a
+    Report row, and regenerates pending ReportItem membership for the date.
+
+    Args:
+        report_date: ISO date string (YYYY-MM-DD). Defaults to today.
 
     Returns:
-        Dict with stats: {'items': int, 'playlists': dict[str, int], 'report_id': int}
+        Dict with stats: ``items``, ``playlists``, ``report_id``.
     """
     _ensure_db()
 
-    today = _local_date_str()
+    today = report_date or _local_date_str()
 
-    # Check if a report already exists for today
     existing = Report.select().where(Report.report_date == today).first()
-
-    # Get classified items that haven't been selected or skipped yet
-    # Exclude items with status != 'classified'
     classified_items = items_for_report()
 
-    # Group items by playlist_assigned
     playlists: dict[str, list[Item]] = {}
     for item in classified_items:
         playlist = item.playlist_assigned or "Uncategorized"
-        if playlist not in playlists:
-            playlists[playlist] = []
-        playlists[playlist].append(item)
+        playlists.setdefault(playlist, []).append(item)
 
-    # Sort within each group by relevance_score descending
     for playlist_name in playlists:
         playlists[playlist_name].sort(
             key=lambda i: i.relevance_score if i.relevance_score is not None else 0,
             reverse=True,
         )
 
-    # Count items per playlist
     playlist_counts: dict[str, int] = {k: len(v) for k, v in playlists.items()}
-
-    # If Uncategorized is empty, remove it from the dict
     if playlist_counts.get("Uncategorized", 0) == 0:
         playlist_counts.pop("Uncategorized", None)
 
     total_items = sum(playlist_counts.values())
-
-    # Store or update report
     metadata = {
         "playlists": playlist_counts,
         "total_items": total_items,
@@ -98,11 +94,39 @@ def run_report() -> dict:
         report_id = report.id
         logger.info("Created report #%d for %s: %d items", report_id, today, total_items)
 
+    rank = 0
+    proposed_pending: list[ReportItemContract] = []
+    for playlist_name in sorted(playlists.keys()):
+        for item in playlists[playlist_name]:
+            proposed_pending.append(
+                ReportItemContract(
+                    report_id=report_id,
+                    item_id=str(item.id),
+                    rank=rank,
+                    decision=ReportDecision.PENDING,
+                ),
+            )
+            rank += 1
+
+    regenerate_report_membership(report_id, tuple(proposed_pending))
+
     return {
         "items": total_items,
         "playlists": playlist_counts,
         "report_id": report_id,
     }
+
+
+def run_report() -> dict:
+    """Assemble a morning report from classified items.
+
+    Synchronous helper for worker-thread callers (e.g. TUI report check).
+    CLI and ingest use :func:`run_report_via_runner` instead.
+
+    Returns:
+        Dict with stats: ``items``, ``playlists``, ``report_id``.
+    """
+    return assemble_report()
 
 
 def get_report(report_date: str | None = None) -> dict | None:

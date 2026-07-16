@@ -80,3 +80,58 @@ def build_prepare_manifest(item: Item, *, operation_version: int) -> ArtifactMan
         output_digests=(prepare_output_digest(item),),
         completeness_checks=("preparation_state_ready",),
     )
+
+
+def build_discover_manifest(
+    *,
+    feed_id: int,
+    operation_version: int,
+    stats: dict[str, int],
+) -> ArtifactManifest:
+    """Build a completion manifest after one feed poll."""
+    payload = {"feed_id": feed_id, **stats}
+    digest = _sha256_hex(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    return ArtifactManifest(
+        item_id=str(feed_id),
+        input_digest=digest,
+        operation_version=operation_version,
+        output_digests=(digest,),
+        completeness_checks=("feed_polled",),
+    )
+
+
+def build_report_manifest(
+    *,
+    report_id: int,
+    report_date: str,
+    operation_version: int,
+    item_count: int,
+) -> ArtifactManifest:
+    """Build a completion manifest after report assembly."""
+    payload = {"report_id": report_id, "report_date": report_date, "item_count": item_count}
+    digest = _sha256_hex(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    return ArtifactManifest(
+        item_id=str(report_id),
+        input_digest=digest,
+        operation_version=operation_version,
+        output_digests=(digest,),
+        completeness_checks=("report_snapshot",),
+    )
+
+
+def build_briefing_manifest(
+    *,
+    artifact_id: str,
+    operation_version: int,
+    word_count: int,
+) -> ArtifactManifest:
+    """Build a completion manifest after compact briefing generation."""
+    payload = {"artifact_id": artifact_id, "word_count": word_count}
+    digest = _sha256_hex(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    return ArtifactManifest(
+        item_id=artifact_id,
+        input_digest=digest,
+        operation_version=operation_version,
+        output_digests=(digest,),
+        completeness_checks=("briefing_artifact",),
+    )

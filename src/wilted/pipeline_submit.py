@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Callable  # noqa: TC003
 from typing import Any
 
-from wilted.background_work.contracts import AnalysisState, JobKind, PreparationState, ProcessingJobState
-from wilted.background_work.idempotency import build_idempotency_key, logical_identity_for_kind
+from wilted.background_work.contracts import (
+    AnalysisState,
+    JobKind,
+    PreparationState,
+    ProcessingJobState,
+    SubmissionOutcome,
+)
+from wilted.background_work.idempotency import IdempotencyKey, build_idempotency_key, logical_identity_for_kind
 from wilted.content_state import items_for_prepare, items_pending_classification, read_content_state
 from wilted.db import Item, ProcessingJob, ensure_db
 from wilted.pipeline_runner import PipelineRunner, RunStats
@@ -79,6 +87,50 @@ def _merge_stats(accum: RunStats, batch: RunStats) -> RunStats:
         cancelled=accum.cancelled + batch.cancelled,
         deferred_yield=accum.deferred_yield + batch.deferred_yield,
     )
+
+
+def _submit_fresh_generation(
+    key_for_version: Callable[[int], IdempotencyKey],
+    *,
+    metadata: dict[str, Any],
+    item_id: int | None = None,
+) -> SubmitResult:
+    """Admit a new generation, bumping ``operation_version`` past terminal completed rows."""
+    for operation_version in range(1, 65):
+        versioned_metadata = {**metadata, "operation_version": operation_version}
+        result = submit_job(
+            key_for_version(operation_version),
+            item_id=item_id,
+            metadata=versioned_metadata,
+        )
+        if result.outcome is not SubmissionOutcome.COMPLETED:
+            return result
+    raise RuntimeError("could not admit a fresh processing job generation")
+
+
+def _latest_result_metadata(*, kind: JobKind, logical_identity: str) -> dict[str, Any]:
+    """Return result metadata from the newest completed job for one logical identity."""
+    suffix = f":{logical_identity}"
+    latest: ProcessingJob | None = None
+    latest_version = -1
+    for job in ProcessingJob.select().where(ProcessingJob.kind == kind.value):
+        if not job.idempotency_key.endswith(suffix):
+            continue
+        try:
+            version = int(job.idempotency_key.split(":v", 1)[1].split(":", 1)[0])
+        except (IndexError, ValueError):
+            continue
+        if version > latest_version:
+            latest_version = version
+            latest = job
+    if latest is None or not latest.result_json:
+        return {}
+    try:
+        payload = json.loads(latest.result_json)
+    except json.JSONDecodeError:
+        return {}
+    metadata = payload.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
 
 
 def drain_runner(
@@ -288,3 +340,182 @@ def run_prepare_via_runner(
 
     drain_runner(kind=JobKind.PREPARE, max_jobs_per_run=max_jobs_per_run)
     return _prepare_stats_for_items(items)
+
+
+def _discover_metadata(*, feed_id: int, operation_version: int = 1) -> dict[str, Any]:
+    return {"feed_id": feed_id, "operation_version": operation_version}
+
+
+def _report_metadata(*, report_date: str, operation_version: int = 1) -> dict[str, Any]:
+    return {"report_date": report_date, "operation_version": operation_version}
+
+
+def _briefing_metadata(
+    *,
+    window_start: str,
+    window_end: str,
+    operation_version: int = 1,
+) -> dict[str, Any]:
+    return {
+        "window_start": window_start,
+        "window_end": window_end,
+        "operation_version": operation_version,
+    }
+
+
+def submit_discover(
+    feed_id: int,
+    *,
+    operation_version: int = 1,
+    sync_run: bool = False,
+    max_jobs_per_run: int = _DEFAULT_MAX_JOBS_PER_RUN,
+) -> SubmitResult:
+    """Submit one per-feed discovery job."""
+    ensure_db()
+    metadata = _discover_metadata(feed_id=feed_id, operation_version=operation_version)
+    identity = logical_identity_for_kind(JobKind.DISCOVER, feed_id=feed_id)
+
+    def _key_for_version(version: int) -> IdempotencyKey:
+        return build_idempotency_key(
+            JobKind.DISCOVER,
+            operation_version=version,
+            logical_identity=identity,
+        )
+
+    result = _submit_fresh_generation(_key_for_version, metadata=metadata)
+    if sync_run:
+        drain_runner(kind=JobKind.DISCOVER, max_jobs_per_run=max_jobs_per_run)
+    return result
+
+
+def submit_report(
+    *,
+    report_date: str | None = None,
+    operation_version: int = 1,
+    sync_run: bool = False,
+    max_jobs_per_run: int = _DEFAULT_MAX_JOBS_PER_RUN,
+) -> SubmitResult:
+    """Submit one report assembly job for ``report_date`` (defaults to today)."""
+    from wilted.report import _local_date_str
+
+    ensure_db()
+    resolved_date = report_date or _local_date_str()
+    metadata = _report_metadata(report_date=resolved_date, operation_version=operation_version)
+    identity = logical_identity_for_kind(JobKind.REPORT_ASSEMBLY, report_date=resolved_date)
+
+    def _key_for_version(version: int) -> IdempotencyKey:
+        return build_idempotency_key(
+            JobKind.REPORT_ASSEMBLY,
+            operation_version=version,
+            logical_identity=identity,
+        )
+
+    result = _submit_fresh_generation(_key_for_version, metadata=metadata)
+    if sync_run:
+        drain_runner(kind=JobKind.REPORT_ASSEMBLY, max_jobs_per_run=max_jobs_per_run)
+    return result
+
+
+def submit_briefing(
+    *,
+    window_start: str,
+    window_end: str,
+    operation_version: int = 1,
+    sync_run: bool = False,
+    max_jobs_per_run: int = _DEFAULT_MAX_JOBS_PER_RUN,
+) -> SubmitResult:
+    """Submit one compact briefing generation job."""
+    ensure_db()
+    metadata = _briefing_metadata(
+        window_start=window_start,
+        window_end=window_end,
+        operation_version=operation_version,
+    )
+    identity = logical_identity_for_kind(
+        JobKind.COMPACT_BRIEFING,
+        window_start=window_start,
+        window_end=window_end,
+    )
+    key = build_idempotency_key(
+        JobKind.COMPACT_BRIEFING,
+        operation_version=operation_version,
+        logical_identity=identity,
+    )
+    result = submit_job(key, metadata=metadata)
+    if sync_run:
+        drain_runner(kind=JobKind.COMPACT_BRIEFING, max_jobs_per_run=max_jobs_per_run)
+    return result
+
+
+def run_discover_via_runner(
+    *,
+    max_jobs_per_run: int = _DEFAULT_MAX_JOBS_PER_RUN,
+) -> dict[str, int]:
+    """Submit discovery jobs for all enabled feeds and drain the runner."""
+    from wilted.db import Feed
+
+    ensure_db()
+    feeds = list(Feed.select().where(Feed.enabled == True))  # noqa: E712
+    if not feeds:
+        logger.info("No enabled feeds to poll")
+        return {"discovered": 0, "feeds_polled": 0, "errors": 0}
+
+    for feed in feeds:
+        submit_discover(feed.id, sync_run=False)
+
+    drain_runner(kind=JobKind.DISCOVER, max_jobs_per_run=max_jobs_per_run)
+
+    discovered = 0
+    errors = 0
+    for feed in feeds:
+        identity = logical_identity_for_kind(JobKind.DISCOVER, feed_id=feed.id)
+        meta = _latest_result_metadata(kind=JobKind.DISCOVER, logical_identity=identity)
+        discovered += int(meta.get("discovered", 0))
+        errors += int(meta.get("errors", 0))
+
+    return {"discovered": discovered, "feeds_polled": len(feeds), "errors": errors}
+
+
+def run_report_via_runner(
+    *,
+    report_date: str | None = None,
+    max_jobs_per_run: int = _DEFAULT_MAX_JOBS_PER_RUN,
+) -> dict:
+    """Submit a report assembly job and drain the runner synchronously."""
+    from wilted.report import _local_date_str, assemble_report
+
+    resolved_date = report_date or _local_date_str()
+    submit_report(report_date=resolved_date, sync_run=False)
+    drain_runner(kind=JobKind.REPORT_ASSEMBLY, max_jobs_per_run=max_jobs_per_run)
+    return assemble_report(resolved_date)
+
+
+def run_briefing_via_runner(
+    *,
+    window_start: str | None = None,
+    window_end: str | None = None,
+    max_jobs_per_run: int = _DEFAULT_MAX_JOBS_PER_RUN,
+) -> dict[str, str | int]:
+    """Submit a compact briefing job and drain the runner synchronously."""
+    from wilted.report import _local_date_str
+
+    today = _local_date_str()
+    resolved_start = window_start or today
+    resolved_end = window_end or today
+    submit_briefing(window_start=resolved_start, window_end=resolved_end, sync_run=False)
+    drain_runner(kind=JobKind.COMPACT_BRIEFING, max_jobs_per_run=max_jobs_per_run)
+
+    identity = logical_identity_for_kind(
+        JobKind.COMPACT_BRIEFING,
+        window_start=resolved_start,
+        window_end=resolved_end,
+    )
+    key = build_idempotency_key(JobKind.COMPACT_BRIEFING, operation_version=1, logical_identity=identity)
+    job = ProcessingJob.get_or_none(ProcessingJob.idempotency_key == key.canonical)
+    if job and job.result_json:
+        try:
+            payload = json.loads(job.result_json)
+            return payload.get("metadata", {})
+        except json.JSONDecodeError:
+            pass
+    return {"window_start": resolved_start, "window_end": resolved_end}

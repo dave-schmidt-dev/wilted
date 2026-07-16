@@ -491,7 +491,7 @@ class WiltedApp(App):
         if self._briefing_generator is not None and not self._station_read_only:
             self._briefing_started = True
             self._set_status("Preparing briefing…", _STATUS_LOW)
-            self._generate_briefing_worker()
+            self._adopt_owed_briefing_worker()
 
         self._refresh_status_indicators()
 
@@ -568,7 +568,7 @@ class WiltedApp(App):
     def _check_unread_report_worker(self) -> None:
         """Check for unread report in a worker thread."""
         from wilted.db import worker_db
-        from wilted.report import get_latest_unread_report, run_report
+        from wilted.report import assemble_report, get_latest_unread_report
 
         try:
             with worker_db():
@@ -577,9 +577,8 @@ class WiltedApp(App):
                 from wilted.db import Report
 
                 today = date.today().isoformat()
-                # Generate report only if one doesn't exist for today
                 if not Report.select().where(Report.report_date == today).exists():
-                    run_report()
+                    assemble_report()
                 report = get_latest_unread_report()
                 if report:
                     self.call_from_thread(self.push_screen, ReportScreen(report), self._on_report_dismissed)
@@ -687,6 +686,67 @@ class WiltedApp(App):
     # special case elsewhere in this module.
 
     @work(thread=True, exclusive=True, group="briefing")
+    def _adopt_owed_briefing_worker(self) -> None:
+        """Adopt a runner-produced briefing artifact, or generate if none owed."""
+        from wilted.briefing_artifacts import (
+            load_briefing_from_artifact,
+            load_newest_owed_briefing,
+            mark_briefing_adopted,
+        )
+        from wilted.db import worker_db
+
+        try:
+            with worker_db():
+                ref = load_newest_owed_briefing()
+                if ref is not None:
+                    briefing = load_briefing_from_artifact(ref)
+                    entry = self._station_entry_from_briefing(briefing)
+                    mark_briefing_adopted(ref.artifact_id)
+                    self.call_from_thread(self._apply_briefing_entry, entry)
+                    return
+                if self._briefing_generator is None:
+                    return
+                briefing = self._briefing_generator.generate()
+            entry = self._station_entry_from_briefing(briefing)
+        except Exception:
+            logger.exception("Failed to adopt or generate briefing")
+            self.call_from_thread(self._set_status, "Briefing unavailable", _STATUS_MEDIUM)
+            return
+        self.call_from_thread(self._apply_briefing_entry, entry)
+
+    def _station_entry_from_briefing(self, briefing) -> StationEntry:
+        """Build a playable briefing ``StationEntry`` from a ``Briefing``."""
+        audio = briefing.synth_result
+        entry_id = f"briefing-{os.getpid()}"
+        expiry = (datetime.now(UTC) + timedelta(seconds=briefing.max_age_s)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        sha256 = media_store.publish_with_owner(audio.audio_bytes, kind="bulletin", entry_id=entry_id, expiry=expiry)
+        published_path = media_store.path_for(sha256)
+        byte_size = published_path.stat().st_size if published_path is not None else len(audio.audio_bytes)
+
+        descriptor = MediaDescriptor(
+            sha256=sha256,
+            byte_size=byte_size,
+            mime_type="audio/wav",
+            duration_ms=audio.duration_ms,
+            transcript_segments=(),
+            safe_interruption=SafeInterruptionMap.empty(),
+            byte_range_available=False,
+            finalization=FinalizationState.complete(),
+        )
+        return StationEntry(
+            entry_id=entry_id,
+            kind="bulletin",
+            item_id=None,
+            source="briefing",
+            policy_id="briefing",
+            priority=0,
+            expiry=expiry,
+            duration_ms=audio.duration_ms,
+            media=descriptor,
+        )
+
+    @work(thread=True, exclusive=True, group="briefing")
     def _generate_briefing_worker(self) -> None:
         """Generate + publish the briefing in a worker thread.
 
@@ -701,40 +761,7 @@ class WiltedApp(App):
         try:
             with worker_db():
                 briefing = self._briefing_generator.generate()
-            audio = briefing.synth_result
-
-            entry_id = f"briefing-{os.getpid()}"
-            expiry = (datetime.now(UTC) + timedelta(seconds=briefing.max_age_s)).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-            sha256 = media_store.publish_with_owner(
-                audio.audio_bytes, kind="bulletin", entry_id=entry_id, expiry=expiry
-            )
-            published_path = media_store.path_for(sha256)
-            byte_size = published_path.stat().st_size if published_path is not None else len(audio.audio_bytes)
-
-            descriptor = MediaDescriptor(
-                sha256=sha256,
-                byte_size=byte_size,
-                mime_type="audio/wav",
-                duration_ms=audio.duration_ms,
-                transcript_segments=(),
-                # A briefing, like a weather bulletin, is not itself meant to
-                # be safely interrupted mid-play -- explicit NO_INTERRUPT.
-                safe_interruption=SafeInterruptionMap.empty(),
-                byte_range_available=False,
-                finalization=FinalizationState.complete(),
-            )
-            entry = StationEntry(
-                entry_id=entry_id,
-                kind="bulletin",
-                item_id=None,
-                source="briefing",
-                policy_id="briefing",
-                priority=0,
-                expiry=expiry,
-                duration_ms=audio.duration_ms,
-                media=descriptor,
-            )
+            entry = self._station_entry_from_briefing(briefing)
         except Exception:
             logger.exception("Failed to generate briefing")
             self.call_from_thread(self._set_status, "Briefing unavailable", _STATUS_MEDIUM)

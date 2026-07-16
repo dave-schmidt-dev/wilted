@@ -206,19 +206,26 @@ class TestStageOrchestrationWiring:
         assert result["prepared"] == 1
         assert spy.count >= 1
 
-    def test_run_discover_is_cheap_without_coordinator(self, monkeypatch) -> None:
-        """``run_discover`` never constructs ``ModelCoordinator``."""
-        spy = _CoordinatorInitSpy(monkeypatch)
+    def test_run_discover_routes_through_runner(self, monkeypatch) -> None:
+        """``run_discover`` drains the processing runner without loading models."""
+        from wilted.feeds import add_feed
+
+        add_feed("https://example.com/feed.xml", feed_type="article")
+        backend_spy = MagicMock(side_effect=AssertionError("discover must not load LLM backends"))
+        monkeypatch.setattr("wilted.llm.create_backend", backend_spy)
+        monkeypatch.setattr("wilted.handlers.discover._poll_feed", lambda feed: {"new": 0, "skipped": 0, "errors": 0})
         result = run_discover()
         assert "discovered" in result
-        assert spy.count == 0
+        backend_spy.assert_not_called()
 
-    def test_run_report_is_cheap_without_coordinator(self, monkeypatch) -> None:
-        """``run_report`` never constructs ``ModelCoordinator``."""
-        spy = _CoordinatorInitSpy(monkeypatch)
+    def test_run_report_routes_through_runner(self, monkeypatch) -> None:
+        """``run_report`` drains the processing runner without loading models."""
+
+        backend_spy = MagicMock(side_effect=AssertionError("report must not load LLM backends"))
+        monkeypatch.setattr("wilted.llm.create_backend", backend_spy)
         result = run_report()
         assert "report_id" in result or result.get("items", 0) == 0
-        assert spy.count == 0
+        backend_spy.assert_not_called()
 
     def test_run_benchmark_constructs_coordinator(self, monkeypatch, capsys) -> None:
         """``run_benchmark`` is a real LLM orchestration surface using ``ModelCoordinator``."""
@@ -240,7 +247,7 @@ class TestIngestPipelineWiring:
         calls: list[str] = []
 
         monkeypatch.setattr(
-            "wilted.discover.run_discover",
+            "wilted.pipeline_submit.run_discover_via_runner",
             lambda: calls.append("discover") or {"discovered": 0, "feeds_polled": 0, "errors": 0},
         )
         monkeypatch.setattr(
@@ -248,7 +255,7 @@ class TestIngestPipelineWiring:
             lambda **kwargs: calls.append("classify") or {"classified": 0, "errors": 0, "total": 0},
         )
         monkeypatch.setattr(
-            "wilted.report.run_report",
+            "wilted.pipeline_submit.run_report_via_runner",
             lambda: calls.append("report") or {"items": 0, "playlists": {}, "report_id": 1},
         )
         monkeypatch.setattr("wilted.report.get_report", lambda: None)
@@ -276,9 +283,9 @@ class TestCliOrchestrationDispatch:
     @pytest.mark.parametrize(
         ("cmd_fn", "target", "call_args"),
         [
-            (cmd_discover, "wilted.discover.run_discover", []),
+            (cmd_discover, "wilted.pipeline_submit.run_discover_via_runner", []),
             (cmd_classify, "wilted.pipeline_submit.run_classify_via_runner", []),
-            (cmd_report, "wilted.report.run_report", []),
+            (cmd_report, "wilted.pipeline_submit.run_report_via_runner", []),
             (cmd_prepare, "wilted.pipeline_submit.run_prepare_via_runner", ["--no-llm"]),
             (
                 cmd_ingest,
@@ -293,11 +300,11 @@ class TestCliOrchestrationDispatch:
 
         def _spy(*args, **kwargs):
             called["value"] = True
-            if target.endswith("run_discover"):
+            if target.endswith("run_discover_via_runner"):
                 return {"discovered": 0, "feeds_polled": 0, "errors": 0}
             if target.endswith("run_classify_via_runner"):
                 return {"classified": 0, "errors": 0, "total": 0}
-            if target.endswith("run_report"):
+            if target.endswith("run_report_via_runner"):
                 return {"items": 0, "playlists": {}, "report_id": 1}
             if target.endswith("run_prepare_via_runner"):
                 return {"prepared": 0, "errors": 0, "skipped": 0}
@@ -306,7 +313,7 @@ class TestCliOrchestrationDispatch:
             return None
 
         monkeypatch.setattr(target, _spy)
-        if target.endswith("run_report"):
+        if target.endswith("run_report_via_runner"):
             monkeypatch.setattr("wilted.report.get_report", lambda: None)
 
         cmd_fn(call_args)
@@ -411,18 +418,18 @@ class TestTuiMountOrchestration:
             elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 called.add(node.func.id)
 
-        assert "_generate_briefing_worker" in called
+        assert "_adopt_owed_briefing_worker" in called
         assert "_trigger_generation" in called
         assert "_check_unread_report" in called
 
     @pytest.mark.asyncio
     async def test_on_mount_starts_briefing_worker_when_generator_present(self) -> None:
-        """Briefing generation on mount calls ``_generate_briefing_worker``."""
+        """Briefing adoption on mount calls ``_adopt_owed_briefing_worker``."""
         from tests.test_tui import FakeBriefingGenerator, _make_app
 
         generator = FakeBriefingGenerator()
         app = _make_app(briefing_generator=generator)
-        with patch.object(app, "_generate_briefing_worker") as mock_briefing:
+        with patch.object(app, "_adopt_owed_briefing_worker") as mock_briefing:
             async with app.run_test():
                 await app.workers.wait_for_complete()
             mock_briefing.assert_called_once()
@@ -443,7 +450,7 @@ class TestTuiMountOrchestration:
 
     @pytest.mark.asyncio
     async def test_report_check_worker_can_call_run_report(self, monkeypatch) -> None:
-        """``_check_unread_report_worker`` reaches ``run_report`` when today's report is missing."""
+        """``_check_unread_report_worker`` reaches ``assemble_report`` when today's report is missing."""
         from tests.test_tui import _make_app
 
         called = {"value": False}
@@ -452,7 +459,7 @@ class TestTuiMountOrchestration:
             called["value"] = True
             return {"items": 0, "playlists": {}, "report_id": 1}
 
-        monkeypatch.setattr("wilted.report.run_report", _spy)
+        monkeypatch.setattr("wilted.report.assemble_report", _spy)
         monkeypatch.setattr("wilted.report.get_latest_unread_report", lambda: None)
 
         app = _make_app()

@@ -819,9 +819,9 @@ class TestKeywordSubcommand:
 
 class TestPipelineSubcommands:
     def test_discover_dispatch(self, monkeypatch, capsys):
-        """wilted discover dispatches to run_discover."""
+        """wilted discover dispatches to run_discover_via_runner."""
         monkeypatch.setattr(
-            "wilted.discover.run_discover",
+            "wilted.pipeline_submit.run_discover_via_runner",
             lambda: {"discovered": 3, "feeds_polled": 2, "errors": 0},
         )
         run_cli(["discover"])

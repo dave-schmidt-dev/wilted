@@ -27,7 +27,13 @@ from wilted.execution_capability import (
     create_model_coordinator,
     issue_execution_capability,
 )
-from wilted.handlers import handle_classify, handle_prepare
+from wilted.handlers import (
+    handle_briefing,
+    handle_classify,
+    handle_discover,
+    handle_prepare,
+    handle_report,
+)
 from wilted.processing_jobs import (
     ExecutionLockBusy,
     _claim_next_job_under_lock,
@@ -118,12 +124,12 @@ def _stub_handler(job: ProcessingJobModel, coordinator: ModelCoordinator) -> Non
 
 
 HANDLERS: dict[JobKind, Callable[[ProcessingJobModel, ModelCoordinator], None]] = {
-    JobKind.DISCOVER: _stub_handler,
+    JobKind.DISCOVER: handle_discover,
     JobKind.CLASSIFY: handle_classify,
     JobKind.PREPARE: handle_prepare,
     JobKind.ARTICLE_CACHE: _stub_handler,
-    JobKind.REPORT_ASSEMBLY: _stub_handler,
-    JobKind.COMPACT_BRIEFING: _stub_handler,
+    JobKind.REPORT_ASSEMBLY: handle_report,
+    JobKind.COMPACT_BRIEFING: handle_briefing,
 }
 
 

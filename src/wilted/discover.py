@@ -40,7 +40,6 @@ from wilted.background_work.contracts import (
 )
 from wilted.content_state import transition_item
 from wilted.db import Feed, Item, _db
-from wilted.db import ensure_db as _ensure_db
 from wilted.db import now_utc as _now_utc
 from wilted.feed_refs import (
     bws_secret_name,
@@ -435,34 +434,6 @@ def run_discover() -> dict:
     Returns:
         Dict with aggregate stats: {'discovered': int, 'feeds_polled': int, 'errors': int}
     """
-    _ensure_db()
+    from wilted.pipeline_submit import run_discover_via_runner
 
-    feeds = list(Feed.select().where(Feed.enabled == True))  # noqa: E712
-    if not feeds:
-        logger.info("No enabled feeds to poll")
-        return {"discovered": 0, "feeds_polled": 0, "errors": 0}
-
-    total_new = 0
-    total_errors = 0
-
-    for feed in feeds:
-        try:
-            stats = _poll_feed(feed)
-            total_new += stats["new"]
-            total_errors += stats["errors"]
-        except Exception as e:
-            logger.error(
-                "Failed to poll feed #%d (%s): %s",
-                feed.id,
-                display_feed_reference(feed.feed_url),
-                type(e).__name__,
-            )
-            total_errors += 1
-
-    result = {
-        "discovered": total_new,
-        "feeds_polled": len(feeds),
-        "errors": total_errors,
-    }
-    logger.info("Discovery stage complete: %s", result)
-    return result
+    return run_discover_via_runner()

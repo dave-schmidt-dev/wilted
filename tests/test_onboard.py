@@ -7,7 +7,7 @@ from wilted.onboard import STARTER_FEEDS, run_ingest, run_setup
 # Patch targets match where the lazy imports land (source modules).
 _P_DISCOVER = "wilted.discover.run_discover"
 _P_CLASSIFY = "wilted.pipeline_submit.run_classify_via_runner"
-_P_RUN_REPORT = "wilted.report.run_report"
+_P_RUN_REPORT = "wilted.pipeline_submit.run_report_via_runner"
 _P_GET_REPORT = "wilted.report.get_report"
 
 

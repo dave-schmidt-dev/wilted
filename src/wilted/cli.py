@@ -823,10 +823,10 @@ def cmd_playlist(argv: list[str]) -> None:
 
 def cmd_discover(argv: list[str]) -> None:
     """Run the discovery stage: poll feeds, dedup, fetch articles."""
-    from wilted.discover import run_discover
+    from wilted.pipeline_submit import run_discover_via_runner
 
     try:
-        stats = run_discover()
+        stats = run_discover_via_runner()
         print(f"Discovery complete: {stats['discovered']} new items from {stats['feeds_polled']} feeds")
         if stats["errors"]:
             print(f"  {stats['errors']} feed(s) had errors (see /tmp/wilted.log)")
@@ -862,14 +862,15 @@ def _load_email_config() -> dict:
 
 def cmd_report(argv: list[str]) -> None:
     """Generate the morning report from classified items."""
-    from wilted.report import get_report, run_report
+    from wilted.pipeline_submit import run_report_via_runner
+    from wilted.report import get_report
 
     parser = argparse.ArgumentParser(prog="wilted report", add_help=False)
     parser.add_argument("--email", action="store_true", default=False)
     args, _ = parser.parse_known_args(argv)
 
     try:
-        run_report()
+        run_report_via_runner()
 
         if args.email:
             from wilted.report import format_report_email

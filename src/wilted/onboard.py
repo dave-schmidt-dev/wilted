@@ -308,9 +308,10 @@ def run_ingest(
         _print_stage("Stage 3/3: Morning Report")
         print("Assembling today's report...")
         try:
-            from wilted.report import get_report, run_report
+            from wilted.pipeline_submit import run_report_via_runner
+            from wilted.report import get_report
 
-            run_report()
+            run_report_via_runner()
             report_data = get_report()
             if report_data:
                 items_dict = report_data["items"]
