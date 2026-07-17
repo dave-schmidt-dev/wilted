@@ -383,6 +383,7 @@ class TestQueueOrchestrationWiring:
         played = {"value": False}
 
         monkeypatch.setattr("wilted.cli.is_station_active", lambda: False)
+        monkeypatch.setattr("wilted.cli.require_speech_ready", lambda: None)
         monkeypatch.setattr(
             "wilted.cli.load_queue",
             lambda: [{"id": 1, "title": "Test", "words": 10, "added": _now(), "file": "missing"}],

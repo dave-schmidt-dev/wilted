@@ -19,6 +19,7 @@ from wilted.content_state import items_for_prepare, items_pending_classification
 from wilted.db import Item, ProcessingJob, ensure_db
 from wilted.pipeline_runner import PipelineRunner, RunStats
 from wilted.processing_jobs import SubmitResult, submit_job
+from wilted.speech_ready import require_speech_ready, runnable_cohort_requires_speech
 from wilted.station_runtime.coordinator import RuntimeBootstrap
 
 logger = logging.getLogger(__name__)
@@ -65,15 +66,19 @@ def _prepare_metadata(
     return metadata
 
 
-def _has_runnable_jobs(*, kind: JobKind | None = None) -> bool:
+def _has_runnable_jobs(*, kind: JobKind | None = None, now: str | None = None) -> bool:
+    """Return whether any claimable (due) queued/retry job exists.
+
+    Aligns with ``processing_jobs`` claim predicates: state in queued/retry and
+    ``not_before`` null or elapsed. Matches ``speech_ready._due_runnable_jobs_query``.
+    """
+    from wilted.db import now_utc
+
     ensure_db()
+    resolved_now = now or now_utc()
     query = ProcessingJob.select().where(
-        ProcessingJob.state.in_(
-            (
-                ProcessingJobState.QUEUED.value,
-                ProcessingJobState.RETRY.value,
-            ),
-        ),
+        (ProcessingJob.state.in_((ProcessingJobState.QUEUED.value, ProcessingJobState.RETRY.value)))
+        & ((ProcessingJob.not_before.is_null()) | (ProcessingJob.not_before <= resolved_now))
     )
     if kind is not None:
         query = query.where(ProcessingJob.kind == kind.value)
@@ -197,12 +202,19 @@ def drain_runner(
     station_active_check: Callable[[], bool] | None = None,
 ) -> RunStats:
     """Run the pipeline runner until no runnable jobs remain for ``kind``."""
+    accum = RunStats()
+    if not _has_runnable_jobs(kind=kind):
+        return accum
+
+    station_deferred = station_active_check is not None and station_active_check()
+    if not station_deferred and runnable_cohort_requires_speech(kind=kind):
+        require_speech_ready()
+
     runner = PipelineRunner(
         bootstrap=_ready_bootstrap(),
         max_jobs_per_run=max_jobs_per_run,
         station_active_check=station_active_check,
     )
-    accum = RunStats()
     while _has_runnable_jobs(kind=kind):
         result = runner.run()
         accum = _merge_stats(accum, result.stats)

@@ -72,10 +72,12 @@ The production launch chain is:
 wilted alias → wilted-runtime.sh → /usr/local/bin/bws run → allowlisted environment → wilted.cli:main
 ```
 
-The exact launch venv is `~/.venvs/wilted`. The speech daemon is mandatory and
-must be installed and started with `make install-daemon` before launching
-Wilted. The entry point verifies daemon readiness during startup, so a stopped
-or unhealthy daemon fails loudly.
+The exact launch venv is `~/.venvs/wilted`. The speech daemon is mandatory for
+speech-producing work and must be installed and started with `make install-daemon`
+before playback, export, TUI use, or background jobs that synthesize or transcribe
+audio. Help, version, and non-speech management commands stay daemon-independent;
+speech paths probe readiness at the speech boundary and fail loudly when the daemon
+is stopped or unhealthy.
 
 Credentialed podcast feeds are stored as `bws:UPPERCASE_SNAKE_CASE` references
 rather than URLs. Add the URL to Bitwarden Secrets Manager under that name, then run

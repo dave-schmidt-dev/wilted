@@ -21,6 +21,7 @@ from wilted.background_work.scheduler import (
 )
 from wilted.pipeline_runner import PipelineRunner, RunExitReason
 from wilted.processing_jobs import ExecutionLockBusy, count_due_jobs, try_acquire_execution_lock
+from wilted.speech_ready import require_speech_ready, runnable_cohort_requires_speech
 from wilted.station_runtime.coordinator import RuntimeBootstrap
 from wilted.station_runtime.lease import is_station_active as lease_is_station_active
 
@@ -142,6 +143,20 @@ def run_scheduler_tick(
                     jobs_due=0,
                     jobs_ran=0,
                 )
+
+            station_deferred = lease_is_station_active(data_dir=resolved_dir)
+            if not station_deferred and runnable_cohort_requires_speech():
+                try:
+                    require_speech_ready()
+                except Exception:
+                    logger.warning("Scheduler speech readiness preflight failed", exc_info=True)
+                    outcome = SchedulerTickOutcome.CHILD_FAILED
+                    return SchedulerTickResult(
+                        outcome=outcome,
+                        exit_code=exit_code_for_outcome(outcome),
+                        jobs_due=jobs_due,
+                        jobs_ran=0,
+                    )
 
             runner = (
                 runner_factory()

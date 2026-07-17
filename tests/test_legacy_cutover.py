@@ -141,7 +141,6 @@ class TestStartupRefusal:
         assert cutover_in_progress(Item._meta.database)
 
         with (
-            patch("wilted.cli.client.require_daemon_ready"),
             patch("sys.argv", ["wilted", "list"]),
             pytest.raises(SystemExit) as exc,
         ):

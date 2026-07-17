@@ -30,6 +30,7 @@ from wilted.cli import (
     run_cli,
 )
 from wilted.queue import add_article, load_queue
+from wilted.speech_ready import require_speech_ready
 from wilted.station_runtime.briefing import BriefingGenerator
 from wilted.station_runtime.weather_monitor import WeatherMonitor, _default_fetch_alerts
 
@@ -253,8 +254,12 @@ class TestCmdPlay:
     def test_play_empty(self, capsys):
         """cmd_play with empty queue shows appropriate message."""
         args = _make_args(play=True)
-        with patch("wilted.cli._play_text", return_value=True):
+        with (
+            patch("wilted.cli.require_speech_ready") as mock_ready,
+            patch("wilted.cli._play_text", return_value=True),
+        ):
             cmd_play(args)
+        mock_ready.assert_not_called()
         assert "empty" in capsys.readouterr().out.lower()
 
     def test_play_articles(self, capsys):
@@ -262,14 +267,89 @@ class TestCmdPlay:
         _add_test_article(title="Article One")
         _add_test_article(title="Article Two")
         args = _make_args(play=True)
-        with patch("wilted.cli._play_text", return_value=True):
+        with (
+            patch("wilted.cli.require_speech_ready") as mock_ready,
+            patch("wilted.cli._play_text", return_value=True),
+        ):
             cmd_play(args)
 
+        mock_ready.assert_called_once_with()
         out = capsys.readouterr().out
         assert "Article One" in out
         assert "Article Two" in out
         assert "Finished 2" in out
         assert load_queue() == []
+
+    def test_play_probes_once_for_multi_article_queue(self, capsys):
+        """cmd_play probes daemon readiness once before the first playable item."""
+        _add_test_article(title="Article One")
+        _add_test_article(title="Article Two")
+        args = _make_args(play=True)
+        with (
+            patch("wilted.cli.require_speech_ready") as mock_ready,
+            patch("wilted.cli._play_text", return_value=True),
+        ):
+            cmd_play(args)
+
+        assert mock_ready.call_count == 1
+
+    def test_play_all_missing_cache_never_probes(self, capsys):
+        """cmd_play skips every missing cache file without probing speech readiness."""
+        import wilted
+
+        entry_one = _add_test_article(title="Missing One")
+        entry_two = _add_test_article(title="Missing Two")
+        (wilted.ARTICLES_DIR / entry_one["file"]).unlink()
+        (wilted.ARTICLES_DIR / entry_two["file"]).unlink()
+
+        args = _make_args(play=True)
+        with patch("wilted.cli.require_speech_ready") as mock_ready:
+            cmd_play(args)
+
+        mock_ready.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Skipping #1: cached file missing" in out
+        assert "Skipping #2: cached file missing" in out
+        assert len(load_queue()) == 2
+
+    def test_play_skips_missing_then_probes_once(self, capsys):
+        """cmd_play probes readiness once at the first playable item after skips."""
+        import wilted
+
+        missing = _add_test_article(title="Missing Article")
+        _add_test_article(title="Playable Article")
+        (wilted.ARTICLES_DIR / missing["file"]).unlink()
+
+        args = _make_args(play=True)
+        with (
+            patch("wilted.cli.require_speech_ready") as mock_ready,
+            patch("wilted.cli._play_text", return_value=True),
+        ):
+            cmd_play(args)
+
+        mock_ready.assert_called_once_with()
+        out = capsys.readouterr().out
+        assert "Skipping #1: cached file missing" in out
+        assert "Playable Article" in out
+        assert "Finished 1" in out
+        remaining = load_queue()
+        assert len(remaining) == 1
+        assert remaining[0]["title"] == "Missing Article"
+
+    def test_play_daemon_down_raises_loudly(self):
+        """cmd_play aborts at the speech boundary when the daemon is unavailable."""
+        _add_test_article(title="First Article")
+        with (
+            patch(
+                "wilted.cli.require_speech_ready",
+                side_effect=client.DaemonUnavailable("speech daemon unavailable"),
+            ),
+            patch("wilted.cli._play_text") as mock_play_text,
+        ):
+            with pytest.raises(client.DaemonUnavailable, match="speech daemon unavailable"):
+                cmd_play(_make_args(play=True))
+
+        mock_play_text.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +360,9 @@ class TestCmdPlay:
 class TestCmdNext:
     def test_next_empty(self, capsys):
         """cmd_next with empty queue shows appropriate message."""
-        cmd_next(_make_args())
+        with patch("wilted.cli.require_speech_ready") as mock_ready:
+            cmd_next(_make_args())
+        mock_ready.assert_not_called()
         assert "empty" in capsys.readouterr().out.lower()
 
     def test_next_plays_first(self, capsys):
@@ -288,13 +370,32 @@ class TestCmdNext:
         _add_test_article(title="First Article")
         _add_test_article(title="Second Article")
         args = _make_args()
-        with patch("wilted.cli._play_text", return_value=True):
+        with (
+            patch("wilted.cli.require_speech_ready") as mock_ready,
+            patch("wilted.cli._play_text", return_value=True),
+        ):
             cmd_next(args)
 
+        mock_ready.assert_called_once_with()
         out = capsys.readouterr().out
         assert "First Article" in out
         assert "1 article(s) remaining" in out
         assert len(load_queue()) == 1
+
+    def test_next_daemon_down_raises_loudly(self):
+        """cmd_next aborts at the speech boundary when the daemon is unavailable."""
+        _add_test_article(title="First Article")
+        with (
+            patch(
+                "wilted.cli.require_speech_ready",
+                side_effect=client.DaemonUnavailable("speech daemon unavailable"),
+            ),
+            patch("wilted.cli._play_text") as mock_play_text,
+        ):
+            with pytest.raises(client.DaemonUnavailable, match="speech daemon unavailable"):
+                cmd_next(_make_args())
+
+        mock_play_text.assert_not_called()
 
     def test_next_missing_file_raises(self, tmp_path):
         """cmd_next raises CLIError when cached file is missing."""
@@ -428,26 +529,52 @@ class TestCmdDirect:
         args = _make_args(input="https://example.com/test")
         with (
             patch("wilted.cli.get_text_from_url", return_value=("Test article text.", "https://example.com/test")),
+            patch("wilted.cli.require_speech_ready") as mock_ready,
             patch("wilted.cli._play_text", return_value=True),
         ):
             cmd_direct(args)
+        mock_ready.assert_called_once_with()
 
     def test_direct_file(self, tmp_path, capsys):
         """cmd_direct with file path reads and plays."""
         test_file = tmp_path / "article.txt"
         test_file.write_text("File article content here.")
         args = _make_args(input=str(test_file))
-        with patch("wilted.cli._play_text", return_value=True):
+        with (
+            patch("wilted.cli.require_speech_ready") as mock_ready,
+            patch("wilted.cli._play_text", return_value=True),
+        ):
             cmd_direct(args)
+        mock_ready.assert_called_once_with()
 
     def test_direct_clean(self, capsys):
         """cmd_direct with --clean prints cleaned text, no audio."""
         args = _make_args(input="https://example.com/test", clean=True)
-        with patch("wilted.cli.get_text_from_url", return_value=("Raw text content.", "https://example.com/test")):
+        with (
+            patch("wilted.cli.get_text_from_url", return_value=("Raw text content.", "https://example.com/test")),
+            patch("wilted.cli.require_speech_ready") as mock_ready,
+        ):
             cmd_direct(args)
 
+        mock_ready.assert_not_called()
         out = capsys.readouterr().out
         assert "Raw text content" in out
+
+    def test_direct_daemon_down_raises_loudly(self):
+        """cmd_direct aborts at the speech boundary when the daemon is unavailable."""
+        args = _make_args(input="https://example.com/test")
+        with (
+            patch("wilted.cli.get_text_from_url", return_value=("Test article text.", "https://example.com/test")),
+            patch(
+                "wilted.cli.require_speech_ready",
+                side_effect=client.DaemonUnavailable("speech daemon unavailable"),
+            ),
+            patch("wilted.cli._play_text") as mock_play_text,
+        ):
+            with pytest.raises(client.DaemonUnavailable, match="speech daemon unavailable"):
+                cmd_direct(args)
+
+        mock_play_text.assert_not_called()
 
     def test_direct_no_text_raises(self):
         """cmd_direct raises CLIError when no text found."""
@@ -914,16 +1041,13 @@ class TestPlaylistSubcommand:
 
 
 class TestMainEntrypoint:
-    def test_main_validates_then_probes_daemon_before_migration_or_dispatch(self):
-        """The positive startup path keeps daemon readiness ahead of all work."""
+    def test_main_non_speech_startup_skips_daemon_readiness(self):
+        """Non-speech CLI entry points must not probe the speech daemon."""
         calls: list[str] = []
 
         with (
             patch("wilted.cli.validate_project_root", side_effect=lambda: calls.append("validate")),
-            patch(
-                "wilted.cli.client.require_daemon_ready",
-                side_effect=lambda *, probe: calls.append(f"ready:{probe}"),
-            ),
+            patch("wilted.cli.require_speech_ready", side_effect=lambda: calls.append("ready")),
             patch("wilted.db.run_migrations", side_effect=lambda _path: calls.append("migrate")),
             patch("wilted.playlists.ensure_default_playlists", side_effect=lambda: calls.append("playlists")),
             patch("wilted.cli.run_cli", side_effect=lambda: calls.append("dispatch")),
@@ -931,12 +1055,38 @@ class TestMainEntrypoint:
         ):
             main()
 
-        assert calls == ["validate", "ready:True", "migrate", "playlists", "dispatch"]
+        assert calls == ["validate", "migrate", "playlists", "dispatch"]
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["wilted", "--version"],
+            ["wilted", "--help"],
+            ["wilted", "feed", "add", "--help"],
+            ["wilted", "--clean", "article.txt"],
+            ["wilted", "list"],
+        ],
+    )
+    def test_non_speech_commands_never_probe_daemon(self, argv, tmp_path):
+        """Management, help, version, and clean-only paths stay daemon-independent."""
+        article = tmp_path / "article.txt"
+        article.write_text("Preview text only.")
+        resolved_argv = [str(article) if arg == "article.txt" else arg for arg in argv]
+
+        with patch("wilted.cli.require_speech_ready") as mock_ready:
+            with patch("sys.argv", resolved_argv):
+                if "--help" in argv[1:]:
+                    with pytest.raises(SystemExit) as exc_info:
+                        main()
+                    assert exc_info.value.code == 0
+                else:
+                    main()
+
+        mock_ready.assert_not_called()
 
     def test_main_cli_mode_dispatches_without_tqdm_preinit(self):
         """CLI mode should dispatch directly to run_cli."""
         with (
-            patch("wilted.cli.client.require_daemon_ready"),
             patch("wilted.cli.run_cli") as mock_run_cli,
             patch("sys.argv", ["wilted", "--version"]),
         ):
@@ -944,8 +1094,8 @@ class TestMainEntrypoint:
 
         mock_run_cli.assert_called_once_with()
 
-    def test_main_tui_mode_preinitializes_tqdm_lock(self):
-        """TUI mode must initialize tqdm's lock before starting Textual."""
+    def test_main_tui_mode_probes_daemon_before_launch(self):
+        """No-arg TUI entry probes speech readiness once before launch."""
         mock_tqdm = MagicMock()
         mock_app = MagicMock()
         mock_app_cls = MagicMock(return_value=mock_app)
@@ -954,7 +1104,7 @@ class TestMainEntrypoint:
 
         with (
             patch("sys.argv", ["wilted"]),
-            patch("wilted.cli.client.require_daemon_ready"),
+            patch("wilted.cli.require_speech_ready") as mock_ready,
             patch("wilted.cli._weather_monitor_for_launch", return_value=sentinel_monitor),
             patch("wilted.cli._briefing_generator_for_launch", return_value=sentinel_briefing),
             patch.dict(
@@ -967,9 +1117,28 @@ class TestMainEntrypoint:
         ):
             main()
 
+        mock_ready.assert_called_once_with()
         mock_tqdm.get_lock.assert_called_once_with()
         mock_app_cls.assert_called_once_with(weather_monitor=sentinel_monitor, briefing_generator=sentinel_briefing)
         mock_app.run.assert_called_once_with()
+
+    def test_main_tui_mode_daemon_down_raises_loudly(self):
+        """No-arg TUI must abort loudly when speech readiness fails."""
+        with (
+            patch(
+                "wilted.cli.require_speech_ready",
+                side_effect=client.DaemonUnavailable(
+                    "speech daemon is not available (no broker at socket); "
+                    "run `make install-daemon` to install and start it"
+                ),
+            ),
+            patch("wilted.cli._launch_tui") as mock_launch_tui,
+            patch("sys.argv", ["wilted"]),
+        ):
+            with pytest.raises(client.DaemonUnavailable, match="make install-daemon"):
+                main()
+
+        mock_launch_tui.assert_not_called()
 
     def test_run_module_invokes_main(self, capsys):
         """INV-6 C1 lock: `python -m wilted.cli <args>` must actually run main().
@@ -982,22 +1151,17 @@ class TestMainEntrypoint:
         We drive that exact entrypoint hermetically via runpy with run_name
         "__main__" (equivalent to `python -m wilted.cli`) and argv ["wilted",
         "list"]. main() runs the full chain (setup_logging → validate_project_root
-        → daemon readiness → run_migrations → ensure_default_playlists → run_cli)
-        against the isolated_data tmp db, whose queue is empty, so cmd_list prints
-        the empty-queue message — an observable side effect only produced if
-        main() actually ran. The daemon-readiness gate is mocked out here — it has
-        its own dedicated coverage in ``test_daemon_down_at_startup_raises_loudly``
-        below — so this test stays focused on the C1 guard.
+        → run_migrations → ensure_default_playlists → run_cli) against the
+        isolated_data tmp db, whose queue is empty, so cmd_list prints the
+        empty-queue message — an observable side effect only produced if
+        main() actually ran.
 
         Pre-fix (no guard) this FAILS: run_module executes the module body but
         nothing calls main(), so no output is produced and the assertion trips.
         """
         import runpy
 
-        with (
-            patch.object(sys, "argv", ["wilted", "list"]),
-            patch("wilted.cli.client.require_daemon_ready"),
-        ):
+        with patch.object(sys, "argv", ["wilted", "list"]):
             try:
                 runpy.run_module("wilted.cli", run_name="__main__", alter_sys=True)
             except SystemExit:
@@ -1008,47 +1172,21 @@ class TestMainEntrypoint:
         out = capsys.readouterr().out
         assert "empty" in out.lower()
 
-    @pytest.mark.parametrize("argv", [["wilted", "--version"], ["wilted"]])
-    def test_daemon_down_at_startup_raises_loudly(self, argv):
-        """PM-9 / M2 gate: a down/unreachable speech daemon must abort startup
-        loudly for BOTH the CLI and TUI entry points — never silently continue.
-
-        ``client.require_daemon_ready(probe=True)`` is wired right after
-        ``validate_project_root()``, before the argv branch, so a daemon-down
-        failure must propagate before ``run_cli()``/the TUI ever starts —
-        regardless of which dispatch branch this invocation would have taken.
-        """
-        with (
-            patch(
-                "wilted.cli.client.require_daemon_ready",
-                side_effect=client.DaemonUnavailable(
-                    "speech daemon is not available (no broker at socket); "
-                    "run `make install-daemon` to install and start it"
-                ),
-            ),
-            patch("wilted.cli.run_cli") as mock_run_cli,
-            patch("wilted.cli._launch_tui") as mock_launch_tui,
-            patch("sys.argv", argv),
-        ):
-            with pytest.raises(client.DaemonUnavailable, match="make install-daemon"):
-                main()
-
-        mock_run_cli.assert_not_called()
-        mock_launch_tui.assert_not_called()
-
-    def test_run_module_daemon_down_propagates_before_dispatch(self):
-        """The ``python -m`` entrypoint cannot turn a down daemon into success."""
+    def test_run_module_version_succeeds_when_daemon_down(self):
+        """`python -m wilted.cli --version` stays truthful without daemon coupling."""
         import runpy
 
-        with (
-            patch.object(sys, "argv", ["wilted", "--version"]),
-            patch(
-                "speech_stack.client.require_daemon_ready",
-                side_effect=client.DaemonUnavailable("speech daemon unavailable"),
-            ),
-        ):
-            with pytest.raises(client.DaemonUnavailable, match="speech daemon unavailable"):
-                runpy.run_module("wilted.cli", run_name="__main__", alter_sys=True)
+        with patch.object(sys, "argv", ["wilted", "--version"]):
+            runpy.run_module("wilted.cli", run_name="__main__", alter_sys=True)
+
+
+class TestRequireSpeechReady:
+    def test_helper_delegates_to_client_with_probe(self):
+        """The shared speech gate exercises a real daemon probe."""
+        with patch("wilted.speech_ready.client.require_daemon_ready") as mock_ready:
+            require_speech_ready()
+
+        mock_ready.assert_called_once_with(probe=True)
 
 
 class TestNightlyWrapper:

@@ -8,9 +8,10 @@ from unittest.mock import MagicMock
 import pytest
 
 import wilted
-from wilted.background_work.contracts import JobKind
+from wilted.background_work.contracts import JobKind, ProcessingJobState
 from wilted.background_work.idempotency import build_idempotency_key, logical_identity_for_kind
 from wilted.background_work.scheduler import SchedulerTickOutcome
+from wilted.db import Item, ProcessingJob
 from wilted.pipeline_runner import PipelineRunner
 from wilted.processing_jobs import count_due_jobs, submit_job, try_acquire_execution_lock
 from wilted.scheduler_tick import (
@@ -196,3 +197,123 @@ class TestSchedulerCliAndWrapper:
         assert "<true/>" in plist
         assert "<key>Minute</key>" in plist
         assert "<key>Hour</key>" not in plist
+
+
+class TestSchedulerSpeechReadiness:
+    def test_non_speech_due_jobs_skip_readiness(self, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        _submit_queued(item_id="scheduler-speech-skip-classify")
+        ready = MagicMock()
+        monkeypatch.setattr("wilted.scheduler_tick.require_speech_ready", ready)
+
+        runner = PipelineRunner(
+            data_dir=wilted.DATA_DIR,
+            max_jobs_per_run=8,
+            bootstrap=_ready_bootstrap(),
+            handlers={JobKind.CLASSIFY: lambda job, coordinator: None},
+        )
+
+        result = run_scheduler_tick(
+            data_dir=wilted.DATA_DIR,
+            dns_check=lambda: True,
+            runner_factory=lambda: runner,
+        )
+
+        ready.assert_not_called()
+        assert result.jobs_ran >= 0
+
+    def test_speech_due_jobs_gate_once(self, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from wilted.background_work.idempotency import build_idempotency_key, logical_identity_for_kind
+
+        item = Item.create(
+            guid="scheduler-speech-gate",
+            title="Scheduler Speech Gate",
+            discovered_at="2026-07-17T12:00:00Z",
+            item_type="article",
+            status="selected",
+            status_changed_at="2026-07-17T12:00:00Z",
+        )
+        identity = logical_identity_for_kind(JobKind.ARTICLE_CACHE, item_id=str(item.id))
+        key = build_idempotency_key(JobKind.ARTICLE_CACHE, operation_version=1, logical_identity=identity)
+        submit_job(key, item_id=item.id, metadata={"voice": "af_heart"})
+
+        ready = MagicMock()
+        monkeypatch.setattr("wilted.scheduler_tick.require_speech_ready", ready)
+
+        runner = PipelineRunner(
+            data_dir=wilted.DATA_DIR,
+            max_jobs_per_run=8,
+            bootstrap=_ready_bootstrap(),
+            handlers={JobKind.ARTICLE_CACHE: lambda job, coordinator: None},
+        )
+
+        result = run_scheduler_tick(
+            data_dir=wilted.DATA_DIR,
+            dns_check=lambda: True,
+            runner_factory=lambda: runner,
+        )
+
+        ready.assert_called_once()
+        assert result.jobs_ran == 1
+
+    def test_readiness_failure_reports_child_failed_without_running_jobs(self, monkeypatch) -> None:
+        from speech_stack import client
+
+        from wilted.background_work.idempotency import build_idempotency_key, logical_identity_for_kind
+
+        item = Item.create(
+            guid="scheduler-speech-fail",
+            title="Scheduler Speech Fail",
+            discovered_at="2026-07-17T12:00:00Z",
+            item_type="article",
+            status="selected",
+            status_changed_at="2026-07-17T12:00:00Z",
+        )
+        identity = logical_identity_for_kind(JobKind.ARTICLE_CACHE, item_id=str(item.id))
+        key = build_idempotency_key(JobKind.ARTICLE_CACHE, operation_version=1, logical_identity=identity)
+        job_id = submit_job(key, item_id=item.id, metadata={"voice": "af_heart"}).job_id
+
+        monkeypatch.setattr(
+            "wilted.scheduler_tick.require_speech_ready",
+            lambda: (_ for _ in ()).throw(client.DaemonUnavailable("down")),
+        )
+        runner = MagicMock()
+        monkeypatch.setattr("wilted.scheduler_tick.PipelineRunner", lambda **kwargs: runner)
+
+        result = run_scheduler_tick(data_dir=wilted.DATA_DIR, dns_check=lambda: True)
+
+        assert result.outcome is SchedulerTickOutcome.CHILD_FAILED
+        assert result.jobs_ran == 0
+        runner.run_assuming_lock_held.assert_not_called()
+        job = ProcessingJob.get_by_id(job_id)
+        assert job.state == ProcessingJobState.QUEUED.value
+        assert job.attempt_count == 0
+
+    def test_station_active_deferral_skips_readiness(self, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from wilted.background_work.idempotency import build_idempotency_key, logical_identity_for_kind
+
+        item = Item.create(
+            guid="scheduler-station-no-probe",
+            title="Scheduler Station No Probe",
+            discovered_at="2026-07-17T12:00:00Z",
+            item_type="article",
+            status="selected",
+            status_changed_at="2026-07-17T12:00:00Z",
+        )
+        identity = logical_identity_for_kind(JobKind.ARTICLE_CACHE, item_id=str(item.id))
+        key = build_idempotency_key(JobKind.ARTICLE_CACHE, operation_version=1, logical_identity=identity)
+        submit_job(key, item_id=item.id, metadata={"voice": "af_heart"})
+
+        ready = MagicMock()
+        monkeypatch.setattr("wilted.scheduler_tick.require_speech_ready", ready)
+        monkeypatch.setattr("wilted.scheduler_tick.lease_is_station_active", lambda *, data_dir: True)
+
+        result = run_scheduler_tick(data_dir=wilted.DATA_DIR, dns_check=lambda: True)
+
+        ready.assert_not_called()
+        assert result.jobs_ran == 0

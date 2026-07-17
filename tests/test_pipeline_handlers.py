@@ -14,7 +14,7 @@ from wilted.background_work.contracts import JobKind, ProcessingJobState
 from wilted.background_work.idempotency import build_idempotency_key, logical_identity_for_kind
 from wilted.cli import cmd_classify
 from wilted.db import Item, ProcessingJob
-from wilted.pipeline_runner import PipelineRunner, RunExitReason
+from wilted.pipeline_runner import PipelineRunner, RunExitReason, RunStats
 from wilted.pipeline_submit import submit_prepare
 from wilted.processing_jobs import submit_job
 from wilted.station_runtime.coordinator import RuntimeBootstrap
@@ -284,3 +284,267 @@ def test_run_article_cache_via_runner_submits_without_typeerror(monkeypatch) -> 
     # The entry point must actually drain what it submitted — instrument the stub so
     # the regression can't pass if the submit→drain path silently stops draining.
     assert drained, "run_article_cache_via_runner must drain the runner after submitting jobs"
+
+
+class TestSpeechReadyPolicy:
+    def test_non_speech_kinds(self) -> None:
+        from wilted.speech_ready import job_requires_speech
+
+        for kind in (JobKind.DISCOVER, JobKind.CLASSIFY, JobKind.REPORT_ASSEMBLY):
+            assert job_requires_speech(kind=kind) is False
+
+    def test_speech_kinds(self) -> None:
+        from wilted.speech_ready import job_requires_speech
+
+        for kind in (JobKind.ARTICLE_CACHE, JobKind.COMPACT_BRIEFING):
+            assert job_requires_speech(kind=kind) is True
+
+    def test_prepare_article_skip_tts_is_non_speech(self) -> None:
+        from wilted.speech_ready import job_requires_speech
+
+        assert (
+            job_requires_speech(
+                kind=JobKind.PREPARE,
+                checkpoint_json='{"skip_tts": true}',
+                item_type="article",
+            )
+            is False
+        )
+
+    def test_prepare_article_normal_is_speech(self) -> None:
+        from wilted.speech_ready import job_requires_speech
+
+        assert (
+            job_requires_speech(
+                kind=JobKind.PREPARE,
+                checkpoint_json='{"skip_tts": false}',
+                item_type="article",
+            )
+            is True
+        )
+
+    def test_prepare_podcast_is_speech_even_with_skip_tts(self) -> None:
+        from wilted.speech_ready import job_requires_speech
+
+        assert (
+            job_requires_speech(
+                kind=JobKind.PREPARE,
+                checkpoint_json='{"skip_tts": true}',
+                item_type="podcast_episode",
+            )
+            is True
+        )
+
+
+def _submit_kind_job(
+    *,
+    kind: JobKind,
+    item_id: int | None = None,
+    metadata: dict | None = None,
+) -> int:
+    if kind is JobKind.DISCOVER:
+        identity = logical_identity_for_kind(kind, feed_id=1)
+    elif kind is JobKind.REPORT_ASSEMBLY:
+        identity = logical_identity_for_kind(kind, report_date="2026-07-17")
+    elif kind is JobKind.COMPACT_BRIEFING:
+        identity = logical_identity_for_kind(kind, window_start="2026-07-17", window_end="2026-07-17")
+    else:
+        assert item_id is not None
+        identity = logical_identity_for_kind(kind, item_id=str(item_id))
+    key = build_idempotency_key(kind, operation_version=1, logical_identity=identity)
+    return submit_job(key, item_id=item_id, metadata=metadata).job_id
+
+
+def _make_podcast_item() -> Item:
+    transcript = wilted.ARTICLES_DIR / "handler-podcast.txt"
+    transcript.write_text("Podcast transcript.", encoding="utf-8")
+    return Item.create(
+        guid=f"handler-podcast-{id(object())}",
+        title="Handler Podcast Item",
+        discovered_at=_now(),
+        item_type="podcast_episode",
+        status="selected",
+        status_changed_at=_now(),
+        transcript_file=str(transcript),
+    )
+
+
+def _stub_runner_run(**_kwargs):
+    return type("R", (), {"stats": RunStats(), "exit_reason": RunExitReason.COMPLETED})()
+
+
+def _stub_runner_run_deferred(**_kwargs):
+    return type(
+        "R",
+        (),
+        {
+            "stats": RunStats(deferred_yield=1),
+            "exit_reason": RunExitReason.DEFERRED_YIELD,
+        },
+    )()
+
+
+class TestDrainRunnerSpeechReadiness:
+    def test_non_speech_cohorts_skip_readiness(self, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from wilted.pipeline_submit import drain_runner
+
+        ready = MagicMock()
+        monkeypatch.setattr("wilted.pipeline_submit.require_speech_ready", ready)
+        monkeypatch.setattr("wilted.pipeline_submit.PipelineRunner.run", lambda self, **kwargs: _stub_runner_run())
+
+        item = _make_fetched_item()
+        for kind in (JobKind.CLASSIFY, JobKind.DISCOVER, JobKind.REPORT_ASSEMBLY):
+            ready.reset_mock()
+            _submit_kind_job(kind=kind, item_id=item.id if kind is JobKind.CLASSIFY else None)
+            drain_runner(kind=kind, max_jobs_per_run=1)
+            ready.assert_not_called()
+
+    def test_skip_tts_article_prepare_skips_readiness(self, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from wilted.pipeline_submit import drain_runner
+
+        item = _make_selected_item()
+        submit_prepare(item.id, use_llm=False, skip_tts=True, sync_run=False)
+
+        ready = MagicMock()
+        monkeypatch.setattr("wilted.pipeline_submit.require_speech_ready", ready)
+        monkeypatch.setattr("wilted.pipeline_submit.PipelineRunner.run", lambda self, **kwargs: _stub_runner_run())
+
+        drain_runner(kind=JobKind.PREPARE, max_jobs_per_run=1)
+        ready.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "setup",
+        [
+            "article_cache",
+            "compact_briefing",
+            "article_prepare",
+            "podcast_prepare",
+        ],
+    )
+    def test_speech_cohorts_gate_once(self, monkeypatch, setup: str) -> None:
+        from unittest.mock import MagicMock
+
+        from wilted.pipeline_submit import drain_runner
+
+        ready = MagicMock()
+        monkeypatch.setattr("wilted.pipeline_submit.require_speech_ready", ready)
+        monkeypatch.setattr("wilted.pipeline_submit.PipelineRunner.run", lambda self, **kwargs: _stub_runner_run())
+
+        if setup == "article_cache":
+            item = _make_selected_item()
+            _submit_kind_job(kind=JobKind.ARTICLE_CACHE, item_id=item.id, metadata={"voice": "af_heart"})
+            drain_runner(kind=JobKind.ARTICLE_CACHE, max_jobs_per_run=1)
+        elif setup == "compact_briefing":
+            _submit_kind_job(kind=JobKind.COMPACT_BRIEFING, metadata={"window_start": "2026-07-17"})
+            drain_runner(kind=JobKind.COMPACT_BRIEFING, max_jobs_per_run=1)
+        elif setup == "article_prepare":
+            item = _make_selected_item()
+            submit_prepare(item.id, use_llm=False, skip_tts=False, sync_run=False)
+            drain_runner(kind=JobKind.PREPARE, max_jobs_per_run=1)
+        else:
+            item = _make_podcast_item()
+            submit_prepare(item.id, use_llm=False, skip_tts=True, sync_run=False)
+            drain_runner(kind=JobKind.PREPARE, max_jobs_per_run=1)
+
+        ready.assert_called_once()
+
+    def test_multiple_speech_jobs_probe_once(self, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from wilted.pipeline_submit import drain_runner
+
+        item_a = _make_selected_item(text="Cache A.")
+        item_b = _make_selected_item(text="Cache B.")
+        _submit_kind_job(kind=JobKind.ARTICLE_CACHE, item_id=item_a.id, metadata={"voice": "af_heart"})
+        _submit_kind_job(kind=JobKind.ARTICLE_CACHE, item_id=item_b.id, metadata={"voice": "af_heart"})
+
+        ready = MagicMock()
+        monkeypatch.setattr("wilted.pipeline_submit.require_speech_ready", ready)
+        monkeypatch.setattr("wilted.pipeline_submit.PipelineRunner.run", lambda self, **kwargs: _stub_runner_run())
+
+        drain_runner(kind=JobKind.ARTICLE_CACHE, max_jobs_per_run=4)
+        ready.assert_called_once()
+
+    def test_readiness_failure_leaves_jobs_unchanged(self, monkeypatch) -> None:
+        from speech_stack import client
+
+        from wilted.pipeline_submit import drain_runner
+
+        item = _make_selected_item()
+        job_id = _submit_kind_job(kind=JobKind.ARTICLE_CACHE, item_id=item.id, metadata={"voice": "af_heart"})
+        before = ProcessingJob.get_by_id(job_id)
+
+        monkeypatch.setattr(
+            "wilted.pipeline_submit.require_speech_ready",
+            lambda: (_ for _ in ()).throw(client.DaemonUnavailable("down")),
+        )
+
+        with pytest.raises(client.DaemonUnavailable):
+            drain_runner(kind=JobKind.ARTICLE_CACHE, max_jobs_per_run=1)
+
+        after = ProcessingJob.get_by_id(job_id)
+        assert after.state == before.state == ProcessingJobState.QUEUED.value
+        assert after.attempt_count == before.attempt_count == 0
+
+    def test_station_active_deferral_skips_readiness(self, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from wilted.pipeline_submit import drain_runner
+
+        item = _make_selected_item()
+        _submit_kind_job(kind=JobKind.ARTICLE_CACHE, item_id=item.id, metadata={"voice": "af_heart"})
+
+        ready = MagicMock()
+        monkeypatch.setattr("wilted.pipeline_submit.require_speech_ready", ready)
+        monkeypatch.setattr(
+            "wilted.pipeline_submit.PipelineRunner.run", lambda self, **kwargs: _stub_runner_run_deferred()
+        )
+
+        drain_runner(
+            kind=JobKind.ARTICLE_CACHE,
+            max_jobs_per_run=1,
+            station_active_check=lambda: True,
+        )
+        ready.assert_not_called()
+
+    def test_empty_drain_skips_readiness(self, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from wilted.pipeline_submit import drain_runner
+
+        ready = MagicMock()
+        monkeypatch.setattr("wilted.pipeline_submit.require_speech_ready", ready)
+
+        drain_runner(kind=JobKind.ARTICLE_CACHE, max_jobs_per_run=1)
+        ready.assert_not_called()
+
+    def test_not_yet_due_speech_job_skips_drain_and_readiness(self, monkeypatch) -> None:
+        """Future not_before jobs are not claimable — drain must not probe or run."""
+        from unittest.mock import MagicMock
+
+        from wilted.background_work.idempotency import build_idempotency_key, logical_identity_for_kind
+        from wilted.pipeline_submit import drain_runner
+
+        item = _make_selected_item()
+        identity = logical_identity_for_kind(JobKind.ARTICLE_CACHE, item_id=str(item.id))
+        key = build_idempotency_key(JobKind.ARTICLE_CACHE, operation_version=1, logical_identity=identity)
+        submit_job(
+            key,
+            item_id=item.id,
+            metadata={"voice": "af_heart"},
+            not_before="2099-01-01T00:00:00Z",
+        )
+
+        ready = MagicMock()
+        runner_cls = MagicMock()
+        monkeypatch.setattr("wilted.pipeline_submit.require_speech_ready", ready)
+        monkeypatch.setattr("wilted.pipeline_submit.PipelineRunner", runner_cls)
+
+        stats = drain_runner(kind=JobKind.ARTICLE_CACHE, max_jobs_per_run=1)
+        ready.assert_not_called()
+        runner_cls.assert_not_called()
+        assert stats.submitted_handled == 0
