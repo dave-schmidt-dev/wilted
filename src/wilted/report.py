@@ -24,8 +24,9 @@ from wilted.content_state import (
     legacy_display_status,
     predicate_report_candidates,
     regenerate_report_membership,
+    selection_history_available,
 )
-from wilted.db import Feed, Item, Report, SelectionHistory, SourceStat
+from wilted.db import Feed, Item, Report, ReportItem, SelectionHistory, SourceStat
 from wilted.db import ensure_db as _ensure_db
 from wilted.db import now_utc as _now_utc
 
@@ -196,16 +197,14 @@ def get_latest_unread_report() -> dict | None:
     """
     _ensure_db()
 
-    # Use NOT EXISTS to find classified items without selection history in one query
-    # Then get the latest report that has items matching those
-    unread_items = (
-        Item.select()
-        .where(
-            predicate_report_candidates()
-            & ~(Item.id << SelectionHistory.select(SelectionHistory.item).where(SelectionHistory.item.is_null(False)))
+    # Classified/discovered candidates without a durable report decision.
+    # Pre-cutover DBs also exclude any item that already has a SelectionHistory row.
+    unread_clause = predicate_report_candidates()
+    if selection_history_available():
+        unread_clause = unread_clause & ~(
+            Item.id << SelectionHistory.select(SelectionHistory.item).where(SelectionHistory.item.is_null(False))
         )
-        .exists()
-    )
+    unread_items = Item.select().where(unread_clause).exists()
 
     if not unread_items:
         return None
@@ -243,16 +242,28 @@ def update_source_stats() -> None:
         items_discovered = len(discovered)
 
         # Count selected items for this feed in the current week
-        selected = list(
-            SelectionHistory.select()
-            .join(Item)
-            .where(
-                (SelectionHistory.selected == True)  # noqa: E712
-                & (Item.feed == feed)
-                & (SelectionHistory.selected_at >= week_start_str)
+        if selection_history_available():
+            selected = list(
+                SelectionHistory.select()
+                .join(Item)
+                .where(
+                    (SelectionHistory.selected == True)  # noqa: E712
+                    & (Item.feed == feed)
+                    & (SelectionHistory.selected_at >= week_start_str)
+                )
             )
-        )
-        items_selected = len(selected)
+            items_selected = len(selected)
+        else:
+            items_selected = (
+                ReportItem.select()
+                .join(Item)
+                .where(
+                    (ReportItem.decision == ReportDecision.ACCEPTED.value)
+                    & (Item.feed == feed)
+                    & (ReportItem.created_at >= week_start_str)
+                )
+                .count()
+            )
 
         selection_rate = items_selected / items_discovered if items_discovered > 0 else None
 

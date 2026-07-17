@@ -98,6 +98,47 @@ class TestItemCRUD:
         ready = list(Item.select().where(Item.status == "ready"))
         assert len(ready) == 2
 
+    def test_legacy_status_create_fields_pre_cutover(self):
+        from wilted.db import legacy_status_create_fields
+
+        fields = legacy_status_create_fields(status="ready")
+        assert fields["status"] == "ready"
+        assert fields["status_changed_at"].endswith("Z")
+
+
+class TestLegacyStatusCreateFieldsPostCutover:
+    def test_returns_empty_dict_after_cutover(self, isolated_data, tmp_path):
+        import wilted
+        from tests.orthogonal_test_helpers import finalize_post_cutover_db
+        from wilted.db import legacy_status_create_fields
+        from wilted.legacy_cutover import apply_legacy_cutover
+
+        data_dir = wilted.DATA_DIR
+        articles = data_dir / "articles"
+        audio = data_dir / "audio"
+        articles.mkdir(parents=True, exist_ok=True)
+        audio.mkdir(parents=True, exist_ok=True)
+        transcript = articles / "9000.txt"
+        transcript.write_text("body")
+        wav = audio / "9000.wav"
+        wav.write_bytes(b"RIFF")
+        Item.create(
+            feed=None,
+            guid="cutover-ready",
+            title="Ready",
+            discovered_at=_now(),
+            item_type="article",
+            status="ready",
+            status_changed_at=_now(),
+            transcript_file=str(transcript),
+            audio_file=str(wav),
+        )
+
+        db_path = data_dir / "wilted.db"
+        apply_legacy_cutover(db_path, dry_run=False, backup_dir=tmp_path / "backups")
+        finalize_post_cutover_db(db_path)
+        assert legacy_status_create_fields(status="ready") == {}
+
 
 class TestThreadSafety:
     def test_concurrent_inserts(self):
@@ -199,6 +240,48 @@ class TestRetentionPolicy:
 
         run_retention(retention_days=30)
         assert not af.exists()
+
+    def test_uses_discovered_at_when_status_changed_at_absent(self, isolated_data, tmp_path):
+        """Post-cutover DBs drop status_changed_at; retention clock falls back to discovered_at."""
+        from tests.orthogonal_test_helpers import finalize_post_cutover_db
+        from wilted.legacy_cutover import apply_legacy_cutover
+        from wilted.queue import run_retention
+
+        data_dir = wilted.DATA_DIR
+        old = (datetime.now(UTC) - timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        articles = data_dir / "articles"
+        audio = data_dir / "audio"
+        articles.mkdir(parents=True, exist_ok=True)
+        audio.mkdir(parents=True, exist_ok=True)
+        transcript = articles / "retention.txt"
+        transcript.write_text("old transcript")
+        wav = audio / "retention.wav"
+        wav.write_bytes(b"RIFF")
+
+        item = Item.create(
+            feed=None,
+            guid="completed-old",
+            title="Completed old",
+            discovered_at=old,
+            item_type="article",
+            status="completed",
+            status_changed_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            transcript_file=str(transcript),
+            audio_file=str(wav),
+        )
+
+        db_path = data_dir / "wilted.db"
+        apply_legacy_cutover(db_path, dry_run=False, backup_dir=tmp_path / "backups")
+        finalize_post_cutover_db(db_path)
+        assert "status_changed_at" not in Item._meta.fields
+
+        refreshed = Item.get_by_id(item.id)
+        assert refreshed.discovered_at == old
+        assert refreshed.playback_state == "completed"
+
+        cleaned = run_retention(retention_days=30)
+        assert cleaned == 1
+        assert not transcript.exists()
 
 
 # ---------------------------------------------------------------------------

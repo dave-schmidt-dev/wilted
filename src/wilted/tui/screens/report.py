@@ -24,7 +24,7 @@ from wilted.background_work.contracts import (
     RetentionFacts,
     RetentionState,
 )
-from wilted.content_state import read_content_state, transition_item
+from wilted.content_state import read_content_state, selection_history_available, transition_item
 from wilted.db import Item, Report, ReportItem, SelectionHistory, worker_db
 from wilted.db import now_utc as _now_utc
 from wilted.report import update_source_stats
@@ -340,12 +340,13 @@ class ReportScreen(ModalScreen[bool]):
                             row.defer_until = None
                             row.save()
 
-                    SelectionHistory.create(
-                        item=db_item,
-                        report=report,
-                        selected=selected,
-                        selected_at=now,
-                    )
+                    if selection_history_available():
+                        SelectionHistory.create(
+                            item=db_item,
+                            report=report,
+                            selected=selected,
+                            selected_at=now,
+                        )
 
                 except Exception as e:
                     logger.error("Failed to save selection for item %d: %s", item_id, e)

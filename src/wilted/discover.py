@@ -39,7 +39,7 @@ from wilted.background_work.contracts import (
     RetentionState,
 )
 from wilted.content_state import transition_item
-from wilted.db import Feed, Item, _db
+from wilted.db import Feed, Item, _db, legacy_status_create_fields
 from wilted.db import now_utc as _now_utc
 from wilted.feed_refs import (
     bws_secret_name,
@@ -337,12 +337,11 @@ def _process_entry(feed: Feed, entry, stats: dict) -> None:
             published_at=published,
             discovered_at=now,
             item_type="podcast_episode",
-            status="discovered",
-            status_changed_at=now,
             enclosure_url=enclosure_url,
             enclosure_type=enclosure_type,
             playlist_assigned=feed.default_playlist,
             metadata=json.dumps({"content_hash": content_hash}),
+            **legacy_status_create_fields(status="discovered", changed_at=now),
         )
         transition_item(
             item,
@@ -354,6 +353,7 @@ def _process_entry(feed: Feed, entry, stats: dict) -> None:
                 retention=RetentionFacts(state=RetentionState.ACTIVE),
             ),
             sync_legacy_status=True,
+            legacy_status="discovered",
         )
         logger.debug("Discovered podcast episode #%d: %s", item.id, title)
         stats["new"] += 1
@@ -401,11 +401,10 @@ def _process_entry(feed: Feed, entry, stats: dict) -> None:
                 published_at=published,
                 discovered_at=now,
                 item_type="article",
-                status="fetched",
-                status_changed_at=now,
                 word_count=word_count,
                 playlist_assigned=feed.default_playlist,
                 metadata=json.dumps({"content_hash": content_hash}),
+                **legacy_status_create_fields(status="fetched", changed_at=now),
             )
 
             # Save transcript to disk
@@ -422,6 +421,8 @@ def _process_entry(feed: Feed, entry, stats: dict) -> None:
                     playback=PlaybackState.UNPLAYED,
                     retention=RetentionFacts(state=RetentionState.ACTIVE),
                 ),
+                sync_legacy_status=True,
+                legacy_status="fetched",
             )
 
         logger.debug("Discovered article #%d: %s (%d words)", item.id, article_title, word_count)

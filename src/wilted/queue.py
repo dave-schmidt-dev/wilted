@@ -126,7 +126,7 @@ def add_article(
 ) -> dict:
     """Save article text and add to the reading list. Returns the new entry dict."""
     from wilted import ARTICLES_DIR, ensure_data_dirs
-    from wilted.db import Item
+    from wilted.db import Item, legacy_status_create_fields
 
     _ensure_db()
     ensure_data_dirs()
@@ -147,9 +147,8 @@ def add_article(
         canonical_url=canonical_url or None,
         discovered_at=now,
         item_type="article",
-        status="ready",
-        status_changed_at=now,
         word_count=word_count,
+        **legacy_status_create_fields(status="ready", changed_at=now),
     )
 
     # Write transcript file using the SQLite-assigned ID
@@ -169,6 +168,8 @@ def add_article(
             playback=PlaybackState.UNPLAYED,
             retention=RetentionFacts(state=RetentionState.ACTIVE),
         ),
+        sync_legacy_status=True,
+        legacy_status="ready",
     )
 
     logger.info("Added article #%d: %s", item.id, title)
@@ -316,14 +317,23 @@ def run_retention(retention_days: int = 30) -> int:
     """
 
     _ensure_db()
+    from wilted.db import Item
+
     cutoff = datetime.now(UTC)
 
     cleaned = 0
     for item in items_for_retention_cleanup():
-        if not item.status_changed_at:
+        # Prefer legacy status_changed_at when present (pre-cutover); otherwise
+        # fall back to discovered_at (post-cutover has no status_changed_at).
+        changed_raw = None
+        if "status_changed_at" in Item._meta.fields:
+            changed_raw = item.status_changed_at
+        if not changed_raw:
+            changed_raw = item.discovered_at
+        if not changed_raw:
             continue
         try:
-            changed = datetime.fromisoformat(item.status_changed_at.replace("Z", "+00:00"))
+            changed = datetime.fromisoformat(changed_raw.replace("Z", "+00:00"))
         except ValueError:
             continue
 

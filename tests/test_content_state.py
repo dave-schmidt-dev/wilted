@@ -24,13 +24,26 @@ from wilted.background_work.contracts import (
 from wilted.content_state import (
     apply_retention_expiry,
     create_report_item,
+    items_for_report,
     load_report_membership,
+    predicate_report_candidates,
     read_content_state,
     regenerate_report_membership,
     report_items_for_date,
+    selection_history_available,
+    transition_item,
     write_content_state,
 )
-from wilted.db import Item, Report, ReportItem, connect_db, now_utc, reset_db, run_migrations
+from wilted.db import (
+    Item,
+    Report,
+    ReportItem,
+    connect_db,
+    legacy_status_create_fields,
+    now_utc,
+    reset_db,
+    run_migrations,
+)
 
 
 def _now() -> str:
@@ -119,6 +132,67 @@ class TestContentStateConstraints:
         write_content_state(item, _content_state())
         fetched = Item.get_by_id(item.id)
         assert fetched.status == "classified"
+
+
+class TestPostCutoverGuards:
+    def _run_cutover(self, tmp_path) -> None:
+        import wilted
+        from tests.orthogonal_test_helpers import finalize_post_cutover_db
+        from wilted.legacy_cutover import apply_legacy_cutover
+
+        data_dir = wilted.DATA_DIR
+        articles = data_dir / "articles"
+        audio = data_dir / "audio"
+        articles.mkdir(parents=True, exist_ok=True)
+        audio.mkdir(parents=True, exist_ok=True)
+        transcript = articles / "cutover.txt"
+        transcript.write_text("body")
+        wav = audio / "cutover.wav"
+        wav.write_bytes(b"RIFF")
+        Item.create(
+            feed=None,
+            guid="cutover-seed",
+            title="Seed",
+            discovered_at=_now(),
+            item_type="article",
+            status="ready",
+            status_changed_at=_now(),
+            transcript_file=str(transcript),
+            audio_file=str(wav),
+        )
+        db_path = data_dir / "wilted.db"
+        apply_legacy_cutover(db_path, dry_run=False, backup_dir=tmp_path / "backups")
+        finalize_post_cutover_db(db_path)
+
+    def test_selection_history_available_false_after_cutover(self, isolated_data, tmp_path):
+        self._run_cutover(tmp_path)
+        assert selection_history_available() is False
+
+    def test_predicate_report_candidates_without_selection_history(self, isolated_data, tmp_path):
+        self._run_cutover(tmp_path)
+        list(Item.select().where(predicate_report_candidates()))
+        assert items_for_report() is not None
+
+    def test_transition_item_skips_legacy_status_sync_post_cutover(self, isolated_data, tmp_path):
+        self._run_cutover(tmp_path)
+        item = Item.create(
+            feed=None,
+            guid="post-cutover-transition",
+            title="Transition target",
+            discovered_at=_now(),
+            item_type="article",
+            fetch_state=FetchState.CONTENT_READY.value,
+            analysis_state=AnalysisState.READY.value,
+            preparation_state=PreparationState.NOT_QUEUED.value,
+            playback_state=PlaybackState.UNPLAYED.value,
+            retention_state=RetentionState.ACTIVE.value,
+            **legacy_status_create_fields(status="classified"),
+        )
+        target = _content_state(preparation=PreparationState.QUEUED)
+        transition_item(item, target)
+        refreshed = Item.get_by_id(item.id)
+        assert read_content_state(refreshed) == target
+        assert "status" not in Item._meta.fields
 
 
 class TestReportItemConstraints:

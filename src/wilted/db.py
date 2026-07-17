@@ -108,6 +108,22 @@ def _sync_item_model_to_schema(db: SqliteDatabase) -> None:
                 Item._meta.add_field(name, field)
 
 
+def legacy_status_create_fields(*, status: str, changed_at: str | None = None) -> dict[str, str]:
+    """Return ``status``/``status_changed_at`` kwargs only when those columns exist.
+
+    Post-cutover databases drop the legacy columns; including them in
+    ``Item.create(...)`` raises ``OperationalError``. Pre-cutover schemas
+    require them (NOT NULL). Uses the live table PRAGMA (not just model meta)
+    so an in-process cutover without reconnect cannot emit stale kwargs.
+    """
+    if not _items_table_has_status_column(_db):
+        return {}
+    return {
+        "status": status,
+        "status_changed_at": changed_at or now_utc(),
+    }
+
+
 def connect_db(path: Path | str) -> SqliteDatabase:
     """Open the database at *path*, applying WAL pragmas.
 
@@ -153,6 +169,7 @@ def worker_db(path: Path | str | None = None):
     if path is not None and _db.database is None:
         _db.init(str(path))
     _db.connect(reuse_if_open=True)
+    _sync_item_model_to_schema(_db)
     try:
         yield _db
     finally:

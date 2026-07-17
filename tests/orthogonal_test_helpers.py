@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from wilted.background_work.legacy_mapping import (
     ArtifactCohort,
     ItemType,
@@ -11,6 +13,16 @@ from wilted.background_work.legacy_mapping import (
 )
 from wilted.content_state import apply_mapped_content_state
 from wilted.db import Item
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+def finalize_post_cutover_db(db_path: Path | str) -> None:
+    """Reconnect and sync ``Item`` model fields after destructive cutover."""
+    from wilted.db import connect_db
+
+    connect_db(db_path)
 
 
 def ensure_test_orthogonal_state(item: Item) -> Item:

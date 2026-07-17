@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
+import wilted
 from wilted.db import Feed, Item, Report, SelectionHistory, SourceStat
 from wilted.report import (
     format_report_email,
@@ -53,6 +54,74 @@ def _create_classified_item(
         relevance_score=relevance,
         summary=summary or f"Summary of {title}",
     )
+
+
+# ---------------------------------------------------------------------------
+# Post-cutover schema
+# ---------------------------------------------------------------------------
+
+
+class TestPostCutoverReport:
+    def test_run_report_after_cutover(self, isolated_data, tmp_path):
+        """Morning report assembly must work when status/selection_history are gone."""
+        from tests.orthogonal_test_helpers import finalize_post_cutover_db
+        from wilted.background_work.contracts import (
+            AnalysisState,
+            FetchState,
+            PlaybackState,
+            PreparationState,
+            RetentionState,
+        )
+        from wilted.legacy_cutover import apply_legacy_cutover
+
+        data_dir = wilted.DATA_DIR
+        articles = data_dir / "articles"
+        audio = data_dir / "audio"
+        articles.mkdir(parents=True, exist_ok=True)
+        audio.mkdir(parents=True, exist_ok=True)
+        transcript = articles / "classified.txt"
+        transcript.write_text("article body")
+        wav = audio / "classified.wav"
+        wav.write_bytes(b"RIFF")
+
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        Item.create(
+            feed=None,
+            guid="pre-cutover-classified",
+            title="Pre-cutover classified",
+            discovered_at=now,
+            item_type="article",
+            status="classified",
+            status_changed_at=now,
+            transcript_file=str(transcript),
+            playlist_assigned="Work",
+            relevance_score=0.8,
+            summary="Summary",
+        )
+
+        db_path = data_dir / "wilted.db"
+        apply_legacy_cutover(db_path, dry_run=False, backup_dir=tmp_path / "backups")
+        finalize_post_cutover_db(db_path)
+
+        Item.create(
+            feed=None,
+            guid="post-cutover-classified",
+            title="Post-cutover classified",
+            discovered_at=now,
+            item_type="article",
+            fetch_state=FetchState.CONTENT_READY.value,
+            analysis_state=AnalysisState.READY.value,
+            preparation_state=PreparationState.NOT_QUEUED.value,
+            playback_state=PlaybackState.UNPLAYED.value,
+            retention_state=RetentionState.ACTIVE.value,
+            playlist_assigned="Work",
+            relevance_score=0.9,
+            summary="Post-cutover summary",
+        )
+
+        result = run_report()
+        assert result["items"] == 2
+        assert result["playlists"]["Work"] == 2
 
 
 # ---------------------------------------------------------------------------

@@ -293,3 +293,77 @@ class TestDryRun:
         assert report.dry_run is True
         assert items_table_has_status_column(Item._meta.database)
         assert Item.select().where(Item.status == "discovered").count() == 1
+
+
+def _apply_post_cutover_fixture(tmp_path, *, include_classified: bool = False) -> None:
+    """Seed minimal legacy rows and run a live cutover for post-cutover regression tests."""
+    from tests.orthogonal_test_helpers import finalize_post_cutover_db
+
+    data_dir = wilted.DATA_DIR
+    transcript_file, audio_file = _write_artifacts(data_dir, 8800, transcript=True, audio=True)
+    _make_item(status="ready", transcript_file=transcript_file, audio_file=audio_file, title="Ready seed")
+    if include_classified:
+        classified_transcript, _ = _write_artifacts(data_dir, 8801, transcript=True)
+        _make_item(
+            status="classified",
+            transcript_file=classified_transcript,
+            title="Classified seed",
+        )
+    db_path = data_dir / "wilted.db"
+    apply_legacy_cutover(db_path, dry_run=False, backup_dir=tmp_path / "backups")
+    finalize_post_cutover_db(db_path)
+
+
+class TestPostCutoverHardening:
+    def test_selection_history_unavailable_after_cutover(self, isolated_data, tmp_path):
+        from wilted.content_state import selection_history_available
+
+        _apply_post_cutover_fixture(tmp_path)
+        assert not items_table_has_status_column(Item._meta.database)
+        assert selection_history_available() is False
+
+    def test_item_create_without_status_after_cutover(self, isolated_data, tmp_path):
+        from wilted.background_work.contracts import (
+            AnalysisState,
+            FetchState,
+            PlaybackState,
+            PreparationState,
+            RetentionState,
+        )
+        from wilted.db import legacy_status_create_fields
+
+        _apply_post_cutover_fixture(tmp_path)
+        assert legacy_status_create_fields(status="classified") == {}
+
+        item = Item.create(
+            feed=None,
+            guid="post-cutover-no-status",
+            title="Created without status",
+            discovered_at=_now(),
+            item_type="article",
+            fetch_state=FetchState.CONTENT_READY.value,
+            analysis_state=AnalysisState.READY.value,
+            preparation_state=PreparationState.NOT_QUEUED.value,
+            playback_state=PlaybackState.UNPLAYED.value,
+            retention_state=RetentionState.ACTIVE.value,
+            **legacy_status_create_fields(status="classified"),
+        )
+        fetched = Item.get_by_id(item.id)
+        assert fetched.title == "Created without status"
+        assert "status" not in Item._meta.fields
+
+    def test_report_predicates_after_cutover(self, isolated_data, tmp_path):
+        from wilted.content_state import items_for_report, predicate_report_candidates
+
+        _apply_post_cutover_fixture(tmp_path, include_classified=True)
+
+        candidate_ids = {row.id for row in Item.select().where(predicate_report_candidates())}
+        report_ids = {item.id for item in items_for_report()}
+        assert candidate_ids == report_ids
+        assert candidate_ids  # classified seed survived cutover mapping
+
+    def test_item_select_does_not_reference_dropped_status_column(self, isolated_data, tmp_path):
+        _apply_post_cutover_fixture(tmp_path)
+        rows = list(Item.select())
+        assert len(rows) >= 1
+        assert all(row.title for row in rows)

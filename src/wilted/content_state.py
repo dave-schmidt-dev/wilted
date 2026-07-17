@@ -144,7 +144,7 @@ def transition_item(
     write_content_state(item, state)
     if error_message is not None:
         item.error_message = error_message
-    if sync_legacy_status and hasattr(item, "status"):
+    if sync_legacy_status and "status" in Item._meta.fields:
         item.status = legacy_status or legacy_status_for_state(state, item.item_type)
         item.status_changed_at = now_utc()
     item.save()
@@ -210,6 +210,16 @@ def predicate_pending_classification():
     return (Item.fetch_state == FetchState.CONTENT_READY.value) & (Item.analysis_state == AnalysisState.PENDING.value)
 
 
+def selection_history_available() -> bool:
+    """Return True when the legacy ``selection_history`` table still exists."""
+    rows = list(
+        Item._meta.database.execute_sql(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='selection_history' LIMIT 1"
+        )
+    )
+    return bool(rows)
+
+
 def _report_decided_item_ids():
     """Items with a non-pending report decision (accepted, deferred, or dismissed)."""
     return ReportItem.select(ReportItem.item).where(ReportItem.decision != ReportDecision.PENDING.value)
@@ -224,8 +234,8 @@ def predicate_report_candidates():
     """Report/briefing candidates: classified articles and discovered podcast episodes.
 
     Excludes items the user already decided on (``ReportItem``) or skipped
-    (legacy ``SelectionHistory``), matching the old ``status == 'classified'``
-    cohort that implicitly excluded ``skipped`` rows.
+    (legacy ``SelectionHistory`` when that table still exists), matching the old
+    ``status == 'classified'`` cohort that implicitly excluded ``skipped`` rows.
     """
     article_candidates = (
         (Item.item_type == "article")
@@ -240,7 +250,9 @@ def predicate_report_candidates():
         & (Item.preparation_state == PreparationState.NOT_QUEUED.value)
         & (Item.retention_state == RetentionState.ACTIVE.value)
     )
-    undecided = ~(Item.id << _report_decided_item_ids()) & ~(Item.id << _legacy_skipped_item_ids())
+    undecided = ~(Item.id << _report_decided_item_ids())
+    if selection_history_available():
+        undecided = undecided & ~(Item.id << _legacy_skipped_item_ids())
     return (article_candidates | podcast_candidates) & undecided
 
 
@@ -529,6 +541,7 @@ __all__ = [
     "regenerate_report_membership",
     "report_item_to_contract",
     "report_items_for_date",
+    "selection_history_available",
     "transition_item",
     "write_content_state",
 ]
