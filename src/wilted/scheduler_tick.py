@@ -22,6 +22,7 @@ from wilted.background_work.scheduler import (
 from wilted.pipeline_runner import PipelineRunner, RunExitReason
 from wilted.processing_jobs import ExecutionLockBusy, count_due_jobs, try_acquire_execution_lock
 from wilted.station_runtime.coordinator import RuntimeBootstrap
+from wilted.station_runtime.lease import is_station_active as lease_is_station_active
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -149,6 +150,14 @@ def run_scheduler_tick(
                     data_dir=resolved_dir,
                     max_jobs_per_run=MAX_JOBS_PER_TICK,
                     bootstrap=_ready_bootstrap(),
+                    # Yield to a LIVE foreground TUI: the scheduler is a separate
+                    # process from the station, so the env-based default never
+                    # fires here. The flock-based lease probe is the real
+                    # cross-process "is the station playing?" signal, so the
+                    # hourly tick defers model/TTS work instead of competing
+                    # with live playback for the audio device and MLX/Metal
+                    # (INV-1). Bound to resolved_dir so a data-dir override is honored.
+                    station_active_check=lambda: lease_is_station_active(data_dir=resolved_dir),
                 )
             )
             run_result = runner.run_assuming_lock_held(owner_id=resolved_owner)

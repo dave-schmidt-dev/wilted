@@ -381,7 +381,12 @@ class TestSchedulerLockBusy:
         assert result.exit_code == exit_code_for_outcome(SchedulerTickOutcome.LOCK_BUSY)
         assert result.exit_code == 0
 
-    def test_scheduler_cli_tick_returns_lock_busy_while_lock_held_cross_process(self, tmp_path) -> None:
+    def test_scheduler_cli_tick_returns_lock_busy_while_lock_held_cross_process(
+        self, tmp_path, requires_speech_daemon
+    ) -> None:
+        # Drives the real ``wilted`` CLI via ``_run_cli`` → ``cli.main()`` →
+        # ``require_daemon_ready``; skips when the speech daemon is unavailable
+        # (external-dependency outage, not a wilted regression).
         _submit_queued(item_id="scheduler-cli-lock-busy")
         project_root = tmp_path
         env = _subprocess_env(project_root)

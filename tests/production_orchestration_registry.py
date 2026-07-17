@@ -268,3 +268,12 @@ def nightly_script_path(project_root: Path | None = None) -> Path:
 
         project_root = PROJECT_ROOT
     return project_root / "scripts" / "wilted-nightly.sh"
+
+
+def scheduler_script_path(project_root: Path | None = None) -> Path:
+    """Resolve ``scripts/wilted-scheduler.sh`` from the project root."""
+    if project_root is None:
+        from wilted import PROJECT_ROOT
+
+        project_root = PROJECT_ROOT
+    return project_root / "scripts" / "wilted-scheduler.sh"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -41,8 +42,8 @@ def _runtime_environment(
         fake_bin / "bws",
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        "printf '%s' \"${BWS_ACCESS_TOKEN:-missing}\" > \"$BWS_MARKER\"\n"
-        "[[ \"$1\" == run && \"$2\" == -- ]]\n"
+        'printf \'%s\' "${BWS_ACCESS_TOKEN:-missing}" > "$BWS_MARKER"\n'
+        '[[ "$1" == run && "$2" == -- ]]\n'
         "shift 2\n"
         "export WILTED_FEED_NPR_PLUS_HOW_TO_DO_EVERYTHING='feed-a'\n"
         "export WILTED_FEED_NPR_PLUS_POP_CULTURE_HAPPY_HOUR='feed-b'\n"
@@ -50,7 +51,7 @@ def _runtime_environment(
         + "export BWS_PROJECT_ID='not-for-wilted'\n"
         + "export UNRELATED_SECRET='not-for-wilted'\n"
         + remove_bws_state
-        + "exec \"$@\"\n",
+        + 'exec "$@"\n',
     )
 
     test_launcher = tmp_path / "wilted-runtime.sh"
@@ -66,8 +67,8 @@ def _runtime_environment(
         fake_bin / "uv",
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        "env | sort > \"$TMPDIR/capture\"\n"
-        "printf '%s\\n' \"$@\" > \"$TMPDIR/capture.args\"\n",
+        'env | sort > "$TMPDIR/capture"\n'
+        'printf \'%s\\n\' "$@" > "$TMPDIR/capture.args"\n',
     )
 
     env = {
@@ -174,3 +175,44 @@ def test_runtime_launcher_has_no_caller_controlled_binary_override() -> None:
     assert "WILTED_RUNTIME_SECURITY_BINARY" not in source
     assert source.startswith("#!/bin/bash\n")
     assert 'readonly RUNTIME_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"' in source
+
+
+def test_runtime_launcher_uv_invocation_never_resolves_dependencies() -> None:
+    """A background tick must reuse the provisioned venv/lockfile as-is.
+
+    Regression: without ``--no-sync --frozen``, a tick launched under launchd's
+    clean environment can stall indefinitely in uv's dependency resolve/sync
+    stage (no network timeout, no python process ever spawns).
+    """
+    source = SCRIPT.read_text(encoding="utf-8")
+    match = re.search(r'"\$UV_BINARY" run\b[^\n]*', source)
+    assert match, "expected a uv run invocation in wilted-runtime.sh"
+    uv_line = match.group(0)
+    assert "--no-sync" in uv_line
+    assert "--frozen" in uv_line
+
+
+def test_runtime_launcher_run_clean_wilted_execs_env_dash_i() -> None:
+    """``run_clean_wilted`` must replace the process, not fork and return.
+
+    Regression: an edit briefly dropped ``exec /usr/bin/env -i``, which broke
+    process replacement — the function forked, returned to ``main()``, which
+    fell through to the ``bws`` re-exec, producing an infinite loop — and
+    silently dropped clean-environment isolation. The subprocess-based tests
+    above already demonstrate no infinite loop by completing at all; this test
+    locks in the source-level invariant so the bug can't be reintroduced.
+    """
+    source = SCRIPT.read_text(encoding="utf-8")
+    match = re.search(r"run_clean_wilted\(\) \{\n(.*?)\n\}\n", source, re.DOTALL)
+    assert match, "expected a run_clean_wilted() function definition"
+    body = match.group(1)
+
+    # Join backslash-continued lines into single logical statements.
+    logical_lines = [line for line in re.sub(r"\\\n\s*", " ", body).splitlines() if line.strip()]
+    exec_lines = [line for line in logical_lines if re.match(r"\s*exec\s", line)]
+
+    assert exec_lines, "run_clean_wilted must exec, not fork+return, to replace the process"
+    assert len(exec_lines) == 1, f"expected exactly one exec statement, found {len(exec_lines)}"
+    assert exec_lines[0].strip().startswith("exec /usr/bin/env -i"), exec_lines[0]
+    # The exec must be the function's terminal statement — nothing may follow it.
+    assert logical_lines[-1] == exec_lines[0]

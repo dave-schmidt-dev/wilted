@@ -40,6 +40,12 @@ run_clean_wilted() {
 
     # bws run supplies only the assigned feed values to this inner shell. The
     # actual Wilted process is re-execed under an allowlisted environment.
+    #
+    # --no-sync --frozen: use the already-provisioned venv (${UV_PROJECT_ENVIRONMENT})
+    # and existing lockfile as-is. A background tick must NEVER resolve/sync
+    # dependencies on the hot path — under launchd's clean env that sync stage can
+    # stall on the network with no timeout and no python ever spawning. Provisioning
+    # happens during dev/`make`, not per-invocation.
     exec /usr/bin/env -i \
         HOME="${HOME:-}" \
         PATH="$RUNTIME_PATH" \
@@ -60,7 +66,7 @@ run_clean_wilted() {
         WILTED_FEED_NPR_PLUS_HOW_TO_DO_EVERYTHING="$WILTED_FEED_NPR_PLUS_HOW_TO_DO_EVERYTHING" \
         WILTED_FEED_NPR_PLUS_POP_CULTURE_HAPPY_HOUR="$WILTED_FEED_NPR_PLUS_POP_CULTURE_HAPPY_HOUR" \
         WILTED_FEED_NPR_PLUS_WAIT_WAIT="$WILTED_FEED_NPR_PLUS_WAIT_WAIT" \
-        "$UV_BINARY" run --project "$project_root" python -m wilted.cli "$@"
+        "$UV_BINARY" run --no-sync --frozen --project "$project_root" python -m wilted.cli "$@"
 }
 
 main() {

@@ -247,3 +247,40 @@ class TestRunEntrypointsDoNotConstructCoordinator:
 
         with pytest.raises((TypeError, ValueError)):
             run_prepare(use_llm=False, skip_tts=True)
+
+
+def test_run_article_cache_via_runner_submits_without_typeerror(monkeypatch) -> None:
+    """Regression: ``run_article_cache_via_runner`` passed ``sync_run=False`` to
+    ``submit_pending_article_cache_jobs`` (which has no such parameter), so the
+    entry point raised ``TypeError`` on every non-empty-queue call before any
+    work was done. Collaborators are stubbed so the contract is exercised without
+    a model load or DB write.
+    """
+    from wilted import pipeline_submit
+
+    submitted: list[int] = []
+    drained: list[dict] = []
+    monkeypatch.setattr(
+        pipeline_submit,
+        "items_needing_article_cache",
+        lambda *, voice, lang, speed: [{"id": 1, "added": ""}],
+    )
+    monkeypatch.setattr(
+        pipeline_submit,
+        "submit_article_cache",
+        lambda item_id, **_kwargs: submitted.append(item_id),
+    )
+    monkeypatch.setattr(pipeline_submit, "drain_runner", lambda **kwargs: drained.append(kwargs))
+    monkeypatch.setattr(
+        pipeline_submit,
+        "_article_cache_stats_for_entries",
+        lambda entries, **_kwargs: {"cached": 0, "errors": 0, "total": len(entries)},
+    )
+
+    result = pipeline_submit.run_article_cache_via_runner(voice="af_heart", lang="a", speed=1.0)
+
+    assert result == {"cached": 0, "errors": 0, "total": 1}
+    assert submitted == [1]  # submit_pending_article_cache_jobs ran with a valid kwarg set
+    # The entry point must actually drain what it submitted — instrument the stub so
+    # the regression can't pass if the submit→drain path silently stops draining.
+    assert drained, "run_article_cache_via_runner must drain the runner after submitting jobs"

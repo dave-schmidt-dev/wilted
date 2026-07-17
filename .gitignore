@@ -45,3 +45,6 @@ handoff.md
 
 # Runtime weather-bulletin latency log (written by the live station)
 reports/weather-bulletin-latency.jsonl
+
+# pytest-textual-snapshot failure report (regenerated on any snapshot mismatch)
+snapshot_report.html

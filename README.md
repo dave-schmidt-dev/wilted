@@ -438,7 +438,8 @@ make install-launchd
 The hourly agent runs `scripts/wilted-scheduler.sh`, which invokes one bounded tick via the same
 `wilted-runtime.sh` launch chain as interactive use. One tick acquires the Python `fcntl` lock,
 checks persisted due state, and drains at most one batch of due jobs — no shell `flock`, no orphan
-runner process.
+runner process. A live foreground station defers the tick (the runner probes the station lease) so
+background model/TTS work never competes with playback for the audio device.
 
 Run a tick manually:
 
@@ -446,7 +447,18 @@ Run a tick manually:
 wilted scheduler tick
 ```
 
-Logs: `~/Library/Logs/wilted-scheduler/`. Uninstall with `make uninstall-launchd`.
+Logs: `~/Library/Logs/homelab/wilted-scheduler/` (and `~/Library/Logs/homelab/wilted-nightly/`),
+matching the homelab `ldstatus` convention. Uninstall with `make uninstall-launchd`.
+
+**macOS Full Disk Access (required for the launchd agents).** The wrappers invoke the runtime as
+`/bin/bash "$WILTED_RUNTIME"` (launchd cannot exec a script resident under `~/Documents` — TCC returns
+exit 126), and the runtime runs `uv run --no-sync --frozen` against the dev-provisioned venv at
+`~/.venvs/wilted` (a background tick must never re-resolve/sync deps — that stage stalls under
+launchd's clean environment). Even so, the chain runs under `bws run`, which macOS treats as the TCC
+*responsible process*; because the project source lives under the protected `~/Documents` tree, the
+agents will **stall in a blocked `open()`** until Full Disk Access is granted to `bws` (and, if still
+blocked, `uv` and the venv python) in System Settings → Privacy & Security → Full Disk Access. Until
+then, keep the agents booted out (`launchctl bootout gui/$(id -u)/local.wilted-scheduler`).
 
 ### Database maintenance
 

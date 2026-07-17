@@ -133,6 +133,42 @@ def execution_capability():
         yield
 
 
+@pytest.fixture(scope="session")
+def speech_daemon_available() -> bool:
+    """Probe the speech daemon once per session.
+
+    Wilted's CLI/TUI entrypoints hard-require a ready speech daemon
+    (``require_daemon_ready`` — the M2 daemon-only cutover), so any test that
+    runs the real ``wilted`` entrypoint as a subprocess needs a live daemon.
+    When the daemon is unavailable — e.g. the tracked gpu-host wedge under
+    concurrent load (see ``speech-stack/TASKS.md``) — those tests should skip,
+    not hard-fail, since the failure is an external-dependency outage rather
+    than a wilted regression. Probed at most once (session-scoped, cached) with
+    a short timeout so a wedged daemon fails fast instead of stalling the suite.
+    """
+    try:
+        from speech_stack.client import require_daemon_ready
+    except Exception:
+        return False
+    try:
+        require_daemon_ready(probe=True, timeout=8.0)
+    except Exception:
+        return False
+    return True
+
+
+@pytest.fixture
+def requires_speech_daemon(speech_daemon_available: bool) -> None:
+    """Skip a test that drives the real ``wilted`` entrypoint when the speech
+    daemon is unavailable. See ``speech_daemon_available``."""
+    if not speech_daemon_available:
+        pytest.skip(
+            "speech daemon unavailable (require_daemon_ready failed) — external "
+            "dependency outage, not a wilted regression; tracked gpu-host wedge, "
+            "see speech-stack/TASKS.md"
+        )
+
+
 @pytest.fixture
 def stub_audio_modules():
     """Provide fake sounddevice/mlx_audio modules for tests that patch them.

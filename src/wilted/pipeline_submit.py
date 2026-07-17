@@ -513,7 +513,7 @@ def run_article_cache_via_runner(
         logger.info("No queue items need article cache generation")
         return {"cached": 0, "errors": 0, "total": 0}
 
-    submit_pending_article_cache_jobs(voice=voice, lang=lang, speed=speed, sync_run=False)
+    submit_pending_article_cache_jobs(voice=voice, lang=lang, speed=speed)
     drain_runner(
         kind=JobKind.ARTICLE_CACHE,
         max_jobs_per_run=max_jobs_per_run,

@@ -126,6 +126,32 @@ class TestSchedulerTickRun:
         assert result.outcome is SchedulerTickOutcome.CHILD_FAILED
         assert result.exit_code == 1
 
+    def test_default_runner_defers_to_live_station_lease(self, monkeypatch) -> None:
+        """Regression: the scheduler runs in a separate process from the TUI, so the
+        env-based station check never fires. Its default runner must consult the
+        flock-based lease probe, so a live foreground station defers the hourly
+        model/TTS drain instead of competing for the audio device and MLX/Metal (INV-1).
+        """
+        _submit_queued(item_id="scheduler-station-yield")
+        due_before = count_due_jobs()
+        assert due_before >= 1  # the job we just queued is due before the tick
+        lease_calls: list[object] = []
+
+        def _lease_active(*, data_dir) -> bool:
+            lease_calls.append(data_dir)
+            return True
+
+        monkeypatch.setattr("wilted.scheduler_tick.lease_is_station_active", _lease_active)
+
+        result = run_scheduler_tick(data_dir=wilted.DATA_DIR, dns_check=lambda: True)
+
+        assert lease_calls, "scheduler default runner must consult the flock-based station lease"
+        assert lease_calls[0] == wilted.DATA_DIR
+        assert result.jobs_ran == 0
+        # The exact due count is unchanged — the queued job was deferred, not drained.
+        # (A bare ``>= 1`` could be satisfied by an unrelated due job masking a drain.)
+        assert count_due_jobs() == due_before
+
     def test_stop_requested_before_side_effects(self) -> None:
         result = run_scheduler_tick(
             data_dir=wilted.DATA_DIR,

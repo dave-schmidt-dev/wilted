@@ -8,13 +8,13 @@
 # Install:
 #   make install-launchd
 #
-# Logs:
-#   ~/Library/Logs/wilted-scheduler/wilted-scheduler.log
-#   ~/Library/Logs/wilted-scheduler/wilted-scheduler-YYYYMMDD-HHMMSS.log
+# Logs (homelab convention — parsed by ldstatus once a WILTED-SCHED parser is registered):
+#   ~/Library/Logs/homelab/wilted-scheduler/wilted-scheduler.log
+#   ~/Library/Logs/homelab/wilted-scheduler/wilted-scheduler-YYYYMMDD-HHMMSS.log
 
 set -euo pipefail
 
-LOG_DIR="${HOME}/Library/Logs/wilted-scheduler"
+LOG_DIR="${HOME}/Library/Logs/homelab/wilted-scheduler"
 AGG_LOG="${LOG_DIR}/wilted-scheduler.log"
 RUN_LOG="${LOG_DIR}/wilted-scheduler-$(date '+%Y%m%d-%H%M%S').log"
 
@@ -38,7 +38,7 @@ log() {
 log "START: scheduler tick"
 START_TIME=$(date +%s)
 
-if "$WILTED_RUNTIME" scheduler tick >> "$RUN_LOG" 2>&1; then
+if /bin/bash "$WILTED_RUNTIME" scheduler tick >> "$RUN_LOG" 2>&1; then
     END_TIME=$(date +%s)
     ELAPSED=$((END_TIME - START_TIME))
     log "completed successfully in ${ELAPSED}s"

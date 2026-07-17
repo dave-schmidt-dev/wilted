@@ -1090,7 +1090,7 @@ class TestNightlyWrapper:
         )
 
         assert result.returncode == 37
-        aggregate_log = home / "Library" / "Logs" / "wilted-nightly" / "wilted.log"
+        aggregate_log = home / "Library" / "Logs" / "homelab" / "wilted-nightly" / "wilted.log"
         log_text = aggregate_log.read_text()
         assert "failed with exit code 37" in log_text
         assert "completed successfully" not in log_text

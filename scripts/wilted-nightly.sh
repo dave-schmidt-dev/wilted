@@ -4,9 +4,9 @@
 # Install:
 #   make install-launchd
 #
-# Logs:
-#   ~/Library/Logs/wilted-nightly/wilted.log                  (aggregate)
-#   ~/Library/Logs/wilted-nightly/wilted-YYYYMMDD-HHMMSS.log  (per-run)
+# Logs (homelab convention — parsed by ldstatus as the WILTED agent):
+#   ~/Library/Logs/homelab/wilted-nightly/wilted.log                  (aggregate)
+#   ~/Library/Logs/homelab/wilted-nightly/wilted-YYYYMMDD-HHMMSS.log  (per-run)
 #
 # Each Wilted invocation goes through wilted-runtime.sh, which retrieves only
 # the dedicated runtime token and removes BWS state before starting Wilted.
@@ -14,7 +14,7 @@
 set -euo pipefail
 
 LOCK_FILE="/tmp/wilted-nightly.lock"
-LOG_DIR="${HOME}/Library/Logs/wilted-nightly"
+LOG_DIR="${HOME}/Library/Logs/homelab/wilted-nightly"
 AGG_LOG="${LOG_DIR}/wilted.log"
 RUN_LOG="${LOG_DIR}/wilted-$(date '+%Y%m%d-%H%M%S').log"
 
@@ -53,13 +53,16 @@ log "START: nightly ingestion"
 START_TIME=$(date +%s)
 
 # --- Pipeline ---
-if "$WILTED_RUNTIME" ingest >> "$RUN_LOG" 2>&1; then
+# Invoke the runtime through /bin/bash (which holds Full Disk Access) rather than
+# direct-exec: launchd cannot exec a script resident under ~/Documents (TCC blocks
+# it, exit 126). See scripts/wilted-scheduler.sh for the same pattern.
+if /bin/bash "$WILTED_RUNTIME" ingest >> "$RUN_LOG" 2>&1; then
     END_TIME=$(date +%s)
     ELAPSED=$((END_TIME - START_TIME))
     log "completed successfully in ${ELAPSED}s"
 
     # Send email report if configured
-    if "$WILTED_RUNTIME" report --email >> "$RUN_LOG" 2>&1; then
+    if /bin/bash "$WILTED_RUNTIME" report --email >> "$RUN_LOG" 2>&1; then
         log "email report sent"
     fi
 else

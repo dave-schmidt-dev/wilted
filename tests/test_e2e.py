@@ -21,6 +21,16 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _require_daemon_for_e2e(requires_speech_daemon):
+    """Every test in this module runs the real ``wilted`` CLI as a subprocess,
+    and ``cli.main()`` gates on ``require_daemon_ready`` (the M2 daemon-only
+    cutover) before any subcommand — even ``--version``. So the whole module
+    skips when the speech daemon is unavailable rather than reporting a wall of
+    ``ConnectionLost`` failures for an external-dependency outage. See
+    ``requires_speech_daemon`` in conftest.py."""
+
+
 @pytest.fixture()
 def wilted_home(tmp_path):
     """Isolated project root with the minimum marker file."""

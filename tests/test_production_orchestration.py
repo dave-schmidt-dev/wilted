@@ -23,6 +23,7 @@ from tests.production_orchestration_registry import (
     discover_orchestration_entrypoints,
     nightly_script_path,
     registry_entrypoints,
+    scheduler_script_path,
 )
 from wilted.cli import (
     cmd_benchmark,
@@ -500,3 +501,32 @@ class TestShellWrapperOrchestration:
         content = script.read_text(encoding="utf-8")
         assert "WILTED_RUNTIME" in content
         assert '"$WILTED_RUNTIME" ingest' in content or '$WILTED_RUNTIME" ingest' in content
+
+    def test_nightly_script_routes_runtime_through_bin_bash_not_direct_exec(self) -> None:
+        """Nightly wrapper must invoke wilted-runtime.sh via /bin/bash, not direct-exec.
+
+        Regression: launchd cannot exec a script resident under ~/Documents
+        (macOS TCC blocks it, exit 126). Both the ingest and report --email
+        invocations must be routed through /bin/bash, which holds Full Disk
+        Access, rather than bare ``"$WILTED_RUNTIME" <subcommand>``.
+        """
+        script = nightly_script_path()
+        content = script.read_text(encoding="utf-8")
+
+        assert 'if /bin/bash "$WILTED_RUNTIME" ingest' in content
+        assert 'if "$WILTED_RUNTIME" ingest' not in content
+
+        assert 'if /bin/bash "$WILTED_RUNTIME" report --email' in content
+        assert 'if "$WILTED_RUNTIME" report --email' not in content
+
+    def test_scheduler_script_routes_runtime_through_bin_bash_not_direct_exec(self) -> None:
+        """Scheduler wrapper must invoke wilted-runtime.sh via /bin/bash, not direct-exec.
+
+        Same TCC/exit-126 rationale as the nightly wrapper above.
+        """
+        script = scheduler_script_path()
+        assert script.is_file(), f"Expected scheduler wrapper at {script}"
+        content = script.read_text(encoding="utf-8")
+
+        assert 'if /bin/bash "$WILTED_RUNTIME" scheduler tick' in content
+        assert 'if "$WILTED_RUNTIME" scheduler tick' not in content
