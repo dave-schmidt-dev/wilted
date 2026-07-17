@@ -19,6 +19,7 @@ import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from peewee import (
     SQL,
@@ -65,12 +66,56 @@ _db = SqliteDatabase(
 
 _connect_lock = threading.Lock()
 
+# After legacy cutover drops ``status`` / ``status_changed_at``, Peewee must not
+# SELECT them. Cache the Field objects so tests that ``reset_db()`` and recreate
+# a pre-cutover schema can restore the model.
+_LEGACY_STATUS_FIELDS: dict[str, Any] | None = None
+
+
+def _items_table_has_status_column(db: SqliteDatabase) -> bool:
+    """Return True when ``items.status`` exists (pre-cutover schema)."""
+    rows = list(db.execute_sql("PRAGMA table_info(items)"))
+    return any(row[1] == "status" for row in rows)
+
+
+def _sync_item_model_to_schema(db: SqliteDatabase) -> None:
+    """Align ``Item`` fields with the live ``items`` table after cutover.
+
+    Cutover rebuilds ``items`` without ``status`` / ``status_changed_at``. The
+    model still declares those fields for pre-cutover DBs and tests; without
+    this sync every ``Item.select()`` fails with ``no such column: t1.status``.
+    """
+    global _LEGACY_STATUS_FIELDS
+
+    rows = list(db.execute_sql("PRAGMA table_info(items)"))
+    if not rows:
+        return
+
+    has_status = any(row[1] == "status" for row in rows)
+    if not has_status:
+        if "status" in Item._meta.fields:
+            _LEGACY_STATUS_FIELDS = {
+                "status": Item._meta.fields["status"],
+                "status_changed_at": Item._meta.fields["status_changed_at"],
+            }
+            Item._meta.remove_field("status")
+            Item._meta.remove_field("status_changed_at")
+        return
+
+    if _LEGACY_STATUS_FIELDS:
+        for name, field in _LEGACY_STATUS_FIELDS.items():
+            if name not in Item._meta.fields:
+                Item._meta.add_field(name, field)
+
 
 def connect_db(path: Path | str) -> SqliteDatabase:
     """Open the database at *path*, applying WAL pragmas.
 
     Safe to call multiple times — subsequent calls on the same thread reuse
     the existing connection. Creates the file if it does not exist.
+
+    After connect, syncs the ``Item`` model to the live schema so post-cutover
+    databases (no legacy ``status`` column) remain queryable.
 
     Args:
         path: Filesystem path to wilted.db.
@@ -83,6 +128,7 @@ def connect_db(path: Path | str) -> SqliteDatabase:
             _db.init(str(path))
     if not _db.is_connection_usable():
         _db.connect(reuse_if_open=True)
+    _sync_item_model_to_schema(_db)
     return _db
 
 
@@ -544,6 +590,15 @@ def reset_db() -> None:
     call will initialize ``_db`` with a new path, giving each test an isolated
     SQLite database.
     """
+    global _LEGACY_STATUS_FIELDS
+
     if not _db.is_closed():
         _db.close()
     _db.init(None)  # Reset to uninitialized; triggers re-init on next connect_db()
+
+    # Restore legacy status fields so the next create_tables() includes them
+    # (post-cutover connects may have removed them from the live model).
+    if _LEGACY_STATUS_FIELDS:
+        for name, field in _LEGACY_STATUS_FIELDS.items():
+            if name not in Item._meta.fields:
+                Item._meta.add_field(name, field)
