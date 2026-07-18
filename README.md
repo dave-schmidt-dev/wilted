@@ -33,9 +33,10 @@ uv sync
 ```
 
 Classification and ad detection are core features and run the Gemma-4 E4B QAT (Q4_0) GGUF via
-llama.cpp (`llama-cpp-python`). By default, the repaired model file is served from
-`data/models/gemma-4-E4B_q4_0-it-2026-07-15-repaired.gguf`. The affected upstream GGUF is never used
-as an automatic fallback because its duplicate tokenizer entries fail during llama.cpp loading.
+llama.cpp (`llama-cpp-python`). By default, the repaired model file is served from the machine-wide
+model store at `~/models/gemma-4-repaired/gemma-4-E4B_q4_0-it-2026-07-15-repaired.gguf` (override the
+parent directory via `LOCAL_MODELS_DIR`). The affected upstream GGUF is never used as an automatic
+fallback because its duplicate tokenizer entries fail during llama.cpp loading.
 
 ### Default GGUF model setup
 
@@ -43,9 +44,11 @@ Model files are intentionally not committed. Given a local copy of the affected 
 create the validated repaired default without modifying the source:
 
 ```bash
+OUT="$HOME/models/gemma-4-repaired"
+mkdir -p "$OUT"
 uv run python -m wilted.gguf_repair --variant e4b \
   /path/to/gemma-4-E4B_q4_0-it.gguf \
-  data/models/gemma-4-E4B_q4_0-it-2026-07-15-repaired.gguf
+  "$OUT/gemma-4-E4B_q4_0-it-2026-07-15-repaired.gguf"
 ```
 
 The repair command validates the exact model identity, tokenizer defect, metadata layout, and tensor

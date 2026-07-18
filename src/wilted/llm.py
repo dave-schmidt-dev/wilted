@@ -23,21 +23,23 @@ from __future__ import annotations
 import gc
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-import wilted
-
 logger = logging.getLogger(__name__)
 
 # Canonical default GGUF classification model. Google's July-2026 Gemma-4 QAT
 # snapshots ship a broken tokenizer (duplicate tokens trip llama.cpp's vocabulary
-# assertion), so the default is only the repaired copy in data/models. Never
+# assertion), so the default is only the repaired copy in the machine-wide model
+# store (~/models/gemma-4-repaired, overridable via LOCAL_MODELS_DIR). Never
 # silently download the known-broken upstream file on a fresh checkout.
-_REPAIRED_E4B_MODEL = wilted.DATA_DIR / "models" / "gemma-4-E4B_q4_0-it-2026-07-15-repaired.gguf"
-DEFAULT_GGUF_MODEL = str(_REPAIRED_E4B_MODEL)
+_MODELS_DIR = (
+    Path(os.path.expanduser(os.environ.get("LOCAL_MODELS_DIR") or str(Path.home() / "models"))) / "gemma-4-repaired"
+)
+DEFAULT_GGUF_MODEL = str(_MODELS_DIR / "gemma-4-E4B_q4_0-it-2026-07-15-repaired.gguf")
 
 
 @runtime_checkable
@@ -212,8 +214,11 @@ class GgufBackend:
                 raise FileNotFoundError(
                     f"Default repaired GGUF model not found: {self.model_path}. "
                     "The upstream Gemma-4 GGUF has a known tokenizer defect and is not downloaded automatically. "
-                    "See README.md#default-gguf-model-setup and run `python -m wilted.gguf_repair` "
-                    "with a source GGUF, or explicitly select the MLX backend."
+                    "See README.md#default-gguf-model-setup and run `mkdir -p ~/models/gemma-4-repaired && "
+                    "python -m wilted.gguf_repair --variant e4b /path/to/source.gguf "
+                    "~/models/gemma-4-repaired/gemma-4-E4B_q4_0-it-2026-07-15-repaired.gguf` "
+                    "with a source GGUF (gguf_repair fails if the destination directory does not exist), "
+                    "or explicitly select the MLX backend."
                 )
             raise FileNotFoundError(f"GGUF model file not found: {self.model_path}")
 
