@@ -1166,6 +1166,7 @@ class TestMainEntrypoint:
 
         mock_launch_tui.assert_not_called()
 
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_run_module_invokes_main(self, capsys):
         """INV-6 C1 lock: `python -m wilted.cli <args>` must actually run main().
 
@@ -1198,6 +1199,7 @@ class TestMainEntrypoint:
         out = capsys.readouterr().out
         assert "empty" in out.lower()
 
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_run_module_version_succeeds_when_daemon_down(self):
         """`python -m wilted.cli --version` stays truthful without daemon coupling."""
         import runpy

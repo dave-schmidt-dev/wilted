@@ -2,6 +2,7 @@
 
 import sys
 import types
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,6 +19,7 @@ _TEST_MARKERS = {
     "test_checkpoint_poller.py": ("unit",),
     "test_classify.py": ("unit",),
     "test_cli.py": ("integration",),
+    "test_conftest_fixtures.py": ("unit",),
     "test_content_state.py": ("integration",),
     "test_controller_lease.py": ("integration",),
     "test_coordinator.py": ("unit",),
@@ -169,13 +171,24 @@ def requires_speech_daemon(speech_daemon_available: bool) -> None:
         )
 
 
-@pytest.fixture
-def stub_audio_modules():
-    """Provide fake sounddevice/mlx_audio modules for tests that patch them.
+@contextmanager
+def _stub_audio_modules_scope():
+    """Install fake sounddevice/mlx_audio ``sys.modules`` entries.
 
-    This keeps collection-time imports from poisoning unrelated tests while
-    still allowing module-level patch targets such as ``sounddevice`` and
-    ``mlx_audio.audio_io`` to resolve inside unit tests.
+    Installs/removes only the three ``sys.modules`` keys this scope owns, via
+    direct dict mutation rather than ``unittest.mock.patch.dict``.
+    ``patch.dict``'s teardown (``_unpatch_dict``) unconditionally clears the
+    ENTIRE ``sys.modules`` dict before restoring it from a snapshot, even
+    though only these three keys were ever added. Textual pilot tests
+    (test_tui.py) drive real background worker threads that may still be
+    mid-import when this scope's teardown runs; a whole-dict clear during
+    that window can race a concurrent ``import`` on another thread and
+    corrupt the import system for whatever module it was loading — numpy
+    detects this and raises "cannot load module more than once per process"
+    (reproduced directly: widening the clear/restore gap with a background
+    thread importing numpy concurrently reliably corrupts the import state).
+    Mutating only our three keys removes the shared-state window entirely.
+    See ``tests/test_conftest_fixtures.py`` for the regression coverage.
     """
     fake_sounddevice = types.ModuleType("sounddevice")
     fake_sounddevice.OutputStream = MagicMock()
@@ -188,14 +201,34 @@ def stub_audio_modules():
 
     fake_mlx_audio.audio_io = fake_audio_io
 
-    with patch.dict(
-        sys.modules,
-        {
-            "sounddevice": fake_sounddevice,
-            "mlx_audio": fake_mlx_audio,
-            "mlx_audio.audio_io": fake_audio_io,
-        },
-    ):
+    fakes = {
+        "sounddevice": fake_sounddevice,
+        "mlx_audio": fake_mlx_audio,
+        "mlx_audio.audio_io": fake_audio_io,
+    }
+    _missing = object()
+    previous = {name: sys.modules.get(name, _missing) for name in fakes}
+    sys.modules.update(fakes)
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is _missing:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = value
+
+
+@pytest.fixture
+def stub_audio_modules():
+    """Provide fake sounddevice/mlx_audio modules for tests that patch them.
+
+    This keeps collection-time imports from poisoning unrelated tests while
+    still allowing module-level patch targets such as ``sounddevice`` and
+    ``mlx_audio.audio_io`` to resolve inside unit tests. See
+    ``_stub_audio_modules_scope`` for why this avoids ``patch.dict``.
+    """
+    with _stub_audio_modules_scope():
         yield
 
 

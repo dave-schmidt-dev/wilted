@@ -33,8 +33,8 @@ def _is_allowlisted(path: Path) -> bool:
 def _iter_production_modules() -> list[Path]:
     modules: list[Path] = []
     for path in sorted(_SRC_ROOT.rglob("*.py")):
-        if path.name == "__init__.py":
-            continue
+        # NOTE: __init__.py files are intentionally NOT skipped — tui/__init__.py
+        # hosts the article-cache drain and must be scanned by the INV-10 gate.
         if _is_allowlisted(path):
             continue
         modules.append(path)
