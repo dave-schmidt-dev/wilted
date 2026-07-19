@@ -41,6 +41,7 @@ _TEST_MARKERS = {
     "test_onboard.py": ("unit",),
     "test_playback_adapter.py": ("integration",),
     "test_playlists.py": ("integration",),
+    "test_post_cutover_e2e.py": ("e2e",),
     "test_schema_cutover_queries.py": ("integration",),
     "test_scheduler_tick.py": ("integration",),
     "test_preferences.py": ("integration",),
@@ -90,10 +91,7 @@ def isolated_data(tmp_path, monkeypatch, request):
     monkeypatch.setattr(wilted, "ARTICLES_DIR", articles_dir)
     monkeypatch.setattr(wilted, "AUDIO_DIR", audio_dir)
 
-    from wilted import cache as cache_mod
     from wilted.db import Item, reset_db, run_migrations
-
-    monkeypatch.setattr(cache_mod, "AUDIO_DIR", audio_dir)
 
     # Give each test a fresh, isolated SQLite database.
     reset_db()
@@ -123,6 +121,29 @@ def isolated_data(tmp_path, monkeypatch, request):
     yield
 
     reset_db()  # Close file handles so tmp_path cleanup succeeds on Windows
+
+
+@pytest.fixture
+def cutover_applied_db(isolated_data, tmp_path):
+    """``isolated_data`` with the destructive legacy content-state cutover applied.
+
+    Drops ``items.status`` / ``items.status_changed_at`` and the legacy
+    ``selection_history`` table, matching the production post-cutover schema
+    (see ``wilted.legacy_cutover.apply_legacy_cutover``). Depends on
+    ``isolated_data`` so the real data tree is never touched, and reuses
+    ``orthogonal_test_helpers.finalize_post_cutover_db`` — the same reconnect
+    step ``test_legacy_cutover.py``'s post-cutover regressions rely on — to
+    resync the ``Item`` model against the rebuilt table (no ``status`` field).
+
+    Yields the cutover-applied ``wilted.db`` path.
+    """
+    from tests.orthogonal_test_helpers import finalize_post_cutover_db
+    from wilted.legacy_cutover import apply_legacy_cutover
+
+    db_path = wilted.DATA_DIR / "wilted.db"
+    apply_legacy_cutover(db_path, dry_run=False, backup_dir=tmp_path / "backups")
+    finalize_post_cutover_db(db_path)
+    return db_path
 
 
 @pytest.fixture

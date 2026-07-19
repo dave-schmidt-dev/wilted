@@ -8,20 +8,7 @@ from urllib.error import HTTPError
 
 import pytest
 
-from wilted import download as download_mod
 from wilted.download import DownloadError, download_podcast, get_podcast_dir
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _patch_data_dir(tmp_path, monkeypatch):
-    """Point download module's DATA_DIR at the isolated tmp directory."""
-    data_dir = tmp_path / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(download_mod, "DATA_DIR", data_dir)
 
 
 def _make_response(
@@ -74,7 +61,6 @@ class TestGetPodcastDir:
 
 
 class TestDownloadPodcast:
-
     @patch("wilted.download.urllib.request.urlopen")
     def test_filename_override_ignores_credentialed_redirect_and_header(self, mock_urlopen, tmp_path):
         private_name = "credential-material-very-private.mp3"
@@ -122,6 +108,7 @@ class TestDownloadPodcast:
 
         assert private_url not in str(exc_info.value)
         assert exc_info.value.__cause__ is None
+
     @patch("wilted.download.urllib.request.urlopen")
     def test_successful_download(self, mock_urlopen, tmp_path):
         """Full download writes correct content to expected path."""

@@ -22,19 +22,19 @@ lint-sh:
 	fi
 
 test:
-	PYTHONPATH=src uv run --group dev pytest
+	uv run --group dev pytest
 
 test-unit:
-	PYTHONPATH=src uv run --group dev pytest -m unit
+	uv run --group dev pytest -m unit
 
 test-integration:
-	PYTHONPATH=src uv run --group dev pytest -m integration
+	uv run --group dev pytest -m integration
 
 test-e2e:
-	PYTHONPATH=src uv run --group dev pytest -m e2e
+	uv run --group dev pytest -m e2e
 
 test-tui:
-	PYTHONPATH=src uv run --group dev pytest -m tui
+	uv run --group dev pytest -m tui
 
 validate: lint test
 

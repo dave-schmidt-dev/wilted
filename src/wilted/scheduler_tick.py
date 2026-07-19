@@ -172,6 +172,16 @@ def run_scheduler_tick(
                     # hourly tick defers model/TTS work instead of competing
                     # with live playback for the audio device and MLX/Metal
                     # (INV-1). Bound to resolved_dir so a data-dir override is honored.
+                    #
+                    # Residual TOCTOU (accepted, INV-6): this is a per-job PROBE
+                    # — the runner re-invokes the lambda on each job iteration, so
+                    # it is strictly better than a one-shot/env check — but it is
+                    # NOT a held lease. A station going active after a given job's
+                    # probe yet before that job's batch drains can still contend
+                    # for that single batch. Full mutual exclusion would need a
+                    # shared/exclusive station lease held across execution; a
+                    # second ControllerLeaseManager writer is unsound, so that is
+                    # deferred to a dedicated station_runtime primitive.
                     station_active_check=lambda: lease_is_station_active(data_dir=resolved_dir),
                 )
             )

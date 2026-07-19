@@ -10,18 +10,6 @@ import tempfile
 from typing import TYPE_CHECKING
 
 import wilted
-from wilted import AUDIO_DIR  # noqa: F401 -- unused by design; see NOTE (INV-5) below
-
-# NOTE (INV-5): the `AUDIO_DIR` name imported above is intentionally NOT used
-# anywhere in this module's function bodies. Resolve `wilted.AUDIO_DIR` via
-# the `wilted` module object at call time instead (see get_cache_dir below),
-# so tests that monkeypatch `wilted.AUDIO_DIR` actually redirect this
-# module's file I/O. A name bound at import time (`AUDIO_DIR` above) stays
-# frozen to whatever Path object `wilted.AUDIO_DIR` held at import — it goes
-# stale the moment a test monkeypatches the live attribute. The import is
-# kept only so `monkeypatch.setattr(cache, "AUDIO_DIR", ...)` (see
-# tests/conftest.py's isolated_data fixture) remains valid; it is a dead
-# alias, not a data path.
 
 if TYPE_CHECKING:
     from collections.abc import Callable

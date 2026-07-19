@@ -12,17 +12,6 @@ from typing import TYPE_CHECKING
 from urllib.error import HTTPError, URLError
 
 import wilted
-from wilted import DATA_DIR  # noqa: F401 -- unused by design; see NOTE (INV-5) below
-
-# NOTE (INV-5): the `DATA_DIR` name imported above is intentionally NOT used
-# anywhere in this module's function bodies. Resolve `wilted.DATA_DIR` via the
-# `wilted` module object at call time instead (see get_podcast_dir below), so
-# tests that monkeypatch `wilted.DATA_DIR` actually redirect this module's
-# file I/O. A name bound at import time (`DATA_DIR` above) stays frozen to
-# whatever Path object `wilted.DATA_DIR` held at import — it goes stale the
-# moment a test monkeypatches the live attribute. The import is kept only so
-# `monkeypatch.setattr(download, "DATA_DIR", ...)` remains valid for any
-# external caller still targeting it; it is a dead alias, not a data path.
 
 if TYPE_CHECKING:
     from http.client import HTTPResponse

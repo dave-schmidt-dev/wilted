@@ -22,6 +22,15 @@ Terminal size is pinned (not the fixture's (80, 24) default) so the new
 indicator lines are never clipped and the SVG baseline stays stable across
 runs/machines.
 
+Colors come from the ``salad`` theme, which ``WiltedApp.__init__`` registers
+and activates unconditionally (``self.theme = "salad"``). Because that theme
+is a ``Theme`` object with hardcoded hex colors (no terminal/env derivation),
+the captured SVG is deterministic across machines -- no ``run_before`` theme
+pin is needed. The baselines were regenerated once for Textual 8.2.3, whose
+headless SVG export (``take_svg_screenshot``) applies the registered custom
+theme; earlier baselines were captured un-themed (grayscale) by an older
+Textual and drifted purely in fill colors (identical text/geometry).
+
 Baselines live under ``tests/__snapshots__/test_tui_snapshots/`` (the
 plugin's default ``SingleFileSnapshotExtension`` location) and are
 regenerated with ``pytest tests/test_tui_snapshots.py --snapshot-update``.
