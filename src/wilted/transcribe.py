@@ -468,14 +468,20 @@ def evict_stt_model() -> None:
 
     Called after a batch of tier-3 transcriptions completes and BEFORE a different
     model (the LLM) loads, so parakeet is not left co-resident in the daemon while
-    wilted loads the LLM in its own process. Best-effort: if the daemon is already
-    gone there is nothing resident to drop, so ``DaemonUnavailable`` is swallowed
-    rather than surfaced.
+    wilted loads the LLM in its own process.
+
+    Best-effort: the eviction is only a hygiene hint and nothing downstream depends
+    on it, so ANY daemon-side fault is swallowed rather than surfaced — not just a
+    *missing* daemon (``DaemonUnavailable``) but also a *wedged* one (``ConnectionLost``
+    / ``Timeout`` / ``Busy`` / worker faults, all ``IsolatedError`` subclasses). A
+    wedged gpu-host must never crash the caller's ``run_prepare`` on a throwaway hint
+    (regression: catching only ``DaemonUnavailable`` failed every prepare run when the
+    daemon was present-but-unresponsive — see HISTORY 2026-07-19).
     """
     try:
         client.evict("stt")
-    except client.DaemonUnavailable:
-        logger.debug("speech daemon already gone at evict-hint time; nothing to evict")
+    except client.IsolatedError as exc:
+        logger.debug("STT evict-hint skipped; speech daemon unavailable: %s", exc)
 
 
 def _env_float(name: str, default: float) -> float:

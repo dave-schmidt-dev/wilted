@@ -855,3 +855,27 @@ class TestEvictSttModel:
             side_effect=client.DaemonUnavailable("gone"),
         ):
             evict_stt_model()  # must not raise
+
+    @pytest.mark.parametrize(
+        "fault",
+        [
+            client.ConnectionLost("stream closed after 0 of 4 expected bytes (peer gone)"),
+            client.Timeout("broker did not reply in time"),
+            client.Busy("broker at capacity"),
+            client.WorkerError("isolated worker failed"),
+        ],
+        ids=["wedged-connection-lost", "timeout", "busy", "worker-error"],
+    )
+    def test_swallows_any_daemon_fault(self, fault):
+        """A WEDGED daemon (or any ``IsolatedError``-family fault) must be swallowed too.
+
+        Regression: ``evict_stt_model`` previously caught only ``DaemonUnavailable``,
+        so a wedged gpu-host (socket present but unresponsive -> ``ConnectionLost``)
+        propagated out of ``run_prepare``'s unconditional evict hint and crashed the
+        *entire* prepare run — every article/podcast item — even though eviction is a
+        best-effort hygiene hint with nothing downstream depending on it. All daemon
+        transport/worker faults share the ``IsolatedError`` base, so all are swallowed.
+        See HISTORY 2026-07-19.
+        """
+        with patch("wilted.transcribe.client.evict", side_effect=fault):
+            evict_stt_model()  # must not raise
