@@ -23,7 +23,6 @@ def _tts_generation_error(error: client.IsolatedError) -> RuntimeError:
     return RuntimeError(f"TTS generation failed: {error}")
 
 
-
 class AudioEngine:
     """TTS audio engine with thread-safe playback controls.
 
@@ -508,7 +507,18 @@ class AudioEngine:
 
         Raises:
             FileNotFoundError: If the audio file does not exist.
-            RuntimeError: If ffmpeg decoding fails (non-zero exit).
+            RuntimeError: If ffmpeg decoding fails with a *non-zero* exit.
+
+        Note:
+            A *truncated* decode is NOT detected here. ffmpeg can exit 0 after
+            stopping early on a corrupt/truncated stream, so this method returns
+            normally even though playback fell short of the file's real duration
+            (``playback_time_s`` will lag ``get_file_duration``). Completion
+            cleanliness is the caller's responsibility: the station path verifies
+            it in ``MacPlaybackAdapter._on_play_file_finished`` (PM-10) by
+            comparing ``playback_time_s`` against ``get_file_duration`` and only
+            reports ``ENDED`` within tolerance. Do not treat a normal return as
+            proof the whole file played.
         """
         path = Path(path)
         if not path.exists():

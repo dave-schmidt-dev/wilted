@@ -2071,6 +2071,49 @@ async def test_mixed_session_play_then_auto_advance_then_interrupted():
             assert "interrupted" in status.lower()
 
 
+@pytest.mark.asyncio
+async def test_truncated_or_unknown_completion_never_marks_item_completed():
+    """PM-10 regression lock (bug-hunter Finding #2 — engine truncated-decode).
+
+    ffmpeg can exit 0 after a corrupt/truncated decode, so ``engine.play_file``
+    returns without raising even though playback fell short of the file's real
+    duration. The completeness verdict lives in the adapter (``playback_time_s``
+    vs ``get_file_duration``, PM-10) and reaches here as TRUNCATED/UNKNOWN. This
+    locks the exact "episode silently marked completed" failure AT THE CONSUMER
+    GATE: only a verified clean end (ENDED) may ``mark_completed`` — a short or
+    unverifiable completion must never. Complements the adapter-side
+    classification tests in ``test_playback_adapter.py``.
+    """
+    entry = _station_entry(1)
+    items = [{"id": 1, "title": "An Article", "words": 3000, "file": "1_a.txt", "added": "2026-04-06"}]
+    app = _make_app(entries=[entry], controller=FakeController(), adapter=FakeAdapter())
+    with (
+        patch("wilted.tui.ensure_default_playlists"),
+        patch("wilted.tui.get_playlist_items", return_value=items),
+        patch("wilted.tui.mark_completed") as mock_mark,
+    ):
+        async with app.run_test():
+            await app.workers.wait_for_complete()
+
+            # TRUNCATED (verified short) -> must NOT mark completed.
+            app._start_playback(entry)
+            app._handle_station_completion(CompletionReason.TRUNCATED)
+            mock_mark.assert_not_called()
+
+            # UNKNOWN (duration unverifiable — ffprobe failed) -> also must NOT,
+            # fail-safe: better to replay than silently skip unheard content.
+            app._start_playback(entry)
+            app._handle_station_completion(CompletionReason.UNKNOWN)
+            mock_mark.assert_not_called()
+
+            # Contrast: a verified clean end DOES mark completed exactly once —
+            # proving the harness actually reaches mark_completed, so the two
+            # negative assertions above are meaningful, not vacuous.
+            app._start_playback(entry)
+            app._handle_station_completion(CompletionReason.ENDED)
+            assert mock_mark.call_count == 1
+
+
 # ---------------------------------------------------------------------------
 # NEW (A.3.5 fix review): audio-thread deadlock regression lock —
 # _on_adapter_completion must marshal via post_message, never call_from_thread.
