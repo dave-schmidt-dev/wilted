@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -263,3 +264,78 @@ class TestPipelineRunnerLifecycle:
         assert len(seen) == 2
         assert ProcessingJob.select().where(ProcessingJob.state == ProcessingJobState.RUNNING.value).count() == 2
         assert ProcessingJob.select().where(ProcessingJob.state == ProcessingJobState.QUEUED.value).count() == 1
+
+
+class TestInstallSignalHandlersOffMain:
+    """BUG-2 regression: the TUI now drains the article-cache runner from a
+    Textual ``@work(thread=True)`` worker thread (``WiltedApp._submit_article_cache_worker``
+    -> ``_drain_article_cache_runner`` -> ``PipelineRunner.run``/``_run_under_lock``
+    -> ``_install_signal_handlers``). ``signal.signal()`` only works on the
+    main thread and raises ``ValueError: signal only works in main thread``
+    if called off it, which would crash the worker. ``_install_signal_handlers``
+    must detect the off-main case and skip installation entirely.
+    """
+
+    def test_install_signal_handlers_off_main_thread_is_noop(self):
+        """Calling ``_install_signal_handlers`` from a worker thread must not
+        raise, and must install nothing (empty mapping) rather than calling
+        ``signal.signal()`` off the main thread."""
+        runner = PipelineRunner(bootstrap=_ready_bootstrap())
+        results: list[dict] = []
+        errors: list[BaseException] = []
+
+        def _call_off_main() -> None:
+            try:
+                results.append(runner._install_signal_handlers())
+            except BaseException as exc:  # noqa: BLE001 - capture for assertion below
+                errors.append(exc)
+
+        thread = threading.Thread(target=_call_off_main)
+        thread.start()
+        thread.join(timeout=5.0)
+
+        assert errors == [], f"_install_signal_handlers raised off-main: {errors}"
+        assert results == [{}]
+
+    def test_install_signal_handlers_on_main_thread_installs_handlers(self):
+        """On the main thread, installation still works and returns the
+        previous SIGTERM/SIGHUP handlers so a caller can restore them."""
+        runner = PipelineRunner(bootstrap=_ready_bootstrap())
+
+        previous = runner._install_signal_handlers()
+        try:
+            assert previous != {}
+            assert set(previous) == {signal.SIGTERM, signal.SIGHUP}
+        finally:
+            # Restore immediately so this test never leaks handlers into the
+            # rest of the suite.
+            runner._restore_signal_handlers(previous)
+
+    def test_run_from_worker_thread_with_no_runnable_jobs(self):
+        """Fuller regression: a complete ``PipelineRunner.run()`` invocation
+        executed entirely from a worker thread (mirroring the TUI's off-main
+        article-cache drain) must not raise, exactly like the focused
+        ``_install_signal_handlers`` test above but exercising the real call
+        path a worker thread takes. No queued jobs means ``_claim_next_job_under_lock``
+        returns ``None`` immediately, so no handler/coordinator work (and no
+        real model load, no speech daemon) is required for this to be a
+        meaningful off-main exercise of the signal-install guard.
+        """
+        runner = PipelineRunner(bootstrap=_ready_bootstrap())
+        results: list = []
+        errors: list[BaseException] = []
+
+        def _run_off_main() -> None:
+            try:
+                results.append(runner.run(owner_id="off-main-runner"))
+            except BaseException as exc:  # noqa: BLE001 - capture for assertion below
+                errors.append(exc)
+
+        thread = threading.Thread(target=_run_off_main)
+        thread.start()
+        thread.join(timeout=5.0)
+
+        assert errors == [], f"PipelineRunner.run() raised off-main: {errors}"
+        assert len(results) == 1
+        assert results[0].exit_reason is RunExitReason.COMPLETED
+        assert results[0].stats.submitted_handled == 0

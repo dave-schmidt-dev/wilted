@@ -6,7 +6,7 @@ import subprocess
 import sys
 import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from speech_stack import client
@@ -305,6 +305,32 @@ class TestCmdPlay:
         assert "Article Two" in out
         assert "Finished 2" in out
         assert load_queue() == []
+
+    def test_play_does_not_mark_completed_when_playback_raises(self):
+        """A hard mid-play failure must not mark the article completed.
+
+        BUG #3 close-out (verify-and-close): the truncated-ffmpeg-decode
+        false-completion scenario is structurally unreachable on the CLI path —
+        ``cmd_play`` synthesizes fresh TTS via the daemon (``_play_text`` ->
+        ``engine.play_article``) and never calls ``AudioEngine.play_file``. This
+        locks the adjacent property that a daemon failure mid-stream (the engine
+        re-raises as ``RuntimeError``) propagates out of ``cmd_play`` and
+        ``mark_completed`` is never reached, so a failed playback cannot silently
+        complete an article. ``cmd_next`` shares the same ``finished =
+        _play_text(...)`` -> ``mark_completed`` gate.
+        """
+        _add_test_article(title="Article One")
+        args = _make_args(play=True)
+        with (
+            patch("wilted.cli.require_speech_ready"),
+            patch("wilted.cli._play_text", side_effect=RuntimeError("daemon died mid-stream")),
+            patch("wilted.cli.mark_completed") as mock_mark,
+            pytest.raises(RuntimeError, match="daemon died mid-stream"),
+        ):
+            cmd_play(args)
+
+        mock_mark.assert_not_called()
+        assert len(load_queue()) == 1  # article stays queued, not completed
 
     def test_play_probes_once_for_multi_article_queue(self, capsys):
         """cmd_play probes daemon readiness once before the first playable item."""
@@ -1144,8 +1170,15 @@ class TestMainEntrypoint:
             main()
 
         mock_ready.assert_called_once_with()
+        # tqdm's lock is now warmed via RuntimeBootstrap.init_tqdm_lock() (which
+        # imports tqdm and calls get_lock() on the main thread), and that same
+        # bootstrap is threaded into the app for its worker-thread drain.
         mock_tqdm.get_lock.assert_called_once_with()
-        mock_app_cls.assert_called_once_with(weather_monitor=sentinel_monitor, briefing_generator=sentinel_briefing)
+        mock_app_cls.assert_called_once_with(
+            weather_monitor=sentinel_monitor,
+            briefing_generator=sentinel_briefing,
+            bootstrap=ANY,
+        )
         mock_app.run.assert_called_once_with()
 
     def test_main_tui_mode_daemon_down_raises_loudly(self):

@@ -77,6 +77,30 @@ def _fake_package(name: str) -> types.ModuleType:
     return module
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _prewarm_tqdm_lock():
+    """Create tqdm's multiprocessing lock once, on the main thread, before any
+    test runs — mirroring production, where ``cli._launch_tui`` pre-warms it
+    before mounting the TUI.
+
+    Textual's headless ``run_test()`` driver makes ``sys.stderr.fileno()``
+    return ``-1``. ``WiltedApp.on_mount`` inits tqdm's lock when handed a
+    not-yet-ready :class:`RuntimeBootstrap` (the test path — ``_make_app`` builds
+    a fresh one). If that mount were the FIRST caller to create the
+    multiprocessing lock inside a pilot, ``multiprocessing.resource_tracker``
+    would choke on the ``-1`` fd (``ValueError: bad value(s) in fds_to_keep``).
+    Warming it here — outside any Textual context, where stderr's fd is valid —
+    means every later ``get_lock()`` / ``init_tqdm_lock()`` returns the cached
+    lock without re-spawning resource_tracker. Session-scoped + autouse so it
+    holds under any marker subset (e.g. ``-m tui``), not only the full suite
+    where ``test_pipeline_runner`` happens to warm it first by import order.
+    """
+    import tqdm
+
+    tqdm.tqdm.get_lock()
+    yield
+
+
 @pytest.fixture(autouse=True)
 def isolated_data(tmp_path, monkeypatch, request):
     """Redirect all data paths to a temp directory for every test."""

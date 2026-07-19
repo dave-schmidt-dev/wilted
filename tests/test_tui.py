@@ -3724,3 +3724,63 @@ async def test_warm_daemon_action_swallows_daemon_unavailable():
             await app.workers.wait_for_complete()
             await pilot.pause()
         assert app._tts_daemon_warmed is False
+
+
+# ---------------------------------------------------------------------------
+# Article-cache drain worker thread (BUG-2 regression)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_article_cache_drain_runs_on_worker_thread_not_ui_thread(monkeypatch):
+    """BUG-2 regression: ``_submit_article_cache_worker`` (a ``@work(thread=True)``
+    worker) must run the article-cache runner drain on the calling WORKER
+    thread, not marshal it onto the main/UI thread -- the pre-fix behavior
+    that froze the UI for the duration of the drain. Also proves the
+    main-thread-inited ``RuntimeBootstrap`` tqdm lock (``WiltedApp._bootstrap``,
+    made ready in ``on_mount``) is threaded into the drain via
+    ``drain_runner(bootstrap=...)`` rather than the worker re-initializing it
+    off-main (which raises by design -- see ``RuntimeBootstrap.init_tqdm_lock``).
+    """
+    import threading
+
+    from wilted.background_work.contracts import JobKind
+    from wilted.pipeline_submit import RunStats
+
+    captured: dict = {}
+
+    # Force submitted > 0 so `_submit_article_cache_worker` always proceeds
+    # to the drain, regardless of real queue contents.
+    monkeypatch.setattr(
+        "wilted.pipeline_submit.submit_pending_article_cache_jobs",
+        lambda **kwargs: 1,
+    )
+
+    def _fake_drain_runner(*, kind, station_active_check, bootstrap):
+        captured["kind"] = kind
+        captured["is_main"] = threading.current_thread() is threading.main_thread()
+        captured["bootstrap_ready"] = bootstrap.is_ready
+        captured["station_active"] = station_active_check()
+        return RunStats()
+
+    # `_drain_article_cache_runner` does `from wilted.pipeline_submit import
+    # drain_runner` locally at call time, so patching the module attribute
+    # is what a fresh import-time lookup will see.
+    monkeypatch.setattr("wilted.pipeline_submit.drain_runner", _fake_drain_runner)
+
+    app = _make_app()
+    async with app.run_test():
+        await app.workers.wait_for_complete()  # settle mount-time workers first
+        app._trigger_generation()
+        await app.workers.wait_for_complete()  # let the generation worker run to completion
+
+    assert captured, "fake drain_runner was never called"
+    assert captured["kind"] is JobKind.ARTICLE_CACHE
+    # The core BUG-2 regression assertion: the drain ran OFF the main thread.
+    assert captured["is_main"] is False
+    # The main-thread-inited tqdm lock was threaded through, not re-initialized
+    # off-main.
+    assert captured["bootstrap_ready"] is True
+    # The station-active yield seam (`_generation_paused`) is wired through to
+    # the runner drain rather than being dropped.
+    assert captured["station_active"] is False

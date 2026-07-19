@@ -1432,13 +1432,16 @@ def _launch_tui() -> None:
         except (ValueError, OSError):
             pass  # e.g. not running on the main thread / signal unsupported
 
-    # Pre-initialize tqdm's multiprocessing lock on the main thread.
-    # If the first initialization happens inside a Textual worker during
-    # Hugging Face snapshot_download(), Python's resource_tracker may spawn
-    # a subprocess with invalid pass-through FDs and raise fds_to_keep.
-    import tqdm
+    # Pre-initialize tqdm's multiprocessing lock on the main thread, via the
+    # same RuntimeBootstrap the app then threads into its worker-thread
+    # article-cache drain. If the first initialization instead happened inside
+    # a Textual worker during Hugging Face snapshot_download(), Python's
+    # resource_tracker may spawn a subprocess with invalid pass-through FDs and
+    # raise fds_to_keep (INV-1/BUG-2).
+    from wilted.station_runtime import RuntimeBootstrap
 
-    tqdm.tqdm.get_lock()
+    bootstrap = RuntimeBootstrap()
+    bootstrap.init_tqdm_lock()
 
     try:
         from wilted.tui import WiltedApp
@@ -1450,6 +1453,7 @@ def _launch_tui() -> None:
         WiltedApp(
             weather_monitor=_weather_monitor_for_launch(),
             briefing_generator=_briefing_generator_for_launch(),
+            bootstrap=bootstrap,
         ).run()
     finally:
         _restore_terminal()

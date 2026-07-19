@@ -62,6 +62,7 @@ from wilted.station_runtime import (
     MacPlaybackAdapter,
     RouteChangeEvent,
     RouteMonitor,
+    RuntimeBootstrap,
     StationController,
     WeatherMonitor,
     media_store,
@@ -306,11 +307,21 @@ class WiltedApp(App):
         weather_monitor: WeatherMonitor | None = None,
         briefing_generator: BriefingGenerator | None = None,
         latency_log_path: Path | None = None,
+        bootstrap: RuntimeBootstrap | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self.register_theme(SALAD_THEME)
         self.theme = "salad"
+
+        # INV-1/BUG-2: tqdm's multiprocessing lock must be initialized on the
+        # main thread before any pipeline-runner drain executes. The app owns a
+        # single RuntimeBootstrap, initializes it in on_mount (main thread), and
+        # threads it into the worker-thread article-cache drain so that drain
+        # calls require_ready() rather than init_tqdm_lock() off-main. cli
+        # supplies an already-ready bootstrap; tests/other callers get a fresh
+        # one initialized at mount.
+        self._bootstrap = bootstrap if bootstrap is not None else RuntimeBootstrap()
 
         # -- Station runtime (INV-8 single-writer plumbing) -----------------
         self._controller = (
@@ -457,6 +468,11 @@ class WiltedApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        # INV-1/BUG-2: initialize tqdm's multiprocessing lock on the main thread
+        # up front — before any worker starts a pipeline-runner drain. Guarded
+        # so a cli-supplied, already-ready bootstrap is not re-initialized.
+        if not self._bootstrap.is_ready:
+            self._bootstrap.init_tqdm_lock()
         self._update_speed_display()
         self.query_one("#playlist-tree", Tree).focus()
         # 1-second timer for live playback countdown
@@ -1167,12 +1183,17 @@ class WiltedApp(App):
 
     @work(thread=True, exclusive=True, group="generate")
     def _submit_article_cache_worker(self) -> None:
-        """Background worker: submit article-cache jobs for queued articles.
+        """Background worker: submit AND drain article-cache jobs off the UI thread.
 
-        Job submission runs off the UI thread; runner drain is scheduled back
-        onto the main thread via :meth:`_drain_article_cache_runner` because
-        :class:`~wilted.station_runtime.coordinator.RuntimeBootstrap` must
-        initialize on the main thread before the pipeline runner executes.
+        Both the submission and the runner drain run here on the worker thread.
+        The drain executes the pipeline runner (TTS synthesis, model work); if it
+        ran on the UI thread the event loop would freeze and the just-pressed play
+        key — which flips ``_generation_paused``, the runner's yield seam — could
+        not be processed until the whole job finished (the BUG-2 freeze). Running
+        off-main is safe because tqdm's lock is initialized on the main thread at
+        mount and threaded in via ``self._bootstrap``, and the runner's signal
+        install is main-thread guarded. Only the post-drain UI refresh is
+        marshalled back to the main thread.
         """
         from wilted.pipeline_submit import submit_pending_article_cache_jobs
 
@@ -1196,10 +1217,16 @@ class WiltedApp(App):
         if worker.is_cancelled or submitted == 0:
             return
 
-        self.call_from_thread(self._drain_article_cache_runner)
+        self._drain_article_cache_runner()
 
     def _drain_article_cache_runner(self) -> None:
-        """Drain article-cache jobs on the main thread after submission."""
+        """Drain article-cache jobs on the CALLING (worker) thread.
+
+        The heavy runner work stays off the UI thread; the post-drain UI refresh
+        is marshalled to the main thread via ``call_from_thread``. Called only
+        from :meth:`_submit_article_cache_worker` (a ``@work(thread=True)``
+        worker), so ``call_from_thread`` here is always cross-thread.
+        """
         from wilted.background_work.contracts import JobKind
         from wilted.pipeline_submit import drain_runner
 
@@ -1209,8 +1236,17 @@ class WiltedApp(App):
         drain_runner(
             kind=JobKind.ARTICLE_CACHE,
             station_active_check=lambda: self._generation_paused,
+            bootstrap=self._bootstrap,
         )
 
+        # UI mutations (_set_status / _rebuild_sequencer both query the DOM) must
+        # run on the main thread. Re-check is_running: a long drain can outlive
+        # app teardown, and call_from_thread raises once the loop has stopped.
+        if self.is_running:
+            self.call_from_thread(self._finish_article_cache_drain)
+
+    def _finish_article_cache_drain(self) -> None:
+        """Main-thread UI refresh after a worker-thread article-cache drain."""
         if not self._playing:
             self._set_status("Ready")
         self._rebuild_sequencer()

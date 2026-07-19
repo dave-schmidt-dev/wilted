@@ -175,8 +175,19 @@ def drain_runner(
     kind: JobKind | None = None,
     max_jobs_per_run: int = _DEFAULT_MAX_JOBS_PER_RUN,
     station_active_check: Callable[[], bool] | None = None,
+    bootstrap: RuntimeBootstrap | None = None,
 ) -> RunStats:
-    """Run the pipeline runner until no runnable jobs remain for ``kind``."""
+    """Run the pipeline runner until no runnable jobs remain for ``kind``.
+
+    Args:
+        bootstrap: A caller-supplied :class:`RuntimeBootstrap` already made
+            ready (``init_tqdm_lock()`` run) on the main thread. Threaded
+            through so a Textual worker-thread drain reuses that main-thread
+            lock via ``require_ready()`` instead of re-initializing it off-main,
+            which raises by design (INV-1/BUG-2). When omitted, a fresh
+            bootstrap is built and initialized on the current (assumed main)
+            thread — the CLI drain path, unchanged.
+    """
     accum = RunStats()
     if not _has_runnable_jobs(kind=kind):
         return accum
@@ -186,7 +197,7 @@ def drain_runner(
         require_speech_ready()
 
     runner = PipelineRunner(
-        bootstrap=_ready_bootstrap(),
+        bootstrap=bootstrap if bootstrap is not None else _ready_bootstrap(),
         max_jobs_per_run=max_jobs_per_run,
         station_active_check=station_active_check,
     )

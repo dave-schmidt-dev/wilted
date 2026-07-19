@@ -230,7 +230,12 @@ class PipelineRunner:
     def run(self, *, owner_id: str | None = None) -> RunResult:
         """Acquire the execution flock, drain up to ``max_jobs_per_run`` jobs, release.
 
-        Must be called from the main thread after ``RuntimeBootstrap.init_tqdm_lock()``.
+        Requires ``RuntimeBootstrap.init_tqdm_lock()`` to have already run on the
+        main thread (the runner only ``require_ready()``-checks it here — INV-1).
+        May itself be called from a worker thread: signal handlers are installed
+        only when running on the main thread (``_install_signal_handlers`` no-ops
+        off-main, since ``signal.signal()`` is main-thread-only), so the TUI
+        article-cache drain can invoke this from its ``@work(thread=True)`` worker.
 
         Args:
             owner_id: Opaque runner identity recorded on claimed leases.
@@ -375,6 +380,18 @@ class PipelineRunner:
 
     def _install_signal_handlers(self) -> dict[int, Any]:
         previous: dict[int, Any] = {}
+
+        # ``signal.signal()`` only works on the main thread. The TUI drains the
+        # article-cache runner from a Textual worker thread (the BUG-2 UI-freeze
+        # fix): there, process-level SIGTERM/SIGHUP are already owned by the
+        # main thread's own handlers (see ``cli._launch_tui``) and the drain is
+        # stopped cooperatively via ``worker.is_cancelled`` / the
+        # ``station_active_check`` yield seam, so installing here is neither
+        # possible nor needed. Off-main, ``signal.signal`` raises ``ValueError``;
+        # skip it and return an empty map (restore then no-ops). CLI and
+        # scheduler-tick callers run on their own main thread and are unaffected.
+        if threading.current_thread() is not threading.main_thread():
+            return previous
 
         def _request_stop(signum: int, _frame: Any) -> None:
             logger.warning("Processing runner received stop signal %s", signum)
