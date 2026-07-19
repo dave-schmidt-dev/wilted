@@ -377,6 +377,30 @@ class TestPruneTerminalJobs:
         assert get_job(cancelled.id) is None
         assert get_job(still_running.id) is not None
 
+    def test_state_guard_survives_a_requeue_with_stale_completed_at(self):
+        """A prune candidate requeued back to a runnable state must survive,
+        even if it still carries an old ``completed_at``.
+
+        Regression for the retention TOCTOU: the delete once selected ids and
+        then deleted by ``id.in_(...)`` with no state predicate, so a concurrent
+        ``_requeue_job`` (state -> ``queued``, ``completed_at`` cleared) landing
+        between select and delete could drop a now-runnable job. The atomic
+        state-guarded DELETE must exclude any non-terminal row regardless of its
+        timestamp — proven here with a ``queued`` row bearing a stale old
+        ``completed_at`` (a pure age-only delete would wrongly remove it).
+        """
+        old = "2020-01-01T00:00:00Z"
+        job = self._make_job(
+            state=ProcessingJobState.QUEUED,
+            completed_at=old,
+            key_suffix="requeued-stale-ts",
+        )
+
+        deleted = prune_terminal_jobs(older_than_days=14, now="2020-02-01T00:00:00Z")
+
+        assert deleted == 0
+        assert get_job(job.id) is not None
+
     def test_rejects_negative_older_than_days(self):
         with pytest.raises(ValueError, match="older_than_days"):
             prune_terminal_jobs(older_than_days=-1)

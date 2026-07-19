@@ -641,17 +641,25 @@ def run_discover_via_runner(
         return {"discovered": 0, "feeds_polled": 0, "errors": 0, "unknown": 0}
 
     submitted_keys: dict[int, str] = {}
+    unknown = 0
     for feed in feeds:
-        result = submit_discover(feed.id, sync_run=False)
+        try:
+            result = submit_discover(feed.id, sync_run=False)
+        except Exception:
+            # Per-feed isolation (INV-6): one feed's submission failure must not
+            # abort the run or starve the drain for the remaining feeds. Tally
+            # it as unknown (never as discovered) and keep going.
+            logger.warning("Discover submit failed for feed %s; isolating and continuing", feed.id, exc_info=True)
+            unknown += 1
+            continue
         submitted_keys[feed.id] = result.idempotency_key
 
     drain_runner(kind=JobKind.DISCOVER, max_jobs_per_run=max_jobs_per_run)
 
     discovered = 0
     errors = 0
-    unknown = 0
-    for feed in feeds:
-        job = get_job_by_key(submitted_keys[feed.id])
+    for key in submitted_keys.values():
+        job = get_job_by_key(key)
         if job is None or job.state != ProcessingJobState.COMPLETED.value or not job.result_json:
             unknown += 1
             continue

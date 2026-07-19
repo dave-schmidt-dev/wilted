@@ -160,6 +160,31 @@ class TestRunDiscoverViaRunner:
         assert result["errors"] == 0
         assert result["unknown"] == 0
 
+    def test_one_feed_submit_failure_does_not_abort_the_others(self, monkeypatch) -> None:
+        """Per-feed isolation (INV-6): a feed whose submission raises must not
+        abort the run. The remaining feeds still submit, drain, and report; the
+        failed feed is tallied as ``unknown``, never as discovered."""
+        add_feed("https://example.com/healthy.xml", feed_type="podcast")
+        broken = add_feed("https://example.com/broken.xml", feed_type="podcast")
+        stats = {"new": 2, "skipped": 0, "errors": 0}
+        monkeypatch.setattr("wilted.handlers.discover._poll_feed", lambda f: stats)
+
+        real_submit = submit_discover
+
+        def _submit_or_raise(feed_id, **kwargs):
+            if feed_id == broken.id:
+                raise RuntimeError("simulated per-feed submit failure")
+            return real_submit(feed_id, **kwargs)
+
+        monkeypatch.setattr("wilted.pipeline_submit.submit_discover", _submit_or_raise)
+
+        result = run_discover_via_runner()
+
+        assert result["feeds_polled"] == 2
+        assert result["discovered"] == 2  # healthy feed still processed end to end
+        assert result["unknown"] == 1  # broken feed isolated, surfaced as unknown
+        assert result["errors"] == 0
+
 
 class TestReportHandler:
     def test_assembles_stable_report_membership(self) -> None:

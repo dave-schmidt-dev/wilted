@@ -836,9 +836,17 @@ def prune_terminal_jobs(*, older_than_days: int = 14, now: str | None = None) ->
     Only rows whose state is a terminal state (``completed``, ``failed``,
     ``cancelled``) with a ``completed_at`` older than ``older_than_days`` are
     removed. Non-terminal rows (``queued``/``running``/``retry``/``deferred``)
-    are never candidates regardless of age, and every candidate is re-checked
-    against the terminal-state set immediately before deletion so a prune can
-    never remove in-flight work.
+    are never candidates regardless of age.
+
+    The removal is a single atomic ``DELETE`` whose ``WHERE`` clause carries
+    the full terminal + age predicate. SQLite re-evaluates that predicate at
+    delete time, so a row a concurrent writer requeues (``_requeue_job`` sets
+    ``state`` back to ``queued`` and clears ``completed_at``) after we decide
+    to prune but before the delete lands no longer matches and is left
+    untouched — a prune can never remove in-flight work. Filtering inside the
+    ``DELETE`` (rather than selecting ids and deleting by ``id.in_(...)``) also
+    binds only the constant predicate values, so a large candidate set cannot
+    trip SQLite's bound-variable limit and silently no-op the retention sweep.
 
     Args:
         older_than_days: Age threshold in days from ``now``.
@@ -849,8 +857,6 @@ def prune_terminal_jobs(*, older_than_days: int = 14, now: str | None = None) ->
 
     Raises:
         ValueError: When ``older_than_days`` is negative.
-        RuntimeError: When a selected candidate is not actually terminal
-            (defensive — should be unreachable given the query's own filter).
     """
     if older_than_days < 0:
         raise ValueError(f"older_than_days must be >= 0, got {older_than_days}")
@@ -863,23 +869,17 @@ def prune_terminal_jobs(*, older_than_days: int = 14, now: str | None = None) ->
     cutoff = cutoff_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     terminal_values = [state.value for state in _TERMINAL_STATES]
 
-    candidates = list(
-        ProcessingJob.select().where(
+    deleted = (
+        ProcessingJob.delete()
+        .where(
             (ProcessingJob.state.in_(terminal_values))
             & (ProcessingJob.completed_at.is_null(False))
             & (ProcessingJob.completed_at < cutoff),
-        ),
+        )
+        .execute()
     )
-    if not candidates:
-        return 0
-
-    non_terminal_ids = [job.id for job in candidates if job.state not in terminal_values]
-    if non_terminal_ids:
-        raise RuntimeError(f"prune_terminal_jobs refused to delete non-terminal job(s): {non_terminal_ids}")
-
-    ids = [job.id for job in candidates]
-    deleted = ProcessingJob.delete().where(ProcessingJob.id.in_(ids)).execute()
-    logger.info("Pruned %d terminal processing job(s) completed before %s", deleted, cutoff)
+    if deleted:
+        logger.info("Pruned %d terminal processing job(s) completed before %s", deleted, cutoff)
     return deleted
 
 
