@@ -49,6 +49,28 @@ def _wall_clock_z(dt: datetime) -> str:
     return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _poll_until_truthy(predicate, *, timeout: float, interval: float):
+    """Poll ``predicate()`` until it returns a truthy value, or raise on timeout.
+
+    Used instead of a fixed ``time.sleep`` + single read for background-thread
+    assertions: a single blind sleep sized as a small multiple of a very short
+    heartbeat interval leaves no margin under full-suite CPU/scheduling load,
+    and ``predicate`` may transiently return a falsy value (e.g. a torn read
+    of a file a background thread is mid-write to -- ``_write_heartbeat``
+    truncates then writes non-atomically) even once the thread is behaving
+    correctly. Retrying tolerates both hazards without weakening what is
+    actually asserted once a truthy value is observed.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        result = predicate()
+        if result:
+            return result
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"condition not met within {timeout}s (last result: {result!r})")
+        time.sleep(interval)
+
+
 # ---------------------------------------------------------------------------
 # (a) Concurrent acquisitions -> exactly one holder
 # ---------------------------------------------------------------------------
@@ -596,7 +618,16 @@ def test_heartbeat_record_uses_wall_clock_not_monotonic():
 
 @pytest.mark.unit
 def test_heartbeat_thread_keeps_refreshing_wall_clock_heartbeat():
-    """The background heartbeat thread refreshes the wall-clock timestamp on its interval."""
+    """The background heartbeat thread refreshes the wall-clock timestamp on its interval.
+
+    De-flaked (was a fixed ``time.sleep(interval * 5)`` then a single read):
+    under full-suite CPU/scheduling load that fixed margin was not always
+    enough for the background thread to even be scheduled once, and a read
+    landing exactly mid-write (``_write_heartbeat`` truncates then writes,
+    non-atomically) could transiently observe a torn/empty file and return
+    None. Polling with a generous ceiling, retrying on a transient None read,
+    removes both hazards deterministically without weakening the assertions.
+    """
     store = JsonStationStore()
     manager = ControllerLeaseManager(
         "steady-holder",
@@ -607,9 +638,16 @@ def test_heartbeat_thread_keeps_refreshing_wall_clock_heartbeat():
 
     manager.acquire()
     try:
-        first_heartbeat = manager._read_heartbeat()  # noqa: SLF001
-        time.sleep(_SHORT_HEARTBEAT_INTERVAL * 5)
-        second_heartbeat = manager._read_heartbeat()  # noqa: SLF001
+        first_heartbeat = _poll_until_truthy(
+            manager._read_heartbeat,  # noqa: SLF001
+            timeout=5.0,
+            interval=_SHORT_HEARTBEAT_INTERVAL,
+        )
+        second_heartbeat = _poll_until_truthy(
+            manager._read_heartbeat,  # noqa: SLF001
+            timeout=5.0,
+            interval=_SHORT_HEARTBEAT_INTERVAL,
+        )
         assert second_heartbeat is not None
         assert first_heartbeat is not None
         assert second_heartbeat.last_beat_wall_clock >= first_heartbeat.last_beat_wall_clock
