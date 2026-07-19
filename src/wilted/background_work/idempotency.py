@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from enum import StrEnum
 
 from wilted.background_work.contracts import JobKind, ProcessingJobState
 
 _LOGICAL_IDENTITY_HELP = """
 Per-kind logical identity recipes (operation_version is separate):
-    discover: feed:{feed_id}
+    discover: feed:{feed_id}:{run_date}
     classify/prepare/article_cache: item:{item_id}
     report_assembly: report:{report_date}
     compact_briefing: briefing:{window_start}:{window_end}
@@ -80,6 +81,18 @@ def build_idempotency_key(
     return IdempotencyKey(kind=kind, operation_version=operation_version, logical_identity=logical_identity)
 
 
+def _default_run_date() -> str:
+    """Return today's local date as ``YYYY-MM-DD``.
+
+    Duplicates :func:`wilted.report._local_date_str` rather than importing it:
+    ``wilted.background_work`` is substrate-neutral and must not import
+    anything outside the package (enforced by
+    ``TestSubstrateNeutrality.test_no_forbidden_import_statements_in_source``),
+    even via a lazy in-function import.
+    """
+    return date.today().isoformat()
+
+
 def logical_identity_for_kind(
     kind: JobKind,
     *,
@@ -88,16 +101,25 @@ def logical_identity_for_kind(
     report_date: str | None = None,
     window_start: str | None = None,
     window_end: str | None = None,
+    run_date: str | None = None,
 ) -> str:
     """Return the logical identity fragment for a job kind.
 
     Recipes (operation_version is separate):
-        discover: ``feed:{feed_id}``
+        discover: ``feed:{feed_id}:{run_date}``
         classify: ``item:{item_id}``
         prepare: ``item:{item_id}``
         article_cache: ``item:{item_id}``
         report_assembly: ``report:{report_date}``
         compact_briefing: ``briefing:{window_start}:{window_end}``
+
+    ``discover``'s identity carries a run-date component (mirroring
+    ``report_assembly``'s date scoping) so ``_submit_fresh_generation``'s
+    per-identity ``operation_version`` walk resets every day instead of
+    climbing forever against one permanent ``feed:{feed_id}`` identity.
+    ``run_date`` defaults to today's local date (see :func:`_default_run_date`,
+    equivalent to :func:`wilted.report._local_date_str`) when omitted, so
+    every existing ``feed_id``-only caller keeps working.
 
     Raises:
         ValueError: When required identity fields for ``kind`` are missing.
@@ -105,7 +127,8 @@ def logical_identity_for_kind(
     if kind is JobKind.DISCOVER:
         if feed_id is None:
             raise ValueError("discover requires feed_id")
-        return f"feed:{feed_id}"
+        resolved_run_date = run_date if run_date is not None else _default_run_date()
+        return f"feed:{feed_id}:{resolved_run_date}"
     if kind in (JobKind.CLASSIFY, JobKind.PREPARE, JobKind.ARTICLE_CACHE):
         if not item_id:
             raise ValueError(f"{kind.value} requires item_id")

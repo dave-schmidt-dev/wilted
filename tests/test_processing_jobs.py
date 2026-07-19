@@ -20,6 +20,7 @@ from wilted.processing_jobs import (
     MetadataTooLargeError,
     get_job,
     get_job_by_key,
+    prune_terminal_jobs,
     redact_metadata,
     submit_job,
     transition_job_state,
@@ -139,6 +140,58 @@ class TestSubmitJobAdmission:
         assert retry.created is False
         assert get_job(first.job_id).state == ProcessingJobState.QUEUED.value
 
+    def test_failed_job_retry_resets_attempt_count_and_result_json(self):
+        """Retry-in-place must start a clean attempt budget and drop any prior result.
+
+        Neither field was reset before this fix: a retried job could carry
+        forward a stale ``attempt_count`` (exhausting ``max_attempts`` early)
+        or a stale ``result_json`` from an unrelated earlier generation.
+        """
+        key = _classify_key(item_id="retry-reset")
+        first = submit_job(key)
+        assert transition_job_state(first.job_id, ProcessingJobState.QUEUED, ProcessingJobState.RUNNING)
+        assert transition_job_state(first.job_id, ProcessingJobState.RUNNING, ProcessingJobState.FAILED)
+
+        # Simulate leftover attempt/result state from the prior generation.
+        (
+            ProcessingJob.update(
+                attempt_count=3,
+                result_json='{"manifest":{},"metadata":{"stale":true}}',
+            ).where(ProcessingJob.id == first.job_id)
+        ).execute()
+
+        retry = submit_job(key)
+
+        assert retry.outcome is SubmissionOutcome.SUBMITTED
+        assert retry.created is False
+        assert retry.job_id == first.job_id
+        refreshed = get_job(first.job_id)
+        assert refreshed is not None
+        assert refreshed.state == ProcessingJobState.QUEUED.value
+        assert refreshed.attempt_count == 0
+        assert refreshed.result_json is None
+
+    def test_cancelled_job_retry_resets_attempt_count_and_result_json(self):
+        key = _classify_key(item_id="retry-cancelled-reset")
+        first = submit_job(key)
+        assert transition_job_state(first.job_id, ProcessingJobState.QUEUED, ProcessingJobState.RUNNING)
+        assert transition_job_state(first.job_id, ProcessingJobState.RUNNING, ProcessingJobState.CANCELLED)
+
+        (
+            ProcessingJob.update(
+                attempt_count=2,
+                result_json='{"manifest":{},"metadata":{}}',
+            ).where(ProcessingJob.id == first.job_id)
+        ).execute()
+
+        retry = submit_job(key)
+
+        assert retry.outcome is SubmissionOutcome.SUBMITTED
+        refreshed = get_job(first.job_id)
+        assert refreshed is not None
+        assert refreshed.attempt_count == 0
+        assert refreshed.result_json is None
+
     def test_completed_job_returns_completed_without_new_row(self):
         key = _classify_key(item_id="done")
         first = submit_job(key)
@@ -222,6 +275,111 @@ class TestRepositoryHelpers:
         with pytest.raises(IntegrityError):
             job.state = "not-a-state"
             job.save()
+
+
+class TestPruneTerminalJobs:
+    def _make_job(
+        self,
+        *,
+        kind: JobKind = JobKind.DISCOVER,
+        state: ProcessingJobState,
+        completed_at: str | None,
+        key_suffix: str,
+    ) -> ProcessingJob:
+        now = now_utc()
+        return ProcessingJob.create(
+            idempotency_key=f"{kind.value}:v1:prune-test:{key_suffix}",
+            kind=kind.value,
+            state=state.value,
+            priority=0,
+            attempt_count=0,
+            max_attempts=3,
+            created_at=now,
+            updated_at=now,
+            completed_at=completed_at,
+        )
+
+    def test_deletes_terminal_rows_older_than_cutoff(self):
+        job = self._make_job(
+            state=ProcessingJobState.COMPLETED,
+            completed_at="2020-01-01T00:00:00Z",
+            key_suffix="old-completed",
+        )
+
+        deleted = prune_terminal_jobs(older_than_days=14, now="2020-02-01T00:00:00Z")
+
+        assert deleted == 1
+        assert get_job(job.id) is None
+
+    def test_retains_recent_terminal_rows(self):
+        job = self._make_job(
+            state=ProcessingJobState.FAILED,
+            completed_at="2020-01-30T00:00:00Z",
+            key_suffix="recent-failed",
+        )
+
+        deleted = prune_terminal_jobs(older_than_days=14, now="2020-02-01T00:00:00Z")
+
+        assert deleted == 0
+        assert get_job(job.id) is not None
+
+    def test_never_touches_non_terminal_rows_regardless_of_age(self):
+        old = "2020-01-01T00:00:00Z"
+        job = ProcessingJob.create(
+            idempotency_key="classify:v1:prune-test:non-terminal",
+            kind=JobKind.CLASSIFY.value,
+            state=ProcessingJobState.QUEUED.value,
+            priority=0,
+            attempt_count=0,
+            max_attempts=3,
+            created_at=old,
+            updated_at=old,
+            completed_at=None,
+        )
+
+        deleted = prune_terminal_jobs(older_than_days=14, now="2020-02-01T00:00:00Z")
+
+        assert deleted == 0
+        assert get_job(job.id) is not None
+
+    def test_prunes_terminal_rows_across_every_kind(self):
+        old = "2020-01-01T00:00:00Z"
+        completed = self._make_job(
+            kind=JobKind.DISCOVER,
+            state=ProcessingJobState.COMPLETED,
+            completed_at=old,
+            key_suffix="discover",
+        )
+        failed = self._make_job(
+            kind=JobKind.CLASSIFY,
+            state=ProcessingJobState.FAILED,
+            completed_at=old,
+            key_suffix="classify",
+        )
+        cancelled = self._make_job(
+            kind=JobKind.REPORT_ASSEMBLY,
+            state=ProcessingJobState.CANCELLED,
+            completed_at=old,
+            key_suffix="report",
+        )
+        still_running = self._make_job(
+            kind=JobKind.PREPARE,
+            state=ProcessingJobState.RUNNING,
+            completed_at=None,
+            key_suffix="prepare",
+        )
+
+        deleted = prune_terminal_jobs(older_than_days=14, now="2020-02-01T00:00:00Z")
+
+        assert deleted == 3
+        assert get_job(completed.id) is None
+        assert get_job(failed.id) is None
+        assert get_job(cancelled.id) is None
+        assert get_job(still_running.id) is not None
+
+    def test_rejects_negative_older_than_days(self):
+        with pytest.raises(ValueError, match="older_than_days"):
+            prune_terminal_jobs(older_than_days=-1)
 
 
 class TestMigration003:

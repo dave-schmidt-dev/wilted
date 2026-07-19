@@ -716,6 +716,12 @@ def _outcome_for_existing(
 
 
 def _requeue_job(job_id: int, *, now: str) -> None:
+    """Reset a terminal failed/cancelled job back to ``queued`` for retry-in-place.
+
+    Clears ``attempt_count`` and ``result_json`` in addition to the existing
+    lease/timestamp/error resets — a retry-in-place generation starts with a
+    clean attempt budget and never carries forward a prior generation's result.
+    """
     ProcessingJob.update(
         state=ProcessingJobState.QUEUED.value,
         updated_at=now,
@@ -724,6 +730,8 @@ def _requeue_job(job_id: int, *, now: str) -> None:
         lease_owner=None,
         lease_expires_at=None,
         error_json=None,
+        attempt_count=0,
+        result_json=None,
     ).where(ProcessingJob.id == job_id).execute()
 
 
@@ -820,6 +828,59 @@ def get_job_by_key(idempotency_key: str) -> ProcessingJob | None:
     """Return one processing job by canonical idempotency key, or None."""
     ensure_db()
     return ProcessingJob.get_or_none(ProcessingJob.idempotency_key == idempotency_key)
+
+
+def prune_terminal_jobs(*, older_than_days: int = 14, now: str | None = None) -> int:
+    """Delete terminal-state :class:`ProcessingJob` rows older than a cutoff.
+
+    Only rows whose state is a terminal state (``completed``, ``failed``,
+    ``cancelled``) with a ``completed_at`` older than ``older_than_days`` are
+    removed. Non-terminal rows (``queued``/``running``/``retry``/``deferred``)
+    are never candidates regardless of age, and every candidate is re-checked
+    against the terminal-state set immediately before deletion so a prune can
+    never remove in-flight work.
+
+    Args:
+        older_than_days: Age threshold in days from ``now``.
+        now: Current UTC ISO-8601 ``Z`` timestamp (defaults to live ``now_utc()``).
+
+    Returns:
+        Count of deleted rows.
+
+    Raises:
+        ValueError: When ``older_than_days`` is negative.
+        RuntimeError: When a selected candidate is not actually terminal
+            (defensive — should be unreachable given the query's own filter).
+    """
+    if older_than_days < 0:
+        raise ValueError(f"older_than_days must be >= 0, got {older_than_days}")
+
+    ensure_db()
+    resolved_now = now or now_utc()
+    cutoff_dt = datetime.fromisoformat(resolved_now.replace("Z", "+00:00")).astimezone(UTC) - timedelta(
+        days=older_than_days,
+    )
+    cutoff = cutoff_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    terminal_values = [state.value for state in _TERMINAL_STATES]
+
+    candidates = list(
+        ProcessingJob.select().where(
+            (ProcessingJob.state.in_(terminal_values))
+            & (ProcessingJob.completed_at.is_null(False))
+            & (ProcessingJob.completed_at < cutoff),
+        ),
+    )
+    if not candidates:
+        return 0
+
+    non_terminal_ids = [job.id for job in candidates if job.state not in terminal_values]
+    if non_terminal_ids:
+        raise RuntimeError(f"prune_terminal_jobs refused to delete non-terminal job(s): {non_terminal_ids}")
+
+    ids = [job.id for job in candidates]
+    deleted = ProcessingJob.delete().where(ProcessingJob.id.in_(ids)).execute()
+    logger.info("Pruned %d terminal processing job(s) completed before %s", deleted, cutoff)
+    return deleted
 
 
 def transition_job_state(

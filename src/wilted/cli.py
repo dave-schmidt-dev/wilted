@@ -384,11 +384,36 @@ def cmd_list_voices():
             print(f"  {accent}: {', '.join(voices)}")
 
 
+def cmd_db_prune(argv: list[str]) -> None:
+    """Delete terminal processing-job ledger rows older than a retention window."""
+    parser = argparse.ArgumentParser(prog="wilted db prune")
+    parser.add_argument(
+        "--older-than-days",
+        type=int,
+        default=14,
+        help="Delete terminal processing jobs completed more than N days ago (default: 14)",
+    )
+    args = parser.parse_args(argv)
+
+    from wilted import DATA_DIR
+    from wilted.db import connect_db
+    from wilted.processing_jobs import prune_terminal_jobs
+
+    connect_db(DATA_DIR / "wilted.db")
+    deleted = prune_terminal_jobs(older_than_days=args.older_than_days)
+    print(f"Pruned {deleted} terminal processing job(s) older than {args.older_than_days} day(s)")
+
+
 def cmd_db(argv: list[str]) -> None:
     """Database maintenance commands."""
-    if not argv or argv[0] != "cutover":
+    if not argv or argv[0] not in ("cutover", "prune"):
         print("Usage: wilted db cutover [--dry-run] [--backup-dir PATH] [--force]", file=sys.stderr)
+        print("       wilted db prune [--older-than-days N]", file=sys.stderr)
         sys.exit(1)
+
+    if argv[0] == "prune":
+        cmd_db_prune(argv[1:])
+        return
 
     parser = argparse.ArgumentParser(prog="wilted db cutover")
     parser.add_argument("--dry-run", action="store_true", help="Plan cutover without mutating the database")
@@ -836,6 +861,11 @@ def cmd_discover(argv: list[str]) -> None:
         print(f"Discovery complete: {stats['discovered']} new items from {stats['feeds_polled']} feeds")
         if stats["errors"]:
             print(f"  {stats['errors']} feed(s) had errors (see /tmp/wilted.log)")
+        if stats.get("unknown"):
+            print(
+                f"  {stats['unknown']} feed(s) did not finish draining — outcome unknown, "
+                f"not counted (see /tmp/wilted.log)",
+            )
     except Exception as e:
         print(f"Discovery failed: {e}", file=sys.stderr)
         sys.exit(1)

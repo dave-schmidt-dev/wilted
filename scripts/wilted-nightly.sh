@@ -61,6 +61,16 @@ if /bin/bash "$WILTED_RUNTIME" ingest >> "$RUN_LOG" 2>&1; then
     ELAPSED=$((END_TIME - START_TIME))
     log "completed successfully in ${ELAPSED}s"
 
+    # Prune the terminal processing-job ledger. Non-fatal: a prune failure must
+    # never block or skip the email report below, so it lives in its own
+    # if/else rather than being chained with && / relying on set -e.
+    if /bin/bash "$WILTED_RUNTIME" db prune >> "$RUN_LOG" 2>&1; then
+        log "ledger prune completed"
+    else
+        PRUNE_STATUS=$?
+        log "ledger prune failed with exit code ${PRUNE_STATUS} (non-fatal, continuing)"
+    fi
+
     # Send email report if configured
     if /bin/bash "$WILTED_RUNTIME" report --email >> "$RUN_LOG" 2>&1; then
         log "email report sent"

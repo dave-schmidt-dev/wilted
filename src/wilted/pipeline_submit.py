@@ -18,7 +18,7 @@ from wilted.background_work.idempotency import IdempotencyKey, build_idempotency
 from wilted.content_state import items_for_prepare, items_pending_classification, read_content_state
 from wilted.db import Item, ProcessingJob, ensure_db
 from wilted.pipeline_runner import PipelineRunner, RunStats
-from wilted.processing_jobs import SubmitResult, submit_job
+from wilted.processing_jobs import SubmitResult, get_job_by_key, submit_job
 from wilted.speech_ready import require_speech_ready, runnable_cohort_requires_speech
 from wilted.station_runtime.coordinator import RuntimeBootstrap
 
@@ -111,31 +111,6 @@ def _submit_fresh_generation(
         if result.outcome is not SubmissionOutcome.COMPLETED:
             return result
     raise RuntimeError("could not admit a fresh processing job generation")
-
-
-def _latest_result_metadata(*, kind: JobKind, logical_identity: str) -> dict[str, Any]:
-    """Return result metadata from the newest completed job for one logical identity."""
-    suffix = f":{logical_identity}"
-    latest: ProcessingJob | None = None
-    latest_version = -1
-    for job in ProcessingJob.select().where(ProcessingJob.kind == kind.value):
-        if not job.idempotency_key.endswith(suffix):
-            continue
-        try:
-            version = int(job.idempotency_key.split(":v", 1)[1].split(":", 1)[0])
-        except (IndexError, ValueError):
-            continue
-        if version > latest_version:
-            latest_version = version
-            latest = job
-    if latest is None or not latest.result_json:
-        return {}
-    try:
-        payload = json.loads(latest.result_json)
-    except json.JSONDecodeError:
-        return {}
-    metadata = payload.get("metadata")
-    return metadata if isinstance(metadata, dict) else {}
 
 
 def _article_cache_metadata(
@@ -643,29 +618,63 @@ def run_discover_via_runner(
     *,
     max_jobs_per_run: int = _DEFAULT_MAX_JOBS_PER_RUN,
 ) -> dict[str, int]:
-    """Submit discovery jobs for all enabled feeds and drain the runner."""
+    """Submit discovery jobs for all enabled feeds and drain the runner.
+
+    Captures each feed's exact submitted idempotency key before the drain,
+    then reads that same key back afterward — never re-derives an identity,
+    which could silently pick up a different day's or a stale row. A feed
+    counts toward ``discovered``/``errors`` only when its own job reached a
+    terminal ``completed`` state with a non-empty result. Anything else
+    (still busy, lock contention, not yet drained) is tallied under
+    ``unknown`` rather than assumed to be zero, so aggregate counts never
+    silently under-report.
+
+    Returns:
+        Dict with ``discovered``, ``feeds_polled``, ``errors``, and ``unknown`` counts.
+    """
     from wilted.db import Feed
 
     ensure_db()
     feeds = list(Feed.select().where(Feed.enabled == True))  # noqa: E712
     if not feeds:
         logger.info("No enabled feeds to poll")
-        return {"discovered": 0, "feeds_polled": 0, "errors": 0}
+        return {"discovered": 0, "feeds_polled": 0, "errors": 0, "unknown": 0}
 
+    submitted_keys: dict[int, str] = {}
     for feed in feeds:
-        submit_discover(feed.id, sync_run=False)
+        result = submit_discover(feed.id, sync_run=False)
+        submitted_keys[feed.id] = result.idempotency_key
 
     drain_runner(kind=JobKind.DISCOVER, max_jobs_per_run=max_jobs_per_run)
 
     discovered = 0
     errors = 0
+    unknown = 0
     for feed in feeds:
-        identity = logical_identity_for_kind(JobKind.DISCOVER, feed_id=feed.id)
-        meta = _latest_result_metadata(kind=JobKind.DISCOVER, logical_identity=identity)
+        job = get_job_by_key(submitted_keys[feed.id])
+        if job is None or job.state != ProcessingJobState.COMPLETED.value or not job.result_json:
+            unknown += 1
+            continue
+        try:
+            payload = json.loads(job.result_json)
+        except json.JSONDecodeError:
+            unknown += 1
+            continue
+        meta = payload.get("metadata")
+        if not isinstance(meta, dict):
+            unknown += 1
+            continue
         discovered += int(meta.get("discovered", 0))
         errors += int(meta.get("errors", 0))
 
-    return {"discovered": discovered, "feeds_polled": len(feeds), "errors": errors}
+    if unknown:
+        logger.warning(
+            "Discovery outcome unknown for %d of %d feed(s) (not drained to completion)",
+            unknown,
+            len(feeds),
+        )
+
+    return {"discovered": discovered, "feeds_polled": len(feeds), "errors": errors, "unknown": unknown}
 
 
 def run_report_via_runner(

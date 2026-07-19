@@ -466,6 +466,31 @@ class TestIdempotency:
         )
         assert key_a.canonical == key_b.canonical == "classify:v3:item:item-99"
 
+    def test_discover_identity_defaults_run_date_when_omitted(self):
+        """Discover's run_date param defaults to today so existing feed_id-only callers keep working."""
+        from wilted.report import _local_date_str
+
+        identity = logical_identity_for_kind(JobKind.DISCOVER, feed_id=7)
+        assert identity == f"feed:7:{_local_date_str()}"
+
+    def test_discover_identity_accepts_explicit_run_date(self):
+        identity = logical_identity_for_kind(JobKind.DISCOVER, feed_id=7, run_date="2026-01-01")
+        assert identity == "feed:7:2026-01-01"
+
+    def test_discover_identity_differs_across_run_dates(self):
+        """Distinct run_date values must yield distinct identities and canonical keys.
+
+        This is the mechanism that resets the operation_version walk daily
+        instead of letting it climb forever against one permanent identity.
+        """
+        identity_a = logical_identity_for_kind(JobKind.DISCOVER, feed_id=7, run_date="2026-01-01")
+        identity_b = logical_identity_for_kind(JobKind.DISCOVER, feed_id=7, run_date="2026-01-02")
+        assert identity_a != identity_b
+
+        key_a = build_idempotency_key(JobKind.DISCOVER, operation_version=1, logical_identity=identity_a)
+        key_b = build_idempotency_key(JobKind.DISCOVER, operation_version=1, logical_identity=identity_b)
+        assert key_a.canonical != key_b.canonical
+
     def test_version_bump_changes_canonical_key(self):
         identity = logical_identity_for_kind(JobKind.PREPARE, item_id="7")
         key_v1 = build_idempotency_key(JobKind.PREPARE, operation_version=1, logical_identity=identity)

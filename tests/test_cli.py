@@ -21,6 +21,7 @@ from wilted.cli import (
     cmd_add,
     cmd_clear,
     cmd_direct,
+    cmd_discover,
     cmd_list,
     cmd_next,
     cmd_play,
@@ -248,6 +249,31 @@ class TestCmdClear:
 # ---------------------------------------------------------------------------
 # cmd_play
 # ---------------------------------------------------------------------------
+
+
+class TestCmdDiscover:
+    def test_reports_discovered_and_errors(self, capsys, monkeypatch):
+        monkeypatch.setattr(
+            "wilted.pipeline_submit.run_discover_via_runner",
+            lambda: {"discovered": 3, "feeds_polled": 2, "errors": 1, "unknown": 0},
+        )
+        cmd_discover([])
+        out = capsys.readouterr().out
+        assert "3 new items from 2 feeds" in out
+        assert "1 feed(s) had errors" in out
+        assert "did not finish draining" not in out
+
+    def test_surfaces_unknown_feeds_instead_of_silent_zero(self, capsys, monkeypatch):
+        # Regression for the "0 new items" misreport: when feeds don't drain to a
+        # terminal state, run_discover_via_runner tallies them under `unknown`
+        # rather than as zero, and cmd_discover must surface that to the user.
+        monkeypatch.setattr(
+            "wilted.pipeline_submit.run_discover_via_runner",
+            lambda: {"discovered": 0, "feeds_polled": 2, "errors": 0, "unknown": 2},
+        )
+        cmd_discover([])
+        out = capsys.readouterr().out
+        assert "2 feed(s) did not finish draining" in out
 
 
 class TestCmdPlay:
