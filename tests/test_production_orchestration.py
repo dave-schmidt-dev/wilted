@@ -21,8 +21,10 @@ from tests.production_orchestration_registry import (
     PRODUCTION_ORCHESTRATION_SURFACES,
     _run_cli_dispatch_subcommands,
     discover_orchestration_entrypoints,
+    nightly_plist_path,
     nightly_script_path,
     registry_entrypoints,
+    scheduler_plist_path,
     scheduler_script_path,
 )
 from wilted.cli import (
@@ -531,3 +533,69 @@ class TestShellWrapperOrchestration:
 
         assert 'if /bin/bash "$WILTED_RUNTIME" scheduler tick' in content
         assert 'if "$WILTED_RUNTIME" scheduler tick' not in content
+
+
+# ---------------------------------------------------------------------------
+# launchd log capture (per-agent std* logs, not /dev/null)
+# ---------------------------------------------------------------------------
+
+
+class TestLaunchdLogCapture:
+    """Both launchd agents must capture raw launchd-level stdout/stderr to a
+    per-agent log file, not discard it to ``/dev/null``.
+
+    Regression/parity (HISTORY 2026-07-23): the wrappers already redirect
+    *Wilted's own* output to per-run logs, but a fault in the wrapper itself
+    before those redirects land — a ``set -euo pipefail`` abort, a bad
+    ``/bin/bash`` invocation, a TCC exit-126 — went to ``/dev/null`` and left
+    no diagnostic trail. Point ``StandardOutPath``/``StandardErrorPath`` at
+    ``~/Library/Logs/homelab/wilted-<agent>/launchd.std{out,err}.log`` instead.
+    ``make install-launchd`` pre-creates the parent dirs, because launchd opens
+    these paths at load and will not create missing parents.
+    """
+
+    @pytest.mark.parametrize(
+        ("plist_path_fn", "agent_dir"),
+        [
+            (nightly_plist_path, "wilted-nightly"),
+            (scheduler_plist_path, "wilted-scheduler"),
+        ],
+    )
+    def test_plist_captures_std_streams_to_per_agent_log(self, plist_path_fn, agent_dir: str) -> None:
+        import plistlib
+
+        plist_path = plist_path_fn()
+        assert plist_path.is_file(), f"Expected plist at {plist_path}"
+        data = plistlib.loads(plist_path.read_bytes())
+
+        out_path = data["StandardOutPath"]
+        err_path = data["StandardErrorPath"]
+
+        # The regression being locked: no longer discarded.
+        assert out_path != "/dev/null", f"{plist_path.name} still discards stdout to /dev/null"
+        assert err_path != "/dev/null", f"{plist_path.name} still discards stderr to /dev/null"
+
+        # Routed to the per-agent homelab log dir, split by stream. Pin the FULL
+        # absolute path, not just the suffix, so a future edit that drifts the
+        # prefix away from the dir `make install-launchd` pre-creates trips this
+        # lock (launchd can't expand $HOME, so the plist value must stay literal).
+        expected_dir = f"/Users/dave/Library/Logs/homelab/{agent_dir}"
+        assert out_path == f"{expected_dir}/launchd.stdout.log"
+        assert err_path == f"{expected_dir}/launchd.stderr.log"
+
+    def test_install_launchd_precreates_log_dirs_before_bootstrap(self) -> None:
+        """``make install-launchd`` must ``mkdir -p`` both log dirs before any
+        ``launchctl bootstrap`` — launchd opens the std* paths at load and will
+        not create missing parents, so a fresh install would otherwise drop the
+        capture silently.
+        """
+        makefile = nightly_plist_path().parent.parent / "Makefile"
+        content = makefile.read_text(encoding="utf-8")
+
+        target = content.split("install-launchd:", 1)[1].split("\nuninstall-launchd:", 1)[0]
+        mkdir_nightly = target.index("mkdir -p $(HOME)/Library/Logs/homelab/wilted-nightly")
+        mkdir_scheduler = target.index("mkdir -p $(HOME)/Library/Logs/homelab/wilted-scheduler")
+        first_bootstrap = target.index("launchctl bootstrap")
+
+        assert mkdir_nightly < first_bootstrap, "nightly log dir must be created before bootstrap"
+        assert mkdir_scheduler < first_bootstrap, "scheduler log dir must be created before bootstrap"

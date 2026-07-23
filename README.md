@@ -453,7 +453,10 @@ wilted scheduler tick
 ```
 
 Logs: `~/Library/Logs/homelab/wilted-scheduler/` (and `~/Library/Logs/homelab/wilted-nightly/`),
-matching the homelab `ldstatus` convention. Uninstall with `make uninstall-launchd`.
+matching the homelab `ldstatus` convention. Each dir also holds `launchd.stdout.log` /
+`launchd.stderr.log`, where launchd captures any wrapper-level fault that occurs before the wrapper's
+own per-run log redirect lands (a `set -euo pipefail` abort, a TCC exit-126). Uninstall with
+`make uninstall-launchd`.
 
 **macOS Full Disk Access (required for the launchd agents).** The wrappers invoke the runtime as
 `/bin/bash "$WILTED_RUNTIME"` (launchd cannot exec a script resident under `~/Documents` — TCC returns

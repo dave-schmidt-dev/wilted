@@ -47,5 +47,11 @@ else
     END_TIME=$(date +%s)
     ELAPSED=$((END_TIME - START_TIME))
     log "failed with exit code ${EXIT_CODE} after ${ELAPSED}s"
+    # Deliberately NO email-alert here (unlike wilted-nightly.sh's failure branch):
+    # this tick fires HOURLY, so mailing on every failure would send ~24/day the
+    # moment FDA or the speech daemon wedges. The failure surface is the aggregate
+    # log line above, the per-run $RUN_LOG, launchd's own StandardErrorPath capture,
+    # and ldstatus. TODO: if a scheduler email is ever wanted, it MUST be throttled/
+    # deduped (e.g. once per wedged streak). See HISTORY.md 2026-07-23.
     exit "$EXIT_CODE"
 fi

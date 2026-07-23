@@ -19,8 +19,8 @@
         <integer>0</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>/dev/null</string>
+    <string>/Users/dave/Library/Logs/homelab/wilted-nightly/launchd.stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/dev/null</string>
+    <string>/Users/dave/Library/Logs/homelab/wilted-nightly/launchd.stderr.log</string>
 </dict>
 </plist>

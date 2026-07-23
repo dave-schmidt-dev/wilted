@@ -59,6 +59,11 @@ station-test:
 	WILTED_WEATHER_TEST_TRIGGER=$(WEATHER_TEST_TRIGGER) PYTHONPATH=src uv run --group dev python -m wilted.cli
 
 install-launchd:
+	@# launchd opens StandardOut/ErrorPath at load and will NOT create missing parent
+	@# dirs, so pre-create the per-agent log dirs before bootstrap. The wrappers'
+	@# own `mkdir -p` runs too late for launchd's own std* capture. See HISTORY.md.
+	mkdir -p $(HOME)/Library/Logs/homelab/wilted-nightly
+	mkdir -p $(HOME)/Library/Logs/homelab/wilted-scheduler
 	ln -sf $(CURDIR)/scripts/wilted-nightly.sh $(HOME)/.launchd/scripts/wilted_nightly.sh
 	cp scripts/local.wilted-nightly.plist $(HOME)/Library/LaunchAgents/local.wilted-nightly.plist
 	launchctl bootstrap gui/$$(id -u) $(HOME)/Library/LaunchAgents/local.wilted-nightly.plist || true

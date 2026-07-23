@@ -277,3 +277,21 @@ def scheduler_script_path(project_root: Path | None = None) -> Path:
 
         project_root = PROJECT_ROOT
     return project_root / "scripts" / "wilted-scheduler.sh"
+
+
+def nightly_plist_path(project_root: Path | None = None) -> Path:
+    """Resolve ``scripts/local.wilted-nightly.plist`` from the project root."""
+    if project_root is None:
+        from wilted import PROJECT_ROOT
+
+        project_root = PROJECT_ROOT
+    return project_root / "scripts" / "local.wilted-nightly.plist"
+
+
+def scheduler_plist_path(project_root: Path | None = None) -> Path:
+    """Resolve ``scripts/local.wilted-scheduler.plist`` from the project root."""
+    if project_root is None:
+        from wilted import PROJECT_ROOT
+
+        project_root = PROJECT_ROOT
+    return project_root / "scripts" / "local.wilted-scheduler.plist"
