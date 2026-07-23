@@ -110,8 +110,12 @@ Confirm with `ls -lO ~/.venvs/wilted/lib/python*/site-packages/*.pth` — the fl
 
 ```bash
 uv sync --group dev   # install with dev/test deps
-make validate                      # lint + full test suite
+make install-hooks                 # activate pre-commit hooks (ruff + vulture + policy)
+make validate                      # lint + dead-code + full test suite
 ```
+
+Run `make install-hooks` once per clone — without it the `.pre-commit-config.yaml`
+hooks are inert and never fire on `git commit`.
 
 ## Quick start
 

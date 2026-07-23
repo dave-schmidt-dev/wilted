@@ -1,4 +1,4 @@
-.PHONY: lint lint-sh deadcode test test-unit test-integration test-e2e test-tui validate station station-test install-daemon install-launchd uninstall-launchd
+.PHONY: lint lint-sh deadcode test test-unit test-integration test-e2e test-tui validate install-hooks station station-test install-daemon install-launchd uninstall-launchd
 
 # Well-known path for the A.5.1 manual weather-bulletin test trigger. `touch`
 # this file (from another shell) while the station is running under
@@ -43,6 +43,12 @@ test-tui:
 	uv run --group dev pytest -m tui
 
 validate: lint deadcode test
+
+# Activate the .pre-commit-config.yaml hooks in .git/hooks. Required once per
+# clone — without it the configured hooks (ruff, vulture, policy) never fire on
+# `git commit`. Idempotent.
+install-hooks:
+	uv run --group dev pre-commit install
 
 # Keep the recovery command advertised by the daemon-only TTS error contract
 # in the sibling speech-stack project, where the launchd service is owned.
