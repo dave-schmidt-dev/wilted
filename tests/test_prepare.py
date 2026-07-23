@@ -365,6 +365,39 @@ class TestPrepareEvictHint:
 
         assert stats["errors"] == 0
 
+    def test_evict_wedged_daemon_does_not_abort_prepare(self, tmp_path):
+        """Full-batch regression lock for the wedged-daemon evict fix (see
+        HISTORY 2026-07-19): a WEDGED daemon (socket present but unresponsive,
+        surfacing as ``ConnectionLost`` rather than ``DaemonUnavailable``) during
+        the between-phases evict hint must not crash the entire ``run_prepare``
+        batch. ``evict_stt_model()`` is called unconditionally and unguarded at
+        the ``run_prepare`` call site (no surrounding try/except there) -- so
+        this exercises the real, undisguised regression shape: before the fix,
+        ``evict_stt_model`` caught only ``DaemonUnavailable``, so a
+        present-but-wedged daemon's ``ConnectionLost`` propagated straight out of
+        this unguarded call and blew up the whole prepare run, not just the
+        evict hint. ``test_evict_failure_does_not_abort_prepare`` above only
+        covers the already-handled ``DaemonUnavailable`` case, which the buggy
+        pre-fix code also caught -- it would not have caught this regression.
+        """
+        from speech_stack import client
+
+        audio_file, segments = self._podcast_pipeline(tmp_path)
+        wedged = client.ConnectionLost("stream closed after 0 of 4 expected bytes (peer gone)")
+
+        with (
+            patch("wilted.prepare.download_podcast", return_value=audio_file),
+            patch("wilted.prepare.get_transcript", return_value=segments),
+            patch("wilted.prepare.save_transcript"),
+            patch("wilted.engine.AudioEngine") as MockEngine,
+            patch("wilted.transcribe.client.evict", side_effect=wedged),
+        ):
+            MockEngine.return_value.get_file_duration.return_value = 5.0
+            stats = _run_prepare(use_llm=False)  # must not raise
+
+        assert stats["errors"] == 0
+        assert stats["prepared"] == 1
+
 
 # ---------------------------------------------------------------------------
 # run_prepare — mixed items

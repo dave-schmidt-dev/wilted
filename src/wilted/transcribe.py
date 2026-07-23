@@ -471,17 +471,28 @@ def evict_stt_model() -> None:
     wilted loads the LLM in its own process.
 
     Best-effort: the eviction is only a hygiene hint and nothing downstream depends
-    on it, so ANY daemon-side fault is swallowed rather than surfaced — not just a
-    *missing* daemon (``DaemonUnavailable``) but also a *wedged* one (``ConnectionLost``
-    / ``Timeout`` / ``Busy`` / worker faults, all ``IsolatedError`` subclasses). A
-    wedged gpu-host must never crash the caller's ``run_prepare`` on a throwaway hint
-    (regression: catching only ``DaemonUnavailable`` failed every prepare run when the
-    daemon was present-but-unresponsive — see HISTORY 2026-07-19).
+    on it, so ANY daemon-side fault is swallowed (never raised) rather than crashing
+    the caller — not just a *missing* daemon (``DaemonUnavailable``) but also a
+    *wedged* one (``ConnectionLost`` / ``Timeout`` / ``Busy`` / worker faults, all
+    ``IsolatedError`` subclasses). A wedged gpu-host must never crash the caller's
+    ``run_prepare`` on a throwaway hint (regression: catching only ``DaemonUnavailable``
+    failed every prepare run when the daemon was present-but-unresponsive — see
+    HISTORY 2026-07-19). A *missing* daemon logs at DEBUG (benign, nothing resident);
+    a *present-but-faulting* one logs at WARNING, since a persistent fault leaves the
+    STT model co-resident while the LLM loads.
     """
     try:
         client.evict("stt")
+    except client.DaemonUnavailable:
+        # Daemon simply not running: nothing is resident to evict. Expected/benign.
+        logger.debug("speech daemon not running at evict-hint time; nothing to evict")
     except client.IsolatedError as exc:
-        logger.debug("STT evict-hint skipped; speech daemon unavailable: %s", exc)
+        # Daemon present but faulting (wedged/ConnectionLost, Busy, worker fault):
+        # still best-effort — never crash the caller's run_prepare on a throwaway
+        # hint — but a PERSISTENT fault here leaves the STT model resident while the
+        # LLM loads (the PM-5/INV-2 co-residency hint didn't land), so surface it at
+        # WARNING for field diagnosis rather than swallowing it silently.
+        logger.warning("speech daemon fault at STT evict-hint time (best-effort skip): %s", exc)
 
 
 def _env_float(name: str, default: float) -> float:

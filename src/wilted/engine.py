@@ -512,13 +512,17 @@ class AudioEngine:
         Note:
             A *truncated* decode is NOT detected here. ffmpeg can exit 0 after
             stopping early on a corrupt/truncated stream, so this method returns
-            normally even though playback fell short of the file's real duration
-            (``playback_time_s`` will lag ``get_file_duration``). Completion
-            cleanliness is the caller's responsibility: the station path verifies
-            it in ``MacPlaybackAdapter._on_play_file_finished`` (PM-10) by
-            comparing ``playback_time_s`` against ``get_file_duration`` and only
-            reports ``ENDED`` within tolerance. Do not treat a normal return as
-            proof the whole file played.
+            normally even though playback fell short of the file's real duration.
+            In the detectable case ``playback_time_s`` then lags
+            ``get_file_duration`` — the shortfall the PM-10 guard keys on — but
+            that is not guaranteed: an unprobeable duration, or an on-disk-truncated
+            file whose container duration is itself short, can leave the two in
+            agreement. Completion cleanliness is therefore the caller's
+            responsibility: the station path verifies it in
+            ``MacPlaybackAdapter._on_play_file_finished`` (PM-10), reporting
+            ``ENDED`` only within tolerance and ``UNKNOWN`` when the duration probe
+            fails (fail-safe). Do not treat a normal return as proof the whole file
+            played.
         """
         path = Path(path)
         if not path.exists():

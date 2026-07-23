@@ -2111,7 +2111,9 @@ async def test_truncated_or_unknown_completion_never_marks_item_completed():
             # negative assertions above are meaningful, not vacuous.
             app._start_playback(entry)
             app._handle_station_completion(CompletionReason.ENDED)
-            assert mock_mark.call_count == 1
+            # Not just "called once" — called once with THIS item (a wrong-item
+            # completion would be as bad as a missed one).
+            mock_mark.assert_called_once_with(items[0])
 
 
 # ---------------------------------------------------------------------------
@@ -3827,3 +3829,60 @@ async def test_article_cache_drain_runs_on_worker_thread_not_ui_thread(monkeypat
     # The station-active yield seam (`_generation_paused`) is wired through to
     # the runner drain rather than being dropped.
     assert captured["station_active"] is False
+
+
+def test_drain_article_cache_runner_noop_when_app_not_running():
+    """Entry guard: a worker firing ``_drain_article_cache_runner`` after the
+    app has stopped (e.g. a queued ``@work`` callback landing post-teardown)
+    must not touch the pipeline runner at all. A constructed-but-never-mounted
+    app has ``is_running`` False by construction (Textual's ``_running``
+    starts False and only flips True once ``_process_messages`` starts) --
+    the same shape as "app already torn down" without needing to fake a full
+    mount/unmount cycle.
+    """
+    app = _make_app()
+    assert not app.is_running  # sanity: never mounted, so never started
+
+    with patch("wilted.pipeline_submit.drain_runner") as mock_drain:
+        app._drain_article_cache_runner()  # must not raise
+
+    mock_drain.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_article_cache_drain_skips_marshal_when_app_stops_mid_drain(monkeypatch):
+    """Exit guard (the ``is_running`` re-check added alongside the worker-thread
+    move): ``_drain_article_cache_runner``'s docstring says "a long drain can
+    outlive app teardown, and call_from_thread raises once the loop has
+    stopped" -- so it re-checks ``is_running`` AFTER the drain, before
+    marshalling the UI refresh onto the main thread. Simulate the app
+    beginning teardown WHILE the drain is still running on the worker thread
+    (flipping ``_running`` False from inside the faked ``drain_runner``, the
+    same field ``is_running`` reads) and prove the guarded code skips the
+    ``call_from_thread(self._finish_article_cache_drain)`` marshal rather than
+    running it against a stopped app.
+    """
+    from wilted.pipeline_submit import RunStats
+
+    monkeypatch.setattr(
+        "wilted.pipeline_submit.submit_pending_article_cache_jobs",
+        lambda **kwargs: 1,
+    )
+
+    app = _make_app()
+
+    def _fake_drain_runner(*, kind, station_active_check, bootstrap):
+        # Mirrors a real drain that finishes just as the app starts tearing
+        # down: is_running flips False before the post-drain marshal check.
+        app._running = False
+        return RunStats()
+
+    monkeypatch.setattr("wilted.pipeline_submit.drain_runner", _fake_drain_runner)
+
+    with patch.object(app, "_finish_article_cache_drain") as mock_finish:
+        async with app.run_test():
+            await app.workers.wait_for_complete()  # settle mount-time workers first
+            app._trigger_generation()
+            await app.workers.wait_for_complete()  # let the generation worker run to completion
+
+    mock_finish.assert_not_called()
