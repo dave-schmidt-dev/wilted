@@ -1,4 +1,4 @@
-.PHONY: lint lint-sh test test-unit test-integration test-e2e test-tui validate station station-test install-daemon install-launchd uninstall-launchd
+.PHONY: lint lint-sh deadcode test test-unit test-integration test-e2e test-tui validate station station-test install-daemon install-launchd uninstall-launchd
 
 # Well-known path for the A.5.1 manual weather-bulletin test trigger. `touch`
 # this file (from another shell) while the station is running under
@@ -21,6 +21,12 @@ lint-sh:
 		exit 1; \
 	fi
 
+# Dead-code detection over src, baselined by vulture_allowlist.py (see the file
+# header and pyproject [tool.vulture]). Fails only on NEW dead code past the
+# baseline. Also runs as a pre-commit hook.
+deadcode:
+	uv run --group dev vulture
+
 test:
 	uv run --group dev pytest
 
@@ -36,7 +42,7 @@ test-e2e:
 test-tui:
 	uv run --group dev pytest -m tui
 
-validate: lint test
+validate: lint deadcode test
 
 # Keep the recovery command advertised by the daemon-only TTS error contract
 # in the sibling speech-stack project, where the launchd service is owned.

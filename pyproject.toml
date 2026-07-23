@@ -90,9 +90,21 @@ markers = [
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+# vulture_allowlist.py is a machine-generated dead-code baseline made of bare
+# names / `_.attr` stubs (vulture whitelist syntax). Those are unresolved
+# names to ruff, so exclude the file to keep `make lint` (an F821 source) green.
+extend-exclude = ["vulture_allowlist.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "TCH"]
+
+# Dead-code detection. `paths` includes the machine-generated allowlist so its
+# stub references mark the known false-positive / dynamically-used surface as
+# "used"; regenerate the baseline with `vulture src --make-whitelist`.
+# min_confidence 60 is vulture's default — kept explicit as the gate contract.
+[tool.vulture]
+paths = ["src", "vulture_allowlist.py"]
+min_confidence = 60
 
 [dependency-groups]
 dev = [
@@ -102,4 +114,5 @@ dev = [
     "pytest-cov>=4.0",
     "pytest-textual-snapshot==1.1.0",
     "ruff>=0.0.1",
+    "vulture>=2.16",
 ]

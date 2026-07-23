@@ -14,3 +14,9 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-commit]
+      - id: vulture
+        name: vulture
+        entry: make deadcode
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
