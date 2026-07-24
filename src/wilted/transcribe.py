@@ -733,12 +733,28 @@ def get_transcript(
 def save_transcript(segments: list[TranscriptSegment], path: Path) -> None:
     """Save transcript segments to a JSON file for caching.
 
+    Writes atomically: the JSON payload lands in a temp file in the same
+    directory as ``path``, then ``os.replace`` swaps it into place. A crash
+    mid-write leaves only the untouched original (or nothing, on first
+    write) — never a truncated/partial ``path`` — which is what a later
+    resume trusts (INV-4). The temp file lives alongside ``path`` so the
+    rename stays on one filesystem; a cross-device ``os.replace`` would
+    raise ``OSError``.
+
     Args:
         segments: List of TranscriptSegment to persist.
         path: File path to write the JSON cache.
     """
     data = [asdict(seg) for seg in segments]
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    payload = json.dumps(data, indent=2)
+
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
     logger.debug("Saved %d transcript segments to %s", len(segments), path)
 
 

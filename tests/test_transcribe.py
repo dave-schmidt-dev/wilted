@@ -588,6 +588,64 @@ class TestSaveLoadTranscript:
         assert result is None
 
 
+class TestSaveTranscriptAtomicity:
+    """S2: ``save_transcript`` writes via temp-file + ``os.replace`` so a
+    crash mid-write can never leave a partial/empty transcript for a later
+    resume to trust. See INVARIANTS.md INV-4.
+    """
+
+    def test_no_tmp_file_left_behind_after_save(self, tmp_path):
+        """Happy path: content round-trips and no ``.tmp`` litter remains."""
+        segments = [TranscriptSegment(start_s=0.0, end_s=3.0, text="Hello.")]
+        path = tmp_path / "transcript.json"
+
+        save_transcript(segments, path)
+
+        assert load_transcript(path) == segments
+        assert not (tmp_path / "transcript.json.tmp").exists()
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_failed_replace_leaves_existing_transcript_intact(self, tmp_path, monkeypatch):
+        """INV-4 crash-safety: if the swap fails (simulating a crash between
+        the temp write and the rename), the pre-existing good transcript on
+        disk must survive untouched — never truncated/emptied — and the
+        temp file must not linger.
+        """
+        path = tmp_path / "transcript.json"
+        original_segments = [TranscriptSegment(start_s=0.0, end_s=1.0, text="Original.")]
+        save_transcript(original_segments, path)
+        original_bytes = path.read_bytes()
+
+        def _boom(_src, _dst):
+            raise OSError("simulated crash between temp write and rename")
+
+        monkeypatch.setattr("wilted.transcribe.os.replace", _boom)
+
+        new_segments = [TranscriptSegment(start_s=9.0, end_s=10.0, text="Replacement.")]
+        with pytest.raises(OSError, match="simulated crash"):
+            save_transcript(new_segments, path)
+
+        # Original file is byte-identical -- never truncated or emptied.
+        assert path.read_bytes() == original_bytes
+        assert load_transcript(path) == original_segments
+        # No .tmp litter left behind from the aborted write.
+        assert not (tmp_path / "transcript.json.tmp").exists()
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_save_empty_segments_behavior_unchanged(self, tmp_path):
+        """Documents current behavior: ``save_transcript`` has no
+        empty-content guard of its own -- INV-4's empty-result protection
+        for transcripts lives upstream in ``get_transcript`` (which raises
+        ``TranscriptionError`` rather than ever returning empty segments).
+        This atomicity change must not alter that: an empty list still
+        writes/round-trips as an empty list, same as before.
+        """
+        path = tmp_path / "transcript.json"
+        save_transcript([], path)
+        assert path.read_text(encoding="utf-8") == "[]"
+        assert load_transcript(path) == []
+
+
 class TestSegmentsToText:
     def test_joins_with_spaces(self):
         segments = [
