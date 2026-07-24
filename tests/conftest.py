@@ -2,6 +2,7 @@
 
 import sys
 import types
+from configparser import ConfigParser
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
@@ -32,6 +33,7 @@ _TEST_MARKERS = {
     "test_execution_capability.py": ("integration",),
     "test_feeds.py": ("integration",),
     "test_fetch.py": ("unit",),
+    "test_fetch_cascade.py": ("unit",),
     "test_ingest.py": ("unit",),
     "test_item_normalize.py": ("integration",),
     "test_legacy_cutover.py": ("integration",),
@@ -279,9 +281,30 @@ def stub_audio_modules():
 
 @pytest.fixture
 def stub_trafilatura_module():
-    """Provide a fake trafilatura module for ingest tests."""
+    """Provide a fake trafilatura module (+ ``settings`` submodule) for tests.
+
+    ``fetch_cascade._configure_once()`` calls
+    ``trafilatura.settings.use_config()`` to get a real
+    ``configparser.ConfigParser`` it can ``.set("DEFAULT", "DOWNLOAD_TIMEOUT",
+    ...)`` on — matching trafilatura's actual return type (verified against
+    the real 2.0.0 install) rather than a MagicMock that would silently
+    accept any attribute access. Each call returns a fresh ConfigParser, same
+    as the real ``use_config``, so tests can inspect what a given call
+    produced without cross-call aliasing.
+    """
     fake_trafilatura = types.ModuleType("trafilatura")
-    with patch.dict(sys.modules, {"trafilatura": fake_trafilatura}):
+    fake_settings = types.ModuleType("trafilatura.settings")
+
+    def _use_config() -> ConfigParser:
+        cfg = ConfigParser()
+        cfg.read_dict({"DEFAULT": {"DOWNLOAD_TIMEOUT": "30", "MAX_REDIRECTS": "2"}})
+        return cfg
+
+    fake_settings.use_config = _use_config
+    fake_settings.DEFAULT_CONFIG = _use_config()
+    fake_trafilatura.settings = fake_settings
+
+    with patch.dict(sys.modules, {"trafilatura": fake_trafilatura, "trafilatura.settings": fake_settings}):
         yield
 
 

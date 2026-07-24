@@ -84,6 +84,8 @@ is_bws_guid  # unused function (src/wilted/feed_refs.py:87)
 _.updated_at  # unused attribute (src/wilted/feeds.py:168)
 get_feed  # unused function (src/wilted/feeds.py:175)
 extract_title_from_url  # unused function (src/wilted/fetch.py:103)
+CHEAP  # unused variable (src/wilted/fetch_cascade.py) # consolidation: Phase 2 callers pending
+resolve_article_text  # unused function (src/wilted/fetch_cascade.py) # consolidation: Phase 2 callers pending
 run_llm_phase  # unused function (src/wilted/handlers/_ml.py:21)
 selection_id  # unused variable (src/wilted/legacy_cutover.py:108)
 _stub_handler  # unused function (src/wilted/pipeline_runner.py:117)
