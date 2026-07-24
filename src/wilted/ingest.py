@@ -9,63 +9,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-from wilted.fetch import (
-    fetch_url_with_browser,
-    get_text_from_clipboard,
-    resolve_apple_news_url,
-    suppress_subprocess_output,
-)
-
-# Phrases that appear at the start of consent/cookie walls, not article text.
-_CONSENT_MARKERS = (
-    "tracker preferences",
-    "manage your tracker",
-    "cookie consent",
-    "we use cookies",
-    "privacy choices",
-)
-
-
-def _looks_like_consent_wall(text: str) -> bool:
-    """Return True if the extracted text looks like a cookie/consent overlay."""
-    probe = text[:300].lower()
-    return any(marker in probe for marker in _CONSENT_MARKERS)
-
-
-def _extract_from_main(html: str, trafilatura, fallback_text, fallback_title):
-    """Re-run trafilatura against the <main> element only.
-
-    Many modern CMS/SPA sites (Axios, The Atlantic, etc.) put the article
-    inside <main> and the consent overlay outside it. Scoping the extraction
-    to <main> avoids picking up the overlay boilerplate.
-
-    Returns (text, title), falling back to the supplied values if extraction
-    yields nothing useful. Title is pulled from the full HTML <title> tag when
-    the scoped extraction doesn't produce one.
-    """
-    main_match = re.search(r"<main[^>]*>.*?</main>", html, re.DOTALL | re.IGNORECASE)
-    if not main_match:
-        return fallback_text, fallback_title
-
-    scoped_html = f"<html><body>{main_match.group(0)}</body></html>"
-    doc = trafilatura.bare_extraction(scoped_html, include_comments=False, include_tables=False)
-    text = getattr(doc, "text", None) if doc else None
-    title = getattr(doc, "title", None) if doc else None
-
-    if not title:
-        # <title> lives outside <main>; grab it from the full HTML.
-        t = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
-        if t:
-            raw = t.group(1).strip()
-            # Strip trailing " - Site Name" / " | Site" suffixes.
-            # Require at least one space before ASCII pipe/hyphen so we don't
-            # split hyphenated words like "self-made". Em/en-dashes are always
-            # title separators regardless of surrounding whitespace.
-            title = re.split(r"(?:\s[|\-]\s|[\u2014\u2013])", raw)[0].strip() or raw
-
-    if text and not _looks_like_consent_wall(text):
-        return text, title or fallback_title
-    return fallback_text, fallback_title
+from wilted.fetch import get_text_from_clipboard
+from wilted.fetch_cascade import FetchBudget, resolve_article_text
 
 
 @dataclass
@@ -119,63 +64,31 @@ def _resolve_from_url(
     url: str,
     status: Callable[[str], None],
 ) -> ArticleResult:
-    """Fetch article from a URL, extracting title from trafilatura metadata.
+    """Fetch article text from a URL via the fetch/extract cascade.
 
-    Falls back to a headed browser fetch (via playwright + system Chrome) when
-    trafilatura is blocked by Cloudflare or other bot-protection challenges.
-    If the browser fetch succeeds but trafilatura still picks up a cookie/consent
-    overlay, retries extraction scoped to the <main> element.
+    Delegates transport (trafilatura, escalating to a headed-browser
+    fallback) and extraction (bare_extraction, escalating to a
+    <main>-scoped retry on a consent wall) to
+    :func:`wilted.fetch_cascade.resolve_article_text` at FULL budget — the
+    interactive-ingest depth. A manual "add" legitimately keeps a
+    headline-only result (the user asked for it), so both "ok" and
+    "headline_only" outcomes return an ArticleResult; only "blocked" and
+    "failed" raise.
     """
-    from wilted.text import clean_text
-
     source_url = url
-    canonical_url = url
 
-    if "apple.news" in url:
-        status("Resolving Apple News link...")
-        canonical_url = resolve_apple_news_url(url)
-        url = canonical_url
+    resolved = resolve_article_text(url, budget=FetchBudget.FULL, on_status=status)
 
-    status("Fetching article...")
-
-    # Suppress stdout/stderr during trafilatura import — spacy model
-    # downloads via pip subprocess corrupt the Textual TUI.  Only the
-    # import itself is guarded; the network fetch runs unsuppressed so
-    # Textual's renderer keeps fd 1 and can paint status updates.
-    with suppress_subprocess_output():
-        import trafilatura
-
-    html = trafilatura.fetch_url(url)
-
-    if not html:
-        # Trafilatura blocked (Cloudflare, bot protection, etc.) — try browser.
-        html = fetch_url_with_browser(url, on_status=status)
-
-    if not html:
+    if resolved.outcome == "blocked":
         raise ValueError("Blocked (paywall or bot protection). Copy the article text, then add without a URL.")
-
-    # Use bare_extraction to get text + title in one pass (no double HTTP fetch).
-    # trafilatura >=2.0 returns a Document object; older versions return a dict.
-    doc = trafilatura.bare_extraction(html, include_comments=False, include_tables=False)
-    doc_text = getattr(doc, "text", None) if doc else None
-    title = getattr(doc, "title", None)
-
-    # If trafilatura picked up a cookie/consent overlay instead of the article,
-    # retry against just the <main> element (which contains only the article body
-    # on most modern CMS/SPA sites like Axios, The Atlantic, etc.).
-    if not doc_text or _looks_like_consent_wall(doc_text):
-        doc_text, title = _extract_from_main(html, trafilatura, doc_text, title)
-
-    if not doc_text:
+    if resolved.outcome == "failed":
         raise ValueError("Could not extract article text. Try copying it and adding without a URL.")
 
-    text = clean_text(doc_text)
-
     return ArticleResult(
-        text=text,
-        title=title,
+        text=resolved.text,
+        title=resolved.title,
         source_url=source_url,
-        canonical_url=canonical_url,
+        canonical_url=resolved.resolved_url,
     )
 
 

@@ -6,10 +6,9 @@ from unittest.mock import patch
 
 import pytest
 
+from wilted.fetch_cascade import _extract_from_main, _looks_like_consent_wall
 from wilted.ingest import (
     ArticleResult,
-    _extract_from_main,
-    _looks_like_consent_wall,
     resolve_article,
 )
 
@@ -36,7 +35,7 @@ class TestResolveFromURL:
         """resolve_article raises ValueError when both trafilatura and browser fetch fail."""
         with (
             patch("trafilatura.fetch_url", create=True, return_value=None),
-            patch("wilted.ingest.fetch_url_with_browser", return_value=None),
+            patch("wilted.fetch_cascade.fetch_url_with_browser", return_value=None),
             pytest.raises(ValueError, match="Blocked"),
         ):
             resolve_article(url="https://example.com/paywall")
@@ -55,7 +54,7 @@ class TestResolveFromURL:
         fake_doc = SimpleNamespace(text="Browser-fetched article.", title="Browser Title")
         with (
             patch("trafilatura.fetch_url", create=True, return_value=None),
-            patch("wilted.ingest.fetch_url_with_browser", return_value="<html>browser</html>") as mock_browser,
+            patch("wilted.fetch_cascade.fetch_url_with_browser", return_value="<html>browser</html>") as mock_browser,
             patch("trafilatura.bare_extraction", create=True, return_value=fake_doc),
         ):
             result = resolve_article(url="https://example.com/cf-protected")
@@ -268,7 +267,7 @@ class TestExtractFromMain:
         with (
             patch("trafilatura.fetch_url", create=True, return_value=consent_html),
             patch("trafilatura.bare_extraction", create=True, side_effect=fake_bare_extraction),
-            patch("wilted.ingest.fetch_url_with_browser", return_value=None),
+            patch("wilted.fetch_cascade.fetch_url_with_browser", return_value=None),
         ):
             result = resolve_article(url="https://example.com/article")
 
