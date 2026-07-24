@@ -5,12 +5,15 @@ from __future__ import annotations
 from time import gmtime
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from wilted.db import Feed, Item
 from wilted.discover import (
     _dedup_hash,
     _entry_enclosure,
     _entry_guid,
     _entry_link,
+    _fetch_article_text,
     _is_duplicate,
     _normalize_text,
     _process_entry,
@@ -501,3 +504,161 @@ class TestRunDiscover:
 
         assert stats["discovered"] == 5
         assert not Item.select().where(Item.feed == feed, Item.guid == "oldest").exists()
+
+
+# ---------------------------------------------------------------------------
+# INV-6 — nightly-path gate: CHEAP-budget fetch cascade integration
+#
+# These exercise the real wilted.fetch_cascade.resolve_article_text CHEAP
+# path (not a mocked _fetch_article_text), matching how the nightly discover
+# run actually calls it — only the transport (trafilatura.fetch_url /
+# bare_extraction) is stubbed.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _reset_fetch_cascade_config_state():
+    """Reset fetch_cascade's process-global config state around each test.
+
+    ``fetch_cascade._configured``/``_trafilatura_config`` are module-global
+    (see ``fetch_cascade._configure_once`` docstring) — without resetting
+    them here, whichever test runs the CHEAP cascade first flips
+    ``_configured = True`` for the rest of the session, and the timeout-bound
+    assertions below would silently pass for the wrong reason (stale state
+    from an earlier test) rather than because this test's own
+    ``_configure_once()`` call did its job.
+    """
+    import wilted.fetch_cascade as fetch_cascade
+
+    fetch_cascade._configured = False
+    fetch_cascade._trafilatura_config = None
+    yield
+    fetch_cascade._configured = False
+    fetch_cascade._trafilatura_config = None
+
+
+class TestFetchArticleTextPerItemIsolation:
+    """INV-6(a): one bad URL in a batch must not abort the other entries."""
+
+    def test_bad_outcome_falls_back_and_batch_continues(self):
+        """A blocked/failed cascade outcome for one entry still yields a
+        typed, persisted item (via the RSS-summary fallback) and does not
+        stop the surrounding good entries from being processed.
+        """
+        from wilted.fetch_cascade import ResolvedText
+
+        def fake_resolve(url, *, budget, **kwargs):
+            if "bad" in url:
+                return ResolvedText(text=None, title=None, resolved_url=url, outcome="blocked", tier_used="none")
+            return ResolvedText(
+                text="Fetched body text for a good article.",
+                title="Fetched Title",
+                resolved_url=url,
+                outcome="ok",
+                tier_used="trafilatura",
+            )
+
+        feed = add_feed("https://ex.com/feed.xml", feed_type="article")
+        entries = [
+            _make_parsed_entry(id="good-1", link="https://ex.com/good-1", summary="Good one summary."),
+            _make_parsed_entry(
+                id="bad-1",
+                link="https://ex.com/bad-1",
+                summary="RSS summary fallback text for the bad entry.",
+            ),
+            _make_parsed_entry(id="good-2", link="https://ex.com/good-2", summary="Good two summary."),
+        ]
+        stats = {"new": 0, "skipped": 0, "errors": 0}
+
+        with patch("wilted.fetch_cascade.resolve_article_text", side_effect=fake_resolve):
+            for entry in entries:
+                _process_entry(feed, entry, stats)
+
+        # Item count unchanged by the bad URL: all three entries produced an
+        # item (the bad one via RSS-summary fallback), and neither good
+        # entry either side of it was skipped or errored.
+        assert stats["new"] == 3
+        assert stats["errors"] == 0
+        assert stats["skipped"] == 0
+
+        good_1 = Item.select().where(Item.guid == "good-1").first()
+        good_2 = Item.select().where(Item.guid == "good-2").first()
+        bad_1 = Item.select().where(Item.guid == "bad-1").first()
+        assert good_1 is not None and good_1.title == "Fetched Title"
+        assert good_2 is not None and good_2.title == "Fetched Title"
+        assert bad_1 is not None
+
+        # The bad entry's persisted text came from the RSS summary fallback,
+        # not the (blocked) cascade.
+        bad_transcript = open(bad_1.transcript_file, encoding="utf-8").read()
+        assert "RSS summary fallback text for the bad entry." in bad_transcript
+
+
+@pytest.mark.usefixtures("stub_trafilatura_module", "_reset_fetch_cascade_config_state")
+class TestFetchArticleTextTransportRaises:
+    """INV-6(b): a raising transport must never escape the discovery fetch path."""
+
+    def test_fetch_url_raising_returns_none_none_not_exception(self):
+        """trafilatura.fetch_url raising internally is absorbed by the
+        cascade's own typed try/except (outcome="blocked"); no traceback
+        propagates out of _fetch_article_text. Also covers one tier deeper:
+        HTML fetched fine but bare_extraction itself raises — same
+        guarantee, same (None, None), never raises.
+        """
+
+        def raising_fetch_url(url, config=None):
+            raise ConnectionError("simulated transport failure")
+
+        with patch("trafilatura.fetch_url", create=True, side_effect=raising_fetch_url):
+            result = _fetch_article_text("https://example.com/raises")
+        assert result == (None, None)
+
+        def raising_bare_extraction(html, **kwargs):
+            raise RuntimeError("simulated extraction failure")
+
+        with (
+            patch("trafilatura.fetch_url", create=True, return_value="<html>content</html>"),
+            patch("trafilatura.bare_extraction", create=True, side_effect=raising_bare_extraction),
+        ):
+            result = _fetch_article_text("https://example.com/extraction-raises")
+        assert result == (None, None)
+
+
+@pytest.mark.usefixtures("stub_trafilatura_module", "_reset_fetch_cascade_config_state")
+class TestConfigureOnceTimeoutBound:
+    """INV-6(c): the CHEAP path's transport timeout is bounded, not unbounded."""
+
+    def test_fetch_url_invoked_with_the_bounded_config(self):
+        """The spike-locked FETCH_TIMEOUT_S global bounds every trafilatura
+        fetch attempt: _configure_once() sets DOWNLOAD_TIMEOUT on the config
+        object, and the nightly discover call site actually threads that
+        same bounded config into trafilatura.fetch_url — asserted without
+        any real network call.
+        """
+        from types import SimpleNamespace
+
+        import wilted.fetch_cascade as fetch_cascade
+
+        fetch_cascade._configure_once()
+        assert fetch_cascade.FETCH_TIMEOUT_S == 30
+        assert fetch_cascade._trafilatura_config.get("DEFAULT", "DOWNLOAD_TIMEOUT") == "30"
+
+        captured = {}
+
+        def fake_fetch_url(url, config=None):
+            captured["config"] = config
+            return "<html>content</html>"
+
+        with (
+            patch("trafilatura.fetch_url", create=True, side_effect=fake_fetch_url),
+            patch(
+                "trafilatura.bare_extraction",
+                create=True,
+                return_value=SimpleNamespace(text="word " * 30, title="Title"),
+            ),
+        ):
+            text, _title = _fetch_article_text("https://example.com/bounded")
+
+        assert text is not None
+        assert captured.get("config") is fetch_cascade._trafilatura_config
+        assert captured["config"].get("DEFAULT", "DOWNLOAD_TIMEOUT") == str(fetch_cascade.FETCH_TIMEOUT_S)
