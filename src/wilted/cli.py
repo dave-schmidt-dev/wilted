@@ -339,6 +339,15 @@ def cmd_next(args):
             print("Reading list is now empty.")
 
 
+def _print_status(msg: str) -> None:
+    """Surface fetch/extract progress to stderr.
+
+    Progress goes to stderr, not stdout, so it stays visible interactively
+    without polluting piped output (e.g. ``wilted URL --clean > out.txt``).
+    """
+    print(msg, file=sys.stderr)
+
+
 def cmd_direct(args):
     """Play text directly from URL, file, stdin, or clipboard."""
     text = None
@@ -347,8 +356,11 @@ def cmd_direct(args):
         text = sys.stdin.read()
     elif args.input:
         if args.input.startswith(("http://", "https://")):
-            print("Fetching article...")
-            text, _ = get_text_from_url(args.input)
+            # Forward live cascade progress to stderr so a slow fetch (Apple
+            # News resolution, or the multi-second headless-browser fallback)
+            # never looks like a hang. The cascade emits "Fetching article..."
+            # itself, so there is no static pre-print here.
+            text, _ = get_text_from_url(args.input, on_status=_print_status)
             if not text:
                 raise CLIError("Could not extract article text (paywall?). Try: wilted --add")
         elif os.path.isfile(args.input):

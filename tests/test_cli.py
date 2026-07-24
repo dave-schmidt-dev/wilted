@@ -127,6 +127,74 @@ class TestCmdAdd:
 
 
 # ---------------------------------------------------------------------------
+# cmd_direct — progress visibility (no silent waits)
+# ---------------------------------------------------------------------------
+
+
+class TestCmdDirectProgressVisibility:
+    """The direct-URL path must surface live fetch progress, to stderr.
+
+    Regression guard for the fetch-path consolidation (AGENTS.md "Progress
+    Visibility"): get_text_from_url gained an on_status hook, and cmd_direct
+    must forward a sink so a slow fetch — Apple News resolution, or the
+    multi-second headless-browser escalation — is never a silent wait. That
+    progress must land on stderr so it never pollutes a --clean stdout pipe.
+    """
+
+    def test_fetch_progress_reaches_stderr_not_stdout(self, capsys):
+        """Cascade on_status messages surface on stderr; stdout carries only text."""
+        from wilted.fetch_cascade import ResolvedText
+
+        url = "https://example.com/article"
+
+        def fake_resolve(u, *, budget, on_status=None, min_words=25):
+            # The real cascade emits progress through on_status at each wait
+            # point; forwarding it is exactly what this test locks.
+            assert on_status is not None, "cmd_direct dropped the status sink"
+            on_status("Fetching article...")
+            on_status("Opening browser to bypass bot protection...")
+            return ResolvedText(
+                text="Real article body text.",
+                title="Example",
+                resolved_url=u,
+                outcome="ok",
+                tier_used="browser",
+            )
+
+        args = _make_args(input=url, clean=True)
+        with patch("wilted.fetch_cascade.resolve_article_text", side_effect=fake_resolve):
+            cmd_direct(args)
+
+        captured = capsys.readouterr()
+        # Progress is visible to the user during the wait...
+        assert "Fetching article..." in captured.err
+        assert "Opening browser to bypass bot protection..." in captured.err
+        # ...on stderr only — stdout carries just the piped article text.
+        assert "Fetching article..." not in captured.out
+        assert "Opening browser" not in captured.out
+        assert "Real article body text." in captured.out
+
+    def test_get_text_from_url_forwards_on_status(self):
+        """get_text_from_url must thread its on_status down into the cascade."""
+        from wilted import fetch
+        from wilted.fetch_cascade import ResolvedText
+
+        seen = {}
+
+        def fake_resolve(u, *, budget, on_status=None, min_words=25):
+            seen["on_status"] = on_status
+            return ResolvedText(text="body", title=None, resolved_url=u, outcome="ok", tier_used="trafilatura")
+
+        def sink(_msg):
+            return None
+
+        with patch("wilted.fetch_cascade.resolve_article_text", side_effect=fake_resolve):
+            fetch.get_text_from_url("https://example.com/a", on_status=sink)
+
+        assert seen["on_status"] is sink, "get_text_from_url did not forward on_status"
+
+
+# ---------------------------------------------------------------------------
 # cmd_list
 # ---------------------------------------------------------------------------
 

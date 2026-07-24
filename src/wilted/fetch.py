@@ -196,7 +196,7 @@ def fetch_url_with_browser(url: str, on_status=None) -> str | None:
         return None
 
 
-def get_text_from_url(url: str) -> tuple[str | None, str]:
+def get_text_from_url(url: str, on_status=None) -> tuple[str | None, str]:
     """Fetch and extract article text from a URL.
 
     Returns (text, resolved_url). The URL may differ from input if an
@@ -210,10 +210,16 @@ def get_text_from_url(url: str) -> tuple[str | None, str]:
     ``ingest``'s interactive path. Imported lazily to avoid a module-level
     import cycle: ``fetch_cascade`` imports ``fetch_url_with_browser`` and
     ``suppress_subprocess_output`` from this module.
+
+    ``on_status`` is forwarded to the cascade so a caller (e.g. the CLI direct
+    path) can surface live progress during a slow fetch: Apple News resolution,
+    the "Fetching article..." step, and the multi-second headless-browser
+    escalation all emit here. Left None, those messages fall through to DEBUG
+    logs only — which is the silent-wait failure mode the CLI path must avoid.
     """
     from wilted.fetch_cascade import FetchBudget, resolve_article_text
 
-    resolved = resolve_article_text(url, budget=FetchBudget.FULL)
+    resolved = resolve_article_text(url, budget=FetchBudget.FULL, on_status=on_status)
     if resolved.outcome in ("ok", "headline_only"):
         return resolved.text, resolved.resolved_url
     return None, resolved.resolved_url
