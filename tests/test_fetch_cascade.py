@@ -313,6 +313,32 @@ class TestAppleNewsResolution:
 
         assert result == "https://www.example.com/article/123/"
 
+    def test_resolve_apple_news_url_returns_original_on_network_error(self):
+        """A network failure during resolution returns the original URL unchanged.
+
+        Coverage relocated from the fetch.resolve_apple_news_url tests removed
+        in the T2.2 cutover — the except branch must never raise or drop the URL.
+        """
+        with patch(
+            "wilted.fetch_cascade.urllib.request.urlopen",
+            side_effect=Exception("Network error"),
+        ):
+            result = resolve_apple_news_url("https://apple.news/ABC123")
+
+        assert result == "https://apple.news/ABC123"
+
+    def test_resolve_apple_news_url_returns_original_when_no_redirect(self):
+        """HTML without a redirectToUrl marker returns the original URL unchanged."""
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b"<html><body>No redirect here</body></html>"
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("wilted.fetch_cascade.urllib.request.urlopen", return_value=mock_resp):
+            result = resolve_apple_news_url("https://apple.news/ABC123")
+
+        assert result == "https://apple.news/ABC123"
+
     def test_resolve_apple_news_url_reports_via_on_status_not_print(self, capsys):
         html = b'<script>redirectToUrl("https://www.example.com/article/123/")</script>'
         mock_resp = MagicMock()

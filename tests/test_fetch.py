@@ -1,6 +1,7 @@
 """Tests for wilted.fetch — URL resolution, title extraction, and FD suppression."""
 
 import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,40 +11,13 @@ from wilted.fetch import (
     extract_title_from_url,
     fetch_url_with_browser,
     get_text_from_url,
-    resolve_apple_news_url,
     suppress_subprocess_output,
 )
 
-
-class TestResolveAppleNewsUrl:
-    @patch("wilted.fetch.urllib.request.urlopen")
-    def test_extracts_redirect_url(self, mock_urlopen):
-        html = b'<script>redirectToUrl("https://www.theatlantic.com/article/123/?utm_source=apple")</script>'
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = html
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_resp
-
-        result = resolve_apple_news_url("https://apple.news/ABC123")
-        assert result == "https://www.theatlantic.com/article/123/"
-
-    @patch("wilted.fetch.urllib.request.urlopen")
-    def test_returns_original_on_failure(self, mock_urlopen):
-        mock_urlopen.side_effect = Exception("Network error")
-        result = resolve_apple_news_url("https://apple.news/ABC123")
-        assert result == "https://apple.news/ABC123"
-
-    @patch("wilted.fetch.urllib.request.urlopen")
-    def test_returns_original_when_no_redirect(self, mock_urlopen):
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = b"<html><body>No redirect here</body></html>"
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_resp
-
-        result = resolve_apple_news_url("https://apple.news/ABC123")
-        assert result == "https://apple.news/ABC123"
+# Note: fetch.resolve_apple_news_url was removed in the T2.2 cutover —
+# get_text_from_url now delegates entirely to
+# wilted.fetch_cascade.resolve_article_text, which has its own Apple News
+# resolution covered by tests/test_fetch_cascade.py::TestAppleNewsResolution.
 
 
 class TestExtractTitleFromUrl:
@@ -161,11 +135,19 @@ class TestFetchUrlWithBrowser:
 class TestGetTextFromUrl:
     """Characterization tests locking get_text_from_url's CURRENT contract.
 
-    get_text_from_url has zero coverage today and is about to be rewritten to
-    add clean_text, a browser fallback, and a <main>-scoped retry. These tests
+    get_text_from_url now delegates entirely to
+    ``wilted.fetch_cascade.resolve_article_text`` (FULL budget). These tests
     pin the observable contract — text present/absent, and the resolved URL —
-    not the literal string trafilatura.extract() happens to return, so they
-    keep passing once the rewrite changes *how* text is produced.
+    not the literal string the cascade's extraction happens to return, so
+    they keep passing as the cascade's internals evolve.
+
+    The cascade extracts via ``trafilatura.bare_extraction`` (not
+    ``trafilatura.extract``, which the pre-cutover implementation used) and,
+    on FULL budget, escalates to :func:`wilted.fetch.fetch_url_with_browser`
+    when the trafilatura fetch yields no HTML — so the blocked-fetch case
+    below stubs the browser fallback too, keeping this a fast, offline,
+    deterministic unit test instead of one that silently opens a real
+    browser.
     """
 
     pytestmark = pytest.mark.usefixtures("stub_trafilatura_module")
@@ -175,8 +157,12 @@ class TestGetTextFromUrl:
         return patch("trafilatura.fetch_url", create=True, return_value=html)
 
     @staticmethod
-    def _mock_extract(text):
-        return patch("trafilatura.extract", create=True, return_value=text)
+    def _mock_extract(text, title=None):
+        return patch(
+            "trafilatura.bare_extraction",
+            create=True,
+            return_value=SimpleNamespace(text=text, title=title),
+        )
 
     def test_apple_news_url_is_resolved_before_fetch(self):
         """apple.news links are resolved to their canonical URL before fetching."""
@@ -189,7 +175,7 @@ class TestGetTextFromUrl:
         with (
             patch("wilted.fetch.urllib.request.urlopen", return_value=mock_resp),
             self._mock_fetch("<html>content</html>"),
-            self._mock_extract("Article body text."),
+            self._mock_extract("Article body text " * 30),
         ):
             text, resolved_url = get_text_from_url("https://apple.news/ABC123")
 
@@ -198,22 +184,27 @@ class TestGetTextFromUrl:
 
     def test_trafilatura_success_returns_text(self):
         """A clean trafilatura fetch+extract yields non-None text and the input URL unchanged."""
-        with self._mock_fetch("<html>content</html>"), self._mock_extract("Article body text."):
+        with self._mock_fetch("<html>content</html>"), self._mock_extract("Article body text " * 30):
             text, resolved_url = get_text_from_url("https://example.com/article")
 
         assert text is not None
         assert resolved_url == "https://example.com/article"
 
     def test_blocked_fetch_returns_no_text(self):
-        """When trafilatura.fetch_url can't retrieve HTML (e.g. blocked), no text is returned."""
-        with self._mock_fetch(None):
+        """When trafilatura.fetch_url can't retrieve HTML (e.g. blocked), no text is returned.
+
+        FULL budget escalates to the headed-browser fallback when trafilatura
+        yields no HTML — stub it to also return nothing so this stays a fast,
+        offline unit test instead of launching a real browser.
+        """
+        with self._mock_fetch(None), patch("wilted.fetch_cascade.fetch_url_with_browser", return_value=None):
             text, resolved_url = get_text_from_url("https://example.com/blocked")
 
         assert text is None
         assert resolved_url == "https://example.com/blocked"
 
     def test_extraction_failure_returns_no_text(self):
-        """When HTML is fetched but trafilatura.extract can't pull text, no text is returned."""
+        """When HTML is fetched but bare_extraction can't pull text, no text is returned."""
         with self._mock_fetch("<html>content</html>"), self._mock_extract(None):
             text, resolved_url = get_text_from_url("https://example.com/unparseable")
 
