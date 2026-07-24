@@ -9,6 +9,7 @@ from wilted.fetch import (
     _suppress_lock,
     extract_title_from_url,
     fetch_url_with_browser,
+    get_text_from_url,
     resolve_apple_news_url,
     suppress_subprocess_output,
 )
@@ -155,3 +156,66 @@ class TestFetchUrlWithBrowser:
         with patch("playwright.sync_api.sync_playwright", side_effect=Exception("no browser")):
             fetch_url_with_browser("https://example.com", on_status=messages.append)
         assert any("browser" in m.lower() for m in messages)
+
+
+class TestGetTextFromUrl:
+    """Characterization tests locking get_text_from_url's CURRENT contract.
+
+    get_text_from_url has zero coverage today and is about to be rewritten to
+    add clean_text, a browser fallback, and a <main>-scoped retry. These tests
+    pin the observable contract — text present/absent, and the resolved URL —
+    not the literal string trafilatura.extract() happens to return, so they
+    keep passing once the rewrite changes *how* text is produced.
+    """
+
+    pytestmark = pytest.mark.usefixtures("stub_trafilatura_module")
+
+    @staticmethod
+    def _mock_fetch(html):
+        return patch("trafilatura.fetch_url", create=True, return_value=html)
+
+    @staticmethod
+    def _mock_extract(text):
+        return patch("trafilatura.extract", create=True, return_value=text)
+
+    def test_apple_news_url_is_resolved_before_fetch(self):
+        """apple.news links are resolved to their canonical URL before fetching."""
+        redirect_html = b'<script>redirectToUrl("https://www.theatlantic.com/article/123/?utm_source=apple")</script>'
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = redirect_html
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch("wilted.fetch.urllib.request.urlopen", return_value=mock_resp),
+            self._mock_fetch("<html>content</html>"),
+            self._mock_extract("Article body text."),
+        ):
+            text, resolved_url = get_text_from_url("https://apple.news/ABC123")
+
+        assert resolved_url == "https://www.theatlantic.com/article/123/"
+        assert text is not None
+
+    def test_trafilatura_success_returns_text(self):
+        """A clean trafilatura fetch+extract yields non-None text and the input URL unchanged."""
+        with self._mock_fetch("<html>content</html>"), self._mock_extract("Article body text."):
+            text, resolved_url = get_text_from_url("https://example.com/article")
+
+        assert text is not None
+        assert resolved_url == "https://example.com/article"
+
+    def test_blocked_fetch_returns_no_text(self):
+        """When trafilatura.fetch_url can't retrieve HTML (e.g. blocked), no text is returned."""
+        with self._mock_fetch(None):
+            text, resolved_url = get_text_from_url("https://example.com/blocked")
+
+        assert text is None
+        assert resolved_url == "https://example.com/blocked"
+
+    def test_extraction_failure_returns_no_text(self):
+        """When HTML is fetched but trafilatura.extract can't pull text, no text is returned."""
+        with self._mock_fetch("<html>content</html>"), self._mock_extract(None):
+            text, resolved_url = get_text_from_url("https://example.com/unparseable")
+
+        assert text is None
+        assert resolved_url == "https://example.com/unparseable"
