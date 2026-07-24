@@ -49,6 +49,7 @@ _TEST_MARKERS = {
     "test_scheduler_tick.py": ("integration",),
     "test_preferences.py": ("integration",),
     "test_prepare.py": ("integration",),
+    "test_prepare_resume.py": ("integration",),
     "test_processing_jobs.py": ("integration",),
     "test_processing_job_claim.py": ("integration",),
     "test_processing_job_recovery.py": ("integration",),

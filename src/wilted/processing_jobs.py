@@ -760,6 +760,35 @@ def merge_checkpoint_progress(
     return updated == 1
 
 
+@dataclass(frozen=True, slots=True)
+class JobCheckpoint:
+    """Live handle a leased handler uses to read/write its in-flight progress hint.
+
+    Binds a ``job_id`` to the ``owner_id`` that currently holds the lease, so the
+    transcription path can consult and record the non-authoritative ``_progress``
+    marker without re-plumbing the lease fence. ``read_progress`` fetches the job
+    fresh (it may have been updated by an earlier stage of the same run), and
+    ``record`` merges through the lease-fenced CAS. Both delegate to the module
+    substrate — the resume consumer re-validates against the on-disk transcript +
+    Item row, so a stale or missing hint can never cause a wrong skip.
+    """
+
+    job_id: int
+    owner_id: str
+
+    def read_progress(self) -> dict[str, Any]:
+        """Return the recorded progress hint for this job, or ``{}`` when absent."""
+        return read_checkpoint_progress(get_job(self.job_id))
+
+    def record(self, **progress: Any) -> bool:
+        """Merge ``progress`` into the lease-fenced ``_progress`` marker.
+
+        Returns:
+            True when the lease still held and exactly one row was updated.
+        """
+        return merge_checkpoint_progress(self.job_id, self.owner_id, progress)
+
+
 def _parse_stored_key(kind_value: str, canonical: str) -> IdempotencyKey:
     kind = JobKind(kind_value)
     prefix = f"{kind.value}:v"

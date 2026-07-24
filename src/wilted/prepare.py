@@ -44,6 +44,7 @@ from wilted.transcribe import (
     TranscriptSegment,
     evict_stt_model,
     get_transcript,
+    load_transcript,
     save_transcript,
     segments_to_text,
 )
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from wilted.llm import LLMBackend
+    from wilted.processing_jobs import JobCheckpoint
 
 logger = logging.getLogger(__name__)
 
@@ -96,11 +98,57 @@ def _set_status(item, status: str, error_message: str | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
+# A resumed transcript is trusted only when its final segment spans at least
+# this fraction of the audio's duration. Deliberately conservative (LOW): the
+# gate exists to reject a *truncated* transcript (e.g. a crash mid-Tier-3 that
+# still flushed a short prefix), not to demand near-total coverage. Legitimate
+# transcripts routinely end well before the file's last second (trailing music,
+# silence, outros), so a high threshold like 0.98 would force needless
+# re-transcription of perfectly complete transcripts. Pinned by test.
+_COVERAGE_TOLERANCE = 0.5
+
+
+def _recompute_coverage(
+    segments: list[TranscriptSegment],
+    audio_file: str | None,
+) -> float | None:
+    """Fraction of the audio's duration spanned by the transcript's last segment.
+
+    A coarse completeness signal for a resumed transcript: ``segments[-1].end_s
+    / duration``. Returns ``None`` — meaning "indeterminable", which the caller
+    treats as non-blocking — when there are no segments, no ``audio_file``, the
+    file is absent on disk, or ffprobe reports a non-positive duration. The
+    ffprobe probe here is blessed on the resume path only; the normal transcribe
+    path already probes duration in :func:`_process_podcast`.
+
+    Args:
+        segments: Transcript segments (may be empty).
+        audio_file: Path to the source audio, or ``None``.
+
+    Returns:
+        Coverage ratio in ``(0, ~1]``, or ``None`` when it cannot be computed.
+    """
+    if not segments or not audio_file:
+        return None
+    audio_path = Path(audio_file)
+    if not audio_path.exists():
+        return None
+    try:
+        duration = _engine_mod.AudioEngine().get_file_duration(audio_path)
+    except Exception:
+        logger.debug("Coverage: could not probe duration for %s", audio_path)
+        return None
+    if duration <= 0:
+        return None
+    return segments[-1].end_s / duration
+
+
 def _transcribe_podcast(
     item,
     coordinator,
     *,
     tier3_transcribe: Callable[[Path], list[TranscriptSegment]] | None = None,
+    checkpoint: JobCheckpoint | None = None,
 ) -> list:
     """Download a podcast episode and produce its transcript (no LLM).
 
@@ -110,16 +158,51 @@ def _transcribe_podcast(
     so any Tier-3 GPU transcription holds the single ML lease — it can never
     overlap a resident LLM (PM-5).
 
+    Resume (INV-6): when ``checkpoint`` is supplied and a prior attempt of this
+    job already persisted a complete transcript to the Item row (atomic save,
+    S2), the download and the GPU transcribe lease are skipped entirely. The
+    decision is gated on the authoritative ``item.transcript_file`` + on-disk
+    transcript, never on the (non-authoritative) marker; the marker only
+    supplies a cheap coverage hint. With ``checkpoint=None`` (the CLI/batch
+    path) this function behaves exactly as before: no marker read, no probe.
+
     Args:
         item: A Peewee Item instance with status='processing',
             item_type='podcast_episode'.
         coordinator: A ``ModelCoordinator`` used to lease the transcribe call.
+        tier3_transcribe: Optional Tier-3 fallback transcriber.
+        checkpoint: Optional live handle for reading/recording the in-flight
+            progress marker. ``None`` disables resume and marker recording.
 
     Returns:
         The list of transcript segments (needed by :func:`_process_podcast`).
     """
     item_id = item.id
     logger.info("Preparing podcast item %d: %s", item_id, item.title)
+
+    # Resume fast-path (INV-6). A previous attempt of this job may have
+    # atomically written a complete transcript + Item row (S2) before its lease
+    # was lost. Trust that authoritative row — not the marker — and re-validate
+    # word count and audio coverage before skipping the download + transcribe
+    # lease. A missing/stale marker just means the coverage hint is recomputed;
+    # it can never cause a wrong skip.
+    if checkpoint is not None and item.transcript_file:
+        segments = load_transcript(Path(item.transcript_file))
+        if segments is not None and len(segments_to_text(segments).split()) == item.word_count:
+            progress = checkpoint.read_progress()
+            coverage = progress.get("coverage_ratio")
+            if not isinstance(coverage, (int, float)):
+                coverage = _recompute_coverage(segments, item.audio_file)
+            if coverage is not None and coverage >= _COVERAGE_TOLERANCE:
+                logger.info(
+                    "Resuming item %d: complete transcript already on disk, skipping transcription",
+                    item_id,
+                )
+                return segments
+        logger.warning(
+            "Item %d transcript present but failed resume validation; re-transcribing",
+            item_id,
+        )
 
     # Step 1: Download audio
     if not item.enclosure_url:
@@ -189,6 +272,18 @@ def _transcribe_podcast(
     item.transcript_file = str(transcript_path)
     item.word_count = word_count
 
+    # Record a non-authoritative progress marker so a future resume attempt can
+    # cheaply confirm this transcript is complete. Coverage is only probed when
+    # a checkpoint is present, keeping the CLI/batch path (checkpoint=None)
+    # probe-free and byte-identical to prior behavior.
+    if checkpoint is not None:
+        ratio = _recompute_coverage(segments, str(audio_path)) or 0.0
+        checkpoint.record(
+            stage="transcribed",
+            word_count=word_count,
+            coverage_ratio=round(ratio, 4),
+        )
+
     return segments
 
 
@@ -208,8 +303,17 @@ def _process_podcast(item, segments, llm_backend=None) -> None:
     """
     item_id = item.id
     # Recover the downloaded audio path saved by _transcribe_podcast's
-    # Item.update(audio_file=...) in step 2.
+    # Item.update(audio_file=...) in step 2. On a resume, this row was persisted
+    # by an EARLIER attempt; if the audio has since been pruned from disk, fail
+    # loudly (set error + raise) rather than half-prepare an item with no audio
+    # (INV-6 / Fix 4). Never mark such an item "ready".
+    if not item.audio_file:
+        _set_status(item, "error", "No audio file on record")
+        raise PrepareError(f"Item {item_id} has no audio_file")
     audio_path = Path(item.audio_file)
+    if not audio_path.exists():
+        _set_status(item, "error", f"Audio file missing on disk: {audio_path}")
+        raise PrepareError(f"Audio file missing for item {item_id}: {audio_path}")
 
     # Step 3: Ad detection + cutting (if LLM backend available)
     if llm_backend and segments:
@@ -373,6 +477,7 @@ def prepare_item(
     skip_tts: bool = False,
     backend_factory: Callable[[str, str], LLMBackend] | None = None,
     tier3_transcribe: Callable[[Path], list[TranscriptSegment]] | None = None,
+    checkpoint: JobCheckpoint | None = None,
 ) -> bool:
     """Prepare one selected item through the content preparation pipeline.
 
@@ -383,6 +488,10 @@ def prepare_item(
         llm_model: Model identifier for the LLM backend.
         llm_backend_type: Backend type ('mlx' or 'gguf').
         skip_tts: If True, skip TTS generation for articles (for testing).
+        backend_factory: Factory that builds an LLM backend on demand.
+        tier3_transcribe: Optional Tier-3 fallback transcriber for podcasts.
+        checkpoint: Optional live progress handle enabling transcript resume
+            for podcast episodes. ``None`` (CLI/batch) disables resume.
 
     Returns:
         True when preparation completed successfully, False otherwise.
@@ -407,7 +516,12 @@ def prepare_item(
     if item.item_type == "podcast_episode":
         _set_status(item, "processing")
         try:
-            segments = _transcribe_podcast(item, coordinator, tier3_transcribe=tier3_transcribe)
+            segments = _transcribe_podcast(
+                item,
+                coordinator,
+                tier3_transcribe=tier3_transcribe,
+                checkpoint=checkpoint,
+            )
         except PrepareError as exc:
             logger.error("Item %d failed: %s", item.id, exc)
             return False

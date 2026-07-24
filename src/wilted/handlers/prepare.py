@@ -11,7 +11,7 @@ from wilted.handlers._ml import build_llm_backend
 from wilted.handlers.manifests import build_prepare_manifest
 from wilted.handlers.transcribe import transcribe_tier3
 from wilted.prepare import prepare_item
-from wilted.processing_jobs import record_job_completion
+from wilted.processing_jobs import JobCheckpoint, record_job_completion
 
 if TYPE_CHECKING:
     from wilted.db import ProcessingJob as ProcessingJobModel
@@ -53,6 +53,12 @@ def handle_prepare(job: ProcessingJobModel, coordinator: ModelCoordinator) -> No
     llm_model = options.get("llm_model")
     llm_backend_type = options.get("llm_backend_type") or "gguf"
 
+    # The lease owner is required up front: it fences the resume marker's
+    # read-modify-write (JobCheckpoint), so validate it before doing any work.
+    owner_id = job.lease_owner
+    if not owner_id:
+        raise ValueError(f"prepare job {job.id} has no lease_owner")
+
     prepared = prepare_item(
         item,
         coordinator,
@@ -62,13 +68,11 @@ def handle_prepare(job: ProcessingJobModel, coordinator: ModelCoordinator) -> No
         skip_tts=skip_tts,
         backend_factory=lambda backend_type, model: build_llm_backend(backend_type, model=model),
         tier3_transcribe=transcribe_tier3,
+        checkpoint=JobCheckpoint(job.id, owner_id),
     )
 
     item = Item.get_by_id(item.id)
     manifest = build_prepare_manifest(item, operation_version=operation_version)
-    owner_id = job.lease_owner
-    if not owner_id:
-        raise ValueError(f"prepare job {job.id} has no lease_owner")
 
     result_metadata = {
         "prepared": 1 if prepared else 0,
