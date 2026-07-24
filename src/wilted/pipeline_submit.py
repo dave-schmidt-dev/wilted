@@ -365,7 +365,10 @@ def run_classify_via_runner(
             wait is named and shows movement. ``None`` is the daemon path.
 
     Returns:
-        Dict with ``classified``, ``errors``, and ``total`` counts.
+        Dict with ``classified``, ``errors``, ``total``, and ``submission_errors``
+        counts. ``submission_errors`` tallies items whose ``submit_classify`` call
+        itself raised (PM-1) — kept out of ``classified``/``errors`` (neither is
+        true) but never dropped from the accounting.
     """
     items = items_pending_classification()
     if not items:
@@ -373,16 +376,30 @@ def run_classify_via_runner(
         return {"classified": 0, "errors": 0, "total": 0}
 
     _emit(on_status, f"Classifying {len(items)} item(s) with the local LLM... (live log: /tmp/wilted.log)")
+    submission_errors = 0
     for item in items:
-        submit_classify(
-            item_id=item.id,
-            model=model,
-            backend_type=backend_type,
-            sync_run=False,
-        )
+        try:
+            submit_classify(
+                item_id=item.id,
+                model=model,
+                backend_type=backend_type,
+                sync_run=False,
+            )
+        except Exception:
+            # Per-item isolation (INV-6, PM-1 fix, path b): a bare/absent except
+            # here previously let a failed submission vanish — the item still
+            # counted toward ``total`` via _classify_stats_for_items but landed in
+            # neither ``classified`` nor ``errors``. A dedicated counter makes the
+            # failure visible and keeps ``total == classified + errors +
+            # submission_errors`` true, without touching content_state.
+            logger.warning("Classify submit failed for item %s; isolating and continuing", item.id, exc_info=True)
+            submission_errors += 1
+            continue
 
     drain_runner(kind=JobKind.CLASSIFY, max_jobs_per_run=max_jobs_per_run, on_status=on_status)
-    return _classify_stats_for_items(items)
+    stats = _classify_stats_for_items(items)
+    stats["submission_errors"] = submission_errors
+    return stats
 
 
 def _prepare_stats_for_items(items: list[Item]) -> dict[str, int]:
@@ -415,7 +432,10 @@ def run_prepare_via_runner(
             audio-generation wait is named. ``None`` is the daemon path.
 
     Returns:
-        Dict with ``prepared``, ``errors``, and ``skipped`` counts.
+        Dict with ``prepared``, ``errors``, ``skipped``, and ``submission_errors``
+        counts. ``submission_errors`` tallies items whose ``submit_prepare`` call
+        itself raised (PM-1) — kept out of ``prepared``/``errors`` (neither is
+        true) but never dropped from the accounting.
     """
     items = items_for_prepare()
     if not items:
@@ -423,18 +443,30 @@ def run_prepare_via_runner(
         return {"prepared": 0, "errors": 0, "skipped": 0}
 
     _emit(on_status, f"Preparing {len(items)} item(s) (ad/promo detection + audio)... (live log: /tmp/wilted.log)")
+    submission_errors = 0
     for item in items:
-        submit_prepare(
-            item.id,
-            use_llm=use_llm,
-            llm_model=llm_model,
-            llm_backend_type=llm_backend_type,
-            skip_tts=skip_tts,
-            sync_run=False,
-        )
+        try:
+            submit_prepare(
+                item.id,
+                use_llm=use_llm,
+                llm_model=llm_model,
+                llm_backend_type=llm_backend_type,
+                skip_tts=skip_tts,
+                sync_run=False,
+            )
+        except Exception:
+            # Per-item isolation (INV-6, PM-1 fix, path b) — see
+            # run_classify_via_runner above. Keeps
+            # ``len(items) == prepared + errors + skipped + submission_errors``
+            # true instead of letting the failed item vanish.
+            logger.warning("Prepare submit failed for item %s; isolating and continuing", item.id, exc_info=True)
+            submission_errors += 1
+            continue
 
     drain_runner(kind=JobKind.PREPARE, max_jobs_per_run=max_jobs_per_run, on_status=on_status)
-    return _prepare_stats_for_items(items)
+    stats = _prepare_stats_for_items(items)
+    stats["submission_errors"] = submission_errors
+    return stats
 
 
 def submit_article_cache(
@@ -503,15 +535,28 @@ def submit_pending_article_cache_jobs(
     """
     submitted = 0
     for entry in items_needing_article_cache(voice=voice, lang=lang, speed=speed):
-        submit_article_cache(
-            entry["id"],
-            voice=voice,
-            lang=lang,
-            speed=speed,
-            added=entry.get("added", ""),
-            operation_version=operation_version,
-            sync_run=False,
-        )
+        try:
+            submit_article_cache(
+                entry["id"],
+                voice=voice,
+                lang=lang,
+                speed=speed,
+                added=entry.get("added", ""),
+                operation_version=operation_version,
+                sync_run=False,
+            )
+        except Exception:
+            # Abort-prevention only (INV-6, B2 backport): one entry's submit
+            # failure must not abort the remaining entries. No accounting change
+            # needed here — _article_cache_stats_for_entries already derives
+            # ``errors`` from ``not is_cache_valid``, so an un-submitted entry is
+            # already counted there without a dedicated counter.
+            logger.warning(
+                "Article-cache submit failed for entry %s; isolating and continuing",
+                entry["id"],
+                exc_info=True,
+            )
+            continue
         submitted += 1
     return submitted
 
@@ -753,6 +798,8 @@ def run_report_via_runner(
 
     resolved_date = report_date or _local_date_str()
     _emit(on_status, "Assembling the morning report... (live log: /tmp/wilted.log)")
+    # Single-submit call, not a per-item loop (INV-6) — trivially isolated already;
+    # no B2 try/except backport needed.
     submit_report(report_date=resolved_date, sync_run=False)
     drain_runner(kind=JobKind.REPORT_ASSEMBLY, max_jobs_per_run=max_jobs_per_run, on_status=on_status)
     return assemble_report(resolved_date)
@@ -770,6 +817,8 @@ def run_briefing_via_runner(
     today = _local_date_str()
     resolved_start = window_start or today
     resolved_end = window_end or today
+    # Single-submit call, not a per-item loop (INV-6) — trivially isolated already;
+    # no B2 try/except backport needed.
     submit_briefing(window_start=resolved_start, window_end=resolved_end, sync_run=False)
     drain_runner(kind=JobKind.COMPACT_BRIEFING, max_jobs_per_run=max_jobs_per_run)
 
