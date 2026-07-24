@@ -252,7 +252,7 @@ class TestIngestPipelineWiring:
 
         monkeypatch.setattr(
             "wilted.pipeline_submit.run_discover_via_runner",
-            lambda: calls.append("discover") or {"discovered": 0, "feeds_polled": 0, "errors": 0},
+            lambda **kwargs: calls.append("discover") or {"discovered": 0, "feeds_polled": 0, "errors": 0},
         )
         monkeypatch.setattr(
             "wilted.pipeline_submit.run_classify_via_runner",
@@ -260,7 +260,7 @@ class TestIngestPipelineWiring:
         )
         monkeypatch.setattr(
             "wilted.pipeline_submit.run_report_via_runner",
-            lambda: calls.append("report") or {"items": 0, "playlists": {}, "report_id": 1},
+            lambda **kwargs: calls.append("report") or {"items": 0, "playlists": {}, "report_id": 1},
         )
         monkeypatch.setattr("wilted.report.get_report", lambda: None)
 

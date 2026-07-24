@@ -586,17 +586,16 @@ def _maybe_chain_discover_prepare(*, yes: bool, no_chain: bool) -> None:
         return
 
     from wilted.discover import run_discover
+    from wilted.pipeline_submit import run_prepare_via_runner
 
-    stats = run_discover()
+    stats = run_discover(on_status=_print_status)
     print(f"→ Discovered {stats['discovered']} new items across {stats['feeds_polled']} feeds")
 
     run_prepare_now = yes or _prompt_yes("Run prepare now?")
     if not run_prepare_now:
         return
 
-    from wilted.pipeline_submit import run_prepare_via_runner
-
-    prep = run_prepare_via_runner()
+    prep = run_prepare_via_runner(on_status=_print_status)
     print(f"→ Prepared {prep['prepared']} items ({prep['errors']} errors, {prep['skipped']} skipped)")
 
 
@@ -1103,6 +1102,10 @@ def cmd_ingest(argv: list[str]) -> None:
     from wilted.onboard import run_ingest
 
     try:
+        # No on_status sink: `wilted ingest` is the nightly launchd entry
+        # (scripts/wilted-nightly.sh), whose per-run log must stay unchanged, and
+        # run_ingest already names each stage wait on stdout. Passing a stderr
+        # heartbeat here would widen the daemon's output (INV-11 byte-silence).
         run_ingest(
             skip_discover=args.skip_discover,
             skip_classify=args.skip_classify,

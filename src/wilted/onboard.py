@@ -9,8 +9,21 @@ from __future__ import annotations
 import logging
 import sys
 import time
+from collections.abc import Callable  # noqa: TC003
 
 logger = logging.getLogger(__name__)
+
+
+def _stderr_status(msg: str) -> None:
+    """Interactive progress sink: heartbeat to the side channel (stderr).
+
+    The setup wizard passes this into ``run_ingest`` so each stage's drain
+    surfaces live progress. The stage opener/result lines stay on stdout as the
+    wizard's narrative; the nightly ``wilted ingest`` path passes ``on_status=None``
+    and adds no heartbeat, so its per-run log is unchanged (INV-11).
+    """
+    print(msg, file=sys.stderr)
+
 
 # ---------------------------------------------------------------------------
 # Starter feed suggestions
@@ -224,7 +237,7 @@ def run_setup() -> None:
         print("This will: poll feeds → fetch articles → classify → build report.\n")
 
         if _confirm("Run first ingestion?"):
-            run_ingest()
+            run_ingest(on_status=_stderr_status)
         else:
             print("\nYou can run it later with: wilted ingest")
     else:
@@ -247,6 +260,7 @@ def run_setup() -> None:
 
 def run_ingest(
     *,
+    on_status: Callable[[str], None] | None = None,
     skip_discover: bool = False,
     skip_classify: bool = False,
     skip_report: bool = False,
@@ -257,6 +271,12 @@ def run_ingest(
     partial failures. Returns aggregate stats.
 
     Args:
+        on_status: Optional progress sink forwarded into each stage's runner
+            drain. The entry point owns the surface (INV-11): the interactive
+            setup wizard passes ``_stderr_status``; the nightly ``wilted ingest``
+            path passes ``None``, so the drain adds no heartbeat and the per-run
+            log is unchanged. The stage opener/result lines print to stdout
+            regardless — that is the pipeline's own narrative, not the sink.
         skip_discover: Skip the discovery stage.
         skip_classify: Skip the classification stage.
         skip_report: Skip the report generation stage.
@@ -274,7 +294,7 @@ def run_ingest(
         try:
             from wilted.discover import run_discover
 
-            stats = run_discover()
+            stats = run_discover(on_status=on_status)
             results["discover"] = stats
             print(f"  Found {stats['discovered']} new items from {stats['feeds_polled']} feeds")
             if stats["errors"]:
@@ -292,7 +312,7 @@ def run_ingest(
         try:
             from wilted.pipeline_submit import run_classify_via_runner
 
-            stats = run_classify_via_runner()
+            stats = run_classify_via_runner(on_status=on_status)
             results["classify"] = stats
             print(f"  Classified {stats['classified']} items")
             if stats["errors"]:
@@ -311,7 +331,7 @@ def run_ingest(
             from wilted.pipeline_submit import run_report_via_runner
             from wilted.report import get_report
 
-            run_report_via_runner()
+            run_report_via_runner(on_status=on_status)
             report_data = get_report()
             if report_data:
                 items_dict = report_data["items"]

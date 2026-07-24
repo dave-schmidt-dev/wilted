@@ -16,7 +16,8 @@ Layers gated here:
   2. The wrapper (``run_*_via_runner``) names the wait before the drain.
   3. The interactive CLI commands each forward a real (non-None) stderr sink —
      enumerated so a future 5th pipeline command that forgets to forward is caught
-     structurally, not just for today's four.
+     structurally, not just for today's four. The `feed add` follow-on chain
+     reaches the same seam through a second call path and is gated separately.
   4. Static guard: output suppression stays confined to the fetch cascade, so a
      future refactor can't wrap a model load/download and swallow the
      huggingface_hub tqdm bar (the multi-GB silent-download regression class).
@@ -31,7 +32,14 @@ from unittest.mock import patch
 import pytest
 
 import wilted.pipeline_submit as ps
-from wilted.cli import cmd_classify, cmd_discover, cmd_prepare, cmd_report
+from wilted.cli import (
+    _maybe_chain_discover_prepare,
+    cmd_classify,
+    cmd_discover,
+    cmd_ingest,
+    cmd_prepare,
+    cmd_report,
+)
 
 _SRC = Path(__file__).resolve().parent.parent / "src" / "wilted"
 
@@ -178,6 +186,131 @@ class TestCliCommandsForwardStderrSink:
             cmd_report([])
 
         assert callable(captured.get("on_status")), "cmd_report did not forward a callable on_status sink"
+
+
+class TestFeedAddChainSurfacesProgress:
+    """The `feed add` follow-on chain reaches the runner through a *second* door.
+
+    `_maybe_chain_discover_prepare` runs discover + prepare after `wilted feed add`
+    (interactive Y/n, or `--yes`). It hits the same blocking seam as cmd_discover /
+    cmd_prepare but via a different call path, so the enumerated command gate above
+    can't see it — a silent chain would still be a live INV-11 counterexample. Both
+    stages must forward a callable stderr sink.
+    """
+
+    def test_chain_forwards_sink_to_both_stages(self):
+        discover_kwargs: dict = {}
+        prepare_kwargs: dict = {}
+
+        def _discover(**kwargs):
+            discover_kwargs.update(kwargs)
+            return {"discovered": 0, "feeds_polled": 0, "errors": 0}
+
+        def _prepare(**kwargs):
+            prepare_kwargs.update(kwargs)
+            return {"prepared": 0, "errors": 0, "skipped": 0}
+
+        with (
+            patch.object(ps, "run_discover_via_runner", _discover),
+            patch.object(ps, "run_prepare_via_runner", _prepare),
+        ):
+            # yes=True skips the TTY prompts and runs both stages unattended.
+            _maybe_chain_discover_prepare(yes=True, no_chain=False)
+
+        assert callable(discover_kwargs.get("on_status")), "chain discover dropped the progress sink"
+        assert callable(prepare_kwargs.get("on_status")), "chain prepare dropped the progress sink"
+
+
+class TestOnboardingSurfacesProgress:
+    """run_ingest is the full pipeline shared by the interactive wizard AND the
+    nightly `wilted ingest` daemon entry, so the entry point owns the sink.
+
+    The library never assumes its surface: run_ingest forwards whatever sink the
+    caller passes to all three stage drains. The interactive setup wizard passes a
+    stderr heartbeat; the nightly path passes None and adds no heartbeat, so the
+    per-run log stays unchanged (INV-11 byte-silence is a drain-layer property).
+    """
+
+    def _capture_stage_sinks(self, on_status):
+        """Run run_ingest with the given sink; return the sink each stage received."""
+        captured: dict[str, object] = {"discover": "unset", "classify": "unset", "report": "unset"}
+
+        def _discover(**kwargs):
+            captured["discover"] = kwargs.get("on_status")
+            return {"discovered": 0, "feeds_polled": 0, "errors": 0}
+
+        def _classify(**kwargs):
+            captured["classify"] = kwargs.get("on_status")
+            return {"classified": 0, "errors": 0, "total": 0}
+
+        def _report(**kwargs):
+            captured["report"] = kwargs.get("on_status")
+            return None
+
+        from wilted import onboard
+
+        with (
+            patch("wilted.discover.run_discover", _discover),
+            patch.object(ps, "run_classify_via_runner", _classify),
+            patch.object(ps, "run_report_via_runner", _report),
+            patch("wilted.report.get_report", return_value=None),
+        ):
+            onboard.run_ingest(on_status=on_status)
+        return captured
+
+    def test_caller_sink_reaches_every_stage(self):
+        """The interactive wizard's sink is forwarded to all three stage drains."""
+
+        def sink(_m):
+            pass  # a distinct callable identified by is-ness
+
+        captured = self._capture_stage_sinks(sink)
+        for stage in ("discover", "classify", "report"):
+            assert captured[stage] is sink, f"onboarding {stage} stage did not forward the caller's sink"
+
+    def test_nightly_none_adds_no_heartbeat_to_any_stage(self):
+        """The daemon path (on_status=None) forwards None — no drain heartbeat."""
+        captured = self._capture_stage_sinks(None)
+        for stage in ("discover", "classify", "report"):
+            assert captured[stage] is None, f"onboarding {stage} stage fabricated a sink on the daemon path"
+
+    def test_wizard_sink_writes_to_stderr_not_stdout(self, capsys):
+        """The wizard's own sink (`_stderr_status`) is a side-channel writer."""
+        from wilted.onboard import _stderr_status
+
+        _stderr_status("  ...3 processed, 0 failed so far")
+        captured = capsys.readouterr()
+        assert "3 processed" in captured.err, "wizard heartbeat did not reach stderr"
+        assert "3 processed" not in captured.out, "wizard heartbeat leaked onto stdout"
+
+
+class TestNightlyEntryStaysSilent:
+    """The nightly `wilted ingest` CLI entry must pass NO sink — the other
+    direction of byte-silence.
+
+    ``run_ingest`` is caller-owned, and ``TestOnboardingSurfacesProgress`` proves
+    ``run_ingest(None)`` is quiet. But nothing there pins that ``cmd_ingest`` — the
+    launchd entry (scripts/wilted-nightly.sh) — is the caller that passes ``None``.
+    A future dev who "helpfully" adds a stderr heartbeat at this seam regresses
+    nightly byte-silence (the exact property this commit protects) while the suite
+    stays green. Lock the central claim at the seam, not just in a warning comment.
+    """
+
+    def test_cmd_ingest_daemon_entry_passes_no_sink(self):
+        captured: dict = {}
+
+        def _stub(**kwargs):
+            captured.update(kwargs)
+            return {}
+
+        # cmd_ingest imports run_ingest from wilted.onboard inside the function.
+        with patch("wilted.onboard.run_ingest", _stub):
+            cmd_ingest([])
+
+        assert "on_status" not in captured or captured["on_status"] is None, (
+            "nightly `wilted ingest` must stay heartbeat-silent: cmd_ingest passed "
+            f"on_status={captured.get('on_status')!r}"
+        )
 
 
 class TestChannelHygiene:

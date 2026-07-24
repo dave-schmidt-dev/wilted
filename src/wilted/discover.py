@@ -23,6 +23,7 @@ import logging
 import re
 import unicodedata
 import uuid
+from collections.abc import Callable  # noqa: TC003
 from datetime import UTC, datetime
 from time import struct_time
 
@@ -438,12 +439,21 @@ def _process_entry(feed: Feed, entry, stats: dict) -> None:
         stats["new"] += 1
 
 
-def run_discover() -> dict:
+def run_discover(on_status: Callable[[str], None] | None = None) -> dict:
     """Run the full discovery stage across all enabled feeds.
+
+    Thin façade over ``run_discover_via_runner`` so callers can `from
+    wilted.discover import run_discover` without reaching into pipeline_submit.
+
+    Args:
+        on_status: Optional progress sink forwarded into the runner drain, so an
+            interactive caller (the setup wizard, the `feed add` follow-on chain)
+            surfaces live progress. ``None`` — the default, and the daemon path —
+            stays byte-silent, with detail in the file log (INV-11).
 
     Returns:
         Dict with aggregate stats: {'discovered': int, 'feeds_polled': int, 'errors': int}
     """
     from wilted.pipeline_submit import run_discover_via_runner
 
-    return run_discover_via_runner()
+    return run_discover_via_runner(on_status=on_status)
