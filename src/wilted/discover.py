@@ -166,36 +166,45 @@ def _is_duplicate(feed: Feed, guid: str | None, canonical_url: str | None, conte
 
 
 def _fetch_article_text(url: str) -> tuple[str | None, str | None]:
-    """Fetch article full text via trafilatura.
+    """Fetch article full text via the CHEAP fetch/extract cascade.
+
+    Delegates to :func:`wilted.fetch_cascade.resolve_article_text` with
+    ``FetchBudget.CHEAP`` — trafilatura fetch + ``bare_extraction`` only, no
+    browser fallback, no ``<main>``-scoped retry — matching this stage's
+    unattended-nightly depth exactly. The cascade already runs its own
+    ``clean_text`` pass, so the result is not cleaned again here.
+
+    Option B (zero nightly behavior change): text is returned for BOTH the
+    "ok" and "headline_only" outcomes — any case where the cascade actually
+    extracted text — because today's discover persists any truthy
+    ``bare_extraction`` result without checking word count or consent-wall
+    shape. Mapping "headline_only" to (None, None) here would make discovery
+    persist fewer articles than it does today; the outcome is logged for
+    observability only and never changes what gets returned.
 
     Returns:
-        Tuple of (text, title) or (None, None) on failure.
+        Tuple of (text, title), or (None, None) when the cascade fetched no
+        HTML ("blocked") or extracted no text from it ("failed").
     """
+    from wilted.fetch_cascade import FetchBudget, resolve_article_text
+
     try:
-        from wilted.fetch import suppress_subprocess_output
-
-        with suppress_subprocess_output():
-            import trafilatura
-
-            html = trafilatura.fetch_url(url)
-
-        if not html:
-            return None, None
-
-        doc = trafilatura.bare_extraction(html, include_comments=False, include_tables=False)
-        doc_text = getattr(doc, "text", None) if doc else None
-        if not doc_text:
-            return None, None
-
-        from wilted.text import clean_text
-
-        text = clean_text(doc_text)
-        title = getattr(doc, "title", None)
-        return text, title
-
+        resolved = resolve_article_text(url, budget=FetchBudget.CHEAP)
     except Exception as e:
         logger.warning("Failed to fetch article text from %s: %s", url, e)
         return None, None
+
+    if resolved.outcome in ("blocked", "failed"):
+        logger.debug("fetch_cascade: outcome=%s for %s, no text to persist", resolved.outcome, url)
+        return None, None
+
+    if resolved.outcome == "headline_only":
+        logger.debug(
+            "fetch_cascade: outcome=headline_only for %s, persisting text anyway (Option B)",
+            url,
+        )
+
+    return resolved.text, resolved.title
 
 
 def _save_transcript(item_id: int, title: str, text: str) -> str:
