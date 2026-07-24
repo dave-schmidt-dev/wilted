@@ -869,7 +869,7 @@ def cmd_discover(argv: list[str]) -> None:
     from wilted.pipeline_submit import run_discover_via_runner
 
     try:
-        stats = run_discover_via_runner()
+        stats = run_discover_via_runner(on_status=_print_status)
         print(f"Discovery complete: {stats['discovered']} new items from {stats['feeds_polled']} feeds")
         if stats["errors"]:
             print(f"  {stats['errors']} feed(s) had errors (see /tmp/wilted.log)")
@@ -888,7 +888,7 @@ def cmd_classify(argv: list[str]) -> None:
     from wilted.pipeline_submit import run_classify_via_runner
 
     try:
-        stats = run_classify_via_runner()
+        stats = run_classify_via_runner(on_status=_print_status)
         print(f"Classification complete: {stats['classified']} items classified")
         if stats["errors"]:
             print(f"  {stats['errors']} item(s) had errors (see /tmp/wilted.log)")
@@ -918,7 +918,7 @@ def cmd_report(argv: list[str]) -> None:
     args, _ = parser.parse_known_args(argv)
 
     try:
-        run_report_via_runner()
+        run_report_via_runner(on_status=_print_status)
 
         if args.email:
             from wilted.report import format_report_email
@@ -1044,6 +1044,7 @@ def cmd_prepare(argv: list[str]) -> None:
             use_llm=not args.no_llm,
             llm_model=args.model,
             llm_backend_type=args.backend,
+            on_status=_print_status,
         )
         print(f"Prepare complete: {stats['prepared']} prepared, {stats['errors']} errors")
     except Exception as e:

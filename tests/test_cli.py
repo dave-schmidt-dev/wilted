@@ -323,7 +323,7 @@ class TestCmdDiscover:
     def test_reports_discovered_and_errors(self, capsys, monkeypatch):
         monkeypatch.setattr(
             "wilted.pipeline_submit.run_discover_via_runner",
-            lambda: {"discovered": 3, "feeds_polled": 2, "errors": 1, "unknown": 0},
+            lambda **kwargs: {"discovered": 3, "feeds_polled": 2, "errors": 1, "unknown": 0},
         )
         cmd_discover([])
         out = capsys.readouterr().out
@@ -337,7 +337,7 @@ class TestCmdDiscover:
         # rather than as zero, and cmd_discover must surface that to the user.
         monkeypatch.setattr(
             "wilted.pipeline_submit.run_discover_via_runner",
-            lambda: {"discovered": 0, "feeds_polled": 2, "errors": 0, "unknown": 2},
+            lambda **kwargs: {"discovered": 0, "feeds_polled": 2, "errors": 0, "unknown": 2},
         )
         cmd_discover([])
         out = capsys.readouterr().out
@@ -1069,7 +1069,7 @@ class TestPipelineSubcommands:
         """wilted discover dispatches to run_discover_via_runner."""
         monkeypatch.setattr(
             "wilted.pipeline_submit.run_discover_via_runner",
-            lambda: {"discovered": 3, "feeds_polled": 2, "errors": 0},
+            lambda **kwargs: {"discovered": 3, "feeds_polled": 2, "errors": 0},
         )
         run_cli(["discover"])
         out = capsys.readouterr().out

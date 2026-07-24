@@ -27,6 +27,19 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_JOBS_PER_RUN = 8
 
 
+def _emit(on_status: Callable[[str], None] | None, msg: str) -> None:
+    """Forward one progress line to the caller's surface, if a sink was supplied.
+
+    Surface-agnostic progress channel (AGENTS.md "Progress Visibility"): the
+    pipeline emits status strings; the entry point owns the sink. The interactive
+    CLI forwards a stderr printer so a multi-second discover/classify/prepare drain
+    never reads as a hang; the nightly daemon passes ``None`` (the sink degrades to
+    the file log at ``/tmp/wilted.log``), leaving that path byte-for-byte unchanged.
+    """
+    if on_status is not None:
+        on_status(msg)
+
+
 def _ready_bootstrap() -> RuntimeBootstrap:
     bootstrap = RuntimeBootstrap()
     bootstrap.init_tqdm_lock()
@@ -176,6 +189,7 @@ def drain_runner(
     max_jobs_per_run: int = _DEFAULT_MAX_JOBS_PER_RUN,
     station_active_check: Callable[[], bool] | None = None,
     bootstrap: RuntimeBootstrap | None = None,
+    on_status: Callable[[str], None] | None = None,
 ) -> RunStats:
     """Run the pipeline runner until no runnable jobs remain for ``kind``.
 
@@ -187,6 +201,15 @@ def drain_runner(
             which raises by design (INV-1/BUG-2). When omitted, a fresh
             bootstrap is built and initialized on the current (assumed main)
             thread — the CLI drain path, unchanged.
+        on_status: Optional progress sink (INV-11). Fires a running tally after
+            each drained batch so an interactive drain shows movement between
+            batches rather than a silent multi-second wait. ``None`` (the nightly
+            daemon path) stays fully silent on any surface — the drain's detail
+            still lands in the file log. Intra-batch granularity (one long job
+            inside a single ``runner.run()``) is intentionally coarse: the
+            per-stage opener names the wait and the live log carries per-item
+            detail; threading a finer hook through ``runner.run()`` would cross
+            into the coordinator internals INV-1/7/8/10 protect.
     """
     accum = RunStats()
     if not _has_runnable_jobs(kind=kind):
@@ -208,6 +231,7 @@ def drain_runner(
             break
         if result.stats.submitted_handled == 0 and result.stats.failed == 0 and result.stats.cancelled == 0:
             break
+        _emit(on_status, f"  ...{accum.submitted_handled} processed, {accum.failed} failed so far")
     return accum
 
 
@@ -331,8 +355,14 @@ def run_classify_via_runner(
     model: str | None = None,
     backend_type: str | None = None,
     max_jobs_per_run: int = _DEFAULT_MAX_JOBS_PER_RUN,
+    on_status: Callable[[str], None] | None = None,
 ) -> dict[str, int]:
     """Submit pending classification jobs and drain the runner synchronously.
+
+    Args:
+        on_status: Optional progress sink (INV-11) forwarded to the drain; the
+            interactive CLI passes a stderr printer so the LLM classification
+            wait is named and shows movement. ``None`` is the daemon path.
 
     Returns:
         Dict with ``classified``, ``errors``, and ``total`` counts.
@@ -342,6 +372,7 @@ def run_classify_via_runner(
         logger.info("No fetched items to classify")
         return {"classified": 0, "errors": 0, "total": 0}
 
+    _emit(on_status, f"Classifying {len(items)} item(s) with the local LLM... (live log: /tmp/wilted.log)")
     for item in items:
         submit_classify(
             item_id=item.id,
@@ -350,7 +381,7 @@ def run_classify_via_runner(
             sync_run=False,
         )
 
-    drain_runner(kind=JobKind.CLASSIFY, max_jobs_per_run=max_jobs_per_run)
+    drain_runner(kind=JobKind.CLASSIFY, max_jobs_per_run=max_jobs_per_run, on_status=on_status)
     return _classify_stats_for_items(items)
 
 
@@ -374,8 +405,14 @@ def run_prepare_via_runner(
     llm_backend_type: str = "gguf",
     skip_tts: bool = False,
     max_jobs_per_run: int = _DEFAULT_MAX_JOBS_PER_RUN,
+    on_status: Callable[[str], None] | None = None,
 ) -> dict[str, int]:
     """Submit prepare jobs for selected items and drain the runner synchronously.
+
+    Args:
+        on_status: Optional progress sink (INV-11) forwarded to the drain; the
+            interactive CLI passes a stderr printer so the ad/promo-detection and
+            audio-generation wait is named. ``None`` is the daemon path.
 
     Returns:
         Dict with ``prepared``, ``errors``, and ``skipped`` counts.
@@ -385,6 +422,7 @@ def run_prepare_via_runner(
         logger.info("No selected items to prepare")
         return {"prepared": 0, "errors": 0, "skipped": 0}
 
+    _emit(on_status, f"Preparing {len(items)} item(s) (ad/promo detection + audio)... (live log: /tmp/wilted.log)")
     for item in items:
         submit_prepare(
             item.id,
@@ -395,7 +433,7 @@ def run_prepare_via_runner(
             sync_run=False,
         )
 
-    drain_runner(kind=JobKind.PREPARE, max_jobs_per_run=max_jobs_per_run)
+    drain_runner(kind=JobKind.PREPARE, max_jobs_per_run=max_jobs_per_run, on_status=on_status)
     return _prepare_stats_for_items(items)
 
 
@@ -628,6 +666,7 @@ def submit_briefing(
 def run_discover_via_runner(
     *,
     max_jobs_per_run: int = _DEFAULT_MAX_JOBS_PER_RUN,
+    on_status: Callable[[str], None] | None = None,
 ) -> dict[str, int]:
     """Submit discovery jobs for all enabled feeds and drain the runner.
 
@@ -651,6 +690,7 @@ def run_discover_via_runner(
         logger.info("No enabled feeds to poll")
         return {"discovered": 0, "feeds_polled": 0, "errors": 0, "unknown": 0}
 
+    _emit(on_status, f"Polling {len(feeds)} feed(s) and fetching new articles... (live log: /tmp/wilted.log)")
     submitted_keys: dict[int, str] = {}
     unknown = 0
     for feed in feeds:
@@ -665,7 +705,7 @@ def run_discover_via_runner(
             continue
         submitted_keys[feed.id] = result.idempotency_key
 
-    drain_runner(kind=JobKind.DISCOVER, max_jobs_per_run=max_jobs_per_run)
+    drain_runner(kind=JobKind.DISCOVER, max_jobs_per_run=max_jobs_per_run, on_status=on_status)
 
     discovered = 0
     errors = 0
@@ -700,13 +740,21 @@ def run_report_via_runner(
     *,
     report_date: str | None = None,
     max_jobs_per_run: int = _DEFAULT_MAX_JOBS_PER_RUN,
+    on_status: Callable[[str], None] | None = None,
 ) -> dict:
-    """Submit a report assembly job and drain the runner synchronously."""
+    """Submit a report assembly job and drain the runner synchronously.
+
+    Args:
+        on_status: Optional progress sink (INV-11) forwarded to the drain; the
+            interactive CLI passes a stderr printer so report assembly is named.
+            ``None`` is the daemon path.
+    """
     from wilted.report import _local_date_str, assemble_report
 
     resolved_date = report_date or _local_date_str()
+    _emit(on_status, "Assembling the morning report... (live log: /tmp/wilted.log)")
     submit_report(report_date=resolved_date, sync_run=False)
-    drain_runner(kind=JobKind.REPORT_ASSEMBLY, max_jobs_per_run=max_jobs_per_run)
+    drain_runner(kind=JobKind.REPORT_ASSEMBLY, max_jobs_per_run=max_jobs_per_run, on_status=on_status)
     return assemble_report(resolved_date)
 
 
