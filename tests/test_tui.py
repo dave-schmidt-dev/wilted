@@ -18,9 +18,10 @@ from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
-from textual.widgets import Label, Static, Tree
+from textual.widgets import Input, Label, Static, Tree
 
 from wilted import ICONS
+from wilted.fetch import _suppress_lock
 from wilted.station.models import (
     FinalizationState,
     MediaDescriptor,
@@ -839,6 +840,67 @@ async def test_add_article_and_play_starts_playback_once_finalized():
         await app.workers.wait_for_complete()
         assert adapter.play_calls == [(entry.media, 0)]
         assert app._pending_play_item_id is None
+
+
+@pytest.mark.asyncio
+async def test_add_screen_shows_waiting_status_when_lock_contended(stub_trafilatura_module):
+    """Manual add surfaces the ``suppress_subprocess_output`` ``on_wait``
+    status when the FD-suppression lock is already held by a concurrent
+    download (e.g. a ``_play_article``/``_generate_cache`` TTS-cache
+    generation running on another worker thread) -- PM-2/T3.6.
+
+    Holds ``wilted.fetch._suppress_lock`` directly from the test thread so
+    contention is guaranteed deterministically, with no timing race against
+    a real second thread -- mirrors ``tests/test_fetch.py::
+    TestSuppressSubprocessOutput.test_on_wait_called_when_lock_is_held``.
+    ``trafilatura.fetch_url`` and ``fetch_cascade.fetch_url_with_browser``
+    are stubbed so nothing touches the network or spawns a real browser once
+    the lock is released and the worker resumes -- everything runs offline.
+
+    Regression lock for the ``on_wait`` forwarding in
+    ``fetch_cascade.resolve_article_text``
+    (``suppress_subprocess_output(on_wait=_on_wait)``): if that forwarding
+    is ever dropped, the contended worker thread would instead block on the
+    lock silently -- the status label would never show "Waiting for another
+    download to finish..." and this assertion goes red.
+    """
+    app = _make_app()
+    async with app.run_test() as pilot:
+        await pilot.press("a")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, AddArticleScreen)
+
+        url_input = screen.query_one("#url-input", Input)
+        url_input.value = "https://example.com/lock-contention-test"
+        status = screen.query_one("#add-status", Label)
+
+        with (
+            patch("trafilatura.fetch_url", create=True, return_value=None),
+            patch("wilted.fetch_cascade.fetch_url_with_browser", return_value=None),
+        ):
+            assert _suppress_lock.acquire(blocking=False), "lock must start free"
+            try:
+                await pilot.click("#add-queue", offset=(2, 1))
+
+                waiting_seen = False
+                for _ in range(60):
+                    await pilot.pause(0.05)
+                    if "Waiting for another download to finish" in status.content:
+                        waiting_seen = True
+                        break
+            finally:
+                # Always release, even on assertion/timeout above, so a
+                # regression here can't wedge the rest of the suite.
+                _suppress_lock.release()
+
+            assert waiting_seen, f"waiting status never appeared; last status was: {status.content!r}"
+
+            # The worker only unblocks once the lock is released above; wait
+            # for it to actually finish while the stubs are still active, so
+            # it can't outlive this block and hit the real network/browser.
+            await app.workers.wait_for_complete()
+            assert "Error" in status.content, f"worker did not resume/finish cleanly: {status.content!r}"
 
 
 # ---------------------------------------------------------------------------
