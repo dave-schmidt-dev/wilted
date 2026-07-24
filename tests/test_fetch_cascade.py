@@ -105,6 +105,95 @@ class TestEdgeStates:
         assert result.outcome == "ok"
         assert result.title is None
 
+    def test_whitespace_only_extracted_text_is_failed_not_headline_only(self):
+        """FIX #1: HTML fetched, text extracted, but it cleans down to nothing
+        usable — must be "failed" with text=None, not "headline_only" with
+        text="". The docstring promises None "if nothing usable" for every
+        code path, not just the None-from-bare_extraction one.
+        """
+        with _mock_fetch("<html>content</html>"), _mock_extract("   \n\t  ", "Title"):
+            result = resolve_article_text("https://example.com/whitespace", budget=FetchBudget.CHEAP)
+
+        assert result.outcome == "failed"
+        assert result.text is None
+        assert result.title is None
+
+    def test_empty_string_extracted_text_is_failed(self):
+        """Defensive companion to the whitespace-only case: an empty string
+        from bare_extraction (falsy pre-clean_text) must also land on
+        "failed", not "headline_only".
+        """
+        with _mock_fetch("<html>content</html>"), _mock_extract("", "Title"):
+            result = resolve_article_text("https://example.com/empty-string", budget=FetchBudget.CHEAP)
+
+        assert result.outcome == "failed"
+        assert result.text is None
+        assert result.title is None
+
+
+class TestExtractFromMain:
+    """Direct unit coverage for _extract_from_main (previously untested only
+    via the resolve_article_text integration path).
+    """
+
+    def test_main_present_with_article_body_returns_scoped_text_and_title(self):
+        html = "<html><head><title>Ignored</title></head><body><main><p>Real article body.</p></main></body></html>"
+        stub_trafilatura = MagicMock()
+        stub_trafilatura.bare_extraction.return_value = SimpleNamespace(text="Real article body.", title="Scoped Title")
+
+        text, title = fc._extract_from_main(html, stub_trafilatura, "fallback text", "fallback title")
+
+        assert text == "Real article body."
+        assert title == "Scoped Title"
+        # Confirm the extraction actually ran scoped to <main> — the outer
+        # <title> tag must not be part of what bare_extraction saw.
+        scoped_html_passed = stub_trafilatura.bare_extraction.call_args.args[0]
+        assert "<main>" in scoped_html_passed
+        assert "Ignored" not in scoped_html_passed
+
+    def test_no_main_element_returns_fallback_unchanged(self):
+        html = "<html><body><p>No main tag anywhere in this document.</p></body></html>"
+        stub_trafilatura = MagicMock()
+
+        text, title = fc._extract_from_main(html, stub_trafilatura, "fallback text", "fallback title")
+
+        assert (text, title) == ("fallback text", "fallback title")
+        stub_trafilatura.bare_extraction.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "raw_title,expected_title",
+        [
+            ("Article Headline - Site Name", "Article Headline"),
+            ("Article Headline | Site", "Article Headline"),
+            ("Article Headline — Site Name", "Article Headline"),  # em dash
+            ("Article Headline – Site Name", "Article Headline"),  # en dash
+            ("A Story About a self-made Millionaire", "A Story About a self-made Millionaire"),
+        ],
+    )
+    def test_title_falls_back_to_full_html_title_with_suffix_strip(self, raw_title, expected_title):
+        """Scoped extraction yields no title, so it's pulled from the full
+        HTML <title> tag, stripping a trailing " - Site" / " | Site" /
+        em/en-dash suffix — but not splitting a hyphenated word like
+        "self-made" that has no surrounding whitespace.
+        """
+        html = f"<html><head><title>{raw_title}</title></head><body><main><p>content</p></main></body></html>"
+        stub_trafilatura = MagicMock()
+        stub_trafilatura.bare_extraction.return_value = SimpleNamespace(text="word " * 30, title=None)
+
+        _, title = fc._extract_from_main(html, stub_trafilatura, None, None)
+
+        assert title == expected_title
+
+    def test_scoped_consent_wall_text_is_rejected_in_favor_of_fallback(self):
+        html = "<html><body><main>cookie overlay markup</main></body></html>"
+        consent_text = "We use cookies " + ("word " * 40)
+        stub_trafilatura = MagicMock()
+        stub_trafilatura.bare_extraction.return_value = SimpleNamespace(text=consent_text, title="Consent Title")
+
+        text, title = fc._extract_from_main(html, stub_trafilatura, "fallback text", "fallback title")
+
+        assert (text, title) == ("fallback text", "fallback title")
+
 
 class TestBudgetDifferences:
     """CHEAP must reproduce discover._fetch_article_text's depth exactly: no browser, no <main> retry."""
@@ -157,6 +246,19 @@ class TestBudgetDifferences:
         assert result.tier_used == "main-scope"
         assert result.outcome == "ok"
         assert result.title == "Main Title"
+
+    def test_full_no_op_main_retry_keeps_prior_tier_used(self):
+        """FIX #2: a <main> retry that finds no <main> element is a no-op —
+        it must not falsely claim tier_used="main-scope" when the text
+        actually used is still whatever the pre-retry tier produced.
+        """
+        consent_text = "We use cookies " + ("word " * 40)
+        html = "<html><body>no main element in this document</body></html>"
+        with _mock_fetch(html), _mock_extract(consent_text, "Consent Title"):
+            result = resolve_article_text("https://example.com/x", budget=FetchBudget.FULL)
+
+        assert result.tier_used == "trafilatura"
+        assert result.outcome == "headline_only"
 
 
 class TestSuppressionScope:

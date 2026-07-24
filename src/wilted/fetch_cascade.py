@@ -230,10 +230,11 @@ def resolve_article_text(
     current extraction depth exactly.
 
     Acceptance gate (first match wins):
-        no HTML fetched                                -> "blocked"
-        HTML fetched, no text extracted                 -> "failed"
-        text extracted, but < min_words or consent-wall -> "headline_only"
-        otherwise                                       -> "ok"
+        no HTML fetched                                    -> "blocked"
+        HTML fetched, no text extracted (or text cleans
+            down to empty/whitespace-only)                 -> "failed"
+        text extracted, but < min_words or consent-wall     -> "headline_only"
+        otherwise                                           -> "ok"
     A title equal to ``resolved_url`` is blanked (title=None) but never
     changes the outcome — a real >= min_words body still reaches "ok" even
     with a URL-shaped title (PM-7).
@@ -308,19 +309,38 @@ def resolve_article_text(
 
         if budget is FetchBudget.FULL and (not text or _looks_like_consent_wall(text)):
             logger.debug("fetch_cascade: retrying extraction scoped to <main>")
-            text, title = _extract_from_main(html, trafilatura, text, title)
-            tier_used = "main-scope"
+            main_text, main_title = _extract_from_main(html, trafilatura, text, title)
+            if main_text is not text:
+                # _extract_from_main returns the exact fallback objects,
+                # unchanged, whenever the <main>-scoped retry was a no-op (no
+                # <main> element, extraction raised, or the scoped result was
+                # itself rejected as a consent wall) — only bump tier_used
+                # when it actually produced the text we go on to use.
+                tier_used = "main-scope"
+            text, title = main_text, main_title
 
         if not text:
+            # Covers both "nothing extracted" (None) and "extracted an empty
+            # string" — either way there's no usable text, so text must be
+            # None per the "None if nothing usable" contract, not "".
             outcome = "failed"
+            text = None
             title = None
         else:
             text = clean_text(text)
-            word_count = len(text.split())
-            consent_wall = _looks_like_consent_wall(text)
-            outcome = "headline_only" if (word_count < min_words or consent_wall) else "ok"
-            if title == resolved_url:
+            if not text:
+                # HTML fetched and something was extracted, but it cleaned
+                # down to nothing usable (e.g. whitespace-only extraction) —
+                # that's "failed", not "headline_only" with an empty string.
+                outcome = "failed"
+                text = None
                 title = None
+            else:
+                word_count = len(text.split())
+                consent_wall = _looks_like_consent_wall(text)
+                outcome = "headline_only" if (word_count < min_words or consent_wall) else "ok"
+                if title == resolved_url:
+                    title = None
 
     logger.debug(
         "fetch_cascade: outcome=%s tier_used=%s words=%d url=%s",
