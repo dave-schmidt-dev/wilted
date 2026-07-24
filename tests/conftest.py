@@ -18,6 +18,7 @@ _TEST_MARKERS = {
     "test_briefing.py": ("unit",),
     "test_cache.py": ("integration",),
     "test_checkpoint_poller.py": ("unit",),
+    "test_checkpoint_progress.py": ("integration",),
     "test_classify.py": ("unit",),
     "test_cli.py": ("integration",),
     "test_conftest_fixtures.py": ("unit",),

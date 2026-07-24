@@ -649,6 +649,117 @@ def _encode_metadata(data: dict[str, Any] | None) -> str | None:
     return encoded
 
 
+# Namespaced checkpoint envelope (backward-compatible). ``checkpoint_json`` stays
+# a flat dict of immutable submission options; mutable in-flight progress lives
+# under the reserved ``_progress`` key, with ``_checkpoint_v`` marking the format.
+# Legacy records lack the marker and are treated as v1 (options-only). Every
+# existing flat-key reader is unchanged — it ignores ``_progress``/``_checkpoint_v``.
+_PROGRESS_KEY = "_progress"
+_CHECKPOINT_VERSION_KEY = "_checkpoint_v"
+_CHECKPOINT_VERSION = 2
+
+
+def read_checkpoint_progress(job: ProcessingJob) -> dict[str, Any]:
+    """Return the mutable progress hint from a job's checkpoint envelope.
+
+    Parses ``job.checkpoint_json`` and returns ``payload["_progress"]`` when it is
+    a dict. Returns ``{}`` on ANY error — a ``None`` checkpoint, malformed JSON, a
+    legacy options-only (v1) record, or a non-dict ``_progress``. Never raises.
+
+    Args:
+        job: The processing job whose checkpoint envelope to read.
+
+    Returns:
+        The recorded progress dict, or ``{}`` when absent/unreadable.
+    """
+    raw = getattr(job, "checkpoint_json", None)
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    progress = payload.get(_PROGRESS_KEY)
+    return progress if isinstance(progress, dict) else {}
+
+
+def merge_checkpoint_progress(
+    job_id: int,
+    owner_id: str,
+    progress: dict[str, Any],
+    *,
+    now: str | None = None,
+) -> bool:
+    """Lease-fenced read-modify-write of a running job's progress hint.
+
+    Merges ``progress`` into the reserved ``_progress`` envelope key on the job's
+    ``checkpoint_json`` (later keys win on collision), preserving every pre-existing
+    flat option key untouched, then CAS-writes it back only while the caller still
+    holds the lease.
+
+    progress is a NON-AUTHORITATIVE hint. Single-writer-per-lease makes the
+    read-modify-write safe; a lost/expired lease (state flipped by
+    recover_stale_jobs) makes the WHERE match 0 rows → returns False, no write.
+    Retry/recovery (``_requeue_job``, ``recover_stale_jobs``) deliberately PRESERVE
+    this hint; the resume consumer re-validates against the on-disk transcript +
+    Item row, so preservation is safe.
+
+    Args:
+        job_id: Target processing job identifier.
+        owner_id: Lease owner asserting the write; must be non-empty.
+        progress: Primitive-only progress fields to merge into the hint.
+        now: Optional UTC ISO-8601 ``Z`` timestamp for ``updated_at`` (defaults to now).
+
+    Returns:
+        True when exactly one row was updated (lease still held); False otherwise.
+
+    Raises:
+        ValueError: When ``owner_id`` is falsy.
+        MetadataForbiddenError: When ``progress`` carries redaction-forbidden content.
+        MetadataTooLargeError: When the encoded envelope exceeds the byte bound.
+    """
+    if not owner_id:
+        raise ValueError("owner_id must be non-empty")
+
+    ensure_db()
+    job = ProcessingJob.get_or_none(ProcessingJob.id == job_id)
+    if job is None:
+        return False
+    if job.state != ProcessingJobState.RUNNING.value or job.lease_owner != owner_id:
+        return False
+
+    payload: dict[str, Any] = {}
+    if job.checkpoint_json:
+        try:
+            loaded = json.loads(job.checkpoint_json)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            loaded = None
+        if isinstance(loaded, dict):
+            payload = loaded
+
+    existing_progress = payload.get(_PROGRESS_KEY)
+    if not isinstance(existing_progress, dict):
+        existing_progress = {}
+    payload[_PROGRESS_KEY] = {**existing_progress, **progress}
+    payload[_CHECKPOINT_VERSION_KEY] = _CHECKPOINT_VERSION
+
+    encoded = _encode_metadata(payload)
+
+    resolved_now = now if now is not None else now_utc()
+    updated = (
+        ProcessingJob.update(checkpoint_json=encoded, updated_at=resolved_now)
+        .where(
+            (ProcessingJob.id == job_id)
+            & (ProcessingJob.state == ProcessingJobState.RUNNING.value)
+            & (ProcessingJob.lease_owner == owner_id),
+        )
+        .execute()
+    )
+    return updated == 1
+
+
 def _parse_stored_key(kind_value: str, canonical: str) -> IdempotencyKey:
     kind = JobKind(kind_value)
     prefix = f"{kind.value}:v"
