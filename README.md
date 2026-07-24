@@ -309,7 +309,8 @@ src/wilted/                # shared library
     cli.py               # CLI commands and argparse dispatch
     db.py                # Peewee ORM models, migrations, SQLite management
     engine.py            # AudioEngine (sounddevice + TTS)
-    fetch.py             # URL resolution, text extraction
+    fetch.py             # browser fetch, subprocess-output suppression, URL helpers
+    fetch_cascade.py     # unified article-text cascade: resolve_article_text(url, budget)
     queue.py             # reading list persistence (SQLite-backed)
     cache.py             # audio cache (MP3 storage, manifest)
     text.py              # text cleaning and splitting
