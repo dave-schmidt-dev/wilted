@@ -49,6 +49,7 @@ _TEST_MARKERS = {
     "test_schema_cutover_queries.py": ("integration",),
     "test_scheduler_tick.py": ("integration",),
     "test_scheduling_cost.py": ("unit",),
+    "test_scheduling_policy.py": ("unit",),
     "test_preferences.py": ("integration",),
     "test_prepare.py": ("integration",),
     "test_prepare_resume.py": ("integration",),

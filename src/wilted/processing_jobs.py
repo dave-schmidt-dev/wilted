@@ -30,11 +30,24 @@ from wilted.background_work.transitions import (
     reconcile_running_cancel,
     transition_processing_job,
 )
-from wilted.db import ProcessingJob, ensure_db, now_utc
+from wilted.content_state import count_listenable_ready
+from wilted.db import Item, ProcessingJob, ensure_db, now_utc
+from wilted.scheduling_policy import (
+    DeferralReason,
+    JobCandidate,
+    PolicyContext,
+    PolicyThresholds,
+    select_claimable,
+    should_defer,
+    thresholds_from_settings,
+)
+from wilted.station_runtime.machine_availability import _DarwinAvailabilityBackend
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from pathlib import Path
+
+    from wilted.station_runtime.machine_availability import AvailabilityBackend
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +79,52 @@ _TERMINAL_STATES = frozenset(
 _LOCKFILE_NAME = ".processing_runner.lock"
 _CLAIM_DB_RETRY_ATTEMPTS = 6
 _CLAIM_DB_RETRY_DELAY_S = 0.02
+
+# Production default for the claim-seam machine-availability sample. Stateless
+# (no I/O until ``sample()``), so constructing it at import time is safe and it
+# can be shared across every default claim attempt.
+_DEFAULT_AVAILABILITY_BACKEND = _DarwinAvailabilityBackend()
+
+
+def _utc_local_now() -> datetime:
+    """Production clock for the claim seam: a local-aware "now".
+
+    Returns a timezone-aware datetime whose wall-clock is local time. The seam
+    reads ``.hour`` for the daytime-window check (so it is machine-local in
+    production) and normalizes to UTC for the persisted 'Z' timestamps. Tests
+    inject their own callable returning an aware datetime with a chosen hour.
+    """
+    return datetime.now().astimezone()
+
+
+def _parse_utc_ts(value: str) -> datetime:
+    """Parse a stored ``...Z`` timestamp into a timezone-aware UTC datetime."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _item_type_for(job: ProcessingJob) -> str | None:
+    """Resolve a job's item type, only when the cost model needs it.
+
+    Cost estimation consults ``item_type`` solely for the ``PREPARE`` branch,
+    so this avoids an ``Item`` lookup for every other kind. Returns ``None``
+    when the job has no item or the item row is gone (``SET NULL`` FK).
+    """
+    if job.kind != JobKind.PREPARE.value or job.item_id is None:
+        return None
+    item = Item.get_or_none(Item.id == job.item_id)
+    return item.item_type if item is not None else None
+
+
+def _candidate_from_row(job: ProcessingJob) -> JobCandidate:
+    """Project a claimable ``ProcessingJob`` row into a pure :class:`JobCandidate`."""
+    return JobCandidate(
+        priority=job.priority,
+        kind=job.kind,
+        created_at=_parse_utc_ts(job.created_at),
+        item_type=_item_type_for(job),
+        checkpoint_json=job.checkpoint_json,
+        job_id=job.id,
+    )
 
 
 class ExecutionLockBusy(OSError):
@@ -189,12 +248,30 @@ def _claim_next_job_under_lock(
     *,
     owner_id: str,
     lease_seconds: int,
+    now: Callable[[], datetime] = _utc_local_now,
+    availability_backend: AvailabilityBackend = _DEFAULT_AVAILABILITY_BACKEND,
+    inventory_probe: Callable[[], int] = count_listenable_ready,
+    thresholds: PolicyThresholds | None = None,
 ) -> ProcessingJob | None:
-    """Claim the next eligible job assuming the execution flock is already held."""
+    """Claim the next eligible job assuming the execution flock is already held.
+
+    Collaborators default to production; tests inject fakes. ``thresholds`` is
+    resolved from settings here (once per claim attempt, not per DB retry) so
+    the DB read happens at call time under the live ``DATA_DIR`` (INV-5) rather
+    than as an import-time default.
+    """
+    resolved_thresholds = thresholds if thresholds is not None else thresholds_from_settings()
     last_error: OperationalError | None = None
     for attempt in range(_CLAIM_DB_RETRY_ATTEMPTS):
         try:
-            return _claim_next_job_under_lock_once(owner_id=owner_id, lease_seconds=lease_seconds)
+            return _claim_next_job_under_lock_once(
+                owner_id=owner_id,
+                lease_seconds=lease_seconds,
+                now=now,
+                availability_backend=availability_backend,
+                inventory_probe=inventory_probe,
+                thresholds=resolved_thresholds,
+            )
         except OperationalError as exc:
             if "locked" not in str(exc).lower():
                 raise
@@ -209,44 +286,89 @@ def _claim_next_job_under_lock_once(
     *,
     owner_id: str,
     lease_seconds: int,
+    now: Callable[[], datetime],
+    availability_backend: AvailabilityBackend,
+    inventory_probe: Callable[[], int],
+    thresholds: PolicyThresholds,
 ) -> ProcessingJob | None:
     ensure_db()
-    now = now_utc()
-    expires_at = _lease_expires_at(now, lease_seconds)
+    now_dt = now()
+    now_str = now_dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    expires_at = _lease_expires_at(now_str, lease_seconds)
 
-    with ProcessingJob._meta.database.atomic():
-        candidate = (
-            ProcessingJob.select()
-            .where(
-                (ProcessingJob.state.in_([state.value for state in _CLAIMABLE_STATES]))
-                & ((ProcessingJob.not_before.is_null()) | (ProcessingJob.not_before <= now))
-            )
-            .order_by(ProcessingJob.priority.desc(), ProcessingJob.created_at.asc())
-            .first()
+    # Candidate-set contract: fetch ALL currently-claimable rows in the base
+    # order (priority DESC, created_at ASC) — never a bounded LIMIT — so
+    # ``select_claimable`` returning None means "nothing claimable globally",
+    # not "nothing in the first N". The policy only SKIPS ineligible expensive
+    # jobs; it never reorders and never mutates state (deferred jobs simply stay
+    # QUEUED). This read is a single statement (autocommit): the atomic CAS
+    # UPDATE below — not a read snapshot — is what enforces single-flight.
+    rows = list(
+        ProcessingJob.select()
+        .where(
+            (ProcessingJob.state.in_([state.value for state in _CLAIMABLE_STATES]))
+            & ((ProcessingJob.not_before.is_null()) | (ProcessingJob.not_before <= now_str))
         )
-        if candidate is None:
-            return None
+        .order_by(ProcessingJob.priority.desc(), ProcessingJob.created_at.asc())
+    )
+    if not rows:
+        return None
 
-        expected_state = candidate.state
+    # Sample the machine + inventory at most once per claim attempt (not per
+    # candidate), and deliberately OUTSIDE any write transaction: the machine
+    # probe shells out to pmset/ioreg (up to a ~2s timeout) and the inventory
+    # probe hits the DB, so holding a write-intent SQLite transaction open
+    # across that I/O would invite "database is locked" churn during the
+    # nightly drain. Single-flight does not depend on this being transactional —
+    # the flock serializes claimers and the CAS below re-validates state — so we
+    # keep the only impure inputs to the pure policy out of the transaction.
+    ctx = PolicyContext(
+        now=now_dt,
+        availability=availability_backend.sample(),
+        listenable_count=inventory_probe(),
+    )
+    candidates = [_candidate_from_row(row) for row in rows]
+    chosen = select_claimable(candidates, ctx, thresholds)
+    if chosen is None:
+        return None
+
+    # Fail-open observability (INV-11: WARNING to the logger, never stdout):
+    # log exactly once, and only when a broken/unknown sensor is the operative
+    # reason this expensive job ran unrestricted.
+    if not ctx.availability.ok and should_defer(chosen, ctx, thresholds).reason is DeferralReason.SENSOR_UNAVAILABLE:
+        logger.warning(
+            "Machine-availability sensor unavailable; expensive job %s claimed unrestricted "
+            "(fail-open: deferral policy not enforced this attempt).",
+            chosen.job_id,
+        )
+
+    rows_by_id = {row.id: row for row in rows}
+    winner = rows_by_id[chosen.job_id]
+    expected_state = winner.state
+    # Compare-and-swap under the SAME flock the caller holds. This single
+    # atomic UPDATE is the single-flight guard: only the transition from the
+    # observed state to RUNNING succeeds, so a concurrent claimer that already
+    # took this row sees ``updated == 0`` and returns None.
+    with ProcessingJob._meta.database.atomic():
         updated = (
             ProcessingJob.update(
                 state=ProcessingJobState.RUNNING.value,
                 lease_owner=owner_id,
                 lease_expires_at=expires_at,
                 attempt_count=ProcessingJob.attempt_count + 1,
-                started_at=now,
-                updated_at=now,
+                started_at=now_str,
+                updated_at=now_str,
                 cancel_requested=False,
             )
             .where(
-                (ProcessingJob.id == candidate.id) & (ProcessingJob.state == expected_state),
+                (ProcessingJob.id == winner.id) & (ProcessingJob.state == expected_state),
             )
             .execute()
         )
-        if updated != 1:
-            return None
+    if updated != 1:
+        return None
 
-        return ProcessingJob.get_by_id(candidate.id)
+    return ProcessingJob.get_by_id(winner.id)
 
 
 def count_due_jobs(*, now: str | None = None) -> int:
@@ -270,28 +392,52 @@ def claim_next_job(
     data_dir: Path | None = None,
     owner_id: str,
     lease_seconds: int = 300,
+    now: Callable[[], datetime] = _utc_local_now,
+    availability_backend: AvailabilityBackend = _DEFAULT_AVAILABILITY_BACKEND,
+    inventory_probe: Callable[[], int] = count_listenable_ready,
+    thresholds: PolicyThresholds | None = None,
 ) -> ProcessingJob | None:
     """Claim the next eligible queued/retry job under the execution flock.
 
-    Selects the highest-priority oldest eligible row, then CAS-advances it to
-    ``running`` with lease evidence and an incremented attempt count.
+    Scans all currently-claimable rows in base order (highest-priority oldest
+    first), applies the resource-aware deferral policy to skip expensive local
+    work that should wait, then CAS-advances the first eligible row to
+    ``running`` with lease evidence and an incremented attempt count. Deferred
+    rows are left untouched (they stay ``QUEUED``); the single-flight execution
+    flock and CAS are unchanged, so at most one job is ever claimed.
 
     Args:
         data_dir: Data directory for the execution flock (defaults to live
             ``wilted.DATA_DIR`` at call time).
         owner_id: Opaque runner identity recorded as ``lease_owner``.
         lease_seconds: Lease duration from claim time.
+        now: Clock returning a local-aware "now" (production default reads the
+            wall clock; tests inject a fixed instant).
+        availability_backend: Machine-availability sensor, sampled at most once
+            per claim attempt (production default probes this Mac).
+        inventory_probe: Callable returning the ready-to-play inventory count,
+            probed once per claim attempt.
+        thresholds: Policy tunables; ``None`` resolves from settings at call
+            time (INV-5).
 
     Returns:
         The claimed :class:`~wilted.db.ProcessingJob`, or ``None`` when no
-        eligible work exists or the CAS loses a race.
+        eligible work exists, all claimable work is deferred, or the CAS loses
+        a race.
     """
     if not owner_id:
         raise ValueError("owner_id must be non-empty")
 
     resolved_dir = _resolve_data_dir(data_dir)
     with try_acquire_execution_lock(resolved_dir):
-        return _claim_next_job_under_lock(owner_id=owner_id, lease_seconds=lease_seconds)
+        return _claim_next_job_under_lock(
+            owner_id=owner_id,
+            lease_seconds=lease_seconds,
+            now=now,
+            availability_backend=availability_backend,
+            inventory_probe=inventory_probe,
+            thresholds=thresholds,
+        )
 
 
 def request_cancel(job_id: int) -> bool:

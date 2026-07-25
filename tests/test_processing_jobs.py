@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
+import multiprocessing
 import sqlite3
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -19,13 +22,17 @@ from wilted.processing_jobs import (
     MAX_METADATA_BYTES,
     MetadataForbiddenError,
     MetadataTooLargeError,
+    claim_next_job,
     get_job,
     get_job_by_key,
     prune_terminal_jobs,
     redact_metadata,
     submit_job,
     transition_job_state,
+    try_acquire_execution_lock,
 )
+from wilted.scheduling_policy import PolicyThresholds
+from wilted.station_runtime.machine_availability import MachineAvailability
 
 
 def _make_item(**kwargs) -> Item:
@@ -45,6 +52,105 @@ def _make_item(**kwargs) -> Item:
 def _classify_key(*, item_id: str, operation_version: int = 1) -> object:
     identity = logical_identity_for_kind(JobKind.CLASSIFY, item_id=item_id)
     return build_idempotency_key(JobKind.CLASSIFY, operation_version=operation_version, logical_identity=identity)
+
+
+# ---------------------------------------------------------------------------
+# Claim-seam policy helpers (M3 / INV-12)
+# ---------------------------------------------------------------------------
+# A daytime instant inside the default busy window [08:00, 20:00).
+_DAYTIME_NOW = datetime(2026, 7, 25, 10, 0, tzinfo=UTC)
+
+
+def _fixed_now():
+    return _DAYTIME_NOW
+
+
+def _busy_available() -> MachineAvailability:
+    """A healthy sample of a BUSY machine (high load, not idle) -> defers."""
+    return MachineAvailability(
+        load_per_core=2.0, on_ac_power=True, user_idle_seconds=5.0, sampled_at="2026-07-25T10:00:00Z", ok=True
+    )
+
+
+def _unavailable() -> MachineAvailability:
+    """A failed sample (sensor unavailable) -> fail-open."""
+    return MachineAvailability(
+        load_per_core=0.0, on_ac_power=False, user_idle_seconds=None, sampled_at="2026-07-25T10:00:00Z", ok=False
+    )
+
+
+class _FakeAvailabilityBackend:
+    """Injectable ``AvailabilityBackend`` returning a fixed, pre-built sample."""
+
+    def __init__(self, availability: MachineAvailability) -> None:
+        self._availability = availability
+        self.sample_calls = 0
+
+    def sample(self) -> MachineAvailability:
+        self.sample_calls += 1
+        return self._availability
+
+
+def _submit_expensive(*, item_id: str = "cache-me", priority: int = 0) -> int:
+    """Submit an ARTICLE_CACHE job (always EXPENSIVE, no item_type dependency)."""
+    identity = logical_identity_for_kind(JobKind.ARTICLE_CACHE, item_id=item_id)
+    key = build_idempotency_key(JobKind.ARTICLE_CACHE, operation_version=1, logical_identity=identity)
+    return submit_job(key, priority=priority).job_id
+
+
+def _submit_cheap(*, report_date: str = "2026-07-25", priority: int = 0) -> int:
+    """Submit a REPORT_ASSEMBLY job (always CHEAP)."""
+    identity = logical_identity_for_kind(JobKind.REPORT_ASSEMBLY, report_date=report_date)
+    key = build_idempotency_key(JobKind.REPORT_ASSEMBLY, operation_version=1, logical_identity=identity)
+    return submit_job(key, priority=priority).job_id
+
+
+def _set_created_at(job_id: int, created_at: str) -> None:
+    ProcessingJob.update(created_at=created_at).where(ProcessingJob.id == job_id).execute()
+
+
+def _mp_claim_with_policy(db_path: str, owner_id: str, start_event: object, result_queue: object) -> None:
+    """Spawn-safe worker: claim under the policy with an injected fail-open sensor.
+
+    Runs the FULL policy path (expensive job, busy daytime, enough inventory)
+    but with an unavailable sensor so the job is claimable via fail-open — the
+    point is that the added filter must not weaken single-flight, so exactly one
+    of several racing workers may win.
+    """
+    import pathlib
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
+
+    import wilted as wilted_mod
+    from wilted.db import connect_db as _connect_db
+    from wilted.processing_jobs import _claim_next_job_under_lock
+    from wilted.scheduling_policy import PolicyThresholds as _PolicyThresholds
+    from wilted.station_runtime.machine_availability import MachineAvailability as _MachineAvailability
+
+    wilted_mod.DATA_DIR = pathlib.Path(db_path).parent
+    _connect_db(pathlib.Path(db_path))
+
+    unavailable = _MachineAvailability(
+        load_per_core=0.0, on_ac_power=False, user_idle_seconds=None, sampled_at="2026-07-25T10:00:00Z", ok=False
+    )
+
+    class _Backend:
+        def sample(self):
+            return unavailable
+
+    start_event.wait()
+    try:
+        job = _claim_next_job_under_lock(
+            owner_id=owner_id,
+            lease_seconds=300,
+            now=lambda: _datetime(2026, 7, 25, 10, 0, tzinfo=_UTC),
+            availability_backend=_Backend(),
+            inventory_probe=lambda: 5,
+            thresholds=_PolicyThresholds(),
+        )
+        result_queue.put((owner_id, job.id if job is not None else None))
+    except Exception as exc:  # pragma: no cover - surfaced via result queue
+        result_queue.put((owner_id, f"error:{exc}"))
 
 
 class TestSubmitJobAdmission:
@@ -557,3 +663,152 @@ def _index_exists(db, index_name: str) -> bool:
         (index_name,),
     )
     return cursor.fetchone() is not None
+
+
+class TestClaimSeamDeferralPolicy:
+    """M3 / INV-12: the claim seam applies the resource-aware deferral filter.
+
+    These exercise the impure seam end-to-end with injected collaborators
+    (fake sensor, fixed clock, controllable inventory) — the pure rule matrix
+    lives in tests/test_scheduling_policy.py.
+    """
+
+    def test_expensive_job_defers_in_busy_daytime_and_stays_queued(self):
+        job_id = _submit_expensive(item_id="defer-me")
+        _set_created_at(job_id, "2026-07-25T09:00:00Z")  # 1h old, under the ceiling
+
+        claimed = claim_next_job(
+            data_dir=wilted.DATA_DIR,
+            owner_id="runner",
+            now=_fixed_now,
+            availability_backend=_FakeAvailabilityBackend(_busy_available()),
+            inventory_probe=lambda: 5,
+            thresholds=PolicyThresholds(),
+        )
+
+        assert claimed is None  # deferred -> nothing claimed
+        assert ProcessingJob.get_by_id(job_id).state == ProcessingJobState.QUEUED.value  # left untouched
+
+    def test_cheap_job_behind_deferred_expensive_is_still_claimed(self):
+        expensive = _submit_expensive(item_id="expensive-first")
+        cheap = _submit_cheap(report_date="2026-07-25")
+        # Same priority; expensive ordered first (older created_at). The policy
+        # must SKIP the deferred expensive job and claim the cheap one behind it.
+        _set_created_at(expensive, "2026-07-25T09:00:00Z")
+        _set_created_at(cheap, "2026-07-25T09:30:00Z")
+
+        claimed = claim_next_job(
+            data_dir=wilted.DATA_DIR,
+            owner_id="runner",
+            now=_fixed_now,
+            availability_backend=_FakeAvailabilityBackend(_busy_available()),
+            inventory_probe=lambda: 5,
+            thresholds=PolicyThresholds(),
+        )
+
+        assert claimed is not None
+        assert claimed.id == cheap
+        assert claimed.state == ProcessingJobState.RUNNING.value
+        # The skipped expensive job is left QUEUED (no DEFERRED state, no churn).
+        assert ProcessingJob.get_by_id(expensive).state == ProcessingJobState.QUEUED.value
+
+    def test_availability_and_inventory_sampled_once_per_attempt(self):
+        _submit_expensive(item_id="a")
+        _submit_expensive(item_id="b")
+        backend = _FakeAvailabilityBackend(_busy_available())
+        probe_calls = {"n": 0}
+
+        def _probe() -> int:
+            probe_calls["n"] += 1
+            return 5
+
+        claim_next_job(
+            data_dir=wilted.DATA_DIR,
+            owner_id="runner",
+            now=_fixed_now,
+            availability_backend=backend,
+            inventory_probe=_probe,
+            thresholds=PolicyThresholds(),
+        )
+
+        # Two candidates, but the sensor and inventory are each sampled once.
+        assert backend.sample_calls == 1
+        assert probe_calls["n"] == 1
+
+    def test_fail_open_runs_expensive_and_logs_one_warning(self, caplog):
+        job_id = _submit_expensive(item_id="fail-open")
+        _set_created_at(job_id, "2026-07-25T09:00:00Z")
+
+        with caplog.at_level(logging.WARNING, logger="wilted.processing_jobs"):
+            claimed = claim_next_job(
+                data_dir=wilted.DATA_DIR,
+                owner_id="runner",
+                now=_fixed_now,
+                availability_backend=_FakeAvailabilityBackend(_unavailable()),
+                inventory_probe=lambda: 5,
+                thresholds=PolicyThresholds(),
+            )
+
+        assert claimed is not None
+        assert claimed.id == job_id
+        assert claimed.state == ProcessingJobState.RUNNING.value
+        warnings = [
+            r for r in caplog.records if r.levelno == logging.WARNING and "sensor unavailable" in r.message.lower()
+        ]
+        assert len(warnings) == 1
+        assert str(job_id) in warnings[0].message
+
+    def test_fail_open_emits_no_warning_when_job_runs_for_another_reason(self, caplog):
+        # Sensor down, but the job runs because it is OUTSIDE the window at
+        # 22:00 — the fail-open branch is never reached, so no warning fires.
+        job_id = _submit_expensive(item_id="night")
+        _set_created_at(job_id, "2026-07-25T21:00:00Z")
+
+        with caplog.at_level(logging.WARNING, logger="wilted.processing_jobs"):
+            claimed = claim_next_job(
+                data_dir=wilted.DATA_DIR,
+                owner_id="runner",
+                now=lambda: datetime(2026, 7, 25, 22, 0, tzinfo=UTC),
+                availability_backend=_FakeAvailabilityBackend(_unavailable()),
+                inventory_probe=lambda: 5,
+                thresholds=PolicyThresholds(),
+            )
+
+        assert claimed is not None
+        assert claimed.id == job_id
+        warnings = [r for r in caplog.records if "sensor unavailable" in r.message.lower()]
+        assert warnings == []
+
+    @pytest.mark.integration
+    def test_single_flight_holds_with_policy_in_force(self):
+        """INV-1/2/10: concurrent claims still yield at most one winner with the
+        deferral policy active. Four spawned workers race on the same claimable
+        (fail-open) expensive job; exactly one CAS-wins."""
+        job_id = _submit_expensive(item_id="race-policy")
+        _set_created_at(job_id, "2026-07-25T09:00:00Z")
+        db_path = str(wilted.DATA_DIR / "wilted.db")
+
+        ctx = multiprocessing.get_context("spawn")
+        start_event = ctx.Event()
+        result_queue = ctx.Queue()
+        processes = [
+            ctx.Process(target=_mp_claim_with_policy, args=(db_path, f"owner-{i}", start_event, result_queue))
+            for i in range(4)
+        ]
+
+        reset_db()
+        with try_acquire_execution_lock(wilted.DATA_DIR):
+            for process in processes:
+                process.start()
+            start_event.set()
+            for process in processes:
+                process.join(timeout=15.0)
+                assert process.exitcode == 0
+        connect_db(wilted.DATA_DIR / "wilted.db")
+
+        outcomes = [result_queue.get(timeout=2.0) for _ in range(4)]
+        errors = [value for _owner, value in outcomes if isinstance(value, str) and value.startswith("error:")]
+        assert errors == [], f"unexpected worker errors: {errors}"
+        claimed_ids = [claimed for _owner, claimed in outcomes if isinstance(claimed, int)]
+        assert claimed_ids == [job_id]  # exactly one winner, and it is our job
+        assert ProcessingJob.get_by_id(job_id).state == ProcessingJobState.RUNNING.value
