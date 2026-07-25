@@ -10,14 +10,17 @@
 # entries are Textual/Peewee/CoreAudio framework false-positives and symbols
 # used dynamically (registry strings, by-name dispatch, test-only helpers,
 # persisted StrEnum members). A clean-pass audit found 16 genuinely-dead
-# symbols inside this set; 14 were deleted on 2026-07-25 (verified against
-# on-disk use, each with its callee/import cascades). Two are HELD — the
-# briefing cluster (run_briefing_via_runner + _generate_briefing_worker):
-# dormant entry-points into a subsystem that is built but unwired in production
-# (nothing in src submits a COMPACT_BRIEFING job, and the cli-constructed
-# BriefingGenerator is never driven by a worker). Removing them is a
-# feature-wiring decision — keep dormant vs. remove the whole subsystem — not a
-# mechanical delete, so they are deferred as one cluster rather than split.
+# symbols inside this set; 15 were deleted on 2026-07-25 (verified against
+# on-disk use, each with its callee/import cascades). That count includes the
+# abandoned TUI-self-generate briefing slice (_generate_briefing_worker + the
+# injected _briefing_generator attr/param + cli._briefing_generator_for_launch),
+# an older design superseded by the runner-produces-artifact / TUI-adopts path
+# (_adopt_owed_briefing_worker) that is actually wired live.
+# One symbol is HELD — run_briefing_via_runner — the not-yet-wired submit
+# trigger for that runner-artifact briefing pipeline. It is kept dormant on
+# purpose: the pipeline (JobKind.COMPACT_BRIEFING + its DB CHECK constraint,
+# handle_briefing, briefing_artifacts, and the live adopt path) stays, so
+# removing the trigger would be a schema migration, not a mechanical delete.
 #
 # ruff excludes this file (extend-exclude) — bare names here are F821 to ruff.
 
@@ -140,7 +143,6 @@ _._briefing_started  # unused attribute (src/wilted/tui/__init__.py:508)
 _.on_unmount  # unused method (src/wilted/tui/__init__.py:524)
 _.display  # unused attribute (src/wilted/tui/__init__.py:637)
 _.display  # unused attribute (src/wilted/tui/__init__.py:643)
-_._generate_briefing_worker  # unused method (src/wilted/tui/__init__.py:760)
 _.show_root  # unused attribute (src/wilted/tui/__init__.py:817)
 _.display  # unused attribute (src/wilted/tui/__init__.py:980)
 _.display  # unused attribute (src/wilted/tui/__init__.py:983)

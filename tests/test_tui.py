@@ -548,7 +548,7 @@ class FakeBriefingGenerator:
     production ``synthesize_briefing_audio`` seam would hand back.
 
     Non-empty ``audio_bytes`` is REQUIRED — ``MediaDescriptor``/INV-4 rejects
-    empty media, and ``_generate_briefing_worker`` publishes these bytes via
+    empty media, and ``_station_entry_from_briefing`` publishes these bytes via
     ``media_store.publish_with_owner`` exactly like a real briefing would.
     """
 
@@ -2747,7 +2747,7 @@ async def test_briefing_generated_prepended_and_plays_first():
 
 
 @pytest.mark.asyncio
-async def test_no_briefing_generator_means_no_briefing():
+async def test_no_owed_briefing_means_no_briefing():
     """With no owed briefing artifact on disk, on_mount adoption is a no-op and
     the backlog stays exactly what the sequencer produced."""
     entry = _station_entry(1)
@@ -2757,7 +2757,6 @@ async def test_no_briefing_generator_means_no_briefing():
         for _ in range(3):
             await pilot.pause()
 
-        assert app._briefing_generator is None
         assert app._briefing_started is True
         assert app._briefing_entry is None
         assert all(e.source != "briefing" for e in app._station_entries)

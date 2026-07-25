@@ -80,7 +80,6 @@ if TYPE_CHECKING:
 
     from wilted.station.models import TranscriptSegment
     from wilted.station_runtime import CompletionReason
-    from wilted.station_runtime.briefing import BriefingGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -305,7 +304,6 @@ class WiltedApp(App):
         poller_factory=None,
         route_monitor_factory=None,
         weather_monitor: WeatherMonitor | None = None,
-        briefing_generator: BriefingGenerator | None = None,
         latency_log_path: Path | None = None,
         bootstrap: RuntimeBootstrap | None = None,
         **kwargs,
@@ -367,16 +365,9 @@ class WiltedApp(App):
             self._weather_monitor.on_bulletin_ready = self._on_bulletin_ready
         self._latency_log_path: Path = latency_log_path if latency_log_path is not None else _DEFAULT_LATENCY_LOG_PATH
 
-        # BriefingGenerator (A.4.6): mirrors `weather_monitor` immediately
-        # above -- no real-implementation default (BriefingGenerator itself
-        # has one via `from_config`/`_default_synth_fn`, but wiring a real
-        # one here by default would mean every test that forgets to pass
-        # `briefing_generator=` risks synthesis or a network request the
-        # network the instant the app mounts). `None` (the default) means
-        # "no briefing this session" -- on_mount skips the generation worker
-        # entirely. The real embedded generator is constructed and injected
-        # by whatever launches the production TUI (wilted.cli._launch_tui).
-        self._briefing_generator = briefing_generator
+        # Briefing (A.4.6): the runner generates a briefing artifact and the
+        # lease-holding TUI adopts it on mount (see `_adopt_owed_briefing_worker`).
+        # `_briefing_entry`/`_briefing_started` track that at-most-once adoption.
         self._briefing_entry: StationEntry | None = None
         self._briefing_started: bool = False
 
@@ -755,28 +746,6 @@ class WiltedApp(App):
             media=descriptor,
         )
 
-    @work(thread=True, exclusive=True, group="briefing")
-    def _generate_briefing_worker(self) -> None:
-        """Generate + publish the briefing in a worker thread.
-
-        A briefing failure (weather/news generation error, TTS synth error,
-        publish error) is caught, logged, and surfaced as a low-urgency
-        status message -- it must NEVER crash the app or block the rest of
-        the backlog from playing (mirrors `WeatherMonitor._qualify`'s own
-        "synthesis failed; interruption not submitted" discipline).
-        """
-        from wilted.db import worker_db
-
-        try:
-            with worker_db():
-                briefing = self._briefing_generator.generate()
-            entry = self._station_entry_from_briefing(briefing)
-        except Exception:
-            logger.exception("Failed to generate briefing")
-            self.call_from_thread(self._set_status, "Briefing unavailable", _STATUS_MEDIUM)
-            return
-        self.call_from_thread(self._apply_briefing_entry, entry)
-
     def _apply_briefing_entry(self, entry: StationEntry) -> None:
         """Adopt the freshly-published briefing entry (main thread).
 
@@ -940,7 +909,7 @@ class WiltedApp(App):
         its class docstring) — the finer podcast/article distinction lives
         in the DB item's ``item_type``, resolved via ``_item_lookup``.
         ``"bulletin"`` covers two distinct producers, disambiguated by
-        ``source`` (never ambiguous — see ``_generate_briefing_worker`` vs.
+        ``source`` (never ambiguous — see ``_station_entry_from_briefing`` vs.
         ``WeatherMonitor._qualify``): the spoken weather+news briefing
         (``source="briefing"``) generated once per session and prepended to
         the backlog, and a live NWS weather alert (``source="monitor:nws-alerts"``)

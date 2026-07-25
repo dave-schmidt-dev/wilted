@@ -428,12 +428,11 @@ class TestTuiMountOrchestration:
         assert "_check_unread_report" in called
 
     @pytest.mark.asyncio
-    async def test_on_mount_starts_briefing_worker_when_generator_present(self) -> None:
+    async def test_on_mount_starts_briefing_adoption(self) -> None:
         """Briefing adoption on mount calls ``_adopt_owed_briefing_worker``."""
-        from tests.test_tui import FakeBriefingGenerator, _make_app
+        from tests.test_tui import _make_app
 
-        generator = FakeBriefingGenerator()
-        app = _make_app(briefing_generator=generator)
+        app = _make_app()
         with patch.object(app, "_adopt_owed_briefing_worker") as mock_briefing:
             async with app.run_test():
                 await app.workers.wait_for_complete()

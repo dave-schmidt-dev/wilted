@@ -134,7 +134,7 @@ def fetch_nws_gridpoint_forecast(
 # ``BulletinAudio`` exactly -- same daemon/engine synthesis discipline, same
 # lazy-import-heavy-deps-only-when-actually-called
 # discipline, same "encode to a temp .wav, read bytes, unlink" shape -- so
-# the TUI's briefing-publish path (``wilted.tui.WiltedApp._generate_briefing_worker``)
+# the TUI's briefing-adoption path (``wilted.tui.WiltedApp._station_entry_from_briefing``)
 # can build a ``StationEntry`` the exact same way ``WeatherMonitor._qualify``
 # does for a bulletin.
 # ---------------------------------------------------------------------------
@@ -169,7 +169,7 @@ def synthesize_briefing_audio(
     :meth:`BriefingGenerator.generate` (via ``BriefingGenerator(synth_fn=
     synthesize_briefing_audio)``) so ``Briefing.synth_result`` becomes a
     :class:`BriefingAudio` rather than a raw numpy array -- the shape
-    ``wilted.tui.WiltedApp._generate_briefing_worker`` needs to publish a
+    ``wilted.tui.WiltedApp._station_entry_from_briefing`` needs to publish a
     playable bulletin ``StationEntry``, exactly like
     ``WeatherMonitor._qualify`` does for a weather bulletin.
 

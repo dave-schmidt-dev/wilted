@@ -28,7 +28,6 @@ from wilted.station_runtime.lease import is_station_active
 from wilted.text import clean_text
 
 if TYPE_CHECKING:
-    from wilted.station_runtime.briefing import BriefingGenerator
     from wilted.station_runtime.weather_monitor import WeatherMonitor
 
 logger = logging.getLogger(__name__)
@@ -1306,42 +1305,6 @@ def _weather_monitor_for_launch() -> "WeatherMonitor | None":
     return monitor
 
 
-def _briefing_generator_for_launch() -> "BriefingGenerator | None":
-    """Construct the production ``BriefingGenerator`` for a live TUI launch.
-
-    Respects an off switch — ``[briefing] enabled = false`` in
-    ``wilted.toml`` — so a listener who doesn't want the spoken briefing can
-    disable it without deleting wiring. Defaults to enabled (mirrors
-    ``BriefingGenerator.from_config``'s own "toml overrides builtin default"
-    precedence: the DEFAULT here is "on", same as every other knob that
-    table controls).
-
-    Construction failures (e.g. optional TTS/model dependencies missing) are
-    logged and swallowed rather than raised — the TUI must still launch even
-    when briefing wiring is unavailable, matching ``WiltedApp``'s own "no
-    briefing_generator given" default and ``_weather_monitor_for_launch``'s
-    identical discipline immediately above.
-    """
-    from wilted import load_config
-
-    if not load_config().get("briefing", {}).get("enabled", True):
-        logger.info("briefing: disabled via config")
-        return None
-
-    try:
-        from wilted.station_runtime.briefing import BriefingGenerator, synthesize_briefing_audio
-
-        generator = BriefingGenerator.from_config(synth_fn=synthesize_briefing_audio)
-    except Exception:
-        logger.warning(
-            "_briefing_generator_for_launch: failed to construct BriefingGenerator; launching without it",
-            exc_info=True,
-        )
-        return None
-    logger.info("briefing: enabled")
-    return generator
-
-
 # DEC private-mode resets that undo the terminal state a full-screen TUI driver
 # sets. Held as raw bytes so a signal handler can emit them with a single
 # async-signal-safe os.write() — no buffered-stream lock, no allocation.
@@ -1472,7 +1435,6 @@ def _launch_tui() -> None:
     try:
         WiltedApp(
             weather_monitor=_weather_monitor_for_launch(),
-            briefing_generator=_briefing_generator_for_launch(),
             bootstrap=bootstrap,
         ).run()
     finally:
