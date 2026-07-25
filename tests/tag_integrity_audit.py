@@ -108,8 +108,14 @@ def _convenience_retags(bugs, invs, led) -> list[Finding]:
 
     Mirrors ``harvest.recurrence.map_entry``'s notion of an explicit tag: only
     a real ``INV-N`` id is checked; ``inv: NA`` and untagged entries (handled by
-    the glob-only rule) are skipped. A tag pointing at an invariant absent from
-    the charter is left to charter-parse tooling, not flagged here.
+    the glob-only rule) are skipped. A tag naming an invariant *absent* from the
+    charter is also skipped here — verified against ``map_entry`` (its
+    ``entry.inv in by_id`` gate): an unknown tag is **not** honoured, it falls
+    through to glob matching exactly like an untagged entry, so it still counts
+    against its glob-home and creates no uncounted parking spot. It is therefore
+    not a freeze-integrity risk; the residual gap (a *typo'd* tag whose intended
+    invariant differs from its glob-home is silently ignored rather than
+    reported) is typo hygiene, tracked as a TASKS.md follow-up, not caught here.
 
     Three conditions must all hold (see the module docstring for the rationale):
 
