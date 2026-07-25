@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -377,17 +378,21 @@ class TestPruneTerminalJobs:
         assert get_job(cancelled.id) is None
         assert get_job(still_running.id) is not None
 
-    def test_state_guard_survives_a_requeue_with_stale_completed_at(self):
-        """A prune candidate requeued back to a runnable state must survive,
-        even if it still carries an old ``completed_at``.
+    def test_queued_row_with_stale_completed_at_is_not_age_pruned(self):
+        """A ``queued`` row bearing a stale old ``completed_at`` is never pruned.
 
-        Regression for the retention TOCTOU: the delete once selected ids and
-        then deleted by ``id.in_(...)`` with no state predicate, so a concurrent
-        ``_requeue_job`` (state -> ``queued``, ``completed_at`` cleared) landing
-        between select and delete could drop a now-runnable job. The atomic
-        state-guarded DELETE must exclude any non-terminal row regardless of its
-        timestamp — proven here with a ``queued`` row bearing a stale old
-        ``completed_at`` (a pure age-only delete would wrongly remove it).
+        Narrow scope note: this proves only that a *currently* non-terminal row
+        is excluded regardless of its timestamp — a pure age-only delete would
+        wrongly remove it. It does **not** exercise the retention TOCTOU itself,
+        because the row is ``queued`` from the outset: the pre-fix
+        ``select(terminal ids) -> delete(id.in_(ids))`` form also excluded it
+        (the terminal filter lived in its SELECT), so this assertion passes on
+        the buggy implementation too. The TOCTOU — a row that is *terminal at
+        select time* and requeued before the delete lands — and the
+        bound-variable no-op are what actually distinguish the fix; they are
+        gated by ``test_prune_delete_reevaluates_state_at_delete_time`` and
+        ``test_prune_deletes_candidate_set_larger_than_sqlite_variable_limit``
+        below.
         """
         old = "2020-01-01T00:00:00Z"
         job = self._make_job(
@@ -400,6 +405,100 @@ class TestPruneTerminalJobs:
 
         assert deleted == 0
         assert get_job(job.id) is not None
+
+    def test_prune_delete_reevaluates_state_at_delete_time(self):
+        """The emitted ``DELETE`` carries the terminal-state predicate itself.
+
+        This is the sensitive gate for the retention TOCTOU (the data-loss half
+        of the fix). The bug was ``select(terminal ids) -> delete().where(
+        id.in_(ids))``: the delete named rows purely by id, so a concurrent
+        ``_requeue_job`` flipping a candidate to ``queued`` between the select
+        and the delete would have it dropped anyway. The fix folds the
+        terminal + age predicate into a single atomic ``DELETE`` whose ``WHERE``
+        SQLite re-evaluates at delete time.
+
+        We assert that property structurally — the DELETE statement's SQL must
+        reference the ``state`` column — because it is a property of the emitted
+        statement, and a deterministic interleaving test cannot distinguish the
+        two implementations without hooking the buggy form's internal SELECT
+        (which the fixed form does not have). Reverting to the id-list delete
+        emits ``DELETE FROM ... WHERE id IN (?, ...)`` with no ``state`` clause,
+        so this goes red. Verified by revert-to-red.
+        """
+        self._make_job(
+            state=ProcessingJobState.COMPLETED,
+            completed_at="2020-01-01T00:00:00Z",
+            key_suffix="captured-delete",
+        )
+        db = ProcessingJob._meta.database
+        original_execute_sql = db.execute_sql
+        captured: list[str] = []
+
+        def _capturing_execute_sql(sql, *args, **kwargs):
+            captured.append(sql)
+            return original_execute_sql(sql, *args, **kwargs)
+
+        db.execute_sql = _capturing_execute_sql
+        try:
+            deleted = prune_terminal_jobs(older_than_days=14, now="2020-02-01T00:00:00Z")
+        finally:
+            db.execute_sql = original_execute_sql
+
+        assert deleted == 1
+        delete_statements = [s for s in captured if s.lstrip().upper().startswith("DELETE")]
+        assert delete_statements, "prune emitted no DELETE statement"
+        assert all('"state"' in s or " state " in s.lower() for s in delete_statements), (
+            f"DELETE must re-evaluate the state predicate at delete time; got: {delete_statements}"
+        )
+
+    def test_prune_deletes_candidate_set_larger_than_sqlite_variable_limit(self):
+        """A candidate set larger than SQLite's bound-variable limit is fully
+        pruned — the sweep never silently no-ops.
+
+        This is the sensitive gate for the second half of the fix. The pre-fix
+        ``delete().where(id.in_(ids))`` bound one variable per candidate, so a
+        retention backlog exceeding ``SQLITE_LIMIT_VARIABLE_NUMBER`` raised
+        ``OperationalError: too many SQL variables`` (or, under a chunking
+        wrapper, silently swept nothing). The atomic ``DELETE`` binds only the
+        constant terminal + cutoff predicate (four variables), independent of
+        row count.
+
+        We lower the connection's variable limit around the prune call so the
+        assertion is deterministic and version-independent rather than depending
+        on the platform's default ceiling (32766 here). The id-list form would
+        bind ``candidate_count`` (200) variables against a limit of 64 and
+        raise; the fix binds four and succeeds. Verified by revert-to-red.
+        """
+        old = "2020-01-01T00:00:00Z"
+        now = now_utc()
+        candidate_count = 200
+        ProcessingJob.insert_many(
+            [
+                {
+                    "idempotency_key": f"discover:v1:prune-bulk:{i}",
+                    "kind": JobKind.DISCOVER.value,
+                    "state": ProcessingJobState.COMPLETED.value,
+                    "priority": 0,
+                    "attempt_count": 0,
+                    "max_attempts": 3,
+                    "created_at": now,
+                    "updated_at": now,
+                    "completed_at": old,
+                }
+                for i in range(candidate_count)
+            ]
+        ).execute()
+
+        connection = ProcessingJob._meta.database.connection()
+        lowered_limit = 64  # comfortably above the fix's 4 constant binds, far below 200
+        previous_limit = connection.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+        connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, lowered_limit)
+        try:
+            deleted = prune_terminal_jobs(older_than_days=14, now="2020-02-01T00:00:00Z")
+        finally:
+            connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, previous_limit)
+
+        assert deleted == candidate_count
 
     def test_rejects_negative_older_than_days(self):
         with pytest.raises(ValueError, match="older_than_days"):
