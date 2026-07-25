@@ -65,6 +65,7 @@ _TEST_MARKERS = {
     "test_station_contracts.py": ("unit",),
     "test_station_controller.py": ("integration",),
     "test_station_store.py": ("unit",),
+    "test_tag_integrity.py": ("unit",),
     "test_text.py": ("unit",),
     "test_timing_map.py": ("unit",),
     "test_transcribe.py": ("unit",),
