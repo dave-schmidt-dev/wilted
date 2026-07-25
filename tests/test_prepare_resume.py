@@ -56,6 +56,10 @@ def _future() -> str:
     return (datetime.now(UTC) + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _past() -> str:
+    return (datetime.now(UTC) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 class _CoordinatorSpy:
     """Fake ModelCoordinator: counts ``run_transcribe`` calls; runs both callbacks inline."""
 
@@ -467,3 +471,85 @@ class TestCheckpointNoneProbeFree:
         recompute.assert_not_called()  # no ffprobe on the CLI/batch path
         read_spy.assert_not_called()
         merge_spy.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# (f) end-to-end: abrupt crash -> REAL recover_stale_jobs -> REAL claim_next_job
+#     -> resume. The (a) case above proves resume-skip but bridges the crash
+#     with a hand-rolled `_reclaim` UPDATE. This class drives the *real*
+#     reconciliation — recover_stale_jobs() flips the lease-expired RUNNING job
+#     to RETRY, and claim_next_job()'s CAS advances it back to RUNNING — closing
+#     the "proven in two halves, not end-to-end" seam the 2026-07-24 close-out
+#     note flagged. Synthetic (fake audio + mocked duration) keeps it hermetic
+#     and in the default gate; the same path was verified once against real
+#     trial audio + a real ffprobe probe out-of-band (item-2 manual check).
+# ---------------------------------------------------------------------------
+
+
+class TestCrashRecoverReclaimResume:
+    def test_real_recover_and_claim_span_crash_to_resume(self):
+        item = _make_podcast()
+        job = _make_job(item, use_llm=False, key="f")
+        audio = wilted.DATA_DIR / "podcasts" / str(item.id) / "episode.mp3"
+        audio.parent.mkdir(parents=True, exist_ok=True)
+        audio.write_bytes(b"fake audio bytes")
+
+        # -- PASS 1: real transcribe, then an abrupt crash in the post-transcription
+        # stage. KeyboardInterrupt (a BaseException) escapes prepare_item's broad
+        # `except Exception` exactly as a real Ctrl-C / SIGKILL would, leaving the
+        # job RUNNING (recoverable) rather than gracefully COMPLETED-with-error.
+        first = _CoordinatorSpy()
+        with (
+            patch("wilted.prepare.download_podcast", return_value=audio),
+            patch("wilted.prepare.get_transcript", return_value=_segments(last_end=70.0)),
+            patch("wilted.prepare._get_feed_xml", return_value=None),
+            patch("wilted.engine.AudioEngine") as mock_engine,
+            patch("wilted.prepare._process_podcast", side_effect=KeyboardInterrupt("crash")),
+        ):
+            mock_engine.return_value.get_file_duration.return_value = 100.0
+            with pytest.raises(KeyboardInterrupt):
+                handle_prepare(ProcessingJob.get_by_id(job.id), first)
+
+        assert first.transcribe_calls == 1  # the crashed attempt took the GPU lease once
+        crashed_item = Item.get_by_id(item.id)
+        assert crashed_item.transcript_file  # atomic transcript survived the crash
+        assert crashed_item.word_count == 6
+        crashed_job = ProcessingJob.get_by_id(job.id)
+        assert crashed_job.state == ProcessingJobState.RUNNING.value  # recoverable, not COMPLETED
+        marker = _marker(job)
+        assert marker["stage"] == "transcribed"
+        assert marker["coverage_ratio"] == pytest.approx(0.7)
+
+        # -- RECOVERY: expire the lease, then the REAL reconciliation flips
+        # RUNNING -> RETRY (the transition the note said was never spanned e2e).
+        ProcessingJob.update(lease_expires_at=_past()).where(ProcessingJob.id == job.id).execute()
+        recovered = processing_jobs.recover_stale_jobs(data_dir=wilted.DATA_DIR, owner_id=_OWNER, now=_now())
+        assert recovered == 1
+        assert ProcessingJob.get_by_id(job.id).state == ProcessingJobState.RETRY.value
+
+        # -- RE-CLAIM: the REAL CAS claim advances RETRY -> RUNNING under a fresh lease.
+        claimed = processing_jobs.claim_next_job(data_dir=wilted.DATA_DIR, owner_id=_OWNER)
+        assert claimed is not None
+        assert claimed.id == job.id
+        assert claimed.state == ProcessingJobState.RUNNING.value
+        assert claimed.lease_owner == _OWNER
+
+        # -- PASS 2: resume. download + get_transcript are spies that must NOT fire —
+        # the fast-path returns the on-disk transcript, skipping download + GPU lease.
+        resumed = _CoordinatorSpy()
+        with (
+            patch("wilted.prepare.download_podcast") as dl,
+            patch("wilted.prepare.get_transcript") as gt,
+            patch("wilted.prepare._get_feed_xml", return_value=None),
+            patch("wilted.engine.AudioEngine") as mock_engine2,
+        ):
+            mock_engine2.return_value.get_file_duration.return_value = 100.0
+            handle_prepare(ProcessingJob.get_by_id(job.id), resumed)
+
+        assert resumed.transcribe_calls == 0  # resume-skip: GPU lease never taken
+        dl.assert_not_called()
+        gt.assert_not_called()
+        assert Item.get_by_id(item.id).status == "ready"
+        final_job = ProcessingJob.get_by_id(job.id)
+        assert final_job.state == ProcessingJobState.COMPLETED.value
+        assert _result_metadata(job)["prepared"] == 1
