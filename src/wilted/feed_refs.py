@@ -84,11 +84,6 @@ def make_bws_guid(entry_guid: str) -> str:
     return f"bws-guid:{hashlib.sha256(entry_guid.encode('utf-8')).hexdigest()}"
 
 
-def is_bws_guid(value: str | None) -> bool:
-    """Return whether value is an opaque persisted BWS episode identity."""
-    return bool(value and _BWS_GUID_REFERENCE.fullmatch(value))
-
-
 def guid_matches_reference(candidate_guid: str, stored_guid: str) -> bool:
     """Match raw XML GUID against either a public or opaque stored identity."""
     match = _BWS_GUID_REFERENCE.fullmatch(stored_guid)

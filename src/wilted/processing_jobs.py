@@ -294,29 +294,6 @@ def claim_next_job(
         return _claim_next_job_under_lock(owner_id=owner_id, lease_seconds=lease_seconds)
 
 
-def renew_lease(job_id: int, owner_id: str, lease_seconds: int) -> bool:
-    """Extend a running job lease when ``owner_id`` still matches.
-
-    Returns:
-        True when exactly one row was updated.
-    """
-    if not owner_id:
-        raise ValueError("owner_id must be non-empty")
-    ensure_db()
-    now = now_utc()
-    expires_at = _lease_expires_at(now, lease_seconds)
-    updated = (
-        ProcessingJob.update(lease_expires_at=expires_at, updated_at=now)
-        .where(
-            (ProcessingJob.id == job_id)
-            & (ProcessingJob.state == ProcessingJobState.RUNNING.value)
-            & (ProcessingJob.lease_owner == owner_id),
-        )
-        .execute()
-    )
-    return updated == 1
-
-
 def request_cancel(job_id: int) -> bool:
     """Cancel an unclaimed job immediately or flag a running job for cooperative stop.
 

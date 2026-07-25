@@ -200,12 +200,10 @@ class RunnerState:
     Attributes:
         lifecycle: Current lifecycle position.
         stop_requested: Set on SIGTERM/SIGHUP; observed at item boundaries.
-        station_active: When True, runner yields instead of claiming model work.
     """
 
     lifecycle: RunnerLifecycle = RunnerLifecycle.IDLE
     stop_requested: bool = False
-    station_active: bool = False
 
 
 _RUNNER_TRANSITIONS: dict[RunnerLifecycle, frozenset[RunnerLifecycle]] = {

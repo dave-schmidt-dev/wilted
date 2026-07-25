@@ -114,16 +114,6 @@ def _default_owner_id() -> str:
     return f"runner-{os.getpid()}"
 
 
-def _stub_handler(job: ProcessingJobModel, coordinator: ModelCoordinator) -> None:
-    """Typed placeholder until Task 5.2 routes remaining stage handlers."""
-    logger.info(
-        "Stub processing handler for kind=%s job_id=%s (coordinator=%s)",
-        job.kind,
-        job.id,
-        id(coordinator),
-    )
-
-
 HANDLERS: dict[JobKind, Callable[[ProcessingJobModel, ModelCoordinator], None]] = {
     JobKind.DISCOVER: handle_discover,
     JobKind.CLASSIFY: handle_classify,

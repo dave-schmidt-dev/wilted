@@ -68,7 +68,6 @@ class AudioEngine:
         # Playback position tracking
         self._playing = False
         self._paused = False
-        self.current_paragraph_idx: int = 0
         self.current_segment_idx: int = 0
         self._sample_offset: int = 0
 
@@ -331,7 +330,6 @@ class AudioEngine:
                 if self._stop_event.is_set():
                     break
 
-                self.current_paragraph_idx = para_idx
                 paragraph_text = paragraphs[para_idx]
 
                 self._play_paragraph_via_daemon(paragraph_text, para_idx, total_paragraphs, on_progress)

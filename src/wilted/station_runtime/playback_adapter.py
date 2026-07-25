@@ -216,7 +216,6 @@ class MacPlaybackAdapter:
         self._engine: _EngineLike = engine if engine is not None else AudioEngine()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
-        self._current_path: str | None = None
         self._last_completion: CompletionReason | None = None
         self._stop_requested = False
         self.on_complete = on_complete
@@ -285,7 +284,6 @@ class MacPlaybackAdapter:
         start_segment = _start_segment_for_offset(media.transcript_segments, offset_ms)
 
         with self._lock:
-            self._current_path = str(resolved_path)
             self._last_completion = None
             self._stop_requested = False
 

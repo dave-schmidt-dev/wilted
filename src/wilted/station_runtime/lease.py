@@ -263,10 +263,6 @@ class ControllerLeaseManager:
 
         self.holder_id = holder_id
         self._store = store if store is not None else JsonStationStore()
-        # ttl_seconds is retained only for `is_lease_live`'s observability
-        # judgment (see its docstring) -- it plays no role in acquire()'s
-        # mutual-exclusion decision, which is flock-only.
-        self._ttl_seconds = ttl_seconds
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
 
         # Serializes acquire/release attempts made through *this* manager

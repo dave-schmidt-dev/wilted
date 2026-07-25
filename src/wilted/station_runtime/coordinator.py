@@ -87,7 +87,6 @@ def _run_close_without_masking(close_fn: Callable[[], None] | None) -> None:
 # The two model families that ModelCoordinator arbitrates. Kept as a
 # closed set (not a free-form string) so a typo in a family name fails
 # loudly instead of silently bypassing the lease accounting.
-ModelFamily = str  # "llm" | "transcribe" — see _VALID_FAMILIES
 _VALID_FAMILIES = frozenset({"llm", "transcribe"})
 
 
@@ -200,7 +199,6 @@ class ModelCoordinator:
         # would otherwise block forever on its own non-reentrant lock.
         self._owner_lock = threading.Lock()
         self._owner_thread_id: int | None = None
-        self._resident_family: str | None = None
         self._resident_lock = threading.Lock()
         # Currently-resident family names, guarded by _resident_lock. Using a
         # set (rather than a depth counter) means nested same-family marks
@@ -269,7 +267,6 @@ class ModelCoordinator:
                     f"INV-2 violation: '{family}' marked resident while {sorted(other_families)} is still resident."
                 )
             self._resident_families.add(family)
-            self._resident_family = family
             self._peak_concurrent_residency = max(self._peak_concurrent_residency, len(self._resident_families))
 
     def _mark_not_resident(self, family: str) -> None:
@@ -278,8 +275,6 @@ class ModelCoordinator:
             # isn't currently in the set (e.g. nested same-family marks
             # unwinding) is a no-op, never an underflow.
             self._resident_families.discard(family)
-            if not self._resident_families:
-                self._resident_family = None
 
     @property
     def peak_concurrent_residency(self) -> int:
@@ -380,7 +375,6 @@ class RuntimeBootstrap:
 
     def __init__(self) -> None:
         self._tqdm_lock_initialized = False
-        self._initialized_thread_name: str | None = None
 
     def init_tqdm_lock(self) -> None:
         """Initialize tqdm's multiprocessing lock. MUST be called from the main thread.
@@ -405,7 +399,6 @@ class RuntimeBootstrap:
 
         tqdm.tqdm.get_lock()
         self._tqdm_lock_initialized = True
-        self._initialized_thread_name = current.name
         logger.debug("tqdm multiprocessing lock initialized on main thread (%s)", current.name)
 
     @property

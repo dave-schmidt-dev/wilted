@@ -15,7 +15,6 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from wilted.db import now_utc
 from wilted.station_runtime.coordinator import ModelCoordinator, RuntimeBootstrap
 
 if TYPE_CHECKING:
@@ -42,7 +41,6 @@ class ExecutionCapability:
 
     owner_id: str
     data_dir: Path
-    issued_at: str
 
 
 def issue_execution_capability(
@@ -75,7 +73,6 @@ def issue_execution_capability(
     capability = ExecutionCapability(
         owner_id=owner_id,
         data_dir=data_dir,
-        issued_at=now_utc(),
     )
     _capability.set(capability)
     logger.debug(
@@ -123,7 +120,6 @@ def execution_capability_scope(
     capability = ExecutionCapability(
         owner_id=owner_id,
         data_dir=data_dir,
-        issued_at=now_utc(),
     )
     token: Token[ExecutionCapability | None] = _capability.set(capability)
     try:

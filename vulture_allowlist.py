@@ -6,13 +6,18 @@
 # clean gate on the current tree. `make deadcode` / the pre-commit hook fail
 # only on NEW dead code introduced after this baseline.
 #
-# This baseline was reviewed (see HISTORY.md 2026-07-23 and TASKS.md): the 202
+# This baseline was reviewed (see HISTORY.md 2026-07-23 and TASKS.md): the
 # entries are Textual/Peewee/CoreAudio framework false-positives and symbols
 # used dynamically (registry strings, by-name dispatch, test-only helpers,
 # persisted StrEnum members). A clean-pass audit found 16 genuinely-dead
-# symbols inside this set; those are tracked for a separate reviewed deletion
-# in TASKS.md rather than removed here (removal is out of scope for wiring the
-# hook, and grep-zero-refs is not deletion-proof against persisted data).
+# symbols inside this set; 14 were deleted on 2026-07-25 (verified against
+# on-disk use, each with its callee/import cascades). Two are HELD — the
+# briefing cluster (run_briefing_via_runner + _generate_briefing_worker):
+# dormant entry-points into a subsystem that is built but unwired in production
+# (nothing in src submits a COMPACT_BRIEFING job, and the cli-constructed
+# BriefingGenerator is never driven by a worker). Removing them is a
+# feature-wiring decision — keep dormant vs. remove the whole subsystem — not a
+# mechanical delete, so they are deferred as one cluster rather than split.
 #
 # ruff excludes this file (extend-exclude) — bare names here are F821 to ruff.
 
@@ -24,7 +29,6 @@ report_decision  # unused variable (src/wilted/background_work/legacy_mapping.py
 all_processing_job_transition_pairs  # unused function (src/wilted/background_work/transitions.py:68)
 requested  # unused variable (src/wilted/background_work/transitions.py:117)
 observed_at  # unused variable (src/wilted/background_work/transitions.py:118)
-station_active  # unused variable (src/wilted/background_work/transitions.py:208)
 all_runner_transition_pairs  # unused function (src/wilted/background_work/transitions.py:243)
 load_audio  # unused function (src/wilted/cache.py:50)
 is_paragraph_cached  # unused function (src/wilted/cache.py:100)
@@ -65,7 +69,6 @@ indexes  # unused variable (src/wilted/db.py:451)
 ALL_MODELS  # unused variable (src/wilted/db.py:461)
 Meta  # unused class (src/wilted/db.py:486)
 table_name  # unused variable (src/wilted/db.py:487)
-_.current_paragraph_idx  # unused attribute (src/wilted/engine.py:71)
 _.current_segment_idx  # unused attribute (src/wilted/engine.py:72)
 _._sample_offset  # unused attribute (src/wilted/engine.py:73)
 _._sample_offset  # unused attribute (src/wilted/engine.py:95)
@@ -74,19 +77,13 @@ _._sample_offset  # unused attribute (src/wilted/engine.py:157)
 _._sample_offset  # unused attribute (src/wilted/engine.py:178)
 _.play_audio  # unused method (src/wilted/engine.py:218)
 _.generate_and_play  # unused method (src/wilted/engine.py:229)
-_.current_paragraph_idx  # unused attribute (src/wilted/engine.py:334)
 _.current_segment_idx  # unused attribute (src/wilted/engine.py:393)
 _.current_segment_idx  # unused attribute (src/wilted/engine.py:571)
 _.is_playing  # unused property (src/wilted/engine.py:700)
 _.is_paused  # unused property (src/wilted/engine.py:705)
-issued_at  # unused variable (src/wilted/execution_capability.py:45)
-is_bws_guid  # unused function (src/wilted/feed_refs.py:87)
 _.updated_at  # unused attribute (src/wilted/feeds.py:168)
 get_feed  # unused function (src/wilted/feeds.py:175)
 extract_title_from_url  # unused function (src/wilted/fetch.py:103)
-run_llm_phase  # unused function (src/wilted/handlers/_ml.py:21)
-selection_id  # unused variable (src/wilted/legacy_cutover.py:108)
-_stub_handler  # unused function (src/wilted/pipeline_runner.py:117)
 run_article_cache_via_runner  # unused function (src/wilted/pipeline_submit.py:496)
 run_briefing_via_runner  # unused function (src/wilted/pipeline_submit.py:713)
 run_expiry  # unused function (src/wilted/playlists.py:313)
@@ -95,7 +92,6 @@ set_resume_position  # unused function (src/wilted/playlists.py:420)
 clear_resume_position  # unused function (src/wilted/playlists.py:461)
 run_prepare  # unused function (src/wilted/prepare.py:535)
 claim_next_job  # unused function (src/wilted/processing_jobs.py:268)
-renew_lease  # unused function (src/wilted/processing_jobs.py:297)
 request_cancel  # unused function (src/wilted/processing_jobs.py:320)
 get_job  # unused function (src/wilted/processing_jobs.py:821)
 transition_job_state  # unused function (src/wilted/processing_jobs.py:886)
@@ -115,21 +111,12 @@ _.ensure_fresh  # unused method (src/wilted/station_runtime/briefing.py:560)
 revision  # unused variable (src/wilted/station_runtime/controller.py:139)
 _.held_epoch  # unused property (src/wilted/station_runtime/controller.py:355)
 _.is_lost  # unused property (src/wilted/station_runtime/controller.py:365)
-ModelFamily  # unused variable (src/wilted/station_runtime/coordinator.py:90)
-_._resident_family  # unused attribute (src/wilted/station_runtime/coordinator.py:203)
-_._resident_family  # unused attribute (src/wilted/station_runtime/coordinator.py:272)
-_._resident_family  # unused attribute (src/wilted/station_runtime/coordinator.py:282)
 _.peak_concurrent_residency  # unused property (src/wilted/station_runtime/coordinator.py:284)
-_._initialized_thread_name  # unused attribute (src/wilted/station_runtime/coordinator.py:383)
-_._initialized_thread_name  # unused attribute (src/wilted/station_runtime/coordinator.py:408)
-_._ttl_seconds  # unused attribute (src/wilted/station_runtime/lease.py:269)
 _._read_heartbeat  # unused method (src/wilted/station_runtime/lease.py:323)
 _.held_epoch  # unused property (src/wilted/station_runtime/lease.py:514)
 _.is_lease_live  # unused method (src/wilted/station_runtime/lease.py:519)
 get_owners  # unused function (src/wilted/station_runtime/media_store.py:346)
-_._current_path  # unused attribute (src/wilted/station_runtime/playback_adapter.py:219)
 _.last_completion  # unused property (src/wilted/station_runtime/playback_adapter.py:224)
-_._current_path  # unused attribute (src/wilted/station_runtime/playback_adapter.py:288)
 _.current_device  # unused method (src/wilted/station_runtime/route_monitor.py:82)
 in_addresses  # unused variable (src/wilted/station_runtime/route_monitor.py:356)
 in_client_data  # unused variable (src/wilted/station_runtime/route_monitor.py:356)
@@ -146,11 +133,9 @@ TITLE  # unused variable (src/wilted/tui/__init__.py:200)
 DEFAULT_CSS  # unused variable (src/wilted/tui/__init__.py:202)
 BINDINGS  # unused variable (src/wilted/tui/__init__.py:281)
 _.theme  # unused attribute (src/wilted/tui/__init__.py:315)
-_._weather_monitor_started  # unused attribute (src/wilted/tui/__init__.py:368)
 _._briefing_started  # unused attribute (src/wilted/tui/__init__.py:382)
 _.compose  # unused method (src/wilted/tui/__init__.py:449)
 _.on_mount  # unused method (src/wilted/tui/__init__.py:470)
-_._weather_monitor_started  # unused attribute (src/wilted/tui/__init__.py:500)
 _._briefing_started  # unused attribute (src/wilted/tui/__init__.py:508)
 _.on_unmount  # unused method (src/wilted/tui/__init__.py:524)
 _.display  # unused attribute (src/wilted/tui/__init__.py:637)
@@ -177,7 +162,6 @@ _.action_text_preview  # unused method (src/wilted/tui/__init__.py:2323)
 _.action_clear_all  # unused method (src/wilted/tui/__init__.py:2343)
 _.action_refresh_queue  # unused method (src/wilted/tui/__init__.py:2373)
 _.action_quit_app  # unused method (src/wilted/tui/__init__.py:2378)
-_._weather_monitor_started  # unused attribute (src/wilted/tui/__init__.py:2387)
 _.action_export_wav  # unused method (src/wilted/tui/__init__.py:2393)
 DEFAULT_CSS  # unused variable (src/wilted/tui/screens/add_article.py:23)
 BINDINGS  # unused variable (src/wilted/tui/screens/add_article.py:68)

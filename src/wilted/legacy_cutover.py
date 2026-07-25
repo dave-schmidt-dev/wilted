@@ -105,7 +105,6 @@ class PlannedItem:
 class SelectionBackfillRow:
     """One SelectionHistory row mapped to report_items."""
 
-    selection_id: int
     report_id: int
     item_id: int
     rank: int
@@ -232,7 +231,6 @@ def _plan_selection_backfill() -> list[SelectionBackfillRow]:
             decision = ReportDecision.ACCEPTED if selection.selected else ReportDecision.DISMISSED
             rows.append(
                 SelectionBackfillRow(
-                    selection_id=selection.id,
                     report_id=report_id,
                     item_id=selection.item_id,
                     rank=rank,

@@ -1,9 +1,9 @@
 """Negative-control matrix + live gate for the tag-integrity lint (plan D1).
 
 The audit logic lives in :mod:`tests.tag_integrity_audit`; this file proves the
-two detection rules are *sensitive* (they flag the shapes they must) and *not
-over-eager* (they leave every legitimate shape clean). Two discriminator cases
-pin rule (ii)'s exact semantics -- remove either and a wrong reading passes:
+three detection rules are *sensitive* (they flag the shapes they must) and *not
+over-eager* (they leave every legitimate shape clean). Three discriminator cases
+pin the rules' exact semantics -- remove any and a wrong reading passes:
 
 * :func:`test_honest_cross_area_tag_is_clean` -- the exact
   ``processing_jobs.py -> INV-6`` shape; separates the correct "refined" reading
@@ -13,8 +13,13 @@ pin rule (ii)'s exact semantics -- remove either and a wrong reading passes:
   invariant, dated in the gap. It is a live dodge and must flag; it only does so
   because the cutoff is keyed on the glob-home, not the tagged invariant. This is
   why the fixture charter carries two *different* cutoffs.
+* :func:`test_trailing_punctuation_on_valid_tag_is_not_unknown` -- rule (iii)
+  flags an off-charter id (``inv: INV-Z``) but must NOT flag a punctuation typo
+  on a *valid* id (``inv: INV-A.``, which the harvest parser preserves with its
+  period). It stays clean only because ``_unknown_tags`` normalizes ``.``/``,``
+  off first; drop that ``rstrip`` and this goes red.
 
-If a future edit relaxes either reading, the matching test goes red; keep both.
+If a future edit relaxes any reading, the matching test goes red; keep all three.
 
 All fixture cases drive the real parse → map pipeline through
 :func:`tag_integrity_audit.audit` over temp charter/history/ledger files, so a
@@ -180,7 +185,57 @@ def test_convenience_retag_dodging_lower_cutoff_home_is_flagged(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Shared controls — shapes both rules must leave clean.
+# Rule 3 — unknown / non-charter tag (explicit inv: names an id not in charter).
+# --------------------------------------------------------------------------- #
+
+
+def test_unknown_tag_is_flagged(tmp_path):
+    """An explicit ``inv:`` naming an id absent from the charter flags as
+    unknown_tag. Files are ``orphan.py`` (no glob-home) so rules 1-2 stay clean
+    and the finding is isolated to rule 3.
+    """
+    res = _run(
+        tmp_path,
+        _hist("- [bug] typo'd or retired id | files: src/pkg/orphan.py | inv: INV-Z"),
+    )
+    assert len(res.unknown_tags) == 1, res.report()
+    assert res.unknown_tags[0].inv == "INV-Z"
+    assert not res.glob_only and not res.convenience_retags
+
+
+def test_unknown_tag_with_trailing_punctuation_still_flagged(tmp_path):
+    """Normalization strips a trailing ``.`` before the membership test, but it
+    cannot MASK a genuine unknown: ``INV-Z.`` → ``INV-Z`` is still off-charter.
+    Guards the ``rstrip`` against over-reaching into false-negatives. The raw
+    tag (period included) is preserved in the finding so the message shows the
+    author exactly what they typed.
+    """
+    res = _run(
+        tmp_path,
+        _hist("- [bug] unknown id with a stray period | files: src/pkg/orphan.py | inv: INV-Z."),
+    )
+    assert len(res.unknown_tags) == 1, res.report()
+    assert res.unknown_tags[0].inv == "INV-Z."
+
+
+def test_trailing_punctuation_on_valid_tag_is_not_unknown(tmp_path):
+    """THE rule-3 discriminator: a punctuation typo on a *valid* charter id
+    (``inv: INV-A.``) is prose hygiene, not an unknown tag, and must stay clean.
+
+    The harvest parser preserves the trailing period on a structured ``inv:``
+    field (verified: yields ``"INV-A."``), so this is clean ONLY because
+    ``_unknown_tags`` normalizes ``.``/``,`` off before the membership test.
+    Remove that ``rstrip`` and this entry flags as unknown_tag — keep the test.
+    """
+    res = _run(
+        tmp_path,
+        _hist("- [bug] valid id, stray trailing period | files: src/pkg/orphan.py | inv: INV-A."),
+    )
+    assert res.clean, res.report()
+
+
+# --------------------------------------------------------------------------- #
+# Shared controls — shapes all rules must leave clean.
 # --------------------------------------------------------------------------- #
 
 

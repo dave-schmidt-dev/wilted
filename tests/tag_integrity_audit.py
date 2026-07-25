@@ -6,7 +6,7 @@ never flags it, while ``ruff check .`` still lints it.
 
 It reuses the shared harvest parser and mapping rules under ``~/.agent/harvest``
 rather than reimplementing them, so the lint can never silently diverge from the
-freeze logic it is meant to protect. Two failure shapes are detected:
+freeze logic it is meant to protect. Three failure shapes are detected:
 
 1. **Glob-only phantom** — an *untagged* ``[bug]`` entry that maps to an
    invariant purely by ``area:`` glob and survives that invariant's resolution
@@ -41,6 +41,17 @@ freeze logic it is meant to protect. Two failure shapes are detected:
      skips them.
 
    ``inv: NA`` is a legitimate non-regression marker and is never flagged.
+
+3. **Unknown / non-charter tag** — a ``[bug]`` entry whose explicit ``inv:``
+   names an id absent from the charter (``inv: INV-99``, a retired or typo'd
+   id). ``map_entry`` silently ignores such a tag — its ``entry.inv in by_id``
+   gate falls the entry through to glob matching like an untagged one — so the
+   freeze *count* is unharmed (rules 1-2 own the accounting), but the stated
+   attribution is dropped with no signal: it reads as "tagged" to a human yet
+   is invisible to the harvest. This rule surfaces that authoring error — the
+   typo-hygiene gap the rule-2 note previously deferred. Trailing ``.``/``,``
+   are normalized off first, so a punctuation typo on a *valid* id
+   (``inv: INV-6.``) is not mistaken for an unknown one; ``NA`` is never flagged.
 """
 
 from __future__ import annotations
@@ -72,7 +83,7 @@ def _ensure_harvest_on_path() -> None:
 class Finding:
     """One flagged HISTORY entry, reduced to the fields a message needs."""
 
-    kind: str  # "glob_only" | "convenience_retag"
+    kind: str  # "glob_only" | "convenience_retag" | "unknown_tag"
     date: str
     inv: str | None
     files: tuple[str, ...]
@@ -87,13 +98,14 @@ class Finding:
 class AuditResult:
     glob_only: tuple[Finding, ...]
     convenience_retags: tuple[Finding, ...]
+    unknown_tags: tuple[Finding, ...]
 
     @property
     def clean(self) -> bool:
-        return not self.glob_only and not self.convenience_retags
+        return not self.glob_only and not self.convenience_retags and not self.unknown_tags
 
     def all_findings(self) -> tuple[Finding, ...]:
-        return self.glob_only + self.convenience_retags
+        return self.glob_only + self.convenience_retags + self.unknown_tags
 
     def report(self) -> str:
         if self.clean:
@@ -113,9 +125,9 @@ def _convenience_retags(bugs, invs, led) -> list[Finding]:
     ``entry.inv in by_id`` gate): an unknown tag is **not** honoured, it falls
     through to glob matching exactly like an untagged entry, so it still counts
     against its glob-home and creates no uncounted parking spot. It is therefore
-    not a freeze-integrity risk; the residual gap (a *typo'd* tag whose intended
-    invariant differs from its glob-home is silently ignored rather than
-    reported) is typo hygiene, tracked as a TASKS.md follow-up, not caught here.
+    not a freeze-integrity risk, so rule 2 leaves it alone; the residual
+    typo-hygiene gap (a mistyped or retired id that reads as tagged but is
+    invisible to the harvest) is caught separately by rule 3 (``_unknown_tags``).
 
     Three conditions must all hold (see the module docstring for the rationale):
 
@@ -164,6 +176,48 @@ def _convenience_retags(bugs, invs, led) -> list[Finding]:
     return findings
 
 
+def _unknown_tags(bugs, invs) -> list[Finding]:
+    r"""Entries whose explicit ``inv:`` names an id absent from the charter (rule 3).
+
+    Typo hygiene, not freeze accounting. ``map_entry`` does not honour an unknown
+    id — its ``entry.inv in by_id`` gate drops the entry through to glob matching
+    like an untagged one, so rules 1-2 already keep the *count* honest. The harm
+    this rule catches is different: a mistyped or retired id (``inv: INV-99``,
+    ``inv: INV-6X``) reads as a deliberate attribution to a human reviewer yet is
+    invisible to the harvest, so the entry silently accrues wherever its globs
+    point with no signal that the stated tag was dropped. Surfacing it is the gap
+    the rule-2 docstring previously deferred.
+
+    Normalization: trailing ``.``/``,`` (and surrounding whitespace) are stripped
+    before the membership test. The harvest regex ``INV-[\w.-]+`` can capture a
+    trailing-period id from a ``| inv: INV-6.`` field, and that is a punctuation
+    typo on a *valid* id — prose hygiene, not an unknown tag — so it must not fire
+    here. No charter id ends in ``.``/``,``, so the strip can never mask a genuine
+    unknown (``INV-99.`` still normalizes to the still-unknown ``INV-99``). ``NA``
+    (with or without trailing punctuation) is the non-regression marker and is
+    never flagged; untagged entries (``inv`` is ``None``) are rule 1's domain.
+    """
+    by_id = {inv.id: inv for inv in invs}
+    findings: list[Finding] = []
+    for entry in bugs:
+        tag = entry.inv
+        if tag is None:
+            continue  # untagged — glob-only rule's domain, not an unknown *tag*
+        normalized = tag.strip().rstrip(".,")
+        if normalized == "NA" or normalized in by_id:
+            continue  # non-regression marker, or a grounded/known charter id
+        findings.append(
+            Finding(
+                kind="unknown_tag",
+                date=entry.date,
+                inv=tag,
+                files=tuple(entry.files),
+                text=entry.text,
+            )
+        )
+    return findings
+
+
 def audit(*, invariants_path: Path, history_path: Path, ledger_path: Path) -> AuditResult:
     """Run both tag-integrity rules over one repo's closed-loop documents.
 
@@ -197,4 +251,5 @@ def audit(*, invariants_path: Path, history_path: Path, ledger_path: Path) -> Au
     return AuditResult(
         glob_only=tuple(glob_only),
         convenience_retags=tuple(_convenience_retags(bugs, invs, led)),
+        unknown_tags=tuple(_unknown_tags(bugs, invs)),
     )

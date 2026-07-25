@@ -365,7 +365,6 @@ class WiltedApp(App):
         self._weather_monitor = weather_monitor
         if self._weather_monitor is not None:
             self._weather_monitor.on_bulletin_ready = self._on_bulletin_ready
-        self._weather_monitor_started: bool = False
         self._latency_log_path: Path = latency_log_path if latency_log_path is not None else _DEFAULT_LATENCY_LOG_PATH
 
         # BriefingGenerator (A.4.6): mirrors `weather_monitor` immediately
@@ -497,7 +496,6 @@ class WiltedApp(App):
         # itself also guards on _station_read_only, defense in depth).
         if self._weather_monitor is not None and not self._station_read_only:
             self._weather_monitor.start()
-            self._weather_monitor_started = True
 
         # Briefing (A.4.6): same "only the lease-holding session" reasoning
         # as the WeatherMonitor guard just above -- a read-only second
@@ -2384,7 +2382,6 @@ class WiltedApp(App):
         self._route_monitor_started = False
         if self._weather_monitor is not None:
             self._weather_monitor.stop()
-            self._weather_monitor_started = False
         self._controller.stop()
         self.exit()
 
