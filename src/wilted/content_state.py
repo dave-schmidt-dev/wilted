@@ -329,6 +329,15 @@ def items_playable_ready_only() -> list[Item]:
     return list(Item.select().where(predicate_playable_ready()).order_by(Item.discovered_at))
 
 
+def count_listenable_ready() -> int:
+    """Return the count of prepared, not-yet-completed listenable items.
+
+    Read-only inventory helper reusing :func:`predicate_playable_ready`;
+    does not change its behavior.
+    """
+    return Item.select().where(predicate_playable_ready()).count()
+
+
 def items_for_playlist_all() -> list[Item]:
     """Return items for the dynamic ``All`` playlist."""
     return list(Item.select().where(predicate_playlist_active()).order_by(Item.discovered_at.asc()))
@@ -515,6 +524,7 @@ __all__ = [
     "apply_retention_expiry",
     "backfill_items_with_null_fetch_state",
     "backfill_orthogonal_from_legacy",
+    "count_listenable_ready",
     "create_report_item",
     "items_for_playlist_all",
     "items_for_playlist_dynamic",

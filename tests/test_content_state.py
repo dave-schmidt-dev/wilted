@@ -23,6 +23,7 @@ from wilted.background_work.contracts import (
 )
 from wilted.content_state import (
     apply_retention_expiry,
+    count_listenable_ready,
     create_report_item,
     items_for_report,
     load_report_membership,
@@ -132,6 +133,23 @@ class TestContentStateConstraints:
         write_content_state(item, _content_state())
         fetched = Item.get_by_id(item.id)
         assert fetched.status == "classified"
+
+
+class TestCountListenableReady:
+    def test_zero_when_no_items(self):
+        assert count_listenable_ready() == 0
+
+    def test_counts_only_playable_ready_items(self):
+        ready_item = _make_item(guid="listenable-ready-1")
+        write_content_state(ready_item, _content_state())
+
+        completed_item = _make_item(guid="listenable-completed-1")
+        write_content_state(completed_item, _content_state(playback=PlaybackState.COMPLETED))
+
+        queued_item = _make_item(guid="listenable-queued-1")
+        write_content_state(queued_item, _content_state(preparation=PreparationState.QUEUED))
+
+        assert count_listenable_ready() == 1
 
 
 class TestPostCutoverGuards:

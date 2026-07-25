@@ -47,6 +47,7 @@ _TEST_MARKERS = {
     "test_post_cutover_e2e.py": ("e2e",),
     "test_schema_cutover_queries.py": ("integration",),
     "test_scheduler_tick.py": ("integration",),
+    "test_scheduling_cost.py": ("unit",),
     "test_preferences.py": ("integration",),
     "test_prepare.py": ("integration",),
     "test_prepare_resume.py": ("integration",),
