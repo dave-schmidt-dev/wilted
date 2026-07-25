@@ -2,11 +2,19 @@
 
 The audit logic lives in :mod:`tests.tag_integrity_audit`; this file proves the
 two detection rules are *sensitive* (they flag the shapes they must) and *not
-over-eager* (they leave every legitimate shape clean). The single most important
-case is :func:`test_honest_cross_area_tag_is_clean` — it is the exact
-``processing_jobs.py → INV-6`` shape and is what separates the correct "refined"
-reading of rule (ii) from the naive "literal" one. If a future edit relaxes the
-lint back to literal, that test goes red; keep it.
+over-eager* (they leave every legitimate shape clean). Two discriminator cases
+pin rule (ii)'s exact semantics -- remove either and a wrong reading passes:
+
+* :func:`test_honest_cross_area_tag_is_clean` -- the exact
+  ``processing_jobs.py -> INV-6`` shape; separates the correct "refined" reading
+  from the naive "literal" one (flag any tag whose globs miss its files).
+* :func:`test_convenience_retag_dodging_lower_cutoff_home_is_flagged` -- a re-tag
+  onto a *high-cutoff* invariant whose files' real glob-home is a *low-cutoff*
+  invariant, dated in the gap. It is a live dodge and must flag; it only does so
+  because the cutoff is keyed on the glob-home, not the tagged invariant. This is
+  why the fixture charter carries two *different* cutoffs.
+
+If a future edit relaxes either reading, the matching test goes red; keep both.
 
 All fixture cases drive the real parse → map pipeline through
 :func:`tag_integrity_audit.audit` over temp charter/history/ledger files, so a
@@ -40,7 +48,11 @@ gate_test: tests/test_beta.py
 threshold: 3
 """
 
-# INV-A resolved at 07-15; entries dated after that accrue toward its freeze.
+# Deliberately DIFFERENT cutoffs: INV-A (07-05) low, INV-B (07-18) high. The gap
+# between them is what lets the rule-(ii) discriminator express a re-tag onto the
+# high-cutoff invariant that hides a live recurrence of the low-cutoff home. With
+# equal cutoffs that failure mode is inexpressible, so the gate could regress to
+# keying its cutoff on the tag instead of the glob-home and no fixture would notice.
 _LEDGER = """\
 invariants:
   INV-A:
@@ -49,9 +61,9 @@ invariants:
     gate_test_status: passing
 resolutions:
   INV-A:
-    resolved_at_date: "2026-07-15"
+    resolved_at_date: "2026-07-05"
   INV-B:
-    resolved_at_date: "2026-07-15"
+    resolved_at_date: "2026-07-18"
 """
 
 
@@ -90,7 +102,7 @@ def test_glob_only_before_cutoff_is_clean(tmp_path):
     Mirrors ``recurrence_counts``: a resolved-era entry cannot accrue toward a
     freeze, so the lint must not raise on it either (cutoff is exclusive).
     """
-    body = "## 2026-07-15\n\n- [bug] resolved-era regression | files: src/pkg/alpha.py\n"
+    body = "## 2026-07-05\n\n- [bug] resolved-era regression | files: src/pkg/alpha.py\n"
     res = _run(tmp_path, body)
     assert res.clean, res.report()
 
@@ -116,8 +128,14 @@ def test_convenience_retag_is_flagged(tmp_path):
 
 
 def test_convenience_retag_before_cutoff_is_clean(tmp_path):
-    """A re-tag dated on/before the tagged invariant's cutoff cannot dodge a live
-    count, so it is archaeology — not flagged (rule-2 cutoff filter)."""
+    """A re-tag dated on/before its GLOB-HOME's cutoff cannot dodge a live count,
+    so it is archaeology -- not flagged (rule-2 cutoff filter).
+
+    Files are ``beta.py`` (glob-home INV-B, cutoff 07-18); dated 07-15, before
+    that. Because the filter keys on the glob-home, this is clean -- but under the
+    old tag-keyed reading the cutoff would be INV-A's 07-05, 07-15 would be
+    post-cutoff, and it would flag. So this doubles as a guard on the cutoff key.
+    """
     body = "## 2026-07-15\n\n- [bug] resolved-era retag | files: src/pkg/beta.py | inv: INV-A\n"
     res = _run(tmp_path, body)
     assert res.clean, res.report()
@@ -138,6 +156,27 @@ def test_honest_cross_area_tag_is_clean(tmp_path):
         _hist("- [bug] truthfulness bug in an unmapped module | files: src/pkg/orphan.py | inv: INV-A"),
     )
     assert res.clean, res.report()
+
+
+def test_convenience_retag_dodging_lower_cutoff_home_is_flagged(tmp_path):
+    """A re-tag onto a HIGH-cutoff invariant whose files' real glob-home is a
+    LOW-cutoff invariant, dated in the gap between the two cutoffs, is a *live*
+    dodge and must be flagged.
+
+    Files ``alpha.py`` -> glob-home INV-A (cutoff 07-05). Tagged ``INV-B`` (cutoff
+    07-18), whose globs miss ``alpha.py``. Dated 07-10, i.e. AFTER INV-A's cutoff
+    (so it would count against INV-A if untagged) but before INV-B's. Keying the
+    filter on the glob-home (INV-A) sees 07-10 > 07-05 -> live -> flagged. The old
+    tag-keyed reading saw 07-10 <= 07-18 (INV-B) and skipped it: a false-clean
+    that hides exactly the evasion this rule exists to stop -- park a live
+    recurrence on a safe, already-resolved-far-in-the-future bucket. This is the
+    rule-(ii) analog of ``test_honest_cross_area_tag_is_clean``; keep it.
+    """
+    body = "## 2026-07-10\n\n- [bug] parked on a safe high-cutoff bucket | files: src/pkg/alpha.py | inv: INV-B\n"
+    res = _run(tmp_path, body)
+    assert len(res.convenience_retags) == 1, res.report()
+    assert res.convenience_retags[0].inv == "INV-B"
+    assert not res.glob_only
 
 
 # --------------------------------------------------------------------------- #

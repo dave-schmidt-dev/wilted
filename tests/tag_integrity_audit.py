@@ -23,16 +23,21 @@ freeze logic it is meant to protect. Two failure shapes are detected:
    invariant its files actually implicate and *onto* one they don't. Two
    deliberate narrowings from the naive "tag's globs miss its files":
 
-   * **Requires another invariant to match.** ``map_entry`` makes an explicit tag
+   * **Requires a glob-home to exist.** ``map_entry`` makes an explicit tag
      *win over* globs by design, so a bare glob-miss cannot be the defect —
      otherwise every legitimate cross-area attribution (e.g. a
      ``processing_jobs.py`` execution-truthfulness bug tagged ``INV-6``, where
      ``processing_jobs.py`` sits in *no* invariant's area) would be flagged. The
-     defect is only present when the files have a different, specific glob-home,
-     matching the plan's own words "move it off another one."
-   * **Cutoff-filtered, like rule 1.** A re-tag only *harms* anything after the
-     tagged invariant's ``resolved_at_date`` (that is when it dodges a live
-     count), so resolved-era entries are skipped exactly as ``glob_only_mappings``
+     defect is only present when the files have a different, specific *glob-home*
+     — the first charter-order invariant whose glob matches, i.e. the count
+     ``map_entry`` would assign if the tag were absent — matching the plan's own
+     words "move it off another one."
+   * **Cutoff-filtered on the GLOB-HOME, like rule 1.** A re-tag only *harms*
+     anything after the *glob-home's* ``resolved_at_date`` — that home is the
+     count the re-tag dodges, so its cutoff (not the tagged invariant's) decides
+     whether the dodge is live. Keying on the tag would let a re-tag onto a
+     high-cutoff invariant hide a live recurrence of a low-cutoff home dated in
+     the gap. Resolved-era-at-home entries are skipped as ``glob_only_mappings``
      skips them.
 
    ``inv: NA`` is a legitimate non-regression marker and is never flagged.
@@ -109,12 +114,18 @@ def _convenience_retags(bugs, invs, led) -> list[Finding]:
     Three conditions must all hold (see the module docstring for the rationale):
 
     1. The tagged invariant's ``area:`` globs match *none* of the cited files.
-    2. *Some other* invariant's globs match *at least one* cited file — the files
-       have a different, specific glob-home, so this is a redirection rather than
-       a legitimate cross-area attribution (which ``map_entry`` honours by design).
-    3. The entry survives the tagged invariant's resolution cutoff — a re-tag only
-       dodges a live count *after* ``resolved_at_date``; resolved-era entries are
-       archaeology, skipped exactly as ``glob_only_mappings`` skips them.
+    2. Some invariant's globs match *at least one* cited file — the files have a
+       specific *glob-home* (the invariant ``map_entry`` would assign if the tag
+       were absent: the first charter-order invariant whose ``area:`` matches).
+       Absent one, this is a legitimate cross-area attribution ``map_entry``
+       honours by design, not a redirection.
+    3. The entry survives the *glob-home's* resolution cutoff — NOT the tagged
+       invariant's. A convenience re-tag dodges a count against the entry's real
+       glob-home, so the "is this a live dodge?" question must key on the home's
+       ``resolved_at_date``. Keying on the tag would let a re-tag onto a
+       high-cutoff invariant mask a live recurrence of a low-cutoff home dated in
+       the gap between them (the adversarial evasion this gate exists to stop).
+       Resolved-era-at-home entries are archaeology, skipped as glob-only skips.
     """
     by_id = {inv.id: inv for inv in invs}
     findings: list[Finding] = []
@@ -124,12 +135,17 @@ def _convenience_retags(bugs, invs, led) -> list[Finding]:
             continue
         if any(fnmatch(f, g) for f in entry.files for g in by_id[tag].area):
             continue  # (1) fails: tag is grounded in at least one touched file
-        other_home = any(fnmatch(f, g) for inv in invs if inv.id != tag for f in entry.files for g in inv.area)
-        if not other_home:
+        # (2) glob-home: first charter-order invariant whose area matches a cited
+        # file — exactly map_entry's fall-through when the explicit tag is absent.
+        glob_home = next(
+            (inv for inv in invs if any(fnmatch(f, g) for f in entry.files for g in inv.area)),
+            None,
+        )
+        if glob_home is None:
             continue  # (2) fails: files sit in no invariant's area — honest cross-area tag
-        cutoff = led.resolved_after(tag)
+        cutoff = led.resolved_after(glob_home.id)
         if cutoff and entry.date <= cutoff:
-            continue  # (3) fails: pre-resolution, cannot dodge a live count
+            continue  # (3) fails: pre-resolution at the glob-home, cannot dodge a live count
         findings.append(
             Finding(
                 kind="convenience_retag",
