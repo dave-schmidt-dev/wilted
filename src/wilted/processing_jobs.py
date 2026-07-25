@@ -34,11 +34,13 @@ from wilted.content_state import count_listenable_ready
 from wilted.db import Item, ProcessingJob, ensure_db, now_utc
 from wilted.scheduling_policy import (
     DeferralReason,
+    DeferralSummary,
     JobCandidate,
     PolicyContext,
     PolicyThresholds,
     select_claimable,
     should_defer,
+    summarize_claimable,
     thresholds_from_settings,
 )
 from wilted.station_runtime.machine_availability import _DarwinAvailabilityBackend
@@ -438,6 +440,69 @@ def claim_next_job(
             inventory_probe=inventory_probe,
             thresholds=thresholds,
         )
+
+
+def read_deferral_summary(
+    *,
+    now: Callable[[], datetime] = _utc_local_now,
+    availability_backend: AvailabilityBackend = _DEFAULT_AVAILABILITY_BACKEND,
+    inventory_probe: Callable[[], int] = count_listenable_ready,
+    thresholds: PolicyThresholds | None = None,
+) -> DeferralSummary:
+    """Read-only projection of the claim seam's current deferral state (M5).
+
+    Mirrors ``_claim_next_job_under_lock_once``'s READ pattern exactly — the
+    same claimable-row query and base order, one machine-availability
+    sample, one inventory count, one clock read, the same
+    ``_candidate_from_row`` projection — but claims NOTHING: no execution
+    flock, no CAS, no state write. Safe to call from an interactive CLI/TUI
+    surface at any time: it never competes for the flock, so a concurrent
+    real claim attempt is unaffected, and it never mutates a row, so it can
+    never itself race with anything.
+
+    Collaborators default to production, exactly like :func:`claim_next_job`;
+    tests inject fakes. ``thresholds`` is resolved from settings here (once
+    per call) when not supplied, under the live ``DATA_DIR`` (INV-5).
+
+    This function performs no printing/logging of its own (INV-11
+    byte-silence) — it only samples and returns data. Callers (the CLI, the
+    TUI) decide whether and where to surface it.
+
+    Args:
+        now: Clock returning a local-aware "now" (production default reads
+            the wall clock; tests inject a fixed instant).
+        availability_backend: Machine-availability sensor, sampled once.
+        inventory_probe: Callable returning the ready-to-play inventory
+            count, probed once.
+        thresholds: Policy tunables; ``None`` resolves from settings at call
+            time (INV-5).
+
+    Returns:
+        A :class:`~wilted.scheduling_policy.DeferralSummary` covering every
+        currently-claimable row.
+    """
+    ensure_db()
+    now_dt = now()
+    now_str = now_dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    resolved_thresholds = thresholds if thresholds is not None else thresholds_from_settings()
+
+    # Same candidate-set contract as the seam: ALL currently-claimable rows,
+    # never a bounded LIMIT (see _claim_next_job_under_lock_once's comment).
+    rows = list(
+        ProcessingJob.select()
+        .where(
+            (ProcessingJob.state.in_([state.value for state in _CLAIMABLE_STATES]))
+            & ((ProcessingJob.not_before.is_null()) | (ProcessingJob.not_before <= now_str))
+        )
+        .order_by(ProcessingJob.priority.desc(), ProcessingJob.created_at.asc())
+    )
+    ctx = PolicyContext(
+        now=now_dt,
+        availability=availability_backend.sample(),
+        listenable_count=inventory_probe(),
+    )
+    candidates = [_candidate_from_row(row) for row in rows]
+    return summarize_claimable(candidates, ctx, resolved_thresholds)
 
 
 def request_cancel(job_id: int) -> bool:

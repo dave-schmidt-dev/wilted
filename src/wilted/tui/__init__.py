@@ -42,12 +42,14 @@ from textual.worker import get_current_worker
 
 from wilted import ICONS, PROJECT_ROOT
 from wilted.playlists import ensure_default_playlists, get_playlist_items
+from wilted.processing_jobs import read_deferral_summary
 from wilted.queue import (
     clear_queue,
     get_article_text,
     mark_completed,
     remove_article_by_id,
 )
+from wilted.scheduling_policy import format_deferral_summary
 from wilted.station.models import (
     FinalizationState,
     MediaDescriptor,
@@ -78,6 +80,7 @@ from wilted.tui.screens.voice_settings import VoiceSettingsScreen
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from wilted.scheduling_policy import DeferralSummary
     from wilted.station.models import TranscriptSegment
     from wilted.station_runtime import CompletionReason
 
@@ -304,6 +307,7 @@ class WiltedApp(App):
         poller_factory=None,
         route_monitor_factory=None,
         weather_monitor: WeatherMonitor | None = None,
+        deferral_summary_probe=None,
         latency_log_path: Path | None = None,
         bootstrap: RuntimeBootstrap | None = None,
         **kwargs,
@@ -330,6 +334,16 @@ class WiltedApp(App):
         # the default adapter alike.
         self._adapter.on_complete = self._on_adapter_completion
         self._sequencer_factory = sequencer_factory if sequencer_factory is not None else EntrySequencer.build
+        # Deferral-observability probe (M5, read-only): mirrors
+        # `_sequencer_factory`'s "factory defaults to the real production
+        # implementation" convention. Production default is the real
+        # read-only claim-seam projection (samples machine availability +
+        # inventory + clock, but NEVER claims/locks/mutates — see
+        # `read_deferral_summary`'s docstring); tests inject a fake
+        # returning a fixed `DeferralSummary`.
+        self._deferral_summary_probe = (
+            deferral_summary_probe if deferral_summary_probe is not None else read_deferral_summary
+        )
         self._poller_factory = poller_factory if poller_factory is not None else (lambda c, a: CheckpointPoller(c, a))
         self._poller = self._poller_factory(self._controller, self._adapter)
         self._poller_started: bool = False
@@ -435,6 +449,11 @@ class WiltedApp(App):
         # the indicator can swap the click-to-warm affordance for a "warmed"
         # note. TTS is always served by the resident speech daemon.
         self._tts_daemon_warmed: bool = False
+        # Read-only deferral-queue projection (M5). Refreshed by
+        # `_build_sequencer_worker`'s off-thread probe (see
+        # `_update_queue_status`), never the 1s timer — the probe samples
+        # machine availability (a bounded but real subprocess round-trip).
+        self._deferral_summary: DeferralSummary | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -454,6 +473,7 @@ class WiltedApp(App):
                 yield Static("", id="speed-display")
                 yield Label("", id="backend-indicator")
                 yield Label("", id="source-health")
+                yield Label("", id="queue-status")
                 yield Label("", id="status-line")
         yield Footer()
 
@@ -643,7 +663,15 @@ class WiltedApp(App):
         """Build the station backlog in a worker thread.
 
         ``EntrySequencer.build()`` runs ffmpeg concat per article to check
-        finalization and would freeze the UI if run on the main thread.
+        finalization and would freeze the UI if run on the main thread. The
+        same off-thread hop also reads the read-only deferral projection
+        (M5): the probe samples machine availability (a bounded, sub-2s
+        subprocess round-trip — see machine_availability.py) plus the DB, so
+        like the sequencer build it must never run on the main/UI thread —
+        and unlike ``#source-health`` it must not run on every 1s timer tick
+        either (see :meth:`_update_queue_status`); a probe failure never
+        disrupts the station-backlog build (fail-open — the queue line just
+        stays blank).
         """
         from wilted.db import worker_db
 
@@ -651,13 +679,21 @@ class WiltedApp(App):
             with worker_db():
                 sequencer = self._sequencer_factory()
                 entries = list(sequencer.entries)
+
+                deferral_summary: DeferralSummary | None = None
+                try:
+                    deferral_summary = self._deferral_summary_probe()
+                except Exception:
+                    logger.exception("Failed to read deferral summary")
         except Exception:
             logger.exception("Failed to build station backlog")
             self.call_from_thread(self._set_status, "Error preparing station backlog", _STATUS_HIGH)
             return
-        self.call_from_thread(self._apply_sequencer_result, entries)
+        self.call_from_thread(self._apply_sequencer_result, entries, deferral_summary)
 
-    def _apply_sequencer_result(self, entries: list[StationEntry]) -> None:
+    def _apply_sequencer_result(
+        self, entries: list[StationEntry], deferral_summary: DeferralSummary | None = None
+    ) -> None:
         """Adopt a freshly-built backlog (main thread) and refresh the Larder tree.
 
         No-ops if the app has begun shutting down by the time this
@@ -667,6 +703,8 @@ class WiltedApp(App):
         if not self.is_running:
             return
         self._station_entries = entries
+        self._deferral_summary = deferral_summary
+        self._update_queue_status()
         self._current_index = self._index_of(self._current_entry) if self._current_entry is not None else None
         self._rebuild_larder_tree()
         self._update_empty_message()
@@ -990,6 +1028,27 @@ class WiltedApp(App):
         else:
             route_text = "Route: idle"
         self.query_one("#source-health", Label).update(f"{weather_text}   {route_text}")
+
+    def _update_queue_status(self) -> None:
+        """Read-only deferral-queue line (M5): a pure renderer of
+        ``self._deferral_summary``.
+
+        Unlike ``#source-health``/``#backend-indicator`` (refreshed every 1s
+        timer tick, cheap in-memory reads), this is refreshed only by
+        :meth:`_build_sequencer_worker`'s off-thread probe — the projection
+        involves a real, bounded machine-availability sample, so it must not
+        run every second. Blank until the first sequencer build completes,
+        or if the probe failed (fail-open — see
+        :meth:`_build_sequencer_worker`): an unreadable projection must
+        never look like an error banner, it just stays blank.
+        """
+        if not self.is_running:
+            return
+        widget = self.query_one("#queue-status", Label)
+        if self._deferral_summary is None:
+            widget.update("")
+            return
+        widget.update(f"queue: {format_deferral_summary(self._deferral_summary)}")
 
     def _update_backend_indicator(self) -> None:
         """Compact indicator of the resident speech daemon backends.

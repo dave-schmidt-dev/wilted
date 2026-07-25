@@ -25,6 +25,7 @@ from wilted.cli import (
     cmd_next,
     cmd_play,
     cmd_playlist,
+    cmd_queue,
     cmd_remove,
     main,
     run_cli,
@@ -1495,3 +1496,133 @@ class TestCmdDoctor:
         cmd_doctor()
         out = capsys.readouterr().out
         assert "Playlist" in out or "All" in out
+
+
+# ---------------------------------------------------------------------------
+# cmd_queue (M5: read-only deferral observability, no scheduling change)
+# ---------------------------------------------------------------------------
+class TestCmdQueueStatus:
+    """`wilted queue status` — a read-only projection of the M3 claim-seam
+    deferral policy. Reuses the same seeding shape as
+    tests/test_processing_jobs.py::TestClaimSeamDeferralPolicy (duplicated
+    locally, not cross-imported, so this file's fixtures stay self-contained).
+    """
+
+    @staticmethod
+    def _seed_representative_queue() -> None:
+        """One held (busy-daytime) expensive job, one priority-bypassed
+        expensive job, and one always-cheap job — a small but representative
+        claimable queue."""
+        from wilted.background_work.contracts import JobKind
+        from wilted.background_work.idempotency import build_idempotency_key, logical_identity_for_kind
+        from wilted.db import ProcessingJob
+        from wilted.processing_jobs import submit_job
+
+        def _submit(kind, identity, *, priority=0):
+            key = build_idempotency_key(kind, operation_version=1, logical_identity=identity)
+            job_id = submit_job(key, priority=priority).job_id
+            ProcessingJob.update(created_at="2026-07-25T09:00:00Z").where(ProcessingJob.id == job_id).execute()
+            return job_id
+
+        _submit(JobKind.ARTICLE_CACHE, logical_identity_for_kind(JobKind.ARTICLE_CACHE, item_id="held-1"))
+        _submit(
+            JobKind.ARTICLE_CACHE,
+            logical_identity_for_kind(JobKind.ARTICLE_CACHE, item_id="bypassed-1"),
+            priority=5,
+        )
+        _submit(
+            JobKind.REPORT_ASSEMBLY,
+            logical_identity_for_kind(JobKind.REPORT_ASSEMBLY, report_date="2026-07-25"),
+        )
+
+    @staticmethod
+    def _fake_collaborators() -> dict:
+        """A busy-daytime machine sample + a fixed clock inside the default
+        [08:00, 20:00) window + controllable inventory — injected explicitly
+        (never monkeypatched defaults), mirroring how the seam's own tests
+        inject fakes into ``claim_next_job``."""
+        from datetime import UTC, datetime
+
+        from wilted.scheduling_policy import PolicyThresholds
+        from wilted.station_runtime.machine_availability import MachineAvailability
+
+        class _BusyBackend:
+            def sample(self) -> MachineAvailability:
+                return MachineAvailability(
+                    load_per_core=2.0,
+                    on_ac_power=True,
+                    user_idle_seconds=5.0,
+                    sampled_at="2026-07-25T10:00:00Z",
+                    ok=True,
+                )
+
+        return {
+            "now": lambda: datetime(2026, 7, 25, 10, 0, tzinfo=UTC),
+            "availability_backend": _BusyBackend(),
+            "inventory_probe": lambda: 5,
+            "thresholds": PolicyThresholds(),
+        }
+
+    def test_projection_text_for_representative_seeded_queue(self):
+        """Drives the REAL read_deferral_summary against seeded DB rows with
+        injected fakes — proves the end-to-end projection text, not just a
+        mocked stats dict."""
+        from wilted.processing_jobs import read_deferral_summary
+        from wilted.scheduling_policy import format_deferral_summary
+
+        self._seed_representative_queue()
+        summary = read_deferral_summary(**self._fake_collaborators())
+        text = format_deferral_summary(summary)
+
+        assert "1 expensive job held until 20:00" in text
+        assert "1 bypassed (priority)" in text
+
+    def test_status_writes_to_stderr_not_stdout(self, capsys, monkeypatch):
+        """INV-11: the interactive `queue status` command surfaces its
+        projection on stderr, never stdout."""
+        from wilted.scheduling_policy import DeferralReason, DeferralSummary
+
+        fixed = DeferralSummary(
+            deferred_count=1,
+            claimable_now_count=2,
+            by_reason={DeferralReason.PRIORITY_BYPASS: 1},
+            next_window_open_hour=20,
+        )
+        monkeypatch.setattr("wilted.processing_jobs.read_deferral_summary", lambda: fixed)
+
+        cmd_queue(["status"])
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "1 expensive job held until 20:00" in captured.err
+        assert "1 bypassed (priority)" in captured.err
+
+    def test_direct_gatherer_call_is_byte_silent(self, capsys):
+        """INV-11: a caller that reaches read_deferral_summary directly (no
+        CLI wrapper — the shape a daemon/non-interactive path would take)
+        gets ZERO bytes on either stream. Only the CLI layer above chooses
+        to print, and only to stderr (see the sibling test)."""
+        from wilted.processing_jobs import read_deferral_summary
+
+        self._seed_representative_queue()
+        read_deferral_summary(**self._fake_collaborators())
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+
+    def test_status_dispatches_through_run_cli(self, monkeypatch, capsys):
+        from wilted.scheduling_policy import DeferralSummary
+
+        fixed = DeferralSummary(deferred_count=0, claimable_now_count=4, by_reason={}, next_window_open_hour=None)
+        monkeypatch.setattr("wilted.processing_jobs.read_deferral_summary", lambda: fixed)
+
+        run_cli(["queue", "status"])
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "no expensive jobs held" in captured.err
+
+    def test_unknown_action_errors(self):
+        with pytest.raises(SystemExit):
+            cmd_queue(["bogus"])

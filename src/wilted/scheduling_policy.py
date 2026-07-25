@@ -62,12 +62,13 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from wilted.scheduling_cost import JobCostClass, estimate_cost_class
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from wilted.station_runtime.machine_availability import MachineAvailability
 
@@ -214,6 +215,49 @@ class DeferralDecision:
 
     deferred: bool
     reason: DeferralReason
+
+
+@dataclass(frozen=True, slots=True)
+class DeferralSummary:
+    """Read-only projection of the claim seam's current deferral state.
+
+    Milestone 5 (observability): a human-facing answer to "why is the queue
+    holding expensive work right now?", built by :func:`summarize_claimable`
+    folding :func:`should_defer` over every currently claimable candidate.
+    Deferral has no persisted state (M4's durable ``DEFERRED`` reflection is
+    out of scope) — a job "being held" is simply ``QUEUED`` and is
+    re-evaluated fresh every time this is built, exactly like at claim time.
+    Pure data; no I/O of its own.
+
+    Attributes:
+        deferred_count: How many sampled candidates are currently deferred
+            (``DeferralReason.DAYTIME_BUSY`` — the only reason
+            ``deferred=True`` is ever returned).
+        claimable_now_count: How many sampled candidates would be eligible
+            to run right now (``deferred=False``, for any reason — not
+            expensive, priority bypass, low inventory, aged past the
+            ceiling, outside the window, a broken sensor, or machine idle).
+            Only the single highest-priority-oldest one of these is actually
+            claimed per claim attempt; the rest simply haven't been reached
+            yet.
+        by_reason: Count of candidates per :class:`DeferralReason`, covering
+            every candidate exactly once (``sum(by_reason.values()) ==`` the
+            number of candidates summarized). E.g.
+            ``by_reason[DeferralReason.PRIORITY_BYPASS]`` answers "how many
+            jobs bypassed on priority."
+        next_window_open_hour: When ``now`` falls inside the configured
+            daytime busy window, the local hour
+            (``thresholds.daytime_end_hour``) the window closes and held
+            work becomes eligible again. ``None`` outside the window — there
+            is nothing to wait for, the window is already open. Computed
+            from the clock alone, independent of whether anything is
+            actually held right now.
+    """
+
+    deferred_count: int
+    claimable_now_count: int
+    by_reason: Mapping[DeferralReason, int]
+    next_window_open_hour: int | None
 
 
 # ---------------------------------------------------------------------------
@@ -373,13 +417,99 @@ def select_claimable(
     return None
 
 
+def summarize_claimable(
+    candidates: Iterable[JobCandidate],
+    ctx: PolicyContext,
+    thresholds: PolicyThresholds,
+) -> DeferralSummary:
+    """Fold :func:`should_defer` over every candidate into a read-only summary.
+
+    Pure: no I/O, no DB, no clock read, no logging — same discipline as
+    :func:`should_defer`/:func:`select_claimable`. Milestone 5
+    (observability): unlike :func:`select_claimable`, this does not stop at
+    the first claimable candidate — it evaluates and counts EVERY candidate,
+    since the point is a full picture of the current queue, not a claim
+    decision. Never claims, locks, or mutates anything; the caller (the
+    read-only gatherer) is responsible for only ever reading, never writing.
+
+    Args:
+        candidates: All claimable jobs (same candidate-set contract as
+            :func:`select_claimable`, though order does not affect the
+            counts here).
+        ctx: The once-sampled time/machine/inventory context.
+        thresholds: The active tunables.
+
+    Returns:
+        A :class:`DeferralSummary` covering every candidate exactly once.
+    """
+    counts: dict[DeferralReason, int] = {}
+    deferred_count = 0
+    claimable_now_count = 0
+    for candidate in candidates:
+        decision = should_defer(candidate, ctx, thresholds)
+        counts[decision.reason] = counts.get(decision.reason, 0) + 1
+        if decision.deferred:
+            deferred_count += 1
+        else:
+            claimable_now_count += 1
+
+    in_window = thresholds.daytime_start_hour <= ctx.now.hour < thresholds.daytime_end_hour
+    next_window_open_hour = thresholds.daytime_end_hour if in_window else None
+
+    return DeferralSummary(
+        deferred_count=deferred_count,
+        claimable_now_count=claimable_now_count,
+        by_reason=MappingProxyType(counts),
+        next_window_open_hour=next_window_open_hour,
+    )
+
+
+def format_deferral_summary(summary: DeferralSummary) -> str:
+    """Render a terse, human-readable line for the CLI/TUI (M5, read-only).
+
+    Pure string formatting — no I/O. Callers own where the text goes: the
+    CLI prints it to a stderr/status sink (INV-11 — never stdout), the TUI
+    writes it into its read-only status-region label. Neither surface
+    re-derives the wording, so the two stay identical by construction.
+
+    Args:
+        summary: A :class:`DeferralSummary` from :func:`summarize_claimable`.
+
+    Returns:
+        A one-line summary, e.g. ``"3 expensive jobs held until 20:00; 1
+        bypassed (priority)"`` or ``"no expensive jobs held"``.
+    """
+    if summary.deferred_count == 0:
+        held = "no expensive jobs held"
+    else:
+        noun = "job" if summary.deferred_count == 1 else "jobs"
+        held = f"{summary.deferred_count} expensive {noun} held"
+        if summary.next_window_open_hour is not None:
+            held += f" until {summary.next_window_open_hour:02d}:00"
+
+    extras = []
+    for reason, label in (
+        (DeferralReason.PRIORITY_BYPASS, "priority"),
+        (DeferralReason.AGE_CEILING, "age"),
+        (DeferralReason.MACHINE_IDLE, "idle machine"),
+    ):
+        count = summary.by_reason.get(reason, 0)
+        if count:
+            extras.append(f"{count} bypassed ({label})")
+
+    return "; ".join([held, *extras])
+
+
 __all__ = [
     "DeferralDecision",
     "DeferralReason",
+    "DeferralSummary",
     "JobCandidate",
     "PolicyContext",
     "PolicyThresholds",
+    "format_deferral_summary",
     "select_claimable",
     "should_defer",
+    "summarize_claimable",
     "thresholds_from_settings",
 ]

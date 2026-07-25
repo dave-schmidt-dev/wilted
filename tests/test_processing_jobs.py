@@ -26,12 +26,13 @@ from wilted.processing_jobs import (
     get_job,
     get_job_by_key,
     prune_terminal_jobs,
+    read_deferral_summary,
     redact_metadata,
     submit_job,
     transition_job_state,
     try_acquire_execution_lock,
 )
-from wilted.scheduling_policy import PolicyThresholds
+from wilted.scheduling_policy import DeferralReason, PolicyThresholds
 from wilted.station_runtime.machine_availability import MachineAvailability
 
 
@@ -812,3 +813,81 @@ class TestClaimSeamDeferralPolicy:
         claimed_ids = [claimed for _owner, claimed in outcomes if isinstance(claimed, int)]
         assert claimed_ids == [job_id]  # exactly one winner, and it is our job
         assert ProcessingJob.get_by_id(job_id).state == ProcessingJobState.RUNNING.value
+
+
+class TestReadDeferralSummary:
+    """M5 (read-only deferral observability): the gatherer mirrors the claim
+    seam's READ pattern exactly but claims/locks/mutates nothing.
+    """
+
+    def test_summary_reflects_seeded_queue_via_seam_read_pattern(self):
+        held = _submit_expensive(item_id="held-1")
+        _set_created_at(held, "2026-07-25T09:00:00Z")
+        bypassed = _submit_expensive(item_id="bypassed-1", priority=5)
+        _set_created_at(bypassed, "2026-07-25T09:00:00Z")
+        _submit_cheap(report_date="2026-07-25")
+
+        summary = read_deferral_summary(
+            now=_fixed_now,
+            availability_backend=_FakeAvailabilityBackend(_busy_available()),
+            inventory_probe=lambda: 5,
+            thresholds=PolicyThresholds(),
+        )
+
+        assert summary.deferred_count == 1
+        assert summary.claimable_now_count == 2
+        assert summary.by_reason[DeferralReason.DAYTIME_BUSY] == 1
+        assert summary.by_reason[DeferralReason.PRIORITY_BYPASS] == 1
+        assert summary.by_reason[DeferralReason.NOT_EXPENSIVE] == 1
+        assert summary.next_window_open_hour == PolicyThresholds().daytime_end_hour
+
+    def test_availability_and_inventory_sampled_once(self):
+        _submit_expensive(item_id="a")
+        _submit_expensive(item_id="b")
+        backend = _FakeAvailabilityBackend(_busy_available())
+        probe_calls = {"n": 0}
+
+        def _probe() -> int:
+            probe_calls["n"] += 1
+            return 5
+
+        read_deferral_summary(
+            now=_fixed_now,
+            availability_backend=backend,
+            inventory_probe=_probe,
+            thresholds=PolicyThresholds(),
+        )
+
+        assert backend.sample_calls == 1
+        assert probe_calls["n"] == 1
+
+    def test_never_claims_locks_or_mutates_anything(self):
+        job_id = _submit_expensive(item_id="untouched")
+        _set_created_at(job_id, "2026-07-25T09:00:00Z")
+
+        read_deferral_summary(
+            now=_fixed_now,
+            availability_backend=_FakeAvailabilityBackend(_busy_available()),
+            inventory_probe=lambda: 5,
+            thresholds=PolicyThresholds(),
+        )
+
+        job = ProcessingJob.get_by_id(job_id)
+        assert job.state == ProcessingJobState.QUEUED.value
+        assert job.lease_owner is None
+        assert job.attempt_count == 0
+        # The execution flock is still free -- a real claim would have to
+        # acquire it first; read_deferral_summary never touches it.
+        with try_acquire_execution_lock(wilted.DATA_DIR):
+            pass
+
+    def test_no_claimable_rows_returns_all_zero_summary(self):
+        summary = read_deferral_summary(
+            now=_fixed_now,
+            availability_backend=_FakeAvailabilityBackend(_busy_available()),
+            inventory_probe=lambda: 5,
+            thresholds=PolicyThresholds(),
+        )
+        assert summary.deferred_count == 0
+        assert summary.claimable_now_count == 0
+        assert dict(summary.by_reason) == {}

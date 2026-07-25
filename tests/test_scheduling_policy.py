@@ -15,11 +15,14 @@ import pytest
 from wilted.background_work.contracts import JobKind
 from wilted.scheduling_policy import (
     DeferralReason,
+    DeferralSummary,
     JobCandidate,
     PolicyContext,
     PolicyThresholds,
+    format_deferral_summary,
     select_claimable,
     should_defer,
+    summarize_claimable,
     thresholds_from_settings,
 )
 from wilted.station_runtime.machine_availability import MachineAvailability
@@ -391,3 +394,110 @@ class TestThresholdsFromSettings:
         )
         result = thresholds_from_settings()
         assert result.enough_inventory == PolicyThresholds().enough_inventory
+
+
+# ---------------------------------------------------------------------------
+# summarize_claimable: pure fold over should_defer (M5 gate)
+# ---------------------------------------------------------------------------
+class TestSummarizeClaimable:
+    def test_empty_candidates_returns_zeros(self):
+        summary = summarize_claimable([], _ctx(), THRESHOLDS)
+        assert summary.deferred_count == 0
+        assert summary.claimable_now_count == 0
+        assert dict(summary.by_reason) == {}
+        # NOW (10:00) is inside the default [8, 20) window.
+        assert summary.next_window_open_hour == THRESHOLDS.daytime_end_hour
+
+    def test_mixed_queue_counts_each_reason_once(self):
+        cands = [
+            _cand(job_id=1),  # deferred: DAYTIME_BUSY
+            _cand(job_id=2),  # deferred: DAYTIME_BUSY
+            _cand(priority=5, job_id=3),  # PRIORITY_BYPASS
+            _cand(kind=JobKind.CLASSIFY.value, job_id=4),  # NOT_EXPENSIVE
+        ]
+        summary = summarize_claimable(cands, _ctx(), THRESHOLDS)
+
+        assert summary.deferred_count == 2
+        assert summary.claimable_now_count == 2
+        assert dict(summary.by_reason) == {
+            DeferralReason.DAYTIME_BUSY: 2,
+            DeferralReason.PRIORITY_BYPASS: 1,
+            DeferralReason.NOT_EXPENSIVE: 1,
+        }
+
+    def test_by_reason_covers_every_candidate_exactly_once(self):
+        cands = [_cand(job_id=i) for i in range(1, 6)]
+        summary = summarize_claimable(cands, _ctx(), THRESHOLDS)
+        assert sum(summary.by_reason.values()) == len(cands)
+
+    def test_next_window_open_hour_none_outside_window(self):
+        night = datetime(2026, 7, 25, 22, 0, tzinfo=UTC)
+        summary = summarize_claimable([_cand(created_at=night - timedelta(hours=1))], _ctx(now=night), THRESHOLDS)
+        assert summary.next_window_open_hour is None
+
+    def test_next_window_open_hour_set_inside_window_even_with_no_candidates(self):
+        # Purely clock-derived: no candidates at all, but still inside the window.
+        summary = summarize_claimable([], _ctx(now=NOW), THRESHOLDS)
+        assert summary.next_window_open_hour == THRESHOLDS.daytime_end_hour
+
+    def test_all_deferred_matches_select_claimable_none(self):
+        cands = [_cand(job_id=i) for i in range(1, 4)]
+        summary = summarize_claimable(cands, _ctx(), THRESHOLDS)
+        assert select_claimable(cands, _ctx(), THRESHOLDS) is None
+        assert summary.deferred_count == 3
+        assert summary.claimable_now_count == 0
+
+
+# ---------------------------------------------------------------------------
+# format_deferral_summary: pure text projection (M5)
+# ---------------------------------------------------------------------------
+class TestFormatDeferralSummary:
+    def test_nothing_held_message(self):
+        summary = DeferralSummary(deferred_count=0, claimable_now_count=4, by_reason={}, next_window_open_hour=None)
+        assert format_deferral_summary(summary) == "no expensive jobs held"
+
+    def test_held_with_window_hour_is_zero_padded(self):
+        summary = DeferralSummary(
+            deferred_count=3,
+            claimable_now_count=1,
+            by_reason={DeferralReason.DAYTIME_BUSY: 3},
+            next_window_open_hour=20,
+        )
+        assert format_deferral_summary(summary) == "3 expensive jobs held until 20:00"
+
+    def test_singular_job_noun(self):
+        summary = DeferralSummary(
+            deferred_count=1,
+            claimable_now_count=0,
+            by_reason={DeferralReason.DAYTIME_BUSY: 1},
+            next_window_open_hour=8,
+        )
+        assert format_deferral_summary(summary) == "1 expensive job held until 08:00"
+
+    def test_bypassed_reasons_appended(self):
+        summary = DeferralSummary(
+            deferred_count=2,
+            claimable_now_count=3,
+            by_reason={
+                DeferralReason.DAYTIME_BUSY: 2,
+                DeferralReason.PRIORITY_BYPASS: 1,
+                DeferralReason.AGE_CEILING: 1,
+                DeferralReason.MACHINE_IDLE: 1,
+                DeferralReason.NOT_EXPENSIVE: 1,
+            },
+            next_window_open_hour=20,
+        )
+        text = format_deferral_summary(summary)
+        assert (
+            text
+            == "2 expensive jobs held until 20:00; 1 bypassed (priority); 1 bypassed (age); 1 bypassed (idle machine)"
+        )
+
+    def test_held_with_no_window_hour_omits_until_clause(self):
+        summary = DeferralSummary(
+            deferred_count=1,
+            claimable_now_count=0,
+            by_reason={DeferralReason.DAYTIME_BUSY: 1},
+            next_window_open_hour=None,
+        )
+        assert format_deferral_summary(summary) == "1 expensive job held"

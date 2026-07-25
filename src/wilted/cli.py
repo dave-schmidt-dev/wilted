@@ -1091,6 +1091,30 @@ def cmd_scheduler(argv: list[str]) -> None:
     raise SystemExit(result.exit_code)
 
 
+def cmd_queue(argv: list[str]) -> None:
+    """Read-only queue-deferral observability (M5 — no scheduling behavior change).
+
+    Re-samples availability/inventory/clock and re-derives the M3 deferral
+    policy over the live claimable queue at display time (there is no
+    persisted DEFERRED state to read); claims nothing, locks nothing, writes
+    nothing. INV-11: this is an interactive surface, so the projection goes
+    to stderr via ``_print_status``, never stdout.
+    """
+    parser = argparse.ArgumentParser(prog="wilted queue")
+    subparsers = parser.add_subparsers(dest="action", required=True)
+    subparsers.add_parser("status", help="Show the current resource-aware deferral projection")
+    args = parser.parse_args(argv)
+
+    if args.action != "status":
+        parser.error(f"unknown queue action: {args.action}")
+
+    from wilted.processing_jobs import read_deferral_summary
+    from wilted.scheduling_policy import format_deferral_summary
+
+    summary = read_deferral_summary()
+    _print_status(format_deferral_summary(summary))
+
+
 def cmd_ingest(argv: list[str]) -> None:
     """Run the full nightly pipeline: discover → classify → report."""
     parser = argparse.ArgumentParser(
@@ -1175,6 +1199,9 @@ def run_cli(argv=None):
             return
         if first == "scheduler":
             cmd_scheduler(argv[1:])
+            return
+        if first == "queue":
+            cmd_queue(argv[1:])
             return
         if first == "playlist":
             cmd_playlist(argv[1:])

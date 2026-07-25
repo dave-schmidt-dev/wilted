@@ -22,6 +22,7 @@ from textual.widgets import Input, Label, Static, Tree
 
 from wilted import ICONS
 from wilted.fetch import _suppress_lock
+from wilted.scheduling_policy import DeferralReason, DeferralSummary
 from wilted.station.models import (
     FinalizationState,
     MediaDescriptor,
@@ -571,6 +572,21 @@ class FakeBriefingGenerator:
         )
 
 
+def _no_deferral_held() -> DeferralSummary:
+    """Fast, no-I/O stand-in for the M5 deferral-queue probe.
+
+    ``_make_app``'s default for ``deferral_summary_probe`` — mirrors
+    ``weather_monitor`` defaulting to ``None`` (no live NWS calls): the
+    PRODUCTION default (``read_deferral_summary``) samples the REAL
+    ``_DarwinAvailabilityBackend`` (real ``pmset``/``ioreg`` subprocesses) and
+    hits the DB, so letting it leak into ``WiltedApp``'s own default here
+    would make every unrelated TUI test's sequencer-build worker slower and
+    environment-dependent. A test that actually exercises the queue-status
+    line passes its own ``deferral_summary_probe=`` explicitly.
+    """
+    return DeferralSummary(deferred_count=0, claimable_now_count=0, by_reason={}, next_window_open_hour=None)
+
+
 def _make_app(
     *,
     entries=(),
@@ -578,6 +594,7 @@ def _make_app(
     adapter=None,
     poller_factory=None,
     route_monitor=None,
+    deferral_summary_probe=None,
     **kwargs,
 ) -> WiltedApp:
     """Construct a WiltedApp with fake station-runtime dependencies injected.
@@ -599,6 +616,7 @@ def _make_app(
         sequencer_factory=_sequencer_factory(list(entries)),
         poller_factory=poller_factory if poller_factory is not None else _fake_poller_factory,
         route_monitor_factory=_route_monitor_factory_for(monitor),
+        deferral_summary_probe=(deferral_summary_probe if deferral_summary_probe is not None else _no_deferral_held),
         **kwargs,
     )
 
@@ -3767,6 +3785,73 @@ async def test_source_health_refreshes_every_timer_tick_even_when_idle():
         weather_monitor.fake_health = "stale"
         app._update_timer()  # not playing -- must still refresh
         assert "stale" in str(app.query_one("#source-health", Label).render()).lower()
+
+
+# ---------------------------------------------------------------------------
+# Queue-status line (M5: read-only deferral observability, no scheduling
+# behavior change). Unlike source-health, this is refreshed only by the
+# off-thread sequencer-build worker (a real machine-availability sample is
+# too expensive to run on the 1s timer) -- see _build_sequencer_worker /
+# _update_queue_status.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_queue_status_shows_summary_after_sequencer_build():
+    summary = DeferralSummary(
+        deferred_count=3,
+        claimable_now_count=1,
+        by_reason={DeferralReason.PRIORITY_BYPASS: 1},
+        next_window_open_hour=20,
+    )
+    app = _make_app(entries=[], deferral_summary_probe=lambda: summary)
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        text = str(app.query_one("#queue-status", Label).render())
+        assert "queue:" in text
+        assert "3" in text
+        assert "20:00" in text
+        assert "bypassed" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_queue_status_stays_blank_and_app_survives_probe_failure():
+    """Fail-open (M5): a probe error must never crash the sequencer build or
+    show an error banner on the queue-status line -- it just stays blank,
+    and the station backlog build it rides alongside still succeeds."""
+
+    def _boom():
+        raise RuntimeError("sensor exploded")
+
+    app = _make_app(entries=[_station_entry(1)], deferral_summary_probe=_boom)
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+        assert str(app.query_one("#queue-status", Label).render()) == ""
+        # The station backlog itself was unaffected by the probe failure.
+        assert len(app._station_entries) == 1
+
+
+@pytest.mark.asyncio
+async def test_queue_status_refreshes_on_explicit_queue_refresh():
+    """Pressing 'r' (action_refresh_queue) re-triggers the off-thread probe,
+    so an updated projection (e.g. the window closed) replaces a stale one."""
+    calls = {"n": 0}
+    summaries = [
+        DeferralSummary(deferred_count=2, claimable_now_count=0, by_reason={}, next_window_open_hour=20),
+        DeferralSummary(deferred_count=0, claimable_now_count=2, by_reason={}, next_window_open_hour=None),
+    ]
+
+    def _probe():
+        result = summaries[min(calls["n"], len(summaries) - 1)]
+        calls["n"] += 1
+        return result
+
+    app = _make_app(entries=[], deferral_summary_probe=_probe)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        assert "2" in str(app.query_one("#queue-status", Label).render())
+
+        await pilot.press("r")
+        await app.workers.wait_for_complete()
+        assert "no expensive jobs held" in str(app.query_one("#queue-status", Label).render())
 
 
 # ---------------------------------------------------------------------------
