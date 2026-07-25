@@ -40,6 +40,7 @@ _TEST_MARKERS = {
     "test_legacy_cutover.py": ("integration",),
     "test_llm.py": ("unit",),
     "test_llm_metal.py": ("integration",),
+    "test_machine_availability.py": ("integration",),
     "test_media_store.py": ("integration",),
     "test_onboard.py": ("unit",),
     "test_playback_adapter.py": ("integration",),

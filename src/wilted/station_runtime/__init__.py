@@ -57,6 +57,10 @@ from wilted.station_runtime.lease import (
     LeaseHeldError,
     is_station_active,
 )
+from wilted.station_runtime.machine_availability import (
+    MachineAvailability,
+    MachineAvailabilityMonitor,
+)
 from wilted.station_runtime.media_store import (
     EmptyMediaError,
     MediaOwnersCorruptError,
@@ -107,6 +111,8 @@ __all__ = [
     "ItemNotFinalizedError",
     "JsonStationStore",
     "MacPlaybackAdapter",
+    "MachineAvailability",
+    "MachineAvailabilityMonitor",
     "MediaNotAvailableError",
     "TimingMapVersionError",
     "assemble_article_audio",
