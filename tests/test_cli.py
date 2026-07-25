@@ -849,6 +849,29 @@ class TestFeedSubcommand:
             run_cli(["feed"])
 
 
+class TestCmdPrepareSummary:
+    """`wilted prepare` names isolated submit failures on its summary line (INV-6)."""
+
+    def test_submission_errors_surfaced(self, capsys):
+        with patch(
+            "wilted.pipeline_submit.run_prepare_via_runner",
+            return_value={"prepared": 1, "errors": 0, "skipped": 0, "submission_errors": 2},
+        ):
+            run_cli(["prepare"])
+        out = capsys.readouterr().out
+        assert "Prepare complete: 1 prepared, 0 errors, 2 failed to submit" in out
+
+    def test_clean_run_omits_submit_line(self, capsys):
+        with patch(
+            "wilted.pipeline_submit.run_prepare_via_runner",
+            return_value={"prepared": 3, "errors": 0, "skipped": 0, "submission_errors": 0},
+        ):
+            run_cli(["prepare"])
+        out = capsys.readouterr().out
+        assert "failed to submit" not in out
+        assert "Prepare complete: 3 prepared, 0 errors" in out
+
+
 class TestFeedAddChainPrompt:
     """`wilted feed add` offers to chain into discover and prepare."""
 

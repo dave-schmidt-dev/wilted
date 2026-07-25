@@ -1045,7 +1045,11 @@ def cmd_prepare(argv: list[str]) -> None:
             llm_backend_type=args.backend,
             on_status=_print_status,
         )
-        print(f"Prepare complete: {stats['prepared']} prepared, {stats['errors']} errors")
+        summary = f"Prepare complete: {stats['prepared']} prepared, {stats['errors']} errors"
+        # Truthful accounting (INV-6): name isolated submit failures on the surface.
+        if stats.get("submission_errors"):
+            summary += f", {stats['submission_errors']} failed to submit"
+        print(summary)
     except Exception as e:
         print(f"Prepare failed: {e}", file=sys.stderr)
         sys.exit(1)

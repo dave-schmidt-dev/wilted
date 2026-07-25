@@ -317,6 +317,11 @@ def run_ingest(
             print(f"  Classified {stats['classified']} items")
             if stats["errors"]:
                 print(f"  {stats['errors']} item(s) had errors")
+            # Truthful accounting (INV-6): an isolated submit failure is counted
+            # separately (total == classified + errors + submission_errors) and
+            # must be named on the surface, not just in /tmp/wilted.log.
+            if stats.get("submission_errors"):
+                print(f"  {stats['submission_errors']} item(s) failed to submit (see /tmp/wilted.log)")
         except Exception as e:
             results["classify"] = {"error": str(e)}
             print(f"  Classification failed: {e}", file=sys.stderr)

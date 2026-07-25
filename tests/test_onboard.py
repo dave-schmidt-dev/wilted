@@ -121,6 +121,43 @@ class TestRunIngest:
         assert "error" in results["discover"]
         mock_classify.assert_called_once()
 
+    def test_classify_submission_errors_are_surfaced(self, capsys):
+        """Truthful accounting (INV-6): an isolated submit failure is named on the
+        ingest summary surface, not silently confined to the return dict + log."""
+        mock_discover = MagicMock(return_value={"discovered": 3, "feeds_polled": 1, "errors": 0})
+        # total(3) == classified(1) + errors(0) + submission_errors(2)
+        mock_classify = MagicMock(return_value={"classified": 1, "errors": 0, "total": 3, "submission_errors": 2})
+        mock_run_report = MagicMock()
+        mock_get_report = MagicMock(return_value=None)
+
+        with (
+            patch(_P_DISCOVER, mock_discover),
+            patch(_P_CLASSIFY, mock_classify),
+            patch(_P_RUN_REPORT, mock_run_report),
+            patch(_P_GET_REPORT, mock_get_report),
+        ):
+            run_ingest()
+
+        out = capsys.readouterr().out
+        assert "2 item(s) failed to submit" in out
+
+    def test_no_submission_errors_keeps_summary_quiet(self, capsys):
+        """A clean run must not print a submit-failure line (output byte-stability)."""
+        mock_discover = MagicMock(return_value={"discovered": 2, "feeds_polled": 1, "errors": 0})
+        mock_classify = MagicMock(return_value={"classified": 2, "errors": 0, "total": 2, "submission_errors": 0})
+        mock_run_report = MagicMock()
+        mock_get_report = MagicMock(return_value=None)
+
+        with (
+            patch(_P_DISCOVER, mock_discover),
+            patch(_P_CLASSIFY, mock_classify),
+            patch(_P_RUN_REPORT, mock_run_report),
+            patch(_P_GET_REPORT, mock_get_report),
+        ):
+            run_ingest()
+
+        assert "failed to submit" not in capsys.readouterr().out
+
     def test_returns_stats_dict(self):
         """run_ingest returns a dict with per-stage results."""
         mock_discover = MagicMock(return_value={"discovered": 2, "feeds_polled": 1, "errors": 0})
