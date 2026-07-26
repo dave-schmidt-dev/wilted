@@ -1623,6 +1623,23 @@ class TestCmdQueueStatus:
         assert captured.out == ""
         assert "no expensive jobs held" in captured.err
 
+    def test_status_fails_open_when_read_raises(self, capsys, monkeypatch):
+        """A genuine read failure (DB/probe error) degrades gracefully rather
+        than surfacing a traceback — parity with the TUI's fail-open. INV-11:
+        the notice goes to stderr, nothing leaks to stdout, and cmd_queue
+        returns normally instead of propagating."""
+
+        def _boom():
+            raise RuntimeError("db locked")
+
+        monkeypatch.setattr("wilted.processing_jobs.read_deferral_summary", _boom)
+
+        cmd_queue(["status"])  # must not raise
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "queue status unavailable" in captured.err
+
     def test_unknown_action_errors(self):
         with pytest.raises(SystemExit):
             cmd_queue(["bogus"])

@@ -1111,7 +1111,16 @@ def cmd_queue(argv: list[str]) -> None:
     from wilted.processing_jobs import read_deferral_summary
     from wilted.scheduling_policy import format_deferral_summary
 
-    summary = read_deferral_summary()
+    try:
+        summary = read_deferral_summary()
+    except Exception:
+        # Fail-open, mirroring the TUI (tui/__init__.py:_build_sequencer_worker):
+        # an unreadable projection is observability degrading, not a scheduling
+        # fault, so it must never surface as a traceback. INV-11: the graceful
+        # notice stays on stderr, never stdout.
+        logger.exception("wilted queue status: failed to read deferral summary")
+        _print_status("queue status unavailable")
+        return
     _print_status(format_deferral_summary(summary))
 
 
