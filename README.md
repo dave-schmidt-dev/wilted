@@ -457,6 +457,26 @@ Run a tick manually:
 wilted scheduler tick
 ```
 
+**Resource-aware deferral (INV-12).** Within a tick the claim seam is resource-aware: expensive
+local-model work (article-cache TTS/STT, compact-briefing, speech-requiring prepare) is not claimed
+during the local daytime busy window (default 08:00–20:00) when there is already enough finished audio
+to play. It is a stateless *filter*, not a new state — a deferred job simply stays `queued` and is
+claimed later (after the window, or once inventory runs low); there is no `deferred` state, sweep, or
+promotion. Cheap/medium work always runs. Deferral never starves an interactive-priority or
+aged-past-ceiling job, and a genuinely idle machine (low load, on AC, user idle) runs the work anyway.
+If the availability sensor can't be read the policy fails open (runs the job). All thresholds are
+settings-overridable, resolved live under the current data dir:
+`scheduling_daytime_start_hour`, `scheduling_daytime_end_hour`, `scheduling_enough_inventory`,
+`scheduling_max_defer_hours`, `scheduling_idle_load_per_core`, `scheduling_idle_min_seconds`,
+`scheduling_interactive_priority_floor`.
+
+Inspect what the policy would do right now (read-only — claims and writes nothing):
+
+```bash
+wilted queue status
+# e.g. "3 expensive jobs held until 20:00; 1 bypassed (priority)"  — or  "no expensive jobs held"
+```
+
 Logs: `~/Library/Logs/homelab/wilted-scheduler/` (and `~/Library/Logs/homelab/wilted-nightly/`),
 matching the homelab `ldstatus` convention. Each dir also holds `launchd.stdout.log` /
 `launchd.stderr.log`, where launchd captures any wrapper-level fault that occurs before the wrapper's
@@ -539,6 +559,7 @@ to = "you@example.com"
 - ~~Morning report~~ (done: report assembly, TUI ReportScreen, selection history, source stats, `wilted report` + `wilted feed stats`)
 - ~~Playlists + Polish (Phase 5)~~ (done: dynamic/static playlists, CLI `wilted playlist`, `ensure_default_playlists` on startup, email morning report, nightly wrapper script, launchd integration.)
 - ~~E2e test coverage + playback verification~~ (done: tiered automated suite plus manual speaker verification)
+- ~~Resource-aware processing queue~~ (done: expensive local-model jobs defer out of the daytime busy window when listenable inventory is sufficient — INV-12, stateless filter; `wilted queue status` surfaces the projection.)
 
 ## Dependencies
 
