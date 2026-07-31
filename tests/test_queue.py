@@ -100,6 +100,47 @@ class TestClearQueue:
         clear_queue()
         assert not article_path.exists()
 
+    def test_clears_queued_items_not_just_ready(self):
+        """clear_queue removes queued-but-unbuilt items, not only ready ones.
+
+        Regression: clear_queue was ready-only, so "Clear All" left queued items
+        (e.g. podcast episodes awaiting the nightly pipeline) behind and the
+        larder still showed items right after the user cleared it. It now clears
+        the whole active playlist (predicate_playlist_active), matching the
+        Larder's own _all_items count.
+        """
+        from wilted.background_work.contracts import (
+            AnalysisState,
+            ContentState,
+            FetchState,
+            PlaybackState,
+            PreparationState,
+            RetentionFacts,
+            RetentionState,
+        )
+        from wilted.content_state import read_content_state, transition_item
+        from wilted.db import Item
+
+        add_article("Ready body.", title="Ready One")  # preparation=ready
+        entry = add_article("Queued body.", title="Queued One")
+        item = Item.get_by_id(entry["id"])
+        current = read_content_state(item)
+        transition_item(
+            item,
+            ContentState(
+                fetch=current.fetch if current else FetchState.CONTENT_READY,
+                analysis=current.analysis if current else AnalysisState.READY,
+                preparation=PreparationState.QUEUED,
+                playback=current.playback if current else PlaybackState.UNPLAYED,
+                retention=current.retention if current else RetentionFacts(state=RetentionState.ACTIVE),
+            ),
+            legacy_status="selected",
+        )
+
+        # Both the ready and the queued item are removed; larder ends empty.
+        assert clear_queue() == 2
+        assert load_queue() == []
+
 
 class TestGetArticleText:
     def test_reads_cached_text(self):

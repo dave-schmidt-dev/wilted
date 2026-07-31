@@ -7,7 +7,7 @@ Item lifecycle (status transitions):
   add_article()    → status='ready'
   mark_completed() → status='completed'  (files retained; cleanup by retention policy)
   remove_article() → row deleted + transcript file deleted
-  clear_queue()    → all 'ready' rows deleted + files deleted
+  clear_queue()    → all active (ready + queued) rows deleted + files deleted
 """
 
 from __future__ import annotations
@@ -28,9 +28,9 @@ from wilted.background_work.contracts import (
     RetentionState,
 )
 from wilted.content_state import (
+    items_for_playlist_all,
     items_for_retention_cleanup,
     items_playable_in_queue,
-    items_playable_ready_only,
     legacy_display_status,
     read_content_state,
     transition_item,
@@ -230,10 +230,18 @@ def remove_article_by_id(item_id: int) -> dict:
 
 
 def clear_queue() -> int:
-    """Remove all 'ready' articles. Returns count removed."""
+    """Remove every active-playlist article (ready or queued). Returns count removed.
+
+    Clears exactly the set the Larder counts — ``predicate_playlist_active``
+    (preparation ``ready``/``queued``, not completed, retention active), the same
+    query behind the TUI's ``_all_items`` — so "Clear All" empties the larder for
+    real and the confirm-dialog count matches what is deleted. Previously
+    ready-only, which left queued-but-unbuilt items behind (e.g. podcast episodes
+    awaiting the nightly pipeline), so a "cleared" larder still showed items.
+    """
 
     _ensure_db()
-    items = items_playable_ready_only()
+    items = items_for_playlist_all()
     if not items:
         return 0
 

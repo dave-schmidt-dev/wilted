@@ -638,7 +638,15 @@ class WiltedApp(App):
         self._update_empty_message()
 
     def _update_empty_message(self) -> None:
-        """PM-3: distinguish "nothing queued at all" from "queued but not finalized yet"."""
+        """PM-3: distinguish "nothing queued at all" from "queued but not finalized yet".
+
+        Three states, not two: the "queued" case splits into *actively being
+        prepared* and *queued but idle*. The old wording always claimed active
+        preparation, which was false when items were queued with nothing working
+        on them (e.g. a cleared larder that left queued podcast episodes, or
+        text-less items the article-cache worker skips). See
+        :meth:`_preparation_in_flight` for how the two are told apart.
+        """
         if not self.is_running:
             return
         empty_msg = self.query_one("#empty-message", Label)
@@ -646,10 +654,54 @@ class WiltedApp(App):
             empty_msg.display = False
             return
         if self._all_items:
-            empty_msg.update("Items are being prepared — they'll appear here once ready.")
+            if self._preparation_in_flight():
+                empty_msg.update("Items are being prepared — they'll appear here once ready.")
+            else:
+                n = len(self._all_items)
+                noun = "item" if n == 1 else "items"
+                empty_msg.update(f"{n} {noun} queued but idle. Audio is built on the next scheduled run.")
         else:
             empty_msg.update("The larder is empty. Press [a] to add an article.")
         empty_msg.display = True
+
+    def _preparation_in_flight(self) -> bool:
+        """True when something will actually turn queued items into playable audio.
+
+        Two independent signals, ORed so neither preparation path is missed:
+
+        * a non-terminal ``ProcessingJob`` of a *larder-preparing* kind exists
+          (checked first — a cheap indexed ``EXISTS``, no file I/O): the durable
+          queue has ``prepare`` (podcast download+transcribe+synth) or
+          ``article_cache`` (article TTS) work running or waiting — the two kinds
+          that turn a queued ``_all_items`` row into playable audio, including
+          deferred (M5) jobs the article-cache view below is blind to. Without
+          this arm the message would read "idle" while the nightly pipeline is
+          mid-prepare. The check is scoped to those kinds so an unrelated
+          ``discover``/``classify``/``report_assembly`` job — ``report_assembly``
+          runs on launch — never masquerades as active larder preparation.
+        * ``items_needing_article_cache`` is non-empty: items the interactive
+          article-cache worker can synthesize now (text present, no audio). This
+          is the exact set :func:`submit_pending_article_cache_jobs` acts on and a
+          pure function of current DB state, so it is true in the window *before*
+          the on-mount generation worker has submitted its job (no idle flash
+          right after ``[a]``) and stays correct even when generation is
+          suppressed.
+
+        Fail-open to the legacy "being prepared" wording on error: never assert
+        "idle" (nothing happening) on the strength of a check that failed.
+        """
+        from wilted.background_work.contracts import JobKind
+        from wilted.pipeline_submit import items_needing_article_cache
+        from wilted.processing_jobs import has_active_jobs
+
+        preparing_kinds = (JobKind.PREPARE.value, JobKind.ARTICLE_CACHE.value)
+        try:
+            if has_active_jobs(kinds=preparing_kinds):
+                return True
+            return bool(items_needing_article_cache(voice=self._voice, lang=self._lang, speed=self._speed))
+        except Exception:
+            logger.warning("empty-message in-flight check failed; assuming preparation active", exc_info=True)
+            return True
 
     # -- Station backlog (Larder tree) ---------------------------------------
 
@@ -1406,11 +1458,7 @@ class WiltedApp(App):
         # reducer has finished preserves it for the next call to
         # ``_start_playback`` (which will find entry A in the playlist and
         # honour the offset).
-        if (
-            result.accepted
-            and prior_checkpoint is not None
-            and prior_checkpoint.entry_id != entry.entry_id
-        ):
+        if result.accepted and prior_checkpoint is not None and prior_checkpoint.entry_id != entry.entry_id:
             try:
                 restore = Checkpoint(
                     mutation_id=f"mac-ckpt-restore-{uuid.uuid4()}",

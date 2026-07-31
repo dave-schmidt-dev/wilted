@@ -46,7 +46,7 @@ from wilted.scheduling_policy import (
 from wilted.station_runtime.machine_availability import _DarwinAvailabilityBackend
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterable, Iterator
     from pathlib import Path
 
     from wilted.station_runtime.machine_availability import AvailabilityBackend
@@ -387,6 +387,36 @@ def count_due_jobs(*, now: str | None = None) -> int:
         )
         .count()
     )
+
+
+def has_active_jobs(kinds: Iterable[str] | None = None) -> bool:
+    """Return True when any background job is non-terminal (in flight or pending).
+
+    Non-terminal means the state is *not* in :data:`_TERMINAL_STATES`
+    (``completed``/``failed``/``cancelled``) — i.e. one of
+    ``queued``/``running``/``retry``/``deferred``. A True result means the
+    durable work queue has jobs actively running or waiting to run, including
+    podcast ``prepare`` jobs and deferred (M5) jobs that the article-cache view
+    is structurally blind to. Cheap: an indexed ``EXISTS`` on ``state``.
+
+    Args:
+        kinds: when given, restrict the check to these :class:`JobKind` values.
+            Callers use this to ask "is any job *of a kind that prepares larder
+            items* active?" so an unrelated ``discover``/``classify``/
+            ``report_assembly`` job never reads as active preparation.
+            ``report_assembly`` in particular is submitted on launch, so an
+            unscoped check would flag an idle larder as "being prepared" purely
+            because a report is assembling. ``None`` (default) checks every kind.
+
+    Used by the TUI empty-state message to distinguish "items are actively being
+    prepared" from "queued but idle".
+    """
+    ensure_db()
+    terminal = [state.value for state in _TERMINAL_STATES]
+    query = ProcessingJob.select().where(ProcessingJob.state.not_in(terminal))
+    if kinds is not None:
+        query = query.where(ProcessingJob.kind.in_(list(kinds)))
+    return query.exists()
 
 
 def claim_next_job(

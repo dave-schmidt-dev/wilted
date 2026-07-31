@@ -1744,6 +1744,165 @@ async def test_tui_shows_being_prepared_for_unfinalized_real_db_article():
 
 
 @pytest.mark.asyncio
+async def test_tui_idle_message_for_queued_items_without_work():
+    """A queued item that nothing is preparing shows "queued but idle", not the
+    false "being prepared" claim.
+
+    Regression: the empty-state message always said "being prepared" whenever the
+    DB had ready/queued items — even a cleared larder that left a queued podcast
+    episode with no synthesizable text and no in-flight job. The article-cache
+    worker skips text-less items and there is no ProcessingJob, so nothing is
+    actually preparing it.
+    """
+    from datetime import UTC, datetime
+
+    from wilted.db import Feed, Item, ProcessingJob
+
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    feed = Feed.create(
+        title="Idle Podcast",
+        feed_url="https://example.com/idle.xml",
+        feed_type="podcast",
+        enabled=True,
+        created_at=now,
+        updated_at=now,
+    )
+    Item.create(
+        feed=feed,
+        guid="idle-ep-1",
+        title="Idle Queued Episode",
+        discovered_at=now,
+        item_type="podcast_episode",
+        status="selected",  # backfills to preparation=queued → in the active playlist
+        status_changed_at=now,
+    )
+
+    app = WiltedApp()
+    with patch.object(app, "_trigger_generation"):
+        async with app.run_test():
+            await app.workers.wait_for_complete()
+            # Isolate the branch: guarantee no in-flight jobs from mount-time workers.
+            ProcessingJob.delete().execute()
+            app._refresh_playlists()
+
+            assert any(item["title"] == "Idle Queued Episode" for item in app._all_items)
+            tree = app.query_one("#playlist-tree", Tree)
+            assert len(tree.root.children) == 0
+            content = app.query_one("#empty-message", Label).content.lower()
+            assert "idle" in content
+            assert "prepared" not in content
+
+
+@pytest.mark.asyncio
+async def test_tui_being_prepared_when_prepare_job_in_flight():
+    """A queued item with a non-terminal ProcessingJob (e.g. the nightly podcast
+    prepare pipeline running) shows "being prepared".
+
+    Exercises the durable-queue arm of the OR in _preparation_in_flight, which
+    items_needing_article_cache (article-text only) is structurally blind to —
+    without it the message would falsely read "idle" mid-prepare.
+    """
+    from datetime import UTC, datetime
+
+    from wilted.db import Feed, Item, ProcessingJob
+
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    feed = Feed.create(
+        title="Prep Podcast",
+        feed_url="https://example.com/prep.xml",
+        feed_type="podcast",
+        enabled=True,
+        created_at=now,
+        updated_at=now,
+    )
+    item = Item.create(
+        feed=feed,
+        guid="prep-ep-1",
+        title="Preparing Episode",
+        discovered_at=now,
+        item_type="podcast_episode",
+        status="selected",
+        status_changed_at=now,
+    )
+
+    app = WiltedApp()
+    with patch.object(app, "_trigger_generation"):
+        async with app.run_test():
+            await app.workers.wait_for_complete()
+            # Exactly one in-flight prepare job for the queued item.
+            ProcessingJob.delete().execute()
+            ProcessingJob.create(
+                idempotency_key="prep-ep-1-job",
+                kind="prepare",
+                state="queued",
+                item=item,
+                created_at=now,
+                updated_at=now,
+            )
+            app._refresh_playlists()
+
+            content = app.query_one("#empty-message", Label).content.lower()
+            assert "prepared" in content
+            assert "idle" not in content
+
+
+@pytest.mark.asyncio
+async def test_tui_idle_when_only_unrelated_job_kind_in_flight():
+    """A non-terminal job of a kind that does NOT prepare larder items (e.g.
+    report_assembly, which is submitted on launch) must not read as "being
+    prepared".
+
+    Locks the kind-scoping of _preparation_in_flight: it counts only the
+    larder-preparing kinds (prepare, article_cache). An unscoped has_active_jobs()
+    would flag this idle larder as "being prepared" purely because a report is
+    assembling — the same false-positive class this feature fixes, narrower.
+    """
+    from datetime import UTC, datetime
+
+    from wilted.db import Feed, Item, ProcessingJob
+
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    feed = Feed.create(
+        title="Idle Podcast 2",
+        feed_url="https://example.com/idle2.xml",
+        feed_type="podcast",
+        enabled=True,
+        created_at=now,
+        updated_at=now,
+    )
+    Item.create(
+        feed=feed,
+        guid="idle-ep-2",
+        title="Idle Queued Episode 2",
+        discovered_at=now,
+        item_type="podcast_episode",
+        status="selected",  # backfills to preparation=queued → in the active playlist
+        status_changed_at=now,
+    )
+
+    app = WiltedApp()
+    with patch.object(app, "_trigger_generation"):
+        async with app.run_test():
+            await app.workers.wait_for_complete()
+            # Only an unrelated (non-larder-preparing) job is in flight.
+            ProcessingJob.delete().execute()
+            ProcessingJob.create(
+                idempotency_key="report-assembly-job",
+                kind="report_assembly",
+                state="queued",
+                item=None,
+                created_at=now,
+                updated_at=now,
+            )
+            app._refresh_playlists()
+
+            assert any(item["title"] == "Idle Queued Episode 2" for item in app._all_items)
+            content = app.query_one("#empty-message", Label).content.lower()
+            assert "idle" in content
+            assert "prepared" not in content
+
+
+@pytest.mark.asyncio
 async def test_tui_quit_with_real_db():
     """TUI exits cleanly on q key with a real database."""
     app = WiltedApp()
@@ -2429,9 +2588,14 @@ async def test_start_playback_honors_matching_checkpoint_offset_only():
 @pytest.mark.asyncio
 async def test_empty_station_message_distinguishes_being_prepared_from_truly_empty():
     items = [{"id": 1, "title": "Unfinalized", "words": 500, "file": "1_x.txt", "added": "2026-04-06"}]
+    # Items present AND preparation genuinely in flight -> "being prepared".
+    # (Whether work is in flight is decided by _preparation_in_flight; the
+    #  queued-but-idle branch is covered by
+    #  test_tui_idle_message_for_queued_items_without_work.)
     with (
         patch("wilted.tui.ensure_default_playlists"),
         patch("wilted.tui.get_playlist_items", return_value=items),
+        patch("wilted.tui.WiltedApp._preparation_in_flight", return_value=True),
     ):
         app = _make_app(entries=[])  # sequencer has nothing finalized yet
         async with app.run_test():
