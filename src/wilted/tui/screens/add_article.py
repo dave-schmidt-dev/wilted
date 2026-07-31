@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
-from textual import work
+from textual import on, work
 from textual.binding import Binding
 
 if TYPE_CHECKING:
@@ -89,14 +89,17 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
         """Handle enter key on the URL input."""
         self._do_add(play_after=False)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        button_id = event.button.id
-        if button_id == "add-queue":
-            self._do_add(play_after=False)
-        elif button_id == "add-play":
-            self._do_add(play_after=True)
-        elif button_id == "add-cancel":
-            self.action_cancel()
+    @on(Button.Pressed, "#add-queue")
+    def _add_to_queue(self) -> None:
+        self._do_add(play_after=False)
+
+    @on(Button.Pressed, "#add-play")
+    def _add_and_play(self) -> None:
+        self._do_add(play_after=True)
+
+    @on(Button.Pressed, "#add-cancel")
+    def _add_cancel(self) -> None:
+        self.action_cancel()
 
     def action_play_after(self) -> None:
         """Add and play immediately."""
@@ -148,4 +151,5 @@ class AddArticleScreen(ModalScreen[tuple[str, dict] | None]):
     def _set_controls_disabled(self, disabled: bool) -> None:
         self.query_one("#url-input", Input).disabled = disabled
         for button in self.query(Button):
-            button.disabled = disabled
+            if button.id != "add-cancel":
+                button.disabled = disabled

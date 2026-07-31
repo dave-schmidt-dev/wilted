@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-LOCK_FILE="/tmp/wilted-nightly.lock"
+LOCK_DIR="/tmp/wilted-nightly.lockdir"
 LOG_DIR="${HOME}/Library/Logs/homelab/wilted-nightly"
 AGG_LOG="${LOG_DIR}/wilted.log"
 RUN_LOG="${LOG_DIR}/wilted-$(date '+%Y%m%d-%H%M%S').log"
@@ -41,13 +41,14 @@ log() {
 }
 
 # --- Locking ---
-# Legacy nightly path still uses shell flock; the bounded scheduler tick uses
-# Python fcntl only via processing_jobs.try_acquire_execution_lock.
-exec 200>"$LOCK_FILE"
-if ! flock -n 200; then
+# Use mkdir as a portable lock (macOS has no flock). The bounded scheduler
+# tick uses Python fcntl via processing_jobs.try_acquire_execution_lock.
+LOCK_DIR="/tmp/wilted-nightly.lockdir"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     log "SKIP: previous run still active"
     exit 0
 fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 
 log "START: nightly ingestion"
 START_TIME=$(date +%s)

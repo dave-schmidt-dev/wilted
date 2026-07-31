@@ -130,6 +130,71 @@ def run_report() -> dict:
     return assemble_report()
 
 
+def reset_latest_report() -> dict | None:
+    """Undo the user's decisions on the most recent report so it can be reviewed again.
+
+    Reverts every decided ``ReportItem`` on the latest report back to ``PENDING`` and
+    returns any item that *the acceptance queued* (``preparation_state == QUEUED``) to
+    ``NOT_QUEUED``, so it re-qualifies as a report candidate. Items that were already
+    prepared, played, or queued independently of this report are left untouched. Then
+    re-assembles the report so membership and counts reflect the restored candidates.
+
+    Returns:
+        Stats dict with ``report_id``, ``report_date``, ``cleared`` (decisions reset),
+        ``requeued_cleared`` (items returned to the pool), and ``candidates`` (items now
+        showable). ``None`` when no report exists.
+    """
+    import dataclasses
+
+    from wilted.background_work.contracts import PreparationState
+    from wilted.content_state import read_content_state, transition_item
+
+    _ensure_db()
+
+    latest = Report.select().order_by(Report.report_date.desc()).first()
+    if latest is None:
+        return None
+
+    decided = list(
+        ReportItem.select().where((ReportItem.report == latest) & (ReportItem.decision != ReportDecision.PENDING.value))
+    )
+
+    requeued_cleared = 0
+    for report_item in decided:
+        item = report_item.item
+        current = read_content_state(item)
+        # Compare by value, not enum identity: test suites that reload the
+        # contracts module leave two PreparationState classes in play, and an
+        # `is` check would silently misfire. Values ('queued') are stable.
+        if current is not None and current.preparation.value == PreparationState.QUEUED.value:
+            # Only un-queue work the acceptance itself queued; never un-prepare
+            # already-generated audio (READY) or clobber independently queued items.
+            transition_item(item, dataclasses.replace(current, preparation=PreparationState.NOT_QUEUED))
+            requeued_cleared += 1
+        # Clear the decision *before* re-assembly: regenerate_report_membership
+        # preserves decided rows, so a still-accepted row would never resurface.
+        report_item.decision = ReportDecision.PENDING.value
+        report_item.defer_until = None
+        report_item.save()
+
+    stats = assemble_report(latest.report_date)
+
+    logger.info(
+        "Reset report #%d (%s): cleared %d decision(s), returned %d item(s) to the candidate pool",
+        latest.id,
+        latest.report_date,
+        len(decided),
+        requeued_cleared,
+    )
+    return {
+        "report_id": latest.id,
+        "report_date": latest.report_date,
+        "cleared": len(decided),
+        "requeued_cleared": requeued_cleared,
+        "candidates": stats["items"],
+    }
+
+
 def get_report(report_date: str | None = None) -> dict | None:
     """Retrieve a report and its items.
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from textual import work
+from textual import on, work
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
@@ -107,6 +107,10 @@ class ReportScreen(ModalScreen[bool]):
             with Horizontal(id="report-actions"):
                 yield Button("Accept Selected", id="accept-button", variant="primary")
                 yield Button("Dismiss", id="dismiss-button")
+            yield Label(
+                "[space/enter] Toggle   [a] All   [n] None   [s] Accept selected   [esc] Dismiss",
+                id="report-help",
+            )
         yield Footer()
 
     def on_mount(self) -> None:
@@ -260,6 +264,15 @@ class ReportScreen(ModalScreen[bool]):
         if not self._items:
             self.dismiss(True)
             return
+        # Emit an app-level toast before the modal closes so the disappearance
+        # reads as a committed action, not a glitch. Counts come from in-memory
+        # selection state; the toast survives dismiss (notifications are app-level).
+        accepted = sum(1 for item in self._items if self._selected.get(item["id"], True))
+        skipped = len(self._items) - accepted
+        message = f"Queued {accepted} item{'s' if accepted != 1 else ''} for audio"
+        if skipped:
+            message += f" · {skipped} skipped"
+        self.notify(message, title="Morning report", timeout=4)
         self._save_selections()
 
     @work(thread=True, exclusive=True, group="report")
@@ -362,8 +375,10 @@ class ReportScreen(ModalScreen[bool]):
         """Dismiss without saving."""
         self.dismiss(False)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "accept-button":
-            self.action_accept()
-        elif event.button.id == "dismiss-button":
-            self.action_dismiss()
+    @on(Button.Pressed, "#accept-button")
+    def _accept_button(self) -> None:
+        self.action_accept()
+
+    @on(Button.Pressed, "#dismiss-button")
+    def _dismiss_button(self) -> None:
+        self.action_dismiss()

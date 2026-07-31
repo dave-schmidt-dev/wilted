@@ -110,7 +110,7 @@ class VoiceSettingsScreen(ModalScreen[tuple[str, float, str] | None]):
             with Horizontal(classes="button-row"):
                 yield Button("Confirm", id="voice-confirm", variant="primary")
                 yield Button("Cancel", id="voice-cancel")
-            yield Label("[enter] Confirm  [esc] Cancel", classes="button-help")
+            yield Label("[↑↓] Choose voice  [enter] Confirm  [esc] Cancel", classes="button-help")
 
     def on_mount(self) -> None:
         table = self.query_one("#voice-table", DataTable)

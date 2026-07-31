@@ -537,6 +537,18 @@ to = "you@example.com"
 3. Send manually: `wilted report --email`
 4. Or install the launchd schedule: `make install-launchd` (2:00 AM email report + hourly scheduler tick)
 
+### Re-reviewing a report
+
+Accepting a report in the TUI (`s`) commits every selected item and closes the modal, so the
+report stops resurfacing. To undo those decisions and review the most recent report again:
+
+```bash
+wilted report --reset   # clears decisions, returns accepted items to the candidate pool
+```
+
+Items whose audio was already prepared are left untouched (they stay ready to play); only items
+the acceptance queued are returned to the pool. The report reappears the next time you open the TUI.
+
 ## Roadmap
 
 - Near term:

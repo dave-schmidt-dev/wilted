@@ -72,7 +72,7 @@ class TextPreviewScreen(ModalScreen[None]):
                 yield Static(self._text, id="preview-text")
             with Horizontal(classes="preview-footer"):
                 yield Button("Close", id="preview-close", variant="primary")
-                yield Label(f"{self._word_count} words", classes="preview-help")
+                yield Label(f"{self._word_count} words   ·   [esc] Close", classes="preview-help")
 
     def action_close(self) -> None:
         self.dismiss(None)

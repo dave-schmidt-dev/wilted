@@ -1243,7 +1243,20 @@ class WiltedApp(App):
         if worker.is_cancelled or submitted == 0:
             return
 
-        self._drain_article_cache_runner()
+        if self.is_running:
+            self.call_from_thread(
+                lambda: self._set_status(f"Generating audio for {submitted} article(s)…", _STATUS_MEDIUM)
+            )
+
+        try:
+            self._drain_article_cache_runner()
+        except Exception:
+            logger.exception("Article-cache drain failed")
+            if self.is_running:
+                self.call_from_thread(
+                    lambda: self._set_status("Audio generation failed — is speech daemon running?", _STATUS_HIGH)
+                )
+            return
 
     def _drain_article_cache_runner(self) -> None:
         """Drain article-cache jobs on the CALLING (worker) thread.
@@ -1281,6 +1294,7 @@ class WiltedApp(App):
         """Start or restart the background article-cache submission worker."""
         if self._generation_worker and self._generation_worker.is_running:
             self._generation_worker.cancel()
+        self._set_status("Generating audio…", _STATUS_MEDIUM)
         self._generation_worker = self._submit_article_cache_worker()
 
     # -- Speech-daemon pre-warm (backend indicator affordance) ----------------
@@ -1383,6 +1397,35 @@ class WiltedApp(App):
             logger.warning("StartPlayback for entry %s was not accepted by the reducer", entry.entry_id)
             self._set_status("Could not start playback", _STATUS_HIGH)
             return
+
+        # Restore a checkpoint that belongs to a DIFFERENT entry.  The
+        # reducer's StartPlayback handler unconditionally clears
+        # ``state.checkpoint = None`` (see reducer.py `_start_playback`), so a
+        # prior-session checkpoint for entry A is destroyed when the briefing
+        # auto-plays entry B on restart.  Persisting it again AFTER the
+        # reducer has finished preserves it for the next call to
+        # ``_start_playback`` (which will find entry A in the playlist and
+        # honour the offset).
+        if (
+            result.accepted
+            and prior_checkpoint is not None
+            and prior_checkpoint.entry_id != entry.entry_id
+        ):
+            try:
+                restore = Checkpoint(
+                    mutation_id=f"mac-ckpt-restore-{uuid.uuid4()}",
+                    expected_revision=result.revision,
+                    media_offset_ms=prior_checkpoint.media_offset_ms,
+                    state_label=prior_checkpoint.state,
+                    writer_device="mac",
+                    entry_id=prior_checkpoint.entry_id,
+                )
+                self._controller.submit_and_wait(restore, timeout=5.0)
+            except Exception:
+                logger.exception(
+                    "Failed to restore checkpoint for %s after briefing auto-play",
+                    prior_checkpoint.entry_id,
+                )
 
         try:
             self._adapter.play(entry.media, offset_ms=offset_ms)
@@ -2098,6 +2141,60 @@ class WiltedApp(App):
                 "route-resume: exact checkpoint submission failed; falling back to the existing checkpoint"
             )
 
+    def _write_checkpoint(self, state_label: str) -> None:
+        """Write a playback checkpoint to the station controller.
+
+        Uses ``submit_and_wait`` for durability — the drain thread processes
+        quickly in practice (<100ms), so blocking the UI thread briefly here
+        is safe and eliminates the race with the final checkpoint on quit.
+        A stale revision rejection is benign (the next checkpoint
+        self-corrects).
+        """
+        try:
+            if not self._controller.is_running:
+                return
+            state = self._controller.current_state()
+            if state.active_entry is None:
+                return
+            action = Checkpoint(
+                mutation_id=f"mac-ckpt-{uuid.uuid4()}",
+                expected_revision=state.station_revision,
+                media_offset_ms=self._adapter.current_offset_ms(),
+                state_label=state_label,
+                writer_device="mac",
+            )
+            self._controller.submit_and_wait(action, timeout=5.0)
+        except Exception:
+            logger.exception("Failed to write %s checkpoint", state_label)
+
+    def _write_checkpoint_final(self) -> None:
+        """Write and await one last checkpoint before the controller shuts down.
+
+        Uses ``submit_and_wait`` so the checkpoint is durably stored before
+        the drain thread stops. By this point the poller has been stopped and
+        any earlier fire-and-forget checkpoint has been drained (both
+        ``_write_checkpoint`` and this method now use sequential
+        ``submit_and_wait``), so there is no revision race.
+        """
+        if not self._controller.is_running:
+            return
+        try:
+            state = self._controller.current_state()
+            if state.active_entry is None:
+                return
+            action = Checkpoint(
+                mutation_id=f"mac-ckpt-{uuid.uuid4()}",
+                expected_revision=state.station_revision,
+                media_offset_ms=self._adapter.current_offset_ms(),
+                state_label=state.checkpoint.state if state.checkpoint else "playing",
+                writer_device="mac",
+            )
+            result = self._controller.submit_and_wait(action, timeout=5.0)
+            if not result.accepted:
+                logger.warning("Final checkpoint was rejected (stale revision %d)", state.station_revision)
+        except Exception:
+            logger.exception("Failed to write final checkpoint on quit")
+
     # -- Actions (key bindings) ---------------------------------------------
 
     def action_toggle_play(self) -> None:
@@ -2118,6 +2215,7 @@ class WiltedApp(App):
         if self._playing and not self._paused:
             self._adapter.pause()
             self._paused = True
+            self._write_checkpoint("paused")
             self._set_status("Paused", _STATUS_MEDIUM)
         elif self._playing and self._paused:
             self._adapter.resume()
@@ -2403,9 +2501,11 @@ class WiltedApp(App):
 
     def action_quit_app(self) -> None:
         """Stop playback/polling and release the station lease, then exit."""
-        self._adapter.stop()
+        # Stop the poller FIRST so no tick races with the final checkpoint.
         self._poller.stop()
         self._poller_started = False
+        self._write_checkpoint_final()
+        self._adapter.stop()
         self._route_monitor.stop()
         self._route_monitor_started = False
         if self._weather_monitor is not None:

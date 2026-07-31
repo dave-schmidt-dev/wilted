@@ -913,7 +913,28 @@ def cmd_report(argv: list[str]) -> None:
 
     parser = argparse.ArgumentParser(prog="wilted report", add_help=False)
     parser.add_argument("--email", action="store_true", default=False)
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        default=False,
+        help="Undo decisions on the most recent report so it can be reviewed again",
+    )
     args, _ = parser.parse_known_args(argv)
+
+    if args.reset:
+        from wilted.report import reset_latest_report
+
+        result = reset_latest_report()
+        if result is None:
+            print("No report to reset.")
+            return
+        print(
+            f"Reset morning report for {result['report_date']}: "
+            f"cleared {result['cleared']} decision(s), "
+            f"returned {result['requeued_cleared']} item(s) to the candidate pool."
+        )
+        print(f"{result['candidates']} item(s) will show next time you open the report.")
+        return
 
     try:
         run_report_via_runner(on_status=_print_status)

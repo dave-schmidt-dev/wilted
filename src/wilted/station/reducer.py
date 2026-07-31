@@ -123,6 +123,7 @@ class Checkpoint:
     state_label: str  # "playing" | "paused" | "stopped" — see PlaybackState
     writer_device: str
     now: str = field(default_factory=now_utc_z)
+    entry_id: str | None = None  # override the default active-entry derivation
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,7 +370,7 @@ def _checkpoint(state: StationState, action: Checkpoint) -> StationState:
     new_revision = state.station_revision + 1
     new_checkpoint = PlaybackCheckpoint(
         station_revision=new_revision,
-        entry_id=state.active_entry.entry_id,
+        entry_id=action.entry_id or state.active_entry.entry_id,
         media_offset_ms=action.media_offset_ms,
         state=action.state_label,  # type: ignore[arg-type]
         interrupted_entry_stack=tuple(e.entry_id for e in state.interruption_stack),

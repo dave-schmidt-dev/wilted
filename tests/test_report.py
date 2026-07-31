@@ -541,3 +541,116 @@ class TestFormatReportEmail:
         """Returns None when no report exists for the given date."""
         result = format_report_email("2000-01-01")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# TestResetLatestReport
+# ---------------------------------------------------------------------------
+
+
+class TestResetLatestReport:
+    """reset_latest_report() undoes an accepted report so it can be reviewed again."""
+
+    def _accepted_candidate(self, prepared: bool = False) -> tuple[int, int]:
+        """Create a candidate article, assemble a report, and mark it accepted.
+
+        Returns (item_id, report_id). When ``prepared`` the item is left at
+        PreparationState.READY (already-generated audio) instead of QUEUED.
+        """
+        from wilted.background_work.contracts import (
+            AnalysisState,
+            ContentState,
+            FetchState,
+            PlaybackState,
+            PreparationState,
+            ReportDecision,
+            RetentionState,
+        )
+        from wilted.content_state import read_content_state, transition_item
+        from wilted.db import ReportItem
+        from wilted.report import assemble_report
+
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        item = Item.create(
+            feed=_create_feed(),
+            guid="reset-candidate" + ("-prepared" if prepared else ""),
+            title="Prepared Candidate" if prepared else "Reset Candidate",
+            discovered_at=now,
+            item_type="article",
+            status="classified",  # legacy mirror; this DB is pre-cutover (status is NOT NULL)
+            status_changed_at=now,
+            fetch_state=FetchState.CONTENT_READY.value,
+            analysis_state=AnalysisState.READY.value,
+            preparation_state=PreparationState.NOT_QUEUED.value,
+            playback_state=PlaybackState.UNPLAYED.value,
+            retention_state=RetentionState.ACTIVE.value,
+            playlist_assigned="Work",
+            relevance_score=0.9,
+            summary="candidate summary",
+        )
+
+        stats = assemble_report()
+        report_id = stats["report_id"]
+
+        # Simulate the ReportScreen "accept": queue (or prepare) + mark decision.
+        db_item = Item.get_by_id(item.id)
+        current = read_content_state(db_item)
+        target_prep = PreparationState.READY if prepared else PreparationState.QUEUED
+        transition_item(
+            db_item,
+            ContentState(
+                fetch=current.fetch,
+                analysis=current.analysis,
+                preparation=target_prep,
+                playback=current.playback,
+                retention=current.retention,
+            ),
+        )
+        report_item = ReportItem.get(ReportItem.report == report_id, ReportItem.item == item.id)
+        report_item.decision = ReportDecision.ACCEPTED.value
+        report_item.save()
+        return item.id, report_id
+
+    def test_reset_resurfaces_accepted_report(self):
+        """An accepted item returns to the candidate pool and the report is reviewable."""
+        from wilted.background_work.contracts import PreparationState
+        from wilted.content_state import read_content_state
+        from wilted.report import get_latest_unread_report, reset_latest_report
+
+        item_id, _ = self._accepted_candidate()
+
+        # After accept, nothing is unread.
+        assert get_latest_unread_report() is None
+
+        result = reset_latest_report()
+        assert result is not None
+        assert result["cleared"] == 1
+        assert result["requeued_cleared"] == 1
+        assert result["candidates"] == 1
+
+        assert read_content_state(Item.get_by_id(item_id)).preparation.value == PreparationState.NOT_QUEUED.value
+        unread = get_latest_unread_report()
+        assert unread is not None
+        titles = [it["title"] for items in unread["items"].values() for it in items]
+        assert "Reset Candidate" in titles
+
+    def test_reset_preserves_already_prepared_audio(self):
+        """Reset must not un-prepare items whose audio was already generated (READY)."""
+        from wilted.background_work.contracts import PreparationState
+        from wilted.content_state import read_content_state
+        from wilted.report import reset_latest_report
+
+        item_id, _ = self._accepted_candidate(prepared=True)
+
+        result = reset_latest_report()
+        assert result is not None
+        assert result["cleared"] == 1
+        assert result["requeued_cleared"] == 0  # nothing un-queued
+        # Prepared audio is preserved, so the item does not re-enter the pool.
+        assert read_content_state(Item.get_by_id(item_id)).preparation.value == PreparationState.READY.value
+
+    def test_reset_no_report_returns_none(self):
+        """Reset is a no-op when no report exists."""
+        from wilted.report import reset_latest_report
+
+        assert reset_latest_report() is None

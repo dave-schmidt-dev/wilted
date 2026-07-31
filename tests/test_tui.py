@@ -2008,6 +2008,74 @@ async def test_report_screen_has_footer():
         assert len(footers) == 1, "ReportScreen should have exactly one Footer"
 
 
+@pytest.mark.asyncio
+async def test_report_screen_shows_inline_help(sample_report_data):
+    """ReportScreen renders an always-visible key-hint line inside the dialog."""
+    from textual.widgets import Label
+
+    from wilted.tui.screens.report import ReportScreen
+
+    app = WiltedApp()
+    async with app.run_test() as pilot:
+        app.push_screen(ReportScreen(sample_report_data))
+        await pilot.pause()
+        help_text = str(app.screen.query_one("#report-help", Label).render()).lower()
+        assert "toggle" in help_text
+        assert "accept" in help_text
+        assert "dismiss" in help_text
+
+
+@pytest.mark.asyncio
+async def test_report_accept_emits_toast(sample_report_data):
+    """Accepting dismisses the modal *and* leaves a toast behind, so the close
+    reads as a committed action instead of the report vanishing silently.
+
+    This is an end-to-end check rather than a mock of ``notify``: it exercises
+    the exact failure the user reported (report "disappeared" with no feedback)
+    by asserting the modal is gone yet the toast survives on the app-level
+    notification stack.
+    """
+    from wilted.tui.screens.report import ReportScreen
+
+    app = WiltedApp()
+    async with app.run_test() as pilot:
+        app.push_screen(ReportScreen(sample_report_data))
+        await pilot.pause()
+        assert isinstance(app.screen, ReportScreen)
+        await pilot.press("s")
+        await pilot.pause(delay=0.5)
+        # The accept action pops the modal...
+        assert not isinstance(app.screen, ReportScreen)
+        # ...but the toast lives on the app, so it stays visible after the
+        # report closes. sample_report_data has 2 items, both selected by
+        # default, and none skipped, so the message is exact.
+        messages = [n.message for n in app._notifications]
+        assert messages.count("Queued 2 items for audio") == 1, messages
+
+
+@pytest.mark.asyncio
+async def test_voice_and_preview_expose_key_hints():
+    """Voice-settings and text-preview modals show their keys inline."""
+    from textual.widgets import Label
+
+    from wilted.tui.screens.text_preview import TextPreviewScreen
+    from wilted.tui.screens.voice_settings import VoiceSettingsScreen
+
+    app = WiltedApp()
+    async with app.run_test() as pilot:
+        app.push_screen(VoiceSettingsScreen("af_heart", 1.0, "a"))
+        await pilot.pause()
+        voice_help = str(app.screen.query_one(".button-help", Label).render())
+        assert "Confirm" in voice_help and "Cancel" in voice_help
+        app.pop_screen()
+        await pilot.pause()
+
+        app.push_screen(TextPreviewScreen("Title", "some body text", 3))
+        await pilot.pause()
+        preview_help = str(app.screen.query_one(".preview-help", Label).render())
+        assert "Close" in preview_help
+
+
 # ---------------------------------------------------------------------------
 # NEW (A.3.5): INV-8 gate — legacy resume functions must never fire on the
 # station playback lifecycle, and every station-state change must route
