@@ -2018,10 +2018,11 @@ async def test_toggle_selection():
         app.push_screen(ReportScreen(report_data))
         await pilot.pause()
         screen = app.screen
-        assert screen._selected.get(1, False) is True
+        # Items are unselected by default (opt-in); toggling selects.
+        assert screen._selected.get(1) is False
         await pilot.press("enter")
         await pilot.pause()
-        assert screen._selected.get(1, True) is False
+        assert screen._selected.get(1) is True
 
 
 @pytest.mark.asyncio
@@ -2063,6 +2064,8 @@ async def test_accept_promotes_selected_items():
     async with app.run_test() as pilot:
         app.push_screen(ReportScreen(report_data))
         await pilot.pause()
+        # Items are unselected by default — select the cursor row, then save.
+        await pilot.press("enter")
         await pilot.press("s")
         await pilot.pause(delay=0.5)
 
@@ -2071,40 +2074,192 @@ async def test_accept_promotes_selected_items():
 
 
 @pytest.mark.asyncio
-async def test_dismiss_without_action_preserves_state():
-    """Dismissing without accepting preserves the original item states."""
+async def test_close_without_selecting_persists_dismissal():
+    """Closing the report without selecting DISMISSES items — and it sticks.
+
+    Regression for the reported bug: the user opened the report, dismissed every
+    item, and the same items came back in the next morning's email. The cause was
+    a cancel-without-saving close path (``self.dismiss(False)``) that silently
+    discarded the user's decisions. Every close now routes through
+    ``_save_selections``, so an unselected item is persisted as a ``DISMISSED``
+    ReportItem (preparation ``not_queued``) and never re-surfaces as a candidate.
+    """
+    from datetime import UTC, datetime
+
+    from wilted.background_work.contracts import PreparationState, ReportDecision
+    from wilted.content_state import read_content_state
+    from wilted.db import Feed, Item, Report, ReportItem
+    from wilted.report import get_report, run_report
     from wilted.tui.screens.report import ReportScreen
 
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    feed = Feed.create(
+        title="Dismiss Feed",
+        feed_url="https://example.com/dismiss.xml",
+        feed_type="article",
+        enabled=True,
+        created_at=now,
+        updated_at=now,
+    )
+    item = Item.create(
+        feed=feed,
+        guid="test-dismiss-1",
+        title="Article To Dismiss",
+        discovered_at=now,
+        item_type="article",
+        status="classified",
+        status_changed_at=now,
+        playlist_assigned="Work",
+        relevance_score=0.9,
+        summary="Test summary",
+    )
+
+    run_report()
+    report_data = get_report()
+    assert report_data is not None
+
     app = WiltedApp()
-    report_data = {
-        "report": {
-            "report_date": "2026-04-20",
-            "generated_at": "2026-04-20T06:00:00Z",
-            "item_count": 1,
-            "metadata": '{"playlists": {"Work": 1}, "total_items": 1}',
-        },
-        "items": {
-            "Work": [
-                {
-                    "id": 1,
-                    "title": "Test Article",
-                    "source_name": "Test Source",
-                    "relevance_score": 0.9,
-                    "summary": "Summary",
-                },
-            ]
-        },
-    }
     async with app.run_test() as pilot:
         app.push_screen(ReportScreen(report_data))
         await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        screen = app.screen
-        assert screen._selected.get(1, True) is False
+        # Do NOT select anything — just close with `q`. Draining the save worker
+        # is what proves the decision persisted (the reported bug was the close
+        # path discarding it); the modal pop itself is covered elsewhere.
         await pilot.press("q")
+        await app.workers.wait_for_complete()
         await pilot.pause()
-        assert not isinstance(app.screen, ReportScreen)
+
+    updated = Item.get_by_id(item.id)
+    state = read_content_state(updated)
+    assert state is not None
+    assert state.preparation == PreparationState.NOT_QUEUED
+    report = Report.get(Report.report_date == report_data["report"]["report_date"])
+    decided = ReportItem.get((ReportItem.report == report) & (ReportItem.item == item.id))
+    assert decided.decision == ReportDecision.DISMISSED.value
+
+
+@pytest.mark.asyncio
+async def test_escape_saves_selection():
+    """Pressing escape (not just `s`) saves the current selection.
+
+    "Any close saves" means the escape/q keys persist selections too, not only
+    the explicit accept key — otherwise the natural close gesture silently drops
+    the user's choices (the original bug, in the accept direction).
+    """
+    from datetime import UTC, datetime
+
+    from wilted.background_work.contracts import PreparationState, ReportDecision
+    from wilted.content_state import read_content_state
+    from wilted.db import Feed, Item, Report, ReportItem
+    from wilted.report import get_report, run_report
+    from wilted.tui.screens.report import ReportScreen
+
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    feed = Feed.create(
+        title="Escape Feed",
+        feed_url="https://example.com/escape.xml",
+        feed_type="article",
+        enabled=True,
+        created_at=now,
+        updated_at=now,
+    )
+    item = Item.create(
+        feed=feed,
+        guid="test-escape-1",
+        title="Article To Keep",
+        discovered_at=now,
+        item_type="article",
+        status="classified",
+        status_changed_at=now,
+        playlist_assigned="Work",
+        relevance_score=0.9,
+        summary="Test summary",
+    )
+
+    run_report()
+    report_data = get_report()
+    assert report_data is not None
+
+    app = WiltedApp()
+    async with app.run_test() as pilot:
+        app.push_screen(ReportScreen(report_data))
+        await pilot.pause()
+        await pilot.press("enter")  # select the cursor row
+        await pilot.press("escape")  # close via escape, not `s`
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    updated = Item.get_by_id(item.id)
+    state = read_content_state(updated)
+    assert state is not None
+    assert state.preparation == PreparationState.QUEUED
+    report = Report.get(Report.report_date == report_data["report"]["report_date"])
+    decided = ReportItem.get((ReportItem.report == report) & (ReportItem.item == item.id))
+    assert decided.decision == ReportDecision.ACCEPTED.value
+
+
+@pytest.mark.asyncio
+async def test_close_invokes_modal_dismiss_on_real_item_path():
+    """The save worker calls ``dismiss(True)`` to close, even with real items.
+
+    Guards the reroute in this fix: escape/q used to close synchronously via
+    ``dismiss(False)``; they now route through the save worker, whose final act
+    is ``call_from_thread(self.dismiss, True)``. This asserts that trigger fires
+    on the real-item worker path (which the Pilot harness does not visually
+    surface). The actual modal pop is covered by ``test_report_accept_emits_toast``
+    on the empty-worker fast path; here we lock that the worker reaches dismiss.
+    """
+    from datetime import UTC, datetime
+    from unittest.mock import patch
+
+    from wilted.db import Feed, Item
+    from wilted.report import get_report, run_report
+    from wilted.tui.screens.report import ReportScreen
+
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    feed = Feed.create(
+        title="Close Feed",
+        feed_url="https://example.com/close.xml",
+        feed_type="article",
+        enabled=True,
+        created_at=now,
+        updated_at=now,
+    )
+    Item.create(
+        feed=feed,
+        guid="test-close-1",
+        title="Article To Close",
+        discovered_at=now,
+        item_type="article",
+        status="classified",
+        status_changed_at=now,
+        playlist_assigned="Work",
+        relevance_score=0.9,
+        summary="Test summary",
+    )
+
+    run_report()
+    report_data = get_report()
+    assert report_data is not None
+
+    # Record the dismiss argument without popping (no-op recorder); the worker
+    # persists to the DB before it ever reaches dismiss, so this doesn't lose data.
+    dismiss_args: list[object] = []
+
+    def _record_dismiss(self, result=None):
+        dismiss_args.append(result)
+
+    app = WiltedApp()
+    with patch.object(ReportScreen, "dismiss", _record_dismiss):
+        async with app.run_test() as pilot:
+            app.push_screen(ReportScreen(report_data))
+            await pilot.pause()
+            await pilot.press("escape")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+    # The worker reached its final line and asked the modal to close with True.
+    assert dismiss_args == [True]
 
 
 @pytest.mark.asyncio
@@ -2179,8 +2334,8 @@ async def test_report_screen_shows_inline_help(sample_report_data):
         app.push_screen(ReportScreen(sample_report_data))
         await pilot.pause()
         help_text = str(app.screen.query_one("#report-help", Label).render()).lower()
-        assert "toggle" in help_text
-        assert "accept" in help_text
+        assert "select" in help_text
+        assert "save" in help_text
         assert "dismiss" in help_text
 
 
@@ -2201,13 +2356,14 @@ async def test_report_accept_emits_toast(sample_report_data):
         app.push_screen(ReportScreen(sample_report_data))
         await pilot.pause()
         assert isinstance(app.screen, ReportScreen)
+        await pilot.press("a")  # select all (items are unselected by default)
         await pilot.press("s")
         await pilot.pause(delay=0.5)
-        # The accept action pops the modal...
+        # The save-and-close action pops the modal...
         assert not isinstance(app.screen, ReportScreen)
         # ...but the toast lives on the app, so it stays visible after the
-        # report closes. sample_report_data has 2 items, both selected by
-        # default, and none skipped, so the message is exact.
+        # report closes. sample_report_data has 2 items, all selected via `a`
+        # and none skipped, so the message is exact.
         messages = [n.message for n in app._notifications]
         assert messages.count("Queued 2 items for audio") == 1, messages
 

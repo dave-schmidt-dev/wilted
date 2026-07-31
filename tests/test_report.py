@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import wilted
 from wilted.db import Feed, Item, Report, SelectionHistory, SourceStat
@@ -54,6 +54,33 @@ def _create_classified_item(
         relevance_score=relevance,
         summary=summary or f"Summary of {title}",
     )
+
+
+def _prior_report(report_date: str, items: list[Item], decision: str = "pending") -> Report:
+    """Create a historical report row with durable membership for ``items``.
+
+    Used by the "email shows only new items" tests to stand in for a report the
+    user already received on an earlier day.
+    """
+    from wilted.db import ReportItem
+
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    report = Report.create(
+        report_date=report_date,
+        generated_at=f"{report_date}T06:00:00Z",
+        item_count=len(items),
+        metadata=None,
+    )
+    for rank, item in enumerate(items):
+        ReportItem.create(
+            report=report,
+            item=item,
+            rank=rank,
+            decision=decision,
+            defer_until=None,
+            created_at=now,
+        )
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -541,6 +568,69 @@ class TestFormatReportEmail:
         """Returns None when no report exists for the given date."""
         result = format_report_email("2000-01-01")
         assert result is None
+
+    def test_email_excludes_items_from_prior_report(self):
+        """The email shows only items new since the last report.
+
+        Regression: the user triaged the report in the TUI, but the next
+        morning's email still contained the same items. The email used to render
+        the whole undecided candidate pool; it now excludes anything that already
+        appeared in an earlier report.
+        """
+        feed = _create_feed()
+        carried = _create_classified_item("Carried Over Item", feed=feed)
+        _create_classified_item("Brand New Item", feed=feed)
+
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        _prior_report(yesterday, [carried])
+
+        run_report()  # today's report — membership includes both
+        result = format_report_email()
+
+        assert result is not None
+        _, body = result
+        assert "Brand New Item" in body
+        assert "Carried Over Item" not in body
+
+    def test_email_none_when_nothing_new(self):
+        """No email is sent when every candidate already appeared in a prior report.
+
+        Suppressing the empty digest (returning None) keeps the nightly run from
+        emailing the same already-seen items every morning.
+        """
+        feed = _create_feed()
+        carried = _create_classified_item("Carried Over Item", feed=feed)
+
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        _prior_report(yesterday, [carried])
+
+        run_report()
+        assert format_report_email() is None
+
+    def test_email_new_defined_by_membership_not_discovery(self):
+        """ "New" is first *report* appearance, not ``discovered_at``.
+
+        An article discovered days ago but only classified (and therefore made a
+        candidate) today has no prior report membership, so it must surface as
+        new — the exact case a ``discovered_at`` cutoff would silently drop.
+        """
+        feed = _create_feed()
+        late = _create_classified_item("Late Classified Item", feed=feed)
+        # Discovered before the prior report, yet only a candidate now.
+        late.discovered_at = (date.today() - timedelta(days=3)).isoformat() + "T06:00:00Z"
+        late.save()
+
+        other = _create_classified_item("Already Seen Item", feed=feed)
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        _prior_report(yesterday, [other])  # `late` was never a member
+
+        run_report()
+        result = format_report_email()
+
+        assert result is not None
+        _, body = result
+        assert "Late Classified Item" in body
+        assert "Already Seen Item" not in body
 
 
 # ---------------------------------------------------------------------------

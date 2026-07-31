@@ -195,11 +195,30 @@ def reset_latest_report() -> dict | None:
     }
 
 
-def get_report(report_date: str | None = None) -> dict | None:
+def _items_seen_in_prior_reports(report_date: str) -> set[int]:
+    """Item ids that appeared in any report generated before ``report_date``.
+
+    Report membership is durable and never rewritten across days
+    (:func:`wilted.background_work.transitions.apply_report_regeneration` only
+    touches the same report's pending rows), so an item's first report
+    appearance is a stable signal. The morning email uses this to surface only
+    items new since the previous report instead of re-sending the whole
+    undecided candidate pool every day.
+    """
+    prior_report_ids = [r.id for r in Report.select(Report.id).where(Report.report_date < report_date)]
+    if not prior_report_ids:
+        return set()
+    return {ri.item_id for ri in ReportItem.select(ReportItem.item).where(ReportItem.report << prior_report_ids)}
+
+
+def get_report(report_date: str | None = None, *, new_only: bool = False) -> dict | None:
     """Retrieve a report and its items.
 
     Args:
         report_date: ISO date string (YYYY-MM-DD). Defaults to today.
+        new_only: When True, exclude candidates that appeared in any earlier
+            report — used by the morning email so it shows only what is new
+            since the last report, not the cumulative undecided pool.
 
     Returns:
         Dict with 'report': Report row dict, 'items': list of Item rows grouped
@@ -217,6 +236,10 @@ def get_report(report_date: str | None = None) -> dict | None:
 
     # Get all classified items — same criteria as run_report()
     all_classified = items_for_report()
+
+    if new_only:
+        seen_before = _items_seen_in_prior_reports(report_date)
+        all_classified = [item for item in all_classified if item.id not in seen_before]
 
     # Group by playlist
     playlists: dict[str, list[dict]] = {}
@@ -358,12 +381,15 @@ def format_report_email(report_date: str | None = None) -> tuple[str, str] | Non
         report_date: ISO date (YYYY-MM-DD), defaults to today.
 
     Returns:
-        (subject, body) tuple, or None if no report exists.
+        (subject, body) tuple, or None if no report exists or nothing is new
+        since the previous report (so the nightly run skips an empty email).
         Subject format: "Wilted Morning Report -- Apr 20"
         Body: plain text with playlist groups, titles, relevance scores, summaries.
     """
-    data = get_report(report_date)
-    if data is None:
+    # Only items new since the last report — never re-send the whole undecided
+    # pool, so a report the user already triaged does not reappear each morning.
+    data = get_report(report_date, new_only=True)
+    if data is None or not data["items"]:
         return None
 
     # Parse the report date for the subject line

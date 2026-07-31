@@ -141,6 +141,93 @@ class TestClearQueue:
         assert clear_queue() == 2
         assert load_queue() == []
 
+    def test_clear_queue_keeps_rows_as_dedup_tombstone(self):
+        """clear_queue expires rows instead of hard-deleting them.
+
+        Regression: hard delete erased the discovery dedup ledger, so cleared
+        feed items were re-discovered and re-emailed. The row is now preserved
+        (dedup keeps matching it) but expired out of every active surface — the
+        larder, the playable queue, and report candidacy all require
+        retention=active — and its on-disk files are deleted and paths nulled.
+        """
+        from wilted.background_work.contracts import RetentionState
+        from wilted.content_state import (
+            items_for_playlist_all,
+            items_for_report,
+            items_playable_in_queue,
+        )
+        from wilted.db import Item
+
+        entry = add_article("Body text.", title="To Clear")
+        item_id = entry["id"]
+        before_count = Item.select().count()
+
+        assert clear_queue() == 1
+
+        # Row preserved as a dedup tombstone, not deleted.
+        assert Item.select().count() == before_count
+        row = Item.get_by_id(item_id)
+        assert row.retention_state == RetentionState.EXPIRED.value
+        assert row.transcript_file is None
+        # Gone from every active surface.
+        assert items_for_playlist_all() == []
+        assert items_playable_in_queue() == []
+        assert item_id not in [it.id for it in items_for_report()]
+
+    def test_clear_queue_removes_queued_item_from_prepare_stage(self):
+        """A cleared queued item must not survive in the prepare queue.
+
+        Regression: the prepare queue (predicate_prepare_queue) is the one
+        active surface not retention-gated — its first branch matches
+        preparation=queued outright. clear_queue used to preserve preparation,
+        so a cleared podcast episode stayed queued and the nightly prepare stage
+        rebuilt the audio files clear had just deleted. clear now drives
+        preparation to not_queued (and playback to completed), so both branches
+        of predicate_prepare_queue exclude it.
+        """
+        from wilted.background_work.contracts import (
+            AnalysisState,
+            ContentState,
+            FetchState,
+            PlaybackState,
+            PreparationState,
+            RetentionFacts,
+            RetentionState,
+        )
+        from wilted.content_state import (
+            items_for_prepare,
+            read_content_state,
+            transition_item,
+        )
+        from wilted.db import Item
+
+        entry = add_article("Queued body.", title="Queued To Clear")
+        item_id = entry["id"]
+        item = Item.get_by_id(item_id)
+        current = read_content_state(item)
+        transition_item(
+            item,
+            ContentState(
+                fetch=current.fetch if current else FetchState.CONTENT_READY,
+                analysis=current.analysis if current else AnalysisState.READY,
+                preparation=PreparationState.QUEUED,
+                playback=current.playback if current else PlaybackState.UNPLAYED,
+                retention=current.retention if current else RetentionFacts(state=RetentionState.ACTIVE),
+            ),
+            legacy_status="selected",
+        )
+        # Before clearing, the queued item is in the prepare stage.
+        assert item_id in [it.id for it in items_for_prepare()]
+
+        assert clear_queue() == 1
+
+        # After clearing, it is gone from the prepare stage — no rebuild tonight.
+        assert item_id not in [it.id for it in items_for_prepare()]
+        row = Item.get_by_id(item_id)
+        assert row.preparation_state == PreparationState.NOT_QUEUED.value
+        assert row.playback_state == PlaybackState.COMPLETED.value
+        assert row.retention_state == RetentionState.EXPIRED.value
+
 
 class TestGetArticleText:
     def test_reads_cached_text(self):

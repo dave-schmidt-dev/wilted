@@ -81,11 +81,12 @@ class ReportScreen(ModalScreen[bool]):
     """
 
     # priority=True overrides parent app bindings (s=stop, a=add, n=next, q=quit)
+    # Every close path routes to save_and_close: there is no cancel-without-saving,
+    # so a dismissal in the report always sticks (the bug this screen used to have).
     BINDINGS = [
         Binding("a", "select_all", "Select All", priority=True),
         Binding("n", "select_none", "Select None", priority=True),
-        Binding("s", "accept", "Accept Selected", priority=True),
-        Binding("escape,q", "dismiss", "Dismiss", priority=True),
+        Binding("escape,q,s", "save_and_close", "Save & Close", priority=True),
     ]
 
     def __init__(self, report_data: dict, **kwargs) -> None:
@@ -105,10 +106,9 @@ class ReportScreen(ModalScreen[bool]):
             with VerticalScroll(id="report-scroll"):
                 yield DataTable(id="report-table")
             with Horizontal(id="report-actions"):
-                yield Button("Accept Selected", id="accept-button", variant="primary")
-                yield Button("Dismiss", id="dismiss-button")
+                yield Button("Save & Close", id="done-button", variant="primary")
             yield Label(
-                "[space/enter] Toggle   [a] All   [n] None   [s] Accept selected   [esc] Dismiss",
+                "[space/enter] Select   [a] All   [n] None   [esc] Save & close — unselected items are dismissed",
                 id="report-help",
             )
         yield Footer()
@@ -148,7 +148,9 @@ class ReportScreen(ModalScreen[bool]):
             item_id = item["id"]
             self._items.append(item)
             self._item_order.append(item_id)
-            self._selected[item_id] = True
+            # Unselected by default: closing without choosing dismisses the report
+            # rather than queueing everything (opt-in selection).
+            self._selected[item_id] = False
             self._playlist_index[item_id] = self._playlists.index(playlist) if playlist in self._playlists else 0
             self._original_playlist[item_id] = playlist
 
@@ -203,7 +205,7 @@ class ReportScreen(ModalScreen[bool]):
             source = item.get("source_name") or ""
             playlist_cell = playlist or "Uncategorized"
 
-            check = "  ✓" if self._selected.get(item_id, True) else "   "
+            check = "  ✓" if self._selected.get(item_id, False) else "   "
             table.add_row(check, title, source, playlist_cell)
 
             if first_data_row is None:
@@ -244,7 +246,7 @@ class ReportScreen(ModalScreen[bool]):
         cursor_data = self._get_item_at_cursor()
         if cursor_data:
             item_id, _ = cursor_data
-            self._selected[item_id] = not self._selected.get(item_id, True)
+            self._selected[item_id] = not self._selected.get(item_id, False)
             self._rebuild_table()
 
     def action_select_all(self) -> None:
@@ -259,19 +261,28 @@ class ReportScreen(ModalScreen[bool]):
             self._selected[item["id"]] = False
         self._rebuild_table()
 
-    def action_accept(self) -> None:
-        """Accept selected items, skip unselected, record in history."""
+    def action_save_and_close(self) -> None:
+        """Persist the current selection and close.
+
+        Selected items are queued, unselected items are dismissed. Every close
+        path (esc/q/s and the button) routes here — there is no cancel-without-
+        saving — so a dismissal always sticks. Items default to unselected, so
+        closing without choosing dismisses the whole report.
+        """
         if not self._items:
             self.dismiss(True)
             return
         # Emit an app-level toast before the modal closes so the disappearance
         # reads as a committed action, not a glitch. Counts come from in-memory
         # selection state; the toast survives dismiss (notifications are app-level).
-        accepted = sum(1 for item in self._items if self._selected.get(item["id"], True))
+        accepted = sum(1 for item in self._items if self._selected.get(item["id"], False))
         skipped = len(self._items) - accepted
-        message = f"Queued {accepted} item{'s' if accepted != 1 else ''} for audio"
-        if skipped:
-            message += f" · {skipped} skipped"
+        if accepted and skipped:
+            message = f"Queued {accepted} for audio · dismissed {skipped}"
+        elif accepted:
+            message = f"Queued {accepted} item{'s' if accepted != 1 else ''} for audio"
+        else:
+            message = f"Dismissed {skipped} item{'s' if skipped != 1 else ''}"
         self.notify(message, title="Morning report", timeout=4)
         self._save_selections()
 
@@ -290,7 +301,7 @@ class ReportScreen(ModalScreen[bool]):
 
             for rank, item in enumerate(self._items):
                 item_id = item["id"]
-                selected = self._selected.get(item_id, True)
+                selected = self._selected.get(item_id, False)
 
                 try:
                     db_item = Item.get_by_id(item_id)
@@ -371,14 +382,6 @@ class ReportScreen(ModalScreen[bool]):
 
         self.app.call_from_thread(self.dismiss, True)
 
-    def action_dismiss(self) -> None:
-        """Dismiss without saving."""
-        self.dismiss(False)
-
-    @on(Button.Pressed, "#accept-button")
-    def _accept_button(self) -> None:
-        self.action_accept()
-
-    @on(Button.Pressed, "#dismiss-button")
-    def _dismiss_button(self) -> None:
-        self.action_dismiss()
+    @on(Button.Pressed, "#done-button")
+    def _done_button(self) -> None:
+        self.action_save_and_close()

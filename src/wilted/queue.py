@@ -7,7 +7,7 @@ Item lifecycle (status transitions):
   add_article()    → status='ready'
   mark_completed() → status='completed'  (files retained; cleanup by retention policy)
   remove_article() → row deleted + transcript file deleted
-  clear_queue()    → all active (ready + queued) rows deleted + files deleted
+  clear_queue()    → active rows expired (row kept as dedup tombstone) + files deleted
 """
 
 from __future__ import annotations
@@ -230,14 +230,33 @@ def remove_article_by_id(item_id: int) -> dict:
 
 
 def clear_queue() -> int:
-    """Remove every active-playlist article (ready or queued). Returns count removed.
+    """Clear every active-playlist item (ready or queued). Returns count cleared.
 
     Clears exactly the set the Larder counts — ``predicate_playlist_active``
     (preparation ``ready``/``queued``, not completed, retention active), the same
     query behind the TUI's ``_all_items`` — so "Clear All" empties the larder for
-    real and the confirm-dialog count matches what is deleted. Previously
-    ready-only, which left queued-but-unbuilt items behind (e.g. podcast episodes
-    awaiting the nightly pipeline), so a "cleared" larder still showed items.
+    real and the confirm-dialog count matches what is cleared.
+
+    Tombstone semantics (not hard delete): each Item row is preserved so the
+    discovery dedup ledger keeps matching it — a feed re-fetch will not
+    re-discover a cleared item and re-surface it in tomorrow's report/email. The
+    row is expired out of *all* active surfaces at once, because the Larder, the
+    playable queue, and report candidacy each require ``retention == active``
+    (see ``predicate_playlist_active`` / ``predicate_playable_queue`` /
+    ``predicate_report_candidates``). On-disk artifacts are deleted and their
+    paths nulled, mirroring ``run_retention``.
+
+    Preparation/playback are driven to a terminal state too, not preserved:
+    ``predicate_prepare_queue`` is the one active surface *not* retention-gated —
+    its first branch matches ``preparation == queued`` outright. A cleared
+    podcast episode awaiting the nightly pipeline would otherwise stay ``queued``
+    and be re-prepared tonight, rebuilding the audio we just deleted. Setting
+    ``preparation=not_queued`` clears that branch and ``playback=completed``
+    clears the ``accepted_needing_prep`` branch (which ignores retention but
+    requires ``playback != completed``).
+
+    Previously this hard-deleted the rows, which erased the dedup ledger and let
+    cleared feed items be re-discovered and re-emailed.
     """
 
     _ensure_db()
@@ -247,13 +266,34 @@ def clear_queue() -> int:
 
     from wilted.cache import clear_cache
 
+    now = _now_utc()
     for item in items:
         if item.transcript_file:
             tf = Path(item.transcript_file)
             if tf.exists():
                 tf.unlink()
+            item.transcript_file = None
+        if item.audio_file:
+            af = Path(item.audio_file)
+            if af.exists():
+                af.unlink()
+            item.audio_file = None
         clear_cache(item.id)
-        item.delete_instance()
+
+        current = read_content_state(item)
+        transition_item(
+            item,
+            ContentState(
+                fetch=current.fetch if current else FetchState.CONTENT_READY,
+                analysis=current.analysis if current else AnalysisState.READY,
+                # Drive prep/playback to terminal values (not preserved): the
+                # prepare queue is not retention-gated, so a preserved `queued`
+                # item would be re-prepared tonight. See docstring.
+                preparation=PreparationState.NOT_QUEUED,
+                playback=PlaybackState.COMPLETED,
+                retention=RetentionFacts(state=RetentionState.EXPIRED, keep_override=False, expired_at=now),
+            ),
+        )
 
     return len(items)
 
