@@ -78,9 +78,21 @@
 - Checked since, without the terminal:
   - Not `tmux`: no `tmux` process running and no `~/.tmux.conf`.
   - iTerm2 preferences have `Mouse Reporting = true` on the profiles, and `NoSyncNeverAskAboutMouseReportingFrustration = true` (the "stop asking me about mouse reporting" prompt was dismissed at some point). **This does not clear iTerm2**: mouse reporting is also togglable per session at runtime, and that state never lands in the plist.
-- Next diagnostic step (needs a real interactive window — not a `!` command inside Claude Code, which is not a TTY that can be clicked into): run a *different* Textual app in the same iTerm2 window, e.g. `uvx --from textual textual demo` or `python -m textual`. Same framework, same driver, different app code:
-  - Mouse works in the demo → the problem is Wilted's app or its launcher, and the diff between them is small enough to bisect.
-  - Mouse dead in the demo too → the terminal or the driver's input path. Next step there is a raw-byte probe: enable SGR mouse reporting and dump stdin bytes on click. No bytes → iTerm2 is not emitting them (check Session menu, and any per-session mouse-reporting toggle); bytes present → Textual's parser is dropping them.
+- **iTerm2 is emitting mouse events — confirmed 2026-08-06 by raw stdin capture.** A probe that bypasses Textual entirely (enable mouse tracking, dump stdin) captured ~2400 bytes of motion and button reports from a single session: `\x1b[64;116;19M` (motion — `64 - 32 = 32`, the motion bit) through `\x1b[35;98;29M` (`35 - 32 = 3`, button release). The terminal side is therefore **exonerated**; the fault is downstream of iTerm2.
+  - Correction, so the capture is not misread later: the probe's own first-run verdict said "no mouse bytes arrived". That was a defect in the probe, which classified reports by the SGR `\x1b[<` prefix only and counted every urxvt-format report as a keystroke. The bytes were there all along.
+- Live lead — **encoding mismatch between what iTerm2 replies with and what Textual can parse**:
+  - Textual's `linux_driver._enable_mouse_support` writes `?1000h ?1003h ?1015h ?1006h` — 1015 (urxvt) *then* 1006 (SGR), so under last-one-wins SGR should be selected.
+  - Textual's parser recognises both encodings but only decodes one:
+    ```python
+    _re_mouse_event = re.compile("^\x1b\[" + r"(<?[-\d;]+[mM]|M...)\Z")  # '<' optional: matches urxvt
+    _re_sgr_mouse   = re.compile(r"\x1b\[<(\d+);(-?\d+);(-?\d+)([Mm])")  # SGR only
+    ```
+    `parse_mouse_code` tries `_re_sgr_mouse` and returns `None` when it fails. So a urxvt-format report is *recognised as a mouse sequence, consumed, and silently dropped* — a dead mouse alongside a perfectly live keyboard, which is exactly the reported symptom.
+  - The original probe requested 1006 then 1015 and got urxvt back, which confirms iTerm2 honours last-one-wins. It does **not** yet establish what iTerm2 replies with under Textual's ordering — that is the open question.
+  - Ruled out as the cause of a mid-session encoding change: Wilted only ever writes mouse *disable* sequences (`_TERMINAL_RESTORE_SEQ`, `cli.py:1369`), and only from exit paths.
+- Next diagnostic step (needs a real interactive window — not a `!` command inside Claude Code, which is not a TTY that can be clicked into):
+  1. Re-run the corrected probe, which now uses Textual's exact enable order and reports which encoding comes back. urxvt → root cause found, and the fix is a Wilted-side workaround. SGR → encoding is fine and the fault is further downstream.
+  2. `~/.venvs/wilted/bin/python -m textual` (the demo, on the same Textual 8.2.3 in the same venv) to split "Textual's fault" from "Wilted's fault".
 - Note: BUG-8 below is a *separate* defect in the report table's click semantics, now fixed. Fixing it did not fix this one, and this one still masks it — clicking rows will do nothing until mouse events reach the process.
 
 ### BUG-8 — A single mouse click never selects a row in the report table
