@@ -4753,11 +4753,22 @@ async def test_single_click_selects_a_fresh_report_row():
         # Only the clicked row changed.
         assert sum(1 for r in data_rows if table.get_row_at(r)[0].plain == "[x]") == 1
 
-        # Clicking a group header is a clean no-op — no toggle, no crash.
+        # Clicking a group header collapses that group instead of toggling a selection.
+        full_rows = table.row_count
         await pilot.click(table, offset=(10, header_rows[0] + 1), times=1)
         await pilot.pause()
+        assert table.row_count == full_rows - 2, (
+            f"header click did not hide the group's 2 items: {table.row_count} of {full_rows}"
+        )
+        assert table.get_row_at(header_rows[0])[0].plain == "▶", "collapsed header kept the open glyph"
+
+        # Expanding again restores every row with the selection untouched.
+        await pilot.click(table, offset=(10, header_rows[0] + 1), times=1)
+        await pilot.pause()
+        assert table.row_count == full_rows, f"header click did not re-expand: {table.row_count}"
+        assert table.get_row_at(header_rows[0])[0].plain == "▼", "expanded header kept the closed glyph"
         assert sum(1 for r in data_rows if table.get_row_at(r)[0].plain == "[x]") == 1, (
-            "clicking a group header changed a selection"
+            "collapse/expand changed a selection"
         )
 
         # A second click on the same row unselects it.
@@ -4766,3 +4777,90 @@ async def test_single_click_selects_a_fresh_report_row():
         assert table.get_row_at(target)[0].plain == "[ ]", "second click did not deselect"
 
     assert uncategorized and work_item  # fixture rows are what the table renders
+
+
+@pytest.mark.asyncio
+async def test_collapsing_a_group_never_drops_its_items_from_the_save():
+    """Collapsing hides rows only — the items must still be queued or dismissed.
+
+    ``_items`` drives Select All, the Save & Close toast counts, and the save loop that
+    dismisses everything left unselected. Building the table is the same pass that builds
+    that model, so the obvious implementation — skip the collapsed group in the loop —
+    would silently drop its items from the save entirely: neither queued nor dismissed,
+    and they would reappear in the next report having never been decided.
+
+    Asserted against the DB rather than in-memory state, because ``_selected`` stays
+    correct either way; only the write is wrong.
+    """
+    from textual.widgets import DataTable
+
+    from wilted.db import Item
+    from wilted.tui.screens.report import ReportScreen
+
+    report_data, uncategorized, work_item = _uncategorized_report_fixture()
+
+    app = WiltedApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(ReportScreen(report_data))
+        await pilot.pause()
+        screen = app.screen
+        table = screen.query_one("#report-table", DataTable)
+
+        # Rows: [0 UNCATEGORIZED hdr, 1 ep1, 2 ep2, 3 WORK hdr, 4 Work Article].
+        uncat_header = min(screen._header_rows)
+        assert screen._header_rows[uncat_header] == "Uncategorized", "fixture shape changed"
+
+        # Select the first episode (y = row + 1, past the column-label row), then
+        # collapse the group that contains it.
+        await pilot.click(table, offset=(10, uncat_header + 2), times=1)
+        await pilot.pause()
+        assert screen._selected[uncategorized[0].id] is True, "setup: first episode not selected"
+
+        await pilot.click(table, offset=(10, uncat_header + 1), times=1)
+        await pilot.pause()
+        assert "Uncategorized" in screen._collapsed, "header click did not collapse the group"
+        assert len(screen._items) == 3, f"collapsing removed items from the save model: {len(screen._items)} of 3"
+
+        await pilot.press("s")
+        await pilot.pause(delay=0.5)
+
+    # Both hidden items were still decided, each according to its own selection.
+    assert Item.get_by_id(uncategorized[0].id).status == "selected", (
+        "a selected item inside a collapsed group was not queued"
+    )
+    assert Item.get_by_id(uncategorized[1].id).status == "skipped", (
+        "an unselected item inside a collapsed group was not dismissed"
+    )
+    assert Item.get_by_id(work_item.id).status == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_select_all_reaches_items_hidden_by_a_collapsed_group():
+    """Select All operates on the report, not on what happens to be visible."""
+    from textual.widgets import DataTable
+
+    from wilted.tui.screens.report import ReportScreen
+
+    report_data, uncategorized, work_item = _uncategorized_report_fixture()
+
+    app = WiltedApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(ReportScreen(report_data))
+        await pilot.pause()
+        screen = app.screen
+        table = screen.query_one("#report-table", DataTable)
+
+        uncat_header = min(screen._header_rows)
+        await pilot.click(table, offset=(10, uncat_header + 1), times=1)
+        await pilot.pause()
+        assert "Uncategorized" in screen._collapsed
+
+        await pilot.press("a")
+        await pilot.pause()
+
+        for item in (*uncategorized, work_item):
+            assert screen._selected[item.id] is True, f"item {item.id} missed by Select All"
+
+        # The toast counts come from the same model, so they must cover hidden items too.
+        accepted = sum(1 for i in screen._items if screen._selected.get(i["id"], False))
+        assert accepted == 3, f"toast would under-report: {accepted} of 3"

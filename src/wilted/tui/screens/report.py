@@ -149,7 +149,11 @@ class ReportScreen(ModalScreen[bool]):
         self._playlist_index: dict[int, int | None] = {}
         self._original_playlist: dict[int, str | None] = {}  # item_id -> original playlist from DB
         self._playlists = ["Work", "Fun", "Education"]
-        self._header_rows: set[int] = set()  # row indices that are playlist headers
+        self._header_rows: dict[int, str] = {}  # row index -> playlist name
+        self._row_item_id: dict[int, int] = {}  # row index -> item_id (data rows only)
+        # Collapsed playlist names. Purely a view concern and deliberately not
+        # persisted: it never reaches the DB and is gone when the modal closes.
+        self._collapsed: set[str] = set()
 
     def compose(self) -> ComposeResult:
         with Vertical(id="report-dialog"):
@@ -181,7 +185,7 @@ class ReportScreen(ModalScreen[bool]):
             table.add_column(label, width=width)
         self._populate_table(table)
 
-    def _header_cells(self, playlist: str, count: int) -> tuple[Text, ...]:
+    def _header_cells(self, playlist: str, count: int, collapsed: bool) -> tuple[Text, ...]:
         """Cells for a playlist group-header row.
 
         Built as Rich ``Text`` with a literal style rather than markup. DataTable cells
@@ -189,9 +193,13 @@ class ReportScreen(ModalScreen[bool]):
         ``[bold $primary]`` markup was dropped and headers rendered identically to items
         (BUG-9). Uppercase plus the marker glyph keeps them distinct without depending on
         a theme colour.
+
+        The glyph is a real disclosure triangle: ``▶`` when the group is collapsed and
+        ``▼`` when it is open. It used to be a fixed ``▼`` on a row that did nothing when
+        clicked, which read as a broken control.
         """
         return (
-            Text("▼"),
+            Text("▶" if collapsed else "▼"),
             Text(f"{playlist.upper()}  ({count})", style="bold"),
             Text(""),
             Text(""),
@@ -213,12 +221,20 @@ class ReportScreen(ModalScreen[bool]):
         """Build every row from the report data, preserving existing selections.
 
         Shared by first population and rebuild so the two cannot drift apart — the
-        header-row bookkeeping that ``_get_item_at_cursor`` relies on is derived here
-        once. Returns the index of the first data row, or None if the report is empty.
+        row bookkeeping that ``_get_item_at_cursor`` relies on is derived here once.
+        Returns the index of the first *visible* data row, or None if nothing is
+        showing (an empty report, or every group collapsed).
+
+        Collapsing a group hides rows only. Every item is still appended to
+        ``_items``/``_item_order`` and still seeded into the selection maps below,
+        because those drive Select All, the Save & Close toast counts, and the save
+        loop itself — which dismisses anything left unselected. Skipping the model
+        for a collapsed group would silently drop its items from the save entirely.
         """
         self._items = []
         self._item_order = []
-        self._header_rows = set()
+        self._header_rows = {}
+        self._row_item_id = {}
 
         items_dict = self._report_data["items"]
 
@@ -233,8 +249,8 @@ class ReportScreen(ModalScreen[bool]):
             if playlist != current_playlist:
                 current_playlist = playlist
                 count = len(items_dict.get(playlist, []))
-                self._header_rows.add(table.row_count)
-                table.add_row(*self._header_cells(playlist, count))
+                self._header_rows[table.row_count] = playlist
+                table.add_row(*self._header_cells(playlist, count, playlist in self._collapsed))
 
             item_id = item["id"]
             self._items.append(item)
@@ -251,6 +267,12 @@ class ReportScreen(ModalScreen[bool]):
             )
             self._original_playlist.setdefault(item_id, playlist)
 
+            # Everything above is model state and must run for every item. Only the
+            # row is conditional.
+            if playlist in self._collapsed:
+                continue
+
+            self._row_item_id[table.row_count] = item_id
             table.add_row(*self._item_cells(item, playlist))
 
             if first_data_row is None:
@@ -297,43 +319,67 @@ class ReportScreen(ModalScreen[bool]):
             table.move_cursor(row=first_data_row)
         table.focus()
 
-    def _rebuild_table(self) -> None:
-        """Rebuild the table preserving cursor position."""
+    def _rebuild_table(self, focus_playlist: str | None = None) -> None:
+        """Rebuild the table, keeping the cursor somewhere sensible.
+
+        ``focus_playlist`` re-finds that group's header row after the rebuild. Restoring
+        the saved index instead would be wrong for a collapse toggle: hiding or revealing
+        a group shifts every row below it, so the old index lands on a different row.
+        """
         table = self.query_one("#report-table", DataTable)
         saved_cursor = table.cursor_row
         table.clear()
         first_data_row = self._fill_table(table)
         self._fit_scroll_height()
 
-        if saved_cursor is not None and saved_cursor < table.row_count:
+        target = None
+        if focus_playlist is not None:
+            target = next((row for row, name in self._header_rows.items() if name == focus_playlist), None)
+
+        if target is not None:
+            table.move_cursor(row=target)
+        elif saved_cursor is not None and saved_cursor < table.row_count:
             table.move_cursor(row=saved_cursor)
         elif first_data_row is not None:
             table.move_cursor(row=first_data_row)
         table.focus()
 
+    def _toggle_collapse(self, playlist: str) -> None:
+        """Show or hide one playlist group's items."""
+        if playlist in self._collapsed:
+            self._collapsed.discard(playlist)
+        else:
+            self._collapsed.add(playlist)
+        self._rebuild_table(focus_playlist=playlist)
+
     def _get_item_at_cursor(self) -> tuple[int, dict] | None:
-        """Get the item at the current cursor position, or None for header rows."""
+        """Get the item at the current cursor position, or None on a header row."""
         table = self.query_one("#report-table", DataTable)
         row_idx = table.cursor_row
-        if row_idx is None or row_idx in self._header_rows:
+        if row_idx is None:
             return None
 
-        # Count header rows before cursor to find the data index
-        header_count = sum(1 for h in self._header_rows if h < row_idx)
-        data_row_idx = row_idx - header_count
+        # A direct row -> item_id map, not arithmetic over header positions. The old
+        # ``row_idx - header_count`` indexing assumed every item owns a row, which stops
+        # being true the moment a group is collapsed.
+        item_id = self._row_item_id.get(row_idx)
+        if item_id is None:
+            return None
 
-        if 0 <= data_row_idx < len(self._item_order):
-            item_id = self._item_order[data_row_idx]
-            item = next((i for i in self._items if i["id"] == item_id), None)
-            if item:
-                return item_id, item
-        return None
+        item = next((i for i in self._items if i["id"] == item_id), None)
+        return (item_id, item) if item else None
 
     # DataTable consumes space/enter for its own RowSelected event before
-    # screen-level bindings fire. Hook into that event for toggle.
+    # screen-level bindings fire. Hook into that event for toggle. Single clicks
+    # arrive here too, via ClickSelectDataTable pre-positioning the cursor, so
+    # keyboard and mouse cannot diverge.
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        """Toggle selection when user presses enter/space on a row."""
-        self.action_toggle_selection()
+        """Route a row activation: headers collapse the group, items toggle selection."""
+        playlist = self._header_rows.get(event.cursor_row)
+        if playlist is not None:
+            self._toggle_collapse(playlist)
+        else:
+            self.action_toggle_selection()
 
     def action_toggle_selection(self) -> None:
         """Toggle selection for the item at cursor."""
