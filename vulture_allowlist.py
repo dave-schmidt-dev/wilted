@@ -180,6 +180,10 @@ _.compose  # unused method (src/wilted/tui/screens/confirm.py:65)
 _.on_button_pressed  # unused method (src/wilted/tui/screens/confirm.py:80)
 DEFAULT_CSS  # unused variable (src/wilted/tui/screens/report.py:38)
 BINDINGS  # unused variable (src/wilted/tui/screens/report.py:84)
+# ClickSelectDataTable: dispatched by Textual's message pump, not called directly.
+# Exercised by test_single_click_selects_a_fresh_report_row.
+_.on_click  # unused method (src/wilted/tui/screens/report.py:65)
+_.cursor_coordinate  # unused attribute (src/wilted/tui/screens/report.py:74)
 _.compose  # unused method (src/wilted/tui/screens/report.py:102)
 _.on_mount  # unused method (src/wilted/tui/screens/report.py:112)
 _.cursor_type  # unused attribute (src/wilted/tui/screens/report.py:114)

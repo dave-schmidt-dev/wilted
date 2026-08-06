@@ -64,7 +64,7 @@
 - Cleanup: the 21 stamped rows were cleared 2026-08-06 (`UPDATE items SET playlist_override = NULL WHERE playlist_override = 'Work' AND (playlist_assigned IS NULL OR playlist_assigned = '')` — the exact bug signature; `report.py` is the only writer of that column, and all 21 had no `playlist_assigned`). DB backed up to `data/backups/wilted-pre-bug6-cleanup.db` first. Zero overrides remain.
 - Regression tests (`tests/test_tui.py`): `test_save_does_not_stamp_playlist_override_on_uncategorized_items` asserts against `Item.get_by_id(...).playlist_override` read back from the DB, not in-memory state — the bug was a write that happened *despite* correct in-memory state, so an in-memory assertion passes against the buggy code. Verified by reverting the fix: the test fails with `assert 'Work' is None`. `test_unknown_playlist_maps_to_sentinel_not_index_zero` covers the sentinel separately.
 
-### BUG-7 — Mouse input does not reach Wilted's modal screens in the real terminal
+### BUG-7 — Mouse input does not reach Wilted at all in the real terminal
 
 - Trigger: any mouse interaction with a Wilted popup (morning report, add article, voice settings, confirm) in an actual terminal session. Long-standing; previously filed in `tasks.md` as "Modal screen buttons inoperable … buttons work in tests but not in terminal". Re-reported by David 2026-08-06: "the Morning Report popup doesn't respond to mouse input at all. I don't think any of the wilted popups do."
 - Failure mode: clicks appear to do nothing. Keyboard bindings work normally in the same session.
@@ -73,10 +73,15 @@
   - *App-side click handling.* Under headless Pilot (Textual 8.2.3) a single click on `#done-button` reaches its handler, and clicks on the report `DataTable` do move the cursor. The app handles mouse events correctly when it receives them.
   - *The launcher's environment stripping.* A PTY capture of a trivial Textual app under the full environment and under `scripts/wilted-runtime.sh`'s `env -i` allowlist produced byte-identical output, including the mouse-tracking enables `?1000h ?1003h ?1006h ?1015h` and `?1049h`. Textual asks for mouse tracking in both.
   - *Wilted disabling mouse mid-session.* `_restore_terminal()` / `_emit_terminal_restore()` are only reachable from the post-`run()` `finally` (`cli.py:1498`) and the SIGTERM/SIGHUP handler (`cli.py:1465`), which re-raises and exits. Nothing under `src/wilted/tui/` touches mouse state.
-- Next diagnostic step (cheapest discriminator, needs the human at the terminal): does the mouse do anything on the **main** Wilted screen, outside a popup?
-  - Dead everywhere → mouse events are not reaching the process at all: check iTerm2 mouse reporting for that profile, and whether the session is inside `tmux` without `set -g mouse on`.
-  - Works on the main screen but dead in modals → the problem is in Wilted's `ModalScreen` layer and the search narrows sharply.
-- Note: BUG-8 below is a *separate*, confirmed defect in the report table's click semantics. Fixing it will not fix this one, and this one masks it.
+- **Answered 2026-08-06** (David, at the terminal): the mouse does nothing on the **main** Wilted screen either. This rules out the `ModalScreen` layer — the title is now inaccurate, the failure is app-wide.
+  - Key narrowing: mouse events and key events arrive on the *same* file descriptor and are decoded by the same input parser. The keyboard works. So either the terminal never emits the mouse sequences, or they are dropped before Textual's parser — not a widget/screen-layer problem.
+- Checked since, without the terminal:
+  - Not `tmux`: no `tmux` process running and no `~/.tmux.conf`.
+  - iTerm2 preferences have `Mouse Reporting = true` on the profiles, and `NoSyncNeverAskAboutMouseReportingFrustration = true` (the "stop asking me about mouse reporting" prompt was dismissed at some point). **This does not clear iTerm2**: mouse reporting is also togglable per session at runtime, and that state never lands in the plist.
+- Next diagnostic step (needs a real interactive window — not a `!` command inside Claude Code, which is not a TTY that can be clicked into): run a *different* Textual app in the same iTerm2 window, e.g. `uvx --from textual textual demo` or `python -m textual`. Same framework, same driver, different app code:
+  - Mouse works in the demo → the problem is Wilted's app or its launcher, and the diff between them is small enough to bisect.
+  - Mouse dead in the demo too → the terminal or the driver's input path. Next step there is a raw-byte probe: enable SGR mouse reporting and dump stdin bytes on click. No bytes → iTerm2 is not emitting them (check Session menu, and any per-session mouse-reporting toggle); bytes present → Textual's parser is dropping them.
+- Note: BUG-8 below is a *separate* defect in the report table's click semantics, now fixed. Fixing it did not fix this one, and this one still masks it — clicking rows will do nothing until mouse events reach the process.
 
 ### BUG-8 — A single mouse click never selects a row in the report table
 
@@ -96,8 +101,12 @@
   - `enter` on a row → toggles correctly (keyboard path is fine).
   - `#done-button` → responds to a **single** click and reaches its handler.
 - Scope note: this is independent of BUG-7. It is confirmed and fixable inside Wilted, but it is invisible until mouse events actually reach the process.
-- Status: **active**, no test coverage for the click path.
-- Fix direction: stop relying solely on `RowSelected`. Handle `RowHighlighted` plus an explicit activation, or bind the click through `DataTable.CellSelected`, or make the first click both move the cursor and toggle. Whatever is chosen, add a Pilot test that clicks a fresh row **once** and asserts the selection changed.
+- Status: **fixed** 2026-08-06 — but **not observable to the user until BUG-7 is fixed**, because no mouse event reaches the app in David's terminal at all.
+- Fix: `ClickSelectDataTable` (`report.py`), a `DataTable` subclass that moves the cursor to the clicked row *before* Textual's own handler runs, so Textual's `new_coordinate == self.cursor_coordinate` check comes out true for the row the user actually clicked and `DataTable` posts `RowSelected` itself. Chosen over posting `RowSelected` by hand (couples to the private `_post_selected_message`) and over `RowHighlighted` (fires on keyboard navigation too, so every arrow key would toggle).
+- Why the public `on_click`, not an `_on_click` override: `MessagePump._get_dispatch_methods` walks the MRO taking `cls.__dict__["_on_click"] or cls.__dict__["on_click"]` *per class*, so an `_on_click` override is dispatched **in addition to** `DataTable`'s — a `super()._on_click(event)` inside it would run Textual's handler twice. Public handlers on a subclass are dispatched first, which is the ordering this fix needs.
+- Verified assumptions: `validate_cursor_coordinate` only clamps to valid ranges, so the assigned coordinate survives to Textual's equality check; and `_css_type_names` includes base-class names, so the `DataTable { border: none; }` type selector still matches the subclass (a regained border would have moved both `CHROME_ROWS` and the 93-cell width floor — the 3 snapshot tests confirm it did not).
+- Regression test: `test_single_click_selects_a_fresh_report_row` — clicks a row that is *not* under the cursor exactly once and asserts it toggles, that the cursor stays on it through `_rebuild_table()`, that only that row changed, that clicking a group header is a clean no-op, and that a second click deselects. Verified to fail against a plain `DataTable`: `one click on row 2 (cursor started on 1) did not select it`.
+- Known behavior: a double-click toggles twice (net zero), the normal outcome for a checkbox list. Not special-cased.
 
 ### BUG-9 — Report modal reads as a flat list: group headers and item rows are indistinguishable
 

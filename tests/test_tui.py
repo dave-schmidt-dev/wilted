@@ -4709,3 +4709,60 @@ async def test_short_report_dialog_shrinks_to_content():
         dialog = app.screen.query_one("#report-dialog")
         # 80% of 40 rows = 32; the old fixed height always claimed all of it.
         assert dialog.size.height < 24, f"dialog did not shrink to content: {dialog.size}"
+
+
+@pytest.mark.asyncio
+async def test_single_click_selects_a_fresh_report_row():
+    """One click on any row must toggle it, not just move the cursor (BUG-8).
+
+    Textual's ``DataTable._on_click`` computes ``highlight_click`` before moving the
+    cursor, so an unpatched table only posts ``RowSelected`` when the click lands on
+    the row that already held the cursor — clicking down a list selects nothing.
+    """
+    from textual.widgets import DataTable
+
+    from wilted.tui.screens.report import ReportScreen
+
+    report_data, uncategorized, work_item = _uncategorized_report_fixture()
+
+    app = WiltedApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(ReportScreen(report_data))
+        await pilot.pause()
+        screen = app.screen
+        table = screen.query_one("#report-table", DataTable)
+
+        # Rows: [UNCATEGORIZED hdr, ep1, ep2, WORK hdr, Work Article].
+        header_rows = sorted(screen._header_rows)
+        assert len(header_rows) == 2, f"fixture shape changed: {header_rows}"
+        data_rows = [r for r in range(table.row_count) if r not in screen._header_rows]
+        start = table.cursor_row
+        target = next(r for r in data_rows if r != start)
+        assert table.get_row_at(target)[0].plain == "[ ]", "target row starts unselected"
+
+        # y=0 is the column-label row, so data row N sits at y=N+1.
+        await pilot.click(table, offset=(10, target + 1), times=1)
+        await pilot.pause()
+
+        assert table.get_row_at(target)[0].plain == "[x]", (
+            f"one click on row {target} (cursor started on {start}) did not select it"
+        )
+        assert table.cursor_row == target, (
+            f"cursor left the clicked row after the rebuild: {table.cursor_row} != {target}"
+        )
+        # Only the clicked row changed.
+        assert sum(1 for r in data_rows if table.get_row_at(r)[0].plain == "[x]") == 1
+
+        # Clicking a group header is a clean no-op — no toggle, no crash.
+        await pilot.click(table, offset=(10, header_rows[0] + 1), times=1)
+        await pilot.pause()
+        assert sum(1 for r in data_rows if table.get_row_at(r)[0].plain == "[x]") == 1, (
+            "clicking a group header changed a selection"
+        )
+
+        # A second click on the same row unselects it.
+        await pilot.click(table, offset=(10, target + 1), times=1)
+        await pilot.pause()
+        assert table.get_row_at(target)[0].plain == "[ ]", "second click did not deselect"
+
+    assert uncategorized and work_item  # fixture rows are what the table renders

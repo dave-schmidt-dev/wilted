@@ -6,9 +6,10 @@ import logging
 from typing import TYPE_CHECKING
 
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.coordinate import Coordinate
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Label
 
@@ -31,6 +32,46 @@ from wilted.db import now_utc as _now_utc
 from wilted.report import update_source_stats
 
 logger = logging.getLogger(__name__)
+
+
+class ClickSelectDataTable(DataTable):
+    """A ``DataTable`` where a single click selects the row that was clicked.
+
+    Textual's ``DataTable._on_click`` computes ``highlight_click`` *before* it moves
+    the cursor::
+
+        highlight_click = new_coordinate == self.cursor_coordinate
+        self.cursor_coordinate = new_coordinate
+        if highlight_click:
+            self._post_selected_message()
+
+    so ``RowSelected`` is posted only when the click lands on the row that already
+    held the cursor. Clicking down a fresh list moves the cursor and selects nothing
+    (BUG-8) — two clicks per row, with the first giving no feedback that it did
+    anything.
+
+    The fix is to move the cursor to the clicked row *ahead* of Textual's handler, so
+    its own equality check comes out true for the row the user actually clicked. That
+    keeps the selection message on Textual's side rather than reimplementing it here.
+
+    This is deliberately the public ``on_click`` rather than an ``_on_click``
+    override: ``MessagePump._get_dispatch_methods`` walks the MRO taking
+    ``cls.__dict__["_on_click"] or cls.__dict__["on_click"]`` per class, so an
+    ``_on_click`` override would be dispatched *in addition to* ``DataTable``'s, and
+    a ``super()`` call inside it would run Textual's handler twice. Public handlers
+    on a subclass run first, which is exactly the ordering this needs.
+    """
+
+    def on_click(self, event: events.Click) -> None:
+        meta = event.style.meta
+        if "row" not in meta or "column" not in meta:
+            return
+        row, column = meta["row"], meta["column"]
+        # Negative indices are the header row and row labels; leave those to Textual,
+        # which has its own HeaderSelected/RowLabelSelected paths for them.
+        if row < 0 or column < 0:
+            return
+        self.cursor_coordinate = Coordinate(row, column)
 
 
 class ReportScreen(ModalScreen[bool]):
@@ -114,7 +155,7 @@ class ReportScreen(ModalScreen[bool]):
         with Vertical(id="report-dialog"):
             yield Label("Morning Report", id="report-title")
             with VerticalScroll(id="report-scroll"):
-                yield DataTable(id="report-table")
+                yield ClickSelectDataTable(id="report-table")
             with Horizontal(id="report-actions"):
                 yield Button("Save & Close", id="done-button", variant="primary")
             yield Label(
