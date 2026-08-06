@@ -4420,3 +4420,253 @@ async def test_article_cache_drain_skips_marshal_when_app_stops_mid_drain(monkey
             await app.workers.wait_for_complete()  # let the generation worker run to completion
 
     mock_finish.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Report screen: playlist overrides and legibility (BUG-6, BUG-9)
+# ---------------------------------------------------------------------------
+
+
+def _uncategorized_report_fixture():
+    """Create a feed with two unclassified podcast items and one 'Work' article.
+
+    Mirrors the real shape that produced BUG-6: podcast episodes from a feed with
+    no ``default_playlist`` group under "Uncategorized", because nothing in the
+    pipeline ever assigns them a playlist.
+    """
+    from datetime import UTC, datetime
+
+    from wilted.db import Feed, Item
+
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    feed = Feed.create(
+        title="Pop Culture Happy Hour",
+        feed_url="https://example.com/pchh.xml",
+        feed_type="podcast",
+        enabled=True,
+        created_at=now,
+        updated_at=now,
+    )
+    uncategorized = [
+        Item.create(
+            feed=feed,
+            guid=f"bug6-uncat-{n}",
+            title=f"Uncategorized Episode {n}",
+            discovered_at=now,
+            item_type="podcast_episode",
+            status="discovered",
+            status_changed_at=now,
+            playlist_assigned=None,
+        )
+        for n in (1, 2)
+    ]
+    work_item = Item.create(
+        feed=feed,
+        guid="bug6-work-1",
+        title="Work Article",
+        discovered_at=now,
+        item_type="article",
+        status="classified",
+        status_changed_at=now,
+        playlist_assigned="Work",
+    )
+
+    report_data = {
+        "report": {
+            "report_date": "2026-08-06",
+            "generated_at": "2026-08-06T06:00:00Z",
+            "item_count": 3,
+            "metadata": '{"playlists": {"Uncategorized": 2, "Work": 1}, "total_items": 3}',
+        },
+        "items": {
+            "Uncategorized": [
+                {
+                    "id": item.id,
+                    "title": item.title,
+                    "source_name": "Pop Culture Happy Hour",
+                    "relevance_score": None,
+                    "summary": None,
+                }
+                for item in uncategorized
+            ],
+            "Work": [
+                {
+                    "id": work_item.id,
+                    "title": work_item.title,
+                    "source_name": "Pop Culture Happy Hour",
+                    "relevance_score": 0.9,
+                    "summary": "Summary",
+                }
+            ],
+        },
+    }
+    return report_data, uncategorized, work_item
+
+
+@pytest.mark.asyncio
+async def test_save_does_not_stamp_playlist_override_on_uncategorized_items():
+    """Saving the report must not invent a playlist the user never chose (BUG-6).
+
+    ``_playlist_index`` used to default to ``0``, which resolves to the real
+    playlist "Work", so save-and-close wrote ``playlist_override='Work'`` onto every
+    uncategorized item — including ones the user dismissed. Asserted against the DB,
+    not in-memory state: the bug was a write that happened despite correct in-memory
+    state, so an in-memory assertion would pass against the buggy code.
+    """
+    from wilted.db import Item
+    from wilted.tui.screens.report import ReportScreen
+
+    report_data, uncategorized, work_item = _uncategorized_report_fixture()
+
+    app = WiltedApp()
+    async with app.run_test() as pilot:
+        app.push_screen(ReportScreen(report_data))
+        await pilot.pause()
+
+        # Accept the first item, leave the rest dismissed, then save and close.
+        await pilot.press("enter")
+        await pilot.press("s")
+        await pilot.pause(delay=0.5)
+
+    for item in uncategorized:
+        assert Item.get_by_id(item.id).playlist_override is None, (
+            f"item {item.id} was stamped with an override the user never chose"
+        )
+    # An item already in a known playlist keeps its assignment, no override written.
+    refreshed = Item.get_by_id(work_item.id)
+    assert refreshed.playlist_override is None
+    assert refreshed.playlist_assigned == "Work"
+
+
+@pytest.mark.asyncio
+async def test_unknown_playlist_maps_to_sentinel_not_index_zero():
+    """An item outside ``_playlists`` gets None, not index 0 (which means "Work")."""
+    from wilted.tui.screens.report import ReportScreen
+
+    report_data, uncategorized, work_item = _uncategorized_report_fixture()
+
+    app = WiltedApp()
+    async with app.run_test() as pilot:
+        app.push_screen(ReportScreen(report_data))
+        await pilot.pause()
+        screen = app.screen
+        assert screen._playlist_index[uncategorized[0].id] is None
+        assert screen._playlist_index[uncategorized[1].id] is None
+        assert screen._playlist_index[work_item.id] == 0  # "Work" is in _playlists
+
+
+@pytest.mark.asyncio
+async def test_report_rows_are_visually_distinguishable():
+    """Group headers, checkboxes and the Category column must all be legible (BUG-9).
+
+    Headers previously used ``[bold $primary]`` markup, which Rich cannot resolve
+    (``$primary`` is a Textual CSS variable), so it was silently dropped and headers
+    rendered identically to item rows.
+    """
+    from textual.widgets import DataTable
+
+    from wilted.tui.screens.report import ReportScreen
+
+    report_data, uncategorized, _work_item = _uncategorized_report_fixture()
+
+    app = WiltedApp()
+    async with app.run_test() as pilot:
+        app.push_screen(ReportScreen(report_data))
+        await pilot.pause()
+        screen = app.screen
+        table = app.screen.query_one("#report-table", DataTable)
+
+        assert [label for label, _width in ReportScreen.COLUMNS] == ["Sel", "Title", "Source", "Category"]
+
+        header_row = min(screen._header_rows)
+        header_cells = table.get_row_at(header_row)
+        # Carries a real (Rich-resolvable) style, so it cannot render as a plain row.
+        assert header_cells[1].style == "bold"
+        assert "UNCATEGORIZED" in header_cells[1].plain
+        assert "(2)" in header_cells[1].plain
+
+        item_row = header_row + 1
+        item_cells = table.get_row_at(item_row)
+        assert item_cells[1].style != "bold", "item titles must not look like headers"
+        # An empty checkbox still reads as a checkbox.
+        assert item_cells[0].plain == "[ ]"
+        assert item_cells[3].plain == "Uncategorized", "Category column must carry a value"
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert table.get_row_at(item_row)[0].plain == "[x]", "selection must be visible"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", [(120, 40), (100, 24), (80, 24)])
+async def test_report_dialog_keeps_actions_on_screen(terminal):
+    """A long report must not push Save & Close outside the dialog (BUG-9).
+
+    ``height: auto`` on the dialog is what stops a 3-item report rendering in a
+    mostly-blank 80%-tall box, but Textual's auto layout clips at ``max-height``
+    without re-distributing space to siblings. This locks ``CHROME_ROWS``: change the
+    dialog's border/padding/actions CSS without updating it and this fails.
+    """
+    from textual.widgets import Button, DataTable, Label
+
+    from wilted.tui.screens.report import ReportScreen
+
+    report_data = {
+        "report": {
+            "report_date": "2026-08-06",
+            "generated_at": "2026-08-06T06:00:00Z",
+            "item_count": 60,
+            "metadata": "{}",
+        },
+        "items": {
+            "Uncategorized": [
+                {
+                    "id": n,
+                    "title": f"Episode {n} with a title long enough to crowd the Category column",
+                    "source_name": "Some Podcast Feed",
+                    "relevance_score": None,
+                    "summary": None,
+                }
+                for n in range(1, 61)
+            ]
+        },
+    }
+
+    app = WiltedApp()
+    async with app.run_test(size=terminal) as pilot:
+        app.push_screen(ReportScreen(report_data))
+        await pilot.pause()
+        screen = app.screen
+        dialog = screen.query_one("#report-dialog")
+        table = screen.query_one("#report-table", DataTable)
+        button = screen.query_one("#done-button", Button)
+        help_label = screen.query_one("#report-help", Label)
+
+        assert dialog.region.contains_region(button.region), (
+            f"Save & Close spilled outside the dialog at {terminal}: button={button.region} dialog={dialog.region}"
+        )
+        assert dialog.region.contains_region(help_label.region)
+        assert screen.region.contains_region(dialog.region)
+
+        # The table must still be scrollable to the last row.
+        assert table.virtual_size.height > table.size.height
+        table.move_cursor(row=table.row_count - 1)
+        await pilot.pause()
+        assert table.cursor_row == table.row_count - 1
+        assert table.scroll_y > 0
+
+
+@pytest.mark.asyncio
+async def test_short_report_dialog_shrinks_to_content():
+    """A 3-item report should not render in a mostly-empty 80%-tall dialog (BUG-9)."""
+    from wilted.tui.screens.report import ReportScreen
+
+    report_data, _uncategorized, _work_item = _uncategorized_report_fixture()
+
+    app = WiltedApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(ReportScreen(report_data))
+        await pilot.pause()
+        dialog = app.screen.query_one("#report-dialog")
+        # 80% of 40 rows = 32; the old fixed height always claimed all of it.
+        assert dialog.size.height < 24, f"dialog did not shrink to content: {dialog.size}"

@@ -45,6 +45,80 @@
 - Status: **resolved (2026-07-10)**. Engine: `stop()` now kills the tracked `self._current_proc` (guarded by `_proc_lock`), so a blocked read returns EOF and `play_file` unwinds. Regression lock: `tests/test_engine.py::TestPlayFileStreaming::test_stop_interrupts_blocked_read` (blocking-read fake; revert-proven). Harness `measure_playback.py`: incremental `results.log` writes + a daemon-thread `install_hang_guard` backstop for the write-block/device-wedge case that killing ffmpeg cannot interrupt.
 - Follow-up: killing ffmpeg does not interrupt a `stream.write()` blocked on a genuinely wedged device — the engine relies on the block-boundary check there. If the route-recovery measurement (Task 0.3) shows real-world device-wedge hangs in the TUI, consider a write-side timeout or persistent-stream design.
 
+### BUG-6 — Morning report silently stamps `playlist_override = "Work"` on every uncategorized item
+
+- Trigger: Save & Close in the morning-report modal, for any item whose group is not one of `Work` / `Fun` / `Education` — in practice every item with `playlist_assigned IS NULL`, which renders under the `Uncategorized` group header. Applies to dismissed items as well as accepted ones.
+- Failure mode: the item silently acquires a user-intent playlist the user never chose. No prompt, no visible change in the modal, no log line.
+- Root cause: two halves of `src/wilted/tui/screens/report.py` disagree about what index `0` means.
+  - `report.py:154` — `self._playlist_index[item_id] = self._playlists.index(playlist) if playlist in self._playlists else 0`. `"Uncategorized"` is not in `self._playlists`, so it falls to `0`, which *is* a real playlist (`"Work"`), not a sentinel.
+  - `report.py:340-345` — on save, reads that index back, resolves it to `"Work"`, compares against `self._original_playlist[item_id]` (`"Uncategorized"`), sees a mismatch, and writes `db_item.playlist_override = "Work"`.
+  - Nothing ever *changes* `_playlist_index`: the screen has no binding that cycles playlists (`BINDINGS` is only `a` / `n` / `escape,q,s`). The index is therefore always `0`, so the "did the user change it?" comparison is guaranteed to fire for uncategorized items and never fires for anything else.
+- Diagnosis: `tui/screens/report.py:345` is the only writer of `playlist_override` anywhere in `src/` (`wilted playlist add` writes `playlist_items`, a different table). Live DB at 2026-08-06 showed 14 rows with `playlist_assigned IS NULL AND playlist_override = 'Work'`, all `preparation_state='not_queued'` — i.e. items that were *dismissed* in the modal and stamped on the way out.
+- Live reproduction (2026-08-06 09:55): closing the morning report without selecting anything recorded all 15 report items as `dismissed` and stamped the 7 uncategorized ones, taking the affected count from 14 to **21**. Predicted before the close, confirmed after — no test needed to trigger it, it fires on every ordinary close.
+- Interaction with `wilted report --reset`: reset reverts `ReportItem.decision` to `PENDING` and re-assembles, but it does **not** clear `playlist_override`. Dismissed items come back; the bogus overrides do not go away, and a subsequent close re-applies them. Any cleanup has to clear the column explicitly.
+- Related inconsistency worth checking when fixing: report grouping keys off `playlist_assigned` alone (`report.py:62`, `report.py:247`), while playlist membership resolves `COALESCE(playlist_override, playlist_assigned)` (`content_state.py:348`). A stamped item therefore still shows under `Uncategorized` in the next report while belonging to `Work` for playlist purposes.
+- Impact today: latent, not visible. `items_for_playlist_dynamic` (`content_state.py:346-352`) requires `preparation_state IN ('ready','queued')`, and all 14 affected rows are `not_queued`, so they are not currently showing up in the Work playlist. Any of them that is later queued would silently appear there.
+- Status: **fixed** 2026-08-06.
+- Fix: `_playlist_index` now stores `None` — a real sentinel — for any item whose playlist is not in `_playlists`, and the save site skips the write when the index is `None`. The dangerous default (`0` silently meaning `"Work"`) is gone from the data structure itself, not merely from the write path. Deliberately *not* implemented as a guard on `_original_playlist not in self._playlists`: that silently drops a real choice the moment a playlist-cycling binding is added (cycle an `Uncategorized` item to `Fun`, guard fires, selection discarded) — the same class of defect. A future cycling binding sets the index, which is exactly what makes the `new != original` comparison mean "the user chose".
+  - An explicit `_playlist_changed` set was considered as a second barrier and rejected: with no UI that changes a playlist, it would have had no writer, and `make deadcode` (vulture, `min_confidence 60`) would flag it. Baselining new dead code in `vulture_allowlist.py` launders it past the gate.
+- Cleanup: the 21 stamped rows were cleared 2026-08-06 (`UPDATE items SET playlist_override = NULL WHERE playlist_override = 'Work' AND (playlist_assigned IS NULL OR playlist_assigned = '')` — the exact bug signature; `report.py` is the only writer of that column, and all 21 had no `playlist_assigned`). DB backed up to `data/backups/wilted-pre-bug6-cleanup.db` first. Zero overrides remain.
+- Regression tests (`tests/test_tui.py`): `test_save_does_not_stamp_playlist_override_on_uncategorized_items` asserts against `Item.get_by_id(...).playlist_override` read back from the DB, not in-memory state — the bug was a write that happened *despite* correct in-memory state, so an in-memory assertion passes against the buggy code. Verified by reverting the fix: the test fails with `assert 'Work' is None`. `test_unknown_playlist_maps_to_sentinel_not_index_zero` covers the sentinel separately.
+
+### BUG-7 — Mouse input does not reach Wilted's modal screens in the real terminal
+
+- Trigger: any mouse interaction with a Wilted popup (morning report, add article, voice settings, confirm) in an actual terminal session. Long-standing; previously filed in `tasks.md` as "Modal screen buttons inoperable … buttons work in tests but not in terminal". Re-reported by David 2026-08-06: "the Morning Report popup doesn't respond to mouse input at all. I don't think any of the wilted popups do."
+- Failure mode: clicks appear to do nothing. Keyboard bindings work normally in the same session.
+- Status: **active, root cause unknown.** The evidence points *away* from Wilted's own code, but delivery has not been observed end-to-end in a real terminal.
+- Ruled out so far:
+  - *App-side click handling.* Under headless Pilot (Textual 8.2.3) a single click on `#done-button` reaches its handler, and clicks on the report `DataTable` do move the cursor. The app handles mouse events correctly when it receives them.
+  - *The launcher's environment stripping.* A PTY capture of a trivial Textual app under the full environment and under `scripts/wilted-runtime.sh`'s `env -i` allowlist produced byte-identical output, including the mouse-tracking enables `?1000h ?1003h ?1006h ?1015h` and `?1049h`. Textual asks for mouse tracking in both.
+  - *Wilted disabling mouse mid-session.* `_restore_terminal()` / `_emit_terminal_restore()` are only reachable from the post-`run()` `finally` (`cli.py:1498`) and the SIGTERM/SIGHUP handler (`cli.py:1465`), which re-raises and exits. Nothing under `src/wilted/tui/` touches mouse state.
+- Next diagnostic step (cheapest discriminator, needs the human at the terminal): does the mouse do anything on the **main** Wilted screen, outside a popup?
+  - Dead everywhere → mouse events are not reaching the process at all: check iTerm2 mouse reporting for that profile, and whether the session is inside `tmux` without `set -g mouse on`.
+  - Works on the main screen but dead in modals → the problem is in Wilted's `ModalScreen` layer and the search narrows sharply.
+- Note: BUG-8 below is a *separate*, confirmed defect in the report table's click semantics. Fixing it will not fix this one, and this one masks it.
+
+### BUG-8 — A single mouse click never selects a row in the report table
+
+- Trigger: clicking an item row in the morning-report modal to accept/dismiss it (assuming mouse events reach the app at all — see BUG-7).
+- Failure mode: clicking a row moves the cursor but does not toggle selection. Clicking down a list, a different row each time, selects nothing. Only a second click on the *same* row registers.
+- Root cause (confirmed): Textual's `DataTable._on_click` only posts `RowSelected` when the clicked coordinate *already equals* `self.cursor_coordinate`:
+  ```python
+  highlight_click = new_coordinate == self.cursor_coordinate
+  self.cursor_coordinate = new_coordinate
+  if highlight_click:
+      self._post_selected_message()
+  ```
+  So the first click on a row only moves the cursor; a second click on the same row selects it. `ReportScreen` hangs its entire toggle behavior off `on_data_table_row_selected` (`report.py:240`), so one click per row is a no-op by construction. Browsing down a list — clicking a different row each time — never selects anything.
+- Diagnosis (headless Pilot, Textual 8.2.3, fake data, no DB writes):
+  - click a not-yet-highlighted row → cursor moves `1 → 2`, `RowSelected` never fires, `_selected` unchanged.
+  - click the *same* row again → `_selected` toggles to `True`.
+  - `enter` on a row → toggles correctly (keyboard path is fine).
+  - `#done-button` → responds to a **single** click and reaches its handler.
+- Scope note: this is independent of BUG-7. It is confirmed and fixable inside Wilted, but it is invisible until mouse events actually reach the process.
+- Status: **active**, no test coverage for the click path.
+- Fix direction: stop relying solely on `RowSelected`. Handle `RowHighlighted` plus an explicit activation, or bind the click through `DataTable.CellSelected`, or make the first click both move the cursor and toggle. Whatever is chosen, add a Pilot test that clicks a fresh row **once** and asserts the selection changed.
+
+### BUG-9 — Report modal reads as a flat list: group headers and item rows are indistinguishable
+
+- Trigger: opening the morning report with more than one playlist group.
+- Failure mode: `Uncategorized (7)` and `Work (8)` are rendered as ordinary table rows in the Title column, visually identical to the item rows beneath them. The report reads as a list of counts rather than as grouped items, and the cursor lands on header rows as if they were selectable. Surfaced 2026-08-06 when the group header was mistaken for an item with no title.
+- Contributing details:
+  - `report.py:139-145` adds headers via `table.add_row("", f"[bold $primary]{playlist}[/bold $primary]", "", "")`. `DataTable` cells go through *Rich* markup, not Textual content markup, and `$primary` is a Textual CSS variable that Rich cannot resolve — verified: `Style.parse("bold $primary")` raises `StyleSyntaxError: '$primary' is not a valid color`. Rich does not crash on render, it drops the style, so the intended bold/primary header styling never lands and headers render identically to item titles.
+  - The selection column is a single space (`" "`) with values `"   "` / `"  ✓"` (`report.py:120`, `report.py:162`). With nothing selected there is no visible column at all, so there is no affordance showing that rows are selectable or what is currently selected.
+  - The `Category` column is pushed off the right edge — the four auto-sized columns exceed `#report-dialog`'s `max-width: 120`, leaving a horizontal scrollbar and a truncated `Source` column.
+  - `#report-table { height: auto; }` inside a `1fr` scroll container leaves a large blank area under short reports.
+- Status: **fixed** 2026-08-06 (cursor still lands on header rows — see remaining gap below).
+- Fix:
+  - Headers are built as Rich `Text` with a literal `style="bold"` plus a `▼` marker and an uppercased label (`UNCATEGORIZED  (2)`), so they no longer depend on a theme colour Rich cannot resolve. Building cells as `Text` rather than markup strings also removes markup-parsing ambiguity for titles containing `[`.
+  - The selection column has a real header (`Sel`) and renders `[ ]` / `[x]`, so it reads as a checkbox even when nothing is selected.
+  - Columns now have explicit widths (`Sel` 3, `Title` 52, `Source` 18, `Category` 12 — `ReportScreen.COLUMNS`) instead of auto-sizing, so `Category` stays on screen. `Category` was kept, not dropped: it is the only feedback surface for the `_playlist_index` state a future playlist-cycling binding drives.
+  - `#report-dialog` is `height: auto` with `max-height: 80%` so a 3-item report renders a 16-row dialog instead of a mostly-blank 32-row one.
+- Layout trap found while fixing: Textual's `height: auto` container *clips* at `max-height` without re-distributing space to siblings, so an unbounded table pushed the Save & Close button outside the dialog border — and entirely off screen on an 80×24 terminal. Neither `max-height: 100%` nor `height: 1fr` on the scroll region fixes it (`1fr` does not collapse to content inside an `auto` parent, which is what caused the blank area to begin with). Resolved by sizing the scroll region at runtime in `_fit_scroll_height()`: `min(content_rows, 80% of screen - CHROME_ROWS)`, recomputed on resize.
+- Refactor: `_populate_table` and `_rebuild_table` were near-duplicate renderers, which is how they could drift on the `_header_rows` bookkeeping that `_get_item_at_cursor` depends on for row→item mapping. Both now delegate to a single `_fill_table`.
+- Regression tests (`tests/test_tui.py`): `test_report_rows_are_visually_distinguishable` (header carries a Rich-resolvable style, item titles do not, checkbox visible in both states, `Category` populated), `test_report_dialog_keeps_actions_on_screen` (parametrised 120×40 / 100×24 / 80×24 — asserts the button and help line stay inside the dialog and the last row is still scrollable; this is what locks `CHROME_ROWS`), and `test_short_report_dialog_shrinks_to_content`.
+- Remaining gap: the cursor still lands on header rows. `_get_item_at_cursor` returns `None` there so nothing breaks, but the rows are not skipped during navigation. Not addressed here.
+
 ## Validation Debt
 
 - The routine automated suite covers the safe, guarded paths that Wilted actually uses.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from rich.text import Text
 from textual import on, work
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -39,10 +40,12 @@ class ReportScreen(ModalScreen[bool]):
     ReportScreen {
         align: center middle;
     }
+    /* height: auto so a short report is a short dialog. Without it the dialog was
+       always 80% tall and a 3-item report left most of the box blank (BUG-9). */
     #report-dialog {
         width: 90%;
         max-width: 120;
-        height: 80%;
+        height: auto;
         max-height: 80%;
         border: thick $primary;
         background: $surface;
@@ -55,8 +58,11 @@ class ReportScreen(ModalScreen[bool]):
         width: 100%;
         margin-bottom: 1;
     }
+    /* auto (not 1fr) so the scroll region collapses to its content and the dialog's
+       height: auto can take effect. On long reports this is overridden at runtime by
+       _fit_scroll_height(), which is what keeps the action row inside the dialog. */
     #report-scroll {
-        height: 1fr;
+        height: auto;
     }
     #report-table {
         height: auto;
@@ -95,7 +101,11 @@ class ReportScreen(ModalScreen[bool]):
         self._items: list[dict] = []
         self._item_order: list[int] = []  # item_ids in table order (excluding headers)
         self._selected: dict[int, bool] = {}  # item_id -> selected
-        self._playlist_index: dict[int, int] = {}  # item_id -> playlist index
+        # item_id -> index into _playlists, or None when the item's current playlist is
+        # not one of _playlists (e.g. "Uncategorized"). None is a real sentinel, never 0:
+        # defaulting to 0 silently means "Work" and was written to the DB as an override
+        # the user never chose (BUG-6).
+        self._playlist_index: dict[int, int | None] = {}
         self._original_playlist: dict[int, str | None] = {}  # item_id -> original playlist from DB
         self._playlists = ["Work", "Fun", "Education"]
         self._header_rows: set[int] = set()  # row indices that are playlist headers
@@ -113,66 +123,59 @@ class ReportScreen(ModalScreen[bool]):
             )
         yield Footer()
 
+    # Explicit widths keep the Category column on screen instead of letting long
+    # titles push it past the dialog's right edge (BUG-9).
+    COLUMNS = (
+        ("Sel", 3),
+        ("Title", 52),
+        ("Source", 18),
+        ("Category", 12),
+    )
+
     def on_mount(self) -> None:
         table = self.query_one("#report-table", DataTable)
         table.cursor_type = "row"
         table.zebra_stripes = True
-        table.add_columns(" ", "Title", "Source", "Category")
+        for label, width in self.COLUMNS:
+            table.add_column(label, width=width)
         self._populate_table(table)
 
-    def _populate_table(self, table: DataTable) -> None:
-        """Fill the table with report items grouped by playlist."""
-        items_dict = self._report_data["items"]
+    def _header_cells(self, playlist: str, count: int) -> tuple[Text, ...]:
+        """Cells for a playlist group-header row.
 
-        all_items: list[tuple[str, dict]] = []
-        for playlist, items in sorted(items_dict.items()):
-            for item in items:
-                all_items.append((playlist, item))
+        Built as Rich ``Text`` with a literal style rather than markup. DataTable cells
+        are rendered by Rich, which cannot resolve Textual CSS variables, so the previous
+        ``[bold $primary]`` markup was dropped and headers rendered identically to items
+        (BUG-9). Uppercase plus the marker glyph keeps them distinct without depending on
+        a theme colour.
+        """
+        return (
+            Text("▼"),
+            Text(f"{playlist.upper()}  ({count})", style="bold"),
+            Text(""),
+            Text(""),
+        )
 
-        current_playlist = None
-        first_data_row = None
-        for playlist, item in all_items:
-            if playlist != current_playlist:
-                current_playlist = playlist
-                count = len(items_dict.get(playlist, []))
-                row_idx = table.row_count
-                table.add_row(
-                    "",
-                    f"[bold $primary]{playlist}[/bold $primary] ({count})",
-                    "",
-                    "",
-                    key=f"header-{playlist}",
-                )
-                self._header_rows.add(row_idx)
+    def _item_cells(self, item: dict, playlist: str) -> tuple[Text, ...]:
+        """Cells for a single report-item row."""
+        # An empty checkbox still reads as a checkbox; the old blank cell made the
+        # selection column invisible until something was selected (BUG-9).
+        check = "[x]" if self._selected.get(item["id"], False) else "[ ]"
+        return (
+            Text(check),
+            Text(item.get("title") or "Untitled"),
+            Text(item.get("source_name") or ""),
+            Text(playlist or "Uncategorized"),
+        )
 
-            item_id = item["id"]
-            self._items.append(item)
-            self._item_order.append(item_id)
-            # Unselected by default: closing without choosing dismisses the report
-            # rather than queueing everything (opt-in selection).
-            self._selected[item_id] = False
-            self._playlist_index[item_id] = self._playlists.index(playlist) if playlist in self._playlists else 0
-            self._original_playlist[item_id] = playlist
+    def _fill_table(self, table: DataTable) -> int | None:
+        """Build every row from the report data, preserving existing selections.
 
-            title = item.get("title") or "Untitled"
-            source = item.get("source_name") or ""
-            playlist_cell = playlist or "Uncategorized"
-
-            check = "  ✓" if self._selected[item_id] else "   "
-            table.add_row(check, title, source, playlist_cell)
-
-            if first_data_row is None:
-                first_data_row = table.row_count - 1
-
-        if first_data_row is not None:
-            table.move_cursor(row=first_data_row)
-        table.focus()
-
-    def _rebuild_table(self) -> None:
-        """Rebuild the table preserving cursor position."""
-        table = self.query_one("#report-table", DataTable)
-        saved_cursor = table.cursor_row
-        table.clear()
+        Shared by first population and rebuild so the two cannot drift apart — the
+        header-row bookkeeping that ``_get_item_at_cursor`` relies on is derived here
+        once. Returns the index of the first data row, or None if the report is empty.
+        """
+        self._items = []
         self._item_order = []
         self._header_rows = set()
 
@@ -189,27 +192,71 @@ class ReportScreen(ModalScreen[bool]):
             if playlist != current_playlist:
                 current_playlist = playlist
                 count = len(items_dict.get(playlist, []))
-                row_idx = table.row_count
-                table.add_row(
-                    "",
-                    f"[bold $primary]{playlist}[/bold $primary] ({count})",
-                    "",
-                    "",
-                )
-                self._header_rows.add(row_idx)
+                self._header_rows.add(table.row_count)
+                table.add_row(*self._header_cells(playlist, count))
 
             item_id = item["id"]
+            self._items.append(item)
             self._item_order.append(item_id)
+            # Unselected by default: closing without choosing dismisses the report
+            # rather than queueing everything (opt-in selection).
+            self._selected.setdefault(item_id, False)
+            # None, not 0, when the current playlist is not one we can cycle through.
+            # Index 0 resolves to the real playlist "Work", which save-and-close then
+            # wrote as an override the user never chose (BUG-6).
+            self._playlist_index.setdefault(
+                item_id,
+                self._playlists.index(playlist) if playlist in self._playlists else None,
+            )
+            self._original_playlist.setdefault(item_id, playlist)
 
-            title = item.get("title") or "Untitled"
-            source = item.get("source_name") or ""
-            playlist_cell = playlist or "Uncategorized"
-
-            check = "  ✓" if self._selected.get(item_id, False) else "   "
-            table.add_row(check, title, source, playlist_cell)
+            table.add_row(*self._item_cells(item, playlist))
 
             if first_data_row is None:
                 first_data_row = table.row_count - 1
+
+        return first_data_row
+
+    # Rows the dialog spends on chrome around the scroll region: border (2), padding
+    # (2), title plus its margin (2), the action row plus its margin (4), help (1).
+    # Locked by the long-report layout test — change the CSS above and it fails.
+    CHROME_ROWS = 11
+    # Must track max-height on #report-dialog.
+    MAX_DIALOG_FRACTION = 0.8
+
+    def _fit_scroll_height(self) -> None:
+        """Size the scroll region to its content, capped to leave room for the buttons.
+
+        ``height: auto`` on the dialog is what makes a short report a short dialog
+        instead of a mostly-blank 80%-tall box (BUG-9). But Textual's auto layout
+        clips at ``max-height`` without re-distributing space, so an unbounded table
+        pushes the Save & Close button outside the dialog — off screen entirely on a
+        24-row terminal. Capping the scroll here is what keeps both cases correct.
+        """
+        table = self.query_one("#report-table", DataTable)
+        scroll = self.query_one("#report-scroll", VerticalScroll)
+        content = table.row_count + 1  # + the column-label row
+        available = int(self.size.height * self.MAX_DIALOG_FRACTION) - self.CHROME_ROWS
+        scroll.styles.height = max(3, min(content, available))
+
+    def on_resize(self) -> None:
+        self._fit_scroll_height()
+
+    def _populate_table(self, table: DataTable) -> None:
+        """Fill the table with report items grouped by playlist."""
+        first_data_row = self._fill_table(table)
+        self._fit_scroll_height()
+        if first_data_row is not None:
+            table.move_cursor(row=first_data_row)
+        table.focus()
+
+    def _rebuild_table(self) -> None:
+        """Rebuild the table preserving cursor position."""
+        table = self.query_one("#report-table", DataTable)
+        saved_cursor = table.cursor_row
+        table.clear()
+        first_data_row = self._fill_table(table)
+        self._fit_scroll_height()
 
         if saved_cursor is not None and saved_cursor < table.row_count:
             table.move_cursor(row=saved_cursor)
@@ -336,9 +383,16 @@ class ReportScreen(ModalScreen[bool]):
                             legacy_status="skipped",
                         )
 
-                    # Apply playlist override only if changed from original
-                    playlist_idx = self._playlist_index.get(item_id, 0)
-                    if playlist_idx < len(self._playlists):
+                    # Apply a playlist override only where the in-memory index names a
+                    # real playlist that differs from the item's own. A None index means
+                    # the item sits outside _playlists (e.g. "Uncategorized") and the
+                    # user has expressed no choice, so nothing is written — the previous
+                    # `.get(item_id, 0)` default resolved to "Work" and stamped an
+                    # override onto every uncategorized item, dismissed ones included
+                    # (BUG-6). Any future playlist-cycling binding must set this index,
+                    # which is what makes the comparison below mean "the user chose".
+                    playlist_idx = self._playlist_index.get(item_id)
+                    if playlist_idx is not None and playlist_idx < len(self._playlists):
                         new_playlist = self._playlists[playlist_idx]
                         original = self._original_playlist.get(item_id)
                         if new_playlist != original:
