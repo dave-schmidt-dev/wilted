@@ -21,9 +21,10 @@ The product should feel like a private, local-first listening surface rather tha
 Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
 
 The project lives under `~/Documents/`, which iCloud Drive syncs. iCloud sets the
-macOS `UF_HIDDEN` flag on `.venv` contents, and Python 3.13's `site.py` silently
-skips hidden `.pth` files — which breaks the editable install. The fix is to keep
-the venv **outside** iCloud via `UV_PROJECT_ENVIRONMENT`:
+macOS `UF_HIDDEN` flag on `.venv` contents, and Python's `site.py` silently skips
+hidden `.pth` files (`site.addpackage` returns early on `st_flags & UF_HIDDEN`) —
+which breaks the editable install. The fix is to keep the venv **outside** iCloud
+via `UV_PROJECT_ENVIRONMENT`:
 
 ```bash
 cd ~/Documents/Projects/wilted
@@ -97,7 +98,7 @@ and the alias together. The alias remains the canonical interactive command.
 
 ### Troubleshooting
 
-If `wilted` exits with `ModuleNotFoundError: No module named 'wilted'`, the venv's `.pth` files probably have the `UF_HIDDEN` filesystem flag set — Python 3.13's `site.py` silently skips hidden `.pth` files, so the editable install pointer to `src/` never lands on `sys.path`. This happens when the venv lives under `~/Documents/` (iCloud-synced) instead of `~/.venvs/`. The durable fix is the `UV_PROJECT_ENVIRONMENT` setup above; if you hit it on an in-iCloud venv, clear the flag:
+If `wilted` exits with `ModuleNotFoundError: No module named 'wilted'`, the venv's `.pth` files probably have the `UF_HIDDEN` filesystem flag set — Python's `site.py` silently skips hidden `.pth` files, so the editable install pointer to `src/` never lands on `sys.path`. This happens when the venv lives under `~/Documents/` (iCloud-synced) instead of `~/.venvs/`. The durable fix is the `UV_PROJECT_ENVIRONMENT` setup above; if you hit it on an in-iCloud venv, clear the flag:
 
 ```bash
 chflags nohidden .venv/lib/python*/site-packages/*.pth
