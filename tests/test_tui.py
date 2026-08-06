@@ -4597,6 +4597,11 @@ async def test_report_rows_are_visually_distinguishable():
         assert table.get_row_at(item_row)[0].plain == "[x]", "selection must be visible"
 
 
+# Narrowest terminal that shows the whole report table, Category column included.
+# See the horizontal-floor comment in test_report_dialog_keeps_actions_on_screen.
+REPORT_WIDTH_FLOOR = 110
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("terminal", [(120, 40), (100, 24), (80, 24)])
 async def test_report_dialog_keeps_actions_on_screen(terminal):
@@ -4648,12 +4653,46 @@ async def test_report_dialog_keeps_actions_on_screen(terminal):
         assert dialog.region.contains_region(help_label.region)
         assert screen.region.contains_region(dialog.region)
 
+        # Horizontal floor. The four fixed columns want 93 cells (85 declared + the
+        # DataTable's 1-cell padding either side of each), and the dialog offers 90%
+        # of the screen less 6 for border+padding. So Category is fully visible from
+        # 110 columns up and clipped below that — BUG-9 is fixed at David's terminal
+        # width, not at 80. Narrowing COLUMNS is what would move this floor.
+        needs_h_scroll = table.virtual_size.width > table.size.width
+        assert needs_h_scroll == (terminal[0] < REPORT_WIDTH_FLOOR), (
+            f"width floor moved at {terminal}: table wants {table.virtual_size.width} cells, has {table.size.width}"
+        )
+
         # The table must still be scrollable to the last row.
         assert table.virtual_size.height > table.size.height
         table.move_cursor(row=table.row_count - 1)
         await pilot.pause()
         assert table.cursor_row == table.row_count - 1
         assert table.scroll_y > 0
+
+        # Resizing is the only path that runs on_resize(), so without this the handler
+        # would ship unexecuted. Assert the recomputed scroll height, not just "the
+        # dialog got taller" — auto-layout drifts a row or two on its own, so the
+        # looser check passes even with on_resize removed.
+        scroll = screen.query_one("#report-scroll")
+        before = scroll.size.height
+        taller = (terminal[0], terminal[1] + 12)
+        await pilot.resize_terminal(*taller)
+        await pilot.pause()
+
+        content_rows = table.row_count + 1  # + the column-label row
+        available = int(taller[1] * ReportScreen.MAX_DIALOG_FRACTION) - ReportScreen.CHROME_ROWS
+        expected_scroll = max(3, min(content_rows, available))
+        assert scroll.size.height == expected_scroll, (
+            f"scroll height not recomputed for {taller}: got {scroll.size.height}, "
+            f"expected {expected_scroll} (was {before}) — on_resize did not fire"
+        )
+        assert scroll.size.height > before
+        assert dialog.region.contains_region(button.region), (
+            f"Save & Close spilled outside the dialog after resize to {taller}: "
+            f"button={button.region} dialog={dialog.region}"
+        )
+        assert screen.region.contains_region(dialog.region)
 
 
 @pytest.mark.asyncio

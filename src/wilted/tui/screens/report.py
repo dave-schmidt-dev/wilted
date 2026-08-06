@@ -232,6 +232,12 @@ class ReportScreen(ModalScreen[bool]):
         clips at ``max-height`` without re-distributing space, so an unbounded table
         pushes the Save & Close button outside the dialog — off screen entirely on a
         24-row terminal. Capping the scroll here is what keeps both cases correct.
+
+        Two known floors, neither worth code: the ``max(3, ...)`` below keeps three
+        rows visible, so on a terminal under ~14 rows the dialog overflows again
+        (three rows of list are more useful there than a correctly-clipped empty
+        one). And the columns want 93 cells, so ``Category`` is clipped below ~110
+        columns — see ``REPORT_WIDTH_FLOOR`` in the layout test.
         """
         table = self.query_one("#report-table", DataTable)
         scroll = self.query_one("#report-scroll", VerticalScroll)
