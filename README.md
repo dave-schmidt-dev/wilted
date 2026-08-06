@@ -22,9 +22,8 @@ Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
 
 The project lives under `~/Documents/`, which iCloud Drive syncs. iCloud sets the
 macOS `UF_HIDDEN` flag on `.venv` contents, and Python 3.13's `site.py` silently
-skips hidden `.pth` files — which breaks the editable install (see BUG-3 in
-`BUGS.md`). The fix is to keep the venv **outside** iCloud via
-`UV_PROJECT_ENVIRONMENT`:
+skips hidden `.pth` files — which breaks the editable install. The fix is to keep
+the venv **outside** iCloud via `UV_PROJECT_ENVIRONMENT`:
 
 ```bash
 cd ~/Documents/Projects/wilted
@@ -297,8 +296,6 @@ export NERD_FONTS=1
 | `r` | Refresh queue |
 | `q` | Quit (saves resume position) |
 
-Full design: [TUI_PLAN.md](TUI_PLAN.md)
-
 ## Project structure
 
 ```
@@ -552,19 +549,17 @@ the acceptance queued are returned to the pool. The report reappears the next ti
 ## Roadmap
 
 - Near term:
-  - unified content model (articles + podcasts + playlists in one schema)
-  - playlist rules (assignment, override, decay)
-- Content preparation (Phase 4):
-  - podcast audio download and transcription (RSS transcript ingest + speech-daemon transcription)
-  - ad detection with sliding window + ffmpeg cutting
-  - article promotional content removal
-  - article TTS generation for pipeline items
+  - playlist decay (assignment and override shipped; time-based decay has not)
+  - dynamic playlisting — auto build/break playlists from freshness, priority, and listening history
 - Radio mode (Phase 6):
   - always-on continuous playback that fills airtime from queue, feeds, and discovered content
   - priority interrupts for breaking/important stories, then resume where you left off
   - regular feed scanning (every ~15 min) with importance detection
   - auto-fill when queue is empty — prefer subscribed feeds, allow broader discovery
   - time-of-day awareness — morning news, midday light, evening education/entertainment
+- ~~Unified content model~~ (done: articles, podcasts, and playlists in one `Item` schema)
+- ~~Content preparation (Phase 4)~~ (done: podcast download + transcription via RSS transcript ingest and
+  the speech daemon, sliding-window ad detection with ffmpeg cutting, article promo removal, article TTS)
 - ~~Pre-generated audio for instant playback~~ (done: background MP3 caching + hybrid playback)
 - ~~RSS feed management~~ (done: feed CRUD, RSS polling, dedup, conditional GET)
 - ~~LLM classification~~ (done: playlist assignment, relevance scoring, summarization)
