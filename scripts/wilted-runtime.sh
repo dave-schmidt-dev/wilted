@@ -46,6 +46,16 @@ run_clean_wilted() {
     # dependencies on the hot path — under launchd's clean env that sync stage can
     # stall on the network with no timeout and no python ever spawning. Provisioning
     # happens during dev/`make`, not per-invocation.
+    #
+    # TERM_PROGRAM/LC_TERMINAL are terminal identification strings, not secrets, and
+    # mouse input does not work without them (BUG-7). Textual gates a known-buggy
+    # iTerm2 code path on `IS_ITERM`, which it derives from exactly these two
+    # variables. Strip them and Textual cannot tell it is on iTerm2, so it enables
+    # in-band window resize and with it SGR-pixel mouse mode (`\e[?1016h`). iTerm2
+    # then reports mouse position in PIXELS while Textual reads them as cells, so
+    # every click lands far outside the grid: mouse totally dead, keyboard fine.
+    # Textual's own source comments the guard "iTerm is buggy in one or more of the
+    # protocols required here" — env -i was defeating that guard.
     exec /usr/bin/env -i \
         HOME="${HOME:-}" \
         PATH="$RUNTIME_PATH" \
@@ -55,6 +65,8 @@ run_clean_wilted() {
         WILTED_PROJECT_ROOT="$project_root" \
         TERM="${TERM:-}" \
         COLORTERM="${COLORTERM:-}" \
+        TERM_PROGRAM="${TERM_PROGRAM:-}" \
+        LC_TERMINAL="${LC_TERMINAL:-}" \
         LANG="${LANG:-}" \
         LC_ALL="${LC_ALL:-}" \
         LC_CTYPE="${LC_CTYPE:-}" \

@@ -80,6 +80,8 @@ def _runtime_environment(
         "BWS_PROJECT_ID": "inherited-project-must-not-reach-wilted",
         "UNRELATED_SECRET": "inherited-unrelated-must-not-reach-wilted",
         "TERM": "xterm-256color",
+        "TERM_PROGRAM": "iTerm.app",
+        "LC_TERMINAL": "iTerm2",
         "LANG": "en_US.UTF-8",
         "WILTED_DEBUG": "1",
         "WILTED_WEATHER_TEST_TRIGGER": "/tmp/wilted-trigger",
@@ -109,6 +111,8 @@ def test_runtime_launcher_limits_bws_and_wilted_environments(tmp_path: Path) -> 
     ]
     for safe_value in (
         "TERM=xterm-256color",
+        "TERM_PROGRAM=iTerm.app",
+        "LC_TERMINAL=iTerm2",
         "LANG=en_US.UTF-8",
         "WILTED_DEBUG=1",
         "WILTED_WEATHER_TEST_TRIGGER=/tmp/wilted-trigger",
@@ -216,3 +220,36 @@ def test_runtime_launcher_run_clean_wilted_execs_env_dash_i() -> None:
     assert exec_lines[0].strip().startswith("exec /usr/bin/env -i"), exec_lines[0]
     # The exec must be the function's terminal statement — nothing may follow it.
     assert logical_lines[-1] == exec_lines[0]
+
+
+def test_runtime_launcher_passes_terminal_identity_through_for_mouse_input(tmp_path: Path) -> None:
+    """The env -i allowlist must carry TERM_PROGRAM/LC_TERMINAL through (BUG-7).
+
+    Textual derives ``IS_ITERM`` from exactly these two variables and uses it to skip
+    an iTerm2 code path its own source calls buggy. Strip them and Textual cannot tell
+    it is on iTerm2, so it enables in-band window resize and with it SGR-pixel mouse
+    mode (``\x1b[?1016h``); iTerm2 then reports mouse position in pixels while Textual
+    reads them as cells, and every click lands outside the grid. The symptom is a
+    totally dead mouse with a working keyboard, which is what BUG-7 was.
+
+    Asserted at the launcher rather than in a TUI test because the defect lives in the
+    environment handoff — the app itself was always correct, and every headless test
+    passed throughout.
+    """
+    env, capture, launcher = _runtime_environment(tmp_path)
+
+    result = subprocess.run([str(launcher), "discover"], env=env, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+    received = capture.read_text().splitlines()
+    assert "TERM_PROGRAM=iTerm.app" in received, (
+        "TERM_PROGRAM was stripped by the env -i allowlist; Textual will enable "
+        "pixel mouse mode on iTerm2 and the mouse will be dead"
+    )
+    assert "LC_TERMINAL=iTerm2" in received, (
+        "LC_TERMINAL was stripped by the env -i allowlist; it is the other half of "
+        "Textual's IS_ITERM check"
+    )
+    # The allowlist must stay an allowlist: unrelated inherited vars still must not pass.
+    assert not any(line.startswith("UNRELATED_SECRET=") for line in received)
+    assert not any(line.startswith("BWS_ACCESS_TOKEN=") for line in received)
