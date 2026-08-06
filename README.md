@@ -230,11 +230,12 @@ The trigger file is consumed automatically, so one `touch` fires at most one bul
 
 The roadmap beyond station mode includes:
 
-- always-on radio-mode playback that fills airtime from queue, feeds, and discovered content
-- priority interrupt thresholds for breaking/important stories with configurable freshness windows
-- time-of-day awareness — morning news, midday light, evening education/entertainment
 - unified private-feed surface merging saved articles, subscribed feeds, and podcast episodes
-- cross-device briefing export for sharing morning reports to another surface
+- major-source curation — which sources pull automatically, and what makes an article audio-worthy
+- a manual process/defer/dismiss step in the morning report, before expensive preparation runs
+
+Radio mode and cross-device listening were both on this list and have moved up — radio mode is now
+near-term, and cross-device is answered by the iOS companion app. See **Roadmap** below.
 
 ## Data
 
@@ -550,14 +551,25 @@ the acceptance queued are returned to the pool. The report reappears the next ti
 ## Roadmap
 
 - Near term:
+  - **dynamic playlisting** — auto build/break playlists from freshness, priority, and listening history
+  - **radio mode** — always-on continuous playback:
+    - fills airtime from queue, feeds, and discovered content
+    - priority interrupts for breaking/important stories, then resume where you left off
+    - regular feed scanning (every ~15 min) with importance detection
+    - auto-fill when the queue is empty — prefer subscribed feeds, allow broader discovery
+    - time-of-day awareness — morning news, midday light, evening education/entertainment
   - playlist decay (assignment and override shipped; time-based decay has not)
-  - dynamic playlisting — auto build/break playlists from freshness, priority, and listening history
-- Radio mode (Phase 6):
-  - always-on continuous playback that fills airtime from queue, feeds, and discovered content
-  - priority interrupts for breaking/important stories, then resume where you left off
-  - regular feed scanning (every ~15 min) with importance detection
-  - auto-fill when queue is empty — prefer subscribed feeds, allow broader discovery
-  - time-of-day awareness — morning news, midday light, evening education/entertainment
+- iOS companion app (listener-only):
+  - play wilted-prepared audio away from the Mac — playlists, resume position, offline downloads
+  - the Mac stays the only producer; the phone never fetches, classifies, or synthesizes
+  - CloudKit sync for prepared audio, playlist membership, and listening position
+  - follows Zero Delta's shared Apple release standard: semantic versioning, automated coverage shipped
+    with each feature, and a TestFlight release gate
+  - **Scope note on "local-first".** Everything that makes Wilted expensive — fetching, LLM
+    classification, ad stripping, TTS — stays on the Mac and keeps running with no network. CloudKit is
+    a deliberate exception for *distribution only*: prepared audio and listening position leave the
+    machine so the phone can play them. Choosing Apple-hosted sync over LAN-only was an explicit
+    tradeoff for working away from home without the Mac awake.
 - ~~Unified content model~~ (done: articles, podcasts, and playlists in one `Item` schema)
 - ~~Content preparation (Phase 4)~~ (done: podcast download + transcription via RSS transcript ingest and
   the speech daemon, sliding-window ad detection with ffmpeg cutting, article promo removal, article TTS)
