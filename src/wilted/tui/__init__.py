@@ -99,6 +99,12 @@ _STATUS_HOLD_SECS = 2.0
 # live session) — kept as one constant so all refusal sites stay in sync.
 _STATION_READ_ONLY_MSG = "Station active in another session — read-only"
 
+# How long an "add & play" intent survives while its article is still being
+# prepared. Generous, because TTS for a long article takes minutes — but
+# bounded, so a preparation that never finishes cannot fire a surprise
+# auto-play an hour later.
+_PENDING_PLAY_TIMEOUT_S = 300.0
+
 # ---------------------------------------------------------------------------
 # Weather bulletin interrupt/resume (A.4.3)
 # ---------------------------------------------------------------------------
@@ -404,6 +410,8 @@ class WiltedApp(App):
         self._current_entry: StationEntry | None = None
         self._current_index: int | None = None
         self._pending_play_item_id: str | None = None
+        # monotonic deadline for the above; see _resolve_pending_play.
+        self._pending_play_deadline: float | None = None
 
         # -- Route-change interruption state (A.3.3) --------------------------
         # Set by on_route_changed when a device switch interrupts active
@@ -762,13 +770,46 @@ class WiltedApp(App):
         self._update_empty_message()
 
         if self._pending_play_item_id is not None:
-            pending_id = self._pending_play_item_id
+            self._resolve_pending_play(entries)
+
+    def _resolve_pending_play(self, entries: list[StationEntry]) -> None:
+        """Start "add & play" playback once the added item reaches the backlog.
+
+        The rebuild that immediately follows an add usually *loses* a race with
+        TTS: ``Sequencer.build`` skips any item whose article cache has no
+        ``manifest.json`` yet (``ArticleCacheIncompleteError``), so the item
+        just added is simply absent from ``entries``. This used to clear the
+        intent on that first miss, which meant the rebuild that runs when
+        generation finishes (:meth:`_finish_article_cache_drain`) had nothing
+        left to act on — the item never played, despite the status line
+        promising it would appear.
+
+        The intent is therefore retained across rebuilds until either the item
+        appears (play it) or :data:`_PENDING_PLAY_TIMEOUT_S` elapses —
+        preparation stalled or failed, and a surprise auto-play long after the
+        fact is worse than none.
+
+        Deliberately *not* cancelled by playback starting in the meantime.
+        "Add & Play" always interrupted whatever was playing when the item
+        resolved on the first rebuild; making a slow TTS silently downgrade
+        that to "add" would change the button's meaning based on timing the
+        user cannot see. The timeout is the only bound.
+        """
+        pending_id = self._pending_play_item_id
+        match = next((e for e in entries if e.item_id == pending_id), None)
+        if match is not None:
             self._pending_play_item_id = None
-            match = next((e for e in entries if e.item_id == pending_id), None)
-            if match is not None:
-                self._start_playback(match)
-            else:
-                self._set_status("Added — being prepared, will appear once ready", _STATUS_MEDIUM)
+            self._pending_play_deadline = None
+            self._start_playback(match)
+            return
+
+        if self._pending_play_deadline is not None and time.monotonic() >= self._pending_play_deadline:
+            self._pending_play_item_id = None
+            self._pending_play_deadline = None
+            self._set_status("Added — still preparing; press play when it appears", _STATUS_MEDIUM)
+            return
+
+        self._set_status("Added — preparing, will play when ready", _STATUS_MEDIUM)
 
     # -- Briefing generation (A.4.6) ------------------------------------------
     #
@@ -2394,10 +2435,11 @@ class WiltedApp(App):
         """Open the add article dialog.
 
         Item-DB CRUD — writes the item store directly (not station-state, no
-        controller routing). After a successful add, the sequencer is
-        rebuilt so the new item can appear once finalized; "add & play"
-        defers the actual play until that rebuild resolves whether the item
-        is already finalized (see :meth:`_apply_sequencer_result`).
+        controller routing). After a successful add, the sequencer is rebuilt
+        so the new item can appear once finalized; "add & play" records the
+        intent and lets :meth:`_resolve_pending_play` act on whichever rebuild
+        first contains the item, since the rebuild fired here normally runs
+        before TTS has written the article cache's manifest.
         """
 
         def on_dismiss(result: tuple[str, dict] | None) -> None:
@@ -2405,6 +2447,9 @@ class WiltedApp(App):
                 action, entry_dict = result
                 self._set_status(f"Added: {entry_dict.get('title', 'Untitled')}", _STATUS_MEDIUM)
                 self._pending_play_item_id = str(entry_dict["id"]) if action == "play" else None
+                self._pending_play_deadline = (
+                    time.monotonic() + _PENDING_PLAY_TIMEOUT_S if self._pending_play_item_id else None
+                )
                 self._rebuild_sequencer()
                 self._trigger_generation()
 

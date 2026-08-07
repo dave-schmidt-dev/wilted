@@ -14,6 +14,7 @@ import concurrent.futures
 import dataclasses
 import inspect
 import json
+import time
 from datetime import UTC, datetime
 from unittest.mock import patch
 
@@ -856,6 +857,83 @@ async def test_add_article_and_play_starts_playback_once_finalized():
         app._pending_play_item_id = "42"
         app._rebuild_sequencer()
         await app.workers.wait_for_complete()
+        assert adapter.play_calls == [(entry.media, 0)]
+        assert app._pending_play_item_id is None
+
+
+@pytest.mark.asyncio
+async def test_add_and_play_survives_a_rebuild_that_misses_the_item():
+    """Regression: "Add & Play" dropped its intent on the first rebuild.
+
+    The rebuild fired straight after an add normally loses a race with TTS —
+    ``Sequencer.build`` skips an item whose article cache has no
+    ``manifest.json`` yet, so the new item is simply absent from that first
+    result. The intent used to be cleared anyway, so the rebuild that runs
+    when generation finishes had nothing left to act on and the item never
+    played, even though the status line said it would.
+    """
+    entry = _station_entry(42)
+    adapter = FakeAdapter()
+    app = _make_app(entries=[], adapter=adapter)
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+
+        app._pending_play_item_id = "42"
+        app._pending_play_deadline = time.monotonic() + 300.0
+        app._rebuild_sequencer()  # still generating: item not in the backlog
+        await app.workers.wait_for_complete()
+
+        assert adapter.play_calls == []
+        assert app._pending_play_item_id == "42"  # intent retained, not dropped
+
+        # Generation finishes; _finish_article_cache_drain rebuilds again.
+        app._sequencer_factory = _sequencer_factory([entry])
+        app._rebuild_sequencer()
+        await app.workers.wait_for_complete()
+
+        assert adapter.play_calls == [(entry.media, 0)]
+        assert app._pending_play_item_id is None
+
+
+@pytest.mark.asyncio
+async def test_add_and_play_intent_expires_rather_than_playing_much_later():
+    """A preparation that stalls must not fire a surprise auto-play."""
+    adapter = FakeAdapter()
+    app = _make_app(entries=[], adapter=adapter)
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+
+        app._pending_play_item_id = "42"
+        app._pending_play_deadline = time.monotonic() - 1.0  # already elapsed
+        app._rebuild_sequencer()
+        await app.workers.wait_for_complete()
+
+        assert adapter.play_calls == []
+        assert app._pending_play_item_id is None
+
+
+@pytest.mark.asyncio
+async def test_add_and_play_still_interrupts_when_something_is_playing():
+    """ "Add & Play" interrupts, and a slow TTS must not quietly change that.
+
+    The pre-fix code played the match on the first rebuild regardless of what
+    was already playing. Cancelling the intent when playback is active would
+    make the button mean "add" or "add & play" depending on how long TTS took
+    — timing the user cannot see. The timeout is the only bound.
+    """
+    entry = _station_entry(42)
+    adapter = FakeAdapter()
+    app = _make_app(entries=[], adapter=adapter)
+    async with app.run_test():
+        await app.workers.wait_for_complete()
+
+        app._pending_play_item_id = "42"
+        app._pending_play_deadline = time.monotonic() + 300.0
+        app._playing = True  # something else was playing during the wait
+        app._sequencer_factory = _sequencer_factory([entry])
+        app._rebuild_sequencer()
+        await app.workers.wait_for_complete()
+
         assert adapter.play_calls == [(entry.media, 0)]
         assert app._pending_play_item_id is None
 
