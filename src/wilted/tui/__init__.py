@@ -100,9 +100,12 @@ _STATUS_HOLD_SECS = 2.0
 _STATION_READ_ONLY_MSG = "Station active in another session — read-only"
 
 # How long an "add & play" intent survives while its article is still being
-# prepared. Generous, because TTS for a long article takes minutes — but
-# bounded, so a preparation that never finishes cannot fire a surprise
-# auto-play an hour later.
+# prepared. This is a safety stop, not a deadline: measured against the real
+# cache on 2026-08-06, five 39-paragraph articles each synthesized in 2-3 s
+# wall clock, so 300 s is ~100x the observed worst case. The bound exists only
+# so a preparation that fails or wedges cannot fire a surprise auto-play an
+# hour later. Expiry never discards the article itself — it is added and
+# prepared normally; only the auto-play is dropped, and the status line says so.
 _PENDING_PLAY_TIMEOUT_S = 300.0
 
 # ---------------------------------------------------------------------------
