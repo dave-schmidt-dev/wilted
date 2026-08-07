@@ -473,6 +473,7 @@ class AudioEngine:
         path: str | Path,
         transcript_segments: list | None = None,
         start_segment: int = 0,
+        start_time_s: float | None = None,
         on_progress: Callable | None = None,
     ) -> None:
         """Play an audio file from disk with pause/resume/stop support.
@@ -495,11 +496,25 @@ class AudioEngine:
             ``transcript_segments[start_segment].start_s`` (accurate output seek,
             ``-i FILE -ss T``) rather than decoding and discarding the prefix.
 
+            ``start_time_s`` is the seek path for audio that has no transcript
+            to seek by — TTS-synthesized briefings and bulletins are generated,
+            never transcribed, so they carry ``transcript_segments=()`` and
+            cannot express a resume position as a segment index. ffmpeg's
+            ``-ss`` takes an arbitrary timestamp, so nothing about the seek
+            itself requires segments; only the index-based *addressing* did.
+            Segment seek still wins when both are usable, keeping the
+            transcribed-podcast path byte-identical to before this parameter
+            existed.
+
         Args:
             path: Path to audio file (MP3, AAC, M4A, WAV, FLAC, OGG).
             transcript_segments: Optional list of segment objects for position
                 tracking. Each must have start_s, end_s, text attributes.
             start_segment: Segment index to start playback from (for resume).
+            start_time_s: Absolute episode time in seconds to seek to when
+                ``start_segment`` cannot express the position (no segments, or
+                the offset falls inside segment 0). Ignored when a segment seek
+                applies. Non-positive or None means start from the beginning.
             on_progress: Callback(segment_idx, total_segments, current_text)
                 called when playback crosses into a new transcript segment.
 
@@ -532,9 +547,13 @@ class AudioEngine:
         # first emitted sample lands on true episode time T — worth the small
         # startup cost over fast input seek, which would snap to a keyframe and
         # desync transcript-segment tracking.
+        # Segment seek takes precedence; start_time_s covers the case segments
+        # cannot address at all (empty transcript — every TTS briefing/bulletin).
         seek_time_s = 0.0
         if transcript_segments is not None and start_segment > 0:
             seek_time_s = float(transcript_segments[start_segment].start_s)
+        elif start_time_s is not None and start_time_s > 0.0:
+            seek_time_s = float(start_time_s)
 
         # -hide_banner/-loglevel error/-nostats stop ffmpeg from streaming its
         # banner and periodic "size=... time=..." progress lines to stderr. We

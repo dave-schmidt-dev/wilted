@@ -13,6 +13,7 @@ from wilted.engine import AudioEngine
 
 pytestmark = pytest.mark.usefixtures("stub_audio_modules")
 
+
 @pytest.fixture
 def engine(stub_audio_modules):
     """Create an AudioEngine for daemon-backed tests."""
@@ -368,6 +369,64 @@ class TestPlayFileStreaming:
         # playback_time_s reflects true episode time (>= the 0.5s seek offset).
         assert engine.playback_time_s >= 0.5
 
+    def test_start_time_s_seeks_without_any_transcript_segments(self, engine, mock_stream, tmp_path):
+        """Regression: seeking must not require a transcript to seek by.
+
+        ffmpeg's ``-ss`` has always taken an arbitrary timestamp; only the
+        *addressing* was segment-indexed. TTS-synthesized briefings and
+        bulletins are never transcribed, so requiring segments meant they could
+        not resume at all and silently restarted at 0:00 no matter how accurate
+        the checkpoint was.
+        """
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        fake = _FakePopen(_make_ffmpeg_pcm(n_samples=2048))
+        with _patch_popen(fake):
+            engine.play_file(wav_file, start_time_s=0.5)
+
+        cmd = fake.args
+        assert "-ss" in cmd
+        ss_idx = cmd.index("-ss")
+        assert cmd[ss_idx - 2] == "-i"  # accurate output seek, same as the segment path
+        assert float(cmd[ss_idx + 1]) == pytest.approx(0.5)
+        assert engine.playback_time_s >= 0.5
+
+    def test_start_time_s_zero_issues_no_seek(self, engine, mock_stream, tmp_path):
+        """Playing from the beginning must stay a plain decode, with no -ss."""
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        fake = _FakePopen(_make_ffmpeg_pcm(n_samples=2048))
+        with _patch_popen(fake):
+            engine.play_file(wav_file, start_time_s=0.0)
+
+        assert "-ss" not in fake.args
+
+    def test_segment_seek_takes_precedence_over_start_time_s(self, engine, mock_stream, tmp_path):
+        """When both are usable the segment seek wins.
+
+        The station adapter passes ``start_time_s`` on every call, so this pins
+        the precedence that keeps the transcribed-podcast path behaving exactly
+        as it did before the parameter existed.
+        """
+        wav_file = tmp_path / "test.wav"
+        wav_file.touch()
+
+        segments = [
+            _make_transcript_segment(0.0, 0.25, "Seg 0"),
+            _make_transcript_segment(0.25, 0.5, "Seg 1"),
+            _make_transcript_segment(0.5, 0.75, "Seg 2"),
+        ]
+
+        fake = _FakePopen(_make_ffmpeg_pcm(n_samples=2048))
+        with _patch_popen(fake):
+            engine.play_file(wav_file, transcript_segments=segments, start_segment=2, start_time_s=0.9)
+
+        cmd = fake.args
+        ss_idx = cmd.index("-ss")
+        assert float(cmd[ss_idx + 1]) == pytest.approx(0.5)  # segment 2's start_s, not 0.9
+
     def test_ffmpeg_stderr_is_quieted_to_prevent_pipe_deadlock(self, engine, mock_stream, tmp_path):
         """ffmpeg is invoked with banner/progress/stats suppressed so its stderr
         pipe cannot fill and deadlock playback.
@@ -662,12 +721,11 @@ class TestDaemonTts:
             result = engine.generate_audio("briefing", voice="bf_emma", lang="b", speed=1.2)
 
         np.testing.assert_array_equal(result, np.concatenate(chunks))
-        stream.assert_called_once_with(
-            "briefing", voice="bf_emma", speed=1.2, model=engine.model_name, lang_code="b"
-        )
+        stream.assert_called_once_with("briefing", voice="bf_emma", speed=1.2, model=engine.model_name, lang_code="b")
 
     def test_generate_audio_returns_empty_float32_for_empty_stream(self, engine):
         """An empty daemon stream retains the no-segments public contract."""
+
         def stream(*_args, **_kwargs):
             if False:  # pragma: no cover - preserves the generator close() contract
                 yield b""

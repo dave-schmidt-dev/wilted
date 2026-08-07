@@ -111,7 +111,7 @@ class _FakeEngine:
         self._active = 0
         self.max_concurrent = 0
 
-    def play_file(self, path, transcript_segments=None, start_segment=0, on_progress=None) -> None:
+    def play_file(self, path, transcript_segments=None, start_segment=0, start_time_s=None, on_progress=None) -> None:
         # Mirror the real AudioEngine.play_file preamble (engine.py:480): a
         # fresh play_file resets the stop/release state, so a preceding stop()
         # (e.g. a preempt from a new play()) does not instantly abort this new
@@ -127,12 +127,16 @@ class _FakeEngine:
                     "path": path,
                     "transcript_segments": transcript_segments,
                     "start_segment": start_segment,
+                    "start_time_s": start_time_s,
                 }
             )
             # Reflect the seek target immediately (mirrors real AudioEngine
-            # setting _playback_time_s to the seek time at call start).
+            # setting _playback_time_s to the seek time at call start) —
+            # including the same segment-wins-over-start_time_s precedence.
             if transcript_segments and start_segment > 0:
                 self.playback_time_s = transcript_segments[start_segment].start_s
+            elif start_time_s:
+                self.playback_time_s = start_time_s
             # Block until released (by stop() or the test) or a stop is requested.
             while not self._release.is_set() and not self._stop_event.is_set():
                 time.sleep(0.005)
@@ -282,6 +286,71 @@ def test_play_resume_at_zero_uses_start_segment_zero(tmp_path):
     _wait_until(lambda: len(engine.play_file_calls) == 1)
 
     assert engine.play_file_calls[0]["start_segment"] == 0
+
+    adapter.stop()
+
+
+def test_play_resume_without_transcript_segments_seeks_to_exact_offset(tmp_path):
+    """Regression: TTS briefings have no transcript, and used to restart at 0:00.
+
+    Every briefing/bulletin is synthesized rather than transcribed, so its
+    ``MediaDescriptor`` carries ``transcript_segments=()``. Resume was addressed
+    purely as a segment index, and ``_start_segment_for_offset`` returns 0 for
+    empty segments — indistinguishable from "resume at the very beginning" — so
+    a perfectly good checkpoint was silently discarded on every restart. The
+    checkpoint write path was never at fault.
+    """
+    sha256 = _publish_media(tmp_path)
+    media = _finalized_media(sha256=sha256, transcript_segments=())
+    engine = _FakeEngine()
+    adapter = MacPlaybackAdapter(engine=engine)
+
+    adapter.play(media, offset_ms=45_000)
+    _wait_until(lambda: len(engine.play_file_calls) == 1)
+
+    call = engine.play_file_calls[0]
+    assert call["start_segment"] == 0  # nothing to index into
+    assert call["start_time_s"] == 45.0  # ...so the raw offset must carry the seek
+    assert engine.playback_time_s == 45.0
+
+    adapter.stop()
+
+
+def test_play_from_start_without_segments_does_not_seek(tmp_path):
+    """offset_ms=0 must stay a real 0, not a spurious seek."""
+    sha256 = _publish_media(tmp_path)
+    media = _finalized_media(sha256=sha256, transcript_segments=())
+    engine = _FakeEngine()
+    adapter = MacPlaybackAdapter(engine=engine)
+
+    adapter.play(media, offset_ms=0)
+    _wait_until(lambda: len(engine.play_file_calls) == 1)
+
+    assert engine.play_file_calls[0]["start_time_s"] == 0.0
+    assert engine.playback_time_s == 0.0
+
+    adapter.stop()
+
+
+def test_play_with_segments_still_prefers_segment_seek(tmp_path):
+    """The transcribed-podcast path is unchanged by the no-transcript fix.
+
+    ``start_time_s`` is passed on every call, so this pins the precedence: when
+    a segment seek applies it wins, and resume still snaps to the containing
+    segment's boundary rather than the raw offset.
+    """
+    sha256 = _publish_media(tmp_path)
+    media = _finalized_media(sha256=sha256, transcript_segments=_segments())
+    engine = _FakeEngine()
+    adapter = MacPlaybackAdapter(engine=engine)
+
+    adapter.play(media, offset_ms=6500)
+    _wait_until(lambda: len(engine.play_file_calls) == 1)
+
+    call = engine.play_file_calls[0]
+    assert call["start_segment"] == 2
+    assert call["start_time_s"] == 6.5  # handed over, but not the seek that wins
+    assert engine.playback_time_s == 5.0  # segment 2's start_s
 
     adapter.stop()
 
@@ -463,10 +532,15 @@ def test_pause_then_play_stops_engine_before_relaunch(tmp_path):
     adapter.stop()
 
 
-def test_resume_without_transcript_segments_warns_and_restarts_at_zero(tmp_path, caplog):
-    """A resume offset on a no-transcript descriptor can't be honored (no
-    segments to seek by) — play_file restarts at 0:00, and the adapter warns
-    rather than silently dropping the listener's position."""
+def test_resume_without_transcript_segments_no_longer_warns(tmp_path, caplog):
+    """The "resume position not honored" warning must not fire any more.
+
+    This replaces a test that asserted the warning DID fire and that playback
+    restarted at 0:00 — it pinned the defect rather than the contract. Resume
+    for no-transcript media is now honored exactly (see
+    ``test_play_resume_without_transcript_segments_seeks_to_exact_offset``), so
+    a surviving warning would mean the fallback seek silently regressed.
+    """
     sha256 = _publish_media(tmp_path)
     media = _finalized_media(sha256=sha256, transcript_segments=())
     engine = _FakeEngine()
@@ -476,8 +550,8 @@ def test_resume_without_transcript_segments_warns_and_restarts_at_zero(tmp_path,
         adapter.play(media, offset_ms=45_000)
         _wait_until(lambda: len(engine.play_file_calls) == 1)
 
-    assert engine.play_file_calls[0]["start_segment"] == 0  # restarted at 0
-    assert any("resume position not honored" in msg for msg in caplog.messages)
+    assert not any("resume position not honored" in msg for msg in caplog.messages)
+    assert engine.play_file_calls[0]["start_time_s"] == 45.0
 
     adapter.stop()
 

@@ -191,9 +191,11 @@ class MacPlaybackAdapter:
     This adapter is the sole resume authority for station playback: it never
     calls ``engine.set_resume_position`` (that legacy TUI resume path lives in
     ``wilted.playlists`` and is unrelated to station playback). Resume is
-    driven entirely by the ``offset_ms`` -> ``start_segment`` mapping in
+    driven by the ``offset_ms`` -> ``start_segment`` mapping in
     :func:`_start_segment_for_offset`, fed into ``play_file``'s own
-    ``start_segment`` seek.
+    ``start_segment`` seek, with the raw ``offset_ms`` passed alongside as
+    ``start_time_s`` so media with no transcript segments — every TTS-
+    synthesized briefing and bulletin — can still resume.
     """
 
     def __init__(
@@ -267,19 +269,6 @@ class MacPlaybackAdapter:
         # reset session state below for the new play.
         self._preempt_current()
 
-        if offset_ms > 0 and not media.transcript_segments:
-            # play_file can only seek via transcript_segments[start_segment];
-            # with no segments there is no arbitrary-ms seek, so a requested
-            # resume offset silently becomes 0:00. Surface it rather than
-            # swallowing a lost listener position.
-            logger.warning(
-                "resume requested at offset_ms=%d for media %r with no transcript segments; "
-                "play_file cannot seek without segments, so playback restarts from 0:00 "
-                "(resume position not honored)",
-                offset_ms,
-                media.sha256,
-            )
-
         engine_segments = _to_engine_segments(media.transcript_segments)
         start_segment = _start_segment_for_offset(media.transcript_segments, offset_ms)
 
@@ -292,6 +281,13 @@ class MacPlaybackAdapter:
                 path=resolved_path,
                 transcript_segments=engine_segments,
                 start_segment=start_segment,
+                # Exact fallback for media whose transcript cannot address the
+                # offset. `_start_segment_for_offset` returns 0 both for "resume
+                # at the very start" and for "there are no segments to index",
+                # and play_file only seeks by segment when start_segment > 0 —
+                # so without this every TTS briefing silently restarted at 0:00
+                # no matter how good the checkpoint was.
+                start_time_s=offset_ms / 1000,
             )
             self._on_play_file_finished(resolved_path)
 
