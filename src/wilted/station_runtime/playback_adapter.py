@@ -272,6 +272,24 @@ class MacPlaybackAdapter:
         engine_segments = _to_engine_segments(media.transcript_segments)
         start_segment = _start_segment_for_offset(media.transcript_segments, offset_ms)
 
+        # A resume offset at or past the end must not become a seek past the end.
+        # `_write_checkpoint_final` records `current_offset_ms()` on quit, so an
+        # item that played to completion checkpoints at ~duration; seeking there
+        # yields zero PCM, play_file returns instantly, and PM-10 classifies it
+        # ENDED — the item is skipped rather than replayed. The segment path is
+        # incidentally shielded (a past-end offset snaps to the LAST segment's
+        # start, which still has audio after it), so this only bites the
+        # arbitrary-offset seek below. Restart from the top instead.
+        seek_s = offset_ms / 1000
+        if media.duration_ms and offset_ms >= media.duration_ms:
+            logger.info(
+                "resume offset %d ms is at/past media %r duration %d ms; restarting from 0:00",
+                offset_ms,
+                media.sha256,
+                media.duration_ms,
+            )
+            seek_s = 0.0
+
         with self._lock:
             self._last_completion = None
             self._stop_requested = False
@@ -281,13 +299,15 @@ class MacPlaybackAdapter:
                 path=resolved_path,
                 transcript_segments=engine_segments,
                 start_segment=start_segment,
-                # Exact fallback for media whose transcript cannot address the
-                # offset. `_start_segment_for_offset` returns 0 both for "resume
-                # at the very start" and for "there are no segments to index",
-                # and play_file only seeks by segment when start_segment > 0 —
-                # so without this every TTS briefing silently restarted at 0:00
-                # no matter how good the checkpoint was.
-                start_time_s=offset_ms / 1000,
+                # Exact seek for offsets a transcript cannot address.
+                # `_start_segment_for_offset` returns 0 both for "resume at the
+                # very start" and for "there are no segments to index", and
+                # play_file only seeks by segment when start_segment > 0 — so
+                # without this every TTS briefing silently restarted at 0:00 no
+                # matter how good the checkpoint was. Passed unconditionally:
+                # play_file prefers the segment seek whenever one applies, and
+                # this also recovers offsets falling inside segment 0.
+                start_time_s=seek_s,
             )
             self._on_play_file_finished(resolved_path)
 

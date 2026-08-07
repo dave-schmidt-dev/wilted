@@ -333,11 +333,10 @@ def test_play_from_start_without_segments_does_not_seek(tmp_path):
 
 
 def test_play_with_segments_still_prefers_segment_seek(tmp_path):
-    """The transcribed-podcast path is unchanged by the no-transcript fix.
+    """A resume that lands on a real segment still snaps to that boundary.
 
     ``start_time_s`` is passed on every call, so this pins the precedence: when
-    a segment seek applies it wins, and resume still snaps to the containing
-    segment's boundary rather than the raw offset.
+    a segment seek applies it wins over the raw offset.
     """
     sha256 = _publish_media(tmp_path)
     media = _finalized_media(sha256=sha256, transcript_segments=_segments())
@@ -351,6 +350,52 @@ def test_play_with_segments_still_prefers_segment_seek(tmp_path):
     assert call["start_segment"] == 2
     assert call["start_time_s"] == 6.5  # handed over, but not the seek that wins
     assert engine.playback_time_s == 5.0  # segment 2's start_s
+
+    adapter.stop()
+
+
+def test_play_offset_inside_segment_zero_seeks_exactly(tmp_path):
+    """An offset inside segment 0 now resumes exactly instead of rewinding.
+
+    ``_start_segment_for_offset`` returns 0 here, which ``play_file``'s segment
+    branch cannot tell apart from "start at the beginning" — so this used to
+    throw the position away. It is the one behavior change the fix makes to
+    transcribed media, and it is pinned rather than left implicit.
+    """
+    sha256 = _publish_media(tmp_path)
+    media = _finalized_media(sha256=sha256, transcript_segments=_segments())
+    engine = _FakeEngine()
+    adapter = MacPlaybackAdapter(engine=engine)
+
+    adapter.play(media, offset_ms=1500)  # segment 0 spans 0-2000ms
+    _wait_until(lambda: len(engine.play_file_calls) == 1)
+
+    call = engine.play_file_calls[0]
+    assert call["start_segment"] == 0
+    assert call["start_time_s"] == 1.5
+    assert engine.playback_time_s == 1.5  # not rewound to 0.0
+
+    adapter.stop()
+
+
+def test_play_offset_at_or_past_duration_restarts_from_zero(tmp_path):
+    """A checkpoint at end-of-content must not become a seek past the end.
+
+    ``_write_checkpoint_final`` records the current offset on quit, so an item
+    played to completion checkpoints at ~duration. Seeking there would yield no
+    PCM, return instantly, and be classified ENDED — silently skipping the item
+    rather than replaying it.
+    """
+    sha256 = _publish_media(tmp_path)
+    media = _finalized_media(sha256=sha256, transcript_segments=())
+    engine = _FakeEngine()
+    adapter = MacPlaybackAdapter(engine=engine)
+
+    adapter.play(media, offset_ms=media.duration_ms)
+    _wait_until(lambda: len(engine.play_file_calls) == 1)
+
+    assert engine.play_file_calls[0]["start_time_s"] == 0.0
+    assert engine.playback_time_s == 0.0
 
     adapter.stop()
 

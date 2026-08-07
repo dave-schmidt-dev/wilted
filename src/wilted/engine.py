@@ -502,9 +502,13 @@ class AudioEngine:
             cannot express a resume position as a segment index. ffmpeg's
             ``-ss`` takes an arbitrary timestamp, so nothing about the seek
             itself requires segments; only the index-based *addressing* did.
-            Segment seek still wins when both are usable, keeping the
-            transcribed-podcast path byte-identical to before this parameter
-            existed.
+
+            Segment seek wins whenever one applies, so a resume that already
+            landed on a segment boundary behaves exactly as before. One case
+            does change: an offset falling inside segment 0 leaves
+            ``start_segment == 0``, which the segment branch cannot distinguish
+            from "start at the beginning" — that now seeks to the true offset
+            instead of rewinding to zero.
 
         Args:
             path: Path to audio file (MP3, AAC, M4A, WAV, FLAC, OGG).
