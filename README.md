@@ -1,8 +1,8 @@
 # wilted
 
-Private, native Mac/iOS personal audio system: a Mac producer prepares audio and an iOS listener receives and plays it.
+Local-first native Mac/iOS personal audio system: a Mac producer prepares audio and an iOS listener receives and plays it.
 
-**Status:** Phase 0 through Task 4 are complete; the attended CloudKit capability preflight is next.
+**Status:** Phase 0 through Task 4 are complete; the Task 5 capability packet awaits attended owner approval.
 
 ## Priorities (in order)
 
@@ -15,7 +15,7 @@ Private, native Mac/iOS personal audio system: a Mac producer prepares audio and
 
 The MVP is a native SwiftUI Mac producer and iOS listener. The Mac accepts an article URL, prepares cancellable audio with visible progress, maintains a local library and durable resume, and publishes immutable audio revisions to the user's private CloudKit database. iOS downloads and caches those revisions for offline/background playback and reports playback state back.
 
-The former `wilted-old` directory is reference-only and non-runnable. Its absolute paths, legacy runtime bindings, SQLite data, alias, virtual environment, and retired launchd jobs are intentionally archived. Do not reuse its origin or migrate its history without a separately reviewed owner decision. Retired nightly/hourly scheduling is disabled. The current `wilted` shell alias is stale and must not be treated as an installation.
+The former `wilted-old` directory is reference-only and non-runnable. Its absolute paths, legacy runtime bindings, SQLite data, alias, virtual environment, and retired launchd jobs are intentionally archived. On 2026-08-17, the owner approved transferring the existing GitHub repository to this fresh project; the old Git history was not migrated, and the local archive remains the recovery copy. Retired nightly/hourly scheduling is disabled. The current `wilted` shell alias is stale and must not be treated as an installation.
 
 Explicitly excluded from the MVP: RSS discovery, automatic classification, podcast/ad stripping, weather, radio mode, dynamic playlists, email, social drafting, background scheduling, and TUI/CLI parity.
 
@@ -39,12 +39,11 @@ Explicitly excluded from the MVP: RSS discovery, automatic classification, podca
 
 ## Planning artifacts
 
-- [`native-macos-ios-mvp-2026-08-17.md`](../.plans/wilted/native-macos-ios-mvp-2026-08-17.md) — reset and native MVP plan.
-- [`wilted-native-mvp-implementation-2026-08-17.md`](../.plans/wilted/wilted-native-mvp-implementation-2026-08-17.md) — product, architecture, Zero Delta Lettuce design, validation, and phased implementation plan.
+The detailed implementation plans are maintained locally outside this public repository. Checked-in decision, capability, and verification records under `docs/` preserve the public evidence boundary.
 
 ## Workflows
 
-Phase 0 contract freeze, Task 3 native project scaffolding, and the Task 4 Mac vertical slice are complete. Implementation continues with the attended CloudKit capability preflight, the iOS listener slice, and MVP qualification. `make validate` is the reproducible local gate; XcodeGen `project.yml` remains authoritative and generated project output is absent/ignored. Follow `INVARIANTS.md` and keep local, Development CloudKit, signed Production, physical-device, App Store Connect, and TestFlight evidence distinct. See [`docs/phase0-decision-record.md`](docs/phase0-decision-record.md), [`docs/phase0-verification-disposition.md`](docs/phase0-verification-disposition.md), [`docs/task3-verification-disposition.md`](docs/task3-verification-disposition.md), and [`docs/task4-verification-disposition.md`](docs/task4-verification-disposition.md).
+Phase 0 contract freeze, Task 3 native project scaffolding, and the Task 4 Mac vertical slice are complete. Implementation continues with the attended CloudKit capability preflight, the iOS listener slice, and MVP qualification. `make validate` is the reproducible local gate; XcodeGen `project.yml` remains authoritative and generated project output is absent/ignored. Follow `INVARIANTS.md` and keep local, Development CloudKit, signed Production, physical-device, App Store Connect, and TestFlight evidence distinct. See [`docs/phase0-decision-record.md`](docs/phase0-decision-record.md), [`docs/phase0-verification-disposition.md`](docs/phase0-verification-disposition.md), [`docs/task3-verification-disposition.md`](docs/task3-verification-disposition.md), [`docs/task4-verification-disposition.md`](docs/task4-verification-disposition.md), and the attended [`docs/task5-cloudkit-capability-preflight.md`](docs/task5-cloudkit-capability-preflight.md).
 
 ## Conventions
 
