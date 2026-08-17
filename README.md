@@ -2,7 +2,7 @@
 
 Local-first native Mac/iOS personal audio system: a Mac producer prepares audio and an iOS listener receives and plays it.
 
-**Status:** Phase 0 through Task 4 are complete; the Task 5 capability packet awaits attended owner approval.
+**Status:** Phase 0 through Task 5 are complete; the CloudKit and iOS listener slice is in progress.
 
 ## Priorities (in order)
 
@@ -43,7 +43,7 @@ The detailed implementation plans are maintained locally outside this public rep
 
 ## Workflows
 
-Phase 0 contract freeze, Task 3 native project scaffolding, and the Task 4 Mac vertical slice are complete. Implementation continues with the attended CloudKit capability preflight, the iOS listener slice, and MVP qualification. `make validate` is the reproducible local gate; XcodeGen `project.yml` remains authoritative and generated project output is absent/ignored. Follow `INVARIANTS.md` and keep local, Development CloudKit, signed Production, physical-device, App Store Connect, and TestFlight evidence distinct. See [`docs/phase0-decision-record.md`](docs/phase0-decision-record.md), [`docs/phase0-verification-disposition.md`](docs/phase0-verification-disposition.md), [`docs/task3-verification-disposition.md`](docs/task3-verification-disposition.md), [`docs/task4-verification-disposition.md`](docs/task4-verification-disposition.md), and the attended [`docs/task5-cloudkit-capability-preflight.md`](docs/task5-cloudkit-capability-preflight.md).
+Phase 0 contract freeze and Tasks 3–5 are complete. Implementation continues with the CloudKit and iOS listener slice, then MVP qualification. `make validate` is the reproducible local gate; XcodeGen `project.yml` remains authoritative and generated project output is absent/ignored. Follow `INVARIANTS.md` and keep local, Development CloudKit, signed Production, physical-device, App Store Connect, and TestFlight evidence distinct. See [`docs/phase0-decision-record.md`](docs/phase0-decision-record.md), [`docs/phase0-verification-disposition.md`](docs/phase0-verification-disposition.md), [`docs/task3-verification-disposition.md`](docs/task3-verification-disposition.md), [`docs/task4-verification-disposition.md`](docs/task4-verification-disposition.md), the attended [`docs/task5-cloudkit-capability-preflight.md`](docs/task5-cloudkit-capability-preflight.md), and [`docs/task5-verification-disposition.md`](docs/task5-verification-disposition.md).
 
 ## Conventions
 

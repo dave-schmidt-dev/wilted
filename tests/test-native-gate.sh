@@ -41,6 +41,103 @@ assert_gatekeeper_contract() {
 
 assert_gatekeeper_contract
 
+assert_capability_source_contract() {
+  local project="$repo_root/project.yml"
+  local mac_development="$repo_root/WiltedMac/WiltedMac.entitlements"
+  local mac_release="$repo_root/WiltedMac/WiltedMacProduction.entitlements"
+  local ios_development="$repo_root/WiltediOS/WiltediOS.entitlements"
+  local ios_release="$repo_root/WiltediOS/WiltediOSProduction.entitlements"
+
+  for required in \
+    'PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.mac.tests' \
+    'PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.ios.tests' \
+    'PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.mac.uitests' \
+    'PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.ios.uitests'; do
+    assert_contains "$required" "$project"
+  done
+  assert_contains 'Development: debug' "$project"
+  target_block() {
+    local target="$1"
+    awk -v target="$target" '
+      index($0, "  " target ":") == 1 { found = 1 }
+      found && index($0, "  " target ":") != 1 && $0 ~ /^  [A-Za-z0-9_]+:/ { exit }
+      found { print }
+    ' "$project"
+  }
+  mac_block="$(target_block WiltedMac)"
+  ios_block="$(target_block WiltediOS)"
+  config_block() {
+    local block="$1"; local config="$2"
+    printf '%s\n' "$block" | awk -v config="$config" '
+      index($0, "        " config ":") == 1 { found = 1 }
+      found && $0 ~ /^        [A-Za-z0-9_]+:/ && index($0, "        " config ":") != 1 { exit }
+      found { print }
+    '
+  }
+  assert_target_config() {
+    local target="$1"; local block="$2"; local config="$3"; local expected="$4"
+    printf '%s\n' "$block" | grep -Fq -- "PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.$([ "$target" = WiltedMac ] && printf mac || printf ios)" || {
+      printf 'assertion failed: %s bundle ID missing\n' "$target" >&2
+      exit 1
+    }
+    printf '%s\n' "$(config_block "$block" "$config")" | grep -Fq -- "$expected" || {
+      printf 'assertion failed: %s %s mapping missing %s\n' "$target" "$config" "$expected" >&2
+      exit 1
+    }
+  }
+  assert_target_config WiltedMac "$mac_block" Debug 'CODE_SIGN_ENTITLEMENTS: ""'
+  assert_target_config WiltedMac "$mac_block" Development 'CODE_SIGN_ENTITLEMENTS: WiltedMac/WiltedMac.entitlements'
+  assert_target_config WiltedMac "$mac_block" Release 'CODE_SIGN_ENTITLEMENTS: WiltedMac/WiltedMacProduction.entitlements'
+  assert_target_config WiltediOS "$ios_block" Debug 'CODE_SIGN_ENTITLEMENTS: ""'
+  assert_target_config WiltediOS "$ios_block" Development 'CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOS.entitlements'
+  assert_target_config WiltediOS "$ios_block" Release 'CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOSProduction.entitlements'
+  if rg -n 'com\.example\.wilted|DEVELOPMENT_TEAM|PROVISIONING_PROFILE_SPECIFIER' \
+    "$project" "$mac_development" "$mac_release" "$ios_development" "$ios_release"; then
+    printf '%s\n' 'assertion failed: signing/team/profile or placeholder binding remains' >&2
+    exit 1
+  fi
+
+  assert_entitlement() {
+    local file="$1"; local key="$2"; local value="$3"
+    plutil -p "$file" | grep -Fq "\"$key\" => \"$value\"" || {
+      printf 'assertion failed: %s missing %s=%s\n' "$file" "$key" "$value" >&2
+      exit 1
+    }
+  }
+  assert_entitlement "$mac_development" 'com.apple.developer.aps-environment' development
+  assert_entitlement "$ios_development" 'aps-environment' development
+  assert_entitlement "$mac_release" 'com.apple.developer.aps-environment' production
+  assert_entitlement "$ios_release" 'aps-environment' production
+  assert_entitlement "$mac_release" 'com.apple.developer.icloud-container-environment' Production
+  assert_entitlement "$ios_release" 'com.apple.developer.icloud-container-environment' Production
+  for file in "$mac_development" "$mac_release" "$ios_development" "$ios_release"; do
+    plutil -p "$file" | grep -Fq 'CloudKit' || {
+      printf 'assertion failed: %s missing CloudKit service\n' "$file" >&2
+      exit 1
+    }
+    plutil -p "$file" | grep -Fq 'iCloud.com.zerodelta.wilted' || {
+      printf 'assertion failed: %s missing approved CloudKit container\n' "$file" >&2
+      exit 1
+    }
+  done
+  for file in "$mac_development" "$ios_development"; do
+    if plutil -p "$file" | grep -Fq 'icloud-container-environment'; then
+      printf '%s\n' 'assertion failed: Development entitlements contain Production environment key' >&2
+      exit 1
+    fi
+  done
+  plutil -p "$repo_root/WiltediOS/Info.plist" | grep -Fq 'UIBackgroundModes' || {
+    printf '%s\n' 'assertion failed: iOS Info.plist lacks UIBackgroundModes' >&2
+    exit 1
+  }
+  plutil -p "$repo_root/WiltediOS/Info.plist" | grep -Fq 'audio' || {
+    printf '%s\n' 'assertion failed: iOS Info.plist lacks audio background mode' >&2
+    exit 1
+  }
+}
+
+assert_capability_source_contract
+
 assert_snapshot_contract() {
   assert_contains 'validate_pixel_snapshot_baselines' "$gate"
   assert_contains 'expected_count=156' "$gate"
@@ -52,6 +149,13 @@ assert_snapshot_contract() {
   assert_contains 'cp -R "$repo_root/Shared" "$repo_root/WiltedMac" "$repo_root/WiltedMacTests"' "$gate"
   assert_contains 'cp "$repo_root/Producer/Package.swift" "$integration_root/Producer/Package.swift"' "$gate"
   assert_contains 'cp -R "$repo_root/Producer/Sources" "$repo_root/Producer/Tests" "$integration_root/Producer/"' "$gate"
+  for entitlement in \
+    WiltedMac/WiltedMac.entitlements \
+    WiltedMac/WiltedMacProduction.entitlements \
+    WiltediOS/WiltediOS.entitlements \
+    WiltediOS/WiltediOSProduction.entitlements; do
+    assert_contains "$entitlement" "$gate"
+  done
   assert_contains 'validate_pixel_snapshot_baselines "$integration_root"' "$gate"
   assert_contains 'NATIVE_FORCE_SNAPSHOT_BASELINE' "$gate"
 

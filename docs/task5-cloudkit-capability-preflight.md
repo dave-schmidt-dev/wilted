@@ -1,27 +1,33 @@
 # Task 5: CloudKit capability preflight
 
-**Status:** attended decision packet; read-only and credential-free
+**Status:** owner-approved decisions and source configuration; read-only and credential-free
 **Date:** 2026-08-17
 **Scope:** Wilted macOS producer and iOS 17+ listener
 
-This packet records decisions the release owner must make before any Apple
-Developer portal, CloudKit container, capability, profile, or signing state is
-created or changed. It does not contain secrets, team identifiers, certificate
-names, or portal receipts.
+This packet records David’s approval of the Wilted decisions, installed source
+configuration, and future attended evidence plan. It does not contain secrets, team
+identifiers, certificate names, or portal receipts. No Apple Developer portal,
+CloudKit container, capability, profile, signing, schema, device, or TestFlight
+state has been changed.
 
-**Hard stop:** do not register an App ID, create or attach a container, enable a
-capability, create/pick a profile, upload a schema, promote Development to
-Production, or alter any external Apple state until the owner approves the
-decision table at the end.
+Local source verification is complete. The final disposition and exact evidence
+boundary are recorded in `docs/task5-verification-disposition.md`.
+
+**Hard stop:** the decisions are approved, but external execution and proof
+remain attended gates. Do not register an App ID, create or attach a container,
+enable a capability, create/pick a profile, upload a schema, promote Development
+to Production, or alter any external Apple state until each gate is explicitly
+executed and evidenced.
 
 ## Current inventory and gaps
 
-- `project.yml` is the source of truth. It currently uses the local placeholder
-  prefix `com.example.wilted`, with target placeholders
-  `com.example.wilted.mac` and `com.example.wilted.ios`.
-- Both application targets have no entitlements file, no CloudKit container,
-  no Development/Production environment selection, and no Apple team/profile
-  binding. Current Mac ad-hoc signing is local validation only.
+- `project.yml` is the source of truth and now contains the approved target
+  identifiers `com.zerodelta.wilted.mac` and `com.zerodelta.wilted.ios`.
+- Four source entitlement files now exist, and the Development/Release
+  configurations bind the approved Development/Production entitlement choices
+  for the Mac and iOS targets. There is still no Apple team/profile or portal
+  association, no signed effective-entitlement proof, and Debug remains
+  credential-free. Current Mac ad-hoc signing is local validation only.
 - `contracts/cloudkit/schema.json` freezes a private database, custom zone
   `WiltedZone`, record families `WiltedItem`, `WiltedRevision`, and
   `WiltedPlaybackState`, and no query indexes (`queryIndexAllowlist: []`). It
@@ -36,38 +42,46 @@ decision table at the end.
   promotion, signed artifact, provisioning profile, device run, or TestFlight
   receipt exists.
 
-## Owner decisions requested
+## Owner-approved source configuration
 
-These are proposals only and are **not approved identifiers**:
+The following choices were approved by David on 2026-08-17. They are
+configuration authorization, not proof that the identifiers exist in Apple
+Developer or that any external state has been mutated:
 
-| Decision | Proposed value | Owner decision required |
+| Decision | Approved value | Authorization boundary |
 |---|---|---|
-| Mac bundle ID | `com.zerodelta.wilted.mac` | Confirm ownership and final spelling |
-| iOS bundle ID | `com.zerodelta.wilted.ios` | Confirm ownership and final spelling |
-| Shared iCloud container | `iCloud.com.zerodelta.wilted` | Confirm one shared private container for both targets |
-| CloudKit database/zone | Private database; custom zone `WiltedZone` | Confirm contract ownership and zone policy |
-| Mac distribution | Hardened, notarized Developer ID, initially without App Sandbox | Approve hypothesis or select App Sandbox/App Group/XPC alternative |
-| Capability membership | Paid Apple Developer Program account with required capabilities | Confirm account authority and capability availability |
+| Mac bundle ID | `com.zerodelta.wilted.mac` | Source configuration only; portal registration remains future |
+| iOS bundle ID | `com.zerodelta.wilted.ios` | Source configuration only; portal registration remains future |
+| Shared iCloud container | `iCloud.com.zerodelta.wilted` | Source reference only; container creation/attachment remains future |
+| CloudKit database/zone | Private database; custom zone `WiltedZone` | Contract authority only; deployment remains future |
+| Mac distribution | Hardened, notarized Developer ID, initially without App Sandbox | Approved hypothesis; signed runtime and notarization remain future |
+| Capability membership | Paid Apple Developer Program account with required capabilities | Approved prerequisite; capability enablement remains future |
 
-The proposed values must not be typed into the portal until approved. The
-placeholder values remain intentionally non-release values.
+The approved values are installed in the repository’s source configuration. This
+record does not authorize portal or container mutation.
 
-## Entitlement matrix to approve
+## Owner-approved entitlement matrix
 
 The effective signed entitlements, not source settings alone, are the evidence
-of record. The exact container identifier below is still conditional on the
-owner decision above.
+of record. The exact container identifier below is approved for source
+configuration; effective signed entitlements remain future evidence.
 
 ### Target-by-environment key matrix
 
-The proposed target-specific effective-key matrix is:
+The source project has three distinct build configurations: local `Debug`
+has an explicitly empty `CODE_SIGN_ENTITLEMENTS` setting for credential-free
+validation; `Development` binds the Development entitlement files below; and
+`Release` binds the Production entitlement files. Local Debug evidence must
+not be treated as Development CloudKit evidence.
+
+The approved target-specific effective-key matrix is:
 
 | Target | Development | Production |
 |---|---|---|
 | Mac | `icloud-container-identifiers`, `icloud-services: [CloudKit]`; `com.apple.developer.aps-environment: development` only if notifications are approved | `icloud-container-identifiers`, `icloud-services: [CloudKit]`, `icloud-container-environment: Production`; `com.apple.developer.aps-environment: production` only if notifications are approved |
 | iOS | `icloud-container-identifiers`, `icloud-services: [CloudKit]`; `aps-environment: development` only if notifications are approved; `UIBackgroundModes: [audio]` in the built app Info.plist | `icloud-container-identifiers`, `icloud-services: [CloudKit]`, `icloud-container-environment: Production`; `aps-environment: production` only if notifications are approved; `UIBackgroundModes: [audio]` in the built app Info.plist |
 
-For both targets, the proposed shared CloudKit keys are:
+For both targets, the approved shared CloudKit keys are:
 
 ```text
 com.apple.developer.icloud-container-identifiers = [iCloud.com.zerodelta.wilted]
@@ -115,9 +129,9 @@ Normative Apple references: [iCloud container environment entitlement](https://d
 ## Schema and index promotion evidence plan
 
 1. Freeze the approved identifiers and a content hash of `contracts/cloudkit/schema.json`.
-2. Create/configure only the approved Development container after the owner
-   authorizes the portal step. Record the redacted container/environment
-   identity and exact tool/Xcode version, never credentials.
+2. In a future attended gate, create/configure only the approved Development
+   container. Record the redacted container/environment identity and exact
+   tool/Xcode version, never credentials.
 3. Use Apple’s [text-based CloudKit schema workflow](https://developer.apple.com/documentation/cloudkit/integrating-a-text-based-schema-into-your-workflow)
    to import or compare the contract-derived schema. Retain the command
    transcript with private inputs removed, the input hash, and the resulting
@@ -130,7 +144,7 @@ Normative Apple references: [iCloud container environment entitlement](https://d
    playback-state operations, including stale change-tag, offline, delayed,
    quota, and malformed-schema cases. Preserve redacted operation receipts and
    artifact hashes.
-6. Require an attended owner approval that Development matches the frozen
+6. Require a future attended owner approval that Development matches the frozen
    contract before promotion. Promotion evidence must include the exact
    Development export, Production export after promotion, schema/index diff
    showing no unintended change, promotion timestamp, and the approving owner.
@@ -160,33 +174,33 @@ Normative Apple references: [iCloud container environment entitlement](https://d
   are separate receipts. Neither proves CloudKit schema promotion; Production
   CloudKit and device acceptance remain separate gates.
 
-## Human approval checklist
+## Approved checklist and remaining gates
 
-- [ ] Owner approves the two bundle IDs and one shared container, or records replacements.
-- [ ] Owner confirms the authorized paid-team capability boundary; no team ID is recorded here.
-- [ ] Owner approves private database/custom-zone ownership and the schema contract hash.
-- [ ] Owner approves Development versus Production entitlement files for both targets.
-- [ ] Owner approves CloudKit, Background Modes/audio, and remote-notification scope.
-- [ ] Owner chooses the non-sandbox Developer ID hypothesis or an approved sandbox alternative.
-- [ ] Owner approves certificate/profile classes and artifact inspection method without recording names or secrets.
-- [ ] Owner approves the schema/index comparison, promotion, rollback/stop, and receipt plan.
-- [ ] Owner approves physical Mac/iPhone roles and separate Development/Production acceptance.
-- [ ] Owner confirms that no portal/container mutation occurs before this checklist and decision table are approved.
+- [x] David approves the two bundle IDs and one shared container.
+- [x] David confirms the paid-team capability boundary; no team ID is recorded here.
+- [x] David approves private database/custom-zone ownership and the schema contract hash plan.
+- [x] David approves Development versus Production entitlement keys for both targets.
+- [x] David approves CloudKit, Background Modes/audio, and remote-notification scope.
+- [x] David approves the non-sandbox Developer ID hypothesis.
+- [x] David approves certificate/profile classes and artifact inspection without names or secrets.
+- [x] David approves the schema/index comparison, promotion, stop, and receipt plan.
+- [x] David approves physical Mac/iPhone roles and separate Development/Production acceptance.
+- [x] David confirms portal/container mutation remains a future attended gate.
 
 ## Final decision table
 
-| Area | Proposed decision / required evidence | Owner approval | Evidence reference |
+| Area | Approved source decision / required future evidence | Owner approval | Evidence reference |
 |---|---|---|---|
-| Bundle IDs | `com.zerodelta.wilted.mac`; `com.zerodelta.wilted.ios` |  |  |
-| Shared container | `iCloud.com.zerodelta.wilted` |  |  |
-| CloudKit scope | Private database; `WiltedZone`; current index set empty |  |  |
-| Development entitlements | CloudKit service + container identifiers; Development notification value if used |  |  |
-| Production entitlements | CloudKit service + container identifiers + `icloud-container-environment: Production`; Production notification value if used |  |  |
-| iOS capabilities | CloudKit, Background Modes/audio, remote notifications as approved |  |  |
-| Mac distribution | Hardened/notarized Developer ID without App Sandbox, or owner-approved alternative |  |  |
-| Schema promotion | Hash-bound text-schema import/export, diff, index evidence, attended promotion approval |  |  |
-| Signing/profiles | Correct target, capability, environment, and artifact-bound inspection receipts |  |  |
-| Device/release proof | Signed physical Mac/iPhone Production acceptance; App Store Connect/TestFlight receipts separately |  |  |
+| Bundle IDs | `com.zerodelta.wilted.mac`; `com.zerodelta.wilted.ios` | Approved 2026-08-17 | Portal registration future; no evidence yet |
+| Shared container | `iCloud.com.zerodelta.wilted` | Approved 2026-08-17 | Container creation/attachment future; no evidence yet |
+| CloudKit scope | Private database; `WiltedZone`; current index set empty | Approved 2026-08-17 | Development schema comparison and promotion future |
+| Development entitlements | CloudKit service + container identifiers; Development notification value if used | Approved 2026-08-17 | Signed Development artifacts future |
+| Production entitlements | CloudKit service + container identifiers + `icloud-container-environment: Production`; Production notification value if used | Approved 2026-08-17 | Signed Production artifacts future |
+| iOS capabilities | CloudKit, Background Modes/audio, remote notifications as approved | Approved 2026-08-17 | Profile, artifact, and device proof future |
+| Mac distribution | Hardened/notarized Developer ID without App Sandbox | Approved 2026-08-17 | Signed runtime and notarization proof future |
+| Schema promotion | Hash-bound text-schema import/export, diff, index evidence, attended promotion approval | Approved 2026-08-17 | No schema mutation or promotion performed |
+| Signing/profiles | Correct target, capability, environment, and artifact-bound inspection receipts | Approved 2026-08-17 | No profiles or signing evidence recorded |
+| Device/release proof | Signed physical Mac/iPhone Production acceptance; App Store Connect/TestFlight receipts separately | Approved 2026-08-17 | No device, App Store Connect, or TestFlight proof |
 
 ### References
 

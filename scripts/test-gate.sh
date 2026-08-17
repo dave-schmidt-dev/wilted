@@ -332,14 +332,18 @@ leg_xcodegen_reproducible() {
   xcodegen generate --spec "$integration_root/project.yml" --project "$first" --project-root "$integration_root"
   xcodegen generate --spec "$integration_root/project.yml" --project "$second" --project-root "$integration_root"
 
-  # XcodeGen writes generated plists beside the spec's project root while the
-  # disposable project lives under tmp_root.  Keep the generated project
-  # self-contained so xcodebuild never reads or writes the checkout.
-  local plist
-  for plist in WiltedMac/Info.plist WiltediOS/Info.plist; do
-    mkdir -p "$first/$(dirname "$plist")" "$second/$(dirname "$plist")"
-    cp "$integration_root/$plist" "$first/$plist"
-    cp "$integration_root/$plist" "$second/$plist"
+  # XcodeGen resolves plist and entitlement paths relative to the generated
+  # project, while the disposable project lives under tmp_root. Keep every
+  # referenced signing input in both generated projects so xcodebuild never
+  # reads or writes the checkout.
+  local project_file
+  for project_file in \
+    WiltedMac/Info.plist WiltedMac/WiltedMac.entitlements \
+    WiltedMac/WiltedMacProduction.entitlements WiltediOS/Info.plist \
+    WiltediOS/WiltediOS.entitlements WiltediOS/WiltediOSProduction.entitlements; do
+    mkdir -p "$first/$(dirname "$project_file")" "$second/$(dirname "$project_file")"
+    cp "$integration_root/$project_file" "$first/$project_file"
+    cp "$integration_root/$project_file" "$second/$project_file"
   done
 
   local first_project second_project

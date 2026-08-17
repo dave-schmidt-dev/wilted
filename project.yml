@@ -1,7 +1,7 @@
 name: Wilted
 
 options:
-  bundleIdPrefix: com.example.wilted
+  bundleIdPrefix: com.zerodelta.wilted
   deploymentTarget:
     macOS: "14.0"
     iOS: "17.0"
@@ -19,6 +19,7 @@ packages:
 
 configs:
   Debug: debug
+  Development: debug
   Release: release
 
 settings:
@@ -47,8 +48,9 @@ targets:
         product: WiltedProducer
     settings:
       base:
-        # Local-only placeholder. Replace only during the attended identity gate.
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.wilted.mac
+        # Source bundle ID; Apple App ID ownership and portal registration remain
+        # separate attended evidence.
+        PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.mac
         INFOPLIST_FILE: WiltedMac/Info.plist
         # Credential-free local signing keeps the Mac host launchable for
         # XCUITest without asserting a team, profile, entitlement, or
@@ -57,8 +59,13 @@ targets:
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGNING_ALLOWED: YES
         CODE_SIGNING_REQUIRED: YES
-        DEVELOPMENT_TEAM: ""
-        PROVISIONING_PROFILE_SPECIFIER: ""
+      configs:
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: ""
+        Development:
+          CODE_SIGN_ENTITLEMENTS: WiltedMac/WiltedMac.entitlements
+        Release:
+          CODE_SIGN_ENTITLEMENTS: WiltedMac/WiltedMacProduction.entitlements
     info:
       path: WiltedMac/Info.plist
       properties:
@@ -83,9 +90,17 @@ targets:
         product: WiltedDomain
     settings:
       base:
-        # Local-only placeholder. Replace only during the attended identity gate.
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.wilted.ios
+        # Source bundle ID; Apple App ID ownership and portal registration remain
+        # separate attended evidence.
+        PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.ios
         INFOPLIST_FILE: WiltediOS/Info.plist
+      configs:
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: ""
+        Development:
+          CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOS.entitlements
+        Release:
+          CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOSProduction.entitlements
     info:
       path: WiltediOS/Info.plist
       properties:
@@ -118,7 +133,7 @@ targets:
         product: SnapshotTesting
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.wilted.mac.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.mac.tests
         GENERATE_INFOPLIST_FILE: YES
 
   WiltediOSTests:
@@ -136,7 +151,7 @@ targets:
         product: SnapshotTesting
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.wilted.ios.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.ios.tests
         GENERATE_INFOPLIST_FILE: YES
 
   WiltedMacUITests:
@@ -149,15 +164,13 @@ targets:
       - target: WiltedMac
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.wilted.mac.uitests
+        PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.mac.uitests
         GENERATE_INFOPLIST_FILE: YES
         # The UI runner must be ad-hoc signed independently of its host.
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGNING_ALLOWED: YES
         CODE_SIGNING_REQUIRED: YES
-        DEVELOPMENT_TEAM: ""
-        PROVISIONING_PROFILE_SPECIFIER: ""
 
   WiltediOSUITests:
     type: bundle.ui-testing
@@ -169,7 +182,7 @@ targets:
       - target: WiltediOS
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.wilted.ios.uitests
+        PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.ios.uitests
         GENERATE_INFOPLIST_FILE: YES
 
 schemes:
