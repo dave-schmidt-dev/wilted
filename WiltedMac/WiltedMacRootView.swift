@@ -62,6 +62,8 @@ private struct WiltedMacLibraryView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                WiltedMacSyncControls(model: model)
+
                 HStack(spacing: 10) {
                     TextField("https://example.com/article", text: $model.urlDraft)
                         .textFieldStyle(.roundedBorder)
@@ -98,6 +100,43 @@ private struct WiltedMacLibraryView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .accessibilityIdentifier("wilted-mac-library-detail")
+    }
+}
+
+private struct WiltedMacSyncControls: View {
+    let model: WiltedMacModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Sync", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.headline)
+                Spacer()
+                Text(model.syncStatus.phase.rawValue.capitalized)
+                    .foregroundStyle(model.syncStatus.phase == .failed ? .red : .secondary)
+                    .accessibilityIdentifier("wilted-sync-status")
+            }
+            Text(model.syncStatus.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("wilted-sync-detail")
+            HStack {
+                Button("Refresh") { model.refreshSync() }
+                    .disabled(model.syncStatus.phase == .disabled || model.syncStatus.phase == .quarantined)
+                    .accessibilityIdentifier("wilted-sync-refresh")
+                Button("Upload") { model.uploadPendingSync() }
+                    .disabled(model.syncStatus.phase == .disabled || model.syncStatus.phase == .quarantined)
+                    .accessibilityIdentifier("wilted-sync-upload")
+                if model.syncStatus.phase == .fetching || model.syncStatus.phase == .sending || model.syncStatus.phase == .staging {
+                    Button("Cancel") { model.cancelSync() }
+                        .accessibilityIdentifier("wilted-sync-cancel")
+                }
+            }
+        }
+        .padding(16)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-sync-controls")
     }
 }
 
@@ -202,6 +241,9 @@ private struct WiltedMacNowPlayingView: View {
             }
             .buttonStyle(.bordered)
             .font(.title2)
+
+            Button("Restart") { model.restartPlayback() }
+                .accessibilityIdentifier("wilted-player-restart")
 
             Button("Recover audio route") { model.recoverAudioRoute() }
                 .accessibilityIdentifier("wilted-player-route-recovery")

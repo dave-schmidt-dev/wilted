@@ -13,11 +13,18 @@ let package = Package(
     targets: [
         .target(
             name: "WiltedProducer",
-            dependencies: [.product(name: "WiltedDomain", package: "WiltedKit")]
+            dependencies: [
+                .product(name: "WiltedDomain", package: "WiltedKit"),
+                .product(name: "WiltedSync", package: "WiltedKit"),
+            ]
         ),
         .testTarget(
             name: "WiltedProducerTests",
-            dependencies: ["WiltedProducer", .product(name: "WiltedDomain", package: "WiltedKit")]
+            dependencies: [
+                "WiltedProducer",
+                .product(name: "WiltedDomain", package: "WiltedKit"),
+                .product(name: "WiltedSync", package: "WiltedKit"),
+            ]
         ),
     ]
 )

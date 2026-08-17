@@ -58,13 +58,19 @@ public struct WiltedRootView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var selection: WiltedNavigation
     private let fixture: WiltedPreviewFixture
+    private let iOSLibrary: AnyView?
+    private let iOSDownloads: AnyView?
 
     public init(
         initialSelection: WiltedNavigation = .library,
-        fixture: WiltedPreviewFixture = WiltedPreviewFixture(state: .emptyLibrary)
+        fixture: WiltedPreviewFixture = WiltedPreviewFixture(state: .emptyLibrary),
+        iOSLibrary: AnyView? = nil,
+        iOSDownloads: AnyView? = nil
     ) {
         _selection = State(initialValue: initialSelection)
         self.fixture = fixture
+        self.iOSLibrary = iOSLibrary
+        self.iOSDownloads = iOSDownloads
     }
 
     public var body: some View {
@@ -108,9 +114,17 @@ public struct WiltedRootView: View {
     private func destination(for item: WiltedNavigation) -> some View {
         switch item {
         case .library:
+            #if os(iOS)
+            if let iOSLibrary { iOSLibrary } else { WiltedLibraryShell(fixture: fixture) }
+            #else
             WiltedLibraryShell(fixture: fixture)
+            #endif
         case .downloads:
+            #if os(iOS)
+            if let iOSDownloads { iOSDownloads } else { WiltedDownloadsShell() }
+            #else
             WiltedDownloadsShell()
+            #endif
         case .settings:
             WiltedSettingsShell()
         }

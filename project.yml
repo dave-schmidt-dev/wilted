@@ -13,6 +13,10 @@ packages:
     path: WiltedKit
   WiltedProducer:
     path: Producer
+  WiltedCloudKit:
+    path: CloudSync
+  WiltedListener:
+    path: Listener
   SnapshotTesting:
     url: https://github.com/pointfreeco/swift-snapshot-testing
     exactVersion: 1.19.4
@@ -44,6 +48,10 @@ targets:
     dependencies:
       - package: WiltedKit
         product: WiltedDomain
+      - package: WiltedKit
+        product: WiltedSync
+      - package: WiltedCloudKit
+        product: WiltedCloudKit
       - package: WiltedProducer
         product: WiltedProducer
     settings:
@@ -62,10 +70,13 @@ targets:
       configs:
         Debug:
           CODE_SIGN_ENTITLEMENTS: ""
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"
         Development:
           CODE_SIGN_ENTITLEMENTS: WiltedMac/WiltedMac.entitlements
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"
         Release:
           CODE_SIGN_ENTITLEMENTS: WiltedMac/WiltedMacProduction.entitlements
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"
     info:
       path: WiltedMac/Info.plist
       properties:
@@ -88,6 +99,12 @@ targets:
     dependencies:
       - package: WiltedKit
         product: WiltedDomain
+      - package: WiltedKit
+        product: WiltedSync
+      - package: WiltedCloudKit
+        product: WiltedCloudKit
+      - package: WiltedListener
+        product: WiltedListener
     settings:
       base:
         # Source bundle ID; Apple App ID ownership and portal registration remain
@@ -97,10 +114,13 @@ targets:
       configs:
         Debug:
           CODE_SIGN_ENTITLEMENTS: ""
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"
         Development:
           CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOS.entitlements
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"
         Release:
           CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOSProduction.entitlements
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"
     info:
       path: WiltediOS/Info.plist
       properties:
@@ -127,8 +147,14 @@ targets:
       - target: WiltedMac
       - package: WiltedKit
         product: WiltedDomain
+      - package: WiltedKit
+        product: WiltedSync
       - package: WiltedProducer
         product: WiltedProducer
+      - package: WiltedCloudKit
+        product: WiltedCloudKit
+      - package: WiltedListener
+        product: WiltedListener
       - package: SnapshotTesting
         product: SnapshotTesting
     settings:
@@ -147,6 +173,10 @@ targets:
       - target: WiltediOS
       - package: WiltedKit
         product: WiltedDomain
+      - package: WiltedKit
+        product: WiltedSync
+      - package: WiltedCloudKit
+        product: WiltedCloudKit
       - package: SnapshotTesting
         product: SnapshotTesting
     settings:

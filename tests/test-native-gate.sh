@@ -37,9 +37,43 @@ assert_gatekeeper_contract() {
   assert_contains 'test-without-building' "$gate"
   assert_contains 'codesign --verify --deep --strict' "$gate"
   assert_contains 'WiltedMacUITests-Runner.app' "$gate"
+  assert_contains 'NATIVE_MAC_UI_METADATA_CLEAN_QUALIFIED' "$gate"
+  assert_contains 'native.mac-ui.unrun reason=metadata-clean-qualification-required' "$gate"
+  local mac_ui_block guard_line launch_line
+  mac_ui_block="$(sed -n '/^leg_macos_ui_tests()/,/^}$/p' "$gate")"
+  guard_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'metadata-clean-qualification-required' | head -1 | cut -d: -f1)"
+  launch_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'xcodebuild test-without-building' | head -1 | cut -d: -f1)"
+  [[ -n "$guard_line" && -n "$launch_line" && "$guard_line" -lt "$launch_line" ]] || {
+    printf '%s\n' 'assertion failed: Mac UI launch is not guarded by metadata-clean qualification' >&2
+    exit 1
+  }
 }
 
 assert_gatekeeper_contract
+
+assert_wiltedkit_sync_contract() {
+  assert_contains 'WiltedSyncTests' "$gate"
+  assert_contains 'assert_test_sources wiltedsync-tests' "$gate"
+  assert_contains 'WiltedSync authoritative fixture drift' "$gate"
+  assert_contains 'native.sync-fixture.parity' "$gate"
+  assert_contains 'authoritative publish fixture decodes all records and round trips exactly' "$gate"
+  assert_contains 'fake delay emits visible status before completion' "$gate"
+  assert_contains 'remote deletions apply incrementally, cascade items, and preserve protected work' "$gate"
+  assert_contains 'leg_cloudsync_tests' "$gate"
+  assert_contains 'swift test --package-path "$package"' "$gate"
+  assert_contains 'CloudSync named adapter case was not observed' "$gate"
+  assert_contains 'CloudSync named send case was not observed' "$gate"
+  assert_contains 'cp "$repo_root/CloudSync/Package.swift" "$integration_root/CloudSync/Package.swift"' "$gate"
+  assert_contains 'cp -R "$repo_root/CloudSync/Sources" "$repo_root/CloudSync/Tests" "$integration_root/CloudSync/"' "$gate"
+  assert_contains 'leg_listener_tests' "$gate"
+  assert_contains 'swift test --package-path "$package"' "$gate"
+  assert_contains 'Listener repository case was not observed' "$gate"
+  assert_contains 'Listener playback case was not observed' "$gate"
+  assert_contains 'cp "$repo_root/Listener/Package.swift" "$integration_root/Listener/Package.swift"' "$gate"
+  assert_contains 'cp -R "$repo_root/Listener/Sources" "$repo_root/Listener/Tests" "$integration_root/Listener/"' "$gate"
+}
+
+assert_wiltedkit_sync_contract
 
 assert_capability_source_contract() {
   local project="$repo_root/project.yml"
@@ -86,11 +120,33 @@ assert_capability_source_contract() {
     }
   }
   assert_target_config WiltedMac "$mac_block" Debug 'CODE_SIGN_ENTITLEMENTS: ""'
+  assert_target_config WiltedMac "$mac_block" Debug 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"'
   assert_target_config WiltedMac "$mac_block" Development 'CODE_SIGN_ENTITLEMENTS: WiltedMac/WiltedMac.entitlements'
+  assert_target_config WiltedMac "$mac_block" Development 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"'
   assert_target_config WiltedMac "$mac_block" Release 'CODE_SIGN_ENTITLEMENTS: WiltedMac/WiltedMacProduction.entitlements'
+  assert_target_config WiltedMac "$mac_block" Release 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"'
   assert_target_config WiltediOS "$ios_block" Debug 'CODE_SIGN_ENTITLEMENTS: ""'
+  assert_target_config WiltediOS "$ios_block" Debug 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"'
   assert_target_config WiltediOS "$ios_block" Development 'CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOS.entitlements'
+  assert_target_config WiltediOS "$ios_block" Development 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"'
   assert_target_config WiltediOS "$ios_block" Release 'CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOSProduction.entitlements'
+  assert_target_config WiltediOS "$ios_block" Release 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"'
+  for debug_block in "$(config_block "$mac_block" Debug)" "$(config_block "$ios_block" Debug)"; do
+    if printf '%s\n' "$debug_block" | grep -Fq 'WILTED_CLOUDKIT_LIVE'; then
+      printf '%s\n' 'assertion failed: Debug defines the CloudKit-live compilation condition' >&2
+      exit 1
+    fi
+  done
+  for wiring in \
+    '  WiltedCloudKit:' \
+    '    path: CloudSync' \
+    '  WiltedListener:' \
+    '    path: Listener' \
+    '        product: WiltedSync' \
+    '        product: WiltedCloudKit'; do
+    assert_contains "$wiring" "$project"
+  done
+  assert_contains '        product: WiltedListener' "$project"
   if rg -n 'com\.example\.wilted|DEVELOPMENT_TEAM|PROVISIONING_PROFILE_SPECIFIER' \
     "$project" "$mac_development" "$mac_release" "$ios_development" "$ios_release"; then
     printf '%s\n' 'assertion failed: signing/team/profile or placeholder binding remains' >&2
@@ -265,7 +321,7 @@ assert_result_bundle_contract
 success_log="$tmp_dir/success.log"
 success_status="$(run_case success "$success_log" bash "$gate")"
 [[ "$success_status" -eq 0 ]] || { cat "$success_log" >&2; exit 1; }
-assert_contains 'native.passed count=7' "$success_log"
+assert_contains 'native.passed count=9' "$success_log"
 
 forced_log="$tmp_dir/forced.log"
 forced_status="$(run_case forced "$forced_log" env NATIVE_FORCE_FAIL_LEG=macos-unit-tests bash "$gate")"
@@ -286,6 +342,30 @@ package_zero_status="$(run_case package-zero "$package_zero_log" env NATIVE_FORC
 assert_contains 'native.zero-tests label=wiltedproducer-tests' "$package_zero_log"
 assert_contains 'xctest=' "$package_zero_log"
 
+cloudsync_zero_log="$tmp_dir/cloudsync-zero.log"
+cloudsync_zero_status="$(run_case cloudsync-zero "$cloudsync_zero_log" env NATIVE_FORCE_ZERO_TEST_LEG=cloudsync-tests bash "$gate")"
+[[ "$cloudsync_zero_status" -ne 0 ]] || { cat "$cloudsync_zero_log" >&2; exit 1; }
+assert_contains 'native.zero-tests label=cloudsync-tests' "$cloudsync_zero_log"
+assert_contains 'xctest=' "$cloudsync_zero_log"
+
+cloudsync_failure_log="$tmp_dir/cloudsync-failure.log"
+cloudsync_failure_status="$(run_case cloudsync-failure "$cloudsync_failure_log" env NATIVE_FORCE_FAIL_LEG=cloudsync-tests bash "$gate")"
+[[ "$cloudsync_failure_status" -ne 0 ]] || { cat "$cloudsync_failure_log" >&2; exit 1; }
+assert_contains 'native.failed count=1' "$cloudsync_failure_log"
+assert_contains 'forced_self_test_failure' "$cloudsync_failure_log"
+
+listener_zero_log="$tmp_dir/listener-zero.log"
+listener_zero_status="$(run_case listener-zero "$listener_zero_log" env NATIVE_FORCE_ZERO_TEST_LEG=listener-tests bash "$gate")"
+[[ "$listener_zero_status" -ne 0 ]] || { cat "$listener_zero_log" >&2; exit 1; }
+assert_contains 'native.zero-tests label=listener-tests' "$listener_zero_log"
+assert_contains 'xctest=' "$listener_zero_log"
+
+listener_failure_log="$tmp_dir/listener-failure.log"
+listener_failure_status="$(run_case listener-failure "$listener_failure_log" env NATIVE_FORCE_FAIL_LEG=listener-tests bash "$gate")"
+[[ "$listener_failure_status" -ne 0 ]] || { cat "$listener_failure_log" >&2; exit 1; }
+assert_contains 'native.failed count=1' "$listener_failure_log"
+assert_contains 'forced_self_test_failure' "$listener_failure_log"
+
 producer_failure_log="$tmp_dir/producer-failure.log"
 producer_failure_status="$(run_case producer-failure "$producer_failure_log" env NATIVE_FORCE_FAIL_LEG=wiltedproducer-tests bash "$gate")"
 [[ "$producer_failure_status" -ne 0 ]] || { cat "$producer_failure_log" >&2; exit 1; }
@@ -300,4 +380,4 @@ for snapshot_failure in missing zero malformed; do
   assert_contains 'native.error' "$snapshot_log"
 done
 
-printf '%s\n' 'native gate aggregate meta-test passed (seven legs; forced and zero-test failures are fail-closed)'
+printf '%s\n' 'native gate aggregate meta-test passed (seven native Xcode legs plus CloudSync and Listener SwiftPM; forced and zero-test failures are fail-closed)'

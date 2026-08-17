@@ -4,6 +4,11 @@ import Observation
 #if canImport(WiltedProducer)
 import WiltedDomain
 import WiltedProducer
+import WiltedSync
+#endif
+
+#if WILTED_CLOUDKIT_LIVE
+import CloudKit
 #endif
 
 struct WiltedMacArticle: Identifiable, Hashable, Sendable {
@@ -65,12 +70,15 @@ final class WiltedMacModel {
     private let store: LocalLibraryStore?
     private let coordinator: PreparationCoordinator?
     private let playback: PlaybackController?
+    private let syncLifecycle: WiltedMacSyncLifecycle?
     private var preparationRun: PreparationRun?
     private var preparationTask: Task<Void, Never>?
     private var fixtureRevision: StoredAudioRevision?
 #endif
 
-    init(arguments: [String] = ProcessInfo.processInfo.arguments) {
+    init(arguments: [String] = ProcessInfo.processInfo.arguments,
+         syncTransportFactory: WiltedMacSyncTransportFactory? = nil,
+         assetResolver: @escaping LocalLibraryAssetResolver = { _, _ in nil }) {
         let usesFixtureMode = arguments.contains("--wilted-ui-fixture-article-flow")
         fixtureMode = usesFixtureMode
 
@@ -90,6 +98,25 @@ final class WiltedMacModel {
                 deviceID: "mac"
             )
         }
+        var selectedSyncFactory = syncTransportFactory
+#if WILTED_CLOUDKIT_LIVE
+        if !usesFixtureMode, selectedSyncFactory == nil, let configuredStore {
+            let liveConfiguration = WiltedMacLiveSyncConfiguration(
+                database: CKContainer(identifier: "iCloud.com.zerodelta.wilted").privateCloudDatabase,
+                assetRootURL: mediaDirectory,
+                store: configuredStore,
+                assetResolver: assetResolver
+            )
+            selectedSyncFactory = makeWiltedMacLiveSyncTransportFactory(configuration: liveConfiguration)
+        }
+#endif
+        syncLifecycle = configuredStore.map {
+            WiltedMacSyncLifecycle(
+                store: $0,
+                transportFactory: usesFixtureMode ? nil : selectedSyncFactory,
+                assetResolver: assetResolver
+            )
+        }
 
         if usesFixtureMode {
             installFixture(ready: arguments.contains("--wilted-ui-fixture-ready"))
@@ -98,6 +125,49 @@ final class WiltedMacModel {
         }
 #else
         _ = arguments
+#endif
+    }
+
+    var syncStatus: WiltedMacSyncStatus {
+#if canImport(WiltedProducer)
+        syncLifecycle?.status ?? .disabled
+#else
+        .disabled
+#endif
+    }
+
+    /// Starts the explicit manual refresh action.
+    func refreshSync() {
+#if canImport(WiltedProducer)
+        syncLifecycle?.startRefresh()
+#endif
+    }
+
+    /// Starts the explicit manual upload action.
+    func uploadPendingSync() {
+#if canImport(WiltedProducer)
+        syncLifecycle?.startUpload()
+#endif
+    }
+
+    /// Cancels the current bounded sync action.
+    func cancelSync() {
+#if canImport(WiltedProducer)
+        syncLifecycle?.cancel()
+#endif
+    }
+
+    /// Quarantines sync after an account-owner change.
+    func quarantineSyncAccount() {
+#if canImport(WiltedProducer)
+        syncLifecycle?.quarantineAccount()
+#endif
+    }
+
+    /// Clears the explicit account quarantine after review.
+    func resetSyncAccount() {
+#if canImport(WiltedProducer)
+        syncLifecycle?.resetAfterAccountChange()
 #endif
     }
 
@@ -121,6 +191,7 @@ final class WiltedMacModel {
             )
             return
         }
+        guard let preparedItemID = try? ItemID.derive(from: url) else { return }
 
         if fixtureMode {
             preparation = WiltedMacPreparation(
@@ -148,6 +219,9 @@ final class WiltedMacModel {
                 guard !Task.isCancelled else { await run.cancel(); return }
                 self.update(status)
                 if status.terminal { break }
+            }
+            if self.preparation?.phase == .completed {
+                await self.queuePreparedPublication(itemID: preparedItemID)
             }
             self.preparationRun = nil
             self.refresh()
@@ -205,6 +279,7 @@ final class WiltedMacModel {
             do {
                 try await playback.toggle()
                 self.isPlaying = playback.isPlaying
+                await self.queueCurrentPlaybackCheckpoint()
             } catch { self.playbackError = "Playback is unavailable." }
         }
 #else
@@ -214,6 +289,20 @@ final class WiltedMacModel {
 
     func rewind() { seek(by: -15) }
     func forward() { seek(by: 30) }
+
+    /// Starts a new playback session and publishes its durable checkpoint.
+    func restartPlayback() {
+#if canImport(WiltedProducer)
+        guard let playback else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await playback.restart()
+                await self.queueCurrentPlaybackCheckpoint()
+            } catch { self.playbackError = "Playback restart is unavailable." }
+        }
+#endif
+    }
 
     func recoverAudioRoute() {
 #if canImport(WiltedProducer)
@@ -229,7 +318,11 @@ final class WiltedMacModel {
     func checkpointForQuit() {
 #if canImport(WiltedProducer)
         guard let playback else { return }
-        Task { try? await playback.handlePauseOrQuit() }
+        Task { [weak self] in
+            guard let self else { return }
+            try? await playback.handlePauseOrQuit()
+            await self.queueCurrentPlaybackCheckpoint()
+        }
 #endif
     }
 
@@ -250,6 +343,27 @@ final class WiltedMacModel {
         preparation = WiltedMacPreparation(
             phase: phase, detail: status.detail, fraction: status.fraction, cancellable: status.cancellable
         )
+    }
+
+    private func queuePreparedPublication(itemID: ItemID) async {
+        guard let store, let syncLifecycle,
+              let article = try? await store.article(for: itemID),
+              let stored = try? await store.readyRevision(for: itemID),
+              let asset = try? WiltedAsset(assetID: stored.revision.revisionID.rawValue,
+                                           contentHash: stored.revision.contentHash) else { return }
+        _ = await syncLifecycle.queueItem(article, currentRevisionID: stored.revision.revisionID)
+        _ = await syncLifecycle.queueRevision(stored.revision, audioAsset: asset)
+    }
+
+    private func queueCurrentPlaybackCheckpoint() async {
+        guard let store, let syncLifecycle, let playbackItemID = playback?.itemID,
+              let playbackRevisionID = playback?.revisionID,
+              let state = try? await store.playbackState(for: playbackItemID, revisionID: playbackRevisionID) else { return }
+        let sidecar = try? await store.playbackSidecar(for: playbackItemID, revisionID: playbackRevisionID)
+        let opaque = sidecar.map {
+            WiltedOpaqueSidecar(changeTag: $0.changeTag, encodedSystemFields: $0.encodedSystemFields)
+        }
+        _ = await syncLifecycle.queuePlayback(state, sidecar: opaque)
     }
 
     private func refresh() {
@@ -302,6 +416,7 @@ final class WiltedMacModel {
             do {
                 try await playback.seek(by: seconds)
                 self.isPlaying = playback.isPlaying
+                await self.queueCurrentPlaybackCheckpoint()
             } catch { self.playbackError = "Playback is unavailable." }
         }
     }

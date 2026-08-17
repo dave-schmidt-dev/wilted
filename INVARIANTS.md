@@ -5,7 +5,7 @@
 ## Standing invariants
 
 ### W-INV-001 — No silent blocking waits
-area: ["WiltedMac/**", "WiltediOS/**", "Producer/**", "WiltedKit/**"]
+area: ["WiltedMac/**", "WiltediOS/**", "Producer/**", "WiltedKit/**", "CloudSync/**", "Listener/**"]
 gate_test: test-gate.sh
 threshold: 3
 rationale: Every network, subprocess, extraction, speech, transfer, cache, and other stall-prone operation exposes live, cancellable progress on the active UI surface and reaches a bounded failure state.
@@ -43,13 +43,13 @@ threshold: 3
 rationale: Playback state carries revision ID, position, completion, session epoch, explicit restart/rewind intent, and update time. Merge rules preserve intentional rewinds/restarts and reject incompatible revisions.
 
 ### W-INV-007 — CloudKit transfer with local cache
-area: ["WiltedKit/**", "WiltedMac/**", "WiltediOS/**"]
+area: ["WiltedKit/**", "WiltedMac/**", "WiltediOS/**", "CloudSync/**", "Listener/**"]
 gate_test: test-gate.sh
 threshold: 3
 rationale: CloudKit is a transfer service, not the source of truth or a real-time channel. Both apps retain local state; iOS can play cached audio offline, and persisted zone changes/deletions survive relaunch.
 
 ### W-INV-008 — Cross-target fixtures are authoritative
-area: ["WiltedKit/**", "WiltedMacTests/**", "WiltediOSTests/**"]
+area: ["WiltedKit/**", "WiltedMacTests/**", "WiltediOSTests/**", "CloudSync/**", "Listener/**"]
 gate_test: test-gate.sh
 threshold: 3
 rationale: Publish, decode, merge, completion, deletion, version mismatch, offline cache, partial failure, and delayed delivery cases use shared fixtures so Mac and iOS cannot silently diverge.

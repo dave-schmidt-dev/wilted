@@ -11,6 +11,7 @@ native_self_test="${NATIVE_SELF_TEST:-0}"
 forced_fail_leg="${NATIVE_FORCE_FAIL_LEG:-}"
 forced_zero_leg="${NATIVE_FORCE_ZERO_TEST_LEG:-}"
 forced_snapshot_baseline="${NATIVE_FORCE_SNAPSHOT_BASELINE:-}"
+mac_ui_metadata_clean_qualified="${NATIVE_MAC_UI_METADATA_CLEAN_QUALIFIED:-0}"
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-native-gate.XXXXXX")"
 derived_data="$tmp_root/DerivedData"
 mkdir -p "$derived_data"
@@ -19,13 +20,15 @@ trap 'rm -rf "$tmp_root"' EXIT
 leg_names=(
   xcodegen-reproducible
   wiltedkit-tests
+  cloudsync-tests
+  listener-tests
   wiltedproducer-tests
   macos-unit-tests
   ios-unit-tests
   macos-ui-tests
   ios-ui-tests
 )
-leg_reports=(none xctest xctest count count count count)
+leg_reports=(none xctest xctest xctest xctest count count count count)
 declare -i failed_legs=0
 declare -i completed_legs=0
 native_project=""
@@ -222,6 +225,12 @@ parse_xctest_output_count() {
       sub(/ tests,.*$/, "", line)
       if (line ~ /^[0-9]+$/) last = line
     }
+    /Test run with [0-9]+ tests / {
+      line = $0
+      sub(/^.*Test run with /, "", line)
+      sub(/ tests.*$/, "", line)
+      if (line ~ /^[0-9]+$/) last = line
+    }
     END { if (last != "") print last }
   ' "$output_file")"
   if [[ -z "$reported" ]]; then
@@ -229,6 +238,58 @@ parse_xctest_output_count() {
   fi
   [[ "$reported" =~ ^[0-9]+$ ]] || reported=0
   printf '%s\n' "$reported"
+}
+
+leg_cloudsync_tests() {
+  local package="$repo_root/CloudSync"
+  [[ -d "$package" ]] || fail "missing CloudSync package: $package"
+  assert_test_sources cloudsync-tests "$package/Tests"
+  require_tool swift
+
+  # Keep the complete SwiftPM runner log as the leg's XCTest evidence.  The
+  # named-case checks below prevent a package that merely builds or reports an
+  # empty test plan from satisfying this leg.
+  set +e
+  swift test --package-path "$package" 2>&1 | tee "$tmp_root/cloudsync-tests.xctest.log" >&2
+  local test_status="${PIPESTATUS[0]}"
+  set -e
+  if [[ "$test_status" -eq 0 ]]; then
+    if ! grep -Fq 'all CloudKit field types map round trip through a valid article' "$tmp_root/cloudsync-tests.xctest.log"; then
+      printf '%s\n' 'native.error CloudSync named adapter case was not observed in the test log' >&2
+      return 1
+    fi
+    if ! grep -Fq 'transport send returns partial acknowledgement and server conflict envelope' "$tmp_root/cloudsync-tests.xctest.log"; then
+      printf '%s\n' 'native.error CloudSync named send case was not observed in the test log' >&2
+      return 1
+    fi
+  fi
+  return "$test_status"
+}
+
+leg_listener_tests() {
+  local package="$repo_root/Listener"
+  [[ -d "$package" ]] || fail "missing Listener package: $package"
+  assert_test_sources listener-tests "$package/Tests"
+  require_tool swift
+
+  # These cases exercise the durable repository and offline playback paths;
+  # keep their names in the runner evidence so an empty or unrelated suite
+  # cannot satisfy the leg.
+  set +e
+  swift test --package-path "$package" 2>&1 | tee "$tmp_root/listener-tests.xctest.log" >&2
+  local test_status="${PIPESTATUS[0]}"
+  set -e
+  if [[ "$test_status" -eq 0 ]]; then
+    if ! grep -Fq 'repository applies remote deletion and quarantines pending playback' "$tmp_root/listener-tests.xctest.log"; then
+      printf '%s\n' 'native.error Listener repository case was not observed in the test log' >&2
+      return 1
+    fi
+    if ! grep -Fq 'offline playback supports resume, rewind, restart, interruption, and route changes' "$tmp_root/listener-tests.xctest.log"; then
+      printf '%s\n' 'native.error Listener playback case was not observed in the test log' >&2
+      return 1
+    fi
+  fi
+  return "$test_status"
 }
 
 assert_xctest_output() {
@@ -359,6 +420,8 @@ leg_wiltedkit_tests() {
   local package="$repo_root/WiltedKit"
   local authoritative="$repo_root/contracts/fixtures"
   local copied="$package/Tests/WiltedDomainTests/Fixtures"
+  local sync_authoritative="$repo_root/contracts/cloudkit/fixtures/01-valid-publish-decode.json"
+  local sync_copied="$package/Tests/WiltedSyncTests/Fixtures/01-valid-publish-decode.json"
   [[ -d "$package" ]] || fail "missing WiltedKit package: $package"
   [[ -d "$authoritative" && -d "$copied" ]] || fail 'missing authoritative or WiltedKit fixture directory'
   if ! diff -u <(find "$authoritative" -maxdepth 1 -type f -name '*.json' -exec basename {} \; | sort) \
@@ -370,8 +433,14 @@ leg_wiltedkit_tests() {
     cmp -s "$authoritative/$fixture" "$copied/$fixture" ||
       fail "WiltedKit fixture drift: $fixture"
   done < <(find "$authoritative" -maxdepth 1 -type f -name '*.json' -exec basename {} \; | sort)
+  [[ -f "$sync_authoritative" && -f "$sync_copied" ]] || fail 'missing authoritative or copied sync fixture'
+  cmp -s "$sync_authoritative" "$sync_copied" || fail 'WiltedSync authoritative fixture drift'
+  printf 'native.sync-fixture.parity file=%s\n' "$(basename "$sync_authoritative")"
   printf 'native.fixtures.parity count=%s\n' "$(find "$authoritative" -maxdepth 1 -type f -name '*.json' | wc -l | tr -d ' ')"
   assert_test_sources wiltedkit-tests "$package/Tests"
+  # Keep the sync-core suite in the package leg's executed test bundle; a
+  # generic domain source count must not allow this target to disappear.
+  assert_test_sources wiltedsync-tests "$package/Tests/WiltedSyncTests"
   require_tool swift
   require_tool xcrun
   swift build --package-path "$package" --build-tests
@@ -386,6 +455,15 @@ leg_wiltedkit_tests() {
   xcrun xctest "$test_bundle" 2>&1 | tee "$tmp_root/wiltedkit-tests.xctest.log" >&2
   local xctest_status="${PIPESTATUS[0]}"
   set -e
+  if [[ "$xctest_status" -eq 0 ]]; then
+    [[ -s "$tmp_root/wiltedkit-tests.xctest.log" ]] || fail 'WiltedKit XCTest log is empty'
+    grep -Fq 'authoritative publish fixture decodes all records and round trips exactly' "$tmp_root/wiltedkit-tests.xctest.log" ||
+      fail 'WiltedSyncTests fixture case was not observed in the XCTest log'
+    grep -Fq 'fake delay emits visible status before completion' "$tmp_root/wiltedkit-tests.xctest.log" ||
+      fail 'WiltedSyncTests liveness case was not observed in the XCTest log'
+    grep -Fq 'remote deletions apply incrementally, cascade items, and preserve protected work' "$tmp_root/wiltedkit-tests.xctest.log" ||
+      fail 'WiltedSyncTests deletion case was not observed in the XCTest log'
+  fi
   return "$xctest_status"
 }
 
@@ -519,6 +597,14 @@ leg_macos_ui_tests() {
   [[ "$signature_info" == *CodeDirectory* ]] || fail 'macOS UI test runner is unsigned'
   printf '%s\n' "$signature_info"
 
+  # Building and signing the runner are safe metadata checks. Do not launch
+  # the host UI runner from unattended validation until a separate attended
+  # qualification has confirmed its launch metadata is clean.
+  if [[ "$mac_ui_metadata_clean_qualified" != "1" ]]; then
+    printf '%s\n' 'native.mac-ui.unrun reason=metadata-clean-qualification-required' >&2
+    return 1
+  fi
+
   xcodebuild test-without-building \
     -project "$project" \
     -scheme WiltedMac \
@@ -565,7 +651,7 @@ leg_ios_ui_tests() (
 
 prepare_integration_root() {
   integration_root="$tmp_root/integration-root"
-  mkdir -p "$integration_root/WiltedKit" "$integration_root/Producer"
+  mkdir -p "$integration_root/WiltedKit" "$integration_root/Producer" "$integration_root/CloudSync" "$integration_root/Listener"
   cp "$project_yml" "$integration_root/project.yml"
   cp -R "$repo_root/Shared" "$repo_root/WiltedMac" "$repo_root/WiltedMacTests" \
     "$repo_root/WiltedMacUITests" "$repo_root/WiltediOS" "$repo_root/WiltediOSTests" \
@@ -574,6 +660,10 @@ prepare_integration_root() {
   cp -R "$repo_root/WiltedKit/Sources" "$repo_root/WiltedKit/Tests" "$integration_root/WiltedKit/"
   cp "$repo_root/Producer/Package.swift" "$integration_root/Producer/Package.swift"
   cp -R "$repo_root/Producer/Sources" "$repo_root/Producer/Tests" "$integration_root/Producer/"
+  cp "$repo_root/CloudSync/Package.swift" "$integration_root/CloudSync/Package.swift"
+  cp -R "$repo_root/CloudSync/Sources" "$repo_root/CloudSync/Tests" "$integration_root/CloudSync/"
+  cp "$repo_root/Listener/Package.swift" "$integration_root/Listener/Package.swift"
+  cp -R "$repo_root/Listener/Sources" "$repo_root/Listener/Tests" "$integration_root/Listener/"
 }
 
 if [[ "$native_self_test" != "1" ]]; then
@@ -608,11 +698,13 @@ fi
 
 run_leg "${leg_names[0]}" "${leg_reports[0]}" leg_xcodegen_reproducible
 run_leg "${leg_names[1]}" "xctest" leg_wiltedkit_tests
-run_leg "${leg_names[2]}" "xctest" leg_wiltedproducer_tests
-run_leg "${leg_names[3]}" "${leg_reports[3]}" leg_macos_unit_tests
-run_leg "${leg_names[4]}" "${leg_reports[4]}" leg_ios_unit_tests
-run_leg "${leg_names[5]}" "${leg_reports[5]}" leg_macos_ui_tests
-run_leg "${leg_names[6]}" "${leg_reports[6]}" leg_ios_ui_tests
+run_leg "${leg_names[2]}" "xctest" leg_cloudsync_tests
+run_leg "${leg_names[3]}" "xctest" leg_listener_tests
+run_leg "${leg_names[4]}" "xctest" leg_wiltedproducer_tests
+run_leg "${leg_names[5]}" "${leg_reports[5]}" leg_macos_unit_tests
+run_leg "${leg_names[6]}" "${leg_reports[6]}" leg_ios_unit_tests
+run_leg "${leg_names[7]}" "${leg_reports[7]}" leg_macos_ui_tests
+run_leg "${leg_names[8]}" "${leg_reports[8]}" leg_ios_ui_tests
 
 status "native.complete failed_legs=$failed_legs total_legs=$completed_legs"
 if [[ "$failed_legs" -ne 0 ]]; then

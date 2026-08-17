@@ -4,6 +4,8 @@ Local-first native Mac/iOS personal audio system: a Mac producer prepares audio 
 
 **Status:** Phase 0 through Task 5 are complete; the CloudKit and iOS listener slice is in progress.
 
+Task 6 component gates are green, but the authoritative full gate remains fail-closed: the Mac UI runner builds and passes signature checks, while unattended execution is disabled after repeated Gatekeeper damaged-runner dialogs. Task 6 is not complete.
+
 ## Priorities (in order)
 
 1. Native usability.
@@ -34,6 +36,8 @@ Explicitly excluded from the MVP: RSS discovery, automatic classification, podca
 | `tests/` | Probe and aggregate gate runners. |
 | `docs/` | Capability inventory and phase/task verification records. |
 | `WiltedKit/` | CloudKit-free shared Swift domain package and tests. |
+| `CloudSync/` | CloudKit adapter, transport, mapping, and deterministic tests. |
+| `Listener/` | Local iOS listener repository, cache, playback, and tests. |
 | `WiltedMac/`, `WiltediOS/` | Native Mac producer and iOS listener targets. |
 | `WiltedMacTests/`, `WiltedMacUITests/`, `WiltediOSTests/`, `WiltediOSUITests/` | Unit, pixel-snapshot, and UI regression coverage. |
 
@@ -43,7 +47,7 @@ The detailed implementation plans are maintained locally outside this public rep
 
 ## Workflows
 
-Phase 0 contract freeze and Tasks 3–5 are complete. Implementation continues with the CloudKit and iOS listener slice, then MVP qualification. `make validate` is the reproducible local gate; XcodeGen `project.yml` remains authoritative and generated project output is absent/ignored. Follow `INVARIANTS.md` and keep local, Development CloudKit, signed Production, physical-device, App Store Connect, and TestFlight evidence distinct. See [`docs/phase0-decision-record.md`](docs/phase0-decision-record.md), [`docs/phase0-verification-disposition.md`](docs/phase0-verification-disposition.md), [`docs/task3-verification-disposition.md`](docs/task3-verification-disposition.md), [`docs/task4-verification-disposition.md`](docs/task4-verification-disposition.md), the attended [`docs/task5-cloudkit-capability-preflight.md`](docs/task5-cloudkit-capability-preflight.md), and [`docs/task5-verification-disposition.md`](docs/task5-verification-disposition.md).
+Phase 0 contract freeze and Tasks 3–5 are complete. Task 6 remains in progress; MVP qualification remains blocked. `make validate` is the authoritative local gate and is currently expected to fail closed at guarded Mac UI execution, not pass. XcodeGen `project.yml` remains authoritative and generated project output is absent/ignored. Follow `INVARIANTS.md` and keep local, Development CloudKit, signed Production, physical-device, App Store Connect, and TestFlight evidence distinct. See [`docs/phase0-decision-record.md`](docs/phase0-decision-record.md), [`docs/phase0-verification-disposition.md`](docs/phase0-verification-disposition.md), [`docs/task3-verification-disposition.md`](docs/task3-verification-disposition.md), [`docs/task4-verification-disposition.md`](docs/task4-verification-disposition.md), the attended [`docs/task5-cloudkit-capability-preflight.md`](docs/task5-cloudkit-capability-preflight.md), [`docs/task5-verification-disposition.md`](docs/task5-verification-disposition.md), and [`docs/task6-verification-disposition.md`](docs/task6-verification-disposition.md).
 
 ## Conventions
 

@@ -10,12 +10,21 @@ let package = Package(
     ],
     products: [
         .library(name: "WiltedDomain", targets: ["WiltedDomain"]),
+        .library(name: "WiltedSync", targets: ["WiltedSync"]),
+        .library(name: "WiltedSyncTesting", targets: ["WiltedSyncTesting"]),
     ],
     targets: [
         .target(name: "WiltedDomain"),
+        .target(name: "WiltedSync", dependencies: ["WiltedDomain"]),
+        .target(name: "WiltedSyncTesting", dependencies: ["WiltedSync"]),
         .testTarget(
             name: "WiltedDomainTests",
             dependencies: ["WiltedDomain"],
+            resources: [.copy("Fixtures")]
+        ),
+        .testTarget(
+            name: "WiltedSyncTests",
+            dependencies: ["WiltedDomain", "WiltedSync", "WiltedSyncTesting"],
             resources: [.copy("Fixtures")]
         ),
     ]

@@ -50,6 +50,24 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertEqual(reopenedPlayback?.positionSeconds, 12)
     }
 
+    func testV2StoreMigratesArticlePlaybackAndSafeNewDefaults() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article()
+        let rev = try revision(for: item, id: "rev-migration")
+        let state = try playback(for: item, revision: rev, position: 17)
+        try LocalLibraryStore.createV2MigrationFixture(at: url, article: item, playback: state)
+
+        let migrated = try LocalLibraryStore(url: url)
+        let migratedArticle = try await migrated.article(for: item.itemID)
+        let migratedPlayback = try await migrated.playbackState(for: item.itemID, revisionID: rev.revisionID)
+        XCTAssertEqual(migratedArticle, item)
+        XCTAssertEqual(migratedPlayback?.positionSeconds, 17)
+        let migratedStatus = try await migrated.syncStatus(for: item.itemID)
+        let migratedSidecar = try await migrated.playbackSidecar(for: item.itemID, revisionID: rev.revisionID)
+        XCTAssertEqual(migratedStatus, .localOnly)
+        XCTAssertNil(migratedSidecar?.changeTag)
+    }
+
     func testPriorRevisionIsPreservedAndImmutableWhenNewRevisionIsSaved() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let article = try article(); let old = try revision(for: article, id: "rev-old", at: 1_700_000_001); let new = try revision(for: article, id: "rev-new", at: 1_700_000_002)
@@ -76,5 +94,75 @@ final class LocalLibraryStoreTests: XCTestCase {
         let otherItem = try ItemID(rawValue: "item-other")
         let mismatchedItem = try await store.playbackState(for: otherItem, revisionID: first.revisionID)
         XCTAssertNil(mismatchedItem)
+    }
+
+    func testSyncStateTombstoneAndPlaybackSidecarsReopen() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article(); let rev = try revision(for: item, id: "rev-sidecar")
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(article: item)
+        try await store.save(playback: playback(for: item, revision: rev, position: 8))
+        let fetched = Timestamp(Date(timeIntervalSince1970: 1_700_000_100))
+        let sent = Timestamp(Date(timeIntervalSince1970: 1_700_000_101))
+        try await store.save(syncState: LocalLibrarySyncState(key: "private-zone", engineState: Data([1, 2, 3]), lastFetchAt: fetched, lastSendAt: sent))
+        try await store.save(playbackSidecar: PlaybackSystemFieldsSidecar(encodedSystemFields: Data([4, 5]), changeTag: "change-tag-1"), for: item.itemID, revisionID: rev.revisionID)
+        try await store.record(tombstone: LocalLibraryTombstone(id: "delete-1", itemID: item.itemID, requestedAt: fetched))
+        let firstAcknowledgement = try await store.acknowledgeTombstone(id: "delete-1")
+        let secondAcknowledgement = try await store.acknowledgeTombstone(id: "delete-1")
+        XCTAssertTrue(firstAcknowledgement)
+        XCTAssertFalse(secondAcknowledgement)
+
+        let reopened = try LocalLibraryStore(url: url)
+        let reopenedSync = try await reopened.syncState(for: "private-zone")
+        let reopenedSidecar = try await reopened.playbackSidecar(for: item.itemID, revisionID: rev.revisionID)
+        let reopenedTombstone = try await reopened.tombstone(for: "delete-1")
+        XCTAssertEqual(reopenedSync?.engineState, Data([1, 2, 3]))
+        XCTAssertEqual(reopenedSync?.lastFetchAt, fetched)
+        XCTAssertEqual(reopenedSidecar, PlaybackSystemFieldsSidecar(encodedSystemFields: Data([4, 5]), changeTag: "change-tag-1"))
+        XCTAssertEqual(reopenedTombstone?.remoteAcknowledged, true)
+    }
+
+    func testCorruptRepositoryStateDoesNotSilentlyReset() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try LocalLibraryStore.corruptRepositoryStateFixture(at: url, data: Data("corrupt-state".utf8))
+        let store = try LocalLibraryStore(url: url)
+        do {
+            _ = try await store.syncRepositoryState()
+            XCTFail("Expected corrupt repository state to throw")
+        } catch {
+            XCTAssertTrue(error is DecodingError)
+        }
+    }
+
+    func testPartialSnapshotRetainsEveryLocalState() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let statuses: [LocalLibrarySyncStatus] = [.remoteAcknowledged, .localOnly, .pendingUpload, .conflicted, .failedUpload]
+        var items: [ItemID] = []
+        for (index, status) in statuses.enumerated() {
+            let value = try Article(itemID: ItemID.derive(from: URL(string: "https://example.test/article-\(index)")!), canonicalURL: URL(string: "https://example.test/article-\(index)")!, title: "Article \(index)", source: "example.test", createdAt: Timestamp(Date(timeIntervalSince1970: Double(index))))
+            items.append(value.itemID); try await store.save(article: value); try await store.setSyncStatus(status, for: value.itemID)
+        }
+        let result = try await store.finalizeSnapshot(generationID: "generation-partial", fetchComplete: false, seenRemoteItemIDs: [items[0]])
+        XCTAssertFalse(result.mutated)
+        let articleCount = try await store.articles().count
+        XCTAssertEqual(articleCount, statuses.count)
+    }
+
+    func testCompleteSnapshotDeletesOnlyUnseenRemoteAcknowledgedItems() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let remote = try article()
+        let localURL = URL(string: "https://example.test/local")!
+        let local = try Article(itemID: ItemID.derive(from: localURL), canonicalURL: localURL, title: "Local", source: "example.test", createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_004)))
+        try await store.save(article: remote); try await store.save(article: local)
+        try await store.setSyncStatus(.remoteAcknowledged, for: remote.itemID)
+        try await store.setSyncStatus(.localOnly, for: local.itemID)
+        let result = try await store.finalizeSnapshot(generationID: "generation-complete", fetchComplete: true, seenRemoteItemIDs: Set<ItemID>())
+        XCTAssertEqual(result.deletedItemIDs, [remote.itemID])
+        let deletedArticle = try await store.article(for: remote.itemID)
+        let retainedArticle = try await store.article(for: local.itemID)
+        XCTAssertNil(deletedArticle)
+        XCTAssertNotNil(retainedArticle)
     }
 }
