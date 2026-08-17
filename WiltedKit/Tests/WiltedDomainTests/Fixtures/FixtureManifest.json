@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "hashAlgorithm": "sha256",
+  "fixtures": {
+    "01-publish-decode.json": "658d45a82877c735769cedbef405999afc5e8902e48d50353ddd8d9b186b3f8e",
+    "02-forward-progress.json": "70c2cad885edfdbc08ec91e77d214ef2ad9d2e42d918777beddc78bce56d0062",
+    "03-explicit-rewind.json": "9a7c2a0d97c8b1cbb2bfadff8018981ef258c36700d60709de041a2d3829b639",
+    "04-explicit-restart-after-completion.json": "a09aa001d7beab50ea06d8fd0b4e5f843c9d131351e49397d91e84ed8b7c851b",
+    "05-stale-progress-across-sessions.json": "d4382069316c8fc4c978681835fc317eadb9c9261a1e6006e222c8ba0c804025",
+    "06-same-session-sequence-ordering.json": "901afa63255f5c102c83fb032c2a3b46659a3593eb50e49a3e5be5b57123a9c1",
+    "07-incompatible-revision.json": "81d362219ec2ae2d59770046bcda23b58ce020c0e839c7b1f0d6b8be768158ec",
+    "08-revision-supersession.json": "4cb896156b64d22f5133e4d9dc6cd0aa2f5a9bc6dde24f1657ea6d29a6790fcd",
+    "09-deletion-full-snapshot-success.json": "0a39a116d1888f511a58bb2f497a2d5c58116e1804c597d89bc0ed4d6c025b26",
+    "10-deletion-partial-failure.json": "28ceca01146256a35e5014418902cd096434fd354d3d5d768c03f7984f3038d0",
+    "11-deletion-exemptions.json": "13de3156a5ad08a9487225309ecbf5c4084fe5b5cdf295704effb45e1d36ea85",
+    "12-offline-cache.json": "965bf0c97d9e5a848acdbac2bcbb437641e6bf93206ee5ac178749e4cc119967",
+    "13-delayed-delivery.json": "ec0d66fac04e8da1fe5f7a14794b36037b07a285fc461affab8ba7c2b6304201",
+    "14-schema-version-mismatch.json": "fd4acbeca623aac944353e624303c9aafe1279811cd8b6b7a34d8f28228878e3",
+    "15-partial-preparation-failure.json": "1c51085f67f869b511cca6fa70435957557be612349db0a0c11e0725903ce95a",
+    "16-timeout-terminal-error.json": "7d05b9fe1f2fcbf7e5c7aa327cca116c25b53392b253782c4c68d0d149e26fce"
+  }
+}

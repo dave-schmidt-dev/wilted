@@ -1,0 +1,23 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "deletion-absence-exemptions",
+  "operation": "deletionReconcile",
+  "description": "Absence never deletes local-only, pending-upload, conflicted, or failed-upload records.",
+  "input": {
+    "generationID": "generation-103",
+    "fetchComplete": true,
+    "seenRemoteItemIDs": [],
+    "localRecords": [
+      {"itemID": "item-local", "syncStatus": "localOnly"},
+      {"itemID": "item-pending", "syncStatus": "pendingUpload"},
+      {"itemID": "item-conflicted", "syncStatus": "conflicted"},
+      {"itemID": "item-failed", "syncStatus": "failedUpload"}
+    ],
+    "completedAt": "2026-08-17T13:22:00Z"
+  },
+  "expected": {
+    "deleteItemIDs": [],
+    "retainItemIDs": ["item-conflicted", "item-failed", "item-local", "item-pending"],
+    "mutated": false
+  }
+}

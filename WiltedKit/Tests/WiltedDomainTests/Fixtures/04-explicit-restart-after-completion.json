@@ -1,0 +1,38 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "playback-explicit-restart-after-completion",
+  "operation": "playbackMerge",
+  "description": "Completion is reversed only by an explicit restart with a new session ID.",
+  "input": {
+    "changeTagMatches": true,
+    "current": {
+      "itemID": "item-alpha",
+      "revisionID": "rev-alpha-v1",
+      "sessionID": "session-alpha-complete",
+      "sequence": 20,
+      "positionSeconds": 420,
+      "durationSeconds": 420,
+      "completed": true,
+      "intent": "progress",
+      "deviceID": "device-mac",
+      "updatedAt": "2026-08-17T12:30:00Z"
+    },
+    "incoming": {
+      "itemID": "item-alpha",
+      "revisionID": "rev-alpha-v1",
+      "sessionID": "session-alpha-restart",
+      "sequence": 1,
+      "positionSeconds": 0,
+      "durationSeconds": 420,
+      "completed": false,
+      "intent": "restart",
+      "deviceID": "device-iphone",
+      "updatedAt": "2026-08-17T12:31:00Z"
+    }
+  },
+  "expected": {
+    "decision": "accept",
+    "winningState": "incoming",
+    "reason": "explicitIntentNewSession"
+  }
+}

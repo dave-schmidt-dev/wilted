@@ -1,0 +1,38 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "playback-stale-ordinary-progress-across-sessions",
+  "operation": "playbackMerge",
+  "description": "Delayed ordinary progress based on an old change tag cannot overwrite another session.",
+  "input": {
+    "changeTagMatches": false,
+    "current": {
+      "itemID": "item-alpha",
+      "revisionID": "rev-alpha-v1",
+      "sessionID": "session-alpha-rewind-2",
+      "sequence": 3,
+      "positionSeconds": 190,
+      "durationSeconds": 420,
+      "completed": false,
+      "intent": "progress",
+      "deviceID": "device-iphone",
+      "updatedAt": "2026-08-17T12:40:00Z"
+    },
+    "incoming": {
+      "itemID": "item-alpha",
+      "revisionID": "rev-alpha-v1",
+      "sessionID": "session-alpha-1",
+      "sequence": 15,
+      "positionSeconds": 350,
+      "durationSeconds": 420,
+      "completed": false,
+      "intent": "progress",
+      "deviceID": "device-mac",
+      "updatedAt": "2026-08-17T12:41:00Z"
+    }
+  },
+  "expected": {
+    "decision": "reject",
+    "winningState": "current",
+    "reason": "staleOrdinaryProgressAcrossSessions"
+  }
+}

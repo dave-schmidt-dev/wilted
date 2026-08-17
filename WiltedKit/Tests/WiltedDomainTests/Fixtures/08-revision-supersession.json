@@ -1,0 +1,24 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "revision-supersession-no-position-translation",
+  "operation": "revisionSupersession",
+  "description": "Publishing a new revision preserves old cached playback and does not translate position.",
+  "input": {
+    "itemID": "item-alpha",
+    "playingRevisionID": "rev-alpha-v1",
+    "playingPositionSeconds": 300,
+    "playingRevisionCached": true,
+    "newRevisionID": "rev-alpha-v2",
+    "oldAssetRemovedRemotely": true,
+    "newRevisionExplicitlySelected": false,
+    "publishedAt": "2026-08-17T13:10:00Z"
+  },
+  "expected": {
+    "activeRevisionID": "rev-alpha-v1",
+    "activePositionSeconds": 300,
+    "mayFinishCachedRevision": true,
+    "availableRevisionID": "rev-alpha-v2",
+    "translatedPosition": false,
+    "newRevisionStartSecondsOnSelection": 0
+  }
+}

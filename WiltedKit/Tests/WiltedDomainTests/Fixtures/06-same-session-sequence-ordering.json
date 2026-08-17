@@ -1,0 +1,38 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "playback-same-session-sequence-ordering",
+  "operation": "playbackMerge",
+  "description": "A lower sequence is rejected even if its timestamp and position are newer.",
+  "input": {
+    "changeTagMatches": true,
+    "current": {
+      "itemID": "item-alpha",
+      "revisionID": "rev-alpha-v1",
+      "sessionID": "session-alpha-3",
+      "sequence": 10,
+      "positionSeconds": 240,
+      "durationSeconds": 420,
+      "completed": false,
+      "intent": "progress",
+      "deviceID": "device-mac",
+      "updatedAt": "2026-08-17T12:50:00Z"
+    },
+    "incoming": {
+      "itemID": "item-alpha",
+      "revisionID": "rev-alpha-v1",
+      "sessionID": "session-alpha-3",
+      "sequence": 9,
+      "positionSeconds": 260,
+      "durationSeconds": 420,
+      "completed": false,
+      "intent": "progress",
+      "deviceID": "device-iphone",
+      "updatedAt": "2026-08-17T12:51:00Z"
+    }
+  },
+  "expected": {
+    "decision": "reject",
+    "winningState": "current",
+    "reason": "staleSequence"
+  }
+}

@@ -1,0 +1,321 @@
+{
+  "contractName": "WiltedDomainAndProducerRPC",
+  "contractVersion": 1,
+  "serialization": {
+    "dateTime": "UTC ISO 8601",
+    "dateTimePattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$",
+    "unknownOptionalMetadata": "null-or-absent-is-unknown-and-must-not-be-invented"
+  },
+  "config": {
+    "noSilentWaitMaximumStatusIntervalSeconds": 5,
+    "defaultOperationTimeoutSeconds": 300,
+    "cancellationGracePeriodSeconds": 5
+  },
+  "types": {
+    "ItemID": {
+      "kind": "string",
+      "required": true,
+      "nullable": false,
+      "constraints": {"pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", "maxLength": 128},
+      "identity": {
+        "algorithm": "sha256",
+        "encoding": "lowercase-hex",
+        "prefix": "item-",
+        "inputs": ["canonicalURL"],
+        "canonicalization": "https URL; lowercase scheme and host; remove fragment and default port; preserve path and query"
+      }
+    },
+    "RevisionID": {
+      "kind": "string",
+      "required": true,
+      "nullable": false,
+      "constraints": {"pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$", "maxLength": 192},
+      "identity": {
+        "algorithm": "sha256",
+        "encoding": "lowercase-hex",
+        "prefix": "rev-",
+        "inputs": ["extractedTextSHA256", "voiceID", "synthesisSettingsCanonicalJSON", "audioFormatCanonicalJSON"],
+        "canonicalization": "UTF-8 fields joined with a single LF in listed order; settings and format use sorted-key canonical JSON"
+      }
+    },
+    "Timestamp": {"kind": "string", "required": true, "nullable": false, "constraints": {"format": "utc-z"}},
+    "Article": {
+      "kind": "object",
+      "required": true,
+      "nullable": false,
+      "fields": {
+        "itemID": {"type": "ItemID", "required": true, "nullable": false},
+        "canonicalURL": {"type": "string", "required": true, "nullable": false, "constraints": {"scheme": "https", "maxLength": 4096}},
+        "title": {"type": "string", "required": true, "nullable": false, "constraints": {"minLength": 1, "maxLength": 1024}},
+        "source": {"type": "string", "required": true, "nullable": false, "constraints": {"minLength": 1, "maxLength": 512}},
+        "author": {"type": "string", "required": false, "nullable": true, "constraints": {"maxLength": 512}},
+        "publishedTime": {"type": "Timestamp", "required": false, "nullable": true},
+        "createdAt": {"type": "Timestamp", "required": true, "nullable": false},
+        "isDeleted": {"type": "boolean", "required": true, "nullable": false}
+      }
+    },
+    "AudioRevision": {
+      "kind": "object",
+      "required": true,
+      "nullable": false,
+      "fields": {
+        "itemID": {"type": "ItemID", "required": true, "nullable": false},
+        "revisionID": {"type": "RevisionID", "required": true, "nullable": false},
+        "durationSeconds": {"type": "number", "required": true, "nullable": false, "constraints": {"greaterThan": 0}},
+        "byteCount": {"type": "integer", "required": true, "nullable": false, "constraints": {"greaterThan": 0}},
+        "contentHash": {"type": "string", "required": true, "nullable": false, "constraints": {"pattern": "^sha256:[0-9a-f]{64}$"}},
+        "mediaType": {"type": "string", "required": true, "nullable": false, "constraints": {"pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$"}},
+        "createdAt": {"type": "Timestamp", "required": true, "nullable": false},
+        "schemaVersion": {"type": "integer", "required": true, "nullable": false, "constraints": {"greaterThan": 0}},
+        "readiness": {"type": "RevisionReadiness", "required": true, "nullable": false}
+      },
+      "durabilityRule": "ready requires temp file flushed and closed, media validated, content hashed, and atomic move completed"
+    },
+    "RevisionReadiness": {
+      "kind": "enum",
+      "required": true,
+      "nullable": false,
+      "values": ["ready"]
+    },
+    "PlaybackIntent": {"kind": "enum", "required": true, "nullable": false, "values": ["progress", "rewind", "restart"]},
+    "PlaybackState": {
+      "kind": "object",
+      "required": true,
+      "nullable": false,
+      "fields": {
+        "itemID": {"type": "ItemID", "required": true, "nullable": false},
+        "revisionID": {"type": "RevisionID", "required": true, "nullable": false},
+        "sessionID": {"type": "string", "required": true, "nullable": false, "constraints": {"pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", "maxLength": 128}},
+        "sequence": {"type": "integer", "required": true, "nullable": false, "constraints": {"greaterThanOrEqual": 1}},
+        "positionSeconds": {"type": "number", "required": true, "nullable": false, "constraints": {"greaterThanOrEqual": 0}},
+        "durationSeconds": {"type": "number", "required": true, "nullable": false, "constraints": {"greaterThan": 0}},
+        "completed": {"type": "boolean", "required": true, "nullable": false},
+        "intent": {"type": "PlaybackIntent", "required": true, "nullable": false},
+        "deviceID": {"type": "string", "required": true, "nullable": false, "constraints": {"pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", "maxLength": 128}},
+        "encodedCloudKitRecordSystemFields": {"type": "string", "required": false, "nullable": true, "constraints": {"encoding": "base64"}},
+        "updatedAt": {"type": "Timestamp", "required": true, "nullable": false}
+      },
+      "mergeRule": "record change tag is the causal boundary; absent system fields are valid for create; update/delete conflict-safe saves require the encoded change tag; incompatible item or revision rejects; explicit rewind/restart requires a new session and current tag; same-session higher sequence wins; ordinary progress cannot move backward or undo completion",
+      "persistenceRule": {
+        "field": "encodedCloudKitRecordSystemFields",
+        "create": {"required": false, "nullable": true},
+        "updateDeleteConflictSave": {"required": true, "nullable": false}
+      }
+    },
+    "PreparationStage": {
+      "kind": "enum",
+      "required": true,
+      "nullable": false,
+      "values": ["preparing", "fetching", "extracting", "synthesizing", "assembling", "saving", "completed", "failed", "cancelled"]
+    },
+    "PreparationOutcome": {"kind": "enum", "required": true, "nullable": false, "values": ["succeeded", "failed", "cancelled"]},
+    "PreparationTerminalResult": {
+      "kind": "object",
+      "required": false,
+      "nullable": true,
+      "fields": {
+        "outcome": {"type": "PreparationOutcome", "required": true, "nullable": false},
+        "revisionID": {"type": "RevisionID", "required": false, "nullable": true},
+        "error": {"type": "ProducerError", "required": false, "nullable": true}
+      },
+      "conditions": ["succeeded requires revisionID and no error", "failed requires error and no revisionID", "cancelled has neither revisionID nor error"]
+    },
+    "PreparationStatus": {
+      "kind": "object",
+      "required": true,
+      "nullable": false,
+      "fields": {
+        "stage": {"type": "PreparationStage", "required": true, "nullable": false},
+        "detail": {"type": "string", "required": true, "nullable": false, "constraints": {"minLength": 1, "maxLength": 1024}},
+        "fraction": {"type": "number", "required": false, "nullable": true, "constraints": {"minimum": 0, "maximum": 1}},
+        "cancellable": {"type": "boolean", "required": true, "nullable": false},
+        "terminal": {"type": "boolean", "required": true, "nullable": false},
+        "terminalResult": {"type": "PreparationTerminalResult", "required": false, "nullable": true},
+        "emittedAt": {"type": "Timestamp", "required": true, "nullable": false}
+      },
+      "conditions": ["terminal is false requires no terminalResult", "terminal is true requires terminalResult and a terminal stage", "fraction is optional and when present is within 0...1"]
+    },
+    "ArticleRequest": {
+      "kind": "object",
+      "required": true,
+      "nullable": false,
+      "fields": {
+        "requestID": {"type": "string", "required": true, "nullable": false, "constraints": {"pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", "maxLength": 128}},
+        "sourceURL": {"type": "string", "required": true, "nullable": false, "constraints": {"scheme": "https", "maxLength": 4096}},
+        "timeoutSeconds": {"type": "number", "required": false, "nullable": false, "constraints": {"greaterThan": 0}},
+        "statusIntervalSeconds": {"type": "number", "required": false, "nullable": false, "constraints": {"greaterThan": 0, "maximumConfig": "noSilentWaitMaximumStatusIntervalSeconds"}}
+      }
+    },
+    "SpeechRequest": {
+      "kind": "object",
+      "required": true,
+      "nullable": false,
+      "fields": {
+        "requestID": {"type": "string", "required": true, "nullable": false, "constraints": {"pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", "maxLength": 128}},
+        "itemID": {"type": "ItemID", "required": true, "nullable": false},
+        "extractedText": {"type": "string", "required": true, "nullable": false, "constraints": {"minLength": 1}},
+        "voiceID": {"type": "string", "required": true, "nullable": false, "constraints": {"minLength": 1, "maxLength": 256}},
+        "synthesisSettings": {"type": "object", "required": true, "nullable": false},
+        "audioFormat": {"type": "object", "required": true, "nullable": false},
+        "timeoutSeconds": {"type": "number", "required": false, "nullable": false, "constraints": {"greaterThan": 0}},
+        "statusIntervalSeconds": {"type": "number", "required": false, "nullable": false, "constraints": {"greaterThan": 0, "maximumConfig": "noSilentWaitMaximumStatusIntervalSeconds"}}
+      }
+    },
+    "ExtractionEvent": {
+      "kind": "object",
+      "required": true,
+      "nullable": false,
+      "fields": {
+        "requestID": {"type": "string", "required": true, "nullable": false},
+        "sequence": {"type": "integer", "required": true, "nullable": false, "constraints": {"greaterThanOrEqual": 1}},
+        "emittedAt": {"type": "Timestamp", "required": true, "nullable": false},
+        "kind": {"type": "string", "required": true, "nullable": false, "constraints": {"enum": ["status", "data", "terminal"]}},
+        "stage": {"type": "string", "required": true, "nullable": false, "constraints": {"enum": ["fetching", "extracting"]}},
+        "detail": {"type": "string", "required": true, "nullable": false},
+        "fraction": {"type": "number", "required": false, "nullable": true, "constraints": {"minimum": 0, "maximum": 1}},
+        "article": {"type": "Article", "required": false, "nullable": true},
+        "terminal": {"type": "ExtractionTerminal", "required": false, "nullable": true}
+      },
+      "streamRule": "tagged union: kind=status requires status fields only, kind=data requires article, kind=terminal requires terminal; exactly one terminal message ends each accepted stream; events are ordered by sequence and status precedes every potentially blocking wait",
+      "stream": {
+        "tag": "kind",
+        "terminalCount": "exactlyOne",
+        "variants": {
+          "status": {"requiredPayload": [], "forbiddenPayload": ["article", "terminal"]},
+          "data": {"requiredPayload": ["article"], "forbiddenPayload": ["terminal"]},
+          "terminal": {"requiredPayload": ["terminal"], "forbiddenPayload": ["article"]}
+        }
+      }
+    },
+    "SpeechEvent": {
+      "kind": "object",
+      "required": true,
+      "nullable": false,
+      "fields": {
+        "requestID": {"type": "string", "required": true, "nullable": false},
+        "sequence": {"type": "integer", "required": true, "nullable": false, "constraints": {"greaterThanOrEqual": 1}},
+        "emittedAt": {"type": "Timestamp", "required": true, "nullable": false},
+        "kind": {"type": "string", "required": true, "nullable": false, "constraints": {"enum": ["status", "data", "terminal"]}},
+        "stage": {"type": "string", "required": true, "nullable": false, "constraints": {"enum": ["synthesizing", "assembling"]}},
+        "detail": {"type": "string", "required": true, "nullable": false},
+        "fraction": {"type": "number", "required": false, "nullable": true, "constraints": {"minimum": 0, "maximum": 1}},
+        "audioChunkBase64": {"type": "string", "required": false, "nullable": true, "constraints": {"encoding": "base64"}},
+        "terminal": {"type": "SpeechTerminal", "required": false, "nullable": true}
+      },
+      "streamRule": "tagged union: kind=status requires status fields only, kind=data requires nonempty base64 little-endian Float32 PCM audioChunkBase64, kind=terminal requires terminal; exactly one terminal message ends each accepted stream; events are ordered by sequence",
+      "stream": {
+        "tag": "kind",
+        "terminalCount": "exactlyOne",
+        "variants": {
+          "status": {"requiredPayload": [], "forbiddenPayload": ["audioChunkBase64", "terminal"]},
+          "data": {"requiredPayload": ["audioChunkBase64"], "forbiddenPayload": ["terminal"]},
+          "terminal": {"requiredPayload": ["terminal"], "forbiddenPayload": ["audioChunkBase64"]}
+        }
+      }
+    },
+    "ProducerError": {
+      "kind": "object",
+      "required": true,
+      "nullable": false,
+      "fields": {
+        "code": {"type": "string", "required": true, "nullable": false, "constraints": {"enum": ["invalidRequest", "unsupported", "extractionFailed", "speechUnavailable", "protocolMismatch", "outputInvalid", "timedOut", "cancelled", "failed"]}},
+        "message": {"type": "string", "required": true, "nullable": false, "constraints": {"minLength": 1, "maxLength": 1024}},
+        "retryable": {"type": "boolean", "required": true, "nullable": false},
+        "stage": {"type": "string", "required": false, "nullable": true},
+        "underlyingCode": {"type": "string", "required": false, "nullable": true}
+      }
+    },
+    "ExtractionTerminal": {
+      "kind": "object",
+      "required": true,
+      "nullable": false,
+      "fields": {
+        "requestID": {"type": "string", "required": true, "nullable": false},
+        "sequence": {"type": "integer", "required": true, "nullable": false, "constraints": {"greaterThanOrEqual": 1}},
+        "emittedAt": {"type": "Timestamp", "required": true, "nullable": false},
+        "outcome": {"type": "PreparationOutcome", "required": true, "nullable": false},
+        "article": {"type": "Article", "required": false, "nullable": true},
+        "error": {"type": "ProducerError", "required": false, "nullable": true}
+      },
+      "conditions": ["succeeded requires article and no error", "failed requires error and no article", "cancelled has neither article nor error"]
+    },
+    "SpeechTerminal": {
+      "kind": "object",
+      "required": true,
+      "nullable": false,
+      "fields": {
+        "requestID": {"type": "string", "required": true, "nullable": false},
+        "sequence": {"type": "integer", "required": true, "nullable": false, "constraints": {"greaterThanOrEqual": 1}},
+        "emittedAt": {"type": "Timestamp", "required": true, "nullable": false},
+        "outcome": {"type": "PreparationOutcome", "required": true, "nullable": false},
+        "error": {"type": "ProducerError", "required": false, "nullable": true}
+      },
+      "conditions": ["succeeded has no error", "failed requires error", "cancelled requires error.code=cancelled"]
+    }
+  },
+  "transitions": {
+    "AudioRevision.readiness": {
+      "allowed": {"ready": []},
+      "immutableFields": ["itemID", "revisionID", "durationSeconds", "byteCount", "contentHash", "mediaType", "createdAt", "schemaVersion"],
+      "publicationRule": "AudioRevision exists only as ready after temp flush/close, media validation, content hashing, and atomic move; failed or cancelled preparation removes only temporary output and preserves the prior ready revision; supersession changes WiltedItem.currentRevisionID, never this immutable revision"
+    }
+  },
+  "merge": {
+    "canonicalRecord": "one PlaybackState per itemID and revisionID",
+    "causalBoundary": "encodedCloudKitRecordSystemFields.recordChangeTag",
+    "rules": [
+      "different itemID or revisionID rejects incoming state",
+      "rewind or restart requires a new sessionID and a retry against the current record change tag",
+      "ordinary progress from another session rejects, regardless of sequence or timestamp",
+      "within a session, a higher sequence wins",
+      "ordinary progress cannot decrease position or reverse completed",
+      "completion is reversible only by explicit restart",
+      "updatedAt never outranks session or sequence causality"
+    ]
+  },
+  "rpc": {
+    "ArticleExtracting": {
+      "requestType": "ArticleRequest",
+      "eventType": "ExtractionEvent",
+      "terminalType": "ExtractionTerminal",
+      "errorType": "ProducerError",
+      "signature": "extract(ArticleRequest) -> AsyncThrowingStream<ExtractionEvent, ProducerError>",
+      "cancellation": "consumer cancellation requests cooperative cancellation; stream emits exactly one cancelled terminal message; no candidate revision is published"
+    },
+    "SpeechProducing": {
+      "requestType": "SpeechRequest",
+      "eventType": "SpeechEvent",
+      "terminalType": "SpeechTerminal",
+      "errorType": "ProducerError",
+      "signature": "synthesize(SpeechRequest) -> AsyncThrowingStream<SpeechEvent, ProducerError>",
+      "cancellation": "consumer cancellation closes the stream/socket cooperatively; stream emits exactly one cancelled terminal message and partial audio is discarded"
+    }
+  },
+  "progressTimeoutCancellation": {
+    "statusRule": "emit an initial status before any stall-prone wait and at least once every noSilentWaitMaximumStatusIntervalSeconds until terminal",
+    "timeoutRule": "timeoutSeconds is bounded and produces one terminal timedOut ProducerError; it never publishes partial output",
+    "cancellationRule": "cancellation is idempotent, remains visible until terminal cancelled, and preserves the last durable ready revision",
+    "terminalRule": "every accepted request emits exactly one tagged terminal message; failed and cancelled terminal messages carry ProducerError; a transport-level ProducerError before terminal closes the stream as a protocol failure; no request may silently wait"
+  },
+  "fixtureCoverage": {
+    "fixtureVersion": 1,
+    "requiredCases": [
+      {"caseID": "publish-decode-unknown-optional-metadata", "operation": "publishDecode"},
+      {"caseID": "playback-forward-progress", "operation": "playbackMerge"},
+      {"caseID": "playback-explicit-rewind-new-session", "operation": "playbackMerge"},
+      {"caseID": "playback-explicit-restart-after-completion", "operation": "playbackMerge"},
+      {"caseID": "playback-stale-ordinary-progress-across-sessions", "operation": "playbackMerge"},
+      {"caseID": "playback-same-session-sequence-ordering", "operation": "playbackMerge"},
+      {"caseID": "playback-incompatible-revision", "operation": "playbackMerge"},
+      {"caseID": "revision-supersession-no-position-translation", "operation": "revisionSupersession"},
+      {"caseID": "deletion-full-snapshot-success", "operation": "deletionReconcile"},
+      {"caseID": "deletion-partial-snapshot-failure", "operation": "deletionReconcile"},
+      {"caseID": "deletion-absence-exemptions", "operation": "deletionReconcile"},
+      {"caseID": "offline-cache-remains-playable", "operation": "offlineCache"},
+      {"caseID": "delayed-delivery-preserves-local-playback", "operation": "delayedDelivery"},
+      {"caseID": "schema-version-mismatch-fails-closed", "operation": "schemaCompatibility"},
+      {"caseID": "partial-preparation-failure-preserves-valid-revision", "operation": "preparationFailure"},
+      {"caseID": "timeout-terminal-error-preserves-ready-revision", "operation": "timeoutTerminalError"}
+    ]
+  }
+}

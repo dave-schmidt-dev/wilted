@@ -1,0 +1,10 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "invalid-unsupported-schema-version",
+  "operation": "recordValidation",
+  "expectedValid": false,
+  "expectedError": "unsupported-schema-version",
+  "records": [{"recordType":"WiltedItem","zoneName":"WiltedZone","recordName":"item:item-schema","fields":{
+    "itemID":{"type":"String","value":"item-schema"},"canonicalURL":{"type":"String","value":"https://example.test/schema"},"title":{"type":"String","value":"Schema"},"source":{"type":"String","value":"Example"},"createdAt":{"type":"Date","value":"2026-08-17T12:00:00Z"},"isDeleted":{"type":"Int64","value":0},"schemaVersion":{"type":"Int64","value":2},"currentRevisionID":{"type":"String","value":"rev-schema"}
+  }}]
+}

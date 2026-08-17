@@ -1,0 +1,9 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "invalid-publication-budget-per-revision",
+  "operation": "budgetValidation",
+  "expectedValid": false,
+  "expectedError": "revision-budget-exceeded",
+  "input": {"candidateBytes": 80000001, "acknowledgedOwnedBytes": 0, "pendingOwnedBytes": 0},
+  "expected": {"decision": "reject", "visibleRejection": true}
+}

@@ -1,0 +1,22 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "partial-preparation-failure-preserves-valid-revision",
+  "operation": "preparationFailure",
+  "description": "A partial candidate is removed and never replaces the last durable ready revision.",
+  "input": {
+    "itemID": "item-alpha",
+    "priorRevisionID": "rev-alpha-v1",
+    "priorRevisionReady": true,
+    "candidateRevisionID": "rev-alpha-v2",
+    "candidateTempFilePresent": true,
+    "candidateValidated": false,
+    "candidateAtomicallyMoved": false,
+    "failureAt": "2026-08-17T13:45:00Z"
+  },
+  "expected": {
+    "activeRevisionID": "rev-alpha-v1",
+    "candidatePublished": false,
+    "removeCandidateTempFile": true,
+    "priorRevisionPreserved": true
+  }
+}

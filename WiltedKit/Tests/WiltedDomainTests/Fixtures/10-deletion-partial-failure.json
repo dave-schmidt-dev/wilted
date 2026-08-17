@@ -1,0 +1,21 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "deletion-partial-snapshot-failure",
+  "operation": "deletionReconcile",
+  "description": "A failed partial fetch mutates nothing even when acknowledged records were not seen.",
+  "input": {
+    "generationID": "generation-102",
+    "fetchComplete": false,
+    "seenRemoteItemIDs": ["item-kept"],
+    "localRecords": [
+      {"itemID": "item-kept", "syncStatus": "remoteAcknowledged"},
+      {"itemID": "item-not-yet-seen", "syncStatus": "remoteAcknowledged"}
+    ],
+    "failedAt": "2026-08-17T13:21:00Z"
+  },
+  "expected": {
+    "deleteItemIDs": [],
+    "retainItemIDs": ["item-kept", "item-not-yet-seen"],
+    "mutated": false
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "deletion-full-snapshot-success",
+  "operation": "deletionReconcile",
+  "description": "A complete generation sweep removes only unseen records previously acknowledged as remote.",
+  "input": {
+    "generationID": "generation-101",
+    "fetchComplete": true,
+    "seenRemoteItemIDs": ["item-kept"],
+    "localRecords": [
+      {"itemID": "item-kept", "syncStatus": "remoteAcknowledged"},
+      {"itemID": "item-removed", "syncStatus": "remoteAcknowledged"}
+    ],
+    "completedAt": "2026-08-17T13:20:00Z"
+  },
+  "expected": {
+    "deleteItemIDs": ["item-removed"],
+    "retainItemIDs": ["item-kept"],
+    "mutated": true
+  }
+}

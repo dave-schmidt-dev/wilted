@@ -1,0 +1,38 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "playback-forward-progress",
+  "operation": "playbackMerge",
+  "description": "Ordinary progress advances within one session with a newer sequence and current change tag.",
+  "input": {
+    "changeTagMatches": true,
+    "current": {
+      "itemID": "item-alpha",
+      "revisionID": "rev-alpha-v1",
+      "sessionID": "session-alpha-1",
+      "sequence": 7,
+      "positionSeconds": 120,
+      "durationSeconds": 420,
+      "completed": false,
+      "intent": "progress",
+      "deviceID": "device-mac",
+      "updatedAt": "2026-08-17T12:10:00Z"
+    },
+    "incoming": {
+      "itemID": "item-alpha",
+      "revisionID": "rev-alpha-v1",
+      "sessionID": "session-alpha-1",
+      "sequence": 8,
+      "positionSeconds": 145,
+      "durationSeconds": 420,
+      "completed": false,
+      "intent": "progress",
+      "deviceID": "device-iphone",
+      "updatedAt": "2026-08-17T12:11:00Z"
+    }
+  },
+  "expected": {
+    "decision": "accept",
+    "winningState": "incoming",
+    "reason": "forwardProgress"
+  }
+}

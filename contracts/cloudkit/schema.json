@@ -1,0 +1,140 @@
+{
+  "contractVersion": 1,
+  "supportedSchemaVersions": [1],
+  "database": {
+    "scope": "private",
+    "zoneType": "custom",
+    "zoneName": "WiltedZone",
+    "owner": "currentUser"
+  },
+  "recordNameRules": {
+    "identifierPattern": "^[A-Za-z0-9][A-Za-z0-9._~-]*$",
+    "identityComparison": "byte-exact",
+    "WiltedItem": "item:<itemID>",
+    "WiltedRevision": "revision:<itemID>:<revisionID>",
+    "WiltedPlaybackState": "playback:<itemID>:<revisionID>"
+  },
+  "records": {
+    "WiltedItem": {
+      "requiredFields": {
+        "itemID": {"cloudKitType": "String", "logicalType": "identifier"},
+        "canonicalURL": {"cloudKitType": "String", "logicalType": "httpsURL"},
+        "title": {"cloudKitType": "String"},
+        "source": {"cloudKitType": "String"},
+        "createdAt": {"cloudKitType": "Date", "logicalType": "utcISO8601"},
+        "isDeleted": {"cloudKitType": "Int64", "logicalType": "boolean01"},
+        "schemaVersion": {"cloudKitType": "Int64", "logicalType": "supportedSchemaVersion"},
+        "currentRevisionID": {"cloudKitType": "String", "logicalType": "identifier"}
+      },
+      "optionalFields": {
+        "author": {"cloudKitType": "String", "logicalType": "unknownWhenAbsent"},
+        "publishedTime": {"cloudKitType": "Date", "logicalType": "utcISO8601", "unknownWhenAbsent": true}
+      },
+      "references": []
+    },
+    "WiltedRevision": {
+      "requiredFields": {
+        "itemID": {"cloudKitType": "String", "logicalType": "identifier"},
+        "revisionID": {"cloudKitType": "String", "logicalType": "identifier"},
+        "itemReference": {"cloudKitType": "Reference", "referenceTarget": "WiltedItem", "referenceAction": "none"},
+        "durationSeconds": {"cloudKitType": "Double", "logicalType": "positive"},
+        "byteCount": {"cloudKitType": "Int64", "logicalType": "positive"},
+        "contentHash": {"cloudKitType": "String", "logicalType": "sha256"},
+        "mediaType": {"cloudKitType": "String"},
+        "createdAt": {"cloudKitType": "Date", "logicalType": "utcISO8601"},
+        "schemaVersion": {"cloudKitType": "Int64", "logicalType": "supportedSchemaVersion"},
+        "readiness": {"cloudKitType": "String", "enum": ["ready"]},
+        "audioAsset": {"cloudKitType": "Asset", "logicalType": "fileBackedAudio"}
+      },
+      "optionalFields": {
+        "voiceIdentifier": {"cloudKitType": "String", "logicalType": "unknownWhenAbsent"},
+        "synthesisSettingsHash": {"cloudKitType": "String", "logicalType": "unknownWhenAbsent"}
+      },
+      "references": ["itemReference"]
+    },
+    "WiltedPlaybackState": {
+      "requiredFields": {
+        "itemID": {"cloudKitType": "String", "logicalType": "identifier"},
+        "revisionID": {"cloudKitType": "String", "logicalType": "identifier"},
+        "itemReference": {"cloudKitType": "Reference", "referenceTarget": "WiltedItem", "referenceAction": "none"},
+        "revisionReference": {"cloudKitType": "Reference", "referenceTarget": "WiltedRevision", "referenceAction": "none"},
+        "sessionID": {"cloudKitType": "String", "logicalType": "identifier"},
+        "sequence": {"cloudKitType": "Int64", "logicalType": "positive"},
+        "positionSeconds": {"cloudKitType": "Double", "logicalType": "nonnegative"},
+        "durationSeconds": {"cloudKitType": "Double", "logicalType": "positive"},
+        "completed": {"cloudKitType": "Int64", "logicalType": "boolean01"},
+        "intent": {"cloudKitType": "String", "enum": ["progress", "rewind", "restart"]},
+        "deviceID": {"cloudKitType": "String", "logicalType": "identifier"},
+        "updatedAt": {"cloudKitType": "Date", "logicalType": "utcISO8601"},
+        "schemaVersion": {"cloudKitType": "Int64", "logicalType": "supportedSchemaVersion"}
+      },
+      "optionalFields": {},
+      "references": ["itemReference", "revisionReference"]
+    }
+  },
+  "queryIndexAllowlist": [],
+  "ownership": {
+    "mac": {"create": ["WiltedItem", "WiltedRevision", "WiltedPlaybackState"], "update": ["WiltedItem", "WiltedPlaybackState"], "delete": ["WiltedItem", "WiltedRevision", "WiltedPlaybackState"]},
+    "iphone": {"create": ["WiltedPlaybackState"], "update": ["WiltedPlaybackState"], "delete": []},
+    "sharedRules": ["WiltedPlaybackState saves use the last fetched change tag", "iPhone never creates or mutates article or audio records", "playback deletion follows its item"]
+  },
+  "schemaVersionBehavior": {
+    "field": "schemaVersion",
+    "acceptedVersions": [1],
+    "unknownVersion": "reject-without-mutation",
+    "missingVersion": "reject-without-mutation",
+    "invalidVersion": "reject-without-mutation"
+  },
+  "syncState": {
+    "engine": "CKSyncEngine",
+    "opaqueState": {"storageType": "Bytes", "required": true, "persistence": "atomic-local-sidecar", "decode": "never-inspect-or-invent"},
+    "systemFields": {"storageType": "Bytes", "source": "CKRecord.encodeSystemFields", "persistence": "atomic-local-sidecar", "requiredFor": ["update", "delete"], "createWithout": true},
+    "changeTag": {"source": "fetched CKRecord", "requiredFor": "optimistic-save", "staleSave": "refetch-and-reconcile"},
+    "scheduling": "eventual-not-real-time",
+    "idempotency": "replay-safe-by-record-name-and-change-token"
+  },
+  "deletion": {
+    "tombstoneFields": ["itemID", "generationID", "requestedAt", "remoteAcknowledged"],
+    "retainUntil": "remote delete acknowledgement",
+    "cascade": ["WiltedRevision", "WiltedPlaybackState"],
+    "localPlayback": "may remain usable until cached media is explicitly removed"
+  },
+  "generationSweep": {
+    "requires": "complete full-zone fetch",
+    "generationID": "new opaque ID per fetch",
+    "seenSet": "all remote item IDs observed in that generation",
+    "absenceDeletesOnly": ["remoteAcknowledged"],
+    "neverAbsenceDelete": ["localOnly", "pendingUpload", "conflicted", "failedUpload"],
+    "partialFailure": "mutate-nothing-and-retry"
+  },
+  "delayOfflineQuota": {
+    "delayedDelivery": "local cache remains usable; no immediate-delivery promise",
+    "offline": "queue safe changes and expose refresh/retry; cached verified audio remains playable",
+    "quotaExceeded": "separate actionable failure; do not treat as schema mismatch or silently retry",
+    "publicationBudget": {
+      "parameter": "audioPublicationBudgetBytes",
+      "status": "frozen-app-policy",
+      "maxRevisionAssetBytes": 80000000,
+      "maxOwnedAssetBytes": 800000000,
+      "basis": "fresh audio probe: 90-minute encode plus configured bitrate reference",
+      "capacityRationale": "10 maximum-sized revisions for the small-library MVP",
+      "isCloudKitLimit": false,
+      "aggregateFormula": "acknowledgedOwnedBytes + pendingOwnedBytes + candidateBytes <= maxOwnedAssetBytes",
+      "preflight": [
+        "reject visibly before publish when candidate exceeds maxRevisionAssetBytes",
+        "reject visibly before publish when acknowledged plus pending Wilted-owned remote assets plus candidate exceeds maxOwnedAssetBytes"
+      ],
+      "recovery": ["explicit item deletion (all remote revisions removed after acknowledgement)", "later owner configuration change"],
+      "automaticEviction": false,
+      "configurableLater": true,
+      "quotaExceeded": "separate actionable failure even below this app-owned budget"
+    }
+  },
+  "unknownOptionalMetadata": {
+    "optionalFieldsMayBeAbsent": true,
+    "absentMeans": "unknown",
+    "decoder": "preserve-opaque-unknown-fields-when-supported",
+    "writer": "never-invent-values-or-write-undeclared-fields",
+    "knownOptionalFields": ["author", "publishedTime", "voiceIdentifier", "synthesisSettingsHash"]
+  }
+}

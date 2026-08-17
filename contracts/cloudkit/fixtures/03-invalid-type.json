@@ -1,0 +1,10 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "invalid-field-type",
+  "operation": "recordValidation",
+  "expectedValid": false,
+  "expectedError": "wrong-field-type",
+  "records": [{"recordType":"WiltedItem","zoneName":"WiltedZone","recordName":"item:item-type","fields":{
+    "itemID":{"type":"String","value":"item-type"},"canonicalURL":{"type":"Int64","value":7},"title":{"type":"String","value":"Wrong type"},"source":{"type":"String","value":"Example"},"createdAt":{"type":"Date","value":"2026-08-17T12:00:00Z"},"isDeleted":{"type":"Int64","value":0},"schemaVersion":{"type":"Int64","value":1},"currentRevisionID":{"type":"String","value":"rev-type"}
+  }}]
+}

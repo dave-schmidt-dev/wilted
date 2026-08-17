@@ -1,0 +1,20 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "delayed-delivery-preserves-local-playback",
+  "operation": "delayedDelivery",
+  "description": "Eventual delivery delay exposes pending sync without disabling verified local playback.",
+  "input": {
+    "itemID": "item-alpha",
+    "revisionID": "rev-alpha-v1",
+    "cachedHashVerified": true,
+    "uploadAcknowledged": false,
+    "remoteRevisionVisible": false,
+    "lastAttemptAt": "2026-08-17T13:35:00Z"
+  },
+  "expected": {
+    "localPlayable": true,
+    "deliveryState": "pending",
+    "remotePlayable": false,
+    "immediateDeliveryPromised": false
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "operation": "extract-static-html",
+  "provenance": "Synthetic fixtures authored for the Wilted native extraction probe on 2026-08-17; no publisher prose or external page source is included.",
+  "license": "MIT",
+  "fixtures": [
+    {
+      "id": "simple-article",
+      "file": "simple-article.html",
+      "sourceURL": "https://example.test/simple-article",
+      "sha256": "1c9a7853d0f5e774fb267709d4d175882cf1cb7d3ffb434479329fe7458c2680",
+      "provenance": "Synthetic simple article authored locally.",
+      "license": "MIT",
+      "intentionalCondition": "Static article element with two paragraphs.",
+      "expected": {"outcome": "extracted", "title": "Garden Notes", "bodyMarkers": ["quiet greenhouse", "static article extraction"], "metadata": {}}
+    },
+    {
+      "id": "metadata",
+      "file": "metadata.html",
+      "sourceURL": "https://example.test/metadata",
+      "sha256": "92bb60405e79b58ca1a2941b2d507aa09686e061b5e2aee6d837c82885887b9c",
+      "provenance": "Synthetic metadata case authored locally.",
+      "license": "MIT",
+      "intentionalCondition": "Open Graph title, author, and description metadata.",
+      "expected": {"outcome": "extracted", "title": "Metadata Wins", "bodyMarkers": ["ordinary static body"], "metadata": {"author": "Fixture Author", "description": "Synthetic metadata description."}}
+    },
+    {
+      "id": "utf8-charset",
+      "file": "utf8-charset.html",
+      "sourceURL": "https://example.test/utf8-charset",
+      "sha256": "8c72b39dcb7d49e959e5b84c6b7c7d3afbdab26edfbef726c543fd518bee9912",
+      "provenance": "Synthetic UTF-8 case authored locally.",
+      "license": "MIT",
+      "intentionalCondition": "Explicit UTF-8 charset declaration and non-ASCII text.",
+      "expected": {"outcome": "extracted", "title": "UTF-8 Café", "bodyMarkers": ["naïve résumé", "café accents"], "metadata": {}}
+    },
+    {
+      "id": "canonical-redirect",
+      "file": "canonical-redirect.html",
+      "sourceURL": "https://example.test/redirect-source",
+      "sha256": "e382faff060f2c218f8955e1c4c16e807513c64c4ab9a2646193565597d0b973",
+      "provenance": "Synthetic canonical redirect-signal case authored locally.",
+      "license": "MIT",
+      "intentionalCondition": "Canonical link signals a stable destination without performing network redirects.",
+      "expected": {"outcome": "extracted", "title": "Moved Garden Dispatch", "bodyMarkers": ["canonical destination"], "metadata": {"canonicalURL": "https://example.test/articles/garden-dispatch"}}
+    },
+    {
+      "id": "code-blocks",
+      "file": "code-blocks.html",
+      "sourceURL": "https://example.test/code-blocks",
+      "sha256": "9939e2e57d9b730ae5839a7d955a730877486979c76a76bbc801352f984d646c",
+      "provenance": "Synthetic code article authored locally.",
+      "license": "MIT",
+      "intentionalCondition": "Preformatted Swift-like source between prose paragraphs.",
+      "expected": {"outcome": "extracted", "title": "Code Sample", "bodyMarkers": ["let lettuce", "continues after the code block"], "metadata": {}}
+    },
+    {
+      "id": "malformed",
+      "file": "malformed.html",
+      "sourceURL": "https://example.test/malformed",
+      "sha256": "5ab20cd5d5f8cc3131ea31e8b2b472f27d7bb5069d0b2889183ce265bde73e1f",
+      "provenance": "Synthetic malformed markup authored locally.",
+      "license": "MIT",
+      "intentionalCondition": "Paragraph, main, and html closing tags are intentionally missing or mismatched.",
+      "expected": {"outcome": "extracted", "title": "Intentionally Bent Markup", "bodyMarkers": ["Broken but readable", "recover visible static words"], "metadata": {}}
+    },
+    {
+      "id": "consent-wall",
+      "file": "consent-wall.html",
+      "sourceURL": "https://example.test/consent-wall",
+      "sha256": "358c66ae792f29cb844e47a6808550ec24549bc55f03d21c185b49af47987712",
+      "provenance": "Synthetic consent wall authored locally.",
+      "license": "MIT",
+      "intentionalCondition": "Privacy dialog language and choice buttons represent consent-gated content.",
+      "expected": {"outcome": "controlledUnsupported", "title": "Consent Required", "bodyMarkers": [], "metadata": {}}
+    },
+    {
+      "id": "paywall-headline-only",
+      "file": "paywall-headline-only.html",
+      "sourceURL": "https://example.test/paywall",
+      "sha256": "6fee30289fbff61c651cc066869dcb6d5ff30f17607052b416ba6edd49501a98",
+      "provenance": "Synthetic paywall authored locally.",
+      "license": "MIT",
+      "intentionalCondition": "A short subscription shell limits the result to headline metadata.",
+      "expected": {"outcome": "headlineOnly", "title": "Members Only Garden Report", "bodyMarkers": [], "metadata": {"description": "Synthetic paywall summary."}}
+    },
+    {
+      "id": "script-rendered",
+      "file": "script-rendered.html",
+      "sourceURL": "https://example.test/script-rendered",
+      "sha256": "965f0c9a2a7267b7f750b6738f43aff87c104d04cd961f97c0eb95288ad1406d",
+      "provenance": "Synthetic client-rendered shell authored locally.",
+      "license": "MIT",
+      "intentionalCondition": "Empty app root plus script payload; JavaScript must never execute.",
+      "expected": {"outcome": "controlledUnsupported", "title": "Client Rendered Dispatch", "bodyMarkers": [], "metadata": {}}
+    },
+    {
+      "id": "empty-failed",
+      "file": "empty-failed.html",
+      "sourceURL": "https://example.test/empty",
+      "sha256": "89719f930729115b18992c7cb66b9d5b755c0c985e8c537024c4c8dcadbf34eb",
+      "provenance": "Synthetic empty page authored locally.",
+      "license": "MIT",
+      "intentionalCondition": "No title or visible content; script and style are ignored.",
+      "expected": {"outcome": "failed", "bodyMarkers": [], "metadata": {}}
+    }
+  ]
+}

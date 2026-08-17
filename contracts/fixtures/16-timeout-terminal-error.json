@@ -1,0 +1,51 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "timeout-terminal-error-preserves-ready-revision",
+  "operation": "timeoutTerminalError",
+  "description": "A stalled operation reaches its bounded deadline with one timedOut terminal error, no partial publication, and the prior ready revision intact.",
+  "input": {
+    "requestID": "request-timeout-alpha",
+    "timeoutSeconds": 4,
+    "statusIntervalSeconds": 5,
+    "events": [
+      {
+        "kind": "status",
+        "elapsedSeconds": 0
+      },
+      {
+        "kind": "status",
+        "elapsedSeconds": 3.5
+      },
+      {
+        "kind": "terminal",
+        "elapsedSeconds": 4,
+        "terminal": {
+          "outcome": "failed",
+          "error": {
+            "code": "timedOut",
+            "message": "operation exceeded its deadline",
+            "retryable": true,
+            "stage": "synthesizing"
+          }
+        }
+      }
+    ],
+    "priorRevisionID": "rev-alpha-v1",
+    "priorRevisionReady": true,
+    "candidateRevisionID": "rev-alpha-v2",
+    "candidateTempOutputPresent": true,
+    "candidateValidated": false,
+    "candidateAtomicallyMoved": false
+  },
+  "expected": {
+    "terminalEventCount": 1,
+    "terminalOutcome": "failed",
+    "terminalErrorCode": "timedOut",
+    "initialStatusEmitted": true,
+    "statusIntervalWithinMaximum": true,
+    "candidatePublished": false,
+    "removeCandidateTempOutput": true,
+    "priorRevisionPreserved": true,
+    "activeRevisionID": "rev-alpha-v1"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "playback-explicit-rewind-new-session",
+  "operation": "playbackMerge",
+  "description": "An explicit rewind uses a new session and is accepted after retrying against the current change tag.",
+  "input": {
+    "changeTagMatches": true,
+    "current": {
+      "itemID": "item-alpha",
+      "revisionID": "rev-alpha-v1",
+      "sessionID": "session-alpha-1",
+      "sequence": 12,
+      "positionSeconds": 300,
+      "durationSeconds": 420,
+      "completed": false,
+      "intent": "progress",
+      "deviceID": "device-mac",
+      "updatedAt": "2026-08-17T12:20:00Z"
+    },
+    "incoming": {
+      "itemID": "item-alpha",
+      "revisionID": "rev-alpha-v1",
+      "sessionID": "session-alpha-rewind-2",
+      "sequence": 1,
+      "positionSeconds": 180,
+      "durationSeconds": 420,
+      "completed": false,
+      "intent": "rewind",
+      "deviceID": "device-iphone",
+      "updatedAt": "2026-08-17T12:20:05Z"
+    }
+  },
+  "expected": {
+    "decision": "accept",
+    "winningState": "incoming",
+    "reason": "explicitIntentNewSession"
+  }
+}

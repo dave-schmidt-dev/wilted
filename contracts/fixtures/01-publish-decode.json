@@ -1,0 +1,36 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "publish-decode-unknown-optional-metadata",
+  "operation": "publishDecode",
+  "description": "A published immutable revision decodes without inventing unknown author or publication time.",
+  "input": {
+    "article": {
+      "itemID": "item-article-alpha",
+      "canonicalURL": "https://example.test/articles/alpha",
+      "title": "Alpha",
+      "source": "Example Test",
+      "author": null,
+      "publishedTime": null,
+      "createdAt": "2026-08-17T12:00:00Z",
+      "isDeleted": false
+    },
+    "revision": {
+      "itemID": "item-article-alpha",
+      "revisionID": "rev-alpha-v1",
+      "durationSeconds": 420.5,
+      "byteCount": 2048000,
+      "contentHash": "sha256:alpha-v1",
+      "mediaType": "audio/mp4",
+      "createdAt": "2026-08-17T12:05:00Z",
+      "schemaVersion": 1,
+      "readiness": "ready"
+    }
+  },
+  "expected": {
+    "itemID": "item-article-alpha",
+    "revisionID": "rev-alpha-v1",
+    "authorIsUnknown": true,
+    "publishedTimeIsUnknown": true,
+    "readiness": "ready"
+  }
+}

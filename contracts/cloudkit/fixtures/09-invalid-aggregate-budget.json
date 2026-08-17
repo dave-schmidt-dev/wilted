@@ -1,0 +1,9 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "invalid-publication-budget-aggregate",
+  "operation": "budgetValidation",
+  "expectedValid": false,
+  "expectedError": "aggregate-budget-exceeded",
+  "input": {"candidateBytes": 10000000, "acknowledgedOwnedBytes": 790000000, "pendingOwnedBytes": 10000000},
+  "expected": {"decision": "reject", "visibleRejection": true}
+}

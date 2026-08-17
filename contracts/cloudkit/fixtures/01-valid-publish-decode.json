@@ -1,0 +1,23 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "valid-publish-decode",
+  "operation": "publishDecode",
+  "expectedValid": true,
+  "records": [
+    {"recordType":"WiltedItem","zoneName":"WiltedZone","recordName":"item:item-article-alpha","fields":{
+      "itemID":{"type":"String","value":"item-article-alpha"},"canonicalURL":{"type":"String","value":"https://example.test/articles/alpha"},"title":{"type":"String","value":"Alpha"},"source":{"type":"String","value":"Example Test"},"createdAt":{"type":"Date","value":"2026-08-17T12:00:00Z"},"isDeleted":{"type":"Int64","value":0},"schemaVersion":{"type":"Int64","value":1},"currentRevisionID":{"type":"String","value":"rev-alpha-v1"}
+    }},
+    {"recordType":"WiltedRevision","zoneName":"WiltedZone","recordName":"revision:item-article-alpha:rev-alpha-v1","fields":{
+      "itemID":{"type":"String","value":"item-article-alpha"},"revisionID":{"type":"String","value":"rev-alpha-v1"},"itemReference":{"type":"Reference","value":{"recordType":"WiltedItem","recordName":"item:item-article-alpha","zoneName":"WiltedZone","action":"none"}},"durationSeconds":{"type":"Double","value":420.5},"byteCount":{"type":"Int64","value":2048000},"contentHash":{"type":"String","value":"sha256:alpha-v1"},"mediaType":{"type":"String","value":"audio/mp4"},"createdAt":{"type":"Date","value":"2026-08-17T12:05:00Z"},"schemaVersion":{"type":"Int64","value":1},"readiness":{"type":"String","value":"ready"},"audioAsset":{"type":"Asset","value":{"assetID":"asset-alpha-v1","contentHash":"sha256:alpha-v1"}}
+    }},
+    {"recordType":"WiltedPlaybackState","zoneName":"WiltedZone","recordName":"playback:item-article-alpha:rev-alpha-v1","fields":{
+      "itemID":{"type":"String","value":"item-article-alpha"},"revisionID":{"type":"String","value":"rev-alpha-v1"},"itemReference":{"type":"Reference","value":{"recordType":"WiltedItem","recordName":"item:item-article-alpha","zoneName":"WiltedZone","action":"none"}},"revisionReference":{"type":"Reference","value":{"recordType":"WiltedRevision","recordName":"revision:item-article-alpha:rev-alpha-v1","zoneName":"WiltedZone","action":"none"}},"sessionID":{"type":"String","value":"session-alpha-1"},"sequence":{"type":"Int64","value":1},"positionSeconds":{"type":"Double","value":0},"durationSeconds":{"type":"Double","value":420.5},"completed":{"type":"Int64","value":0},"intent":{"type":"String","value":"progress"},"deviceID":{"type":"String","value":"device-mac"},"updatedAt":{"type":"Date","value":"2026-08-17T12:06:00Z"},"schemaVersion":{"type":"Int64","value":1}
+    }}
+  ],
+  "sidecars": {
+    "item:item-article-alpha":{"encodedSystemFieldsBase64":"AQI=","changeTag":"tag-item-1"},
+    "revision:item-article-alpha:rev-alpha-v1":{"encodedSystemFieldsBase64":"AwQ=","changeTag":"tag-revision-1"},
+    "playback:item-article-alpha:rev-alpha-v1":{"encodedSystemFieldsBase64":"BQY=","changeTag":"tag-playback-1"}
+  },
+  "opaqueOptionalMetadataObserved": {"legacyEditorialLabel":"kept-opaque"}
+}

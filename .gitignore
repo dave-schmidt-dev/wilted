@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Node / JS
+node_modules/
+*.tsbuildinfo
+
+# Secrets / local state (never commit)
+etc/bws-config.txt
+etc/*.local.yaml
+*.local
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Swift / Xcode
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+/*.xcodeproj/
+/generated/*.xcodeproj/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.playground/xcuserdata/
+*.swiftpm/
+Package.resolved
+
+# Build / logs
+dist/
+build/
+*.log
+
+# Working docs kept local
+HISTORY.md
+TASKS.md
+history.md
+tasks.md
+
+# Agent workflow byproducts
+verifications/
+overnight-log.md
+overnight-report.html
+.verifier_prompt.md
+spikes/
+
+# Personal opencode agent-permission config
+opencode.jsonc

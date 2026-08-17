@@ -1,0 +1,618 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Credential-free native gate for the generated Mac/iOS project.  The live
+# gate uses only local XcodeGen, SwiftPM, xcodebuild, and simctl capabilities.
+# NATIVE_SELF_TEST is intentionally hermetic and is used by the meta-test.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+project_yml="$repo_root/project.yml"
+native_self_test="${NATIVE_SELF_TEST:-0}"
+forced_fail_leg="${NATIVE_FORCE_FAIL_LEG:-}"
+forced_zero_leg="${NATIVE_FORCE_ZERO_TEST_LEG:-}"
+forced_snapshot_baseline="${NATIVE_FORCE_SNAPSHOT_BASELINE:-}"
+tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-native-gate.XXXXXX")"
+derived_data="$tmp_root/DerivedData"
+mkdir -p "$derived_data"
+trap 'rm -rf "$tmp_root"' EXIT
+
+leg_names=(
+  xcodegen-reproducible
+  wiltedkit-tests
+  wiltedproducer-tests
+  macos-unit-tests
+  ios-unit-tests
+  macos-ui-tests
+  ios-ui-tests
+)
+leg_reports=(none xctest xctest count count count count)
+declare -i failed_legs=0
+declare -i completed_legs=0
+native_project=""
+integration_root=""
+
+status() {
+  printf '%s\n' "$1" >&2
+}
+
+fail() {
+  printf 'native.error %s\n' "$1" >&2
+  return 1
+}
+
+is_forced_failure() {
+  [[ "$forced_fail_leg" == "$1" ]]
+}
+
+is_forced_zero() {
+  [[ "$forced_zero_leg" == "$1" ]]
+}
+
+count_source_files() {
+  local directory="$1"
+  if [[ ! -d "$directory" ]]; then
+    printf '0\n'
+    return 0
+  fi
+  find "$directory" -type f -name '*.swift' -print | wc -l | tr -d ' '
+}
+
+assert_test_sources() {
+  local label="$1"
+  local directory="$2"
+  local file_count
+
+  file_count="$(count_source_files "$directory")"
+  if [[ "$file_count" -eq 0 ]]; then
+    printf 'native.zero-sources label=%s source_files=0 path=%s\n' "$label" "$directory" >&2
+    return 1
+  fi
+  printf 'native.discovery label=%s source_files=%s\n' "$label" "$file_count"
+}
+
+validate_pixel_snapshot_baselines() {
+  local root="$1"
+  local snapshot_dir="$root/WiltedMacTests/__Snapshots__/WiltedPixelSnapshotTests"
+  local expected_count expected_state_ids actual_state_ids state_id state_count
+  local expected_variants actual_variants variant_count shell_name bad_pngs
+  local expected_selectors actual_selectors duplicate_selectors empty_pngs
+  local snapshot_test_source method
+
+  require_tool file
+  [[ -d "$snapshot_dir" ]] || fail "missing Mac pixel snapshot directory: $snapshot_dir"
+  snapshot_test_source="$root/WiltedMacTests/WiltedPixelSnapshotTests.swift"
+  [[ -f "$snapshot_test_source" ]] || fail "missing Mac pixel snapshot test source: $snapshot_test_source"
+  grep -Fq 'assertSnapshot' "$snapshot_test_source" ||
+    fail 'Mac pixel snapshot test has no image assertions'
+  grep -Fq 'WILTED_RECORD_SNAPSHOTS' "$snapshot_test_source" ||
+    fail 'Mac pixel snapshots have no explicit recording mode'
+  grep -Fq 'expectedPixelBaselineCount' "$snapshot_test_source" ||
+    fail 'Mac pixel test does not declare its expected baseline count'
+  for method in \
+    testEveryPreviewStateHasLightAndDarkPixelBaselines \
+    testPixelSnapshotSelectorsAreUniqueAndComplete \
+    testMacLibraryShellPixelBaselines \
+    testMacPlayerShellPixelBaselines; do
+    grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" "$snapshot_test_source" ||
+      fail "Mac pixel snapshot test method is missing: $method"
+  done
+
+  expected_count=156
+  [[ "$(find "$snapshot_dir" -type f -name '*.png' | wc -l | tr -d ' ')" -eq "$expected_count" ]] ||
+    fail "Mac pixel baseline count is not $expected_count"
+  empty_pngs="$(find "$snapshot_dir" -type f -name '*.png' -size 0c -print)"
+  [[ -z "$empty_pngs" ]] || fail "Mac pixel baselines contain empty PNG files: $empty_pngs"
+
+  expected_state_ids=$'cancelling\ndeletedRemotely\ndownloadFailure\nemptyLibrary\nextractionFailure\niCloudUnavailable\nincompatibleRevision\nofflineCached\npaused\nplaying\npreparing-assembling\npreparing-extracting\npreparing-fetching\npreparing-saving\npreparing-synthesizing\nready\nspeechUnavailable\ncompleted\nsyncPending'
+  actual_state_ids="$(find "$snapshot_dir" -type f -name '*.png' -print |
+    sed -E -n 's/.*\.state-(.*)-(light|dark)-(standard|xxxLarge)-motion-(full|reduced)\.png/\1/p' | sort -u)"
+  [[ "$actual_state_ids" == "$(printf '%s\n' "$expected_state_ids" | sort)" ]] ||
+    fail 'Mac pixel baselines do not cover exactly the required preview states'
+  while IFS= read -r state_id; do
+    [[ -n "$state_id" ]] || continue
+    state_count="$(printf '%s\n' "$actual_state_ids" | grep -Fxc "$state_id")"
+    [[ "$state_count" -eq 1 ]] || fail "duplicate preview state selector: $state_id"
+    [[ "$(find "$snapshot_dir" -type f -name "*.state-$state_id-*.png" | wc -l | tr -d ' ')" -eq 8 ]] ||
+      fail "preview state does not have all eight visual variants: $state_id"
+  done <<<"$actual_state_ids"
+
+  expected_variants=$'dark-standard-motion-full\ndark-standard-motion-reduced\ndark-xxxLarge-motion-full\ndark-xxxLarge-motion-reduced\nlight-standard-motion-full\nlight-standard-motion-reduced\nlight-xxxLarge-motion-full\nlight-xxxLarge-motion-reduced'
+  actual_variants="$(find "$snapshot_dir" -type f -name '*.png' -print |
+    sed -E -n 's/.*\.state-.*-(light|dark)-(standard|xxxLarge)-motion-(full|reduced)\.png/\1-\2-motion-\3/p' | sort -u)"
+  [[ "$actual_variants" == "$(printf '%s\n' "$expected_variants" | sort)" ]] ||
+    fail 'Mac pixel baselines do not cover exactly the required visual variants'
+  while IFS= read -r variant; do
+    [[ -n "$variant" ]] || continue
+    variant_count="$(find "$snapshot_dir" -type f -name "*.state-*$variant.png" | wc -l | tr -d ' ')"
+    [[ "$variant_count" -eq 19 ]] || fail "visual variant is missing preview states: $variant"
+  done <<<"$actual_variants"
+
+  expected_selectors=""
+  while IFS= read -r state_id; do
+    [[ -n "$state_id" ]] || continue
+    while IFS= read -r variant; do
+      [[ -n "$variant" ]] || continue
+      expected_selectors+="state-$state_id-$variant\n"
+    done <<<"$expected_variants"
+  done <<<"$expected_state_ids"
+  expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\n'
+  expected_selectors="$(printf '%b' "$expected_selectors" | sort)"
+  actual_selectors="$(find "$snapshot_dir" -type f -name '*.png' -exec basename {} \; |
+    sed -E 's/^.*\.(state-[^.]+|mac-shell-[^.]+)\.png$/\1/' | sort)"
+  [[ "$actual_selectors" == "$expected_selectors" ]] ||
+    fail 'Mac pixel baseline selectors have missing or unexpected names'
+  duplicate_selectors="$(printf '%s\n' "$actual_selectors" | uniq -d)"
+  [[ -z "$duplicate_selectors" ]] || fail "Mac pixel baseline selectors are not unique: $duplicate_selectors"
+
+  for shell_name in \
+    testMacLibraryShellPixelBaselines.mac-shell-library-light.png \
+    testMacLibraryShellPixelBaselines.mac-shell-library-dark.png \
+    testMacPlayerShellPixelBaselines.mac-shell-player-light.png \
+    testMacPlayerShellPixelBaselines.mac-shell-player-dark.png; do
+    [[ -s "$snapshot_dir/$shell_name" ]] || fail "missing Mac shell baseline: $shell_name"
+  done
+  bad_pngs="$(find "$snapshot_dir" -type f -name '*.png' -exec file {} \; |
+    grep -vc 'PNG image data, 520 x 260' || true)"
+  [[ "$bad_pngs" -eq 0 ]] || fail "pixel baselines contain invalid or zero-size images: $bad_pngs"
+  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=4\n' "$expected_count"
+}
+
+parse_result_bundle_test_count() {
+  local summary_file="$1"
+  jq -er '.totalTestCount | numbers | select(. > 0)' "$summary_file"
+}
+
+expected_test_count_floor() {
+  case "$1" in
+    macos-unit-tests) printf '10\n' ;;
+    *) printf '1\n' ;;
+  esac
+}
+
+assert_result_bundle_tests() {
+  local label="$1"
+  local result_bundle="$2"
+  local summary_file="$tmp_root/$label-summary.json"
+  local reported expected_minimum
+
+  if [[ "$native_self_test" == "1" ]]; then
+    if is_forced_zero "$label"; then
+      printf '%s\n' '{"totalTestCount":0}' >"$summary_file"
+    elif [[ "$label" == "macos-unit-tests" ]]; then
+      printf '%s\n' '{"totalTestCount":10}' >"$summary_file"
+    else
+      printf '%s\n' '{"totalTestCount":2}' >"$summary_file"
+    fi
+  else
+    require_tool xcrun
+    [[ -d "$result_bundle" ]] || {
+      printf 'native.result-bundle-missing label=%s path=%s\n' "$label" "$result_bundle" >&2
+      return 1
+    }
+    xcrun xcresulttool get test-results summary --path "$result_bundle" --compact >"$summary_file"
+  fi
+
+  reported="$(parse_result_bundle_test_count "$summary_file" 2>/dev/null || true)"
+
+  if [[ -z "$reported" || "$reported" -eq 0 ]]; then
+    printf 'native.zero-tests label=%s reported=%s result_bundle=%s\n' \
+      "$label" "${reported:-0}" "$result_bundle" >&2
+    return 1
+  fi
+  expected_minimum="$(expected_test_count_floor "$label")"
+  if [[ "$reported" -lt "$expected_minimum" ]]; then
+    printf 'native.insufficient-tests label=%s reported=%s expected_minimum=%s result_bundle=%s\n' \
+      "$label" "$reported" "$expected_minimum" "$result_bundle" >&2
+    return 1
+  fi
+  printf 'native.tests label=%s reported=%s\n' "$label" "$reported"
+}
+
+parse_xctest_output_count() {
+  local output_file="$1"
+  local reported
+
+  # xcrun xctest emits an XCTest summary after the bundle has actually run.
+  # Prefer the final aggregate; fall back to terminal case records so a
+  # truncated or otherwise malformed runner log cannot pass as a test run.
+  reported="$(awk '
+    /Executed [0-9]+ tests,/ {
+      line = $0
+      sub(/^.*Executed /, "", line)
+      sub(/ tests,.*$/, "", line)
+      if (line ~ /^[0-9]+$/) last = line
+    }
+    END { if (last != "") print last }
+  ' "$output_file")"
+  if [[ -z "$reported" ]]; then
+    reported="$(grep -Ec "^Test Case '.*' (passed|failed|skipped)" "$output_file" || true)"
+  fi
+  [[ "$reported" =~ ^[0-9]+$ ]] || reported=0
+  printf '%s\n' "$reported"
+}
+
+assert_xctest_output() {
+  local label="$1"
+  local output_file="$2"
+  local reported
+
+  if [[ "$native_self_test" == "1" ]]; then
+    if is_forced_zero "$label"; then
+      printf '%s\n' "Test Suite 'All tests' started." "Test Suite 'All tests' passed." >"$output_file"
+    else
+      printf '%s\n' "Test Case '-[SelfTest testOne]' passed (0.000 seconds)." \
+        "Test Case '-[SelfTest testTwo]' passed (0.000 seconds)." \
+        "\t Executed 2 tests, with 0 failures (0 unexpected) in 0.000 seconds" >"$output_file"
+    fi
+  fi
+  [[ -s "$output_file" ]] || {
+    printf 'native.xctest-missing label=%s path=%s\n' "$label" "$output_file" >&2
+    return 1
+  }
+  reported="$(parse_xctest_output_count "$output_file")"
+  if [[ "$reported" -eq 0 ]]; then
+    printf 'native.zero-tests label=%s reported=%s xctest=%s\n' "$label" "$reported" "$output_file" >&2
+    return 1
+  fi
+  printf 'native.tests label=%s reported=%s evidence=xctest\n' "$label" "$reported"
+}
+
+run_leg() {
+  local name="$1"
+  local report_mode="$2"
+  shift 2
+  local output_file="$tmp_root/$name.log"
+  local result_bundle="$tmp_root/$name.xcresult"
+  local command_status=0
+
+  status "native.leg.start name=$name"
+  if is_forced_failure "$name"; then
+    printf '%s\n' 'forced_self_test_failure' >"$output_file"
+    command_status=1
+  elif is_forced_zero "$name"; then
+    printf '%s\n' 'forced_self_test_zero_result_bundle' >"$output_file"
+    command_status=0
+  elif [[ "$native_self_test" == "1" ]]; then
+    printf '%s\n' 'self_test_command_success' >"$output_file"
+    command_status=0
+  else
+    set +e
+    "$@" 2>&1 | tee "$output_file" >&2
+    command_status="${PIPESTATUS[0]}"
+    set -e
+  fi
+
+  if [[ "$command_status" -eq 0 && "$report_mode" == "count" ]]; then
+    set +e
+    assert_result_bundle_tests "$name" "$result_bundle"
+    local count_status=$?
+    set -e
+    if [[ "$count_status" -ne 0 ]]; then
+      command_status="$count_status"
+    fi
+  elif [[ "$command_status" -eq 0 && "$report_mode" == "xctest" ]]; then
+    set +e
+    assert_xctest_output "$name" "$tmp_root/$name.xctest.log"
+    local xctest_status=$?
+    set -e
+    if [[ "$xctest_status" -ne 0 ]]; then
+      command_status="$xctest_status"
+    fi
+  fi
+
+  completed_legs+=1
+  if [[ "$command_status" -ne 0 ]]; then
+    failed_legs+=1
+    status "native.leg.complete name=$name status=$command_status"
+    if [[ -s "$output_file" ]]; then
+      printf '%s\n' "--- $name output ---" >&2
+      cat "$output_file" >&2 || true
+    fi
+    return 0
+  fi
+  status "native.leg.complete name=$name status=0"
+}
+
+require_tool() {
+  local tool="$1"
+  command -v "$tool" >/dev/null 2>&1 || fail "missing required tool: $tool"
+}
+
+generated_project_path() {
+  find "$1" -maxdepth 1 -type d -name '*.xcodeproj' -print -quit
+}
+
+leg_xcodegen_reproducible() {
+  [[ -f "$integration_root/project.yml" ]] || fail "missing integration XcodeGen source"
+  require_tool xcodegen
+
+  local first="$tmp_root/generated-first"
+  local second="$tmp_root/generated-second"
+  mkdir -p "$first" "$second"
+  xcodegen generate --spec "$integration_root/project.yml" --project "$first" --project-root "$integration_root"
+  xcodegen generate --spec "$integration_root/project.yml" --project "$second" --project-root "$integration_root"
+
+  # XcodeGen writes generated plists beside the spec's project root while the
+  # disposable project lives under tmp_root.  Keep the generated project
+  # self-contained so xcodebuild never reads or writes the checkout.
+  local plist
+  for plist in WiltedMac/Info.plist WiltediOS/Info.plist; do
+    mkdir -p "$first/$(dirname "$plist")" "$second/$(dirname "$plist")"
+    cp "$integration_root/$plist" "$first/$plist"
+    cp "$integration_root/$plist" "$second/$plist"
+  done
+
+  local first_project second_project
+  first_project="$(generated_project_path "$first")"
+  second_project="$(generated_project_path "$second")"
+  [[ -n "$first_project" && -n "$second_project" ]] || fail 'XcodeGen produced no .xcodeproj'
+  diff -ru "$first_project" "$second_project"
+  native_project="$first_project"
+  printf 'native.xcodegen.reproducible project=%s\n' "$(basename "$first_project")"
+}
+
+leg_wiltedkit_tests() {
+  local package="$repo_root/WiltedKit"
+  local authoritative="$repo_root/contracts/fixtures"
+  local copied="$package/Tests/WiltedDomainTests/Fixtures"
+  [[ -d "$package" ]] || fail "missing WiltedKit package: $package"
+  [[ -d "$authoritative" && -d "$copied" ]] || fail 'missing authoritative or WiltedKit fixture directory'
+  if ! diff -u <(find "$authoritative" -maxdepth 1 -type f -name '*.json' -exec basename {} \; | sort) \
+      <(find "$copied" -maxdepth 1 -type f -name '*.json' ! -name 'FixtureManifest.json' -exec basename {} \; | sort); then
+    fail 'WiltedKit fixture names differ from authoritative contracts/fixtures'
+  fi
+  local fixture
+  while IFS= read -r fixture; do
+    cmp -s "$authoritative/$fixture" "$copied/$fixture" ||
+      fail "WiltedKit fixture drift: $fixture"
+  done < <(find "$authoritative" -maxdepth 1 -type f -name '*.json' -exec basename {} \; | sort)
+  printf 'native.fixtures.parity count=%s\n' "$(find "$authoritative" -maxdepth 1 -type f -name '*.json' | wc -l | tr -d ' ')"
+  assert_test_sources wiltedkit-tests "$package/Tests"
+  require_tool swift
+  require_tool xcrun
+  swift build --package-path "$package" --build-tests
+  local test_bundle
+  test_bundle="$(find "$package/.build" -type d -name 'WiltedKitPackageTests.xctest' -print -quit)"
+  [[ -n "$test_bundle" && -d "$test_bundle" ]] || fail 'WiltedKit XCTest bundle was not produced'
+
+  # The installed Swift toolchain accepts the SwiftPM xUnit flag but does not
+  # emit the requested file for this package. Invoke the built XCTest bundle
+  # directly; its runner log is authoritative and remains visible while running.
+  set +e
+  xcrun xctest "$test_bundle" 2>&1 | tee "$tmp_root/wiltedkit-tests.xctest.log" >&2
+  local xctest_status="${PIPESTATUS[0]}"
+  set -e
+  return "$xctest_status"
+}
+
+leg_wiltedproducer_tests() {
+  local package="$repo_root/Producer"
+  [[ -d "$package" ]] || fail "missing WiltedProducer package: $package"
+  assert_test_sources wiltedproducer-tests "$package/Tests"
+  require_tool swift
+  require_tool xcrun
+  swift build --package-path "$package" --build-tests
+  local test_bundle
+  test_bundle="$(find "$package/.build" -type d -name 'WiltedProducerPackageTests.xctest' -print -quit)"
+  [[ -n "$test_bundle" && -d "$test_bundle" ]] || fail 'WiltedProducer XCTest bundle was not produced'
+
+  set +e
+  xcrun xctest "$test_bundle" 2>&1 | tee "$tmp_root/wiltedproducer-tests.xctest.log" >&2
+  local xctest_status="${PIPESTATUS[0]}"
+  set -e
+  return "$xctest_status"
+}
+
+find_project() {
+  [[ -n "$native_project" && -d "$native_project" ]] || fail 'no temporary XcodeGen project is available'
+  printf '%s\n' "$native_project"
+}
+
+find_simulator_udid() {
+  require_tool xcrun
+  local udid
+  local state
+
+  # Reuse a booted device first to avoid racing CoreSimulatorService or
+  # disturbing a simulator the owner is already using.
+  udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ && /Booted/ { print $2; exit }')"
+  [[ -n "$udid" ]] || udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPad/ && /Booted/ { print $2; exit }')"
+  state=Booted
+  if [[ -z "$udid" ]]; then
+    udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ && /Shutdown/ { print $2; exit }')"
+    [[ -n "$udid" ]] || udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPad/ && /Shutdown/ { print $2; exit }')"
+    state=Shutdown
+  fi
+  [[ -n "$udid" ]] || fail 'no available iOS simulator device'
+
+  if [[ "$state" == Booted ]]; then
+    printf 'native.simulator.reuse udid=%s state=Booted\n' "$udid" >&2
+  else
+    printf 'native.simulator.boot udid=%s\n' "$udid" >&2
+    xcrun simctl boot "$udid" >&2
+  fi
+  printf 'native.simulator.bootstatus.start udid=%s\n' "$udid" >&2
+  xcrun simctl bootstatus "$udid" -b >&2
+  printf 'native.simulator.ready udid=%s\n' "$udid" >&2
+  printf '%s\n' "$udid"
+}
+
+find_shutdown_iphone_udid() {
+  require_tool xcrun
+  local udid
+  udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ && /Shutdown/ { print $2; exit }')"
+  [[ -n "$udid" ]] || fail 'no available shutdown iPhone simulator'
+  printf 'native.simulator.clean-selection udid=%s state=Shutdown\n' "$udid" >&2
+  printf '%s\n' "$udid"
+}
+
+xcode_test_leg() {
+  local label="$1"
+  local source_dir="$2"
+  local scheme="$3"
+  local destination="$4"
+  local target="$5"
+  local project
+
+  [[ -f "$integration_root/project.yml" ]] || fail "missing integration XcodeGen source"
+  require_tool xcodebuild
+  require_tool jq
+  require_tool xmllint
+  assert_test_sources "$label" "$source_dir"
+  project="$(find_project)"
+  xcodebuild test \
+    -project "$project" \
+    -scheme "$scheme" \
+    -only-testing:"$target" \
+    -destination "$destination" \
+    -derivedDataPath "$derived_data/$label" \
+    -resultBundlePath "$tmp_root/$label.xcresult" \
+    -parallel-testing-enabled NO \
+    -quiet
+}
+
+leg_macos_unit_tests() {
+  xcode_test_leg macos-unit-tests "$integration_root/WiltedMacTests" WiltedMac 'platform=macOS' WiltedMacTests
+}
+
+leg_ios_unit_tests() {
+  local udid
+  udid="$(find_simulator_udid)"
+  xcode_test_leg ios-unit-tests "$integration_root/WiltediOSTests" WiltediOS "platform=iOS Simulator,id=$udid" WiltediOSTests
+}
+
+leg_macos_ui_tests() {
+  local label=macos-ui-tests
+  local source_dir="$integration_root/WiltedMacUITests"
+  local destination='platform=macOS'
+  local project="$native_project"
+  local label_data="$derived_data/$label"
+  local runner
+  local signature_info
+
+  [[ -f "$integration_root/project.yml" ]] || fail 'missing integration XcodeGen source'
+  require_tool xcodebuild
+  require_tool codesign
+  assert_test_sources "$label" "$source_dir"
+  [[ -n "$project" && -d "$project" ]] || fail 'no temporary XcodeGen project is available'
+
+  xcodebuild build-for-testing \
+    -project "$project" \
+    -scheme WiltedMac \
+    -only-testing:WiltedMacUITests \
+    -destination "$destination" \
+    -derivedDataPath "$label_data" \
+    -parallel-testing-enabled NO \
+    -quiet
+
+  runner="$label_data/Build/Products/Debug/WiltedMacUITests-Runner.app"
+  if [[ ! -d "$runner" ]]; then
+    runner="$(find "$label_data/Build/Products" -type d -name 'WiltedMacUITests-Runner.app' -print -quit)"
+  fi
+  [[ -n "$runner" && -d "$runner" ]] || fail 'macOS UI test runner was not produced'
+  codesign --verify --deep --strict "$runner"
+  signature_info="$(codesign --display --verbose=4 "$runner" 2>&1)" || fail 'macOS UI runner signature metadata unavailable'
+  [[ "$signature_info" == *CodeDirectory* ]] || fail 'macOS UI test runner is unsigned'
+  printf '%s\n' "$signature_info"
+
+  xcodebuild test-without-building \
+    -project "$project" \
+    -scheme WiltedMac \
+    -only-testing:WiltedMacUITests \
+    -destination "$destination" \
+    -derivedDataPath "$label_data" \
+    -resultBundlePath "$tmp_root/$label.xcresult" \
+    -parallel-testing-enabled NO \
+    -quiet
+}
+
+leg_ios_ui_tests() (
+  local udid=""
+  local simulator_started=0
+
+  cleanup_ios_ui_simulator() {
+    local test_status=$?
+    local cleanup_status=0
+    if [[ "$simulator_started" -eq 1 ]]; then
+      printf 'native.simulator.shutdown.start udid=%s\n' "$udid" >&2
+      xcrun simctl shutdown "$udid" >&2 || cleanup_status=$?
+      if [[ "$cleanup_status" -eq 0 ]]; then
+        printf 'native.simulator.shutdown.complete udid=%s\n' "$udid" >&2
+      else
+        printf 'native.simulator.shutdown.failed udid=%s status=%s\n' "$udid" "$cleanup_status" >&2
+      fi
+    fi
+    if [[ "$test_status" -eq 0 && "$cleanup_status" -ne 0 ]]; then
+      exit "$cleanup_status"
+    fi
+    exit "$test_status"
+  }
+  trap cleanup_ios_ui_simulator EXIT
+
+  udid="$(find_shutdown_iphone_udid)"
+  printf 'native.simulator.boot udid=%s purpose=ios-ui-tests\n' "$udid" >&2
+  xcrun simctl boot "$udid" >&2
+  simulator_started=1
+  printf 'native.simulator.bootstatus.start udid=%s purpose=ios-ui-tests\n' "$udid" >&2
+  xcrun simctl bootstatus "$udid" -b >&2
+  printf 'native.simulator.ready udid=%s purpose=ios-ui-tests\n' "$udid" >&2
+  xcode_test_leg ios-ui-tests "$integration_root/WiltediOSUITests" WiltediOS "platform=iOS Simulator,id=$udid" WiltediOSUITests
+)
+
+prepare_integration_root() {
+  integration_root="$tmp_root/integration-root"
+  mkdir -p "$integration_root/WiltedKit" "$integration_root/Producer"
+  cp "$project_yml" "$integration_root/project.yml"
+  cp -R "$repo_root/Shared" "$repo_root/WiltedMac" "$repo_root/WiltedMacTests" \
+    "$repo_root/WiltedMacUITests" "$repo_root/WiltediOS" "$repo_root/WiltediOSTests" \
+    "$repo_root/WiltediOSUITests" "$integration_root/"
+  cp "$repo_root/WiltedKit/Package.swift" "$integration_root/WiltedKit/Package.swift"
+  cp -R "$repo_root/WiltedKit/Sources" "$repo_root/WiltedKit/Tests" "$integration_root/WiltedKit/"
+  cp "$repo_root/Producer/Package.swift" "$integration_root/Producer/Package.swift"
+  cp -R "$repo_root/Producer/Sources" "$repo_root/Producer/Tests" "$integration_root/Producer/"
+}
+
+if [[ "$native_self_test" != "1" ]]; then
+  [[ -f "$project_yml" ]] || fail "missing XcodeGen source: $project_yml"
+  require_tool xcodegen
+  require_tool jq
+  require_tool xmllint
+  # run_leg streams each function through tee, so state assigned inside the
+  # xcodegen function is not propagated from its pipeline subshell.  The
+  # deterministic first output path is known before that leg starts.
+  prepare_integration_root
+  native_project="$tmp_root/generated-first/Wilted.xcodeproj"
+  validate_pixel_snapshot_baselines "$integration_root"
+else
+  snapshot_validation_root="$repo_root"
+  if [[ -n "$forced_snapshot_baseline" ]]; then
+    snapshot_validation_root="$tmp_root/snapshot-fixture"
+    mkdir -p "$snapshot_validation_root"
+    cp -R "$repo_root/WiltedMacTests" "$snapshot_validation_root/"
+    forced_snapshot_file="$(find "$snapshot_validation_root/WiltedMacTests/__Snapshots__/WiltedPixelSnapshotTests" \
+      -type f -name '*.png' -print -quit)"
+    [[ -n "$forced_snapshot_file" ]] || fail 'snapshot self-test fixture has no PNG baseline'
+    case "$forced_snapshot_baseline" in
+      missing) rm -f "$forced_snapshot_file" ;;
+      zero) : >"$forced_snapshot_file" ;;
+      malformed) printf '%s\n' 'not a PNG baseline' >"$forced_snapshot_file" ;;
+      *) fail "unknown NATIVE_FORCE_SNAPSHOT_BASELINE: $forced_snapshot_baseline" ;;
+    esac
+  fi
+  validate_pixel_snapshot_baselines "$snapshot_validation_root"
+fi
+
+run_leg "${leg_names[0]}" "${leg_reports[0]}" leg_xcodegen_reproducible
+run_leg "${leg_names[1]}" "xctest" leg_wiltedkit_tests
+run_leg "${leg_names[2]}" "xctest" leg_wiltedproducer_tests
+run_leg "${leg_names[3]}" "${leg_reports[3]}" leg_macos_unit_tests
+run_leg "${leg_names[4]}" "${leg_reports[4]}" leg_ios_unit_tests
+run_leg "${leg_names[5]}" "${leg_reports[5]}" leg_macos_ui_tests
+run_leg "${leg_names[6]}" "${leg_reports[6]}" leg_ios_ui_tests
+
+status "native.complete failed_legs=$failed_legs total_legs=$completed_legs"
+if [[ "$failed_legs" -ne 0 ]]; then
+  status "native.failed count=$failed_legs"
+  exit 1
+fi
+status "native.passed count=$completed_legs"

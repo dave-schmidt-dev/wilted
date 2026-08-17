@@ -1,0 +1,8 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "valid-publication-budget-preflight",
+  "operation": "budgetValidation",
+  "expectedValid": true,
+  "input": {"candidateBytes": 40000000, "acknowledgedOwnedBytes": 200000000, "pendingOwnedBytes": 100000000},
+  "expected": {"decision": "allow", "visibleRejection": false}
+}

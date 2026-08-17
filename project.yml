@@ -1,0 +1,192 @@
+name: Wilted
+
+options:
+  bundleIdPrefix: com.example.wilted
+  deploymentTarget:
+    macOS: "14.0"
+    iOS: "17.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+
+packages:
+  WiltedKit:
+    path: WiltedKit
+  WiltedProducer:
+    path: Producer
+  SnapshotTesting:
+    url: https://github.com/pointfreeco/swift-snapshot-testing
+    exactVersion: 1.19.4
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGNING_ALLOWED: NO
+
+targets:
+  WiltedMac:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: WiltedMac
+      - path: Shared
+        optional: true
+    dependencies:
+      - package: WiltedKit
+        product: WiltedDomain
+      - package: WiltedProducer
+        product: WiltedProducer
+    settings:
+      base:
+        # Local-only placeholder. Replace only during the attended identity gate.
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.wilted.mac
+        INFOPLIST_FILE: WiltedMac/Info.plist
+        # Credential-free local signing keeps the Mac host launchable for
+        # XCUITest without asserting a team, profile, entitlement, or
+        # distributable identity. `-` is codesign's ad-hoc identity.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGNING_REQUIRED: YES
+        DEVELOPMENT_TEAM: ""
+        PROVISIONING_PROFILE_SPECIFIER: ""
+    info:
+      path: WiltedMac/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: en
+        CFBundleDisplayName: Wilted
+        CFBundleName: Wilted
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+
+  WiltediOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: WiltediOS
+      - path: Shared
+        optional: true
+    dependencies:
+      - package: WiltedKit
+        product: WiltedDomain
+    settings:
+      base:
+        # Local-only placeholder. Replace only during the attended identity gate.
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.wilted.ios
+        INFOPLIST_FILE: WiltediOS/Info.plist
+    info:
+      path: WiltediOS/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: en
+        CFBundleDisplayName: Wilted
+        CFBundleName: Wilted
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIBackgroundModes:
+          - audio
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+
+  WiltedMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: WiltedMacTests
+        optional: true
+    dependencies:
+      - target: WiltedMac
+      - package: WiltedKit
+        product: WiltedDomain
+      - package: WiltedProducer
+        product: WiltedProducer
+      - package: SnapshotTesting
+        product: SnapshotTesting
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.wilted.mac.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+  WiltediOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: WiltediOSTests
+        optional: true
+    dependencies:
+      - target: WiltediOS
+      - package: WiltedKit
+        product: WiltedDomain
+      - package: SnapshotTesting
+        product: SnapshotTesting
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.wilted.ios.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+  WiltedMacUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: WiltedMacUITests
+    dependencies:
+      - target: WiltedMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.wilted.mac.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        # The UI runner must be ad-hoc signed independently of its host.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGNING_REQUIRED: YES
+        DEVELOPMENT_TEAM: ""
+        PROVISIONING_PROFILE_SPECIFIER: ""
+
+  WiltediOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: WiltediOSUITests
+    dependencies:
+      - target: WiltediOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.wilted.ios.uitests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  WiltedMac:
+    build:
+      targets:
+        WiltedMac: all
+    test:
+      targets:
+        - WiltedMacTests
+        - WiltedMacUITests
+
+  WiltediOS:
+    build:
+      targets:
+        WiltediOS: all
+    test:
+      targets:
+        - WiltediOSTests
+        - WiltediOSUITests

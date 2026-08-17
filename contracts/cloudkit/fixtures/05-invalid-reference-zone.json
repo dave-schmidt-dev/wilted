@@ -1,0 +1,10 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "invalid-reference-outside-custom-zone",
+  "operation": "recordValidation",
+  "expectedValid": false,
+  "expectedError": "reference-outside-zone",
+  "records": [{"recordType":"WiltedRevision","zoneName":"WiltedZone","recordName":"revision:item-ref:rev-1","fields":{
+    "itemID":{"type":"String","value":"item-ref"},"revisionID":{"type":"String","value":"rev-1"},"itemReference":{"type":"Reference","value":{"recordType":"WiltedItem","recordName":"item:item-ref","zoneName":"_defaultZone","action":"none"}},"durationSeconds":{"type":"Double","value":12.5},"byteCount":{"type":"Int64","value":100},"contentHash":{"type":"String","value":"sha256:ref"},"mediaType":{"type":"String","value":"audio/mp4"},"createdAt":{"type":"Date","value":"2026-08-17T12:00:00Z"},"schemaVersion":{"type":"Int64","value":1},"readiness":{"type":"String","value":"ready"},"audioAsset":{"type":"Asset","value":{"assetID":"asset-ref","contentHash":"sha256:ref"}}
+  }}]
+}

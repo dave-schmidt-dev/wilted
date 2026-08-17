@@ -1,0 +1,16 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "schema-version-mismatch-fails-closed",
+  "operation": "schemaCompatibility",
+  "description": "A record newer than the supported schema is rejected as incompatible.",
+  "input": {
+    "recordType": "WiltedRevision",
+    "recordSchemaVersion": 2,
+    "supportedSchemaVersion": 1,
+    "receivedAt": "2026-08-17T13:40:00Z"
+  },
+  "expected": {
+    "accepted": false,
+    "state": "incompatibleSchema"
+  }
+}
