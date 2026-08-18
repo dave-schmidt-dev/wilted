@@ -47,6 +47,7 @@ extension CloudKitSyncError {
     /// Converts a CloudKit failure without exposing CloudKit to the neutral layer.
     public static func map(_ error: Error) -> Self {
         if let error = error as? Self { return error }
+        if error is CancellationError { return .cancelled }
         if let error = error as? CKError {
             if error.code == .serverRecordChanged { return .serverRecordChanged }
             return .cloudKit(code: error.code.rawValue, message: error.localizedDescription)

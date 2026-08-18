@@ -22,27 +22,103 @@ private func validEnvelope(_ suffix: String = "alpha", opaque: [String: WiltedFi
 
 private func mapper(stager: CloudKitAssetStaging? = nil) throws -> CloudKitRecordMapper { try CloudKitRecordMapper(stager: stager) }
 
+private actor SaveGate {
+    private(set) var calls = 0
+    var released = false
+
+    func save() async throws {
+        calls += 1
+        while !released { await Task.yield() }
+    }
+
+    func release() { released = true }
+
+    func waitForCalls(_ expected: Int, maxYields: Int = 2_000) async -> Bool {
+        for _ in 0..<maxYields {
+            if calls >= expected { return true }
+            await Task.yield()
+        }
+        return calls >= expected
+    }
+}
+
 private actor FakeEngineDriver: CloudKitEngineDriver {
     let events: AsyncStream<CloudKitEngineEvent>
     private let continuation: AsyncStream<CloudKitEngineEvent>.Continuation
     private(set) var fetchCalls = 0
     private(set) var sendCalls = 0
+    private(set) var ensureCalls = 0
+    private(set) var ensureCallsAtFetch = 0
+    private(set) var ensureCallsAtSend = 0
+    private(set) var zoneBootstrapResets = 0
+    private(set) var pendingAddCalls = 0
+    private(set) var pendingChangeCounts: [Int] = []
+    let holdSecondPendingAdd: Bool
+    let pendingRelease: AsyncStream<Void>.Continuation
+    let pendingReleaseStream: AsyncStream<Void>
     private(set) var cancelled = false
+    let zoneFailure: CloudKitSyncError?
+    var zoneNotFoundFetchesRemaining: Int
+    var zoneNotFoundSendRemaining: Int
+    let holdZoneBootstrap: Bool
+    let zoneRelease: AsyncStream<Void>.Continuation
+    let zoneReleaseStream: AsyncStream<Void>
 
-    init() {
+    init(zoneFailure: CloudKitSyncError? = nil, zoneNotFoundFetches: Int = 0, zoneNotFoundSends: Int = 0,
+         holdZoneBootstrap: Bool = false, holdSecondPendingAdd: Bool = false) {
         let (events, continuation) = AsyncStream<CloudKitEngineEvent>.makeStream()
+        let (zoneReleaseStream, zoneRelease) = AsyncStream<Void>.makeStream()
+        let (pendingReleaseStream, pendingRelease) = AsyncStream<Void>.makeStream()
         self.events = events
         self.continuation = continuation
+        self.zoneFailure = zoneFailure
+        self.zoneNotFoundFetchesRemaining = zoneNotFoundFetches
+        self.zoneNotFoundSendRemaining = zoneNotFoundSends
+        self.holdZoneBootstrap = holdZoneBootstrap
+        self.zoneRelease = zoneRelease
+        self.zoneReleaseStream = zoneReleaseStream
+        self.holdSecondPendingAdd = holdSecondPendingAdd
+        self.pendingRelease = pendingRelease
+        self.pendingReleaseStream = pendingReleaseStream
     }
 
-    func fetchChanges() async throws { fetchCalls += 1 }
-    func sendChanges() async throws { sendCalls += 1 }
+    func ensureZone() async throws {
+        ensureCalls += 1
+        if let zoneFailure { throw zoneFailure }
+        if holdZoneBootstrap {
+            for await _ in zoneReleaseStream { break }
+        }
+    }
+    func fetchChanges() async throws {
+        ensureCallsAtFetch = ensureCalls; fetchCalls += 1
+        if zoneNotFoundFetchesRemaining > 0 { zoneNotFoundFetchesRemaining -= 1; throw CKError(.zoneNotFound) }
+    }
+    func sendChanges() async throws {
+        ensureCallsAtSend = ensureCalls; sendCalls += 1
+        if zoneNotFoundSendRemaining > 0 { zoneNotFoundSendRemaining -= 1; throw CKError(.zoneNotFound) }
+    }
     func cancelOperations() async { cancelled = true }
-    func addPendingRecordZoneChanges(_ changes: [CKSyncEngine.PendingRecordZoneChange]) async {}
+    func resetZoneBootstrap() async { zoneBootstrapResets += 1 }
+    func addPendingRecordZoneChanges(_ changes: [CKSyncEngine.PendingRecordZoneChange]) async {
+        pendingAddCalls += 1
+        pendingChangeCounts.append(changes.count)
+        if holdSecondPendingAdd, pendingAddCalls == 2 {
+            for await _ in pendingReleaseStream { break }
+        }
+    }
     nonisolated func isValidStateData(_ data: Data) -> Bool {
         data == Data("{}".utf8) || data == Data("{\"state\":1}".utf8)
     }
     func emit(_ event: CloudKitEngineEvent) { continuation.yield(event) }
+    func releaseZoneBootstrap() { zoneRelease.yield(()) }
+    func releasePendingAdd() { pendingRelease.yield(()) }
+    func waitForEnsureCall(maxYields: Int = 2_000) async -> Bool {
+        for _ in 0..<maxYields {
+            if ensureCalls > 0 { return true }
+            await Task.yield()
+        }
+        return ensureCalls > 0
+    }
     func waitForFetchCall(maxYields: Int = 2_000) async -> Bool {
         for _ in 0..<maxYields {
             if fetchCalls > 0 { return true }
@@ -56,6 +132,27 @@ private actor FakeEngineDriver: CloudKitEngineDriver {
             await Task.yield()
         }
         return sendCalls > 0
+    }
+    func waitForSendCalls(_ expected: Int, maxYields: Int = 2_000) async -> Bool {
+        for _ in 0..<maxYields {
+            if sendCalls >= expected { return true }
+            await Task.yield()
+        }
+        return sendCalls >= expected
+    }
+    func waitForFetchCalls(_ expected: Int, maxYields: Int = 2_000) async -> Bool {
+        for _ in 0..<maxYields {
+            if fetchCalls >= expected { return true }
+            await Task.yield()
+        }
+        return fetchCalls >= expected
+    }
+    func waitForPendingAdd(_ expected: Int, maxYields: Int = 2_000) async -> Bool {
+        for _ in 0..<maxYields {
+            if pendingAddCalls >= expected { return true }
+            await Task.yield()
+        }
+        return pendingAddCalls >= expected
     }
 }
 
@@ -219,6 +316,8 @@ func transportFetch() async throws {
     #expect(batch.records.count == 1)
     #expect(batch.deletedRecordIDs.count == 1)
     #expect(await driver.fetchCalls == 1)
+    #expect(await driver.ensureCalls == 1)
+    #expect(await driver.ensureCallsAtFetch == 1)
 }
 
 @Test("transport send returns partial acknowledgement and server conflict envelope")
@@ -249,6 +348,286 @@ func transportSendPartialConflict() async throws {
     #expect(result.failures.first?.disposition == .conflict)
     #expect(result.failures.first?.serverRecord?.fields["server"] == .string("new"))
     #expect(result.engineState == Data("{\"state\":1}".utf8))
+    #expect(await driver.ensureCalls == 1)
+    #expect(await driver.ensureCallsAtSend == 1)
+}
+
+@Test("zone bootstrap failure prevents record-zone saves and reports failure")
+func zoneBootstrapFailure() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver(zoneFailure: CloudKitSyncError.cloudKit(code: 7, message: "zone unavailable"))
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper)
+    let envelope = try validEnvelope("zone-failure")
+    let change = try SyncPendingChange(operation: .update, recordID: envelope.id, record: envelope)
+    do { _ = try await transport.save(changes: [change], role: .mac); Issue.record("expected zone bootstrap failure") }
+    catch let error as CloudKitSyncError { #expect(error == .cloudKit(code: 7, message: "zone unavailable")) }
+    #expect(await driver.ensureCalls == 1)
+    #expect(await driver.sendCalls == 0)
+}
+
+@Test("zone-not-found send recreates the zone and requeues pending changes once")
+func zoneNotFoundSendRecovery() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver(zoneNotFoundSends: 1)
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper)
+    let envelope = try validEnvelope("zone-retry-send")
+    let record = try mapper.encode(envelope)
+    let change = try SyncPendingChange(operation: .update, recordID: envelope.id, record: envelope)
+    let send = Task { try await transport.save(changes: [change], role: .mac) }
+    guard await driver.waitForSendCalls(2) else {
+        await transport.cancel()
+        Issue.record("zone-not-found send was not retried")
+        return
+    }
+    await driver.emit(.sent(saved: [record], failed: [], deleted: [], failedDeletes: [:]))
+    await driver.emit(.stateUpdated(Data("{\"state\":1}".utf8)))
+    await driver.emit(.sendCompleted)
+    let result = try await send.value
+    #expect(result.acknowledgedRecordIDs == [envelope.id])
+    #expect(await driver.zoneBootstrapResets == 1)
+    #expect(await driver.ensureCalls == 2)
+    #expect(await driver.pendingAddCalls == 2)
+}
+
+@Test("per-record zone-not-found save waits for completion before retrying")
+func eventZoneNotFoundSaveRecovery() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver()
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper)
+    let envelope = try validEnvelope("event-zone-save")
+    let record = try mapper.encode(envelope)
+    let change = try SyncPendingChange(operation: .update, recordID: envelope.id, record: envelope)
+    let send = Task { try await transport.save(changes: [change], role: .mac) }
+    #expect(await driver.waitForSendCalls(1))
+
+    await driver.emit(.sent(saved: [], failed: [CloudKitRecordFailure(record: record, error: CKError(.zoneNotFound))], deleted: [], failedDeletes: [:]))
+    await Task.yield()
+    #expect(await driver.sendCalls == 1)
+    #expect(await driver.pendingAddCalls == 1)
+    await driver.emit(.sendCompleted)
+    #expect(await driver.waitForSendCalls(2))
+    await driver.emit(.sent(saved: [record], failed: [], deleted: [], failedDeletes: [:]))
+    await driver.emit(.stateUpdated(Data("{\"state\":1}".utf8)))
+    await driver.emit(.sendCompleted)
+
+    let result = try await send.value
+    #expect(result.acknowledgedRecordIDs == [envelope.id])
+    #expect(result.failures.isEmpty)
+    #expect(await driver.zoneBootstrapResets == 1)
+    #expect(await driver.pendingAddCalls == 2)
+}
+
+@Test("multiple sent events before completion coalesce all zone failures")
+func multipleEventZoneFailuresCoalesce() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver()
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper)
+    let first = try validEnvelope("event-zone-first")
+    let second = try validEnvelope("event-zone-second")
+    let firstRecord = try mapper.encode(first)
+    let secondRecord = try mapper.encode(second)
+    let changes = [
+        try SyncPendingChange(operation: .update, recordID: first.id, record: first),
+        try SyncPendingChange(operation: .update, recordID: second.id, record: second),
+    ]
+    let send = Task { try await transport.save(changes: changes, role: .mac) }
+    #expect(await driver.waitForSendCalls(1))
+    await driver.emit(.sent(saved: [], failed: [CloudKitRecordFailure(record: firstRecord, error: CKError(.zoneNotFound))], deleted: [], failedDeletes: [:]))
+    await driver.emit(.sent(saved: [], failed: [CloudKitRecordFailure(record: secondRecord, error: CKError(.zoneNotFound))], deleted: [], failedDeletes: [:]))
+    await driver.emit(.sendCompleted)
+    #expect(await driver.waitForSendCalls(2))
+    #expect(await driver.pendingChangeCounts == [2, 2])
+    await driver.emit(.sent(saved: [firstRecord, secondRecord], failed: [], deleted: [], failedDeletes: [:]))
+    await driver.emit(.stateUpdated(Data("{\"state\":1}".utf8)))
+    await driver.emit(.sendCompleted)
+
+    let result = try await send.value
+    #expect(Set(result.acknowledgedRecordIDs) == Set([first.id, second.id]))
+    #expect(result.failures.isEmpty)
+}
+
+@Test("per-record zone-not-found delete waits for completion before retrying")
+func eventZoneNotFoundDeleteRecovery() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver()
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper)
+    let (value, _) = try article("event-zone-delete")
+    let recordID = try WiltedRecordID(recordType: .item, recordName: "item:\(value.itemID.rawValue)", zoneName: mapper.zoneID.zoneName)
+    let tombstone = SyncTombstone(itemID: value.itemID, generationID: "generation-delete", requestedAt: try Timestamp(iso8601: "2026-08-17T12:00:00Z"))
+    let change = try SyncPendingChange(operation: .delete, recordID: recordID, tombstone: tombstone)
+    let cloudID = CKRecord.ID(recordName: recordID.recordName, zoneID: mapper.zoneID)
+    let send = Task { try await transport.save(changes: [change], role: .mac) }
+    #expect(await driver.waitForSendCalls(1))
+
+    await driver.emit(.sent(saved: [], failed: [], deleted: [], failedDeletes: [cloudID: CKError(.zoneNotFound)]))
+    await driver.emit(.sendCompleted)
+    #expect(await driver.waitForSendCalls(2))
+    await driver.emit(.sent(saved: [], failed: [], deleted: [cloudID], failedDeletes: [:]))
+    await driver.emit(.stateUpdated(Data("{\"state\":1}".utf8)))
+    await driver.emit(.sendCompleted)
+
+    let result = try await send.value
+    #expect(result.acknowledgedRecordIDs == [recordID])
+    #expect(result.failures.isEmpty)
+    #expect(await driver.zoneBootstrapResets == 1)
+    #expect(await driver.pendingAddCalls == 2)
+}
+
+@Test("persistent thrown zone-not-found stops after one retry")
+func persistentThrownZoneNotFoundStopsAfterOneRetry() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver(zoneNotFoundSends: 2)
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper)
+    let envelope = try validEnvelope("persistent-zone-throw")
+    let change = try SyncPendingChange(operation: .update, recordID: envelope.id, record: envelope)
+    let send = Task { try await transport.save(changes: [change], role: .mac) }
+    #expect(await driver.waitForSendCalls(2))
+    do { _ = try await send.value; Issue.record("expected persistent zone failure") }
+    catch let error as CloudKitSyncError {
+        if case let .cloudKit(code, _) = error { #expect(code == CKError.Code.zoneNotFound.rawValue) }
+        else { Issue.record("unexpected error: \(error)") }
+    }
+    #expect(await driver.sendCalls == 2)
+    #expect(await driver.zoneBootstrapResets == 1)
+    #expect(await driver.ensureCalls == 2)
+}
+
+@Test("persistent per-record zone-not-found stops after one retry")
+func persistentEventZoneNotFoundStopsAfterOneRetry() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver()
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper)
+    let envelope = try validEnvelope("persistent-zone-event")
+    let record = try mapper.encode(envelope)
+    let change = try SyncPendingChange(operation: .update, recordID: envelope.id, record: envelope)
+    let send = Task { try await transport.save(changes: [change], role: .mac) }
+    #expect(await driver.waitForSendCalls(1))
+    let failure = CloudKitRecordFailure(record: record, error: CKError(.zoneNotFound))
+    await driver.emit(.sent(saved: [], failed: [failure], deleted: [], failedDeletes: [:]))
+    await driver.emit(.sendCompleted)
+    #expect(await driver.waitForSendCalls(2))
+    await driver.emit(.sent(saved: [], failed: [failure], deleted: [], failedDeletes: [:]))
+    await driver.emit(.stateUpdated(Data("{\"state\":1}".utf8)))
+    await driver.emit(.sendCompleted)
+
+    let result = try await send.value
+    #expect(result.acknowledgedRecordIDs.isEmpty)
+    #expect(result.failures.count == 1)
+    #expect(result.failures[0].recordID == envelope.id)
+    #expect(await driver.sendCalls == 2)
+    #expect(await driver.zoneBootstrapResets == 1)
+}
+
+@Test("cancellation during retry requeue prevents the second send")
+func cancellationDuringRetryRequeue() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver(holdSecondPendingAdd: true)
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper)
+    let envelope = try validEnvelope("cancel-requeue")
+    let record = try mapper.encode(envelope)
+    let change = try SyncPendingChange(operation: .update, recordID: envelope.id, record: envelope)
+    let send = Task { try await transport.save(changes: [change], role: .mac) }
+    #expect(await driver.waitForSendCalls(1))
+    await driver.emit(.sent(saved: [], failed: [CloudKitRecordFailure(record: record, error: CKError(.zoneNotFound))], deleted: [], failedDeletes: [:]))
+    await driver.emit(.sendCompleted)
+    #expect(await driver.waitForPendingAdd(2))
+    await transport.cancel()
+    await driver.releasePendingAdd()
+    do { _ = try await send.value; Issue.record("expected cancellation") }
+    catch let error as CloudKitSyncError { #expect(error == .cancelled) }
+    #expect(await driver.sendCalls == 1)
+}
+
+@Test("account change during retry requeue prevents the second send")
+func accountChangeDuringRetryRequeue() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver(holdSecondPendingAdd: true)
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper)
+    let envelope = try validEnvelope("account-requeue")
+    let record = try mapper.encode(envelope)
+    let change = try SyncPendingChange(operation: .update, recordID: envelope.id, record: envelope)
+    let send = Task { try await transport.save(changes: [change], role: .mac) }
+    #expect(await driver.waitForSendCalls(1))
+    await driver.emit(.sent(saved: [], failed: [CloudKitRecordFailure(record: record, error: CKError(.zoneNotFound))], deleted: [], failedDeletes: [:]))
+    await driver.emit(.sendCompleted)
+    #expect(await driver.waitForPendingAdd(2))
+    await driver.emit(.accountChanged)
+    for _ in 0..<100 {
+        if await transport.isQuarantined() { break }
+        await Task.yield()
+    }
+    await driver.releasePendingAdd()
+    do { _ = try await send.value; Issue.record("expected account-change failure") }
+    catch let error as CloudKitSyncError { #expect(error == .accountChanged) }
+    #expect(await driver.sendCalls == 1)
+}
+
+@Test("zone-not-found fetch recreates the zone before returning deletions")
+func zoneNotFoundFetchRecovery() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver(zoneNotFoundFetches: 1)
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper, stateData: Data("{}".utf8))
+    let fetch = Task { try await transport.fetchChanges() }
+    guard await driver.waitForFetchCalls(2) else {
+        await transport.cancel()
+        Issue.record("zone-not-found fetch was not retried")
+        return
+    }
+    let deleted = CloudKitRecordDeletion(recordID: CKRecord.ID(recordName: "item:item-zone-fetch-delete", zoneID: mapper.zoneID), recordType: WiltedRecordType.item.rawValue)
+    await driver.emit(.fetched(modifications: [], deletions: [deleted]))
+    await driver.emit(.stateUpdated(Data("{\"state\":1}".utf8)))
+    await driver.emit(.fetchCompleted)
+    let batch = try await fetch.value
+    #expect(batch.deletedRecordIDs.count == 1)
+    #expect(await driver.zoneBootstrapResets == 1)
+    #expect(await driver.ensureCalls == 2)
+}
+
+@Test("zone bootstrap cancellation cannot publish a stale save generation")
+func zoneBootstrapCancellationGeneration() async throws {
+    let gate = SaveGate()
+    let state = CloudKitZoneBootstrapState { try await gate.save() }
+    let first = Task { try await state.ensureZone() }
+    #expect(await gate.waitForCalls(1))
+
+    await state.cancel()
+    await gate.release()
+    try await first.value
+
+    // The canceled generation completed, but it was not allowed to mark the
+    // zone ensured. A retry creates the replacement save; subsequent ensures
+    // are still idempotent.
+    try await state.ensureZone()
+    #expect(await gate.calls == 2)
+    await state.cancel()
+    try await state.ensureZone()
+    #expect(await gate.calls == 2)
+
+    await state.invalidate()
+    try await state.ensureZone()
+    #expect(await gate.calls == 3)
+}
+
+@Test("account change during suspended zone bootstrap becomes accountChanged")
+func accountChangeDuringZoneBootstrap() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver(holdZoneBootstrap: true)
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper)
+    let fetch = Task { try await transport.fetchChanges() }
+    guard await driver.waitForEnsureCall() else {
+        await transport.cancel()
+        Issue.record("zone bootstrap did not start")
+        return
+    }
+    await driver.emit(.accountChanged)
+    for _ in 0..<100 {
+        if await transport.isQuarantined() { break }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    await driver.releaseZoneBootstrap()
+    do { _ = try await fetch.value; Issue.record("expected account-change failure") }
+    catch let error as CloudKitSyncError { #expect(error == .accountChanged) }
+    #expect(await driver.zoneBootstrapResets == 1)
 }
 
 @Test("send acknowledgements require a fresh engine state update")
@@ -298,10 +677,12 @@ func transportAccountQuarantine() async throws {
         try? await Task.sleep(for: .milliseconds(5))
     }
     #expect(await transport.isQuarantined())
+    #expect(await driver.zoneBootstrapResets == 1)
     do { _ = try await transport.save(changes: [], role: .mac); Issue.record("expected quarantine") }
     catch let error as CloudKitSyncError { #expect(error == .quarantined) }
     await transport.resetAfterAccountChange()
     #expect(await transport.isQuarantined() == false)
+    #expect(await driver.zoneBootstrapResets == 2)
 }
 
 @Test("transport status stream remains live through a fetch")

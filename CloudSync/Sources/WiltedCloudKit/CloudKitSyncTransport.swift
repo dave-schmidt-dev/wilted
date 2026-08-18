@@ -29,6 +29,12 @@ public actor CloudKitSyncTransport: SyncTransport {
     private var sentEventReceived = false
     private var sendAcknowledgementSequence = 0
     private var sendStateSequence = 0
+    private var sendZoneRecoveryAttempted = false
+    private var sendRecoveryInFlight = false
+    private var sendRecoveryCompletionPending = false
+    private var sendRetryDispatched = false
+    private var pendingZoneSaveIDs: Set<CKRecord.ID> = []
+    private var pendingZoneDeleteIDs: Set<CKRecord.ID> = []
 
     /// A corrupt nonempty state fails closed before any engine operation is attempted.
     public init(driver: any CloudKitEngineDriver, role: SyncDeviceRole, mapper: CloudKitRecordMapper,
@@ -71,16 +77,35 @@ public actor CloudKitSyncTransport: SyncTransport {
             if let record = change.record { try validateOutgoing(record) }
         }
         let operations = try pendingMapper.pendingRecordZoneChanges(changes, scope: .all, role: role)
+        sendInFlight = true
+        emit(.init(phase: .staging, message: "Ensuring CloudKit custom zone exists"))
+        do { try await driver.ensureZone() }
+        catch {
+            sendInFlight = false
+            let mapped = quarantined ? .accountChanged : CloudKitSyncError.map(error)
+            emit(.init(phase: .failed, message: mapped.localizedDescription))
+            throw mapped
+        }
+        guard !quarantined else { throw CloudKitSyncError.accountChanged }
         pendingChanges = changes
         sentRecords = []; failedRecords = []; deletedRecordIDs = []; failedDeleteErrors = [:]; sentEventReceived = false
         sendAcknowledgementSequence = 0; sendStateSequence = 0
-        sendInFlight = true
+        sendZoneRecoveryAttempted = false; sendRecoveryInFlight = false; sendRecoveryCompletionPending = false; sendRetryDispatched = false
+        pendingZoneSaveIDs = []; pendingZoneDeleteIDs = []
         await driver.addPendingRecordZoneChanges(operations)
+        guard sendInFlight, !quarantined else {
+            await driver.cancelOperations()
+            throw quarantined ? CloudKitSyncError.accountChanged : CloudKitSyncError.cancelled
+        }
         emit(.init(phase: .committing, message: "Sending CloudKit changes"))
         return try await withCheckedThrowingContinuation { continuation in
             sendWaiters.append(continuation)
-            Task { [driver] in
+            Task { [driver, operations] in
                 do { try await driver.sendChanges() }
+                catch let error as CKError where error.code == .zoneNotFound {
+                    do { try await self.retrySendAfterZoneNotFound(operations) }
+                    catch { self.failSend(error) }
+                }
                 catch { self.failSend(error) }
             }
         }
@@ -95,6 +120,16 @@ public actor CloudKitSyncTransport: SyncTransport {
         guard !fetchInFlight, !sendInFlight else { throw CloudKitSyncError.operationInProgress }
         if let stateData, !driver.isValidStateData(stateData) { throw CloudKitSyncError.stateCorrupt }
         fetchInFlight = true
+        emit(.init(phase: .staging, message: "Ensuring CloudKit custom zone exists"))
+        do { try await driver.ensureZone() }
+        catch {
+            fetchInFlight = false
+            let mapped = quarantined ? .accountChanged : CloudKitSyncError.map(error)
+            emit(.init(phase: .failed, message: mapped.localizedDescription))
+            throw mapped
+        }
+        guard !quarantined else { throw CloudKitSyncError.accountChanged }
+        guard fetchInFlight else { throw CloudKitSyncError.cancelled }
         generation += 1
         await accumulator.begin()
         await accumulator.seedState(stateData)
@@ -103,6 +138,10 @@ public actor CloudKitSyncTransport: SyncTransport {
             fetchWaiters.append(continuation)
             Task { [driver] in
                 do { try await driver.fetchChanges() }
+                catch let error as CKError where error.code == .zoneNotFound {
+                    do { try await self.retryFetchAfterZoneNotFound() }
+                    catch { await self.failFetch(error) }
+                }
                 catch { await self.failFetch(error) }
             }
         }
@@ -119,11 +158,13 @@ public actor CloudKitSyncTransport: SyncTransport {
     /// Re-enables operations after this driver's account-change event has been reviewed.
     ///
     /// CKSyncEngine automatically resets its own live state for the account event,
-    /// so the same driver remains valid here. This method does not reset CKSyncEngine.
+    /// so the same driver remains valid here. The zone bootstrap is invalidated
+    /// so the next operation re-ensures the private zone for the new account.
     /// Full-state recovery, corruption recovery, and other app-initiated resets must
     /// discard this transport and construct a new driver and transport with `nil`
     /// serialization.
-    public func resetAfterAccountChange() {
+    public func resetAfterAccountChange() async {
+        await driver.resetZoneBootstrap()
         quarantined = false
         stateData = nil
         pendingChanges = []
@@ -163,14 +204,42 @@ public actor CloudKitSyncTransport: SyncTransport {
             emit(.init(phase: .committing, message: "CloudKit send started"))
         case let .sent(saved, failed, deleted, failedDeletes):
             sentRecords.append(contentsOf: saved)
-            failedRecords.append(contentsOf: failed)
             deletedRecordIDs.append(contentsOf: deleted)
-            failedDeleteErrors.merge(failedDeletes) { _, new in new }
+            let zoneSaveFailures = failed.filter { isZoneNotFound($0.error) }
+            let zoneDeleteFailures = failedDeletes.filter { isZoneNotFound($0.value) }
+            let hasZoneFailure = !zoneSaveFailures.isEmpty || !zoneDeleteFailures.isEmpty
+            let terminalSaveFailures = failed.filter { !isZoneNotFound($0.error) }
+            let terminalDeleteFailures = failedDeletes.filter { !isZoneNotFound($0.value) }
+            if hasZoneFailure && sendRecoveryInFlight && !sendRetryDispatched {
+                pendingZoneSaveIDs.formUnion(zoneSaveFailures.map { $0.record.recordID })
+                pendingZoneDeleteIDs.formUnion(zoneDeleteFailures.map(\.key))
+            }
+            if hasZoneFailure && !sendZoneRecoveryAttempted {
+                sendZoneRecoveryAttempted = true
+                sendRecoveryInFlight = true
+                sendRecoveryCompletionPending = true
+                pendingZoneSaveIDs.formUnion(zoneSaveFailures.map { $0.record.recordID })
+                pendingZoneDeleteIDs.formUnion(zoneDeleteFailures.map(\.key))
+            }
+            failedRecords.append(contentsOf: terminalSaveFailures)
+            failedDeleteErrors.merge(terminalDeleteFailures) { _, new in new }
+            if sendRetryDispatched {
+                failedRecords.append(contentsOf: zoneSaveFailures)
+                for (id, error) in zoneDeleteFailures { failedDeleteErrors[id] = error }
+            }
             sentEventReceived = true
             sendAcknowledgementSequence += saved.count + deleted.count
-            if failed.isEmpty, failedDeletes.isEmpty { emit(.init(phase: .committing, message: "CloudKit records acknowledged")) }
+            if hasZoneFailure && sendRecoveryInFlight { emit(.init(phase: .staging, message: "CloudKit zone failure detected; preparing retry")) }
+            else if failed.isEmpty, failedDeletes.isEmpty { emit(.init(phase: .committing, message: "CloudKit records acknowledged")) }
             else { emit(.init(phase: .failed, message: "CloudKit send had per-record failures")) }
         case .sendCompleted:
+            if sendRecoveryCompletionPending {
+                sendRecoveryCompletionPending = false
+                let saveIDs = pendingZoneSaveIDs
+                let deleteIDs = pendingZoneDeleteIDs
+                Task { await self.retryEventZoneFailures(saveIDs: saveIDs, deleteIDs: deleteIDs) }
+                return
+            }
             guard sentEventReceived else {
                 failSend(CloudKitSyncError.cloudKit(code: -1, message: "CloudKit send completed without acknowledgement event"))
                 return
@@ -188,6 +257,7 @@ public actor CloudKitSyncTransport: SyncTransport {
             finishSend(with: .success(result))
         case .accountChanged:
             quarantined = true
+            await driver.resetZoneBootstrap()
             pendingChanges = []
             stateData = nil
             await accumulator.cleanupStagedAssets()
@@ -208,14 +278,79 @@ public actor CloudKitSyncTransport: SyncTransport {
         }
     }
 
+    private func retrySendAfterZoneNotFound(_ operations: [CKSyncEngine.PendingRecordZoneChange]) async throws {
+        guard !quarantined, sendInFlight, !sendZoneRecoveryAttempted else { throw quarantined ? CloudKitSyncError.accountChanged : CloudKitSyncError.cancelled }
+        sendZoneRecoveryAttempted = true
+        emit(.init(phase: .staging, message: "CloudKit zone disappeared; recreating before retry"))
+        await driver.resetZoneBootstrap()
+        try await driver.ensureZone()
+        guard !quarantined, sendInFlight else { throw quarantined ? CloudKitSyncError.accountChanged : CloudKitSyncError.cancelled }
+        await driver.addPendingRecordZoneChanges(operations)
+        guard !quarantined, sendInFlight else {
+            await driver.cancelOperations()
+            throw quarantined ? CloudKitSyncError.accountChanged : CloudKitSyncError.cancelled
+        }
+        emit(.init(phase: .committing, message: "Retrying CloudKit record-zone changes"))
+        sendRetryDispatched = true
+        try await driver.sendChanges()
+    }
+
+    private func retryEventZoneFailures(saveIDs: Set<CKRecord.ID>, deleteIDs: Set<CKRecord.ID>) async {
+        do {
+            guard !quarantined, sendInFlight else {
+                throw quarantined ? CloudKitSyncError.accountChanged : CloudKitSyncError.cancelled
+            }
+            emit(.init(phase: .staging, message: "CloudKit zone disappeared; recreating before retry"))
+            await driver.resetZoneBootstrap()
+            try await driver.ensureZone()
+            guard !quarantined, sendInFlight else {
+                throw quarantined ? CloudKitSyncError.accountChanged : CloudKitSyncError.cancelled
+            }
+            let retryChanges = pendingChanges.filter { change in
+                (change.operation == .delete && deleteIDs.contains(CKRecord.ID(recordName: change.recordID.recordName, zoneID: mapper.zoneID))) ||
+                (change.operation != .delete && saveIDs.contains(CKRecord.ID(recordName: change.recordID.recordName, zoneID: mapper.zoneID)))
+            }
+            let operations = try pendingMapper.pendingRecordZoneChanges(retryChanges, scope: .all, role: role)
+            await driver.addPendingRecordZoneChanges(operations)
+            guard !quarantined, sendInFlight else {
+                await driver.cancelOperations()
+                throw quarantined ? CloudKitSyncError.accountChanged : CloudKitSyncError.cancelled
+            }
+            emit(.init(phase: .committing, message: "Retrying failed CloudKit record-zone changes"))
+            // Keep the completion gate set until the first attempt's completion
+            // event is consumed; event ordering then cleanly separates attempts.
+            sendRetryDispatched = true
+            try await driver.sendChanges()
+        } catch {
+            sendRecoveryInFlight = false
+            sendRecoveryCompletionPending = false
+            failSend(error)
+        }
+        sendRecoveryInFlight = false
+    }
+
+    private func retryFetchAfterZoneNotFound() async throws {
+        guard !quarantined, fetchInFlight else { throw quarantined ? CloudKitSyncError.accountChanged : CloudKitSyncError.cancelled }
+        emit(.init(phase: .staging, message: "CloudKit zone disappeared; recreating before retry"))
+        await driver.resetZoneBootstrap()
+        try await driver.ensureZone()
+        guard !quarantined, fetchInFlight else { throw quarantined ? CloudKitSyncError.accountChanged : CloudKitSyncError.cancelled }
+        await accumulator.begin()
+        await accumulator.seedState(stateData)
+        emit(.init(phase: .fetching, message: "Retrying CloudKit record-zone fetch"))
+        try await driver.fetchChanges()
+    }
+
     private func failFetch(_ error: Error) async {
         await accumulator.cleanupStagedAssets()
-        finishFetch(with: .failure(CloudKitSyncError.map(error)))
+        finishFetch(with: .failure(quarantined ? .accountChanged : CloudKitSyncError.map(error)))
         emit(.init(phase: .failed, message: String(describing: error)))
     }
 
     private func failSend(_ error: Error) {
-        finishSend(with: .failure(CloudKitSyncError.map(error)))
+        sendRecoveryInFlight = false
+        sendRecoveryCompletionPending = false
+        finishSend(with: .failure(quarantined ? .accountChanged : CloudKitSyncError.map(error)))
         emit(.init(phase: .failed, message: String(describing: error)))
     }
 
@@ -227,8 +362,16 @@ public actor CloudKitSyncTransport: SyncTransport {
 
     private func finishSend(with result: Result<SyncSendResult, Error>) {
         sendInFlight = false
+        sendRecoveryInFlight = false
+        sendRecoveryCompletionPending = false
+        sendRetryDispatched = false
+        pendingZoneSaveIDs = []; pendingZoneDeleteIDs = []
         let waiters = sendWaiters; sendWaiters.removeAll()
         for waiter in waiters { waiter.resume(with: result) }
+    }
+
+    private func isZoneNotFound(_ error: Error) -> Bool {
+        (error as? CKError)?.code == .zoneNotFound
     }
 
     private func emit(_ status: SyncStatus) { statusContinuation.yield(status) }

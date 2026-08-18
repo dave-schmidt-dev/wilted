@@ -58,7 +58,7 @@ rationale: Publish, decode, merge, completion, deletion, version mismatch, offli
 area: ["README.md", "TASKS.md", "WiltedMac/**", "WiltediOS/**"]
 gate_test: test-gate.sh
 threshold: 3
-rationale: Local tests, simulator results, Development CloudKit, exported Production entitlements, physical-device behavior, App Store Connect processing, and user-visible TestFlight are distinct evidence; none substitutes for another.
+rationale: Portal capability configuration, local tests, simulator results, effective signed entitlements, Development CloudKit runtime, Production CloudKit, physical-device behavior, App Store Connect processing, and user-visible TestFlight are distinct evidence; none substitutes for another.
 
 ### W-INV-010 — Zero Delta Lettuce remains legible and native
 area: ["Shared/**", "WiltedMac/**", "WiltediOS/**"]

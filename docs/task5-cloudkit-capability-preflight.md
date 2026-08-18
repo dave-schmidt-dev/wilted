@@ -5,29 +5,33 @@
 **Scope:** Wilted macOS producer and iOS 17+ listener
 
 This packet records David’s approval of the Wilted decisions, installed source
-configuration, and future attended evidence plan. It does not contain secrets, team
-identifiers, certificate names, or portal receipts. No Apple Developer portal,
-CloudKit container, capability, profile, signing, schema, device, or TestFlight
-state has been changed.
+configuration, attended portal evidence, and future evidence plan. It does not
+contain secrets, team identifiers, certificate names, or provisioning data.
+On 2026-08-17, attended screenshots verified the configured container and App ID
+capabilities described below. No profile, signing, schema, device, Production,
+App Store Connect, or TestFlight evidence was established.
 
 Local source verification is complete. The final disposition and exact evidence
 boundary are recorded in `docs/task5-verification-disposition.md`.
 
-**Hard stop:** the decisions are approved, but external execution and proof
-remain attended gates. Do not register an App ID, create or attach a container,
-enable a capability, create/pick a profile, upload a schema, promote Development
-to Production, or alter any external Apple state until each gate is explicitly
-executed and evidenced.
+**Hard stop:** portal configuration now has screenshot evidence, but further
+external execution remains attended. Do not create/pick a profile, upload or
+alter a schema, promote Development to Production, or change other Apple state
+until the corresponding gate is explicitly executed and evidenced.
 
 ## Current inventory and gaps
 
 - `project.yml` is the source of truth and now contains the approved target
   identifiers `com.zerodelta.wilted.mac` and `com.zerodelta.wilted.ios`.
+- Attended screenshots verify container `iCloud.com.zerodelta.wilted` and App IDs
+  `com.zerodelta.wilted.mac` and `com.zerodelta.wilted.ios`. Both App IDs show
+  iCloud/CloudKit enabled with exactly that container and Push Notifications enabled.
 - Four source entitlement files now exist, and the Development/Release
   configurations bind the approved Development/Production entitlement choices
-  for the Mac and iOS targets. There is still no Apple team/profile or portal
-  association, no signed effective-entitlement proof, and Debug remains
-  credential-free. Current Mac ad-hoc signing is local validation only.
+  for the Mac and iOS targets. Source does not pin an Apple team or profile.
+  There is no provisioning-profile or signed effective-entitlement proof, and
+  Debug remains credential-free. Portal screenshots do not substitute for
+  artifact-bound evidence.
 - `contracts/cloudkit/schema.json` freezes a private database, custom zone
   `WiltedZone`, record families `WiltedItem`, `WiltedRevision`, and
   `WiltedPlaybackState`, and no query indexes (`queryIndexAllowlist: []`). It
@@ -44,21 +48,21 @@ executed and evidenced.
 
 ## Owner-approved source configuration
 
-The following choices were approved by David on 2026-08-17. They are
-configuration authorization, not proof that the identifiers exist in Apple
-Developer or that any external state has been mutated:
+The following choices were approved by David on 2026-08-17. Attended screenshots
+also prove the listed identifier/container/capability configuration exists in the
+Apple Developer portal; they do not prove signed artifacts or runtime behavior:
 
 | Decision | Approved value | Authorization boundary |
 |---|---|---|
-| Mac bundle ID | `com.zerodelta.wilted.mac` | Source configuration only; portal registration remains future |
-| iOS bundle ID | `com.zerodelta.wilted.ios` | Source configuration only; portal registration remains future |
-| Shared iCloud container | `iCloud.com.zerodelta.wilted` | Source reference only; container creation/attachment remains future |
+| Mac bundle ID | `com.zerodelta.wilted.mac` | Screenshot-verified App ID; iCloud/CloudKit and Push enabled |
+| iOS bundle ID | `com.zerodelta.wilted.ios` | Screenshot-verified App ID; iCloud/CloudKit and Push enabled |
+| Shared iCloud container | `iCloud.com.zerodelta.wilted` | Screenshot-verified and attached to both App IDs |
 | CloudKit database/zone | Private database; custom zone `WiltedZone` | Contract authority only; deployment remains future |
 | Mac distribution | Hardened, notarized Developer ID, initially without App Sandbox | Approved hypothesis; signed runtime and notarization remain future |
-| Capability membership | Paid Apple Developer Program account with required capabilities | Approved prerequisite; capability enablement remains future |
+| Capability membership | Paid Apple Developer Program account with required capabilities | Approved prerequisite; iCloud/CloudKit and Push configuration screenshot-verified |
 
-The approved values are installed in the repository’s source configuration. This
-record does not authorize portal or container mutation.
+The approved values are installed in source and match the screenshot-verified
+portal configuration. This record does not authorize further portal mutation.
 
 ## Owner-approved entitlement matrix
 
@@ -185,18 +189,19 @@ Normative Apple references: [iCloud container environment entitlement](https://d
 - [x] David approves certificate/profile classes and artifact inspection without names or secrets.
 - [x] David approves the schema/index comparison, promotion, stop, and receipt plan.
 - [x] David approves physical Mac/iPhone roles and separate Development/Production acceptance.
-- [x] David confirms portal/container mutation remains a future attended gate.
+- [x] David verifies the container, both App IDs, iCloud/CloudKit attachment, and Push capability by attended screenshots.
+- [x] David confirms any further portal/container mutation remains a future attended gate.
 
 ## Final decision table
 
 | Area | Approved source decision / required future evidence | Owner approval | Evidence reference |
 |---|---|---|---|
-| Bundle IDs | `com.zerodelta.wilted.mac`; `com.zerodelta.wilted.ios` | Approved 2026-08-17 | Portal registration future; no evidence yet |
-| Shared container | `iCloud.com.zerodelta.wilted` | Approved 2026-08-17 | Container creation/attachment future; no evidence yet |
+| Bundle IDs | `com.zerodelta.wilted.mac`; `com.zerodelta.wilted.ios` | Approved 2026-08-17 | Screenshot-verified App IDs; iCloud/CloudKit and Push enabled |
+| Shared container | `iCloud.com.zerodelta.wilted` | Approved 2026-08-17 | Screenshot-verified attachment to both App IDs |
 | CloudKit scope | Private database; `WiltedZone`; current index set empty | Approved 2026-08-17 | Development schema comparison and promotion future |
 | Development entitlements | CloudKit service + container identifiers; Development notification value if used | Approved 2026-08-17 | Signed Development artifacts future |
 | Production entitlements | CloudKit service + container identifiers + `icloud-container-environment: Production`; Production notification value if used | Approved 2026-08-17 | Signed Production artifacts future |
-| iOS capabilities | CloudKit, Background Modes/audio, remote notifications as approved | Approved 2026-08-17 | Profile, artifact, and device proof future |
+| iOS capabilities | CloudKit, Background Modes/audio, remote notifications as approved | Approved 2026-08-17 | CloudKit/Push portal configuration verified; profile, background-audio artifact, and device proof future |
 | Mac distribution | Hardened/notarized Developer ID without App Sandbox | Approved 2026-08-17 | Signed runtime and notarization proof future |
 | Schema promotion | Hash-bound text-schema import/export, diff, index evidence, attended promotion approval | Approved 2026-08-17 | No schema mutation or promotion performed |
 | Signing/profiles | Correct target, capability, environment, and artifact-bound inspection receipts | Approved 2026-08-17 | No profiles or signing evidence recorded |
