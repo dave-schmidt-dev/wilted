@@ -390,6 +390,55 @@ final class LocalLibrarySyncRepositoryTests: XCTestCase {
         XCTAssertEqual(reopenedPlayback, playback)
     }
 
+    func testAccountReviewReleasesQuarantinedWorkSoItCanBeSentAgain() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("account-review"); let itemRecord = try record(for: item)
+        let store = try LocalLibraryStore(url: url)
+        let repository = try await LocalLibrarySyncRepository(store: store)
+        let pending = try SyncPendingChange(operation: .update, recordID: itemRecord.id, record: itemRecord)
+        try await repository.enqueue(pending)
+        try await repository.quarantineAfterAccountChange()
+        let quarantined = await repository.state()
+        XCTAssertTrue(quarantined.conflictedRecordIDs.contains(itemRecord.id))
+
+        try await repository.resumeAfterAccountReview()
+
+        let state = await repository.state()
+        XCTAssertFalse(state.conflictedRecordIDs.contains(itemRecord.id))
+        XCTAssertEqual(state.pendingChanges, [pending])
+        XCTAssertTrue(state.protectedRecordIDs.contains(itemRecord.id))
+        let persistedStatus = try await store.syncStatus(for: item.itemID)
+        XCTAssertEqual(persistedStatus, .pendingUpload)
+        // SyncCoordinator drops conflicted records from every batch, so this filter is the
+        // property the release exists to restore.
+        XCTAssertEqual(state.pendingChanges.filter { !state.conflictedRecordIDs.contains($0.recordID) }, [pending])
+        let reopened = try await LocalLibrarySyncRepository(store: try LocalLibraryStore(url: url))
+        let reopenedState = await reopened.state()
+        XCTAssertEqual(reopenedState, state)
+    }
+
+    func testAccountReviewKeepsGenuineRemoteConflictsQuarantined() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("account-review-conflict"); let itemRecord = try record(for: item)
+        let store = try LocalLibraryStore(url: url)
+        let repository = try await LocalLibrarySyncRepository(store: store)
+        let pending = try SyncPendingChange(operation: .update, recordID: itemRecord.id, record: itemRecord)
+        try await repository.enqueue(pending)
+        let serverRecord = try record(for: item)
+        try await repository.acknowledge(try SyncSendResult(
+            engineState: Data([9]),
+            failures: [SyncSendFailure(recordID: itemRecord.id, disposition: .conflict, serverRecord: serverRecord)]))
+        try await repository.quarantineAfterAccountChange()
+
+        try await repository.resumeAfterAccountReview()
+
+        let state = await repository.state()
+        XCTAssertTrue(state.conflictedRecordIDs.contains(itemRecord.id))
+        XCTAssertEqual(state.conflictServerRecords[itemRecord.id], serverRecord)
+        let persistedStatus = try await store.syncStatus(for: item.itemID)
+        XCTAssertEqual(persistedStatus, .conflicted)
+    }
+
     func testAccountChangeQuarantineFailureLeavesStateUnchanged() async throws {
         let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let itemRecord = try record(for: article("account-failure"))

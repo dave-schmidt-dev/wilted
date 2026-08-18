@@ -79,6 +79,56 @@ public actor LocalLibrarySyncRepository: SyncRepository {
         }
     }
 
+    /// Releases account-quarantined work after the owner explicitly reviews the account.
+    ///
+    /// `quarantineAfterAccountChange` conflicts every pending record, and
+    /// `SyncCoordinator` filters conflicted records out of every send, so those records can
+    /// never be acknowledged and `acknowledge` is the only path that un-conflicts one.
+    /// Without this release, explicit review resumes syncing but permanently strands exactly
+    /// the work the quarantine was protecting.
+    ///
+    /// Release is deliberately narrow: only records that are still pending and carry no
+    /// `conflictServerRecords` entry. That entry is written solely by the send-failure path,
+    /// so it marks a genuine remote conflict that must keep its manual resolution. A record
+    /// whose conflict was recorded without a server version is safe to release because the
+    /// envelope is re-sent with its own encoded system fields (or with none at all, for a
+    /// record never seen remotely), so the server rejects a stale write rather than
+    /// overwriting it, and that rejection records the server version and excludes the record
+    /// from every later release.
+    public func resumeAfterAccountReview() async throws {
+        let pendingIDs = Set(storedState.pendingChanges.map(\.recordID))
+        let releasable = storedState.conflictedRecordIDs.filter {
+            pendingIDs.contains($0) && storedState.conflictServerRecords[$0] == nil
+        }
+        guard !releasable.isEmpty else { return }
+        emit(.init(phase: .staging, message: "Releasing quarantined local sync work after account review"))
+        do {
+            let candidate = SyncRepositoryState(
+                records: storedState.records,
+                engineState: storedState.engineState,
+                pendingChanges: storedState.pendingChanges,
+                tombstones: storedState.tombstones,
+                remoteAcknowledgedRecordIDs: storedState.remoteAcknowledgedRecordIDs,
+                protectedRecordIDs: storedState.protectedRecordIDs,
+                conflictedRecordIDs: storedState.conflictedRecordIDs.subtracting(releasable),
+                conflictServerRecords: storedState.conflictServerRecords)
+            // Derived rather than hardcoded to pendingUpload so an item that also holds a
+            // genuine remote conflict keeps reading conflicted.
+            let statusUpdates = Set(releasable.compactMap { itemID(for: $0) }).compactMap { itemID in
+                (try? WiltedRecordID.item(itemID)).map {
+                    LocalLibrarySyncCommit.StatusApply(recordID: $0, status: status(for: itemID, in: candidate))
+                }
+            }
+            try beforeCommit?()
+            try await store.applySyncCommit(LocalLibrarySyncCommit(state: candidate, statusUpdates: statusUpdates))
+            storedState = candidate
+            emit(.init(phase: .completed, message: "Quarantined local sync work released after account review"))
+        } catch {
+            emit(.init(phase: .failed, message: String(describing: error)))
+            throw error
+        }
+    }
+
     /// Validates and decodes a remote batch without mutating SwiftData.
     public func stage(_ batch: SyncFetchBatch) async throws -> StagedSyncBatch {
         emit(.init(phase: .staging, message: "Validating fetched records", generationID: batch.generationID))

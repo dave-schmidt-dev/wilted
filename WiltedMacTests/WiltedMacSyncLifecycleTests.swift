@@ -230,6 +230,41 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
         XCTAssertEqual(resetCalls, 1)
     }
 
+    func testAccountReviewReleasesQuarantinedWorkSoTheNextUploadDrainsIt() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("account-release")
+        let revisionID = try RevisionID(rawValue: "revision-account-release")
+        let recordID = try WiltedRecordID.item(item.itemID)
+        let batch = try SyncFetchBatch(generationID: "released", records: [], engineState: Data([3]))
+        let transport = LifecycleFakeTransport(batch: batch)
+        let lifecycle = lifecycle(try LocalLibraryStore(url: url), transport: transport)
+
+        let queued = await lifecycle.queueItem(item, currentRevisionID: revisionID)
+        XCTAssertTrue(isSuccess(queued))
+        lifecycle.quarantineAccount()
+        for _ in 0..<200 where lifecycle.status.phase != .quarantined {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(lifecycle.status.phase, .quarantined)
+
+        lifecycle.resetAfterAccountChange()
+        for _ in 0..<200 where lifecycle.status.phase != .idle {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(lifecycle.status.phase, .idle)
+
+        // Before the release, the quarantine's conflicted marks survived review and the
+        // coordinator filtered this change out of every batch, so the upload "succeeded"
+        // while the work stayed queued forever.
+        let uploaded = await lifecycle.uploadPending()
+        XCTAssertTrue(isSuccess(uploaded))
+        let store = try LocalLibraryStore(url: url)
+        let state = try await store.syncRepositoryState()
+        XCTAssertEqual(state?.pendingChanges.count, 0)
+        XCTAssertEqual(state?.conflictedRecordIDs.isEmpty, true)
+        XCTAssertEqual(state?.remoteAcknowledgedRecordIDs.contains(recordID), true)
+    }
+
     private func isSuccess(_ result: Result<Void, Error>) -> Bool {
         if case .success = result { return true }
         return false

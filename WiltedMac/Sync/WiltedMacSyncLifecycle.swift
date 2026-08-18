@@ -223,6 +223,16 @@ final class WiltedMacSyncLifecycle {
             await quarantine?.value
             await reset?()
             guard let self else { return }
+            do {
+                // The quarantine conflicted every pending record, and conflicted records are
+                // filtered out of every send. Without releasing them here, review resumes
+                // syncing but strands the work it was protecting. Awaited before the flag
+                // clears so the next upload cannot race it.
+                try await self.openRepository().resumeAfterAccountReview()
+            } catch {
+                self.setStatus(.init(phase: .failed, detail: "Could not release quarantined sync work: \(error)", generationID: nil))
+                return
+            }
             // CKSyncEngine has already reset its own state for the account event.
             // Keep this transport/coordinator alive so the next operation uses the
             // reviewed engine rather than constructing another nil-state driver.
