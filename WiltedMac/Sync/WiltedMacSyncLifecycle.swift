@@ -234,9 +234,18 @@ final class WiltedMacSyncLifecycle {
 
     private func enqueue(_ envelope: WiltedRecordEnvelope, operation: SyncOperation) async throws {
         guard !quarantined else { throw WiltedMacSyncLifecycleError.accountQuarantined }
-        setStatus(.init(phase: .staging, detail: "Queued \(envelope.id.recordType.rawValue) publication.", generationID: nil))
-        let repository = try await openRepository()
-        try await repository.enqueue(try SyncPendingChange(operation: operation, recordID: envelope.id, record: envelope))
+        let recordType = envelope.id.recordType.rawValue
+        setStatus(.init(phase: .staging, detail: "Queued \(recordType) publication.", generationID: nil))
+        do {
+            let repository = try await openRepository()
+            try await repository.enqueue(try SyncPendingChange(operation: operation, recordID: envelope.id, record: envelope))
+        } catch {
+            // Callers discard this Result, so without a terminal status here a failed
+            // enqueue leaves the surface parked on the staging string above and reads as
+            // still working (W-INV-001 requires a bounded failure state).
+            setStatus(.init(phase: .failed, detail: "Could not queue \(recordType) publication: \(error)", generationID: nil))
+            throw error
+        }
         setStatus(.init(phase: .completed, detail: "Publication queued.", generationID: nil))
     }
 
@@ -369,6 +378,25 @@ final class WiltedMacSyncLifecycle {
     private static let idleStatus = WiltedMacSyncStatus(phase: .idle, detail: "Sync is ready.", generationID: nil)
 }
 
+/// Normalizes the persisted CloudKit engine-state blob before it is decoded.
+///
+/// `LocalLibraryStore` mirrors the engine bytes into a non-optional SwiftData column and
+/// collapses "no state yet" to zero bytes, so a fresh install reads back an empty
+/// non-nil `Data` rather than nil. Zero bytes are not a decodable
+/// `CKSyncEngine.State.Serialization`, and treating them as one reports a corrupt state
+/// on the first sync of every fresh install and after every account reset. Empty is
+/// absent: `SyncContracts` already rejects an empty `engineState` as `invalidValue`, so
+/// no valid state can be zero-length, and the lossless copy lives in
+/// `syncRepositoryState()`.
+///
+/// This is deliberately outside the live build flag so the Debug gate can cover it.
+enum WiltedMacSyncEngineState {
+    static func normalized(_ data: Data?) -> Data? {
+        guard let data, !data.isEmpty else { return nil }
+        return data
+    }
+}
+
 #if WILTED_CLOUDKIT_LIVE
 import CloudKit
 import WiltedCloudKit
@@ -399,7 +427,8 @@ private actor WiltedMacLiveStateBox {
     init(_ data: Data?) { self.data = data }
 
     func take(defaultData: Data?) -> Data? {
-        explicitlyReset ? nil : (data ?? defaultData)
+        guard !explicitlyReset else { return nil }
+        return WiltedMacSyncEngineState.normalized(data ?? defaultData)
     }
 
     func clear() { data = nil; explicitlyReset = true }

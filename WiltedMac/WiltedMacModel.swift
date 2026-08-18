@@ -150,7 +150,10 @@ final class WiltedMacModel {
     /// Starts the explicit manual upload action.
     func uploadPendingSync() {
 #if canImport(WiltedProducer)
-        syncLifecycle?.startUpload()
+        Task { [weak self] in
+            await self?.queueUnpublishedReadyRevisions()
+            self?.syncLifecycle?.startUpload()
+        }
 #endif
     }
 
@@ -357,6 +360,32 @@ final class WiltedMacModel {
                                            contentHash: stored.revision.contentHash) else { return }
         _ = await syncLifecycle.queueItem(article, currentRevisionID: stored.revision.revisionID)
         _ = await syncLifecycle.queueRevision(stored.revision, audioAsset: asset)
+    }
+
+    /// Re-queues ready revisions that are durable locally but absent from the outbound queue.
+    ///
+    /// Publication is otherwise queued only at the instant a preparation completes, so any
+    /// enqueue that failed then stays unqueued forever: the revision cannot be re-derived by
+    /// re-preparing it either, because the same text and settings derive the same immutable
+    /// revision ID and `saveReadyRevision` rejects a second media path for it. Reconciling
+    /// from durable local state before an upload is what makes the queue recoverable, and it
+    /// matches W-INV-007's rule that local state, not CloudKit, is the source of truth.
+    ///
+    /// Membership is checked rather than sync status so a partially queued item repairs
+    /// itself, and a revision whose media file is gone is skipped instead of failing the
+    /// whole upload.
+    private func queueUnpublishedReadyRevisions() async {
+        guard let store, syncLifecycle != nil else { return }
+        guard let articles = try? await store.articles() else { return }
+        let state = try? await store.syncRepositoryState()
+        let queued = Set((state?.pendingChanges.map(\.recordID) ?? []) + Array(state?.remoteAcknowledgedRecordIDs ?? []))
+        for article in articles where !article.isDeleted {
+            guard let stored = try? await store.readyRevision(for: article.itemID),
+                  FileManager.default.fileExists(atPath: stored.mediaURL.path),
+                  let revisionRecordID = try? WiltedRecordID.revision(article.itemID, stored.revision.revisionID),
+                  !queued.contains(revisionRecordID) else { continue }
+            await queuePreparedPublication(itemID: article.itemID)
+        }
     }
 
     private func queueCurrentPlaybackCheckpoint() async {

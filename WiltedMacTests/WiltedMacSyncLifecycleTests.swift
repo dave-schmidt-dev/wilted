@@ -103,6 +103,39 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
         XCTAssertEqual(lifecycle.status.phase, .completed)
     }
 
+    func testEmptyPersistedEngineStateReadsAsAbsentRatherThanCorrupt() {
+        // LocalLibraryStore mirrors the engine bytes into a non-optional column and writes
+        // zero bytes for "no state yet", so a fresh install reads back empty non-nil Data.
+        // Decoding that as a CKSyncEngine serialization reported stateCorrupt on the first
+        // sync of every fresh install and after every account reset.
+        XCTAssertNil(WiltedMacSyncEngineState.normalized(Data()))
+        XCTAssertNil(WiltedMacSyncEngineState.normalized(nil))
+        XCTAssertEqual(WiltedMacSyncEngineState.normalized(Data([7, 7])), Data([7, 7]))
+    }
+
+    func testAFailedRevisionQueueReachesABoundedFailureInsteadOfParkingOnStaging() async throws {
+        // queueRevision's Result is discarded by the model, so the status is the only
+        // surface a failure can reach. Without a terminal status the panel sits on
+        // "Queued WiltedRevision publication." forever and reads as still working.
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("unqueueable")
+        let revisionID = try RevisionID(rawValue: "revision-unqueueable")
+        let hash = "sha256:" + SHA256.hash(data: Data("absent-media".utf8)).map { String(format: "%02x", $0) }.joined()
+        let revision = try AudioRevision(itemID: item.itemID, revisionID: revisionID, durationSeconds: 4, byteCount: 12,
+                                         contentHash: hash, mediaType: "audio/mp4", createdAt: Timestamp(Date()), schemaVersion: 1)
+        let batch = try SyncFetchBatch(generationID: "empty", records: [], engineState: Data([1]))
+        let transport = LifecycleFakeTransport(batch: batch)
+        // No assetURL and no stored revision, so the media can never be resolved.
+        let lifecycle = lifecycle(try LocalLibraryStore(url: url), transport: transport)
+
+        let result = await lifecycle.queueRevision(revision, audioAsset: try WiltedAsset(assetID: "absent", contentHash: hash))
+
+        XCTAssertFalse(isSuccess(result))
+        XCTAssertEqual(lifecycle.status.phase, .failed)
+        XCTAssertTrue(lifecycle.status.detail.hasPrefix("Could not queue WiltedRevision publication:"),
+                      "unexpected detail: \(lifecycle.status.detail)")
+    }
+
     func testRefreshAndUploadExposeOfflineErrorCancellationQuarantineAndRelaunchState() async throws {
         let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let item = try article("relaunch")

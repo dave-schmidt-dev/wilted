@@ -64,6 +64,60 @@ final class LocalLibrarySyncRepositoryTests: XCTestCase {
         XCTAssertTrue(state.records.isEmpty)
     }
 
+    func testReadyRevisionEnqueuesWithTheDefaultResolverByFallingBackToTheStore() async throws {
+        // The shipping Mac app builds this repository without an asset resolver, so the
+        // default nil-returning one has to resolve durable media through the store. Before
+        // the fallback existed every revision enqueue threw invalidValue("validatedLocalMedia"),
+        // which meant no audio revision could ever be queued for CloudKit publication.
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("default-resolver")
+        let bytes = Data("default-resolver-media".utf8)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let mediaURL = url.deletingLastPathComponent().appendingPathComponent("candidate-\(UUID().uuidString).m4a")
+        try bytes.write(to: mediaURL)
+        let hash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let revision = try AudioRevision(itemID: item.itemID, revisionID: RevisionID(rawValue: "rev-default-resolver"),
+                                         durationSeconds: 9, byteCount: Int64(bytes.count), contentHash: hash,
+                                         mediaType: "audio/mp4",
+                                         createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_030)), schemaVersion: 1)
+        let revisionRecord = try WiltedRecordCodec().encode(
+            revision: revision, audioAsset: WiltedAsset(assetID: revision.revisionID.rawValue, contentHash: hash)
+        )
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(article: item)
+        try await store.saveReadyRevision(revision, mediaURL: mediaURL)
+        let repository = try await LocalLibrarySyncRepository(store: store)
+
+        try await repository.enqueue(try SyncPendingChange(operation: .create, recordID: revisionRecord.id, record: revisionRecord))
+
+        let state = await repository.state()
+        XCTAssertEqual(state.pendingChanges.map(\.recordID), [revisionRecord.id])
+    }
+
+    func testRevisionEnqueueStillFailsWhenNoLocalMediaBacksIt() async throws {
+        // The fallback must not turn a missing asset into a publishable record: an
+        // unresolvable revision is still a hard failure, just no longer the only outcome.
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("unbacked")
+        let hash = "sha256:" + SHA256.hash(data: Data("absent".utf8)).map { String(format: "%02x", $0) }.joined()
+        let revision = try AudioRevision(itemID: item.itemID, revisionID: RevisionID(rawValue: "rev-unbacked"),
+                                         durationSeconds: 3, byteCount: 6, contentHash: hash, mediaType: "audio/mp4",
+                                         createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_031)), schemaVersion: 1)
+        let revisionRecord = try WiltedRecordCodec().encode(
+            revision: revision, audioAsset: WiltedAsset(assetID: revision.revisionID.rawValue, contentHash: hash)
+        )
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(article: item)
+        let repository = try await LocalLibrarySyncRepository(store: store)
+
+        do {
+            try await repository.enqueue(try SyncPendingChange(operation: .create, recordID: revisionRecord.id, record: revisionRecord))
+            XCTFail("expected an unresolvable revision to fail")
+        } catch {
+            XCTAssertEqual(error as? WiltedSyncError, .invalidValue(field: "validatedLocalMedia"))
+        }
+    }
+
     func testExplicitItemDeletionRetainsProtectedRevisionFamilyAsConflict() async throws {
         let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let item = try article("protected-family")

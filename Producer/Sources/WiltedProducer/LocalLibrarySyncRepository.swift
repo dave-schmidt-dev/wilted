@@ -87,7 +87,7 @@ public actor LocalLibrarySyncRepository: SyncRepository {
                (!batch.records.isEmpty || !batch.deletedRecordIDs.isEmpty || batch.kind == .fullSnapshot) {
                 throw WiltedSyncError.missingEngineState
             }
-            let prepared = try prepare(batch.records)
+            let prepared = try await prepare(batch.records)
             guard Set(batch.records.map(\.id)).count == batch.records.count else { throw WiltedSyncError.invalidRecordIdentity }
             staged[batch.generationID] = prepared
             return StagedSyncBatch(batch: batch, priorState: storedState)
@@ -131,7 +131,7 @@ public actor LocalLibrarySyncRepository: SyncRepository {
         do {
             var prepared = PreparedBatch(articles: [], revisions: [], playbacks: [])
             if let record = change.record {
-                let records = try prepare([record])
+                let records = try await prepare([record])
                 prepared = records
             }
             var records = storedState.records
@@ -194,7 +194,7 @@ public actor LocalLibrarySyncRepository: SyncRepository {
                 throw WiltedSyncError.invalidValue(field: "send result serverEnvelope")
             }
 
-            let prepared = try prepare(result.serverEnvelopes.filter { acknowledged.contains($0.id) })
+            let prepared = try await prepare(result.serverEnvelopes.filter { acknowledged.contains($0.id) })
             var records = storedState.records
             var pending = storedState.pendingChanges
             var tombstones = storedState.tombstones
@@ -274,7 +274,25 @@ public actor LocalLibrarySyncRepository: SyncRepository {
     /// Closes the status stream for lifecycle teardown.
     public func finishStatusStream() { continuation?.finish(); continuation = nil }
 
-    private func prepare(_ envelopes: [WiltedRecordEnvelope]) throws -> PreparedBatch {
+    /// Resolves the local media backing one revision envelope.
+    ///
+    /// The injected resolver is optional by design and defaults to returning nil, so an
+    /// embedder that never supplies one (the shipping Mac app is one) has to be able to
+    /// fall back to the durable store. `PreparationCoordinator` names media by its
+    /// per-run request ID (`candidate-<uuid>.m4a`), so no path is derivable from the
+    /// revision alone and only the store knows where the file went. The live
+    /// CloudKit transport already carries this same fallback with the same
+    /// revisionID/contentHash guards; keeping the two symmetric is what stops a ready
+    /// revision from being enqueueable for upload but not stageable.
+    private func resolveMedia(asset: WiltedAsset, revision: AudioRevision) async throws -> URL? {
+        if let resolved = try assetResolver(asset, revision) { return resolved }
+        guard let stored = try? await store.readyRevision(for: revision.itemID),
+              stored.revision.revisionID == revision.revisionID,
+              stored.revision.contentHash == revision.contentHash else { return nil }
+        return stored.mediaURL
+    }
+
+    private func prepare(_ envelopes: [WiltedRecordEnvelope]) async throws -> PreparedBatch {
         var articles: [LocalLibrarySyncCommit.ArticleApply] = []
         var revisions: [LocalLibrarySyncCommit.RevisionApply] = []
         var playbacks: [LocalLibrarySyncCommit.PlaybackApply] = []
@@ -285,7 +303,7 @@ public actor LocalLibrarySyncRepository: SyncRepository {
             case .revision:
                 let decoded = try codec.decodeRevisionRecord(envelope)
                 guard case let .asset(asset)? = envelope.fields["audioAsset"], asset.contentHash == decoded.value.contentHash,
-                      let mediaURL = try assetResolver(asset, decoded.value) else {
+                      let mediaURL = try await resolveMedia(asset: asset, revision: decoded.value) else {
                     throw WiltedSyncError.invalidValue(field: "validatedLocalMedia")
                 }
                 try validateMedia(mediaURL, contentHash: decoded.value.contentHash)
