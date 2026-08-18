@@ -83,6 +83,28 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["wilted-player-route-recovery"].exists)
     }
 
+    func testQuarantinedSyncOffersAccountReviewAndRecovers() {
+        let app = launch(arguments: ["--wilted-ui-fixture-quarantined"])
+
+        let status = app.descendants(matching: .any)["wilted-sync-status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        let quarantined = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Quarantined"), object: status
+        )
+        XCTAssertEqual(XCTWaiter().wait(for: [quarantined], timeout: 5), .completed)
+
+        let review = app.descendants(matching: .any)["wilted-sync-use-current-account"]
+        XCTAssertTrue(review.waitForExistence(timeout: 5))
+        XCTAssertTrue(review.isEnabled)
+        review.click()
+
+        let recovered = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Disabled"), object: status
+        )
+        XCTAssertEqual(XCTWaiter().wait(for: [recovered], timeout: 5), .completed)
+        XCTAssertFalse(review.exists)
+    }
+
     private func launch(arguments: [String]) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"] + arguments

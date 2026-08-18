@@ -131,6 +131,10 @@ private struct WiltedMacSyncControls: View {
                     Button("Cancel") { model.cancelSync() }
                         .accessibilityIdentifier("wilted-sync-cancel")
                 }
+                if model.syncStatus.phase == .quarantined {
+                    Button("Use Current iCloud Account") { model.resetSyncAccount() }
+                        .accessibilityIdentifier("wilted-sync-use-current-account")
+                }
             }
         }
         .padding(16)

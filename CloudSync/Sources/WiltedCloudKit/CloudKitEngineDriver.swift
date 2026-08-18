@@ -1,6 +1,21 @@
 import CloudKit
 import Foundation
 
+/// The account transition reported by CKSyncEngine without exposing account IDs.
+public enum CloudKitAccountChangeType: String, Codable, Sendable {
+    case signIn
+    case signOut
+    case switchAccounts
+
+    var userFacingName: String {
+        switch self {
+        case .signIn: "iCloud sign-in"
+        case .signOut: "iCloud sign-out"
+        case .switchAccounts: "iCloud account switch"
+        }
+    }
+}
+
 /// CloudKit events reduced to values that can be injected into the transport tests.
 public enum CloudKitEngineEvent: @unchecked Sendable {
     case stateUpdated(Data)
@@ -11,8 +26,11 @@ public enum CloudKitEngineEvent: @unchecked Sendable {
     case willSend
     case sent(saved: [CKRecord], failed: [CloudKitRecordFailure], deleted: [CKRecord.ID], failedDeletes: [CKRecord.ID: CKError])
     case sendCompleted
-    case accountChanged
+    case accountChanged(CloudKitAccountChangeType)
     case ignored
+
+    /// Compatibility spelling for callers that do not need the transition type.
+    public static var accountChanged: Self { .accountChanged(.switchAccounts) }
 }
 
 public struct CloudKitRecordDeletion: @unchecked Sendable {
@@ -54,9 +72,9 @@ public extension CloudKitEngineDriver {
 
 /// The production driver. It does not expose CKSyncEngine to WiltedSync or tests.
 ///
-/// The state serialization is fixed when the engine is constructed. Recovery that
-/// intentionally discards engine state must create a new driver with `nil` state;
-/// clearing a transport's cached bytes does not reset this driver's live engine.
+/// The state serialization is fixed when the engine is constructed. CKSyncEngine
+/// resets its live state for account-change events; other recovery that
+/// intentionally discards state must create a new driver with `nil` state.
 public actor LiveCloudKitEngineDriver: CloudKitEngineDriver {
     private let engine: CKSyncEngine
     private let delegate: CloudKitEngineDelegateProxy
@@ -123,7 +141,13 @@ private actor CloudKitEngineDelegateProxy: CKSyncEngineDelegate {
             yield(.sent(saved: value.savedRecords, failed: failures, deleted: value.deletedRecordIDs,
                         failedDeletes: value.failedRecordDeletes))
         case .didSendChanges: yield(.sendCompleted)
-        case .accountChange: yield(.accountChanged)
+        case let .accountChange(value):
+            switch value.changeType {
+            case .signIn: yield(.accountChanged(.signIn))
+            case .signOut: yield(.accountChanged(.signOut))
+            case .switchAccounts: yield(.accountChanged(.switchAccounts))
+            @unknown default: yield(.accountChanged(.switchAccounts))
+            }
         case .fetchedDatabaseChanges, .sentDatabaseChanges: yield(.ignored)
         @unknown default: yield(.ignored)
         }

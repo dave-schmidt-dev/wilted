@@ -209,23 +209,24 @@ final class WiltedMacSyncLifecycle {
                 self.setStatus(.init(phase: .failed, detail: "Could not quarantine local sync state: \(error)", generationID: nil))
                 return
             }
-            self.setStatus(.init(phase: .quarantined, detail: "Sync is quarantined until the account is reviewed.", generationID: nil))
+            self.setStatus(.init(phase: .quarantined, detail: "Sync is quarantined until the current iCloud account is reviewed.", generationID: nil))
         }
     }
 
-    /// Clears the local lifecycle quarantine; durable repository state remains intact.
+    /// Clears the local lifecycle quarantine after explicit account review.
     func resetAfterAccountChange() {
         guard quarantined else { return }
-        setStatus(.init(phase: .staging, detail: "Rebuilding sync for the reviewed account.", generationID: nil))
+        setStatus(.init(phase: .staging, detail: "Resuming sync for the reviewed account.", generationID: nil))
         let reset = resetTransport
         let quarantine = quarantineTask
         Task { [weak self] in
             await quarantine?.value
             await reset?()
             guard let self else { return }
-            self.coordinator = nil
-            self.repository = nil
-            self.statusTask?.cancel(); self.coordinatorStatusTask?.cancel(); self.accountTask?.cancel()
+            // CKSyncEngine has already reset its own state for the account event.
+            // Keep this transport/coordinator alive so the next operation uses the
+            // reviewed engine rather than constructing another nil-state driver.
+            self.cancelRequested = false
             self.quarantined = false
             self.setStatus(self.transportFactory == nil ? .disabled : Self.idleStatus)
         }
@@ -266,9 +267,9 @@ final class WiltedMacSyncLifecycle {
 #if WILTED_CLOUDKIT_LIVE
         if let cloudTransport = handle.transport as? CloudKitSyncTransport {
             accountTask = Task { [weak self, changes = cloudTransport.accountChanges] in
-                for await signal in changes where signal == .quarantineRequired {
+                for await signal in changes {
                     guard let self else { return }
-                    await self.quarantineForAccountChange()
+                    await self.quarantineForAccountChange(signal.changeType)
                 }
             }
         }
@@ -286,7 +287,7 @@ final class WiltedMacSyncLifecycle {
     private func begin(_ phase: WiltedMacSyncPhase, detail: String) -> Error? {
         guard !running else { return WiltedMacSyncLifecycleError.operationInProgress }
         guard !quarantined else {
-            setStatus(.init(phase: .quarantined, detail: "Sync is quarantined until the account is reviewed.", generationID: nil))
+            setStatus(.init(phase: .quarantined, detail: "Sync is quarantined until the current iCloud account is reviewed.", generationID: nil))
             return WiltedMacSyncLifecycleError.accountQuarantined
         }
         guard transportFactory != nil else {
@@ -310,19 +311,45 @@ final class WiltedMacSyncLifecycle {
         return .failure(WiltedMacSyncLifecycleError.cancelled)
     }
 
-    private func quarantineForAccountChange() async {
+    #if WILTED_CLOUDKIT_LIVE
+    private func quarantineForAccountChange(_ changeType: CloudKitAccountChangeType) async {
         guard !quarantined else { return }
         quarantined = true
         cancelRequested = true
         do {
-            try await repository?.quarantineAfterAccountChange()
+            let repository = try await openRepository()
+            try await repository.quarantineAfterAccountChange()
         } catch {
             setStatus(.init(phase: .failed, detail: "Could not quarantine local sync state: \(error)", generationID: nil))
             return
         }
         await cancelTransport?()
-        setStatus(.init(phase: .quarantined, detail: "Sync is quarantined until the account is reviewed.", generationID: nil))
+        setStatus(.init(phase: .quarantined, detail: quarantineDetail(for: changeType), generationID: nil))
     }
+
+    private func quarantineDetail(for changeType: CloudKitAccountChangeType) -> String {
+        switch changeType {
+        case .signIn: "iCloud sign-in detected. Review local sync before continuing."
+        case .signOut: "iCloud sign-out detected. Review local sync before continuing."
+        case .switchAccounts: "iCloud account switch detected. Review local sync before continuing."
+        }
+    }
+    #else
+    private func quarantineForAccountChange() async {
+        guard !quarantined else { return }
+        quarantined = true
+        cancelRequested = true
+        do {
+            let repository = try await openRepository()
+            try await repository.quarantineAfterAccountChange()
+        } catch {
+            setStatus(.init(phase: .failed, detail: "Could not quarantine local sync state: \(error)", generationID: nil))
+            return
+        }
+        await cancelTransport?()
+        setStatus(.init(phase: .quarantined, detail: "Sync is quarantined until the current iCloud account is reviewed.", generationID: nil))
+    }
+    #endif
 
     private func setStatus(_ value: WiltedMacSyncStatus) { status = value }
 
@@ -430,7 +457,7 @@ func makeWiltedMacLiveSyncTransportFactory(
         )
         return WiltedMacSyncTransportHandle(transport: transport,
                                             cancel: { await transport.cancel() },
-                                            reset: { await stateBox.clear() })
+                                            reset: { await transport.resetAfterAccountChange() })
     }
 }
 #endif

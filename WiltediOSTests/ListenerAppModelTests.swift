@@ -29,6 +29,31 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertFalse(ListenerAppStatus.offline("Offline").isBusy)
     }
 
+    func testEveryTypedAccountChangeQuarantinesTheListener() async throws {
+        let source = AccountSignalSource()
+        let repository = StaticSyncRepository(state: SyncRepositoryState(engineState: Data([1])))
+        let transport = RecordingSyncTransport()
+        let model = WiltedListenerAppModel(repository: repository, sessionFactory: { _ in
+            TestSyncSession(transport: transport, accountChanges: source.stream)
+        })
+
+        await model.refresh()
+        for type in [ListenerAccountChangeType.signIn, .signOut, .switchAccounts] {
+            source.send(.quarantined(type))
+            let expected = type.userFacingName
+            var observed = false
+            for _ in 0..<100 {
+                if case let .failed(message, retryable) = model.status,
+                   message.contains(expected), !retryable {
+                    observed = true
+                    break
+                }
+                await Task.yield()
+            }
+            XCTAssertTrue(observed, "Expected quarantine for \(expected)")
+        }
+    }
+
     func testResetDoesNotSendQuarantinedPendingPlayback() async throws {
         let url = URL(string: "https://example.test/account-reset")!
         let itemID = try ItemID.derive(from: url)
@@ -115,15 +140,28 @@ private actor RecordingSyncTransport: SyncTransport {
     func savedChanges() -> [[SyncPendingChange]] { sent }
 }
 
+private final class AccountSignalSource: @unchecked Sendable {
+    let stream: AsyncStream<ListenerAccountChange>
+    private let continuation: AsyncStream<ListenerAccountChange>.Continuation
+
+    init() {
+        let (stream, continuation) = AsyncStream<ListenerAccountChange>.makeStream()
+        self.stream = stream
+        self.continuation = continuation
+    }
+
+    func send(_ change: ListenerAccountChange) { continuation.yield(change) }
+}
+
 private struct TestSyncSession: ListenerSyncSession {
     let transport: any SyncTransport
     let assetLoader: ListenerAssetLoader
     let accountChanges: AsyncStream<ListenerAccountChange>
 
-    init(transport: any SyncTransport) {
+    init(transport: any SyncTransport, accountChanges: AsyncStream<ListenerAccountChange>? = nil) {
         self.transport = transport
         self.assetLoader = { _, asset in throw ListenerError.cacheUnavailable(asset.assetID) }
-        self.accountChanges = AsyncStream { _ in }
+        self.accountChanges = accountChanges ?? AsyncStream { _ in }
     }
 
     func cancel() async {}

@@ -15,6 +15,7 @@ public actor CloudKitSyncTransport: SyncTransport {
     private let statusContinuation: AsyncStream<SyncStatus>.Continuation
     private let accountContinuation: AsyncStream<CloudKitAccountChangeSignal>.Continuation
     private var stateData: Data?
+    private var operationGenerationValue: UInt64 = 0
     private var generation = 0
     private var pendingChanges: [SyncPendingChange] = []
     private var quarantined = false
@@ -172,6 +173,8 @@ public actor CloudKitSyncTransport: SyncTransport {
 
     public func isQuarantined() -> Bool { quarantined }
 
+    public func operationGeneration() async -> UInt64 { operationGenerationValue }
+
     /// Returns staged asset locations owned by the most recently completed fetch.
     public func assetHandoff() async -> [WiltedRecordID: [String: URL]] {
         await accumulator.assetHandoff()
@@ -255,7 +258,8 @@ public actor CloudKitSyncTransport: SyncTransport {
             }
             if result.failures.isEmpty { emit(.init(phase: .completed, message: "CloudKit send completed")) }
             finishSend(with: .success(result))
-        case .accountChanged:
+        case let .accountChanged(changeType):
+            operationGenerationValue &+= 1
             quarantined = true
             await driver.resetZoneBootstrap()
             pendingChanges = []
@@ -263,8 +267,8 @@ public actor CloudKitSyncTransport: SyncTransport {
             await accumulator.cleanupStagedAssets()
             finishFetch(with: .failure(CloudKitSyncError.accountChanged))
             finishSend(with: .failure(CloudKitSyncError.accountChanged))
-            accountContinuation.yield(.quarantineRequired)
-            emit(.init(phase: .failed, message: "iCloud account changed; sync quarantined"))
+            accountContinuation.yield(.quarantineRequired(changeType))
+            emit(.init(phase: .failed, message: "\(changeType.userFacingName) detected; sync quarantined for review"))
         case .ignored:
             emit(.init(phase: .idle, message: "Ignored unrelated CloudKit event"))
         }

@@ -48,6 +48,14 @@ private actor LifecycleFakeTransport: SyncTransport {
     func wasCancelled() -> Bool { cancelled }
 }
 
+private actor SyncFactoryProbe {
+    private(set) var factoryCalls = 0
+    private(set) var resetCalls = 0
+
+    func madeFactory() { factoryCalls += 1 }
+    func reset() { resetCalls += 1 }
+}
+
 @MainActor
 final class WiltedMacSyncLifecycleTests: XCTestCase {
     private func storeURL(_ name: String = #function) -> URL {
@@ -145,6 +153,48 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
         let uploaded = await relaunched.uploadPending()
         XCTAssertTrue(isSuccess(uploaded))
         XCTAssertEqual(relaunched.status.phase, .completed)
+    }
+
+    func testAccountReviewResetsTheExistingTransportBeforeNextRefresh() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("account-review")
+        let revisionID = try RevisionID(rawValue: "revision-account-review")
+        let record = try WiltedRecordCodec().encode(article: item, currentRevisionID: revisionID)
+        let batch = try SyncFetchBatch(generationID: "reviewed", records: [record], engineState: Data([3]))
+        let transport = LifecycleFakeTransport(batch: batch)
+        let probe = SyncFactoryProbe()
+        let store = try LocalLibraryStore(url: url)
+        let lifecycle = WiltedMacSyncLifecycle(
+            store: store,
+            transportFactory: {
+                await probe.madeFactory()
+                return WiltedMacSyncTransportHandle(
+                    transport: transport,
+                    cancel: { await transport.cancel() },
+                    reset: { await probe.reset() }
+                )
+            }
+        )
+
+        let initial = await lifecycle.refresh()
+        XCTAssertTrue(isSuccess(initial))
+        lifecycle.quarantineAccount()
+        for _ in 0..<100 where lifecycle.status.phase != .quarantined {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(lifecycle.status.phase, .quarantined)
+        lifecycle.resetAfterAccountChange()
+        for _ in 0..<100 where lifecycle.status.phase != .idle {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(lifecycle.status.phase, .idle)
+
+        let refreshed = await lifecycle.refresh()
+        XCTAssertTrue(isSuccess(refreshed))
+        let factoryCalls = await probe.factoryCalls
+        let resetCalls = await probe.resetCalls
+        XCTAssertEqual(factoryCalls, 1)
+        XCTAssertEqual(resetCalls, 1)
     }
 
     private func isSuccess(_ result: Result<Void, Error>) -> Bool {

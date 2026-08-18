@@ -54,6 +54,91 @@ private func fixtureArticle() throws -> (Article, RevisionID, WiltedAsset) {
     return (article, revisionID, try WiltedAsset(assetID: "asset-alpha", contentHash: hash))
 }
 
+private actor EpochGuardTransport: SyncTransport {
+    nonisolated let statuses: AsyncStream<SyncStatus>
+    nonisolated let saveStarted: AsyncStream<Void>
+    private let saveStartedContinuation: AsyncStream<Void>.Continuation
+    private let saveReleaseStream: AsyncStream<Void>
+    private let saveReleaseContinuation: AsyncStream<Void>.Continuation
+    private let batch: SyncFetchBatch
+    private let sendResult: SyncSendResult
+    private var generation: UInt64 = 0
+
+    init(batch: SyncFetchBatch, sendResult: SyncSendResult = try! SyncSendResult()) {
+        self.batch = batch
+        self.sendResult = sendResult
+        let (statuses, _) = AsyncStream<SyncStatus>.makeStream()
+        self.statuses = statuses
+        let (saveStarted, saveStartedContinuation) = AsyncStream<Void>.makeStream()
+        self.saveStarted = saveStarted
+        self.saveStartedContinuation = saveStartedContinuation
+        let (saveReleaseStream, saveReleaseContinuation) = AsyncStream<Void>.makeStream()
+        self.saveReleaseStream = saveReleaseStream
+        self.saveReleaseContinuation = saveReleaseContinuation
+    }
+
+    func operationGeneration() async -> UInt64 { generation }
+
+    func invalidateAccountOperation() { generation &+= 1 }
+
+    func fetchChanges() async throws -> SyncFetchBatch { batch }
+
+    func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {
+        saveStartedContinuation.yield(())
+        for await _ in saveReleaseStream { break }
+        return sendResult
+    }
+
+    func releaseSave() { saveReleaseContinuation.yield(()) }
+}
+
+private actor EpochGuardRepository: SyncRepository {
+    nonisolated let statuses: AsyncStream<SyncStatus>
+    nonisolated let stageStarted: AsyncStream<Void>
+    private var storedState: SyncRepositoryState
+    private let stageStartedContinuation: AsyncStream<Void>.Continuation
+    private let stageReleaseStream: AsyncStream<Void>
+    private let stageReleaseContinuation: AsyncStream<Void>.Continuation
+    private(set) var commitCalls = 0
+    private(set) var acknowledgeCalls = 0
+
+    init(state: SyncRepositoryState = .init()) {
+        storedState = state
+        let (statuses, _) = AsyncStream<SyncStatus>.makeStream()
+        self.statuses = statuses
+        let (stageStarted, stageStartedContinuation) = AsyncStream<Void>.makeStream()
+        self.stageStarted = stageStarted
+        self.stageStartedContinuation = stageStartedContinuation
+        let (stageReleaseStream, stageReleaseContinuation) = AsyncStream<Void>.makeStream()
+        self.stageReleaseStream = stageReleaseStream
+        self.stageReleaseContinuation = stageReleaseContinuation
+    }
+
+    func state() async -> SyncRepositoryState { storedState }
+
+    func stage(_ batch: SyncFetchBatch) async throws -> StagedSyncBatch {
+        stageStartedContinuation.yield(())
+        for await _ in stageReleaseStream { break }
+        return StagedSyncBatch(batch: batch, priorState: storedState)
+    }
+
+    func releaseStage() { stageReleaseContinuation.yield(()) }
+
+    func commit(_ staged: StagedSyncBatch) async throws {
+        commitCalls += 1
+        storedState = SyncRepositoryState(records: staged.batch.records,
+                                          engineState: staged.batch.engineState,
+                                          pendingChanges: storedState.pendingChanges)
+    }
+
+    func enqueue(_ change: SyncPendingChange) async throws {
+        storedState = SyncRepositoryState(records: storedState.records, engineState: storedState.engineState,
+                                          pendingChanges: storedState.pendingChanges + [change])
+    }
+
+    func acknowledge(_ result: SyncSendResult) async throws { acknowledgeCalls += 1 }
+}
+
 @Test("codec round trips validated records and rejects identity mismatch")
 func codecRoundTripAndIdentity() throws {
     let (article, revisionID, _) = try fixtureArticle()
@@ -208,6 +293,49 @@ func failedFetchPreservesState() async throws {
     let repository = FakeSyncRepository(state: initial)
     let result = await SyncCoordinator(transport: transport, repository: repository).synchronize()
     guard case .failure = result else { Issue.record("expected failed fetch"); return }
+    #expect(await repository.state() == initial)
+}
+
+@Test("account change between fetch return and commit invalidates the staged generation")
+func accountChangeBeforeCommitCannotPublishStaleFetch() async throws {
+    let (article, revisionID, _) = try fixtureArticle()
+    let record = try WiltedRecordCodec().encode(article: article, currentRevisionID: revisionID)
+    let batch = try SyncFetchBatch(generationID: "account-race-fetch", records: [record], engineState: Data([7]))
+    let transport = EpochGuardTransport(batch: batch)
+    let repository = EpochGuardRepository()
+    let coordinator = SyncCoordinator(transport: transport, repository: repository)
+    let run = Task { await coordinator.synchronize() }
+    var staged = repository.stageStarted.makeAsyncIterator()
+    #expect(await staged.next() != nil)
+
+    await transport.invalidateAccountOperation()
+    await repository.releaseStage()
+    let result = await run.value
+    guard case .failure = result else { Issue.record("expected stale fetch rejection"); return }
+    let commitCalls = await repository.commitCalls
+    #expect(commitCalls == 0)
+}
+
+@Test("account change between send return and acknowledgement preserves pending work")
+func accountChangeBeforeAcknowledgementCannotPublishStaleSend() async throws {
+    let (article, revisionID, _) = try fixtureArticle()
+    let record = try WiltedRecordCodec().encode(article: article, currentRevisionID: revisionID)
+    let change = try SyncPendingChange(operation: .update, recordID: record.id, record: record)
+    let initial = SyncRepositoryState(pendingChanges: [change])
+    let result = try SyncSendResult(engineState: Data([8]), acknowledgedRecordIDs: [record.id], serverEnvelopes: [record])
+    let transport = EpochGuardTransport(batch: try SyncFetchBatch(generationID: "account-race-send", records: []), sendResult: result)
+    let repository = EpochGuardRepository(state: initial)
+    let coordinator = SyncCoordinator(transport: transport, repository: repository)
+    let run = Task { await coordinator.sendPending(role: .mac) }
+    var saving = transport.saveStarted.makeAsyncIterator()
+    #expect(await saving.next() != nil)
+
+    await transport.invalidateAccountOperation()
+    await transport.releaseSave()
+    let outcome = await run.value
+    guard case .failure = outcome else { Issue.record("expected stale send rejection"); return }
+    let acknowledgeCalls = await repository.acknowledgeCalls
+    #expect(acknowledgeCalls == 0)
     #expect(await repository.state() == initial)
 }
 

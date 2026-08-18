@@ -551,7 +551,7 @@ func accountChangeDuringRetryRequeue() async throws {
     await driver.emit(.sent(saved: [], failed: [CloudKitRecordFailure(record: record, error: CKError(.zoneNotFound))], deleted: [], failedDeletes: [:]))
     await driver.emit(.sendCompleted)
     #expect(await driver.waitForPendingAdd(2))
-    await driver.emit(.accountChanged)
+    await driver.emit(.accountChanged(.switchAccounts))
     for _ in 0..<100 {
         if await transport.isQuarantined() { break }
         await Task.yield()
@@ -619,7 +619,7 @@ func accountChangeDuringZoneBootstrap() async throws {
         Issue.record("zone bootstrap did not start")
         return
     }
-    await driver.emit(.accountChanged)
+    await driver.emit(.accountChanged(.switchAccounts))
     for _ in 0..<100 {
         if await transport.isQuarantined() { break }
         try? await Task.sleep(for: .milliseconds(5))
@@ -671,18 +671,59 @@ func transportAccountQuarantine() async throws {
     let mapper = try mapper()
     let driver = FakeEngineDriver()
     let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper)
-    await driver.emit(.accountChanged)
+    await driver.emit(.accountChanged(.switchAccounts))
     for _ in 0..<100 {
         if await transport.isQuarantined() { break }
         try? await Task.sleep(for: .milliseconds(5))
     }
     #expect(await transport.isQuarantined())
+    #expect(await transport.operationGeneration() == 1)
     #expect(await driver.zoneBootstrapResets == 1)
     do { _ = try await transport.save(changes: [], role: .mac); Issue.record("expected quarantine") }
     catch let error as CloudKitSyncError { #expect(error == .quarantined) }
     await transport.resetAfterAccountChange()
     #expect(await transport.isQuarantined() == false)
     #expect(await driver.zoneBootstrapResets == 2)
+}
+
+@Test("account reset permits a fresh fetch after quarantine")
+func accountResetAllowsFreshFetch() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver()
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper)
+    await driver.emit(.accountChanged(.signOut))
+    for _ in 0..<100 {
+        if await transport.isQuarantined() { break }
+        await Task.yield()
+    }
+    #expect(await transport.isQuarantined())
+
+    await transport.resetAfterAccountChange()
+    #expect(await transport.isQuarantined() == false)
+    let fetch = Task { try await transport.fetchChanges() }
+    guard await driver.waitForFetchCall() else {
+        await transport.cancel()
+        Issue.record("reset transport did not start a fresh fetch")
+        return
+    }
+    await driver.emit(.stateUpdated(Data("{\"state\":1}".utf8)))
+    await driver.emit(.fetchCompleted)
+    let batch = try await fetch.value
+    #expect(batch.records.isEmpty)
+    #expect(await driver.zoneBootstrapResets == 2)
+}
+
+@Test("account change type crosses the CloudKit transport without account identifiers")
+func typedAccountChangeSignal() async throws {
+    let mapper = try mapper()
+    for type in [CloudKitAccountChangeType.signIn, .signOut, .switchAccounts] {
+        let driver = FakeEngineDriver()
+        let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper)
+        var changes = transport.accountChanges.makeAsyncIterator()
+        await driver.emit(.accountChanged(type))
+        #expect(await changes.next() == .quarantineRequired(type))
+        #expect(await transport.isQuarantined())
+    }
 }
 
 @Test("transport status stream remains live through a fetch")

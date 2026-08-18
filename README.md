@@ -6,7 +6,11 @@ Local-first native Mac/iOS personal audio system: a Mac producer prepares audio 
 
 On 2026-08-17, attended screenshots verified the Wilted iCloud container and both App IDs with iCloud/CloudKit and Push Notifications enabled. This is Apple Developer portal configuration evidence only; Task 6 still requires an attended Development producer-to-listener round trip.
 
-Task 6 local gates are green. The recurring Mac UI Gatekeeper failure was traced to ad-hoc signing; the gate now requires Apple Development signatures from the expected team before launch, and the attended Mac UI suite passed 4/4 without a damaged-runner dialog. Task 6 remains open for a real Development CloudKit producer-to-listener round trip.
+Task 6 local gates are green. The final `make validate` passed Phase 0 (10/10 legs), native (9/9 legs), CloudSync (34), Mac unit (13), iOS unit (19), Mac UI (5), and iOS UI (2). The authoritative Mac UI gate requires metadata-clean Apple Development signatures from the expected team and passed without a damaged-runner dialog. A direct unsigned focused run did trigger the dialog and was stopped; it is not qualification evidence. Task 6 remains open for a real Development CloudKit producer-to-listener round trip.
+
+Pre-fix attended screenshots captured a live account-change transition from Cancelled to Quarantined. The recovery patch preserves every typed sign-in, sign-out, or switch transition, quarantines local work, exposes explicit review before reusing the current engine, and rejects fetch/send completions superseded by an account change. The scoped cross-family Google follow-up found no High or Medium issues. Its accepted Low brittle source-text UI assertion is closed: a deterministic quarantined fixture now drives a real Mac UI recovery-control journey. The post-fix live round trip has not run.
+
+The CloudKit Console now shows private zone `WiltedZone` after an attended Development run. This is user-observed zone-bootstrap evidence only, not proof of post-fix account recovery or a producer-to-listener record round trip.
 
 ## Priorities (in order)
 

@@ -18,9 +18,11 @@ public actor SyncCoordinator {
     public func synchronize() async -> Result<SyncFetchBatch, Error> {
         emit(.init(phase: .fetching, message: "Fetching changes"))
         do {
+            let operationGeneration = await transport.operationGeneration()
             let batch = try await transport.fetchChanges()
             emit(.init(phase: .staging, message: "Staging fetched changes", generationID: batch.generationID))
             let staged = try await repository.stage(batch)
+            try await ensureCurrent(operationGeneration)
             emit(.init(phase: .committing, message: "Committing fetched changes", generationID: batch.generationID))
             try await repository.commit(staged)
             emit(.init(phase: .completed, message: "Sync completed", generationID: batch.generationID))
@@ -36,7 +38,9 @@ public actor SyncCoordinator {
         do {
             let state = await repository.state()
             let changes = state.pendingChanges.filter { !state.conflictedRecordIDs.contains($0.recordID) }
+            let operationGeneration = await transport.operationGeneration()
             let result = try await transport.save(changes: changes, role: role)
+            try await ensureCurrent(operationGeneration)
             try await repository.acknowledge(result)
             emit(.init(phase: .completed, message: "Pending changes acknowledged"))
             return .success(result)
@@ -49,4 +53,10 @@ public actor SyncCoordinator {
     public func finishStatusStream() { continuation?.finish(); continuation = nil }
 
     private func emit(_ status: SyncStatus) { continuation?.yield(status) }
+
+    private func ensureCurrent(_ expected: UInt64) async throws {
+        guard await transport.operationGeneration() == expected else {
+            throw WiltedSyncError.transport("sync operation superseded by an account change")
+        }
+    }
 }

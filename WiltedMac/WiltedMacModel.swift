@@ -80,6 +80,7 @@ final class WiltedMacModel {
          syncTransportFactory: WiltedMacSyncTransportFactory? = nil,
          assetResolver: @escaping LocalLibraryAssetResolver = { _, _ in nil }) {
         let usesFixtureMode = arguments.contains("--wilted-ui-fixture-article-flow")
+            || arguments.contains("--wilted-ui-fixture-quarantined")
         fixtureMode = usesFixtureMode
 
 #if canImport(WiltedProducer)
@@ -120,6 +121,9 @@ final class WiltedMacModel {
 
         if usesFixtureMode {
             installFixture(ready: arguments.contains("--wilted-ui-fixture-ready"))
+            if arguments.contains("--wilted-ui-fixture-quarantined") {
+                syncLifecycle?.quarantineAccount()
+            }
         } else {
             refresh()
         }

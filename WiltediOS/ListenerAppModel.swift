@@ -84,7 +84,26 @@ public struct ListenerLibraryItem: Identifiable, Equatable, Sendable {
 
 public typealias ListenerAssetLoader = @Sendable (WiltedRecordID, WiltedAsset) async throws -> URL
 
-public enum ListenerAccountChange: Sendable { case quarantined }
+public enum ListenerAccountChangeType: String, Codable, Sendable {
+    case signIn
+    case signOut
+    case switchAccounts
+
+    var userFacingName: String {
+        switch self {
+        case .signIn: "iCloud sign-in"
+        case .signOut: "iCloud sign-out"
+        case .switchAccounts: "iCloud account switch"
+        }
+    }
+}
+
+public enum ListenerAccountChange: Sendable {
+    case quarantined(ListenerAccountChangeType)
+
+    /// Compatibility spelling for callers that do not need the transition type.
+    public static var quarantined: Self { .quarantined(.switchAccounts) }
+}
 
 public protocol ListenerSyncSession: Sendable {
     var transport: any SyncTransport { get }
@@ -610,8 +629,13 @@ public final class WiltedListenerAppModel: ObservableObject {
             self.accountChanges = stream
             self.accountContinuation = continuation
             Task {
-                for await signal in transport.accountChanges where signal == .quarantineRequired {
-                    continuation.yield(.quarantined)
+                for await signal in transport.accountChanges {
+                    let type: ListenerAccountChangeType = switch signal.changeType {
+                    case .signIn: .signIn
+                    case .signOut: .signOut
+                    case .switchAccounts: .switchAccounts
+                    }
+                    continuation.yield(.quarantined(type))
                 }
             }
         }
@@ -631,9 +655,9 @@ public final class WiltedListenerAppModel: ObservableObject {
         statusTasks.append(Task { [weak self] in
             for await event in stream {
                 guard let self else { return }
-                if case .quarantined = event {
+                if case let .quarantined(type) = event {
                     accountQuarantined = true
-                    status = .failed("iCloud account changed; sync is quarantined", retryable: false)
+                    status = .failed("\(type.userFacingName) detected; sync is quarantined", retryable: false)
                     if let repository = repository as? ListenerRepository {
                         try? await repository.quarantineAfterAccountChange()
                     }

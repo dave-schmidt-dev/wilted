@@ -215,6 +215,15 @@ public protocol SyncStatusReporting: Sendable {
 public protocol SyncTransport: SyncStatusReporting {
     func fetchChanges() async throws -> SyncFetchBatch
     func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult
+
+    /// Returns the account-operation generation captured by in-flight work.
+    /// Adapters increment it when account ownership changes so stale results
+    /// cannot be committed after quarantine.
+    func operationGeneration() async -> UInt64
+}
+
+public extension SyncTransport {
+    func operationGeneration() async -> UInt64 { 0 }
 }
 
 /// CloudKit-neutral local repository contract.

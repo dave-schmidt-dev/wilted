@@ -46,13 +46,13 @@ rationale: Playback state carries revision ID, position, completion, session epo
 area: ["WiltedKit/**", "WiltedMac/**", "WiltediOS/**", "CloudSync/**", "Listener/**"]
 gate_test: test-gate.sh
 threshold: 3
-rationale: CloudKit is a transfer service, not the source of truth or a real-time channel. Both apps retain local state; iOS can play cached audio offline, and persisted zone changes/deletions survive relaunch.
+rationale: CloudKit is a transfer service, not the source of truth or a real-time channel. Both apps retain local state; iOS can play cached audio offline, persisted zone changes/deletions survive relaunch, every typed account change quarantines local work until explicit review resumes the current engine, and an operation generation prevents pre-quarantine fetch/send completions from committing afterward.
 
 ### W-INV-008 — Cross-target fixtures are authoritative
 area: ["WiltedKit/**", "WiltedMacTests/**", "WiltediOSTests/**", "CloudSync/**", "Listener/**"]
 gate_test: test-gate.sh
 threshold: 3
-rationale: Publish, decode, merge, completion, deletion, version mismatch, offline cache, partial failure, and delayed delivery cases use shared fixtures so Mac and iOS cannot silently diverge.
+rationale: Publish, decode, merge, completion, deletion, version mismatch, offline cache, partial failure, delayed delivery, typed account transitions, and deterministic account-change interleavings use shared fixtures so Mac and iOS cannot silently diverge.
 
 ### W-INV-009 — Release evidence remains separated
 area: ["README.md", "TASKS.md", "WiltedMac/**", "WiltediOS/**"]

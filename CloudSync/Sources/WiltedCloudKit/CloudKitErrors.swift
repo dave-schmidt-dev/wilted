@@ -72,6 +72,16 @@ public struct CloudKitSendDisposition: Equatable, Sendable {
 }
 
 /// A deliberately data-free signal. Account identifiers never cross the adapter boundary.
-public enum CloudKitAccountChangeSignal: String, Codable, Sendable {
-    case quarantineRequired
+public enum CloudKitAccountChangeSignal: Codable, Equatable, Sendable {
+    case quarantineRequired(CloudKitAccountChangeType)
+
+    /// Compatibility spelling for callers that do not need the transition type.
+    public static var quarantineRequired: Self { .quarantineRequired(.switchAccounts) }
+
+    /// The account transition requiring explicit review.
+    public var changeType: CloudKitAccountChangeType {
+        switch self {
+        case let .quarantineRequired(type): return type
+        }
+    }
 }
