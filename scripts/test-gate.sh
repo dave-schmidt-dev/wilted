@@ -11,7 +11,7 @@ native_self_test="${NATIVE_SELF_TEST:-0}"
 forced_fail_leg="${NATIVE_FORCE_FAIL_LEG:-}"
 forced_zero_leg="${NATIVE_FORCE_ZERO_TEST_LEG:-}"
 forced_snapshot_baseline="${NATIVE_FORCE_SNAPSHOT_BASELINE:-}"
-mac_ui_metadata_clean_qualified="${NATIVE_MAC_UI_METADATA_CLEAN_QUALIFIED:-0}"
+wilted_development_team="${WILTED_DEVELOPMENT_TEAM:-4CJ49V6QHW}"
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-native-gate.XXXXXX")"
 derived_data="$tmp_root/DerivedData"
 mkdir -p "$derived_data"
@@ -569,41 +569,93 @@ leg_macos_ui_tests() {
   local destination='platform=macOS'
   local project="$native_project"
   local label_data="$derived_data/$label"
-  local runner
-  local signature_info
+  local runner host runner_metadata host_metadata metadata_info runner_signature_info host_signature_info
 
-  [[ -f "$integration_root/project.yml" ]] || fail 'missing integration XcodeGen source'
-  require_tool xcodebuild
-  require_tool codesign
-  assert_test_sources "$label" "$source_dir"
-  [[ -n "$project" && -d "$project" ]] || fail 'no temporary XcodeGen project is available'
+  if [[ ! -f "$integration_root/project.yml" ]]; then
+    fail 'missing integration XcodeGen source'
+    return 1
+  fi
+  if ! require_tool xcodebuild; then return 1; fi
+  if ! require_tool codesign; then return 1; fi
+  if ! assert_test_sources "$label" "$source_dir"; then return 1; fi
+  if [[ -z "$project" || ! -d "$project" ]]; then
+    fail 'no temporary XcodeGen project is available'
+    return 1
+  fi
+  if [[ ! "$wilted_development_team" =~ ^[A-Z0-9]{10}$ ]]; then
+    fail 'WILTED_DEVELOPMENT_TEAM must be a ten-character Apple team identifier'
+    return 1
+  fi
 
-  xcodebuild build-for-testing \
+  if ! xcodebuild build-for-testing \
     -project "$project" \
     -scheme WiltedMac \
     -only-testing:WiltedMacUITests \
     -destination "$destination" \
     -derivedDataPath "$label_data" \
     -parallel-testing-enabled NO \
-    -quiet
+    -quiet \
+    CODE_SIGN_STYLE=Manual \
+    CODE_SIGN_IDENTITY='Apple Development' \
+    DEVELOPMENT_TEAM="$wilted_development_team"; then
+    return 1
+  fi
 
   runner="$label_data/Build/Products/Debug/WiltedMacUITests-Runner.app"
   if [[ ! -d "$runner" ]]; then
     runner="$(find "$label_data/Build/Products" -type d -name 'WiltedMacUITests-Runner.app' -print -quit)"
   fi
-  [[ -n "$runner" && -d "$runner" ]] || fail 'macOS UI test runner was not produced'
-  codesign --verify --deep --strict "$runner"
-  signature_info="$(codesign --display --verbose=4 "$runner" 2>&1)" || fail 'macOS UI runner signature metadata unavailable'
-  [[ "$signature_info" == *CodeDirectory* ]] || fail 'macOS UI test runner is unsigned'
-  printf '%s\n' "$signature_info"
-
-  # Building and signing the runner are safe metadata checks. Do not launch
-  # the host UI runner from unattended validation until a separate attended
-  # qualification has confirmed its launch metadata is clean.
-  if [[ "$mac_ui_metadata_clean_qualified" != "1" ]]; then
-    printf '%s\n' 'native.mac-ui.unrun reason=metadata-clean-qualification-required' >&2
+  if [[ -z "$runner" || ! -d "$runner" ]]; then
+    fail 'macOS UI test runner was not produced'
     return 1
   fi
+  host="$label_data/Build/Products/Debug/WiltedMac.app"
+  if [[ ! -d "$host" ]]; then
+    host="$(find "$label_data/Build/Products" -type d -name 'WiltedMac.app' -print -quit)"
+  fi
+  if [[ -z "$host" || ! -d "$host" ]]; then
+    fail 'macOS UI host app was not produced'
+    return 1
+  fi
+  if ! require_tool xattr; then return 1; fi
+
+  if ! runner_metadata="$(xattr -lr "$runner" 2>/dev/null)"; then return 1; fi
+  if ! host_metadata="$(xattr -lr "$host" 2>/dev/null)"; then return 1; fi
+  metadata_info="${runner_metadata}"$'\n'"${host_metadata}"
+  if [[ "$metadata_info" == *'com.apple.quarantine'* ||
+    "$metadata_info" == *'com.apple.FinderInfo'* ]]; then
+    printf '%s\n' 'native.error forbidden Mac UI quarantine/FinderInfo metadata remains' >&2
+    return 1
+  fi
+  if ! codesign --verify --deep --strict "$runner"; then return 1; fi
+  # The host app is verified strictly without traversing XCTest bundles that
+  # Xcode may reference from the test product but does not ship in the host.
+  if ! codesign --verify --strict "$host"; then return 1; fi
+  if ! runner_signature_info="$(codesign --display --verbose=4 "$runner" 2>&1)"; then
+    fail 'macOS UI runner signature metadata unavailable'
+    return 1
+  fi
+  if ! host_signature_info="$(codesign --display --verbose=4 "$host" 2>&1)"; then
+    fail 'macOS UI host signature metadata unavailable'
+    return 1
+  fi
+  assert_apple_development_signature() {
+    local label="$1"
+    local signature="$2"
+    if [[ "$signature" != *'Authority=Apple Development:'* ||
+      "$signature" != *"TeamIdentifier=$wilted_development_team"* ]]; then
+      printf 'native.error %s is not signed by Apple Development team=%s\n' "$label" "$wilted_development_team" >&2
+      return 1
+    fi
+  }
+  if ! assert_apple_development_signature runner "$runner_signature_info"; then return 1; fi
+  if ! assert_apple_development_signature host "$host_signature_info"; then return 1; fi
+  if [[ "$runner_signature_info" != *CodeDirectory* || "$host_signature_info" != *CodeDirectory* ]]; then
+    fail 'macOS UI test runner is unsigned'
+    return 1
+  fi
+  printf '%s\n' "$runner_signature_info"
+  printf '%s\n' "$host_signature_info"
 
   xcodebuild test-without-building \
     -project "$project" \

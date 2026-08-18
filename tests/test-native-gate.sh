@@ -37,14 +37,38 @@ assert_gatekeeper_contract() {
   assert_contains 'test-without-building' "$gate"
   assert_contains 'codesign --verify --deep --strict' "$gate"
   assert_contains 'WiltedMacUITests-Runner.app' "$gate"
-  assert_contains 'NATIVE_MAC_UI_METADATA_CLEAN_QUALIFIED' "$gate"
-  assert_contains 'native.mac-ui.unrun reason=metadata-clean-qualification-required' "$gate"
-  local mac_ui_block guard_line launch_line
+  assert_contains 'WiltedMac.app' "$gate"
+  assert_contains 'WILTED_DEVELOPMENT_TEAM' "$gate"
+  assert_contains "wilted_development_team=\"\${WILTED_DEVELOPMENT_TEAM:-4CJ49V6QHW}\"" "$gate"
+  assert_contains "CODE_SIGN_IDENTITY='Apple Development'" "$gate"
+  assert_contains 'DEVELOPMENT_TEAM="$wilted_development_team"' "$gate"
+  assert_contains 'Authority=Apple Development:' "$gate"
+  assert_contains 'TeamIdentifier=$wilted_development_team' "$gate"
+  assert_contains 'com.apple.quarantine' "$gate"
+  assert_contains 'com.apple.FinderInfo' "$gate"
+  assert_contains 'if ! codesign --verify --deep --strict "$runner"; then return 1; fi' "$gate"
+  assert_contains 'if ! codesign --verify --strict "$host"; then return 1; fi' "$gate"
+  assert_contains 'if ! runner_metadata=' "$gate"
+  assert_contains 'if ! host_metadata=' "$gate"
+  local mac_ui_block build_line runner_probe_line host_probe_line verify_runner_line verify_host_line signature_runner_line signature_host_line launch_line
   mac_ui_block="$(sed -n '/^leg_macos_ui_tests()/,/^}$/p' "$gate")"
-  guard_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'metadata-clean-qualification-required' | head -1 | cut -d: -f1)"
+  build_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'xcodebuild build-for-testing' | head -1 | cut -d: -f1)"
+  runner_probe_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'if ! runner_metadata=' | head -1 | cut -d: -f1)"
+  host_probe_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'if ! host_metadata=' | head -1 | cut -d: -f1)"
+  verify_runner_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'codesign --verify --deep --strict "\$runner"' | head -1 | cut -d: -f1)"
+  verify_host_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'codesign --verify --strict "\$host"' | head -1 | cut -d: -f1)"
+  signature_runner_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'assert_apple_development_signature runner' | head -1 | cut -d: -f1)"
+  signature_host_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'assert_apple_development_signature host' | head -1 | cut -d: -f1)"
   launch_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'xcodebuild test-without-building' | head -1 | cut -d: -f1)"
-  [[ -n "$guard_line" && -n "$launch_line" && "$guard_line" -lt "$launch_line" ]] || {
-    printf '%s\n' 'assertion failed: Mac UI launch is not guarded by metadata-clean qualification' >&2
+  [[ -n "$build_line" && -n "$runner_probe_line" && -n "$host_probe_line" && -n "$verify_runner_line" &&
+    -n "$verify_host_line" && -n "$signature_runner_line" && -n "$signature_host_line" &&
+    -n "$launch_line" && "$build_line" -lt "$runner_probe_line" &&
+    "$runner_probe_line" -lt "$host_probe_line" &&
+    "$host_probe_line" -lt "$verify_runner_line" && "$host_probe_line" -lt "$verify_host_line" &&
+    "$verify_runner_line" -lt "$signature_runner_line" &&
+    "$verify_host_line" -lt "$signature_host_line" &&
+    "$signature_runner_line" -lt "$launch_line" && "$signature_host_line" -lt "$launch_line" ]] || {
+    printf '%s\n' 'assertion failed: Mac UI signing/metadata verification must precede launch' >&2
     exit 1
   }
 }
