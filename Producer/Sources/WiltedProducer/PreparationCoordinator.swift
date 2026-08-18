@@ -17,16 +17,27 @@ public struct PreparationRun: Sendable {
 /// Owns one preparation at a time and emits exactly one terminal status.
 public actor PreparationCoordinator {
     typealias ExtractionOperation = @Sendable (URL) async throws -> ExtractedArticle
-    typealias SynthesisOperation = @Sendable (String) async throws -> [Float]
+    typealias SynthesisOperation = @Sendable (String) async throws -> SpeechSynthesisResult
     typealias AssemblyOperation = @Sendable ([Float], ItemID, URL, String) async throws -> AudioAssemblyResult
     typealias SaveOperation = @Sendable (AudioAssemblyResult) async throws -> Void
 
     public static let defaultSocketURL = FileManager.default.homeDirectoryForCurrentUser
         .appending(path: "Documents/Projects/speech-stack/.state/speechd.sock")
 
+    /// Per-frame read budget for a `tts_stream`, not a whole-synthesis budget: the
+    /// daemon streams one frame per segment and this bounds the gap between them.
+    ///
+    /// It has to absorb Kokoro cold init (measured ~1.5 s), a cross-process GPU
+    /// inference lock held by another workload, and one long segment's generation.
+    /// The daemon's own watchdog default for the same gap is 600 s; Wilted stays
+    /// tighter so a wedged daemon still fails visibly, and the value is sent as the
+    /// request timeout so both sides police the same number.
+    public static let defaultSpeechOperationTimeout: TimeInterval = 120
+
     private let store: LocalLibraryStore
     private let mediaDirectory: URL
     private let socketPath: String
+    private let speechOperationTimeout: TimeInterval
     private let extractionOperation: ExtractionOperation?
     private let synthesisOperation: SynthesisOperation?
     private let assemblyOperation: AssemblyOperation?
@@ -34,10 +45,16 @@ public actor PreparationCoordinator {
     private var activeTask: Task<Void, Never>?
     private var activeRunID: UUID?
 
-    public init(store: LocalLibraryStore, mediaDirectory: URL, socketPath: String = defaultSocketURL.path) {
+    public init(
+        store: LocalLibraryStore,
+        mediaDirectory: URL,
+        socketPath: String = defaultSocketURL.path,
+        speechOperationTimeout: TimeInterval = defaultSpeechOperationTimeout
+    ) {
         self.store = store
         self.mediaDirectory = mediaDirectory
         self.socketPath = socketPath
+        self.speechOperationTimeout = speechOperationTimeout
         extractionOperation = nil
         synthesisOperation = nil
         assemblyOperation = nil
@@ -55,6 +72,7 @@ public actor PreparationCoordinator {
         self.store = store
         self.mediaDirectory = mediaDirectory
         socketPath = Self.defaultSocketURL.path
+        speechOperationTimeout = Self.defaultSpeechOperationTimeout
         extractionOperation = extraction
         synthesisOperation = synthesis
         assemblyOperation = assembly
@@ -75,6 +93,15 @@ public actor PreparationCoordinator {
     }
 
     public func cancel() { activeTask?.cancel() }
+
+    /// Maps the speech client's `stream.audio samples=N` line to produced audio seconds.
+    /// The live rate is unknown until the terminal frame, so the contracted stream rate
+    /// drives this display-only estimate.
+    private static func producedAudioSeconds(in line: String) -> Double? {
+        let prefix = "stream.audio samples="
+        guard line.hasPrefix(prefix), let count = Int(line.dropFirst(prefix.count)) else { return nil }
+        return Double(count) / Double(SpeechIPCClient.streamSampleRate)
+    }
 
     private func prepare(
         url: URL,
@@ -109,13 +136,23 @@ public actor PreparationCoordinator {
             await emitter.emit(.extracting, "Article text ready", fraction: 0.35)
 
             await emitter.emit(.synthesizing, "Generating speech", fraction: 0.4)
-            let samples: [Float]
+            let speech: SpeechSynthesisResult
             if let synthesisOperation {
-                samples = try await synthesisOperation(extracted.body)
+                speech = try await synthesisOperation(extracted.body)
             } else {
-                let client = SpeechIPCClient(socketPath: socketPath, connectTimeout: 2, operationTimeout: 4)
-                let speechTask = Task.detached { try client.synthesize(text: extracted.body).samples }
-                samples = try await withTaskCancellationHandler {
+                let client = SpeechIPCClient(
+                    socketPath: socketPath,
+                    connectTimeout: 2,
+                    operationTimeout: speechOperationTimeout,
+                    status: { line in
+                        // Synthesis is the longest leg by far. Relay the daemon's
+                        // per-segment progress so the surface never sits silent (W-INV-001).
+                        guard let produced = Self.producedAudioSeconds(in: line) else { return }
+                        Task { await emitter.emitSynthesisProgress(producedSeconds: produced) }
+                    }
+                )
+                let speechTask = Task.detached { try client.synthesize(text: extracted.body) }
+                speech = try await withTaskCancellationHandler {
                     try await speechTask.value
                 } onCancel: {
                     speechTask.cancel()
@@ -130,11 +167,12 @@ public actor PreparationCoordinator {
             let textHash = SHA256.hash(data: Data(extracted.body.utf8)).map { String(format: "%02x", $0) }.joined()
             let result: AudioAssemblyResult
             if let assemblyOperation {
-                result = try await assemblyOperation(samples, itemID, destination, textHash)
+                result = try await assemblyOperation(speech.samples, itemID, destination, textHash)
             } else {
                 let assemblyTask = Task.detached {
                     try AudioAssembler().assemble(
-                        pcm: samples, itemID: itemID, destinationURL: destination,
+                        pcm: speech.samples, itemID: itemID, destinationURL: destination,
+                        sourceSampleRate: speech.sampleRate,
                         extractedTextSHA256: textHash, isCancelled: { Task.isCancelled }
                     )
                 }
@@ -184,6 +222,7 @@ private actor PreparationEmitter {
     private var itemID: ItemID?
     private var sequence = 0
     private var terminalEmitted = false
+    private var lastSynthesisMinute = -1
 
     init(requestID: String, continuation: AsyncStream<PreparationStatus>.Continuation, store: LocalLibraryStore) {
         self.requestID = requestID
@@ -192,6 +231,16 @@ private actor PreparationEmitter {
     }
 
     func setItemID(_ value: ItemID) { itemID = value }
+
+    /// Reports synthesis progress at most once per produced minute so a long article
+    /// shows movement without flooding the stream or the preparation journal.
+    func emitSynthesisProgress(producedSeconds: Double) async {
+        let minute = Int(producedSeconds / 60)
+        guard minute > lastSynthesisMinute else { return }
+        lastSynthesisMinute = minute
+        let detail = minute == 0 ? "Generating speech" : "Generating speech (\(minute) min ready)"
+        await emit(.synthesizing, detail, fraction: 0.4)
+    }
 
     func emit(
         _ stage: PreparationStage,

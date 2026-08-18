@@ -173,6 +173,70 @@ final class SpeechIPCTests: XCTestCase {
         try server.finish()
     }
 
+    func testStreamWithoutAReportedRateUsesTheContractedDaemonRate() throws {
+        let server = try FakeServer { fd in
+            _ = try TestWire.readFrame(fd)
+            try TestWire.write(fd, FrameCodec.encode(Frame(type: .audio, payload: TestWire.float32LE([0.25]))))
+            try TestWire.write(fd, FrameCodec.encode(Frame(type: .end, payload: Data())))
+        }
+        // The broker's client-facing stream terminal is `{"cancelled": false}`, so the
+        // wire reports no rate at all today and the contracted 24 kHz has to stand in.
+        let result = try SpeechIPCClient(socketPath: server.path, operationTimeout: 1).synthesize(text: "fixture")
+        XCTAssertEqual(result.sampleRate, 24_000)
+        XCTAssertEqual(SpeechIPCClient.streamSampleRate, 24_000)
+        try server.finish()
+    }
+
+    func testStreamPrefersARateReportedOnTheWire() throws {
+        let server = try FakeServer { fd in
+            _ = try TestWire.readFrame(fd)
+            try TestWire.write(fd, FrameCodec.control(.audioMeta, object: ["sample_rate": 16_000, "channels": 1]))
+            try TestWire.write(fd, FrameCodec.encode(Frame(type: .audio, payload: TestWire.float32LE([0.25]))))
+            try TestWire.write(fd, FrameCodec.control(.result, object: ["result": ["cancelled": false, "sample_rate": 22_050]]))
+        }
+        let result = try SpeechIPCClient(socketPath: server.path, operationTimeout: 1).synthesize(text: "fixture")
+        XCTAssertEqual(result.sampleRate, 22_050)
+        try server.finish()
+    }
+
+    /// Regression: the read timeout is a per-frame gap budget, and the coordinator used
+    /// to hardcode 4 s for it. A daemon that pauses longer than that between segments —
+    /// Kokoro cold init, a contended GPU lock, one slow segment — failed the whole
+    /// preparation with "read timed out" even though the stream was healthy.
+    func testSlowFirstFrameFailsUnderATightBudgetAndSucceedsUnderAGenerousOne() throws {
+        func serverWithDelayedFirstFrame() throws -> FakeServer {
+            try FakeServer { fd in
+                // The tight-budget client hangs up mid-delay. Without SO_NOSIGPIPE the
+                // late write would take the whole test process down with SIGPIPE, and
+                // the writes are `try?` so that hang-up is an expected outcome here.
+                var enabled: Int32 = 1
+                _ = Darwin.setsockopt(
+                    fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size)
+                )
+                _ = try TestWire.readFrame(fd)
+                Thread.sleep(forTimeInterval: 0.6)
+                try? TestWire.write(fd, FrameCodec.encode(Frame(type: .audio, payload: TestWire.float32LE([0.25]))))
+                try? TestWire.write(fd, FrameCodec.encode(Frame(type: .end, payload: Data())))
+            }
+        }
+
+        let tight = try serverWithDelayedFirstFrame()
+        XCTAssertThrowsError(try SpeechIPCClient(socketPath: tight.path, operationTimeout: 0.2).synthesize(text: "fixture")) {
+            XCTAssertEqual($0 as? SpeechIPCError, .timeout("read"))
+        }
+        try tight.finish()
+
+        let generous = try serverWithDelayedFirstFrame()
+        let result = try SpeechIPCClient(socketPath: generous.path, operationTimeout: 3).synthesize(text: "fixture")
+        XCTAssertEqual(result.samples, [0.25])
+        try generous.finish()
+    }
+
+    func testPreparationDoesNotShipTheHardcodedFourSecondSpeechBudget() {
+        // Kokoro cold init alone is ~1.5 s before a contended GPU lock or a long segment.
+        XCTAssertGreaterThanOrEqual(PreparationCoordinator.defaultSpeechOperationTimeout, 60)
+    }
+
     func testCompleteTTSStreamCancellationClosesBeforeReading() throws {
         let observedEOF = Locked(false)
         let server = try FakeServer { fd in

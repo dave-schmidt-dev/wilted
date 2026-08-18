@@ -90,6 +90,49 @@ struct AudioAssemblerTests {
         #expect(leftovers.filter { $0.lastPathComponent.contains(".tmp-") }.isEmpty)
     }
 
+    /// Regression: the speech daemon streams Kokoro audio at 24 kHz while the frozen
+    /// transfer contract is 44.1 kHz. Assuming the container's rate encoded one second
+    /// of speech as 0.544 seconds — audible as ~1.84x too fast — and validation passed
+    /// because it compared the file against the same wrong assumption.
+    @Test func resamplesDaemonRatePCMWithoutChangingTheTransferFormat() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let destination = directory.appendingPathComponent("resampled.m4a")
+        let sourceRate = 24_000
+        let sourceSamples: [Float] = (0..<sourceRate).map { index in
+            Float(0.2 * sin(2 * Double.pi * 220 * Double(index) / Double(sourceRate)))
+        }
+
+        let result = try AudioAssembler().assemble(
+            pcm: sourceSamples,
+            itemID: try ItemID(rawValue: "item-test"),
+            destinationURL: destination,
+            sourceSampleRate: sourceRate
+        )
+
+        let file = try AVAudioFile(forReading: destination)
+        #expect(Int(file.fileFormat.sampleRate.rounded()) == 44_100)
+        #expect(file.fileFormat.channelCount == 1)
+        let duration = Double(file.length) / file.processingFormat.sampleRate
+        // One second of 24 kHz speech stays one second. The pre-fix encoder produced
+        // 24000/44100 = 0.544 s here.
+        #expect(abs(duration - 1.0) < 0.2)
+        #expect(abs(result.revision.durationSeconds - 1.0) < 0.2)
+    }
+
+    @Test func rejectsAnUnusableSourceSampleRate() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(throws: AudioAssemblerError.invalidPCM("source sample rate must be positive")) {
+            try AudioAssembler().assemble(
+                pcm: samples,
+                itemID: try ItemID(rawValue: "item-test"),
+                destinationURL: directory.appendingPathComponent("bad-rate.m4a"),
+                sourceSampleRate: 0
+            )
+        }
+    }
+
     private var samples: [Float] {
         (0..<44_100).map { index in
             Float(0.2 * sin(2 * Double.pi * 220 * Double(index) / 44_100))

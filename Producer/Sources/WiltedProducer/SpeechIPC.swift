@@ -385,15 +385,26 @@ public struct TTSCancellationResult: Sendable {
 public struct SpeechSynthesisResult: Equatable, Sendable {
     public let requestID: String
     public let samples: [Float]
+    /// The rate the samples were produced at. This is not the transfer container's
+    /// rate: the daemon streams Kokoro audio at 24 kHz and callers must resample.
+    public let sampleRate: Int
 
-    public init(requestID: String, samples: [Float]) {
+    public init(requestID: String, samples: [Float], sampleRate: Int) {
         self.requestID = requestID
         self.samples = samples
+        self.sampleRate = sampleRate
     }
 }
 
 public final class SpeechIPCClient: Sendable {
     public static let selftestEchoValue = "wilted-swift"
+
+    /// The rate `tts_stream` PCM arrives at, per the daemon's Kokoro contract
+    /// (`speech_stack.tts.KOKORO_SAMPLE_RATE`). The broker's client-facing terminal
+    /// frame relays only `{"cancelled": false}`, so nothing on this wire reports the
+    /// rate today. `synthesize` still prefers any rate a frame does report and falls
+    /// back to this contracted value, so a later broker that relays it wins.
+    public static let streamSampleRate = 24_000
 
     public let socketPath: String
     public let connectTimeout: TimeInterval
@@ -405,6 +416,15 @@ public final class SpeechIPCClient: Sendable {
         self.connectTimeout = connectTimeout
         self.operationTimeout = operationTimeout
         self.status = status
+    }
+
+    /// Reads `sample_rate` from a control payload, tolerating the daemon's nested
+    /// `result` envelope, so either frame shape can report the stream's real rate.
+    static func reportedSampleRate(in control: [String: Any]) -> Int? {
+        if let rate = control["sample_rate"] as? Int, rate > 0 { return rate }
+        if let result = control["result"] as? [String: Any],
+           let rate = result["sample_rate"] as? Int, rate > 0 { return rate }
+        return nil
     }
 
     public func selftest() throws -> [String: Any] {
@@ -484,6 +504,7 @@ public final class SpeechIPCClient: Sendable {
         defer { connection.close() }
         try send(request, on: connection)
         var samples: [Float] = []
+        var reportedRate: Int?
         while true {
             if isCancelled() { connection.close(); throw CancellationError() }
             status("stream.wait")
@@ -493,11 +514,17 @@ public final class SpeechIPCClient: Sendable {
                 samples.append(contentsOf: try decodeFloat32LE(frame.payload))
                 status("stream.audio samples=\(samples.count)")
             case .audio, .audioMeta, .status:
-                if frame.type != .audio, !frame.payload.isEmpty { _ = try FrameCodec.decodeControl(frame.payload) }
+                if frame.type != .audio, !frame.payload.isEmpty {
+                    reportedRate = Self.reportedSampleRate(in: try FrameCodec.decodeControl(frame.payload)) ?? reportedRate
+                }
             case .end, .result:
                 guard !samples.isEmpty else { throw SpeechIPCError.connectionClosed(expected: 1, received: 0) }
-                status("stream.complete samples=\(samples.count)")
-                return SpeechSynthesisResult(requestID: request.requestID, samples: samples)
+                if !frame.payload.isEmpty {
+                    reportedRate = Self.reportedSampleRate(in: try FrameCodec.decodeControl(frame.payload)) ?? reportedRate
+                }
+                let rate = reportedRate ?? Self.streamSampleRate
+                status("stream.complete samples=\(samples.count) rate=\(rate)")
+                return SpeechSynthesisResult(requestID: request.requestID, samples: samples, sampleRate: rate)
             case .error:
                 throw SpeechIPCError.daemon(try DaemonError(control: FrameCodec.decodeControl(frame.payload)))
             case .request:

@@ -132,7 +132,7 @@ private struct CoordinatorFixture {
                     author: nil, body: "Fixture article body."
                 )
             },
-            synthesis: { _ in [0, 0.1, -0.1] },
+            synthesis: { _ in SpeechSynthesisResult(requestID: "fixture", samples: [0, 0.1, -0.1], sampleRate: 24_000) },
             assembly: assembly,
             save: save
         )

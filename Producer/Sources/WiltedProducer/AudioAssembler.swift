@@ -3,6 +3,14 @@ import CryptoKit
 import Foundation
 import WiltedDomain
 
+/// Cursor for the resampler's pull block. `AVAudioConverter` invokes that block
+/// synchronously on the calling thread for the duration of one `convert` call, so the
+/// state is single-threaded in practice despite the block's `@Sendable` requirement.
+private final class ResampleCursor: @unchecked Sendable {
+    var offset = 0
+    var consumedInput = false
+}
+
 /// The immutable result exposed only after the transfer file is durable.
 public struct AudioAssemblyResult: Equatable, Sendable {
     public let revision: AudioRevision
@@ -54,6 +62,7 @@ public struct AudioAssembler: Sendable {
         pcm samples: [Float],
         itemID: ItemID,
         destinationURL: URL,
+        sourceSampleRate: Int = Self.sampleRate,
         extractedTextSHA256: String = "",
         voiceID: String = "default",
         synthesisSettingsCanonicalJSON: String = "{}",
@@ -67,6 +76,7 @@ public struct AudioAssembler: Sendable {
             samples: samples,
             itemID: itemID,
             destinationURL: destinationURL,
+            sourceSampleRate: sourceSampleRate,
             extractedTextSHA256: extractedTextSHA256,
             voiceID: voiceID,
             synthesisSettingsCanonicalJSON: synthesisSettingsCanonicalJSON,
@@ -83,6 +93,7 @@ public struct AudioAssembler: Sendable {
         samples: [Float],
         itemID: ItemID,
         destinationURL: URL,
+        sourceSampleRate: Int = Self.sampleRate,
         extractedTextSHA256: String = "",
         voiceID: String = "default",
         synthesisSettingsCanonicalJSON: String = "{}",
@@ -93,6 +104,9 @@ public struct AudioAssembler: Sendable {
         onStatus: @escaping @Sendable (String) -> Void = { _ in }
     ) throws -> AudioAssemblyResult {
         guard !samples.isEmpty else { throw AudioAssemblerError.invalidPCM("samples must not be empty") }
+        guard sourceSampleRate > 0 else {
+            throw AudioAssemblerError.invalidPCM("source sample rate must be positive")
+        }
         guard samples.allSatisfy(\.isFinite) else {
             throw AudioAssemblerError.invalidPCM("samples must be finite")
         }
@@ -111,13 +125,20 @@ public struct AudioAssembler: Sendable {
         }
 
         onStatus("stage=encode-m4a-aac")
-        try encode(samples: samples, to: temporaryURL, isCancelled: isCancelled, onStatus: onStatus)
+        try encode(
+            samples: samples, sourceSampleRate: sourceSampleRate, to: temporaryURL,
+            isCancelled: isCancelled, onStatus: onStatus
+        )
         try checkpoint(isCancelled)
         onStatus("stage=flush-close")
         try flushAndClose(temporaryURL)
 
         onStatus("stage=validate-avasset")
-        let duration = try validate(temporaryURL, expectedDuration: Double(samples.count) / Double(Self.sampleRate))
+        // Measured against the PCM's own rate, not the container's. This is what makes a
+        // rate mismatch fail loudly instead of publishing correct-looking, fast-playing audio.
+        let duration = try validate(
+            temporaryURL, expectedDuration: Double(samples.count) / Double(sourceSampleRate)
+        )
         onStatus("stage=hash")
         let hash = try sha256(temporaryURL)
         let byteCount = try fileSize(temporaryURL)
@@ -213,6 +234,7 @@ public struct AudioAssembler: Sendable {
 
     private func encode(
         samples: [Float],
+        sourceSampleRate: Int,
         to url: URL,
         isCancelled: @Sendable () -> Bool,
         onStatus: @Sendable (String) -> Void
@@ -226,6 +248,14 @@ public struct AudioAssembler: Sendable {
         ]
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(Self.sampleRate), channels: 1, interleaved: false) else {
             throw AudioAssemblerError.invalidPCM("could not create PCM format")
+        }
+        guard sourceSampleRate == Self.sampleRate else {
+            let file = try AVAudioFile(forWriting: url, settings: settings)
+            try resample(
+                samples: samples, from: sourceSampleRate, to: format, writingTo: file,
+                isCancelled: isCancelled, onStatus: onStatus
+            )
+            return
         }
         do {
             let file = try AVAudioFile(forWriting: url, settings: settings)
@@ -276,6 +306,80 @@ public struct AudioAssembler: Sendable {
         let values = try url.resourceValues(forKeys: [.fileSizeKey])
         guard let size = values.fileSize, size > 0 else { throw AudioAssemblerError.invalidAudio("output is empty") }
         return Int64(size)
+    }
+
+    /// Converts PCM produced at `sourceRate` into the frozen 44.1 kHz transfer format.
+    ///
+    /// The speech daemon streams Kokoro audio at 24 kHz while the Phase 0 audio contract
+    /// fixes the container at 44.1 kHz mono AAC. Resampling keeps that contract and its
+    /// checked-in budget evidence intact instead of redeclaring the container's rate.
+    private func resample(
+        samples: [Float],
+        from sourceRate: Int,
+        to outputFormat: AVAudioFormat,
+        writingTo file: AVAudioFile,
+        isCancelled: @Sendable () -> Bool,
+        onStatus: @Sendable (String) -> Void
+    ) throws {
+        guard let sourceFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: Double(sourceRate), channels: 1, interleaved: false
+        ), let converter = AVAudioConverter(from: sourceFormat, to: outputFormat) else {
+            throw AudioAssemblerError.invalidPCM("could not resample \(sourceRate) Hz to \(Self.sampleRate) Hz")
+        }
+        onStatus("stage=resample from=\(sourceRate) to=\(Self.sampleRate)")
+        let ratio = outputFormat.sampleRate / Double(sourceRate)
+        let outputCapacity = AVAudioFrameCount((Double(Self.chunkFrameCount) * ratio).rounded(.up)) + 1_024
+        let cursor = ResampleCursor()
+        while true {
+            try checkpoint(isCancelled)
+            guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: outputCapacity) else {
+                throw AudioAssemblerError.invalidPCM("could not allocate resample chunk")
+            }
+            var conversionError: NSError?
+            let status = converter.convert(to: output, error: &conversionError) { _, inputStatus in
+                guard cursor.offset < samples.count else {
+                    inputStatus.pointee = .endOfStream
+                    return nil
+                }
+                let count = min(Self.chunkFrameCount, samples.count - cursor.offset)
+                guard let input = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: AVAudioFrameCount(count)),
+                      let channel = input.floatChannelData?[0] else {
+                    inputStatus.pointee = .noDataNow
+                    return nil
+                }
+                input.frameLength = AVAudioFrameCount(count)
+                samples.withUnsafeBufferPointer { source in
+                    channel.update(from: source.baseAddress!.advanced(by: cursor.offset), count: count)
+                }
+                cursor.offset += count
+                cursor.consumedInput = true
+                inputStatus.pointee = .haveData
+                return input
+            }
+            if let conversionError {
+                throw AudioAssemblerError.invalidPCM("resample failed: \(conversionError.localizedDescription)")
+            }
+            if output.frameLength > 0 { try file.write(from: output) }
+            onStatus("stage=resample-progress frames=\(cursor.offset)/\(samples.count)")
+            switch status {
+            case .haveData:
+                continue
+            case .endOfStream:
+                return
+            case .inputRanDry:
+                // The converter drained its input without a terminal frame. Only a
+                // stalled input block can do that here, so fail rather than truncate.
+                guard cursor.offset < samples.count else { return }
+                guard cursor.consumedInput else {
+                    throw AudioAssemblerError.invalidPCM("resample stalled at frame \(cursor.offset)")
+                }
+                cursor.consumedInput = false
+            case .error:
+                throw AudioAssemblerError.invalidPCM("resample reported an error at frame \(cursor.offset)")
+            @unknown default:
+                throw AudioAssemblerError.invalidPCM("unknown resample status")
+            }
+        }
     }
 
     private func sha256(_ url: URL) throws -> String {
