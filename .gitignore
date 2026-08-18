@@ -58,3 +58,6 @@ spikes/
 
 # Personal opencode agent-permission config
 opencode.jsonc
+
+# Attended Development CloudKit qualification builds and logs
+.attended-build/
