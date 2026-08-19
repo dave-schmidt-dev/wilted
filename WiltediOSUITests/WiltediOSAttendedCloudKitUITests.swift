@@ -50,10 +50,10 @@ final class WiltediOSAttendedCloudKitUITests: XCTestCase {
         XCTAssertTrue(play.isEnabled, "play stayed disabled after the download reported complete")
         play.tap()
 
-        let player = app.descendants(matching: .any)[WiltedAttendedIdentifiers.player]
-        if !player.waitForExistence(timeout: 30) {
+        if !waitForPlayer(app, timeout: 30) {
             attachScreenshot(app, named: "play-failed")
-            XCTFail("now playing never appeared; status: \(statusText(app))")
+            XCTFail("now playing never became reachable; status: \(statusText(app))\n"
+                    + playerTree(app))
         }
 
         // The readout renders the recorded `PlaybackState`, which only changes at explicit
@@ -64,21 +64,22 @@ final class WiltediOSAttendedCloudKitUITests: XCTestCase {
         XCUIDevice.shared.press(.home)
         let backgrounded = try XCTUnwrap(waitForWallClock(seconds: 8), "could not hold in background")
         app.activate()
-        XCTAssertTrue(player.waitForExistence(timeout: 30))
 
         // Read only after pausing. Foregrounding runs `resumeForeground` -> `refresh`, whose
         // rebuild republishes the persisted start-position record over the display, so a read
         // taken before the pause would report that stale value no matter what the engine did.
-        let playPause = app.descendants(matching: .any)["wilted-player-play-pause"]
-        XCTAssertTrue(playPause.waitForExistence(timeout: 30), "player controls never appeared")
-        playPause.tap()
+        XCTAssertTrue(waitForPlayer(app, timeout: 30),
+                      "player controls never became reachable; status: \(statusText(app))")
+        playPause(app).tap()
         let held = position(app) ?? -1
         let message = "position held at \(held)s across \(backgrounded)s of background audio; "
             + "status: \(statusText(app))"
         let paused = try XCTUnwrap(waitForPosition(app, above: 4, timeout: 30), message)
 
+        // Send sits above the player in the same scrolling stack, so reaching it means
+        // scrolling back up; revealing the player pushed it off the top of the screen.
         let send = app.descendants(matching: .any)["wilted-listener-send"]
-        XCTAssertTrue(send.waitForExistence(timeout: 10))
+        XCTAssertTrue(reveal(app, send, swipingUp: false), "send control never became reachable")
         if send.isEnabled { send.tap() }
         // Only a completed send reaches "Library ready". A queue held by conflicts reports
         // "Nothing was sent…", which a settled-looking status check would have accepted as
@@ -93,7 +94,7 @@ final class WiltediOSAttendedCloudKitUITests: XCTestCase {
                                     "sending rewound the displayed position from \(paused)s to \(beforeRelaunch)s")
         app.terminate()
         app.launch()
-        XCTAssertTrue(player.waitForExistence(timeout: 60), "playback was not restored after relaunch")
+        XCTAssertTrue(waitForPlayer(app, timeout: 60), "playback was not restored after relaunch")
         let restored = try XCTUnwrap(position(app), "no position readout after relaunch")
         XCTAssertGreaterThanOrEqual(restored, beforeRelaunch - 2,
                                     "restored position \(restored)s rewound from \(beforeRelaunch)s")
@@ -103,7 +104,47 @@ final class WiltediOSAttendedCloudKitUITests: XCTestCase {
 
     private enum WiltedAttendedIdentifiers {
         static let player = "wilted-player"
+        static let playPause = "wilted-player-play-pause"
         static let status = "wilted-listener-status"
+    }
+
+    /// The Now Playing subtree as the accessibility hierarchy actually reports it.
+    ///
+    /// A device journey that fails with "control not found" and nothing else costs a full
+    /// rebuild-and-rerun cycle per guess about why, and the guesses are cheap to get wrong:
+    /// off-screen content, a collapsed container, and a control that was never rendered all
+    /// present identically. The tree distinguishes them in one run.
+    private func playerTree(_ app: XCUIApplication) -> String {
+        let player = app.descendants(matching: .any)[WiltedAttendedIdentifiers.player]
+        guard player.exists else { return "player element absent; app tree:\n" + app.debugDescription }
+        return "player subtree:\n" + player.debugDescription
+    }
+
+    private func playPause(_ app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any)[WiltedAttendedIdentifiers.playPause]
+    }
+
+    /// Scrolls `element` into view, reporting whether it got there.
+    ///
+    /// The library and the Now Playing panel share one scrolling stack, so on a long library
+    /// a control can be present but not hittable. A bounded swipe count keeps a genuinely
+    /// absent control a failure rather than an endless scroll, and swiping past the end of
+    /// the content is a no-op, so an already-visible element costs one existence check.
+    @discardableResult
+    private func reveal(_ app: XCUIApplication, _ element: XCUIElement, swipingUp: Bool, swipes: Int = 8) -> Bool {
+        for _ in 0..<swipes {
+            if element.exists && element.isHittable { return true }
+            if swipingUp { app.swipeUp() } else { app.swipeDown() }
+        }
+        return element.exists && element.isHittable
+    }
+
+    /// Waits on the transport control rather than the panel, because the panel identifier
+    /// alone is not evidence the controls are addressable: before the container was declared
+    /// an accessibility element, `wilted-player` resolved to a bare "Now Playing" label while
+    /// every button underneath had had its own identifier overwritten by the same string.
+    private func waitForPlayer(_ app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        poll(timeout: timeout) { self.reveal(app, self.playPause(app), swipingUp: true, swipes: 2) }
     }
 
     /// Failure messages carry the on-screen status, because a device journey that fails
@@ -117,11 +158,13 @@ final class WiltediOSAttendedCloudKitUITests: XCTestCase {
 
     private func statusText(_ app: XCUIApplication) -> String {
         let status = app.descendants(matching: .any)[WiltedAttendedIdentifiers.status]
+        reveal(app, status, swipingUp: false, swipes: 2)
         return status.exists ? status.label : "<no status>"
     }
 
     /// The now-playing readout is `"<position> / <duration> seconds"`.
     private func position(_ app: XCUIApplication) -> Double? {
+        reveal(app, playPause(app), swipingUp: true, swipes: 2)
         let readout = app.staticTexts.matching(
             NSPredicate(format: "label ENDSWITH %@ AND label CONTAINS %@", " seconds", " / ")).firstMatch
         guard readout.exists else { return nil }

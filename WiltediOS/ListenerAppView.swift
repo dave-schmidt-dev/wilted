@@ -110,6 +110,14 @@ public struct WiltedListenerLibraryView: View {
             }
         }
         .padding(WiltedTheme.Spacing.large)
+        // A `VStack` is not an accessibility element, so an identifier applied here does not
+        // name the panel: SwiftUI pushes it down onto every leaf inside and overwrites the
+        // identifiers the transport buttons set for themselves. Rewind, Pause, and Restart
+        // all reported as `wilted-player`, which is unaddressable for tests and, worse,
+        // indistinguishable under VoiceOver. Declaring the container makes it a real element
+        // that carries the identifier while its children keep their own, which is what the
+        // shared state views at `Shared/WiltedStateViews.swift` already do.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(WiltedScreenCopy.playerIdentifier)
     }
 
