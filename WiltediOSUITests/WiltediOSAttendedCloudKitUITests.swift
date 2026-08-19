@@ -56,13 +56,23 @@ final class WiltediOSAttendedCloudKitUITests: XCTestCase {
                     + playerTree(app))
         }
 
+        // Zero the position before backgrounding. Play resumes from the persisted record, and
+        // on a wiped container that record is whatever the server last held -- roughly 9s in
+        // practice. A threshold below that resume value is satisfied the instant the readout
+        // renders, so the assertion would pass identically whether or not any audio advanced
+        // while backgrounded. Restarting makes the hold the only thing that can move the clock.
+        let restart = app.descendants(matching: .any)["wilted-listener-restart"]
+        XCTAssertTrue(reveal(app, restart, swipingUp: true), "restart control never became reachable")
+        restart.tap()
+
         // The readout renders the recorded `PlaybackState`, which only changes at explicit
         // commands, so it stays at the start position for as long as audio simply plays.
         // Background playback is therefore proven through `pause()`, the one path that reads
         // the live engine clock: a position near the wall-clock hold cannot be produced by
         // anything except audio that actually advanced while the app was not frontmost.
         XCUIDevice.shared.press(.home)
-        let backgrounded = try XCTUnwrap(waitForWallClock(seconds: 8), "could not hold in background")
+        let backgrounded = try XCTUnwrap(waitForWallClock(seconds: Self.backgroundHold),
+                                         "could not hold in background")
         app.activate()
 
         // Read only after pausing. Foregrounding runs `resumeForeground` -> `refresh`, whose
@@ -71,10 +81,19 @@ final class WiltediOSAttendedCloudKitUITests: XCTestCase {
         XCTAssertTrue(waitForPlayer(app, timeout: 30),
                       "player controls never became reachable; status: \(statusText(app))")
         playPause(app).tap()
+        // Scaled to the hold rather than fixed, so the threshold cannot be met by a resume
+        // value that predates the background period: from zero, only real elapsed playback
+        // reaches it. The margin absorbs the tap-to-tap overhead either side of the hold.
+        let floor = backgrounded * 0.6
         let held = position(app) ?? -1
-        let message = "position held at \(held)s across \(backgrounded)s of background audio; "
-            + "status: \(statusText(app))"
-        let paused = try XCTUnwrap(waitForPosition(app, above: 4, timeout: 30), message)
+        let message = "position reached \(held)s across \(backgrounded)s of background audio, "
+            + "needed \(floor)s; status: \(statusText(app))"
+        let paused = try XCTUnwrap(waitForPosition(app, above: floor, timeout: 30), message)
+        // Attached on success too. A position is only evidence of background playback if it
+        // tracks the hold, and comparing runs needs the number from the passing run, not just
+        // from a failing one. `WILTED_ATTENDED_BACKGROUND_HOLD` varies the hold so the two can
+        // be checked against each other; a position that ignores the hold is not a live clock.
+        record("held=\(backgrounded)s paused=\(paused)s")
 
         // Send sits above the player in the same scrolling stack, so reaching it means
         // scrolling back up; revealing the player pushed it off the top of the screen.
@@ -96,11 +115,32 @@ final class WiltediOSAttendedCloudKitUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(waitForPlayer(app, timeout: 60), "playback was not restored after relaunch")
         let restored = try XCTUnwrap(position(app), "no position readout after relaunch")
+        record("beforeRelaunch=\(beforeRelaunch)s restored=\(restored)s")
         XCTAssertGreaterThanOrEqual(restored, beforeRelaunch - 2,
                                     "restored position \(restored)s rewound from \(beforeRelaunch)s")
     }
 
     // MARK: - Helpers
+
+    /// How long to hold in the background, overridable per run.
+    ///
+    /// Two runs that hold for the same time cannot distinguish a live engine clock from a
+    /// value echoed back off the server record, because both produce the same number. Varying
+    /// the hold makes the two hypotheses predict different positions.
+    private static var backgroundHold: TimeInterval {
+        ProcessInfo.processInfo.environment["WILTED_ATTENDED_BACKGROUND_HOLD"]
+            .flatMap(TimeInterval.init) ?? 8
+    }
+
+    /// Emits a measurement into the run log and the result bundle.
+    private func record(_ measurement: String) {
+        let note = "wilted.measure \(measurement)"
+        print(note)
+        let attachment = XCTAttachment(string: note)
+        attachment.name = "measurement"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
 
     private enum WiltedAttendedIdentifiers {
         static let player = "wilted-player"
