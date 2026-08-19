@@ -10,7 +10,6 @@ public struct WiltedListenerLibraryView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.section) {
                 HStack(spacing: WiltedTheme.Spacing.small) {
-                    WiltedMark(size: 32, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
                     Text(WiltedScreenCopy.library)
                         .font(WiltedTheme.font(.display))
                         .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
@@ -60,6 +59,16 @@ public struct WiltedListenerLibraryView: View {
             .padding(WiltedTheme.Spacing.xLarge)
         }
         .background(WiltedTheme.color(.page, scheme: colorScheme))
+        // Library is the listener's home and the only tab wrapped in a
+        // `NavigationStack`, so it carries the wordmark for the app the way
+        // the producer's window toolbar does on the Mac. Downloads and
+        // Settings keep plain titles rather than repeating the brand.
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                WiltedWordmark(height: 18)
+            }
+        }
         .accessibilityIdentifier(WiltedScreenCopy.libraryIdentifier)
     }
 
@@ -140,12 +149,9 @@ public struct WiltedListenerDownloadsView: View {
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
-                HStack(spacing: WiltedTheme.Spacing.small) {
-                    WiltedMark(size: 32, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-                    Text(WiltedScreenCopy.downloads)
-                        .font(WiltedTheme.font(.display))
-                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                }
+                Text(WiltedScreenCopy.downloads)
+                    .font(WiltedTheme.font(.display))
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 let downloaded = model.items.filter { $0.state == .downloaded }
                 if downloaded.isEmpty {
                     Text(WiltedScreenCopy.noDownloads)

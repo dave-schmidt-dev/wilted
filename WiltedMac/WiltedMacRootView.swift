@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct WiltedMacRootView: View {
@@ -47,7 +48,47 @@ struct WiltedMacRootView: View {
             }
         }
         .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+        .toolbar { wordmark }
+        .background(WiltedWindowTitleHider())
         .accessibilityIdentifier("wilted-mac-root")
+    }
+
+    /// The wordmark states the brand at the top of the window. macOS 26 gives
+    /// every toolbar item a glass capsule, which reads as a stray button
+    /// behind letterforms that already have their own silhouette, so the
+    /// shared background is opted out of where the API exists.
+    @ToolbarContentBuilder
+    private var wordmark: some ToolbarContent {
+        if #available(macOS 26.0, *) {
+            ToolbarItem(placement: .navigation) {
+                WiltedWordmark(height: 16)
+            }
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .navigation) {
+                WiltedWordmark(height: 16)
+            }
+        }
+    }
+}
+
+/// Hides the window's title text while leaving the title itself set.
+///
+/// The wordmark already says "Wilted" in the toolbar, so drawing the word
+/// again as text beside it reads as a duplicate. Clearing `navigationTitle`
+/// does not work — an empty window title falls back to the bundle name — and
+/// the declarative `toolbar(removing: .title)` is macOS 15+, while this target
+/// ships to macOS 14. Hiding the title keeps it available to the Window menu,
+/// Mission Control, and window-restoration, which an empty string would not.
+private struct WiltedWindowTitleHider: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        // `window` is nil until the view joins the hierarchy, which happens
+        // after this first runs, so defer the lookup by one turn of the loop.
+        DispatchQueue.main.async {
+            view.window?.titleVisibility = .hidden
+        }
     }
 }
 
@@ -87,12 +128,9 @@ private struct WiltedMacLibraryView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xLarge) {
-                HStack(spacing: WiltedTheme.Spacing.medium) {
-                    WiltedMark(size: 32, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-                    Text("Add an article")
-                        .font(WiltedTheme.font(.display))
-                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                }
+                Text("Add an article")
+                    .font(WiltedTheme.font(.display))
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 Text("Paste an HTTPS article URL. Wilted keeps the saved article and audio on this Mac.")
                     .font(WiltedTheme.font(.body))
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))

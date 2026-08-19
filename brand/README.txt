@@ -26,3 +26,9 @@ Notes:
 - The wordmark uses outlined EB Garamond-derived letterforms with a custom leaf
   replacing the dot on the i. No font is required to render the SVGs.
 - Keep the mark solid: don't use progress/status colors inside the brand mark.
+- The wordmark files are copied verbatim into WiltedMac/Assets.xcassets/Wordmark.imageset
+  and WiltediOS/Assets.xcassets/Wordmark.imageset as light/dark pairs, and rendered by
+  Shared/WiltedWordmark.swift. That view hard-codes the ink bounding box (623 x 230 at
+  83,21 on the 1120 x 330 artboard) so it can crop the artboard's asymmetric margins.
+  Re-cut the wordmark and those constants must be re-measured in the same change:
+  magick -background none -density 600 <svg> -resize 1120x png:- | magick - -format %@ info:
