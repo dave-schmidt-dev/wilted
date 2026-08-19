@@ -118,14 +118,14 @@ public actor FakeSyncRepository: SyncRepository {
         storedState = SyncRepositoryState(records: records, engineState: staged.batch.engineState ?? storedState.engineState,
                                           pendingChanges: storedState.pendingChanges, tombstones: tombstones,
                                           remoteAcknowledgedRecordIDs: acknowledged, protectedRecordIDs: protectedIDs, conflictedRecordIDs: conflicts,
-                                          conflictServerRecords: storedState.conflictServerRecords)
+                                          conflictServerRecords: storedState.conflictServerRecords, accountOwnerToken: storedState.accountOwnerToken)
     }
 
     public func enqueue(_ change: SyncPendingChange) async throws {
         storedState = SyncRepositoryState(records: storedState.records, engineState: storedState.engineState,
                                           pendingChanges: storedState.pendingChanges + [change], tombstones: change.tombstone.map { storedState.tombstones + [$0] } ?? storedState.tombstones,
                                           remoteAcknowledgedRecordIDs: storedState.remoteAcknowledgedRecordIDs, protectedRecordIDs: storedState.protectedRecordIDs.union([change.recordID]), conflictedRecordIDs: storedState.conflictedRecordIDs,
-                                          conflictServerRecords: storedState.conflictServerRecords)
+                                          conflictServerRecords: storedState.conflictServerRecords, accountOwnerToken: storedState.accountOwnerToken)
     }
 
     public func acknowledge(_ result: SyncSendResult) async throws {
@@ -158,7 +158,7 @@ public actor FakeSyncRepository: SyncRepository {
         storedState = SyncRepositoryState(records: records, engineState: result.engineState ?? storedState.engineState, pendingChanges: pending,
                                           tombstones: tombstones, remoteAcknowledgedRecordIDs: storedState.remoteAcknowledgedRecordIDs,
                                           protectedRecordIDs: storedState.protectedRecordIDs.subtracting(acknowledged), conflictedRecordIDs: conflicts,
-                                          conflictServerRecords: conflictServers)
+                                          conflictServerRecords: conflictServers, accountOwnerToken: storedState.accountOwnerToken)
     }
 
     public func finishStatusStream() { continuation?.finish(); continuation = nil }
