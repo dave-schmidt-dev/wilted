@@ -1,5 +1,6 @@
 import XCTest
 import CryptoKit
+import WiltedCloudKit
 import WiltedDomain
 import WiltedProducer
 import WiltedSync
@@ -69,10 +70,15 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     private func lifecycle(_ store: LocalLibraryStore, transport: LifecycleFakeTransport,
-                           assetURL: URL? = nil) -> WiltedMacSyncLifecycle {
+                           assetURL: URL? = nil,
+                           accountSignals: AsyncStream<CloudKitAccountChangeSignal> = AsyncStream { $0.finish() }) -> WiltedMacSyncLifecycle {
         WiltedMacSyncLifecycle(
             store: store,
-            transportFactory: { WiltedMacSyncTransportHandle(transport: transport) { await transport.cancel() } },
+            transportFactory: {
+                WiltedMacSyncTransportHandle(transport: transport,
+                                             cancel: { await transport.cancel() },
+                                             accountSignals: accountSignals)
+            },
             assetResolver: { _, _ in assetURL }
         )
     }
@@ -368,6 +374,59 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
         let stillPending = state?.pendingChanges.map(\.recordID)
         XCTAssertEqual(stillPending, [heldRecord.id])
         XCTAssertEqual(state?.remoteAcknowledgedRecordIDs.contains(cleanRecord.id), true)
+    }
+
+    func testAnAdoptedFirstSignInRecordsTheOwnerAndLetsTheUploadFinish() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("adopted")
+        let recordID = try WiltedRecordID.item(item.itemID)
+        let batch = try SyncFetchBatch(generationID: "adopted", records: [], engineState: Data([3]))
+        let (signals, continuation) = AsyncStream<CloudKitAccountChangeSignal>.makeStream()
+        let lifecycle = lifecycle(try LocalLibraryStore(url: url), transport: LifecycleFakeTransport(batch: batch),
+                                  accountSignals: signals)
+        let queued = await lifecycle.queueItem(item, currentRevisionID: try RevisionID(rawValue: "revision-adopted"))
+        XCTAssertTrue(isSuccess(queued))
+        // The account observer starts with the first operation, which is also where a real
+        // sign-in event originates.
+        _ = await lifecycle.refresh()
+
+        // A sync engine with no persisted state always reports a first sign-in. Quarantining
+        // it deadlocked the first-ever sync: no send meant no engine state, which meant
+        // another first sign-in on the next launch, forever.
+        let token = CloudKitAccountIdentity.token(for: "_first-owner")
+        continuation.yield(.ownershipAdopted(token: token))
+        for _ in 0..<200 where (try? await LocalLibraryStore(url: url).syncRepositoryState())??.accountOwnerToken == nil {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertFalse(lifecycle.isQuarantined)
+        let uploaded = await lifecycle.uploadPending()
+        XCTAssertTrue(isSuccess(uploaded))
+        let state = try await LocalLibraryStore(url: url).syncRepositoryState()
+        XCTAssertEqual(state?.accountOwnerToken, token)
+        XCTAssertEqual(state?.pendingChanges.count, 0)
+        XCTAssertEqual(state?.remoteAcknowledgedRecordIDs.contains(recordID), true)
+    }
+
+    func testASignInTheAdapterFlaggedForReviewStillQuarantinesAndStaysReviewable() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("flagged")
+        let recordID = try WiltedRecordID.item(item.itemID)
+        let batch = try SyncFetchBatch(generationID: "flagged", records: [], engineState: Data([3]))
+        let (signals, continuation) = AsyncStream<CloudKitAccountChangeSignal>.makeStream()
+        let lifecycle = lifecycle(try LocalLibraryStore(url: url), transport: LifecycleFakeTransport(batch: batch),
+                                  accountSignals: signals)
+        let queued = await lifecycle.queueItem(item, currentRevisionID: try RevisionID(rawValue: "revision-flagged"))
+        XCTAssertTrue(isSuccess(queued))
+        _ = await lifecycle.refresh()
+
+        continuation.yield(.quarantineRequired(.signIn))
+        for _ in 0..<200 where lifecycle.status.phase != .quarantined {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertTrue(lifecycle.isQuarantined)
+        XCTAssertEqual(lifecycle.status.detail, "iCloud sign-in detected. Review local sync before continuing.")
+        let quarantinedState = try await LocalLibraryStore(url: url).syncRepositoryState()
+        XCTAssertEqual(quarantinedState?.conflictedRecordIDs.contains(recordID), true)
     }
 
     private func isSuccess(_ result: Result<Void, Error>) -> Bool {

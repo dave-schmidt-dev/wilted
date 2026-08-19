@@ -36,10 +36,14 @@ public actor CloudKitSyncTransport: SyncTransport {
     private var sendRetryDispatched = false
     private var pendingZoneSaveIDs: Set<CKRecord.ID> = []
     private var pendingZoneDeleteIDs: Set<CKRecord.ID> = []
+    /// The account token this device recorded, used to tell a first sign-in apart from
+    /// a switch. Nil means no account has claimed the local work yet.
+    private var knownOwnerToken: String?
 
     /// A corrupt nonempty state fails closed before any engine operation is attempted.
     public init(driver: any CloudKitEngineDriver, role: SyncDeviceRole, mapper: CloudKitRecordMapper,
-                stateData: Data? = nil, pendingChanges: [SyncPendingChange] = []) throws {
+                stateData: Data? = nil, pendingChanges: [SyncPendingChange] = [],
+                knownOwnerToken: String? = nil) throws {
         if let stateData {
             guard !stateData.isEmpty, driver.isValidStateData(stateData) else { throw CloudKitSyncError.stateCorrupt }
             self.stateData = stateData
@@ -52,6 +56,7 @@ public actor CloudKitSyncTransport: SyncTransport {
         self.pendingMapper = CloudKitPendingMapper(mapper: mapper)
         self.accumulator = CloudKitChangeAccumulator(mapper: mapper)
         self.pendingChanges = pendingChanges
+        self.knownOwnerToken = knownOwnerToken
         let (statusStream, statusContinuation) = AsyncStream<SyncStatus>.makeStream()
         self.statuses = statusStream
         self.statusContinuation = statusContinuation
@@ -169,6 +174,10 @@ public actor CloudKitSyncTransport: SyncTransport {
         quarantined = false
         stateData = nil
         pendingChanges = []
+        // The review confirmed whichever account is signed in now, so the recorded owner
+        // is dropped and the next sign-in adopts it. Keeping the old token would quarantine
+        // again on the very next engine and make review unable to ever finish.
+        knownOwnerToken = nil
     }
 
     public func isQuarantined() -> Bool { quarantined }
@@ -258,7 +267,25 @@ public actor CloudKitSyncTransport: SyncTransport {
             }
             if result.failures.isEmpty { emit(.init(phase: .completed, message: "CloudKit send completed")) }
             finishSend(with: .success(result))
-        case let .accountChanged(changeType):
+        case let .accountChanged(changeType, identity):
+            // A sync engine built without persisted serialization always reports a first
+            // sign-in, so quarantining every sign-in deadlocked the first-ever sync: it
+            // could never send, so it could never persist state, so the next engine
+            // reported a first sign-in again. Classify instead of gating unconditionally.
+            switch CloudKitAccountOwnership.resolve(changeType: changeType, identity: identity,
+                                                    recordedOwnerToken: knownOwnerToken) {
+            case let .adopt(token):
+                knownOwnerToken = token
+                accountContinuation.yield(.ownershipAdopted(token: token))
+                emit(.init(phase: .staging, message: "iCloud account adopted for local sync"))
+                return
+            case .confirmed:
+                accountContinuation.yield(.ownershipConfirmed)
+                emit(.init(phase: .staging, message: "iCloud account confirmed for local sync"))
+                return
+            case .quarantine:
+                break
+            }
             operationGenerationValue &+= 1
             quarantined = true
             await driver.resetZoneBootstrap()

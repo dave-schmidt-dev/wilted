@@ -122,7 +122,8 @@ public actor ListenerRepository: SyncRepository {
                                        engineState: effectiveEngineState, pendingChanges: pending,
                                        tombstones: tombstones, remoteAcknowledgedRecordIDs: current.remoteAcknowledgedRecordIDs.union(acknowledgedDeletes).union(fetchedIDs),
                                        protectedRecordIDs: current.protectedRecordIDs.subtracting(acknowledgedDeletes), conflictedRecordIDs: conflicts.subtracting(acknowledgedDeletes.subtracting(quarantinedIDs)),
-                                       conflictServerRecords: current.conflictServerRecords)
+                                       conflictServerRecords: current.conflictServerRecords,
+                                       accountOwnerToken: current.accountOwnerToken)
         try persist(next)
         current = next
         generation += 1
@@ -157,7 +158,20 @@ public actor ListenerRepository: SyncRepository {
         let next = SyncRepositoryState(records: current.records, engineState: current.engineState, pendingChanges: current.pendingChanges,
                                        tombstones: tombstones, remoteAcknowledgedRecordIDs: current.remoteAcknowledgedRecordIDs,
                                        protectedRecordIDs: current.protectedRecordIDs, conflictedRecordIDs: current.conflictedRecordIDs,
-                                       conflictServerRecords: current.conflictServerRecords)
+                                       conflictServerRecords: current.conflictServerRecords,
+                                       accountOwnerToken: current.accountOwnerToken)
+        try persist(next)
+        current = next
+    }
+
+    /// Records the iCloud account that owns this device's local listener work.
+    ///
+    /// Persisted at adoption rather than at first successful send, so a failure before
+    /// the first acknowledgement cannot leave the listener prompting for review of an
+    /// account it has no record of.
+    public func adoptAccountOwner(_ token: String) async throws {
+        guard current.accountOwnerToken != token else { return }
+        let next = current.recordingAccountOwner(token)
         try persist(next)
         current = next
     }
@@ -170,7 +184,8 @@ public actor ListenerRepository: SyncRepository {
         let next = SyncRepositoryState(records: current.records, engineState: nil, pendingChanges: [],
                                        tombstones: current.tombstones, remoteAcknowledgedRecordIDs: current.remoteAcknowledgedRecordIDs,
                                        protectedRecordIDs: current.protectedRecordIDs.subtracting(pendingIDs), conflictedRecordIDs: conflicts,
-                                       conflictServerRecords: current.conflictServerRecords)
+                                       conflictServerRecords: current.conflictServerRecords,
+                                       accountOwnerToken: current.accountOwnerToken)
         try persist(next)
         current = next
         emit(.init(phase: .failed, message: "Listener work quarantined after account change"))
@@ -217,7 +232,8 @@ public actor ListenerRepository: SyncRepository {
                                        pendingChanges: pending, tombstones: current.tombstones,
                                        remoteAcknowledgedRecordIDs: current.remoteAcknowledgedRecordIDs.union(acknowledged),
                                        protectedRecordIDs: current.protectedRecordIDs.subtracting(acknowledged), conflictedRecordIDs: conflicts.subtracting(acknowledged),
-                                       conflictServerRecords: retainedConflictRecords)
+                                       conflictServerRecords: retainedConflictRecords,
+                                       accountOwnerToken: current.accountOwnerToken)
         try persist(next)
         current = next
         emit(.init(phase: result.failures.isEmpty ? .completed : .failed, message: "Listener acknowledgement applied"))
@@ -245,7 +261,8 @@ public actor ListenerRepository: SyncRepository {
         SyncRepositoryState(records: Array((records ?? Dictionary(uniqueKeysWithValues: current.records.map { ($0.id, $0) })).values), engineState: current.engineState, pendingChanges: pendingChanges,
                             tombstones: current.tombstones, remoteAcknowledgedRecordIDs: current.remoteAcknowledgedRecordIDs,
                             protectedRecordIDs: protectedRecordIDs ?? current.protectedRecordIDs, conflictedRecordIDs: conflictedRecordIDs ?? current.conflictedRecordIDs,
-                            conflictServerRecords: conflictServerRecords ?? current.conflictServerRecords)
+                            conflictServerRecords: conflictServerRecords ?? current.conflictServerRecords,
+                            accountOwnerToken: current.accountOwnerToken)
     }
 
     private func familyKey(for record: WiltedRecordEnvelope) -> String {

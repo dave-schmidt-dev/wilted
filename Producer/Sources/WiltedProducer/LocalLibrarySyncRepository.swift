@@ -61,7 +61,8 @@ public actor LocalLibrarySyncRepository: SyncRepository {
                 remoteAcknowledgedRecordIDs: storedState.remoteAcknowledgedRecordIDs,
                 protectedRecordIDs: storedState.protectedRecordIDs.union(pendingIDs),
                 conflictedRecordIDs: storedState.conflictedRecordIDs.union(pendingIDs),
-                conflictServerRecords: storedState.conflictServerRecords)
+                conflictServerRecords: storedState.conflictServerRecords,
+                accountOwnerToken: storedState.accountOwnerToken)
             let conflictedItems = Set(pendingIDs.compactMap { itemID(for: $0) })
             let statusUpdates = conflictedItems.compactMap { itemID in
                 (try? WiltedRecordID.item(itemID)).map {
@@ -95,6 +96,20 @@ public actor LocalLibrarySyncRepository: SyncRepository {
     /// record never seen remotely), so the server rejects a stale write rather than
     /// overwriting it, and that rejection records the server version and excludes the record
     /// from every later release.
+    /// Records the iCloud account that owns this device's local sync work.
+    ///
+    /// Persisted at adoption rather than at first successful send: a send that fails
+    /// before any acknowledgement would otherwise leave no owner recorded, and the next
+    /// launch would build another nil-state engine, see another first sign-in, and
+    /// quarantine again with nothing to review.
+    public func adoptAccountOwner(_ token: String) async throws {
+        guard storedState.accountOwnerToken != token else { return }
+        let candidate = storedState.recordingAccountOwner(token)
+        try beforeCommit?()
+        try await store.applySyncCommit(LocalLibrarySyncCommit(state: candidate))
+        storedState = candidate
+    }
+
     public func resumeAfterAccountReview() async throws {
         let releasable = storedState.accountQuarantinedRecordIDs
         guard !releasable.isEmpty else { return }
@@ -108,7 +123,10 @@ public actor LocalLibrarySyncRepository: SyncRepository {
                 remoteAcknowledgedRecordIDs: storedState.remoteAcknowledgedRecordIDs,
                 protectedRecordIDs: storedState.protectedRecordIDs,
                 conflictedRecordIDs: storedState.conflictedRecordIDs.subtracting(releasable),
-                conflictServerRecords: storedState.conflictServerRecords)
+                conflictServerRecords: storedState.conflictServerRecords,
+                // Review confirms the account now signed in, so the stale owner is cleared
+                // and the next sign-in adopts it. Keeping it would re-prompt forever.
+                accountOwnerToken: nil)
             // Derived rather than hardcoded to pendingUpload so an item that also holds a
             // genuine remote conflict keeps reading conflicted.
             let statusUpdates = Set(releasable.compactMap { itemID(for: $0) }).compactMap { itemID in
@@ -203,7 +221,8 @@ public actor LocalLibrarySyncRepository: SyncRepository {
                                                 remoteAcknowledgedRecordIDs: storedState.remoteAcknowledgedRecordIDs,
                                                 protectedRecordIDs: storedState.protectedRecordIDs.union([change.recordID]),
                                                 conflictedRecordIDs: storedState.conflictedRecordIDs,
-                                                conflictServerRecords: storedState.conflictServerRecords)
+                                                conflictServerRecords: storedState.conflictServerRecords,
+                                                accountOwnerToken: storedState.accountOwnerToken)
             try beforeCommit?()
             let status: LocalLibrarySyncStatus = .pendingUpload
             let pendingArticles = prepared.articles.map { LocalLibrarySyncCommit.ArticleApply(article: $0.article, status: status) }
@@ -303,7 +322,8 @@ public actor LocalLibrarySyncRepository: SyncRepository {
                                                 pendingChanges: pending, tombstones: tombstones,
                                                 remoteAcknowledgedRecordIDs: remoteAcknowledged,
                                                 protectedRecordIDs: protected, conflictedRecordIDs: conflicted,
-                                                conflictServerRecords: conflictServerRecords)
+                                                conflictServerRecords: conflictServerRecords,
+                                                accountOwnerToken: storedState.accountOwnerToken)
             try beforeCommit?()
             try await store.applySyncCommit(LocalLibrarySyncCommit(
                 state: candidate,
@@ -438,7 +458,8 @@ public actor LocalLibrarySyncRepository: SyncRepository {
         return (SyncRepositoryState(records: records, engineState: batch.engineState ?? prior.engineState,
                                     pendingChanges: prior.pendingChanges, tombstones: prior.tombstones,
                                     remoteAcknowledgedRecordIDs: acknowledged, protectedRecordIDs: prior.protectedRecordIDs,
-                                    conflictedRecordIDs: conflicted, conflictServerRecords: prior.conflictServerRecords), deletions)
+                                    conflictedRecordIDs: conflicted, conflictServerRecords: prior.conflictServerRecords,
+                                    accountOwnerToken: prior.accountOwnerToken), deletions)
     }
 
     private func status(for itemID: ItemID, in state: SyncRepositoryState) -> LocalLibrarySyncStatus {

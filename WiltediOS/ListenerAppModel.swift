@@ -100,6 +100,9 @@ public enum ListenerAccountChangeType: String, Codable, Sendable {
 
 public enum ListenerAccountChange: Sendable {
     case quarantined(ListenerAccountChangeType)
+    /// A first sign-in on a device whose local work no account had claimed. Recorded and
+    /// carried on, because there is no second account for the listener to review against.
+    case ownershipAdopted(token: String)
 
     /// Compatibility spelling for callers that do not need the transition type.
     public static var quarantined: Self { .quarantined(.switchAccounts) }
@@ -604,9 +607,13 @@ public final class WiltedListenerAppModel: ObservableObject {
                 return try? mapper.encode(envelope)
             }
         )
+        // Read once: the recorded owner is what lets the adapter tell a first sign-in apart
+        // from an account switch that happened while engine state was missing.
+        let repositoryState = await repository.state()
         let transport = try CloudKitSyncTransport(driver: driver, role: .iphone, mapper: mapper,
                                                   stateData: stateData,
-                                                  pendingChanges: await repository.state().pendingChanges)
+                                                  pendingChanges: repositoryState.pendingChanges,
+                                                  knownOwnerToken: repositoryState.accountOwnerToken)
         return LiveListenerSyncSession(transport: transport, mapper: mapper)
     }
 
@@ -630,12 +637,19 @@ public final class WiltedListenerAppModel: ObservableObject {
             self.accountContinuation = continuation
             Task {
                 for await signal in transport.accountChanges {
-                    let type: ListenerAccountChangeType = switch signal.changeType {
-                    case .signIn: .signIn
-                    case .signOut: .signOut
-                    case .switchAccounts: .switchAccounts
+                    switch signal {
+                    case let .quarantineRequired(changeType):
+                        let type: ListenerAccountChangeType = switch changeType {
+                        case .signIn: .signIn
+                        case .signOut: .signOut
+                        case .switchAccounts: .switchAccounts
+                        }
+                        continuation.yield(.quarantined(type))
+                    case let .ownershipAdopted(token):
+                        continuation.yield(.ownershipAdopted(token: token))
+                    case .ownershipConfirmed:
+                        continue
                     }
-                    continuation.yield(.quarantined(type))
                 }
             }
         }
@@ -655,11 +669,18 @@ public final class WiltedListenerAppModel: ObservableObject {
         statusTasks.append(Task { [weak self] in
             for await event in stream {
                 guard let self else { return }
-                if case let .quarantined(type) = event {
+                switch event {
+                case let .quarantined(type):
                     accountQuarantined = true
                     status = .failed("\(type.userFacingName) detected; sync is quarantined", retryable: false)
                     if let repository = repository as? ListenerRepository {
                         try? await repository.quarantineAfterAccountChange()
+                    }
+                case let .ownershipAdopted(token):
+                    // Recorded before the sync it unblocks completes: a failure afterwards
+                    // must not send the next launch back to an unreviewable first sign-in.
+                    if let repository = repository as? ListenerRepository {
+                        try? await repository.adoptAccountOwner(token)
                     }
                 }
             }

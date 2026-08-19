@@ -1,4 +1,5 @@
 import CloudKit
+import CryptoKit
 import Foundation
 
 /// The account transition reported by CKSyncEngine without exposing account IDs.
@@ -16,6 +17,56 @@ public enum CloudKitAccountChangeType: String, Codable, Sendable {
     }
 }
 
+/// Who an account change moved between, reduced to a device-local token.
+///
+/// `CKRecord.ID`s for iCloud users never leave this adapter. A sign-in carries a
+/// non-reversible token derived from the current user record so ownership can be
+/// compared across launches, which is the only way to tell a first adoption apart
+/// from a switch that happened while engine state was missing.
+public struct CloudKitAccountIdentity: Equatable, Sendable {
+    public let currentOwnerToken: String?
+    public let hadPreviousOwner: Bool
+
+    public init(currentOwnerToken: String? = nil, hadPreviousOwner: Bool = false) {
+        self.currentOwnerToken = currentOwnerToken
+        self.hadPreviousOwner = hadPreviousOwner
+    }
+
+    /// Derives the stored token for a user record.
+    ///
+    /// Hashed rather than stored raw so the persisted library never holds an account
+    /// identifier, and prefixed so a future scheme change is distinguishable.
+    public static func token(for recordName: String) -> String {
+        "sha256:" + SHA256.hash(data: Data(recordName.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// How a reported account change resolves against the owner recorded on this device.
+public enum CloudKitAccountOwnership: Equatable, Sendable {
+    /// No account had claimed the local work, so this one takes it without review.
+    case adopt(token: String)
+    /// The recorded owner signed in again, which is what a lost engine state looks like.
+    case confirmed
+    /// Ambiguous or genuinely different: hold the work until the owner reviews it.
+    case quarantine
+
+    /// Classifies an account change against the owner this device already recorded.
+    ///
+    /// Only a first sign-in can resolve without review, and only when it names a current
+    /// user and no previous one. Sign-outs, switches, and any sign-in that disagrees with
+    /// the recorded owner stay quarantined: local work may belong to another account and
+    /// CloudKit cannot answer that after the fact.
+    public static func resolve(changeType: CloudKitAccountChangeType,
+                               identity: CloudKitAccountIdentity,
+                               recordedOwnerToken: String?) -> CloudKitAccountOwnership {
+        guard changeType == .signIn, !identity.hadPreviousOwner, let token = identity.currentOwnerToken else {
+            return .quarantine
+        }
+        guard let recordedOwnerToken else { return .adopt(token: token) }
+        return recordedOwnerToken == token ? .confirmed : .quarantine
+    }
+}
+
 /// CloudKit events reduced to values that can be injected into the transport tests.
 public enum CloudKitEngineEvent: @unchecked Sendable {
     case stateUpdated(Data)
@@ -26,11 +77,16 @@ public enum CloudKitEngineEvent: @unchecked Sendable {
     case willSend
     case sent(saved: [CKRecord], failed: [CloudKitRecordFailure], deleted: [CKRecord.ID], failedDeletes: [CKRecord.ID: CKError])
     case sendCompleted
-    case accountChanged(CloudKitAccountChangeType)
+    case accountChanged(CloudKitAccountChangeType, identity: CloudKitAccountIdentity)
     case ignored
 
     /// Compatibility spelling for callers that do not need the transition type.
-    public static var accountChanged: Self { .accountChanged(.switchAccounts) }
+    public static var accountChanged: Self { .accountChanged(.switchAccounts, identity: .init()) }
+
+    /// Compatibility spelling for callers that do not exercise account identity.
+    public static func accountChanged(_ changeType: CloudKitAccountChangeType) -> Self {
+        .accountChanged(changeType, identity: .init())
+    }
 }
 
 public struct CloudKitRecordDeletion: @unchecked Sendable {
@@ -142,11 +198,21 @@ private actor CloudKitEngineDelegateProxy: CKSyncEngineDelegate {
                         failedDeletes: value.failedRecordDeletes))
         case .didSendChanges: yield(.sendCompleted)
         case let .accountChange(value):
+            // The Swift-refined event carries the user records on the case itself, so the
+            // token is derived here and the identifiers stop at this boundary.
             switch value.changeType {
-            case .signIn: yield(.accountChanged(.signIn))
-            case .signOut: yield(.accountChanged(.signOut))
-            case .switchAccounts: yield(.accountChanged(.switchAccounts))
-            @unknown default: yield(.accountChanged(.switchAccounts))
+            case let .signIn(currentUser):
+                yield(.accountChanged(.signIn, identity: .init(
+                    currentOwnerToken: CloudKitAccountIdentity.token(for: currentUser.recordName),
+                    hadPreviousOwner: false)))
+            case .signOut:
+                yield(.accountChanged(.signOut, identity: .init(currentOwnerToken: nil, hadPreviousOwner: true)))
+            case let .switchAccounts(_, currentUser):
+                yield(.accountChanged(.switchAccounts, identity: .init(
+                    currentOwnerToken: CloudKitAccountIdentity.token(for: currentUser.recordName),
+                    hadPreviousOwner: true)))
+            @unknown default:
+                yield(.accountChanged(.switchAccounts, identity: .init()))
             }
         case .fetchedDatabaseChanges, .sentDatabaseChanges: yield(.ignored)
         @unknown default: yield(.ignored)

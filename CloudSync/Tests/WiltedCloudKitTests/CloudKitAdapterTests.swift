@@ -726,6 +726,87 @@ func typedAccountChangeSignal() async throws {
     }
 }
 
+@Test("a first sign-in adopts ownership instead of deadlocking the first sync")
+func firstSignInAdoptsOwnership() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver()
+    // No recorded owner is what every install starts with, and a sync engine built without
+    // persisted serialization always reports a first sign-in. Quarantining it meant the
+    // first sync could never send, so state was never persisted, so the next engine
+    // reported a first sign-in again.
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper)
+    var changes = transport.accountChanges.makeAsyncIterator()
+    let token = CloudKitAccountIdentity.token(for: "_owner-one")
+    await driver.emit(.accountChanged(.signIn, identity: .init(currentOwnerToken: token, hadPreviousOwner: false)))
+
+    #expect(await changes.next() == .ownershipAdopted(token: token))
+    #expect(await transport.isQuarantined() == false)
+
+    let fetch = Task { try await transport.fetchChanges() }
+    guard await driver.waitForFetchCall() else {
+        await transport.cancel()
+        Issue.record("an adopted account did not permit a fetch")
+        return
+    }
+    await driver.emit(.stateUpdated(Data("{\"state\":1}".utf8)))
+    await driver.emit(.fetchCompleted)
+    let batch = try await fetch.value
+    #expect(batch.records.isEmpty)
+}
+
+@Test("the recorded owner signing in again resumes without review")
+func recordedOwnerSignInResumes() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver()
+    let token = CloudKitAccountIdentity.token(for: "_owner-one")
+    // Losing engine state does not change who owns the work, so this must not read as an
+    // account change the owner has to review.
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper, knownOwnerToken: token)
+    var changes = transport.accountChanges.makeAsyncIterator()
+    await driver.emit(.accountChanged(.signIn, identity: .init(currentOwnerToken: token, hadPreviousOwner: false)))
+
+    #expect(await changes.next() == .ownershipConfirmed)
+    #expect(await transport.isQuarantined() == false)
+}
+
+@Test("a different account signing in still quarantines for review")
+func differentAccountSignInQuarantines() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver()
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper,
+                                              knownOwnerToken: CloudKitAccountIdentity.token(for: "_owner-one"))
+    var changes = transport.accountChanges.makeAsyncIterator()
+    let other = CloudKitAccountIdentity.token(for: "_owner-two")
+    await driver.emit(.accountChanged(.signIn, identity: .init(currentOwnerToken: other, hadPreviousOwner: false)))
+
+    #expect(await changes.next() == .quarantineRequired(.signIn))
+    #expect(await transport.isQuarantined())
+}
+
+@Test("an account switch quarantines even when it lands on the recorded owner")
+func accountSwitchAlwaysQuarantines() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver()
+    let token = CloudKitAccountIdentity.token(for: "_owner-one")
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper, knownOwnerToken: token)
+    var changes = transport.accountChanges.makeAsyncIterator()
+    // A switch means another account was signed in on the way here, so local work may have
+    // been produced under it. Matching tokens do not make that ambiguity go away.
+    await driver.emit(.accountChanged(.switchAccounts, identity: .init(currentOwnerToken: token, hadPreviousOwner: true)))
+
+    #expect(await changes.next() == .quarantineRequired(.switchAccounts))
+    #expect(await transport.isQuarantined())
+}
+
+@Test("account ownership tokens are derived, stable, and not the account identifier")
+func accountOwnershipTokens() {
+    let token = CloudKitAccountIdentity.token(for: "_abc123")
+    #expect(token == CloudKitAccountIdentity.token(for: "_abc123"))
+    #expect(token != CloudKitAccountIdentity.token(for: "_abc124"))
+    #expect(token.hasPrefix("sha256:"))
+    #expect(!token.contains("abc123"))
+}
+
 @Test("transport status stream remains live through a fetch")
 func transportStatusLiveness() async throws {
     let mapper = try mapper()

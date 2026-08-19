@@ -74,14 +74,21 @@ public struct CloudKitSendDisposition: Equatable, Sendable {
 /// A deliberately data-free signal. Account identifiers never cross the adapter boundary.
 public enum CloudKitAccountChangeSignal: Codable, Equatable, Sendable {
     case quarantineRequired(CloudKitAccountChangeType)
+    /// A first sign-in on a device whose local work no account had claimed. The caller
+    /// persists the token and keeps syncing; there is no second account to review against.
+    case ownershipAdopted(token: String)
+    /// The recorded owner signed in again, so nothing is in question. Emitted rather than
+    /// swallowed so a surface can distinguish "resumed" from "no event happened".
+    case ownershipConfirmed
 
     /// Compatibility spelling for callers that do not need the transition type.
     public static var quarantineRequired: Self { .quarantineRequired(.switchAccounts) }
 
-    /// The account transition requiring explicit review.
-    public var changeType: CloudKitAccountChangeType {
+    /// The account transition requiring explicit review, or `nil` when none is required.
+    public var changeType: CloudKitAccountChangeType? {
         switch self {
         case let .quarantineRequired(type): return type
+        case .ownershipAdopted, .ownershipConfirmed: return nil
         }
     }
 }

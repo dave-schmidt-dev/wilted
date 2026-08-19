@@ -189,10 +189,30 @@ public struct SyncRepositoryState: Codable, Equatable, Sendable {
     public let protectedRecordIDs: Set<WiltedRecordID>
     public let conflictedRecordIDs: Set<WiltedRecordID>
     public let conflictServerRecords: [WiltedRecordID: WiltedRecordEnvelope]
+    /// The iCloud account this device's local sync work belongs to.
+    ///
+    /// A non-reversible token, never an account identifier: the CloudKit adapter derives
+    /// it and no raw identifier crosses that boundary. `nil` means no account has claimed
+    /// the local work yet, which is the only condition under which a sign-in may adopt it
+    /// without review. Optional so existing persisted blobs, which predate this field,
+    /// decode unchanged.
+    public let accountOwnerToken: String?
 
-    public init(records: [WiltedRecordEnvelope] = [], engineState: Data? = nil, pendingChanges: [SyncPendingChange] = [], tombstones: [SyncTombstone] = [], remoteAcknowledgedRecordIDs: Set<WiltedRecordID> = [], protectedRecordIDs: Set<WiltedRecordID> = [], conflictedRecordIDs: Set<WiltedRecordID> = [], conflictServerRecords: [WiltedRecordID: WiltedRecordEnvelope] = [:]) {
+    public init(records: [WiltedRecordEnvelope] = [], engineState: Data? = nil, pendingChanges: [SyncPendingChange] = [], tombstones: [SyncTombstone] = [], remoteAcknowledgedRecordIDs: Set<WiltedRecordID> = [], protectedRecordIDs: Set<WiltedRecordID> = [], conflictedRecordIDs: Set<WiltedRecordID> = [], conflictServerRecords: [WiltedRecordID: WiltedRecordEnvelope] = [:], accountOwnerToken: String? = nil) {
         self.records = records; self.engineState = engineState; self.pendingChanges = pendingChanges; self.tombstones = tombstones
         self.remoteAcknowledgedRecordIDs = remoteAcknowledgedRecordIDs; self.protectedRecordIDs = protectedRecordIDs; self.conflictedRecordIDs = conflictedRecordIDs; self.conflictServerRecords = conflictServerRecords
+        self.accountOwnerToken = accountOwnerToken
+    }
+
+    /// Returns this state with a different recorded owner, preserving everything else.
+    ///
+    /// Ownership changes independently of sync work, so it gets its own copy path rather
+    /// than another full rebuild that a later field addition could silently drop.
+    public func recordingAccountOwner(_ token: String?) -> SyncRepositoryState {
+        SyncRepositoryState(records: records, engineState: engineState, pendingChanges: pendingChanges,
+                            tombstones: tombstones, remoteAcknowledgedRecordIDs: remoteAcknowledgedRecordIDs,
+                            protectedRecordIDs: protectedRecordIDs, conflictedRecordIDs: conflictedRecordIDs,
+                            conflictServerRecords: conflictServerRecords, accountOwnerToken: token)
     }
 }
 

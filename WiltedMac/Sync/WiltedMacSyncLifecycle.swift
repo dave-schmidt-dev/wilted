@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import WiltedCloudKit
 import WiltedDomain
 import WiltedProducer
 import WiltedSync
@@ -10,12 +11,20 @@ struct WiltedMacSyncTransportHandle: Sendable {
     let transport: any SyncTransport
     let cancel: @Sendable () async -> Void
     let reset: @Sendable () async -> Void
+    /// Account signals the adapter has already classified.
+    ///
+    /// Carried here rather than read off a concrete transport type, so the account path is
+    /// reachable in the unit gate. It previously required a live-only cast, which is how a
+    /// first-sign-in deadlock reached a shipping build with every suite green.
+    let accountSignals: AsyncStream<CloudKitAccountChangeSignal>
 
     init(transport: any SyncTransport, cancel: @escaping @Sendable () async -> Void = {},
-         reset: @escaping @Sendable () async -> Void = {}) {
+         reset: @escaping @Sendable () async -> Void = {},
+         accountSignals: AsyncStream<CloudKitAccountChangeSignal> = AsyncStream { $0.finish() }) {
         self.transport = transport
         self.cancel = cancel
         self.reset = reset
+        self.accountSignals = accountSignals
     }
 }
 
@@ -314,16 +323,12 @@ final class WiltedMacSyncLifecycle {
                 self.apply(event)
             }
         }
-#if WILTED_CLOUDKIT_LIVE
-        if let cloudTransport = handle.transport as? CloudKitSyncTransport {
-            accountTask = Task { [weak self, changes = cloudTransport.accountChanges] in
-                for await signal in changes {
-                    guard let self else { return }
-                    await self.quarantineForAccountChange(signal.changeType)
-                }
+        accountTask = Task { [weak self, changes = handle.accountSignals] in
+            for await signal in changes {
+                guard let self else { return }
+                await self.handleAccountSignal(signal)
             }
         }
-#endif
         return coordinator
     }
 
@@ -361,7 +366,23 @@ final class WiltedMacSyncLifecycle {
         return .failure(WiltedMacSyncLifecycleError.cancelled)
     }
 
-    #if WILTED_CLOUDKIT_LIVE
+    /// Applies an account signal that the adapter has already classified.
+    ///
+    /// Adoption is persisted immediately rather than after the send it unblocks: a send
+    /// that fails first would otherwise leave no recorded owner, and the next launch would
+    /// see another first sign-in with nothing for the owner to review.
+    private func handleAccountSignal(_ signal: CloudKitAccountChangeSignal) async {
+        switch signal {
+        case let .quarantineRequired(changeType):
+            await quarantineForAccountChange(changeType)
+        case let .ownershipAdopted(token):
+            do { try await openRepository().adoptAccountOwner(token) }
+            catch { setStatus(.init(phase: .failed, detail: "Could not record the iCloud account for local sync: \(error)", generationID: nil)) }
+        case .ownershipConfirmed:
+            break
+        }
+    }
+
     private func quarantineForAccountChange(_ changeType: CloudKitAccountChangeType) async {
         guard !quarantined else { return }
         quarantined = true
@@ -384,22 +405,6 @@ final class WiltedMacSyncLifecycle {
         case .switchAccounts: "iCloud account switch detected. Review local sync before continuing."
         }
     }
-    #else
-    private func quarantineForAccountChange() async {
-        guard !quarantined else { return }
-        quarantined = true
-        cancelRequested = true
-        do {
-            let repository = try await openRepository()
-            try await repository.quarantineAfterAccountChange()
-        } catch {
-            setStatus(.init(phase: .failed, detail: "Could not quarantine local sync state: \(error)", generationID: nil))
-            return
-        }
-        await cancelTransport?()
-        setStatus(.init(phase: .quarantined, detail: "Sync is quarantined until the current iCloud account is reviewed.", generationID: nil))
-    }
-    #endif
 
     private func setStatus(_ value: WiltedMacSyncStatus) { status = value }
 
@@ -530,13 +535,18 @@ func makeWiltedMacLiveSyncTransportFactory(
                 return try? mapper.encode(envelope, assetURLs: assets)
             }
         )
+        // Read once: the recorded owner is what lets the adapter tell a first sign-in
+        // apart from an account switch that happened while engine state was missing.
+        let repositoryState = try? await configuration.store.syncRepositoryState()
         let transport = try CloudKitSyncTransport(
             driver: driver, role: .mac, mapper: mapper, stateData: stateData,
-            pendingChanges: (try? await configuration.store.syncRepositoryState())?.pendingChanges ?? []
+            pendingChanges: repositoryState?.pendingChanges ?? [],
+            knownOwnerToken: repositoryState?.accountOwnerToken
         )
         return WiltedMacSyncTransportHandle(transport: transport,
                                             cancel: { await transport.cancel() },
-                                            reset: { await transport.resetAfterAccountChange() })
+                                            reset: { await transport.resetAfterAccountChange() },
+                                            accountSignals: transport.accountChanges)
     }
 }
 #endif
