@@ -65,6 +65,15 @@ final class WiltediOSAttendedCloudKitUITests: XCTestCase {
         XCTAssertTrue(reveal(app, restart, swipingUp: true), "restart control never became reachable")
         restart.tap()
 
+        // Wait for the restart to actually take hold before backgrounding. The tap starts async
+        // work that reloads the asset and reactivates the audio session, and pressing Home into
+        // the middle of it leaves the engine stopped: one run in two came back at position 0
+        // for exactly this reason, which reads identically to background audio being broken.
+        // `.playing` is published only after `play(asset:)` returns, so the status is the signal
+        // that there is playing audio to background in the first place.
+        XCTAssertTrue(waitForStatus(app, equalTo: "Playing offline", timeout: 30),
+                      "playback never restarted; status: \(statusText(app))")
+
         // The readout renders the recorded `PlaybackState`, which only changes at explicit
         // commands, so it stays at the start position for as long as audio simply plays.
         // Background playback is therefore proven through `pause()`, the one path that reads
