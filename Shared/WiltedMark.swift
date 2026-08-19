@@ -1,26 +1,44 @@
 import SwiftUI
 
-/// The restrained local identity: two leaf curves around a three-step sound
-/// notch. It is a vector shape so the same geometry works at icon, header, and
-/// progress-indicator sizes without raster assets or decorative animation.
+/// The Wilted brand mark: a single continuous stroke that draws a `W` whose
+/// outer terminals curl over like a wilting stem.
+///
+/// The geometry is a direct transcription of the balanced D6 master in
+/// `brand/wilted-mark-master.svg`, kept in that file's 1024-unit design space
+/// so the in-app mark and the generated app icon cannot drift apart. It is a
+/// vector shape, so the same path serves the 32pt header lockup, the 64pt
+/// Now Playing mark, and the 1024px icon without raster assets.
 public struct WiltedMark: View {
+    @Environment(\.colorScheme) private var colorScheme
     private let size: CGFloat
-    private let color: Color
-    private let lineWidth: CGFloat
+    private let color: Color?
+    private let lineWidth: CGFloat?
 
+    /// - Parameters:
+    ///   - size: Edge length of the square the mark is drawn into.
+    ///   - color: Defaults to the `wiltedLeaf` token for the ambient scheme.
+    ///   - lineWidth: Defaults to the master's proportional stroke. Pass a
+    ///     value only to deliberately depart from the brand weight.
     public init(
         size: CGFloat = 28,
         color: Color? = nil,
-        lineWidth: CGFloat = 2
+        lineWidth: CGFloat? = nil
     ) {
         self.size = size
-        self.color = color ?? WiltedTheme.color(.wiltedLeaf, scheme: .dark)
+        self.color = color
         self.lineWidth = lineWidth
     }
 
     public var body: some View {
         WiltedMarkShape()
-            .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
+            .stroke(
+                color ?? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme),
+                style: StrokeStyle(
+                    lineWidth: lineWidth ?? size * WiltedMarkShape.strokeRatio,
+                    lineCap: .round,
+                    lineJoin: .round
+                )
+            )
             .frame(width: size, height: size)
             .accessibilityElement()
             .accessibilityLabel("Wilted")
@@ -31,52 +49,76 @@ public struct WiltedMark: View {
     /// This is presentation-independent data, so keep it available from
     /// headless render-signature code without inheriting SwiftUI's main-actor
     /// isolation.
-    nonisolated public static let geometrySignature = "leaf-curves:sound-notch:v1"
+    nonisolated public static let geometrySignature = "single-stroke-w:balanced-d6:v2"
 }
 
+/// The brand mark as an unstroked path.
+///
+/// Coordinates are the master SVG's own 1024-unit space, scaled to whatever
+/// rect the shape is handed. Keeping the source numbers verbatim means a
+/// change to the master can be diffed against this file line by line.
 public struct WiltedMarkShape: Shape {
+    /// Design-space edge length of the master artboard.
+    public static let designSize: CGFloat = 1024
+
+    /// Master stroke weight as a fraction of the artboard, so the mark keeps
+    /// its brand weight at every size instead of thinning as it scales up.
+    public static let strokeRatio: CGFloat = 108 / designSize
+
     public init() {}
 
     public func path(in rect: CGRect) -> Path {
-        let x = rect.minX
-        let y = rect.minY
-        let w = rect.width
-        let h = rect.height
-        let midX = x + w * 0.5
-        let baseY = y + h * 0.82
+        let scale = min(rect.width, rect.height) / Self.designSize
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * scale, y: rect.minY + y * scale)
+        }
 
         var path = Path()
-        path.move(to: CGPoint(x: midX, y: baseY))
+        path.move(to: point(258, 272))
+        // Left terminal curling back on itself.
         path.addCurve(
-            to: CGPoint(x: x + w * 0.12, y: y + h * 0.28),
-            control1: CGPoint(x: x + w * 0.19, y: y + h * 0.74),
-            control2: CGPoint(x: x + w * 0.08, y: y + h * 0.51)
+            to: point(220, 318),
+            control1: point(220, 226),
+            control2: point(196, 254)
         )
+        // Down the first stem.
         path.addCurve(
-            to: CGPoint(x: midX, y: y + h * 0.12),
-            control1: CGPoint(x: x + w * 0.23, y: y + h * 0.12),
-            control2: CGPoint(x: x + w * 0.42, y: y + h * 0.11)
+            to: point(356, 744),
+            control1: point(274, 463),
+            control2: point(313, 611)
         )
-        path.move(to: CGPoint(x: midX, y: baseY))
+        // Rounded valley into the centre rise.
         path.addCurve(
-            to: CGPoint(x: x + w * 0.88, y: y + h * 0.28),
-            control1: CGPoint(x: x + w * 0.81, y: y + h * 0.74),
-            control2: CGPoint(x: x + w * 0.92, y: y + h * 0.51)
+            to: point(435, 744),
+            control1: point(373, 797),
+            control2: point(411, 800)
         )
+        path.addLine(to: point(503, 583))
+        // The centre peak.
         path.addCurve(
-            to: CGPoint(x: midX, y: y + h * 0.12),
-            control1: CGPoint(x: x + w * 0.77, y: y + h * 0.12),
-            control2: CGPoint(x: x + w * 0.58, y: y + h * 0.11)
+            to: point(565, 583),
+            control1: point(520, 543),
+            control2: point(548, 543)
         )
-
-        // A sound-wave notch remains legible at small sizes and is not a
-        // filled illustration: three short strokes interrupt the leaves.
-        for (index, height) in [0.24, 0.38, 0.52].enumerated() {
-            let offset = CGFloat(index) * w * 0.1 - w * 0.1
-            let center = CGPoint(x: midX + offset, y: y + h * 0.47)
-            path.move(to: CGPoint(x: center.x, y: center.y - h * height * 0.22))
-            path.addLine(to: CGPoint(x: center.x, y: center.y + h * height * 0.22))
-        }
+        path.addLine(to: point(635, 744))
+        // Second valley.
+        path.addCurve(
+            to: point(714, 744),
+            control1: point(659, 800),
+            control2: point(697, 797)
+        )
+        // Up the final stem.
+        path.addCurve(
+            to: point(850, 318),
+            control1: point(757, 611),
+            control2: point(796, 463)
+        )
+        // Right terminal, mirroring the left.
+        path.addCurve(
+            to: point(812, 272),
+            control1: point(874, 254),
+            control2: point(850, 226)
+        )
         return path
     }
 }

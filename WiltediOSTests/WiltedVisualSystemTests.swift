@@ -59,7 +59,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertEqual(WiltedScreenCopy.audioRowIdentifier, "wilted-audio-setting")
         XCTAssertFalse(WiltedScreenCopy.audioValue.isEmpty)
         XCTAssertEqual(WiltedTheme.Spacing.minimumTouchTarget, 44)
-        XCTAssertEqual(WiltedMark.geometrySignature, "leaf-curves:sound-notch:v1")
+        XCTAssertEqual(WiltedMark.geometrySignature, "single-stroke-w:balanced-d6:v2")
         XCTAssertEqual(
             WiltedVisualVariant.matrix.map(\.id),
             [
@@ -79,7 +79,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         )
         XCTAssertEqual(
             WiltedPreviewState.emptyLibrary.renderSignature(variant: variant),
-            "f58e7839b8e946e9"
+            "1d1e7e2ce1d523c3"
         )
         let signatures = Set(
             WiltedPreviewState.allCases.flatMap { state in

@@ -269,7 +269,7 @@ private struct WiltedMacNowPlayingView: View {
 
     var body: some View {
         VStack(spacing: WiltedTheme.Spacing.xLarge) {
-            WiltedMark(size: 64, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme), lineWidth: 3)
+            WiltedMark(size: 64, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
             Text("Now Playing")
                 .font(WiltedTheme.font(.display))
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))

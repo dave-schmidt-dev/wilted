@@ -1,4 +1,4 @@
-.PHONY: validate native-meta native
+.PHONY: validate native-meta native app-icon
 
 validate:
 	@bash tests/test-phase0-aggregate.sh
@@ -11,3 +11,8 @@ native-meta:
 
 native:
 	@bash scripts/test-gate.sh
+
+# Regenerates the app icons from the shipping `WiltedMarkShape`, so the icon and
+# the in-app mark cannot drift. Rerun after any change to the brand geometry.
+app-icon:
+	@bash scripts/generate-app-icon.sh
