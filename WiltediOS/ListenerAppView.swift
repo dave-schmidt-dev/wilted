@@ -9,9 +9,11 @@ public struct WiltedListenerLibraryView: View {
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.section) {
-                HStack {
+                HStack(spacing: WiltedTheme.Spacing.small) {
+                    WiltedMark(size: 32, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
                     Text(WiltedScreenCopy.library)
                         .font(WiltedTheme.font(.display))
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     Spacer()
                     Button("Refresh") { Task { await model.refresh() } }
                         .buttonStyle(.bordered)
@@ -138,7 +140,12 @@ public struct WiltedListenerDownloadsView: View {
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
-                Text(WiltedScreenCopy.downloads).font(WiltedTheme.font(.display))
+                HStack(spacing: WiltedTheme.Spacing.small) {
+                    WiltedMark(size: 32, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                    Text(WiltedScreenCopy.downloads)
+                        .font(WiltedTheme.font(.display))
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                }
                 let downloaded = model.items.filter { $0.state == .downloaded }
                 if downloaded.isEmpty {
                     Text(WiltedScreenCopy.noDownloads)
