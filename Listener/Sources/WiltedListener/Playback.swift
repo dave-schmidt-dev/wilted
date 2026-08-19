@@ -36,7 +36,10 @@ public struct AVAudioSessionController: ListenerAudioSession {
     public init() {}
     public func activate() throws {
         #if os(iOS)
-        try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.allowAirPlay, .allowBluetoothA2DP])
+        // No options: `allowAirPlay` and `allowBluetoothA2DP` are valid only with
+        // `playAndRecord`, and passing them with an output-only category fails the whole
+        // activation with OSStatus -50. Both routes are implicitly available for `playback`.
+        try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
         try AVAudioSession.sharedInstance().setActive(true)
         #endif
     }
