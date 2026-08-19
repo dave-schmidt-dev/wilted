@@ -148,11 +148,20 @@ final class WiltedMacSyncLifecycle {
             let result = await coordinator.sendPending(role: .mac)
             if cancelRequested { return cancelledResult() }
             switch result {
-            case .success:
-                setStatus(.init(phase: .completed, detail: "Pending changes uploaded.", generationID: nil))
+            case let .success(sent):
+                // A partly blocked send is still a success, so the count that moved and the
+                // count still held both have to reach the surface; a bare "uploaded" here
+                // reads as a drained queue when it is not.
+                var held = 0
+                if let repository = try? await openRepository() {
+                    held = await repository.state().conflictBlockedChanges.count
+                }
+                setStatus(.init(phase: .completed,
+                                detail: SyncCoordinator.acknowledgedMessage(sent: sent.acknowledgedRecordIDs.count, held: held),
+                                generationID: nil))
                 return .success(())
             case let .failure(error):
-                setStatus(.init(phase: .failed, detail: String(describing: error), generationID: nil))
+                setStatus(.init(phase: .failed, detail: Self.detail(for: error), generationID: nil))
                 return .failure(error)
             }
         } catch {
@@ -239,6 +248,28 @@ final class WiltedMacSyncLifecycle {
             self.cancelRequested = false
             self.quarantined = false
             self.setStatus(self.transportFactory == nil ? .disabled : Self.idleStatus)
+        }
+    }
+
+    /// Re-arms the account-review gate from durable state at launch.
+    ///
+    /// `quarantineAccount` only sets an in-memory flag, so a relaunch came back
+    /// unquarantined while the persisted quarantine still conflicted every pending
+    /// record. The review control renders only for `.quarantined`, so the release
+    /// path was unreachable and the queue could never drain again. The persisted
+    /// signature is recomputed rather than stored, so no state schema changes and
+    /// existing blobs restore correctly.
+    func restoreAccountQuarantine() {
+        guard !quarantined, !running, operationTask == nil else { return }
+        quarantineTask = Task { [weak self] in
+            guard let self else { return }
+            guard let repository = try? await self.openRepository() else { return }
+            let held = await repository.state().accountQuarantinedRecordIDs
+            guard !held.isEmpty, !self.quarantined, !self.running, self.operationTask == nil else { return }
+            self.quarantined = true
+            self.setStatus(.init(phase: .quarantined,
+                                 detail: "Sync is quarantined until the current iCloud account is reviewed.",
+                                 generationID: nil))
         }
     }
 
@@ -383,6 +414,15 @@ final class WiltedMacSyncLifecycle {
         case .failed: phase = .failed
         }
         setStatus(.init(phase: phase, detail: event.message, generationID: event.generationID))
+    }
+
+    /// Renders a typed sync error for the panel. A blocked send is an expected,
+    /// actionable outcome, so it must not surface as a raw enum description.
+    private static func detail(for error: Error) -> String {
+        guard case let .sendBlockedByConflicts(count, reviewRequired)? = error as? WiltedSyncError else {
+            return String(describing: error)
+        }
+        return SyncCoordinator.blockedMessage(count: count, accountReviewRequired: reviewRequired)
     }
 
     private static let idleStatus = WiltedMacSyncStatus(phase: .idle, detail: "Sync is ready.", generationID: nil)

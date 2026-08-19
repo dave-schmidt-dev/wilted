@@ -231,4 +231,9 @@ public enum WiltedSyncError: Error, Equatable, Sendable {
     case staleStagedBatch
     case injectedFailure(String)
     case transport(String)
+
+    /// Every queued change was withheld because its record is conflicted, so the
+    /// send moved nothing. Reported instead of a success so a fully blocked queue
+    /// cannot present as an upload that worked.
+    case sendBlockedByConflicts(count: Int, accountReviewRequired: Bool)
 }

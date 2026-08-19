@@ -125,6 +125,9 @@ final class WiltedMacModel {
                 syncLifecycle?.quarantineAccount()
             }
         } else {
+            // The account-review gate is durable state, so it has to be restored before
+            // the panel decides whether to show the review control.
+            syncLifecycle?.restoreAccountQuarantine()
             refresh()
         }
 #else

@@ -384,6 +384,28 @@ func coordinatorDoesNotReuploadConflicts() async throws {
     #expect(state.conflictedRecordIDs == [conflicted.id])
 }
 
+@Test("a fully conflicted queue reports a blocked send instead of a clean upload")
+func coordinatorReportsBlockedSendWhenEveryChangeIsConflicted() async throws {
+    let (article, revisionID, _) = try fixtureArticle()
+    let record = try WiltedRecordCodec().encode(article: article, currentRevisionID: revisionID)
+    let change = try SyncPendingChange(operation: .update, recordID: record.id, record: record)
+    let initial = SyncRepositoryState(records: [record], engineState: Data([1]),
+                                      pendingChanges: [change], conflictedRecordIDs: [record.id])
+    let repository = FakeSyncRepository(state: initial)
+    let transport = FakeSyncTransport(batch: try SyncFetchBatch(generationID: "no-op", records: []))
+
+    let result = await SyncCoordinator(transport: transport, repository: repository).sendPending(role: .mac)
+    guard case let .failure(error) = result else {
+        Issue.record("a send that moved nothing must not report success")
+        return
+    }
+    #expect(error as? WiltedSyncError == .sendBlockedByConflicts(count: 1, accountReviewRequired: true))
+    // Nothing was eligible, so the service is never contacted and state is untouched.
+    let saveCalls = await transport.saveCalls
+    #expect(saveCalls == 0)
+    #expect(await repository.state() == initial)
+}
+
 @Test("commit failure leaves staged state untouched and restart preserves deletes")
 func commitFailureAndRestartPreserveState() async throws {
     let (article, revisionID, _) = try fixtureArticle()

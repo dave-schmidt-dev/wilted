@@ -265,6 +265,111 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
         XCTAssertEqual(state?.remoteAcknowledgedRecordIDs.contains(recordID), true)
     }
 
+    func testRelaunchKeepsTheAccountReviewReachableAndNeverReportsABlockedUploadAsDone() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("relaunch-quarantine")
+        let revisionID = try RevisionID(rawValue: "revision-relaunch-quarantine")
+        let recordID = try WiltedRecordID.item(item.itemID)
+        let batch = try SyncFetchBatch(generationID: "restored", records: [], engineState: Data([3]))
+
+        let launched = lifecycle(try LocalLibraryStore(url: url), transport: LifecycleFakeTransport(batch: batch))
+        let queued = await launched.queueItem(item, currentRevisionID: revisionID)
+        XCTAssertTrue(isSuccess(queued))
+        launched.quarantineAccount()
+        for _ in 0..<200 where launched.status.phase != .quarantined {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(launched.status.phase, .quarantined)
+
+        // Relaunch. The quarantine flag was in-memory only, so this surface starts clean
+        // while the persisted quarantine still conflicts every queued record.
+        let relaunched = lifecycle(try LocalLibraryStore(url: url), transport: LifecycleFakeTransport(batch: batch))
+        XCTAssertFalse(relaunched.isQuarantined)
+
+        // The send filters conflicted records out and returns cleanly, so before the fix
+        // this reported a completed upload while nothing left the device.
+        let blocked = await relaunched.uploadPending()
+        XCTAssertFalse(isSuccess(blocked))
+        XCTAssertEqual(relaunched.status.phase, .failed)
+        XCTAssertEqual(relaunched.status.detail,
+                       SyncCoordinator.blockedMessage(count: 1, accountReviewRequired: true))
+
+        // The review control renders only for the quarantined phase, so without the
+        // durable restore the release path is unreachable for the life of the install.
+        relaunched.restoreAccountQuarantine()
+        for _ in 0..<200 where relaunched.status.phase != .quarantined {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(relaunched.status.phase, .quarantined)
+        XCTAssertTrue(relaunched.isQuarantined)
+
+        relaunched.resetAfterAccountChange()
+        for _ in 0..<200 where relaunched.status.phase != .idle {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let uploaded = await relaunched.uploadPending()
+        XCTAssertTrue(isSuccess(uploaded))
+        let state = try await LocalLibraryStore(url: url).syncRepositoryState()
+        let pendingCount = state?.pendingChanges.count
+        let acknowledged = state?.remoteAcknowledgedRecordIDs.contains(recordID)
+        XCTAssertEqual(pendingCount, 0)
+        XCTAssertEqual(acknowledged, true)
+    }
+
+    func testRestoringTheQuarantineIgnoresAGenuineRemoteConflict() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("remote-conflict")
+        let revisionID = try RevisionID(rawValue: "revision-remote-conflict")
+        let record = try WiltedRecordCodec().encode(article: item, currentRevisionID: revisionID)
+        let store = try LocalLibraryStore(url: url)
+        let repository = try await LocalLibrarySyncRepository(store: store)
+        try await repository.enqueue(try SyncPendingChange(operation: .create, recordID: record.id, record: record))
+        // A server rejection records the server version; that conflict is not an account
+        // review gate and must not make a relaunch look quarantined.
+        try await repository.acknowledge(try SyncSendResult(
+            engineState: Data([7]),
+            failures: [SyncSendFailure(recordID: record.id, disposition: .conflict, serverRecord: record)]))
+
+        let batch = try SyncFetchBatch(generationID: "remote-conflict", records: [], engineState: Data([3]))
+        let relaunched = lifecycle(try LocalLibraryStore(url: url), transport: LifecycleFakeTransport(batch: batch))
+        relaunched.restoreAccountQuarantine()
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertFalse(relaunched.isQuarantined)
+
+        let blocked = await relaunched.uploadPending()
+        XCTAssertFalse(isSuccess(blocked))
+        XCTAssertEqual(relaunched.status.detail,
+                       SyncCoordinator.blockedMessage(count: 1, accountReviewRequired: false))
+    }
+
+    func testAPartlyBlockedUploadNamesWhatMovedAndWhatIsStillHeld() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let held = try article("partly-held")
+        let heldRecord = try WiltedRecordCodec().encode(article: held, currentRevisionID: try RevisionID(rawValue: "revision-partly-held"))
+        let clean = try article("partly-clean")
+        let cleanRecord = try WiltedRecordCodec().encode(article: clean, currentRevisionID: try RevisionID(rawValue: "revision-partly-clean"))
+        let store = try LocalLibraryStore(url: url)
+        let repository = try await LocalLibrarySyncRepository(store: store)
+        try await repository.enqueue(try SyncPendingChange(operation: .create, recordID: heldRecord.id, record: heldRecord))
+        try await repository.enqueue(try SyncPendingChange(operation: .create, recordID: cleanRecord.id, record: cleanRecord))
+        try await repository.acknowledge(try SyncSendResult(
+            engineState: Data([7]),
+            failures: [SyncSendFailure(recordID: heldRecord.id, disposition: .conflict, serverRecord: heldRecord)]))
+
+        let batch = try SyncFetchBatch(generationID: "partly-blocked", records: [], engineState: Data([3]))
+        let relaunched = lifecycle(try LocalLibraryStore(url: url), transport: LifecycleFakeTransport(batch: batch))
+        let uploaded = await relaunched.uploadPending()
+        XCTAssertTrue(isSuccess(uploaded))
+        XCTAssertEqual(relaunched.status.phase, .completed)
+        // A send that moved one record and left another behind must say so; a bare
+        // "uploaded" here reads as a drained queue while a record is still stranded.
+        XCTAssertEqual(relaunched.status.detail, "Uploaded 1 change. 1 change is held by unresolved conflicts.")
+        let state = try await LocalLibraryStore(url: url).syncRepositoryState()
+        let stillPending = state?.pendingChanges.map(\.recordID)
+        XCTAssertEqual(stillPending, [heldRecord.id])
+        XCTAssertEqual(state?.remoteAcknowledgedRecordIDs.contains(cleanRecord.id), true)
+    }
+
     private func isSuccess(_ result: Result<Void, Error>) -> Bool {
         if case .success = result { return true }
         return false

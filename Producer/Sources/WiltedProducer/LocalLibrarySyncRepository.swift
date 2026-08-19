@@ -96,10 +96,7 @@ public actor LocalLibrarySyncRepository: SyncRepository {
     /// overwriting it, and that rejection records the server version and excludes the record
     /// from every later release.
     public func resumeAfterAccountReview() async throws {
-        let pendingIDs = Set(storedState.pendingChanges.map(\.recordID))
-        let releasable = storedState.conflictedRecordIDs.filter {
-            pendingIDs.contains($0) && storedState.conflictServerRecords[$0] == nil
-        }
+        let releasable = storedState.accountQuarantinedRecordIDs
         guard !releasable.isEmpty else { return }
         emit(.init(phase: .staging, message: "Releasing quarantined local sync work after account review"))
         do {

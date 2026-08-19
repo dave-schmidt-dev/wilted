@@ -196,6 +196,33 @@ public struct SyncRepositoryState: Codable, Equatable, Sendable {
     }
 }
 
+public extension SyncRepositoryState {
+    /// The pending changes a send will actually carry.
+    ///
+    /// Conflicted records are withheld from every batch, so this is the only
+    /// honest answer to "what will leave this device". Callers must not report a
+    /// send as complete without consulting `conflictBlockedChanges` too.
+    var sendableChanges: [SyncPendingChange] {
+        pendingChanges.filter { !conflictedRecordIDs.contains($0.recordID) }
+    }
+
+    /// The pending changes withheld from a send because their record is conflicted.
+    var conflictBlockedChanges: [SyncPendingChange] {
+        pendingChanges.filter { conflictedRecordIDs.contains($0.recordID) }
+    }
+
+    /// Records the account-change quarantine conflicted, rather than a server rejection.
+    ///
+    /// Only the send-failure path records a `conflictServerRecords` entry, so a pending
+    /// record that is conflicted with no server version was withheld by an account
+    /// review gate and is releasable by that review. A record with a server version
+    /// carries a genuine remote conflict and must keep its manual resolution.
+    var accountQuarantinedRecordIDs: Set<WiltedRecordID> {
+        let pendingIDs = Set(pendingChanges.map(\.recordID))
+        return conflictedRecordIDs.filter { pendingIDs.contains($0) && conflictServerRecords[$0] == nil }
+    }
+}
+
 /// A staged batch; repositories must not expose it as committed state before commit succeeds.
 public struct StagedSyncBatch: Sendable {
     public let batch: SyncFetchBatch

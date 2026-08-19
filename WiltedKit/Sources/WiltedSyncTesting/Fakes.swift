@@ -15,6 +15,8 @@ public actor FakeSyncTransport: SyncTransport {
     private let configuredSendResult: SyncSendResult?
     private var continuation: AsyncStream<SyncStatus>.Continuation?
     public let statuses: AsyncStream<SyncStatus>
+    /// Lets a test prove a send never reached the service, not merely that it sent nothing.
+    public private(set) var saveCalls = 0
 
     public init(batch: SyncFetchBatch, delayNanoseconds: UInt64 = 0, failure: WiltedSyncError? = nil, sendResult: SyncSendResult? = nil) {
         self.batch = batch; self.delayNanoseconds = delayNanoseconds; self.failure = failure; self.configuredSendResult = sendResult
@@ -32,6 +34,7 @@ public actor FakeSyncTransport: SyncTransport {
     }
 
     public func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {
+        saveCalls += 1
         for change in changes {
             let operation: SyncOperation = switch change.operation {
             case .create: .create
