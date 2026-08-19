@@ -29,6 +29,53 @@ On 2026-08-17, attended screenshots verified Apple Developer portal configuratio
 
 During an attended Development run, David observed private zone `WiltedZone` in CloudKit Console. This qualifies only the Development zone-bootstrap result; it does not establish post-fix account-review recovery or any producer-to-listener record transfer.
 
+## Attended Development publication evidence (2026-08-18)
+
+The post-fix attended run established the producer half of the round trip. Two records queued
+by the Mac producer, `item:item-d565b326…` and its revision, were published to the private
+`WiltedZone` in Development CloudKit. Verified by decoding the persisted repository state in
+`~/Library/Application Support/Wilted/library.sqlite` rather than by reading the status
+surface: 0 pending changes, 0 conflicted records, both record IDs present in
+`remoteAcknowledgedRecordIDs`, an account owner token recorded, and 3584 bytes of CKSyncEngine
+state persisted for the first time. The panel reported `Uploaded 2 changes.`
+
+Three defects were found and fixed during this run, each with regression coverage proven by
+neutering the fix and observing the new tests fail.
+
+A send withholds conflicted records, so a fully conflicted queue produced an empty batch, a
+clean acknowledgement, and a completed status indistinguishable from a real upload. A fully
+blocked send now fails closed with a typed error before the transport is contacted, and a
+partly blocked send names both what moved and what is still held.
+
+The Mac account-review quarantine was in-memory while the quarantine it represents is durable,
+so a relaunched app came back unquarantined, the review control never rendered, and the
+persisted conflicts blocked every send for the life of the install.
+
+The blocking defect was a first-sign-in deadlock. A CKSyncEngine built without persisted
+serialization always reports a first sign-in, and the gate quarantined every sign-in, so the
+first-ever sync quarantined before it could send; no send meant no engine state, and no engine
+state meant the next engine reported a first sign-in again. Observed live as fifteen
+consecutive polls held at Quarantined after an explicit review. The sign-in is now classified
+rather than the gate weakened: the adapter derives a non-reversible token from the event's
+current user and compares it to a token persisted with the repository state, so an unclaimed
+device adopts the account, a matching owner resumes after engine-state loss, and anything else
+still quarantines for review. Sign-out and account switches quarantine unconditionally, and raw
+account identifiers still stop at the adapter boundary. The account path had been reachable only
+through a live-only cast to the concrete CloudKit transport, which is why every suite stayed
+green over a deadlock in the shipping build; it now travels on the injected transport handle and
+the unit gate drives it directly.
+
+This is Development producer publication evidence only. It is not listener download, cache,
+offline or background playback, playback reconciliation, deletion propagation, physical-device,
+Production CloudKit, or TestFlight evidence.
+
 ## Boundary and remaining work
 
-Task 6 is not complete. Its sole blocker is an attended real Development CloudKit producer-to-listener round trip, including publication, download/cache, offline/background playback, playback reconciliation, relaunch, deletion, and post-fix account-change review behavior. Task 7 remains blocked. Apart from the user-observed Development `WiltedZone` bootstrap, this checkpoint provides no live record-operation, post-fix recovery, provisioning-profile or effective signed-entitlement, physical-device, Production CloudKit, App Store Connect processing, or TestFlight evidence.
+Task 6 is not complete. Development publication is now proven (above); the listener half is not.
+The remaining blocker is an attended Development download/cache, offline and background playback,
+playback reconciliation across relaunch, and deletion propagation on the physical iPhone. The
+signed Development listener carrying the deadlock fix is built but not installed: the paired
+iPhone's device tunnel was unavailable, so `devicectl device install` failed three times and the
+device must be connected and unlocked before the listener half can run. The listener build still
+running on that device predates the fix and shares the deadlock, which is the likely source of
+its reported refresh failure. Task 7 remains blocked. Apart from the user-observed Development `WiltedZone` bootstrap, this checkpoint provides no live record-operation, post-fix recovery, provisioning-profile or effective signed-entitlement, physical-device, Production CloudKit, App Store Connect processing, or TestFlight evidence.

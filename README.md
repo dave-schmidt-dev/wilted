@@ -12,6 +12,8 @@ Pre-fix attended screenshots captured a live account-change transition from Canc
 
 The CloudKit Console now shows private zone `WiltedZone` after an attended Development run. This is user-observed zone-bootstrap evidence only, not proof of post-fix account recovery or a producer-to-listener record round trip.
 
+On 2026-08-18 an attended Development run published the producer half of the round trip: two queued records reached the private zone, verified by decoding the persisted repository state rather than by reading the status surface. Three defects were found and fixed during that run, including a first-sign-in deadlock in which a sync engine with no persisted state always reported a sign-in, the gate quarantined every sign-in, and the first sync could therefore never send the state that would have prevented the next one. Listener download, playback, reconciliation, and deletion remain unproven; the fixed listener build is not yet installed on the paired iPhone.
+
 ## Priorities (in order)
 
 1. Native usability.

@@ -293,7 +293,16 @@ public final class WiltedListenerAppModel: ObservableObject {
                     && !state.conflictedRecordIDs.contains(change.recordID)
             }
             guard !sendableChanges.isEmpty else {
-                status = .ready
+                // An entirely conflicted queue sends nothing and used to report ready, which
+                // is indistinguishable from having nothing to send. Name the held work so a
+                // stranded queue cannot present as a completed send.
+                let held = state.conflictBlockedChanges.filter { $0.recordID.recordType == .playbackState }
+                if held.isEmpty {
+                    status = .ready
+                } else {
+                    let subject = held.count == 1 ? "1 playback update is" : "\(held.count) playback updates are"
+                    status = .failed("Nothing was sent. \(subject) held by unresolved conflicts.", retryable: true)
+                }
                 return
             }
             let result = try await transport.save(changes: sendableChanges, role: .iphone)

@@ -89,6 +89,50 @@ final class ListenerAppModelTests: XCTestCase {
         let sent = await transport.savedChanges()
         XCTAssertTrue(sent.isEmpty)
     }
+
+    func testAFullyConflictedPlaybackQueueReportsHeldWorkInsteadOfReady() async throws {
+        let url = URL(string: "https://example.test/held-playback")!
+        let itemID = try ItemID.derive(from: url)
+        let revisionID = try RevisionID(rawValue: "revision-held-playback")
+        let asset = try WiltedAsset(assetID: "audio-held-playback",
+                                    contentHash: "sha256:" + String(repeating: "b", count: 64))
+        let codec = WiltedRecordCodec()
+        let article = try Article(itemID: itemID, canonicalURL: url, title: "Held playback",
+                                  source: "Test", createdAt: Timestamp(Date()))
+        let revision = try AudioRevision(itemID: itemID, revisionID: revisionID, durationSeconds: 30,
+                                         byteCount: 1, contentHash: asset.contentHash,
+                                         mediaType: "audio/mpeg", createdAt: Timestamp(Date()), schemaVersion: 1)
+        let playback = try PlaybackState(itemID: itemID, revisionID: revisionID, sessionID: "held",
+                                         sequence: 1, positionSeconds: 5, durationSeconds: 30,
+                                         completed: false, intent: .progress, deviceID: "iphone",
+                                         updatedAt: Timestamp(Date()))
+        let itemRecord = try codec.encode(article: article, currentRevisionID: revisionID)
+        let revisionRecord = try codec.encode(revision: revision, audioAsset: asset)
+        let playbackRecord = try codec.encode(playback: playback)
+        let change = try SyncPendingChange(operation: .update, recordID: playbackRecord.id, record: playbackRecord)
+        let repository = StaticSyncRepository(state: SyncRepositoryState(
+            records: [itemRecord, revisionRecord, playbackRecord], engineState: Data([1]),
+            pendingChanges: [change], conflictedRecordIDs: [change.recordID],
+            conflictServerRecords: [change.recordID: playbackRecord]))
+        let transport = RecordingSyncTransport()
+        let model = WiltedListenerAppModel(repository: repository, sessionFactory: { _ in
+            TestSyncSession(transport: transport)
+        })
+
+        await model.refresh()
+        await model.sendPending()
+
+        // Every queued update is conflicted, so nothing left the device. Reporting ready here
+        // is indistinguishable from having had nothing to send.
+        let sent = await transport.savedChanges()
+        XCTAssertTrue(sent.isEmpty)
+        guard case let .failed(message, retryable) = model.status else {
+            XCTFail("Expected a held-work failure, got \(model.status)")
+            return
+        }
+        XCTAssertEqual(message, "Nothing was sent. 1 playback update is held by unresolved conflicts.")
+        XCTAssertTrue(retryable)
+    }
 }
 
 private actor StaticSyncRepository: SyncRepository {
