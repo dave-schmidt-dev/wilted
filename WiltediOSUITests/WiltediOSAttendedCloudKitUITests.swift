@@ -70,10 +70,15 @@ final class WiltediOSAttendedCloudKitUITests: XCTestCase {
         // Background playback is therefore proven through `pause()`, the one path that reads
         // the live engine clock: a position near the wall-clock hold cannot be produced by
         // anything except audio that actually advanced while the app was not frontmost.
-        XCUIDevice.shared.press(.home)
+        // Holding in the foreground instead isolates which half is broken. A position of zero
+        // after a background hold has two explanations -- audio that stops when the app leaves
+        // the screen, or an engine clock that never advances anywhere -- and they call for
+        // completely different fixes. The same hold with the app frontmost tells them apart.
+        let foregroundOnly = Self.holdsInForeground
+        if !foregroundOnly { XCUIDevice.shared.press(.home) }
         let backgrounded = try XCTUnwrap(waitForWallClock(seconds: Self.backgroundHold),
-                                         "could not hold in background")
-        app.activate()
+                                         "could not hold\(foregroundOnly ? "" : " in background")")
+        if !foregroundOnly { app.activate() }
 
         // Read only after pausing. Foregrounding runs `resumeForeground` -> `refresh`, whose
         // rebuild republishes the persisted start-position record over the display, so a read
@@ -130,6 +135,12 @@ final class WiltediOSAttendedCloudKitUITests: XCTestCase {
     private static var backgroundHold: TimeInterval {
         ProcessInfo.processInfo.environment["WILTED_ATTENDED_BACKGROUND_HOLD"]
             .flatMap(TimeInterval.init) ?? 8
+    }
+
+    /// Diagnostic only: holds with the app frontmost so the engine clock can be measured
+    /// without the background transition in the way. Never the shipping assertion.
+    private static var holdsInForeground: Bool {
+        ProcessInfo.processInfo.environment["WILTED_ATTENDED_FOREGROUND_HOLD"] == "1"
     }
 
     /// Emits a measurement into the run log and the result bundle.
