@@ -13,7 +13,7 @@ public enum WiltedTheme {
         case primaryText
         case secondaryText
         case wiltedLeaf
-        case executionCyan
+        case progress
         case steel
         case success
         case stale
@@ -41,30 +41,30 @@ public enum WiltedTheme {
 
     /// Dark Zero Delta values from the native MVP design contract.
     public static let darkHex: [ColorToken: UInt32] = [
-        .page: 0x141419,
-        .card: 0x1B1B22,
-        .primaryText: 0xE4E4E4,
-        .secondaryText: 0xA7A7B0,
-        .wiltedLeaf: 0xA7C957,
-        .executionCyan: 0x00FFFF,
-        .steel: 0x5F87AF,
-        .success: 0x7BC67B,
-        .stale: 0xF4D35E,
-        .degraded: 0xF4A261,
-        .error: 0xFF6B6B
+        .page: 0x0D110F,
+        .card: 0x151B17,
+        .primaryText: 0xECF2ED,
+        .secondaryText: 0x92A398,
+        .wiltedLeaf: 0x7FD48C,
+        .progress: 0x4FB477,
+        .steel: 0x26332C,
+        .success: 0x6FCF97,
+        .stale: 0xE8C468,
+        .degraded: 0xE79A5C,
+        .error: 0xF08585
     ]
 
     /// Accessible paper values. `wiltedLeaf` is frozen at #4D6B22 by the
     /// contrast tests in both native test targets.
     public static let lightHex: [ColorToken: UInt32] = [
-        .page: 0xF7F8F2,
+        .page: 0xF4F7F3,
         .card: 0xFFFFFF,
-        .primaryText: 0x1E1E24,
-        .secondaryText: 0x5A5A64,
+        .primaryText: 0x141815,
+        .secondaryText: 0x4F5D54,
         .wiltedLeaf: 0x4D6B22,
-        .executionCyan: 0x006F73,
-        .steel: 0x34516E,
-        .success: 0x286B36,
+        .progress: 0x1E6F4C,
+        .steel: 0xC3D2C7,
+        .success: 0x1F6B3C,
         .stale: 0x7A5900,
         .degraded: 0x9A4B00,
         .error: 0xA93030

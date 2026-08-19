@@ -207,12 +207,12 @@ private struct WiltedMacPreparationView: View {
             }
             if let fraction = preparation.fraction {
                 ProgressView(value: fraction)
-                    .tint(WiltedTheme.color(.executionCyan, scheme: colorScheme))
+                    .tint(WiltedTheme.color(.progress, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-preparation-progress")
                     .accessibilityValue("\(Int(fraction * 100)) percent")
             } else {
                 ProgressView()
-                    .tint(WiltedTheme.color(.executionCyan, scheme: colorScheme))
+                    .tint(WiltedTheme.color(.progress, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-preparation-progress")
             }
             Text(preparation.detail)

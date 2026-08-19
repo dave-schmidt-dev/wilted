@@ -41,7 +41,7 @@ public struct WiltedStateCard: View {
             if case .preparing(let stage) = fixture.state {
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                     ProgressView(value: stageFraction(stage))
-                        .tint(WiltedTheme.color(.executionCyan, scheme: colorScheme))
+                        .tint(WiltedTheme.color(.progress, scheme: colorScheme))
                         .accessibilityLabel("Preparation progress")
                         .accessibilityValue(stage.title)
                     Text(stage.title.uppercased())
@@ -79,7 +79,7 @@ public struct WiltedStateCard: View {
         case .syncPending, .iCloudUnavailable, .cancelling:
             WiltedTheme.color(.stale, scheme: colorScheme)
         case .preparing:
-            WiltedTheme.color(.executionCyan, scheme: colorScheme)
+            WiltedTheme.color(.progress, scheme: colorScheme)
         case .completed, .offlineCached, .ready:
             WiltedTheme.color(.success, scheme: colorScheme)
         default:

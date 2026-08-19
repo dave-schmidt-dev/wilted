@@ -49,7 +49,7 @@ final class WiltedVisualSystemTests: XCTestCase {
     func testCardTextPairingsPassReadableContrast() {
         for scheme in [ColorScheme.light, .dark] {
             let card = WiltedTheme.hex(for: .card, scheme: scheme)
-            for token in [WiltedTheme.ColorToken.primaryText, .secondaryText, .success, .error] {
+            for token in [WiltedTheme.ColorToken.primaryText, .secondaryText, .success, .error, .progress] {
                 let foreground = WiltedTheme.hex(for: token, scheme: scheme)
                 XCTAssertGreaterThanOrEqual(
                     WiltedTheme.contrastRatio(foreground, card), 4.5,
