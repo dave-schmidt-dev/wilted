@@ -56,19 +56,26 @@ final class WiltediOSAttendedCloudKitUITests: XCTestCase {
             XCTFail("now playing never appeared; status: \(statusText(app))")
         }
 
-        let started = try XCTUnwrap(position(app), "no position readout")
-        let advanced = try XCTUnwrap(waitForPosition(app, above: started, timeout: 30),
-                                     "playback position never advanced past \(started)s")
-
-        // Background playback: the position must keep moving while the app is not frontmost,
-        // which is the only way to tell real background audio from a UI timer.
+        // The readout renders the recorded `PlaybackState`, which only changes at explicit
+        // commands, so it stays at the start position for as long as audio simply plays.
+        // Background playback is therefore proven through `pause()`, the one path that reads
+        // the live engine clock: a position near the wall-clock hold cannot be produced by
+        // anything except audio that actually advanced while the app was not frontmost.
         XCUIDevice.shared.press(.home)
         let backgrounded = try XCTUnwrap(waitForWallClock(seconds: 8), "could not hold in background")
         app.activate()
         XCTAssertTrue(player.waitForExistence(timeout: 30))
-        let afterBackground = try XCTUnwrap(position(app), "no position readout after foregrounding")
-        XCTAssertGreaterThan(afterBackground, advanced + 4,
-                             "position moved \(afterBackground - advanced)s across \(backgrounded)s in the background")
+
+        // Read only after pausing. Foregrounding runs `resumeForeground` -> `refresh`, whose
+        // rebuild republishes the persisted start-position record over the display, so a read
+        // taken before the pause would report that stale value no matter what the engine did.
+        let playPause = app.descendants(matching: .any)["wilted-player-play-pause"]
+        XCTAssertTrue(playPause.waitForExistence(timeout: 30), "player controls never appeared")
+        playPause.tap()
+        let held = position(app) ?? -1
+        let message = "position held at \(held)s across \(backgrounded)s of background audio; "
+            + "status: \(statusText(app))"
+        let paused = try XCTUnwrap(waitForPosition(app, above: 4, timeout: 30), message)
 
         let send = app.descendants(matching: .any)["wilted-listener-send"]
         XCTAssertTrue(send.waitForExistence(timeout: 10))
@@ -79,8 +86,11 @@ final class WiltediOSAttendedCloudKitUITests: XCTestCase {
         XCTAssertTrue(waitForStatus(app, equalTo: "Library ready", timeout: 120),
                       "playback send never completed; status: \(statusText(app))")
 
-        // Reconciliation across relaunch: the restored position must not rewind.
+        // Reconciliation across relaunch: the restored position must not rewind. The baseline
+        // is re-read rather than reused so a send that clobbered the display would be caught.
         let beforeRelaunch = try XCTUnwrap(position(app), "no position readout before relaunch")
+        XCTAssertGreaterThanOrEqual(beforeRelaunch, paused - 2,
+                                    "sending rewound the displayed position from \(paused)s to \(beforeRelaunch)s")
         app.terminate()
         app.launch()
         XCTAssertTrue(player.waitForExistence(timeout: 60), "playback was not restored after relaunch")
