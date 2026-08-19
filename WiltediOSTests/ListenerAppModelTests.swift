@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import WiltediOS
 import WiltedDomain
@@ -133,6 +134,43 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertEqual(message, "Nothing was sent. 1 playback update is held by unresolved conflicts.")
         XCTAssertTrue(retryable)
     }
+
+    func testAFirstEverPlayStartsPlaybackInsteadOfFailingTheSequenceFloor() async throws {
+        let harness = try await PlaybackHarness.make()
+
+        await harness.model.refresh()
+        XCTAssertEqual(harness.model.items.first?.state, .downloaded,
+                       "the cached asset should present as downloaded before play is attempted")
+
+        await harness.model.play(itemID: harness.itemID)
+
+        guard case .playing = harness.model.status else {
+            return XCTFail("first play failed: \(harness.model.status)")
+        }
+        let started = try XCTUnwrap(harness.model.selectedPlayback)
+        // `PlaybackState` rejects a sequence below one, so an item that has never been
+        // played must not be given a zero: it would be unplayable for the life of the install.
+        XCTAssertGreaterThanOrEqual(started.sequence, 1)
+        XCTAssertEqual(started.positionSeconds, 0)
+        XCTAssertTrue(harness.engine.isPlaying)
+    }
+
+    func testRestartOpensANewSessionInsteadOfFailingTheSequenceFloor() async throws {
+        let harness = try await PlaybackHarness.make()
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        let firstSession = try XCTUnwrap(harness.model.selectedPlayback).sessionID
+
+        await harness.model.restart()
+
+        guard case .playing = harness.model.status else {
+            return XCTFail("restart failed: \(harness.model.status)")
+        }
+        let restarted = try XCTUnwrap(harness.model.selectedPlayback)
+        XCTAssertNotEqual(restarted.sessionID, firstSession, "restart should open a new session")
+        XCTAssertGreaterThanOrEqual(restarted.sequence, 1)
+        XCTAssertEqual(restarted.positionSeconds, 0)
+    }
 }
 
 private actor StaticSyncRepository: SyncRepository {
@@ -210,4 +248,67 @@ private struct TestSyncSession: ListenerSyncSession {
 
     func cancel() async {}
     func resetAfterAccountChange() async {}
+}
+
+
+/// Wires a real audio cache and playback controller around fake device I/O.
+///
+/// The engine, session, and now-playing surfaces are the only parts that need hardware,
+/// so faking exactly those keeps the playback path itself under the Debug gate. That path
+/// was previously reachable only on a device, which is how a first play that could never
+/// construct its own state shipped.
+@MainActor
+private struct PlaybackHarness {
+    let model: WiltedListenerAppModel
+    let itemID: ItemID
+    let engine: FakeAudioEngine
+
+    static func make() async throws -> PlaybackHarness {
+        let url = URL(string: "https://example.test/first-play")!
+        let itemID = try ItemID.derive(from: url)
+        let revisionID = try RevisionID(rawValue: "revision-first-play")
+        let bytes = Data("wilted-first-play-audio".utf8)
+        let contentHash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let asset = try WiltedAsset(assetID: "audio-first-play", contentHash: contentHash)
+        let article = try Article(itemID: itemID, canonicalURL: url, title: "First play",
+                                  source: "Test", createdAt: Timestamp(Date()))
+        let revision = try AudioRevision(itemID: itemID, revisionID: revisionID, durationSeconds: 30,
+                                         byteCount: Int64(bytes.count), contentHash: contentHash,
+                                         mediaType: "audio/mp4", createdAt: Timestamp(Date()), schemaVersion: 1)
+        let codec = WiltedRecordCodec()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wilted-playback-\(UUID().uuidString)", isDirectory: true)
+        let cache = try ListenerAudioCache(rootURL: root)
+        _ = try await cache.store(data: bytes, asset: asset)
+        let engine = FakeAudioEngine(duration: 30)
+        let controller = ListenerPlaybackController(cache: cache, engine: engine,
+                                                    session: FakeAudioSession(), nowPlaying: FakeNowPlaying())
+        let repository = StaticSyncRepository(state: SyncRepositoryState(
+            records: [try codec.encode(article: article, currentRevisionID: revisionID),
+                      try codec.encode(revision: revision, audioAsset: asset)],
+            engineState: Data([1])))
+        return PlaybackHarness(model: WiltedListenerAppModel(repository: repository, cache: cache, playback: controller),
+                               itemID: itemID, engine: engine)
+    }
+}
+
+private final class FakeAudioEngine: ListenerAudioEngine, @unchecked Sendable {
+    let duration: Double
+    var currentTime: Double = 0
+    private(set) var playing = false
+    var isPlaying: Bool { playing }
+    init(duration: Double) { self.duration = duration }
+    func load(url: URL) throws {}
+    func play() -> Bool { playing = true; return true }
+    func pause() { playing = false }
+}
+
+private struct FakeAudioSession: ListenerAudioSession {
+    func activate() throws {}
+    func deactivate() {}
+}
+
+private struct FakeNowPlaying: ListenerNowPlaying {
+    func update(title: String, duration: Double, position: Double, rate: Double) {}
+    func clear() {}
 }

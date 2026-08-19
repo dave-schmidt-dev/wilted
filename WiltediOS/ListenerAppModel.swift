@@ -527,9 +527,14 @@ public final class WiltedListenerAppModel: ObservableObject {
         selectedPlayback = selectedItemID.flatMap { playbackByItem[$0] }
     }
 
+    /// Builds the playback state for an item that has never been played.
+    ///
+    /// `sequence` starts at one because `PlaybackState` rejects anything lower, and a
+    /// state that cannot be constructed leaves the item permanently unplayable: `play`
+    /// has no other way to begin. A new session restarts the numbering at the same floor.
     private func makeInitialPlayback(for item: ListenerLibraryItem, revision: AudioRevision) -> PlaybackState? {
         try? PlaybackState(itemID: item.itemID, revisionID: revision.revisionID, sessionID: UUID().uuidString,
-                           sequence: 0, positionSeconds: 0, durationSeconds: revision.durationSeconds,
+                           sequence: 1, positionSeconds: 0, durationSeconds: revision.durationSeconds,
                            completed: false, intent: .progress, deviceID: "iphone", updatedAt: Timestamp(Date()))
     }
 
@@ -569,7 +574,7 @@ public final class WiltedListenerAppModel: ObservableObject {
     private func nextPlayback(_ current: PlaybackState, position: Double, intent: PlaybackIntent, newSession: Bool) throws -> PlaybackState {
         try PlaybackState(itemID: current.itemID, revisionID: current.revisionID,
                           sessionID: newSession ? UUID().uuidString : current.sessionID,
-                          sequence: newSession ? 0 : current.sequence + 1,
+                          sequence: newSession ? 1 : current.sequence + 1,
                           positionSeconds: max(0, position), durationSeconds: current.durationSeconds,
                           completed: false, intent: intent, deviceID: current.deviceID,
                           encodedCloudKitRecordSystemFields: current.encodedCloudKitRecordSystemFields,
