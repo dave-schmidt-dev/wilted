@@ -37,18 +37,6 @@ struct WiltedMacRootView: View {
                     }
                 }
             }
-            .safeAreaInset(edge: .top) {
-                HStack(spacing: WiltedTheme.Spacing.small) {
-                    WiltedMark(size: 22, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-                    Text("Wilted")
-                        .font(WiltedTheme.font(.title))
-                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                    Spacer()
-                }
-                .padding(.horizontal, WiltedTheme.Spacing.large)
-                .padding(.vertical, WiltedTheme.Spacing.medium)
-                .background(WiltedTheme.color(.page, scheme: colorScheme))
-            }
             .navigationTitle("Wilted")
             .accessibilityIdentifier("wilted-mac-library")
         } detail: {
@@ -247,10 +235,10 @@ private struct WiltedMacArticleRow: View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                 Text(article.title)
-                    .font(WiltedTheme.font(.title))
+                    .font(WiltedTheme.font(.body))
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 Text(article.source)
-                    .font(WiltedTheme.font(.body))
+                    .font(WiltedTheme.font(.utility))
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 Text(article.isReady ? "Ready to play" : "Preparing")
                     .font(WiltedTheme.font(.utility))
