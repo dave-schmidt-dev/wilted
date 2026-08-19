@@ -43,6 +43,22 @@ final class WiltedVisualSystemTests: XCTestCase {
         }
     }
 
+    /// The producer surfaces put body and status text on `.card`, not just on
+    /// `.page`. That pairing shipped untested until the Mac producer screens
+    /// adopted the token set, so it is asserted here rather than assumed.
+    func testCardTextPairingsPassReadableContrast() {
+        for scheme in [ColorScheme.light, .dark] {
+            let card = WiltedTheme.hex(for: .card, scheme: scheme)
+            for token in [WiltedTheme.ColorToken.primaryText, .secondaryText, .success, .error] {
+                let foreground = WiltedTheme.hex(for: token, scheme: scheme)
+                XCTAssertGreaterThanOrEqual(
+                    WiltedTheme.contrastRatio(foreground, card), 4.5,
+                    "\(token) on card fails readable contrast in \(scheme)"
+                )
+            }
+        }
+    }
+
     func testNativeInteractionContract() {
         XCTAssertEqual(WiltedNavigation.allCases.map(\.title), ["Library", "Downloads", "Settings"])
         XCTAssertEqual(WiltedScreenCopy.libraryEmpty, "Your library is empty")

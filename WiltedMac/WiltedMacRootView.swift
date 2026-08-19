@@ -2,6 +2,7 @@ import SwiftUI
 
 struct WiltedMacRootView: View {
     @Bindable private var model: WiltedMacModel
+    @Environment(\.colorScheme) private var colorScheme
 
     init(model: WiltedMacModel) {
         _model = Bindable(model)
@@ -15,12 +16,14 @@ struct WiltedMacRootView: View {
                         Button {
                             model.openNowPlaying(for: article)
                         } label: {
-                            VStack(alignment: .leading, spacing: 3) {
+                            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                                 Text(article.title)
+                                    .font(WiltedTheme.font(.body))
+                                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                                     .lineLimit(2)
                                 Text(article.isReady ? "Ready to play" : "Preparing")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .font(WiltedTheme.font(.caption))
+                                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                             }
                         }
                         .buttonStyle(.plain)
@@ -28,10 +31,23 @@ struct WiltedMacRootView: View {
                     }
                     if model.articles.isEmpty {
                         Text("Your library is empty")
-                            .foregroundStyle(.secondary)
+                            .font(WiltedTheme.font(.body))
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                             .accessibilityIdentifier("wilted-mac-empty-library")
                     }
                 }
+            }
+            .safeAreaInset(edge: .top) {
+                HStack(spacing: WiltedTheme.Spacing.small) {
+                    WiltedMark(size: 22, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                    Text("Wilted")
+                        .font(WiltedTheme.font(.title))
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    Spacer()
+                }
+                .padding(.horizontal, WiltedTheme.Spacing.large)
+                .padding(.vertical, WiltedTheme.Spacing.medium)
+                .background(WiltedTheme.color(.page, scheme: colorScheme))
             }
             .navigationTitle("Wilted")
             .accessibilityIdentifier("wilted-mac-library")
@@ -42,12 +58,39 @@ struct WiltedMacRootView: View {
                 WiltedMacLibraryView(model: model)
             }
         }
+        .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
         .accessibilityIdentifier("wilted-mac-root")
+    }
+}
+
+/// The producer card treatment: a `.card` fill with a hairline `.steel` edge,
+/// matching `Shared/WiltedStateViews.swift` so the two surfaces cannot drift.
+private struct WiltedMacCard: ViewModifier {
+    let colorScheme: ColorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .padding(WiltedTheme.Spacing.large)
+            .background(
+                WiltedTheme.color(.card, scheme: colorScheme),
+                in: RoundedRectangle(cornerRadius: 8)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(WiltedTheme.color(.steel, scheme: colorScheme), lineWidth: 1)
+            )
+    }
+}
+
+private extension View {
+    func wiltedCard(_ colorScheme: ColorScheme) -> some View {
+        modifier(WiltedMacCard(colorScheme: colorScheme))
     }
 }
 
 private struct WiltedMacLibraryView: View {
     @Bindable private var model: WiltedMacModel
+    @Environment(\.colorScheme) private var colorScheme
 
     init(model: WiltedMacModel) {
         _model = Bindable(model)
@@ -55,18 +98,24 @@ private struct WiltedMacLibraryView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("Add an article")
-                    .font(.largeTitle.weight(.semibold))
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xLarge) {
+                HStack(spacing: WiltedTheme.Spacing.medium) {
+                    WiltedMark(size: 32, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                    Text("Add an article")
+                        .font(WiltedTheme.font(.display))
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                }
                 Text("Paste an HTTPS article URL. Wilted keeps the saved article and audio on this Mac.")
-                    .foregroundStyle(.secondary)
+                    .font(WiltedTheme.font(.body))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
 
                 WiltedMacSyncControls(model: model)
 
-                HStack(spacing: 10) {
+                HStack(spacing: WiltedTheme.Spacing.medium) {
                     TextField("https://example.com/article", text: $model.urlDraft)
                         .textFieldStyle(.roundedBorder)
+                        .font(WiltedTheme.font(.body))
                         .accessibilityIdentifier("wilted-article-url")
                     Button("Add Article") {
                         model.addArticle()
@@ -86,9 +135,10 @@ private struct WiltedMacLibraryView: View {
                     )
                     .accessibilityIdentifier("wilted-mac-empty-state")
                 } else {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
                         Text("Saved articles")
-                            .font(.title2.weight(.semibold))
+                            .font(WiltedTheme.font(.title))
+                            .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                         ForEach(model.articles) { article in
                             WiltedMacArticleRow(model: model, article: article)
                         }
@@ -96,31 +146,38 @@ private struct WiltedMacLibraryView: View {
                 }
             }
             .frame(maxWidth: 760, alignment: .leading)
-            .padding(32)
+            .padding(WiltedTheme.Spacing.section)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(WiltedTheme.color(.page, scheme: colorScheme))
         .accessibilityIdentifier("wilted-mac-library-detail")
     }
 }
 
 private struct WiltedMacSyncControls: View {
     let model: WiltedMacModel
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             HStack {
                 Label("Sync", systemImage: "arrow.triangle.2.circlepath")
-                    .font(.headline)
+                    .font(WiltedTheme.font(.title))
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 Spacer()
                 Text(model.syncStatus.phase.rawValue.capitalized)
-                    .foregroundStyle(model.syncStatus.phase == .failed ? .red : .secondary)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(
+                        model.syncStatus.phase == .failed
+                            ? WiltedTheme.color(.error, scheme: colorScheme)
+                            : WiltedTheme.color(.secondaryText, scheme: colorScheme)
+                    )
                     .accessibilityIdentifier("wilted-sync-status")
             }
             Text(model.syncStatus.detail)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(WiltedTheme.font(.caption))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .accessibilityIdentifier("wilted-sync-detail")
-            HStack {
+            HStack(spacing: WiltedTheme.Spacing.small) {
                 Button("Refresh") { model.refreshSync() }
                     .disabled(model.syncStatus.phase == .disabled || model.syncStatus.phase == .quarantined)
                     .accessibilityIdentifier("wilted-sync-refresh")
@@ -137,8 +194,7 @@ private struct WiltedMacSyncControls: View {
                 }
             }
         }
-        .padding(16)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+        .wiltedCard(colorScheme)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-sync-controls")
     }
@@ -147,12 +203,14 @@ private struct WiltedMacSyncControls: View {
 private struct WiltedMacPreparationView: View {
     let model: WiltedMacModel
     let preparation: WiltedMacPreparation
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             HStack {
                 Text(preparation.phase.title)
-                    .font(.headline)
+                    .font(WiltedTheme.font(.title))
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 Spacer()
                 if preparation.cancellable {
                     Button("Cancel") { model.cancelPreparation() }
@@ -161,18 +219,20 @@ private struct WiltedMacPreparationView: View {
             }
             if let fraction = preparation.fraction {
                 ProgressView(value: fraction)
+                    .tint(WiltedTheme.color(.executionCyan, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-preparation-progress")
                     .accessibilityValue("\(Int(fraction * 100)) percent")
             } else {
                 ProgressView()
+                    .tint(WiltedTheme.color(.executionCyan, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-preparation-progress")
             }
             Text(preparation.detail)
-                .foregroundStyle(.secondary)
+                .font(WiltedTheme.font(.utility))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .accessibilityIdentifier("wilted-preparation-detail")
         }
-        .padding(16)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+        .wiltedCard(colorScheme)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-preparation")
     }
@@ -181,18 +241,24 @@ private struct WiltedMacPreparationView: View {
 private struct WiltedMacArticleRow: View {
     let model: WiltedMacModel
     let article: WiltedMacArticle
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: WiltedTheme.Spacing.medium) {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                 Text(article.title)
-                    .font(.headline)
+                    .font(WiltedTheme.font(.title))
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 Text(article.source)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .font(WiltedTheme.font(.body))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 Text(article.isReady ? "Ready to play" : "Preparing")
-                    .font(.caption)
-                    .foregroundStyle(article.isReady ? .green : .secondary)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(
+                        article.isReady
+                            ? WiltedTheme.color(.success, scheme: colorScheme)
+                            : WiltedTheme.color(.secondaryText, scheme: colorScheme)
+                    )
             }
             Spacer()
             if article.isReady {
@@ -202,8 +268,7 @@ private struct WiltedMacArticleRow: View {
                 .accessibilityIdentifier("wilted-open-now-playing")
             }
         }
-        .padding(14)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+        .wiltedCard(colorScheme)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-article-row-\(article.id)")
     }
@@ -212,21 +277,23 @@ private struct WiltedMacArticleRow: View {
 private struct WiltedMacNowPlayingView: View {
     let model: WiltedMacModel
     let article: WiltedMacArticle
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(spacing: 22) {
-            Image(systemName: "waveform")
-                .font(.system(size: 52))
-                .foregroundStyle(.tint)
+        VStack(spacing: WiltedTheme.Spacing.xLarge) {
+            WiltedMark(size: 64, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme), lineWidth: 3)
             Text("Now Playing")
-                .font(.largeTitle.weight(.semibold))
+                .font(WiltedTheme.font(.display))
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             Text(article.title)
-                .font(.title2)
+                .font(WiltedTheme.font(.title))
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 .multilineTextAlignment(.center)
             Text(article.source)
-                .foregroundStyle(.secondary)
+                .font(WiltedTheme.font(.body))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
 
-            HStack(spacing: 14) {
+            HStack(spacing: WiltedTheme.Spacing.large) {
                 Button { model.rewind() } label: {
                     Image(systemName: "gobackward.15")
                 }
@@ -244,24 +311,25 @@ private struct WiltedMacNowPlayingView: View {
                 .accessibilityIdentifier("wilted-player-forward")
             }
             .buttonStyle(.bordered)
-            .font(.title2)
+            .font(WiltedTheme.font(.title))
 
             Button("Restart") { model.restartPlayback() }
                 .accessibilityIdentifier("wilted-player-restart")
 
             Button("Recover audio route") { model.recoverAudioRoute() }
                 .accessibilityIdentifier("wilted-player-route-recovery")
-                .font(.caption)
+                .font(WiltedTheme.font(.caption))
 
             if let error = model.playbackError {
                 Text(error)
-                    .foregroundStyle(.red)
+                    .font(WiltedTheme.font(.body))
+                    .foregroundStyle(WiltedTheme.color(.error, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-player-error")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(40)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .padding(WiltedTheme.Spacing.section)
+        .background(WiltedTheme.color(.page, scheme: colorScheme))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Now Playing. \(article.title)")
         .accessibilityIdentifier("wilted-now-playing")
