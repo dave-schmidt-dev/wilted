@@ -219,6 +219,34 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertTrue(harness.engine.isPlaying)
     }
 
+    func testInitialPlayShowsProgressWhilePlaybackPreparationIsBlocked() async throws {
+        let harness = try await PlaybackHarness.make()
+        await harness.model.refresh()
+        let gate = harness.engine.holdNextLoad()
+
+        let play = Task { await harness.model.play(itemID: harness.itemID) }
+        let loadStarted = await gate.waitUntilStarted()
+        XCTAssertTrue(loadStarted)
+        XCTAssertEqual(harness.model.status, .refreshing("Preparing offline audio"))
+
+        gate.release.signal()
+        await play.value
+        XCTAssertEqual(harness.model.status, .playing)
+    }
+
+    func testPlaybackCompletionEventsPreservePlayingAndPausedStatuses() async throws {
+        let harness = try await PlaybackHarness.make()
+        await harness.model.refresh()
+
+        await harness.model.play(itemID: harness.itemID)
+        await drainPlaybackStatusDelivery()
+        XCTAssertEqual(harness.model.status, .playing)
+
+        await harness.model.pause()
+        await drainPlaybackStatusDelivery()
+        XCTAssertEqual(harness.model.status, .paused)
+    }
+
     func testRestartOpensANewSessionInsteadOfFailingTheSequenceFloor() async throws {
         let harness = try await PlaybackHarness.make()
         await harness.model.refresh()
@@ -234,6 +262,28 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertNotEqual(restarted.sessionID, firstSession, "restart should open a new session")
         XCTAssertGreaterThanOrEqual(restarted.sequence, 1)
         XCTAssertEqual(restarted.positionSeconds, 0)
+    }
+
+    func testRestartShowsProgressWhilePlaybackPreparationIsBlocked() async throws {
+        let harness = try await PlaybackHarness.make()
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        let gate = harness.engine.holdNextLoad()
+
+        let restart = Task { await harness.model.restart() }
+        let loadStarted = await gate.waitUntilStarted()
+        XCTAssertTrue(loadStarted)
+        XCTAssertEqual(harness.model.status, .refreshing("Preparing offline audio"))
+
+        gate.release.signal()
+        await restart.value
+        XCTAssertEqual(harness.model.status, .playing)
+    }
+
+    private func drainPlaybackStatusDelivery() async {
+        // The controller publishes completion separately through AsyncStream. Yielding the
+        // main actor drains that observer after the command has set its user-facing status.
+        for _ in 0..<100 { await Task.yield() }
     }
 
     func testBackgroundPersistsLiveEnginePositionInsteadOfStaleSelectedPlayback() async throws {
@@ -704,11 +754,38 @@ private final class FakeAudioEngine: ListenerAudioEngine, @unchecked Sendable {
     let duration: Double
     var currentTime: Double = 0
     private(set) var playing = false
+    private let loadGateLock = NSLock()
+    private var nextLoadGate: LoadGate?
     var isPlaying: Bool { playing }
     init(duration: Double) { self.duration = duration }
-    func load(url: URL) throws {}
+    func holdNextLoad() -> LoadGate {
+        let gate = LoadGate()
+        loadGateLock.withLock { nextLoadGate = gate }
+        return gate
+    }
+    func load(url: URL) throws {
+        let gate = loadGateLock.withLock {
+            defer { nextLoadGate = nil }
+            return nextLoadGate
+        }
+        gate?.started.signal()
+        gate?.release.wait()
+    }
     func play() -> Bool { playing = true; return true }
     func pause() { playing = false }
+}
+
+private final class LoadGate: @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+
+    func waitUntilStarted() async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { [self] in
+                continuation.resume(returning: started.wait(timeout: .now() + 2) == .success)
+            }
+        }
+    }
 }
 
 private struct FakeAudioSession: ListenerAudioSession {

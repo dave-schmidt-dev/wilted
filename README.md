@@ -2,11 +2,11 @@
 
 Local-first native Mac/iOS personal audio system: a Mac producer prepares audio and an iOS listener receives and plays it.
 
-**Status:** Phase 0 through Task 6 are complete; MVP qualification is next.
+**Status:** Local usable-MVP qualification is complete for the current source; physical-device, Production CloudKit, App Store Connect, and TestFlight qualification remain pending.
 
 On 2026-08-17, attended screenshots verified the Wilted iCloud container and both App IDs with iCloud/CloudKit and Push Notifications enabled. This is Apple Developer portal configuration evidence only. The attended Development producer-to-listener round trip it was waiting on completed on 2026-08-18.
 
-The release gate uses seven non-UI regression legs: `xcodegen-reproducible`, `wiltedkit-tests`, `cloudsync-tests`, `listener-tests`, `wiltedproducer-tests`, `macos-unit-tests`, and `ios-unit-tests`. It verifies snapshot baselines and Xcode result bundles without launching either app or taking over the desktop. The Phase 0 run also proves its own harness: one leg is forced to fail before the real pass, so a gate that cannot see a failure fails itself.
+The release gate uses seven non-UI regression legs: `xcodegen-reproducible`, `wiltedkit-tests`, `cloudsync-tests`, `listener-tests`, `wiltedproducer-tests`, `macos-unit-tests`, and `ios-unit-tests`, plus one clean-simulator iOS UI leg covering eight pixel baselines and the account-free MVP journey. Every leg is backed by Xcode or SwiftPM result evidence. The Phase 0 run also proves its own harness: one leg is forced to fail before the real pass, so a gate that cannot see a failure fails itself.
 
 The attended Development CloudKit round trip completed on 2026-08-18 on a physical iPhone 16 Pro Max, and its evidence is read from the device's own persisted state rather than from an on-screen status: three records (`WiltedItem`, `WiltedRevision`, `WiltedPlaybackState`) each carrying server system fields and a change tag, all three acknowledged by the private zone, zero pending changes, zero conflicts, and an account owner token equal to the Mac producer's. The publish, download, offline play, send, and relaunch-reconcile legs each ran, and on 2026-08-18 they ran as one composed pass from a freshly installed app with an empty data container, so the download and first-sign-in owner-token adoption were genuinely exercised rather than inherited from a warm cache. Background playback is real: with the position zeroed first, a 25.17 s background hold leaves the engine at 27.0 s, reproduced across four consecutive runs, and a foreground hold of the same length gives 25.0 s. The journey that measures it is not yet reliable, though -- it intermittently reports 0.0 s at other hold lengths, which is a test race rather than a playback failure but is not yet eliminated, so treat the background leg as demonstrated rather than gated. Playback is served from the local cache, and no airplane-mode run was performed, so this is cache-backed rather than a proven radio-off journey.
 
@@ -14,7 +14,7 @@ Pre-fix attended screenshots captured a live account-change transition from Canc
 
 The CloudKit Console now shows private zone `WiltedZone` after an attended Development run. This is user-observed zone-bootstrap evidence only, not proof of post-fix account recovery or a producer-to-listener record round trip.
 
-On 2026-08-18 an attended Development run published the producer half of the round trip: two queued records reached the private zone, verified by decoding the persisted repository state rather than by reading the status surface. Three defects were found and fixed during that run, including a first-sign-in deadlock in which a sync engine with no persisted state always reported a sign-in, the gate quarantined every sign-in, and the first sync could therefore never send the state that would have prevented the next one. Listener download, playback, reconciliation, and deletion remain unproven; the fixed listener build is not yet installed on the paired iPhone.
+On 2026-08-18 an attended Development run published and reconciled the producer-to-listener round trip on the paired iPhone, including listener download, cached playback, playback-state acknowledgement, and relaunch reconciliation. That evidence is historical Development/device evidence only; the current source still requires fresh physical-device and Production CloudKit qualification before any App Store Connect or TestFlight claim.
 
 ## Priorities (in order)
 

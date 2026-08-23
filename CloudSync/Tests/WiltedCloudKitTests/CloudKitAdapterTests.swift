@@ -56,6 +56,10 @@ private actor FakeEngineDriver: CloudKitEngineDriver {
     let holdSecondPendingAdd: Bool
     let pendingRelease: AsyncStream<Void>.Continuation
     let pendingReleaseStream: AsyncStream<Void>
+    let holdRecordFetch: Bool
+    let recordFetchRelease: AsyncStream<Void>.Continuation
+    let recordFetchReleaseStream: AsyncStream<Void>
+    private(set) var recordFetchCalls = 0
     private(set) var cancelled = false
     private var explicitRecords: [CKRecord] = []
     let zoneFailure: CloudKitSyncError?
@@ -66,10 +70,11 @@ private actor FakeEngineDriver: CloudKitEngineDriver {
     let zoneReleaseStream: AsyncStream<Void>
 
     init(zoneFailure: CloudKitSyncError? = nil, zoneNotFoundFetches: Int = 0, zoneNotFoundSends: Int = 0,
-         holdZoneBootstrap: Bool = false, holdSecondPendingAdd: Bool = false) {
+         holdZoneBootstrap: Bool = false, holdSecondPendingAdd: Bool = false, holdRecordFetch: Bool = false) {
         let (events, continuation) = AsyncStream<CloudKitEngineEvent>.makeStream()
         let (zoneReleaseStream, zoneRelease) = AsyncStream<Void>.makeStream()
         let (pendingReleaseStream, pendingRelease) = AsyncStream<Void>.makeStream()
+        let (recordFetchReleaseStream, recordFetchRelease) = AsyncStream<Void>.makeStream()
         self.events = events
         self.continuation = continuation
         self.zoneFailure = zoneFailure
@@ -81,6 +86,9 @@ private actor FakeEngineDriver: CloudKitEngineDriver {
         self.holdSecondPendingAdd = holdSecondPendingAdd
         self.pendingRelease = pendingRelease
         self.pendingReleaseStream = pendingReleaseStream
+        self.holdRecordFetch = holdRecordFetch
+        self.recordFetchRelease = recordFetchRelease
+        self.recordFetchReleaseStream = recordFetchReleaseStream
     }
 
     func ensureZone() async throws {
@@ -100,6 +108,10 @@ private actor FakeEngineDriver: CloudKitEngineDriver {
     }
     func cancelOperations() async { cancelled = true }
     func fetchRecords(_ ids: [CKRecord.ID]) async throws -> [CKRecord] {
+        recordFetchCalls += 1
+        if holdRecordFetch {
+            for await _ in recordFetchReleaseStream { break }
+        }
         let requested = Set(ids)
         return explicitRecords.filter { requested.contains($0.recordID) }
     }
@@ -118,6 +130,7 @@ private actor FakeEngineDriver: CloudKitEngineDriver {
     func emit(_ event: CloudKitEngineEvent) { continuation.yield(event) }
     func releaseZoneBootstrap() { zoneRelease.yield(()) }
     func releasePendingAdd() { pendingRelease.yield(()) }
+    func releaseRecordFetch() { recordFetchRelease.yield(()) }
     func waitForEnsureCall(maxYields: Int = 2_000) async -> Bool {
         for _ in 0..<maxYields {
             if ensureCalls > 0 { return true }
@@ -159,6 +172,13 @@ private actor FakeEngineDriver: CloudKitEngineDriver {
             await Task.yield()
         }
         return pendingAddCalls >= expected
+    }
+    func waitForRecordFetch(maxYields: Int = 2_000) async -> Bool {
+        for _ in 0..<maxYields {
+            if recordFetchCalls > 0 { return true }
+            await Task.yield()
+        }
+        return recordFetchCalls > 0
     }
 }
 
@@ -320,6 +340,85 @@ func chunkRecordsRetrieveAndValidate() async throws {
     let reconstructed = try await transport.fetchAudioChunks(itemID: item, revisionID: revisionID,
                                                                manifest: chunked.manifest)
     #expect(reconstructed == sourceBytes)
+}
+
+@Test("account change during chunk zone bootstrap cannot reconstruct audio")
+func accountChangeDuringChunkZoneBootstrap() async throws {
+    let stager = try TestStager()
+    let mapper = try mapper(stager: stager)
+    let item = try article("chunk-account-change").0.itemID
+    let revisionID = try RevisionID(rawValue: "rev-chunk-account-change")
+    let sourceBytes = Data("0123456789".utf8)
+    let chunked = try AudioChunking.chunk(sourceBytes, chunkSize: 4)
+    let records = try chunked.manifest.chunks.map { descriptor -> CKRecord in
+        let source = stager.root.appendingPathComponent("quarantine-chunk-\(descriptor.index)")
+        try chunked.chunks[descriptor.index].write(to: source)
+        let asset = try WiltedAsset(assetID: "chunkAsset-\(descriptor.index)", contentHash: "sha256:\(descriptor.sha256)")
+        let envelope = try WiltedRecordCodec().encode(revisionChunk: item, revisionID: revisionID,
+                                                       descriptor: descriptor, chunkAsset: asset)
+        return try mapper.encodeChunk(envelope, assetURL: source)
+    }
+    let driver = FakeEngineDriver(holdZoneBootstrap: true)
+    await driver.setExplicitRecords(records)
+    let transport = try CloudKitSyncTransport(driver: driver, role: .iphone, mapper: mapper)
+    let fetch = Task { try await transport.fetchAudioChunks(itemID: item, revisionID: revisionID, manifest: chunked.manifest) }
+    guard await driver.waitForEnsureCall() else {
+        await transport.cancel()
+        Issue.record("chunk zone bootstrap did not start")
+        return
+    }
+    await driver.emit(.accountChanged(.switchAccounts))
+    for _ in 0..<100 {
+        if await transport.isQuarantined() { break }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(await transport.isQuarantined())
+    await driver.releaseZoneBootstrap()
+    do { _ = try await fetch.value; Issue.record("expected account-change failure") }
+    catch let error as CloudKitSyncError { #expect(error == .accountChanged) }
+}
+
+@Test("account change during chunk record fetch cannot reconstruct audio")
+func accountChangeDuringChunkRecordFetch() async throws {
+    let stager = try TestStager()
+    let mapper = try mapper(stager: stager)
+    let item = try article("chunk-record-fetch-account-change").0.itemID
+    let revisionID = try RevisionID(rawValue: "rev-chunk-record-fetch-account-change")
+    let sourceBytes = Data("0123456789".utf8)
+    let chunked = try AudioChunking.chunk(sourceBytes, chunkSize: 4)
+    let records = try chunked.manifest.chunks.map { descriptor -> CKRecord in
+        let source = stager.root.appendingPathComponent("held-chunk-\(descriptor.index)")
+        try chunked.chunks[descriptor.index].write(to: source)
+        let asset = try WiltedAsset(assetID: "chunkAsset-\(descriptor.index)", contentHash: "sha256:\(descriptor.sha256)")
+        let envelope = try WiltedRecordCodec().encode(revisionChunk: item, revisionID: revisionID,
+                                                       descriptor: descriptor, chunkAsset: asset)
+        return try mapper.encodeChunk(envelope, assetURL: source)
+    }
+    let driver = FakeEngineDriver(holdRecordFetch: true)
+    await driver.setExplicitRecords(records)
+    let transport = try CloudKitSyncTransport(driver: driver, role: .iphone, mapper: mapper)
+    let fetch = Task { try await transport.fetchAudioChunks(itemID: item, revisionID: revisionID,
+                                                             manifest: chunked.manifest) }
+    guard await driver.waitForRecordFetch() else {
+        await transport.cancel()
+        Issue.record("chunk record fetch did not start")
+        return
+    }
+
+    await driver.emit(.accountChanged(.switchAccounts))
+    for _ in 0..<100 {
+        if await transport.isQuarantined() { break }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(await transport.isQuarantined())
+    await driver.releaseRecordFetch()
+
+    do {
+        let reconstructed = try await fetch.value
+        Issue.record("quarantined fetch reconstructed \(reconstructed.count) bytes")
+    } catch let error as CloudKitSyncError {
+        #expect(error == .accountChanged)
+    }
 }
 
 @Test("explicit chunk retrieval fails closed for missing or corrupt chunks")

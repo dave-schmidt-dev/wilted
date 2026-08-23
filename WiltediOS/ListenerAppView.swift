@@ -114,7 +114,9 @@ public struct WiltedListenerLibraryView: View {
             HStack {
                 Button("Rewind") { Task { await model.rewind() } }
                     .accessibilityIdentifier(WiltedScreenCopy.playerRewindIdentifier)
-                Button("Pause") { Task { await model.pause() } }
+                Button(playbackIsPlaying ? "Pause" : "Play") {
+                    Task { await togglePlayback() }
+                }
                     .accessibilityIdentifier(WiltedScreenCopy.playerPlayPauseIdentifier)
                 Button("Restart") { Task { await model.restart() } }
                     .accessibilityIdentifier("wilted-listener-restart")
@@ -137,6 +139,19 @@ public struct WiltedListenerLibraryView: View {
                 await model.refreshNowPlayingReadout()
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
+        }
+    }
+
+    private var playbackIsPlaying: Bool {
+        if case .playing = model.status { return true }
+        return false
+    }
+
+    private func togglePlayback() async {
+        if playbackIsPlaying {
+            await model.pause()
+        } else if let itemID = model.selectedItemID {
+            await model.play(itemID: itemID)
         }
     }
 

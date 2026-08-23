@@ -159,6 +159,7 @@ public actor CloudKitSyncTransport: SyncTransport {
     /// whole-file hash. Metadata sync never calls this method.
     public func fetchAudioChunks(itemID: ItemID, revisionID: RevisionID,
                                  manifest: AudioChunkManifest) async throws -> Data {
+        let operationGeneration = operationGenerationValue
         guard !quarantined else { throw CloudKitSyncError.quarantined }
         let ids = try manifest.chunks.map {
             CKRecord.ID(recordName: try WiltedRecordID.revisionChunk(itemID, revisionID, index: $0.index).recordName,
@@ -166,10 +167,24 @@ public actor CloudKitSyncTransport: SyncTransport {
         }
         emit(.init(phase: .fetching, message: "Fetching selected audio chunks"))
         do { try await driver.ensureZone() }
-        catch { throw CloudKitSyncError.map(error) }
+        catch {
+            throw quarantined || operationGeneration != operationGenerationValue
+                ? .accountChanged
+                : CloudKitSyncError.map(error)
+        }
+        guard !quarantined, operationGeneration == operationGenerationValue else {
+            throw CloudKitSyncError.accountChanged
+        }
         let records: [CKRecord]
         do { records = try await driver.fetchRecords(ids) }
-        catch { throw CloudKitSyncError.map(error) }
+        catch {
+            throw quarantined || operationGeneration != operationGenerationValue
+                ? .accountChanged
+                : CloudKitSyncError.map(error)
+        }
+        guard !quarantined, operationGeneration == operationGenerationValue else {
+            throw CloudKitSyncError.accountChanged
+        }
         var byID: [String: CKRecord] = [:]
         for record in records { byID[record.recordID.recordName] = record }
         var chunks: [Data] = []

@@ -73,9 +73,17 @@ inspection or simulator snapshots:
 ## Current disposition
 
 The walkthrough is complete as a source-backed candidate inventory. On
-2026-08-23, `make validate` passed its 10 Phase 0 legs and all 8 native legs,
-including 32 Mac tests, 33 iOS unit tests, 162 Mac pixel baselines, and 8 iOS
-pixel tests executed on the clean simulator fixture. Existing 2026-08-21 device
+2026-08-23, final `make validate` passed its 10 Phase 0 legs and all 8 native
+legs, including CloudSync 44, 32 Mac unit tests, 38 iOS unit tests, 162 Mac pixel
+baselines, and the clean-simulator UI leg 9/9: eight pixel cases plus the
+account-free journey. Focused checks also passed the listener model 24/24 and a
+Release build containing no MVP fixture symbols.
+That journey reached Download, Downloads selection, the playback panel, account
+quarantine, and recovery through the shipping listener views. After fixing the
+playback status observer race and now-playing toggle, it passed 1/1 with
+explicit paused, resumed-playing, and recovery assertions. The
+journey uses deterministic local audio and does not prove CloudKit or physical
+audio behavior. Existing 2026-08-21 device
 captures and prior release receipts remain historical evidence only. Task 7
 remains pending until the physical-device, Production CloudKit, App Store
 Connect, and TestFlight boundaries are independently evidenced and reviewed.

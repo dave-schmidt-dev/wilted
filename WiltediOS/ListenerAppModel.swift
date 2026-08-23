@@ -190,7 +190,9 @@ public final class WiltedListenerAppModel: ObservableObject {
         if let repository { observe(repository.statuses) }
         if let transport { observe(transport.statuses) }
         if let cache { observe(cache.statuses) }
-        if let playback { observe(playback.statuses) }
+        // Playback commands set their final presentation state directly. Their status stream
+        // is still consumed, but never used to overwrite those command results later.
+        if let playback { observePlayback(playback.statuses) }
     }
 
     public static func makeDefault() -> WiltedListenerAppModel {
@@ -466,6 +468,7 @@ public final class WiltedListenerAppModel: ObservableObject {
             status = .failed("Playback state could not be created", retryable: false)
             return
         }
+        status = .refreshing("Preparing offline audio")
         do {
             let updated = try await playback.play(asset: asset, title: item.title, state: state)
             try await recordPlayback(updated)
@@ -586,6 +589,35 @@ public final class WiltedListenerAppModel: ObservableObject {
         accountQuarantined = false
         status = .ready
     }
+
+#if DEBUG
+    /// Installs deterministic catalog state for the account-free UI fixture.
+    /// This is internal to the app target so the production composition cannot
+    /// accidentally use fixture data.
+    func installMVPFixture(item: ListenerLibraryItem, revision: AudioRevision, asset: WiltedAsset) {
+        items = [item]
+        revisionByItem = [item.itemID: revision]
+        assetByItem = [item.itemID: asset]
+        manifestByItem = [:]
+        playbackByItem = [:]
+        status = .ready
+    }
+
+    /// Drives the recovery state exposed only by the account-free UI fixture.
+    func quarantineForMVPFixture() {
+        accountQuarantined = true
+        invalidateCurrentOperation()
+        status = .failed("iCloud account switch detected; sync is quarantined", retryable: false)
+    }
+
+    /// Recovers the account-free UI fixture after its simulated quarantine.
+    func recoverMVPFixture() async {
+        guard session == nil, accountQuarantined else { return }
+        accountQuarantined = false
+        await updateDownloadedStates()
+        status = .ready
+    }
+#endif
 
     public func install(remoteCommands: any ListenerRemoteCommands) async {
         await playback?.install(remoteCommands: remoteCommands)
@@ -733,6 +765,7 @@ public final class WiltedListenerAppModel: ObservableObject {
     private func positionChange(item: ListenerLibraryItem, asset: WiltedAsset,
                                 playback: ListenerPlaybackController, current: PlaybackState,
                                 position: Double, intent: PlaybackIntent, newSession: Bool) async {
+        status = .refreshing("Preparing offline audio")
         do {
             let updated = try await playback.play(asset: asset, title: item.title,
                                                   state: try nextPlayback(current, position: position,
@@ -754,11 +787,14 @@ public final class WiltedListenerAppModel: ObservableObject {
     }
 
     private func recordPlayback(_ state: PlaybackState) async throws {
+        // Keep the local playback projection current even when a deliberately
+        // account-free composition has no sync repository. Production still
+        // enqueues the same durable change immediately below.
+        playbackByItem[state.itemID] = state
         guard let repository else { return }
         let envelope = try WiltedRecordCodec().encode(playback: state)
         let change = try SyncPendingChange(operation: .update, recordID: envelope.id, record: envelope)
         try await repository.enqueue(change)
-        playbackByItem[state.itemID] = state
         try await metadataSaver?(ListenerMetadata(lastPlayedRecordID: envelope.id, lastPositionSeconds: state.positionSeconds))
     }
 
@@ -852,6 +888,12 @@ public final class WiltedListenerAppModel: ObservableObject {
     private func observe(_ stream: AsyncStream<SyncStatus>) {
         statusTasks.append(Task { [weak self] in
             for await event in stream { self?.receive(event) }
+        })
+    }
+
+    private func observePlayback(_ stream: AsyncStream<SyncStatus>) {
+        statusTasks.append(Task {
+            for await _ in stream {}
         })
     }
 

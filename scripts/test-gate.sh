@@ -11,6 +11,7 @@ native_self_test="${NATIVE_SELF_TEST:-0}"
 forced_fail_leg="${NATIVE_FORCE_FAIL_LEG:-}"
 forced_zero_leg="${NATIVE_FORCE_ZERO_TEST_LEG:-}"
 forced_snapshot_baseline="${NATIVE_FORCE_SNAPSHOT_BASELINE:-}"
+forced_missing_ios_mvp_journey="${NATIVE_FORCE_MISSING_IOS_MVP_JOURNEY:-0}"
 wilted_development_team="${WILTED_DEVELOPMENT_TEAM:-4CJ49V6QHW}"
 xcode_test_timeout_seconds="${WILTED_XCODE_TEST_TIMEOUT_SECONDS:-300}"
 # The iOS pixel baselines were recorded on iPhone 17 Pro. Selecting it by name
@@ -233,7 +234,7 @@ parse_result_bundle_test_count() {
 expected_test_count_floor() {
   case "$1" in
     macos-unit-tests) printf '10\n' ;;
-    ios-pixel-snapshot-tests) printf '8\n' ;;
+    ios-pixel-snapshot-tests) printf '9\n' ;;
     *) printf '1\n' ;;
   esac
 }
@@ -247,10 +248,12 @@ assert_result_bundle_tests() {
   if [[ "$native_self_test" == "1" ]]; then
     if is_forced_zero "$label"; then
       printf '%s\n' '{"totalTestCount":0}' >"$summary_file"
+    elif [[ "$label" == "ios-pixel-snapshot-tests" && "$forced_missing_ios_mvp_journey" == "1" ]]; then
+      printf '%s\n' '{"totalTestCount":8}' >"$summary_file"
     elif [[ "$label" == "macos-unit-tests" ]]; then
       printf '%s\n' '{"totalTestCount":10}' >"$summary_file"
     elif [[ "$label" == "ios-pixel-snapshot-tests" ]]; then
-      printf '%s\n' '{"totalTestCount":8}' >"$summary_file"
+      printf '%s\n' '{"totalTestCount":9}' >"$summary_file"
     else
       printf '%s\n' '{"totalTestCount":2}' >"$summary_file"
     fi
@@ -620,6 +623,11 @@ xcode_test_leg() {
   local destination="$4"
   local target="$5"
   local project
+  shift 5
+  local only_testing_args=(-only-testing:"$target")
+  for target in "$@"; do
+    only_testing_args+=(-only-testing:"$target")
+  done
 
   [[ -f "$integration_root/project.yml" ]] || fail "missing integration XcodeGen source"
   require_tool xcodebuild
@@ -632,7 +640,7 @@ xcode_test_leg() {
   xcodebuild test \
     -project "$project" \
     -scheme "$scheme" \
-    -only-testing:"$target" \
+    "${only_testing_args[@]}" \
     -destination "$destination" \
     -derivedDataPath "$derived_data/$label" \
     -resultBundlePath "$tmp_root/$label.xcresult" \
@@ -810,7 +818,9 @@ leg_ios_ui_tests() (
   xcrun simctl bootstatus "$udid" -b >&2
   printf 'native.simulator.ready udid=%s purpose=ios-ui-tests\n' "$udid" >&2
   xcode_test_leg ios-pixel-snapshot-tests "$integration_root/WiltediOSUITests" WiltediOS \
-    "platform=iOS Simulator,id=$udid" WiltediOSUITests/WiltediOSPixelSnapshotTests
+    "platform=iOS Simulator,id=$udid" \
+    WiltediOSUITests/WiltediOSPixelSnapshotTests \
+    WiltediOSUITests/WiltediOSMVPFlowUITests
 )
 
 prepare_integration_root() {

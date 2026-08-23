@@ -285,6 +285,7 @@ assert_snapshot_contract() {
   assert_contains 'expected_test_count_floor' "$gate"
   assert_contains 'macos-unit-tests) printf' "$gate"
   assert_contains 'ios-pixel-snapshot-tests) printf' "$gate"
+  assert_contains "printf '%s\\n' '{\"totalTestCount\":9}'" "$gate"
   for method in \
     testEveryPreviewStateHasLightAndDarkPixelBaselines \
     testPixelSnapshotSelectorsAreUniqueAndComplete \
@@ -378,6 +379,7 @@ assert_ios_ui_clean_simulator_contract() {
     exit 1
   }
   assert_block_contains 'WiltediOSUITests/WiltediOSPixelSnapshotTests' "$ios_ui_block"
+  assert_block_contains 'WiltediOSUITests/WiltediOSMVPFlowUITests' "$ios_ui_block"
   if printf '%s\n' "$ios_ui_block" | rg -q 'WiltediOSSmokeUITests|WiltediOSAttendedCloudKitUITests|[[:space:]]WiltediOSUITests$'; then
     printf '%s\n' 'assertion failed: iOS pixel leg must exclude smoke and attended UI tests' >&2
     exit 1
@@ -385,6 +387,28 @@ assert_ios_ui_clean_simulator_contract() {
 }
 
 assert_ios_ui_clean_simulator_contract
+
+assert_ios_mvp_journey_contract() {
+  local fixture="$repo_root/WiltediOS/ListenerMVPFixture.swift"
+  local app="$repo_root/WiltediOS/WiltediOSApp.swift"
+  local listener_view="$repo_root/WiltediOS/ListenerAppView.swift"
+  local journey="$repo_root/WiltediOSUITests/WiltediOSMVPFlowUITests.swift"
+
+  assert_contains '#if DEBUG' "$fixture"
+  assert_contains '#if DEBUG' "$app"
+  assert_contains 'ListenerMVPFixture.makeModel()' "$app"
+  assert_contains 'testAccountFreeListenerJourneyDownloadsPlaysResumesAndRecovers' "$journey"
+  assert_contains 'wilted-player-play-pause' "$journey"
+  assert_contains 'Button(playbackIsPlaying ? "Pause" : "Play")' "$listener_view"
+  assert_contains 'await model.play(itemID: itemID)' "$listener_view"
+  assert_contains 'XCTAssertEqual(resumeControl.label, "Play")' "$journey"
+  if rg -q 'app\.buttons\["Play"\]' "$journey"; then
+    printf '%s\n' 'assertion failed: MVP resume must use the now-playing control identifier' >&2
+    exit 1
+  fi
+}
+
+assert_ios_mvp_journey_contract
 
 assert_result_bundle_contract() {
   if rg -q 'xcodebuild.*(Executed [0-9]+ tests|Test run with [0-9]+ tests)' "$gate"; then
@@ -433,6 +457,13 @@ pixel_zero_status="$(run_case pixel-zero "$pixel_zero_log" \
 [[ "$pixel_zero_status" -ne 0 ]] || { cat "$pixel_zero_log" >&2; exit 1; }
 assert_contains 'native.zero-tests label=ios-pixel-snapshot-tests' "$pixel_zero_log"
 assert_contains 'native.failed count=1' "$pixel_zero_log"
+
+mvp_missing_log="$tmp_dir/mvp-missing.log"
+mvp_missing_status="$(run_case mvp-missing "$mvp_missing_log" \
+  env NATIVE_FORCE_MISSING_IOS_MVP_JOURNEY=1 bash "$gate")"
+[[ "$mvp_missing_status" -ne 0 ]] || { cat "$mvp_missing_log" >&2; exit 1; }
+assert_contains 'native.insufficient-tests label=ios-pixel-snapshot-tests reported=8 expected_minimum=9' "$mvp_missing_log"
+assert_contains 'native.failed count=1' "$mvp_missing_log"
 
 package_zero_log="$tmp_dir/package-zero.log"
 package_zero_status="$(run_case package-zero "$package_zero_log" env NATIVE_FORCE_ZERO_TEST_LEG=wiltedproducer-tests bash "$gate")"
