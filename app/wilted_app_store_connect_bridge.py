@@ -32,7 +32,7 @@ PRODUCT = "wilted-ios"
 BUNDLE_ID = "com.zerodelta.wilted.ios"
 INTERNAL_GROUP_NAME = "Wilted Internal Testers"
 API_BASE = "https://api.appstoreconnect.apple.com/v1"
-OPERATIONS = frozenset({"app-registration", "identity-allocation", "upload", "processing", "compliance", "tester-group", "assignment", "device-health", "notification"})
+OPERATIONS = frozenset({"app-registration", "identity-allocation", "build-lookup", "upload", "processing", "compliance", "tester-group", "assignment", "device-health", "notification"})
 _CANDIDATE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _POSITIVE = re.compile(r"^[1-9][0-9]*$")
@@ -87,7 +87,7 @@ def write_json(path: Path, payload: Mapping[str, Any], *, exclusive: bool = Fals
 def blocked(operation: str, candidate: str | None, reason: str) -> int:
     payload: dict[str, Any] = {
         "proofVersion": "1.0.0",
-        "operationClass": {"identity-allocation": "identityAllocation", "tester-group": "testerGroup", "device-health": "deviceHealth"}.get(operation, operation),
+        "operationClass": {"identity-allocation": "identityAllocation", "build-lookup": "buildLookup", "tester-group": "testerGroup", "device-health": "deviceHealth"}.get(operation, operation),
         "result": "blocked", "observedAt": now(), "reason": reason, "code": reason,
         "responseSha256": digest({"operation": operation, "candidateId": candidate, "reason": reason}),
     }
@@ -519,6 +519,105 @@ def _exact_build(response: Mapping[str, Any], *, version: str, build: str) -> tu
     return match["id"], state
 
 
+def _lookup_build(response: Mapping[str, Any], *, version: str, build: str) -> tuple[str | None, str]:
+    """Resolve the exact registered-app build, allowing a safe absent result."""
+
+    data = response.get("data")
+    if not isinstance(data, list):
+        raise ASCError("app-store-connect-response-invalid")
+    links = response.get("links")
+    if links is not None and not isinstance(links, Mapping):
+        raise ASCError("app-store-connect-pagination-invalid")
+    if isinstance(links, Mapping) and links.get("next") is not None:
+        raise ASCError("app-store-connect-pagination-unexpected")
+    if not data:
+        included = response.get("included", [])
+        if not isinstance(included, list):
+            raise ASCError("app-store-connect-response-invalid")
+        return None, "absent"
+    included = response.get("included")
+    if not isinstance(included, list):
+        raise ASCError("app-store-connect-response-invalid")
+    if len(data) != 1:
+        raise ASCError("app-store-connect-exact-build-ambiguous")
+    item = data[0]
+    attributes = item.get("attributes") if isinstance(item, Mapping) else None
+    identifier = item.get("id") if isinstance(item, Mapping) else None
+    if (
+        not isinstance(item, Mapping)
+        or item.get("type") != "builds"
+        or not isinstance(identifier, str)
+        or not identifier
+        or not isinstance(attributes, Mapping)
+        or str(attributes.get("version")) != build
+    ):
+        raise ASCError("app-store-connect-exact-build-mismatch")
+    state = attributes.get("processingState")
+    relationships = item.get("relationships")
+    prerelease = relationships.get("preReleaseVersion") if isinstance(relationships, Mapping) else None
+    prerelease_data = prerelease.get("data") if isinstance(prerelease, Mapping) else None
+    prerelease_id = prerelease_data.get("id") if isinstance(prerelease_data, Mapping) else None
+    versions = [
+        entry for entry in included
+        if isinstance(entry, Mapping)
+        and entry.get("type") == "preReleaseVersions"
+        and entry.get("id") == prerelease_id
+        and isinstance(entry.get("attributes"), Mapping)
+        and entry["attributes"].get("version") == version
+    ]
+    if len(versions) != 1:
+        raise ASCError("app-store-connect-exact-build-mismatch")
+    normalized = {"VALID": "ready", "PROCESSING": "processing", "FAILED": "failed", "INVALID": "failed"}.get(state)
+    if normalized is None:
+        raise ASCError("app-store-connect-build-processing-state-invalid")
+    return identifier, normalized
+
+
+def build_lookup_candidate(
+    candidate: str,
+    *,
+    root: Path = ROOT,
+    request: Callable[[str, str, str, Mapping[str, Any] | None], Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Reconcile one exact candidate build without uploading or mutating Apple."""
+
+    if not _CANDIDATE.fullmatch(candidate):
+        raise ASCError("candidate-identity-invalid")
+    version, build = _candidate_release(candidate, root=root)
+    artifact = _ipa(candidate, root=root)
+    artifact_sha = _sha256(artifact)
+    if request is None:
+        bearer = token()
+        request = lambda method, path, bearer, body: request_json(path, bearer, method=method, body=body)
+    else:
+        bearer = "test"
+    app_id = _one_app(request("GET", f"/apps?filter[bundleId]={urllib.parse.quote(BUNDLE_ID, safe='')}&limit=2", bearer, None))
+    query = urllib.parse.urlencode({
+        "filter[app]": app_id,
+        "filter[version]": build,
+        "filter[preReleaseVersion.platform]": "IOS",
+        "include": "preReleaseVersion",
+        "fields[builds]": "version,processingState,preReleaseVersion",
+        "fields[preReleaseVersions]": "version",
+        "limit": "200",
+    })
+    identifier, state = _lookup_build(request("GET", f"/builds?{query}", bearer, None), version=version, build=build)
+    if identifier is None:
+        return {
+            "proofVersion": "1.0.0", "operationClass": "buildLookup", "candidateId": candidate,
+            "marketingVersion": version, "buildNumber": build, "result": "passed",
+            "lookupResult": "absent", "processingState": "absent",
+            "responseSha256": digest({"candidateId": candidate, "build": build, "visible": False, "processingState": "absent"}),
+        }
+    return {
+        "proofVersion": "1.0.0", "operationClass": "buildLookup", "candidateId": candidate,
+        "marketingVersion": version, "buildNumber": build, "result": "passed",
+        "lookupResult": "found", "processingState": state, "remoteIdentifier": identifier,
+        "uploadedBuildIdentifier": identifier, "signedArtifactSha256": artifact_sha,
+        "responseSha256": digest({"candidateId": candidate, "buildId": identifier, "processingState": state}),
+    }
+
+
 def process_candidate(
     candidate: str,
     *,
@@ -734,6 +833,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--operation", required=True, choices=sorted(OPERATIONS))
     parser.add_argument("--product", required=True)
     parser.add_argument("--candidate")
+    parser.add_argument("--marketing-version")
+    parser.add_argument("--build-number")
     args = parser.parse_args(argv)
     if args.product != PRODUCT:
         return blocked(args.operation, args.candidate, "product-identity-mismatch")
@@ -766,6 +867,23 @@ def main(argv: list[str] | None = None) -> int:
             return blocked(args.operation, args.candidate, "candidate-identity-invalid")
         try:
             proof = process_candidate(args.candidate)
+            path = evidence_path(args.operation, args.candidate)
+            write_json(path, proof)
+        except (ASCError, OSError, ValueError) as error:
+            return blocked(args.operation, args.candidate, str(error))
+        print(json.dumps({"operation": args.operation, "result": "passed", "proofPath": str(path.relative_to(ROOT))}, sort_keys=True))
+        return 0
+    if args.operation == "build-lookup":
+        if args.candidate is None or not _CANDIDATE.fullmatch(args.candidate):
+            return blocked(args.operation, args.candidate, "candidate-identity-invalid")
+        try:
+            expected_version, expected_build = _candidate_release(args.candidate)
+            if (
+                args.marketing_version is not None and args.marketing_version != expected_version
+                or args.build_number is not None and args.build_number != expected_build
+            ):
+                return blocked(args.operation, args.candidate, "candidate-identity-mismatch")
+            proof = build_lookup_candidate(args.candidate)
             path = evidence_path(args.operation, args.candidate)
             write_json(path, proof)
         except (ASCError, OSError, ValueError) as error:

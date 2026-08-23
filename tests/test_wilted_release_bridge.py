@@ -264,6 +264,134 @@ class IdentityAllocationTests(unittest.TestCase):
         self.assertEqual(requests[1], "/buildUploads/upload-1")
         self.assertIn("filter%5Bversion%5D=1", requests[2])
 
+    def test_build_lookup_records_absent_without_uploading(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            candidate = "0.2.0-1"
+            manifest = root / ".git/release-state/wilted-ios/candidates" / candidate / "manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({"formatVersion": 2, "immutable": True, "productIdentifier": "wilted-ios", "candidateId": candidate, "release": {"frozen": True, "marketingVersion": "0.2.0", "buildNumber": 1}}), encoding="utf-8")
+            artifact = root / ".release-state/artifacts" / candidate / "WiltediOS.ipa"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_bytes(b"signed-ipa")
+            requests: list[str] = []
+
+            def request(method: str, path: str, _: str, body: dict | None) -> dict:
+                self.assertEqual((method, body), ("GET", None))
+                requests.append(path)
+                if path.startswith("/apps?"):
+                    return {"data": [{"type": "apps", "id": "app-1", "attributes": {"bundleId": BRIDGE.BUNDLE_ID}}]}
+                return {"data": []}
+
+            proof = BRIDGE.build_lookup_candidate(candidate, root=root, request=request)
+
+        self.assertEqual(proof["lookupResult"], "absent")
+        self.assertEqual(proof["processingState"], "absent")
+        self.assertEqual(proof["operationClass"], "buildLookup")
+        self.assertEqual(len(requests), 2)
+        self.assertIn("filter%5Bversion%5D=1", requests[1])
+
+    def test_build_lookup_main_blocks_cli_identity_mismatch_without_credentials(self) -> None:
+        with (
+            patch.object(BRIDGE, "_candidate_release", return_value=("0.2.0", "1")),
+            patch.object(BRIDGE, "blocked", return_value=3) as blocked,
+        ):
+            result = BRIDGE.main([
+                "--operation", "build-lookup",
+                "--product", BRIDGE.PRODUCT,
+                "--candidate", "0.2.0-1",
+                "--marketing-version", "0.2.1",
+                "--build-number", "1",
+            ])
+
+        self.assertEqual(result, 3)
+        blocked.assert_called_once_with("build-lookup", "0.2.0-1", "candidate-identity-mismatch")
+
+    def test_build_lookup_normalizes_an_exact_found_build(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            candidate = "0.2.0-2"
+            manifest = root / ".git/release-state/wilted-ios/candidates" / candidate / "manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({"formatVersion": 2, "immutable": True, "productIdentifier": "wilted-ios", "candidateId": candidate, "release": {"frozen": True, "marketingVersion": "0.2.0", "buildNumber": 2}}), encoding="utf-8")
+            artifact = root / ".release-state/artifacts" / candidate / "WiltediOS.ipa"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_bytes(b"signed-ipa")
+
+            def request(method: str, path: str, _: str, body: dict | None) -> dict:
+                self.assertEqual((method, body), ("GET", None))
+                if path.startswith("/apps?"):
+                    return {"data": [{"type": "apps", "id": "app-1", "attributes": {"bundleId": BRIDGE.BUNDLE_ID}}]}
+                return {"data": [{"type": "builds", "id": "build-2", "attributes": {"version": "2", "processingState": "VALID"}, "relationships": {"preReleaseVersion": {"data": {"type": "preReleaseVersions", "id": "pre-1"}}}}], "included": [{"type": "preReleaseVersions", "id": "pre-1", "attributes": {"version": "0.2.0"}}]}
+
+            proof = BRIDGE.build_lookup_candidate(candidate, root=root, request=request)
+
+        self.assertEqual(proof["lookupResult"], "found")
+        self.assertEqual(proof["processingState"], "ready")
+        self.assertEqual(proof["remoteIdentifier"], "build-2")
+        self.assertEqual(proof["signedArtifactSha256"], hashlib.sha256(b"signed-ipa").hexdigest())
+
+    def test_build_lookup_normalizes_processing_and_terminal_failure_states(self) -> None:
+        for index, (remote_state, expected_state) in enumerate((("PROCESSING", "processing"), ("FAILED", "failed"), ("INVALID", "failed")), start=10):
+            with self.subTest(remote_state=remote_state), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                candidate = f"0.2.0-{index}"
+                manifest = root / ".git/release-state/wilted-ios/candidates" / candidate / "manifest.json"
+                manifest.parent.mkdir(parents=True)
+                manifest.write_text(json.dumps({"formatVersion": 2, "immutable": True, "productIdentifier": "wilted-ios", "candidateId": candidate, "release": {"frozen": True, "marketingVersion": "0.2.0", "buildNumber": index}}), encoding="utf-8")
+                artifact = root / ".release-state/artifacts" / candidate / "WiltediOS.ipa"
+                artifact.parent.mkdir(parents=True)
+                artifact.write_bytes(b"signed-ipa")
+
+                def request(method: str, path: str, _: str, body: dict | None) -> dict:
+                    self.assertEqual((method, body), ("GET", None))
+                    if path.startswith("/apps?"):
+                        return {"data": [{"type": "apps", "id": "app-1", "attributes": {"bundleId": BRIDGE.BUNDLE_ID}}]}
+                    return {"data": [{"type": "builds", "id": f"build-{index}", "attributes": {"version": str(index), "processingState": remote_state}, "relationships": {"preReleaseVersion": {"data": {"type": "preReleaseVersions", "id": "pre-1"}}}}], "included": [{"type": "preReleaseVersions", "id": "pre-1", "attributes": {"version": "0.2.0"}}]}
+
+                proof = BRIDGE.build_lookup_candidate(candidate, root=root, request=request)
+
+            self.assertEqual(proof["lookupResult"], "found")
+            self.assertEqual(proof["processingState"], expected_state)
+
+    def test_build_lookup_rejects_duplicate_or_mismatched_results(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            candidate = "0.2.0-3"
+            manifest = root / ".git/release-state/wilted-ios/candidates" / candidate / "manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({"formatVersion": 2, "immutable": True, "productIdentifier": "wilted-ios", "candidateId": candidate, "release": {"frozen": True, "marketingVersion": "0.2.0", "buildNumber": 3}}), encoding="utf-8")
+            artifact = root / ".release-state/artifacts" / candidate / "WiltediOS.ipa"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_bytes(b"signed-ipa")
+
+            def request(method: str, path: str, _: str, body: dict | None) -> dict:
+                self.assertEqual((method, body), ("GET", None))
+                if path.startswith("/apps?"):
+                    return {"data": [{"type": "apps", "id": "app-1", "attributes": {"bundleId": BRIDGE.BUNDLE_ID}}]}
+                return {"data": [{"type": "builds", "id": "build-3a", "attributes": {"version": "3", "processingState": "PROCESSING"}, "relationships": {}}, {"type": "builds", "id": "build-3b", "attributes": {"version": "3", "processingState": "PROCESSING"}, "relationships": {}}], "included": []}
+
+            with self.assertRaisesRegex(BRIDGE.ASCError, "exact-build-ambiguous"):
+                BRIDGE.build_lookup_candidate(candidate, root=root, request=request)
+
+            def mismatched_request(method: str, path: str, _: str, body: dict | None) -> dict:
+                self.assertEqual((method, body), ("GET", None))
+                if path.startswith("/apps?"):
+                    return {"data": [{"type": "apps", "id": "app-1", "attributes": {"bundleId": BRIDGE.BUNDLE_ID}}]}
+                return {"data": [{"type": "builds", "id": "build-wrong", "attributes": {"version": "99", "processingState": "VALID"}, "relationships": {}}], "included": []}
+
+            with self.assertRaisesRegex(BRIDGE.ASCError, "exact-build-mismatch"):
+                BRIDGE.build_lookup_candidate(candidate, root=root, request=mismatched_request)
+
+            def paged_request(method: str, path: str, _: str, body: dict | None) -> dict:
+                self.assertEqual((method, body), ("GET", None))
+                if path.startswith("/apps?"):
+                    return {"data": [{"type": "apps", "id": "app-1", "attributes": {"bundleId": BRIDGE.BUNDLE_ID}}]}
+                return {"data": [{"type": "builds", "id": "build-3", "attributes": {"version": "3", "processingState": "VALID"}, "relationships": {"preReleaseVersion": {"data": {"type": "preReleaseVersions", "id": "pre-1"}}}}], "included": [{"type": "preReleaseVersions", "id": "pre-1", "attributes": {"version": "0.2.0"}}], "links": {"next": "https://api.example.invalid/v1/builds?page=2"}}
+
+            with self.assertRaisesRegex(BRIDGE.ASCError, "pagination-unexpected"):
+                BRIDGE.build_lookup_candidate(candidate, root=root, request=paged_request)
+
 
 if __name__ == "__main__":
     unittest.main()
