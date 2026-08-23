@@ -713,7 +713,18 @@ def notification_candidate(candidate: str) -> dict[str, Any]:
     uploaded, _app_id, build_id = _candidate_context(
         candidate, bearer=bearer, request=request
     )
-    created = request("POST", "/buildBetaNotifications", bearer, {"data": {"type": "buildBetaNotifications", "relationships": {"build": {"data": {"type": "builds", "id": build_id}}}}})
+    try:
+        created = request("POST", "/buildBetaNotifications", bearer, {"data": {"type": "buildBetaNotifications", "relationships": {"build": {"data": {"type": "builds", "id": build_id}}}}})
+    except ASCError as error:
+        if str(error) != "app-store-connect-http-409":
+            raise
+        return _proof(
+            "notification",
+            candidate,
+            uploaded,
+            alreadySent=True,
+            deliveryReceiptSha256=digest({"buildIdentifier": build_id, "alreadySent": True}),
+        )
     notification_id = _resource(created, "buildBetaNotifications")["id"]
     return _proof("notification", candidate, uploaded, deliveryReceiptSha256=digest({"buildIdentifier": build_id, "notificationIdentifier": notification_id}))
 

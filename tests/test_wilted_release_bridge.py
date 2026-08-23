@@ -40,6 +40,49 @@ class IdentityAllocationTests(unittest.TestCase):
 
         self.assertEqual(context.call_args.kwargs["bearer"], "live-bearer")
 
+    def test_notification_validates_a_created_resource_for_the_exact_build(self) -> None:
+        requests: list[tuple[str, str, str, dict | None]] = []
+
+        def request(method: str, path: str, bearer: str, body: dict | None) -> dict:
+            requests.append((method, path, bearer, body))
+            return {"data": {"type": "buildBetaNotifications", "id": "notification-1"}}
+
+        with (
+            patch.object(BRIDGE, "_request_context", return_value=("live-bearer", request)),
+            patch.object(BRIDGE, "_candidate_context", return_value=("upload-1", "app-1", "build-1")),
+        ):
+            proof = BRIDGE.notification_candidate("0.1.8-10")
+
+        self.assertEqual(requests, [("POST", "/buildBetaNotifications", "live-bearer", {"data": {"type": "buildBetaNotifications", "relationships": {"build": {"data": {"type": "builds", "id": "build-1"}}}}})])
+        self.assertNotIn("alreadySent", proof)
+        self.assertEqual(proof["deliveryReceiptSha256"], BRIDGE.digest({"buildIdentifier": "build-1", "notificationIdentifier": "notification-1"}))
+
+    def test_notification_409_returns_an_already_sent_proof_for_the_exact_build(self) -> None:
+        def conflict(*_: object) -> dict:
+            raise BRIDGE.ASCError("app-store-connect-http-409")
+
+        with (
+            patch.object(BRIDGE, "_request_context", return_value=("live-bearer", conflict)),
+            patch.object(BRIDGE, "_candidate_context", return_value=("upload-1", "app-1", "build-1")),
+        ):
+            proof = BRIDGE.notification_candidate("0.1.8-10")
+
+        self.assertEqual(proof["candidateId"], "0.1.8-10")
+        self.assertEqual(proof["uploadedBuildIdentifier"], "upload-1")
+        self.assertTrue(proof["alreadySent"])
+        self.assertEqual(proof["deliveryReceiptSha256"], BRIDGE.digest({"buildIdentifier": "build-1", "alreadySent": True}))
+
+    def test_notification_non_409_error_remains_blocked(self) -> None:
+        def unavailable(*_: object) -> dict:
+            raise BRIDGE.ASCError("app-store-connect-network-failed")
+
+        with (
+            patch.object(BRIDGE, "_request_context", return_value=("live-bearer", unavailable)),
+            patch.object(BRIDGE, "_candidate_context", return_value=("upload-1", "app-1", "build-1")),
+        ):
+            with self.assertRaisesRegex(BRIDGE.ASCError, "app-store-connect-network-failed"):
+                BRIDGE.notification_candidate("0.1.8-10")
+
     def test_identity_allocation_evidence_may_advance_for_a_successor(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "allocate-identity.json"
