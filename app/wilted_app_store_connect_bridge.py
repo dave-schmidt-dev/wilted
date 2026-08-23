@@ -1,11 +1,12 @@
-#!/usr/bin/env -S uv run --with pyjwt --with cryptography python
-"""Fixed Wilted App Store Connect broker boundary.
-
-Only BWS may invoke this executable with the three App Store Connect
-credentials. Identity allocation is read-only against Apple and writes an
-immutable, credential-free proof. Every later release operation remains
-blocked until the signed candidate and its human evidence exist.
-"""
+#!/bin/sh
+'''exec' /Users/dave/.local/bin/uv run --with pyjwt --with cryptography python "$0" "$@"
+' '''
+# Fixed Wilted App Store Connect broker boundary.
+#
+# Only BWS may invoke this executable with the three App Store Connect
+# credentials. Identity allocation is read-only against Apple and writes an
+# immutable, credential-free proof. Every later release operation remains
+# blocked until the signed candidate and its human evidence exist.
 
 from __future__ import annotations
 
