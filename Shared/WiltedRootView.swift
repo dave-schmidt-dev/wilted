@@ -77,9 +77,28 @@ public struct WiltedRootView: View {
         Group {
 #if os(macOS)
             NavigationSplitView {
-                List(WiltedNavigation.allCases, selection: $selection) { item in
-                    Label(item.title, systemImage: item.symbolName)
-                        .tag(item)
+                List {
+                    ForEach(WiltedNavigation.allCases) { item in
+                        Button {
+                            selection = item
+                        } label: {
+                            Label(item.title, systemImage: item.symbolName)
+                                .foregroundStyle(
+                                    item == selection
+                                        ? WiltedTheme.color(.primaryText, scheme: colorScheme)
+                                        : WiltedTheme.color(.secondaryText, scheme: colorScheme)
+                                )
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
+                        .listRowBackground(
+                            item == selection
+                                ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.24)
+                                : Color.clear
+                        )
+                        .accessibilityIdentifier("wilted-navigation-\(item.rawValue)")
+                    }
                 }
                 .navigationTitle("Wilted")
             } detail: {

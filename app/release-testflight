@@ -1,0 +1,50 @@
+#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+CENTRAL_ROOT="$ROOT/../apple_developer"
+ADAPTER="$ROOT/.release/release-adapter.json"
+for arg in "$@"; do
+  case "$arg" in
+    --adapter|--adapter=*|--repository|--repository=*|--broker|--broker=*|--executable|--executable=*|--credential|--credential=*)
+      echo "release-testflight: caller-selected paths and credentials are not permitted" >&2
+      exit 2
+      ;;
+  esac
+done
+if [ -n "${HOME:-}" ] && [ -x "$HOME/.agent/bin/bws-secret-exec" ]; then
+  PATH="$HOME/.agent/bin:$PATH"
+  export PATH
+fi
+[ -f "$CENTRAL_ROOT/release_tools/__main__.py" ] && [ -f "$ADAPTER" ] || {
+  echo "release-testflight: central release_tools or adapter is unavailable" >&2
+  exit 4
+}
+common_dir=$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || {
+  echo "release-testflight: Git common directory is unavailable" >&2
+  exit 4
+}
+candidate_manifest() {
+  candidate=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["candidateId"])' "$common_dir/release-state/wilted-ios/active-candidate.json" 2>/dev/null) || exit 3
+  manifest="$common_dir/release-state/wilted-ios/candidates/$candidate/manifest.json"
+  [ -f "$manifest" ] && [ ! -L "$manifest" ] || exit 3
+}
+case "${1:-}" in
+  --prepare-only)
+    [ "$#" -eq 1 ] || exit 64
+    exec env PYTHONPATH="$CENTRAL_ROOT" python3 -m release_tools testflight --repository "$ROOT" --adapter "$ADAPTER"
+    ;;
+  --stage)
+    [ "$#" -eq 1 ] || exit 64
+    candidate_manifest
+    exec env PYTHONPATH="$CENTRAL_ROOT" READINESS_MANIFEST="$manifest" python3 -m release_tools stage --repository "$ROOT" --adapter "$ADAPTER" --candidate "$candidate"
+    ;;
+  --upload)
+    [ "$#" -eq 1 ] || exit 64
+    candidate_manifest
+    exec env PYTHONPATH="$CENTRAL_ROOT" READINESS_MANIFEST="$manifest" python3 -m release_tools testflight --repository "$ROOT" --adapter "$ADAPTER" --upload --candidate "$candidate"
+    ;;
+  *)
+    echo "usage: app/release-testflight --prepare-only|--stage|--upload" >&2
+    exit 64
+    ;;
+esac

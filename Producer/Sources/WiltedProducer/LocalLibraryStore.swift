@@ -835,6 +835,9 @@ public actor LocalLibraryStore {
             case .revision:
                 let parts = deletion.recordName.split(separator: ":", maxSplits: 2).map(String.init)
                 if parts.count == 3 { for revision in revisions where revision.itemID == parts[1] && revision.id == parts[2] { context.delete(revision) } }
+            case .revisionChunk:
+                // Chunk rows live only in the durable transport state.
+                break
             case .playbackState:
                 let parts = deletion.recordName.split(separator: ":", maxSplits: 2).map(String.init)
                 if parts.count == 3 { for playback in playbacks where playback.id == "\(parts[1])|\(parts[2])" { context.delete(playback) } }

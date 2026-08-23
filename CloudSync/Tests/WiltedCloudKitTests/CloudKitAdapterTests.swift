@@ -57,6 +57,7 @@ private actor FakeEngineDriver: CloudKitEngineDriver {
     let pendingRelease: AsyncStream<Void>.Continuation
     let pendingReleaseStream: AsyncStream<Void>
     private(set) var cancelled = false
+    private var explicitRecords: [CKRecord] = []
     let zoneFailure: CloudKitSyncError?
     var zoneNotFoundFetchesRemaining: Int
     var zoneNotFoundSendRemaining: Int
@@ -98,6 +99,11 @@ private actor FakeEngineDriver: CloudKitEngineDriver {
         if zoneNotFoundSendRemaining > 0 { zoneNotFoundSendRemaining -= 1; throw CKError(.zoneNotFound) }
     }
     func cancelOperations() async { cancelled = true }
+    func fetchRecords(_ ids: [CKRecord.ID]) async throws -> [CKRecord] {
+        let requested = Set(ids)
+        return explicitRecords.filter { requested.contains($0.recordID) }
+    }
+    func setExplicitRecords(_ records: [CKRecord]) { explicitRecords = records }
     func resetZoneBootstrap() async { zoneBootstrapResets += 1 }
     func addPendingRecordZoneChanges(_ changes: [CKSyncEngine.PendingRecordZoneChange]) async {
         pendingAddCalls += 1
@@ -227,8 +233,10 @@ func initialEmptySendWithoutStateUpdate() async throws {
 
 private final class TestStager: CloudKitAssetStaging {
     let root: URL
+    private(set) var stageCalls = 0
     init() throws { root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true) }
     func stage(asset: CKAsset, assetID: String, contentHash: String) throws -> URL {
+        stageCalls += 1
         guard let source = asset.fileURL else { throw CloudKitSyncError.assetUnavailable(assetID) }
         let destination = root.appendingPathComponent("incoming-\(UUID().uuidString)")
         try FileManager.default.copyItem(at: source, to: destination)
@@ -257,6 +265,99 @@ func assetsAreStagedAndValidated() throws {
     let decoded = try mapper.decode(record)
     #expect(decoded.envelope.fields["audioAsset"] == .asset(try WiltedAsset(assetID: "\(record.recordID.recordName)#audioAsset", contentHash: contentHash)))
     #expect(decoded.stagedAssets["audioAsset"].flatMap { try? Data(contentsOf: $0) } == bytes)
+}
+
+@Test("metadata-only decode never stages a revision audio asset")
+func metadataOnlyDecodeDoesNotStageAudio() throws {
+    let stager = try TestStager()
+    let source = stager.root.appendingPathComponent("source.m4a")
+    let bytes = Data("metadata-only".utf8)
+    try bytes.write(to: source)
+    let contentHash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    let item = try article().0.itemID
+    let revision = try AudioRevision(itemID: item, revisionID: RevisionID(rawValue: "rev-metadata"), durationSeconds: 1,
+                                     byteCount: Int64(bytes.count), contentHash: contentHash, mediaType: "audio/mp4",
+                                     createdAt: Timestamp(iso8601: "2026-08-17T12:00:00Z"), schemaVersion: 1)
+    let mapper = try mapper(stager: stager)
+    let record = try mapper.encode(try WiltedRecordCodec().encode(
+        revision: revision, audioAsset: WiltedAsset(assetID: "audioAsset", contentHash: contentHash)),
+        assetURLs: ["audioAsset": source])
+    let decoded = try mapper.decodeMetadataOnly(record)
+    #expect(decoded.stagedAssets.isEmpty)
+    #expect(stager.stageCalls == 0)
+    #expect(decoded.envelope.fields["audioAsset"] == .asset(
+        try WiltedAsset(assetID: "\(record.recordID.recordName)#audioAsset", contentHash: contentHash)))
+}
+
+@Test("chunk records have deterministic identities and explicit retrieval validates bytes")
+func chunkRecordsRetrieveAndValidate() async throws {
+    let stager = try TestStager()
+    let mapper = try mapper(stager: stager)
+    let item = try article().0.itemID
+    let revisionID = try RevisionID(rawValue: "rev-chunked")
+    let sourceBytes = Data("0123456789".utf8)
+    let chunked = try AudioChunking.chunk(sourceBytes, chunkSize: 4)
+    let revision = try AudioRevision(itemID: item, revisionID: revisionID, durationSeconds: 1,
+                                     byteCount: Int64(sourceBytes.count),
+                                     contentHash: "sha256:\(chunked.manifest.contentSHA256)", mediaType: "audio/mp4",
+                                     createdAt: Timestamp(iso8601: "2026-08-17T12:00:00Z"), schemaVersion: 1)
+    let metadataRecord = try mapper.encode(try WiltedRecordCodec().encode(revision: revision, manifest: chunked.manifest))
+    let metadata = try mapper.decodeMetadataOnly(metadataRecord)
+    #expect(metadata.stagedAssets.isEmpty)
+    #expect(try WiltedRecordCodec().decodeRevision(metadata.envelope) == revision)
+    let records = try chunked.manifest.chunks.map { descriptor -> CKRecord in
+        let source = stager.root.appendingPathComponent("chunk-\(descriptor.index)")
+        try chunked.chunks[descriptor.index].write(to: source)
+        let asset = try WiltedAsset(assetID: "chunkAsset", contentHash: "sha256:\(descriptor.sha256)")
+        let envelope = try WiltedRecordCodec().encode(revisionChunk: item, revisionID: revisionID,
+                                                       descriptor: descriptor, chunkAsset: asset)
+        return try mapper.encodeChunk(envelope, assetURL: source)
+    }
+    #expect(Set(records.map(\.recordID.recordName)).count == records.count)
+    let driver = FakeEngineDriver()
+    await driver.setExplicitRecords(records)
+    let transport = try CloudKitSyncTransport(driver: driver, role: .iphone, mapper: mapper)
+    let reconstructed = try await transport.fetchAudioChunks(itemID: item, revisionID: revisionID,
+                                                               manifest: chunked.manifest)
+    #expect(reconstructed == sourceBytes)
+}
+
+@Test("explicit chunk retrieval fails closed for missing or corrupt chunks")
+func chunkRetrievalRejectsMissingAndCorruptData() async throws {
+    let stager = try TestStager()
+    let mapper = try mapper(stager: stager)
+    let item = try article().0.itemID
+    let revisionID = try RevisionID(rawValue: "rev-chunk-errors")
+    let chunked = try AudioChunking.chunk(Data("0123456789".utf8), chunkSize: 4)
+    let first = chunked.manifest.chunks[0]
+    let source = stager.root.appendingPathComponent("chunk-0")
+    try chunked.chunks[0].write(to: source)
+    let envelope = try WiltedRecordCodec().encode(revisionChunk: item, revisionID: revisionID,
+                                                   descriptor: first,
+                                                   chunkAsset: try WiltedAsset(assetID: "chunkAsset", contentHash: "sha256:\(first.sha256)"))
+    let record = try mapper.encodeChunk(envelope, assetURL: source)
+    let missingDriver = FakeEngineDriver()
+    await missingDriver.setExplicitRecords([record])
+    let missingTransport = try CloudKitSyncTransport(driver: missingDriver, role: .iphone, mapper: mapper)
+    do {
+        _ = try await missingTransport.fetchAudioChunks(itemID: item, revisionID: revisionID, manifest: chunked.manifest)
+        Issue.record("missing chunk unexpectedly reconstructed")
+    } catch let error as CloudKitSyncError {
+        #expect(error == .missingField("chunk.1"))
+    }
+
+    let badSource = stager.root.appendingPathComponent("bad")
+    try Data("bad!".utf8).write(to: badSource)
+    let badRecord = try mapper.encodeChunk(envelope, assetURL: badSource)
+    let corruptDriver = FakeEngineDriver()
+    await corruptDriver.setExplicitRecords([badRecord])
+    let corruptTransport = try CloudKitSyncTransport(driver: corruptDriver, role: .iphone, mapper: mapper)
+    do {
+        _ = try await corruptTransport.fetchAudioChunks(itemID: item, revisionID: revisionID, manifest: chunked.manifest)
+        Issue.record("corrupt chunk unexpectedly reconstructed")
+    } catch let error as CloudKitSyncError {
+        #expect(error == .invalidField("chunkAsset.sha256"))
+    }
 }
 
 @Test("failed asset validation preserves the prior valid cached file")

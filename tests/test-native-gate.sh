@@ -28,6 +28,16 @@ assert_contains() {
   }
 }
 
+assert_block_contains() {
+  local needle="$1"
+  local block="$2"
+  [[ "$block" == *"$needle"* ]] || {
+    printf 'assertion failed: missing %s\n' "$needle" >&2
+    printf '%s\n' "$block" >&2
+    exit 1
+  }
+}
+
 assert_gatekeeper_contract() {
   if rg -q 'CODE_SIGNING_(ALLOWED|REQUIRED)=NO' "$gate"; then
     printf '%s\n' 'assertion failed: native gate still disables code signing' >&2
@@ -148,6 +158,11 @@ assert_capability_source_contract() {
   assert_target_config WiltedMac "$mac_block" Development 'CODE_SIGN_ENTITLEMENTS: WiltedMac/WiltedMac.entitlements'
   assert_target_config WiltedMac "$mac_block" Development 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"'
   assert_target_config WiltedMac "$mac_block" Release 'CODE_SIGN_ENTITLEMENTS: WiltedMac/WiltedMacProduction.entitlements'
+  assert_target_config WiltedMac "$mac_block" Release 'CODE_SIGN_IDENTITY: "Developer ID Application"'
+  assert_target_config WiltedMac "$mac_block" Release 'CODE_SIGN_STYLE: Manual'
+  assert_target_config WiltedMac "$mac_block" Release 'DEVELOPMENT_TEAM: 4CJ49V6QHW'
+  assert_target_config WiltedMac "$mac_block" Release 'ENABLE_HARDENED_RUNTIME: YES'
+  assert_target_config WiltedMac "$mac_block" Release 'PROVISIONING_PROFILE_SPECIFIER: Wilted Developer ID'
   assert_target_config WiltedMac "$mac_block" Release 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"'
   assert_target_config WiltediOS "$ios_block" Debug 'CODE_SIGN_ENTITLEMENTS: ""'
   assert_target_config WiltediOS "$ios_block" Debug 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"'
@@ -171,11 +186,14 @@ assert_capability_source_contract() {
     assert_contains "$wiring" "$project"
   done
   assert_contains '        product: WiltedListener' "$project"
-  if rg -n 'com\.example\.wilted|DEVELOPMENT_TEAM|PROVISIONING_PROFILE_SPECIFIER' \
+  if rg -n 'com\.example\.wilted' \
     "$project" "$mac_development" "$mac_release" "$ios_development" "$ios_release"; then
-    printf '%s\n' 'assertion failed: signing/team/profile or placeholder binding remains' >&2
+    printf '%s\n' 'assertion failed: placeholder binding remains' >&2
     exit 1
   fi
+  assert_contains 'CODE_SIGN_IDENTITY: Apple Distribution' "$project"
+  assert_contains 'DEVELOPMENT_TEAM: 4CJ49V6QHW' "$project"
+  assert_contains 'PROVISIONING_PROFILE_SPECIFIER: Wilted App Store' "$project"
 
   assert_entitlement() {
     local file="$1"; local key="$2"; local value="$3"
@@ -214,13 +232,28 @@ assert_capability_source_contract() {
     printf '%s\n' 'assertion failed: iOS Info.plist lacks audio background mode' >&2
     exit 1
   }
+  plutil -p "$repo_root/WiltediOS/Info.plist" | grep -Fq '"ITSAppUsesNonExemptEncryption" => false' || {
+    printf '%s\n' 'assertion failed: iOS Info.plist lacks the exempt-encryption declaration' >&2
+    exit 1
+  }
+  for orientation in \
+    UIInterfaceOrientationPortrait \
+    UIInterfaceOrientationPortraitUpsideDown \
+    UIInterfaceOrientationLandscapeLeft \
+    UIInterfaceOrientationLandscapeRight; do
+    plutil -p "$repo_root/WiltediOS/Info.plist" | grep -Fq "$orientation" || {
+      printf 'assertion failed: iOS Info.plist lacks %s\n' "$orientation" >&2
+      exit 1
+    }
+  done
 }
 
 assert_capability_source_contract
 
 assert_snapshot_contract() {
   assert_contains 'validate_pixel_snapshot_baselines' "$gate"
-  assert_contains 'expected_count=156' "$gate"
+  assert_contains 'validate_ios_pixel_snapshot_baselines' "$gate"
+  assert_contains 'expected_count=162' "$gate"
   assert_contains 'expected_state_ids=' "$gate"
   assert_contains 'expected_variants=' "$gate"
   assert_contains 'expected_selectors' "$gate"
@@ -237,17 +270,41 @@ assert_snapshot_contract() {
     assert_contains "$entitlement" "$gate"
   done
   assert_contains 'validate_pixel_snapshot_baselines "$integration_root"' "$gate"
+  assert_contains 'validate_ios_pixel_snapshot_baselines "$integration_root"' "$gate"
   assert_contains 'NATIVE_FORCE_SNAPSHOT_BASELINE' "$gate"
+  assert_contains 'test_host_pattern' "$gate"
+  assert_contains 'native.cleanup mac-test-hosts=' "$gate"
+  assert_contains 'trap cleanup EXIT' "$gate"
+  assert_contains 'WILTED_XCODE_TEST_TIMEOUT_SECONDS' "$gate"
+  assert_contains 'native.timeout label=$label seconds=$xcode_test_timeout_seconds' "$gate"
+  assert_contains 'native.heartbeat label=$label elapsed_seconds=$elapsed_seconds' "$gate"
+  assert_contains 'cleanup_mac_test_hosts' "$gate"
 
   # The Mac result-bundle floor proves the four snapshot methods are included
   # in the executed target count, rather than merely present in source.
   assert_contains 'expected_test_count_floor' "$gate"
   assert_contains 'macos-unit-tests) printf' "$gate"
+  assert_contains 'ios-pixel-snapshot-tests) printf' "$gate"
   for method in \
     testEveryPreviewStateHasLightAndDarkPixelBaselines \
     testPixelSnapshotSelectorsAreUniqueAndComplete \
+    testLibraryAndPreparingBaselinesContainRenderedControls \
     testMacLibraryShellPixelBaselines \
-    testMacPlayerShellPixelBaselines; do
+    testMacPlayerShellPixelBaselines \
+    testMacNavigationSelectionPixelBaselines \
+    testShippingMacProducerPixelBaselines \
+    testShippingMacURLFocusPixelBaselines; do
+    assert_contains "$method" "$gate"
+  done
+  for method in \
+    testListenerLibraryDarkPixelBaseline \
+    testListenerLibraryLightPixelBaseline \
+    testListenerDownloadsDarkPixelBaseline \
+    testListenerDownloadsLightPixelBaseline \
+    testListenerNowPlayingDarkPixelBaseline \
+    testListenerNowPlayingLightPixelBaseline \
+    testListenerTerminalFailureDarkPixelBaseline \
+    testListenerTerminalFailureLightPixelBaseline; do
     assert_contains "$method" "$gate"
   done
 }
@@ -285,8 +342,13 @@ assert_ios_ui_clean_simulator_contract() {
   local shutdown_line
   local trap_line
 
+  assert_contains 'run_leg "${leg_names[7]}" "${leg_reports[7]}" leg_ios_ui_tests' "$gate"
   assert_contains 'find_shutdown_iphone_udid' "$gate"
-  assert_contains '/iPhone/ && /Shutdown/' "$gate"
+  assert_contains "ios_ui_device_name='iPhone 17 Pro'" "$gate"
+  assert_contains 'ios_ui_baseline_geometry' "$gate"
+  assert_contains 'name == device_name' "$gate"
+  assert_contains 'native.simulator.clean-shutdown' "$gate"
+  assert_contains 'geometry=%s' "$gate"
   assert_contains 'xcrun simctl shutdown "$udid"' "$gate"
   assert_contains 'trap cleanup_ios_ui_simulator EXIT' "$gate"
 
@@ -315,6 +377,11 @@ assert_ios_ui_clean_simulator_contract() {
     printf '%s\n' 'assertion failed: iOS UI simulator shutdown cleanup is misplaced' >&2
     exit 1
   }
+  assert_block_contains 'WiltediOSUITests/WiltediOSPixelSnapshotTests' "$ios_ui_block"
+  if printf '%s\n' "$ios_ui_block" | rg -q 'WiltediOSSmokeUITests|WiltediOSAttendedCloudKitUITests|[[:space:]]WiltediOSUITests$'; then
+    printf '%s\n' 'assertion failed: iOS pixel leg must exclude smoke and attended UI tests' >&2
+    exit 1
+  fi
 }
 
 assert_ios_ui_clean_simulator_contract
@@ -345,7 +412,7 @@ assert_result_bundle_contract
 success_log="$tmp_dir/success.log"
 success_status="$(run_case success "$success_log" bash "$gate")"
 [[ "$success_status" -eq 0 ]] || { cat "$success_log" >&2; exit 1; }
-assert_contains 'native.passed count=9' "$success_log"
+assert_contains 'native.passed count=8' "$success_log"
 
 forced_log="$tmp_dir/forced.log"
 forced_status="$(run_case forced "$forced_log" env NATIVE_FORCE_FAIL_LEG=macos-unit-tests bash "$gate")"
@@ -354,11 +421,18 @@ assert_contains 'native.failed count=1' "$forced_log"
 assert_contains 'forced_self_test_failure' "$forced_log"
 
 zero_log="$tmp_dir/zero.log"
-zero_status="$(run_case zero "$zero_log" env NATIVE_FORCE_ZERO_TEST_LEG=ios-ui-tests bash "$gate")"
+zero_status="$(run_case zero "$zero_log" env NATIVE_FORCE_ZERO_TEST_LEG=ios-unit-tests bash "$gate")"
 [[ "$zero_status" -ne 0 ]] || { cat "$zero_log" >&2; exit 1; }
-assert_contains 'native.zero-tests label=ios-ui-tests' "$zero_log"
+assert_contains 'native.zero-tests label=ios-unit-tests' "$zero_log"
 assert_contains 'result_bundle=' "$zero_log"
 assert_contains 'native.failed count=1' "$zero_log"
+
+pixel_zero_log="$tmp_dir/pixel-zero.log"
+pixel_zero_status="$(run_case pixel-zero "$pixel_zero_log" \
+  env NATIVE_FORCE_ZERO_TEST_LEG=ios-pixel-snapshot-tests bash "$gate")"
+[[ "$pixel_zero_status" -ne 0 ]] || { cat "$pixel_zero_log" >&2; exit 1; }
+assert_contains 'native.zero-tests label=ios-pixel-snapshot-tests' "$pixel_zero_log"
+assert_contains 'native.failed count=1' "$pixel_zero_log"
 
 package_zero_log="$tmp_dir/package-zero.log"
 package_zero_status="$(run_case package-zero "$package_zero_log" env NATIVE_FORCE_ZERO_TEST_LEG=wiltedproducer-tests bash "$gate")"
@@ -404,4 +478,4 @@ for snapshot_failure in missing zero malformed; do
   assert_contains 'native.error' "$snapshot_log"
 done
 
-printf '%s\n' 'native gate aggregate meta-test passed (seven native Xcode legs plus CloudSync and Listener SwiftPM; forced and zero-test failures are fail-closed)'
+printf '%s\n' 'native gate aggregate meta-test passed (eight native Xcode legs plus CloudSync and Listener SwiftPM; forced and zero-test failures are fail-closed)'

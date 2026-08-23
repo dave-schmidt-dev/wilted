@@ -12,10 +12,33 @@ forced_fail_leg="${NATIVE_FORCE_FAIL_LEG:-}"
 forced_zero_leg="${NATIVE_FORCE_ZERO_TEST_LEG:-}"
 forced_snapshot_baseline="${NATIVE_FORCE_SNAPSHOT_BASELINE:-}"
 wilted_development_team="${WILTED_DEVELOPMENT_TEAM:-4CJ49V6QHW}"
+xcode_test_timeout_seconds="${WILTED_XCODE_TEST_TIMEOUT_SECONDS:-300}"
+# The iOS pixel baselines were recorded on iPhone 17 Pro. Selecting it by name
+# keeps the UI leg from silently using a different first-listed iPhone model.
+ios_ui_device_name='iPhone 17 Pro'
+ios_ui_baseline_geometry='402x874 normalized to 390x844'
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-native-gate.XXXXXX")"
 derived_data="$tmp_root/DerivedData"
 mkdir -p "$derived_data"
-trap 'rm -rf "$tmp_root"' EXIT
+
+cleanup_mac_test_hosts() {
+  local test_host_pattern test_host_pids
+  test_host_pattern="$derived_data/.*/WiltedMac.app/Contents/MacOS/WiltedMac"
+  test_host_pids="$(pgrep -f "$test_host_pattern" 2>/dev/null || true)"
+  if [[ -n "$test_host_pids" ]]; then
+    kill $test_host_pids 2>/dev/null || true
+    status "native.cleanup mac-test-hosts=$(printf '%s\n' "$test_host_pids" | wc -l | tr -d ' ')"
+  fi
+}
+
+cleanup() {
+  cleanup_mac_test_hosts
+  rm -rf "$tmp_root"
+}
+
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 leg_names=(
   xcodegen-reproducible
@@ -25,10 +48,9 @@ leg_names=(
   wiltedproducer-tests
   macos-unit-tests
   ios-unit-tests
-  macos-ui-tests
-  ios-ui-tests
+  ios-pixel-snapshot-tests
 )
-leg_reports=(none xctest xctest xctest xctest count count count count)
+leg_reports=(none xctest xctest xctest xctest count count count)
 declare -i failed_legs=0
 declare -i completed_legs=0
 native_project=""
@@ -87,6 +109,8 @@ validate_pixel_snapshot_baselines() {
   [[ -f "$snapshot_test_source" ]] || fail "missing Mac pixel snapshot test source: $snapshot_test_source"
   grep -Fq 'assertSnapshot' "$snapshot_test_source" ||
     fail 'Mac pixel snapshot test has no image assertions'
+  grep -Fq 'NSHostingView' "$snapshot_test_source" ||
+    fail 'Mac pixel snapshot test does not render real AppKit views'
   grep -Fq 'WILTED_RECORD_SNAPSHOTS' "$snapshot_test_source" ||
     fail 'Mac pixel snapshots have no explicit recording mode'
   grep -Fq 'expectedPixelBaselineCount' "$snapshot_test_source" ||
@@ -94,19 +118,20 @@ validate_pixel_snapshot_baselines() {
   for method in \
     testEveryPreviewStateHasLightAndDarkPixelBaselines \
     testPixelSnapshotSelectorsAreUniqueAndComplete \
+    testLibraryAndPreparingBaselinesContainRenderedControls \
     testMacLibraryShellPixelBaselines \
     testMacPlayerShellPixelBaselines; do
     grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" "$snapshot_test_source" ||
       fail "Mac pixel snapshot test method is missing: $method"
   done
 
-  expected_count=156
+  expected_count=162
   [[ "$(find "$snapshot_dir" -type f -name '*.png' | wc -l | tr -d ' ')" -eq "$expected_count" ]] ||
     fail "Mac pixel baseline count is not $expected_count"
   empty_pngs="$(find "$snapshot_dir" -type f -name '*.png' -size 0c -print)"
   [[ -z "$empty_pngs" ]] || fail "Mac pixel baselines contain empty PNG files: $empty_pngs"
 
-  expected_state_ids=$'cancelling\ndeletedRemotely\ndownloadFailure\nemptyLibrary\nextractionFailure\niCloudUnavailable\nincompatibleRevision\nofflineCached\npaused\nplaying\npreparing-assembling\npreparing-extracting\npreparing-fetching\npreparing-saving\npreparing-synthesizing\nready\nspeechUnavailable\ncompleted\nsyncPending'
+  expected_state_ids=$'cancelling\ncompleted\ndeletedRemotely\ndownloadFailure\nemptyLibrary\nextractionFailure\niCloudUnavailable\nincompatibleRevision\nofflineCached\npaused\nplaying\npreparing-assembling\npreparing-extracting\npreparing-fetching\npreparing-saving\npreparing-synthesizing\nready\nspeechUnavailable\nsyncPending'
   actual_state_ids="$(find "$snapshot_dir" -type f -name '*.png' -print |
     sed -E -n 's/.*\.state-(.*)-(light|dark)-(standard|xxxLarge)-motion-(full|reduced)\.png/\1/p' | sort -u)"
   [[ "$actual_state_ids" == "$(printf '%s\n' "$expected_state_ids" | sort)" ]] ||
@@ -116,7 +141,7 @@ validate_pixel_snapshot_baselines() {
     state_count="$(printf '%s\n' "$actual_state_ids" | grep -Fxc "$state_id")"
     [[ "$state_count" -eq 1 ]] || fail "duplicate preview state selector: $state_id"
     [[ "$(find "$snapshot_dir" -type f -name "*.state-$state_id-*.png" | wc -l | tr -d ' ')" -eq 8 ]] ||
-      fail "preview state does not have all eight visual variants: $state_id"
+      fail "preview state does not have the full visual variant matrix: $state_id"
   done <<<"$actual_state_ids"
 
   expected_variants=$'dark-standard-motion-full\ndark-standard-motion-reduced\ndark-xxxLarge-motion-full\ndark-xxxLarge-motion-reduced\nlight-standard-motion-full\nlight-standard-motion-reduced\nlight-xxxLarge-motion-full\nlight-xxxLarge-motion-reduced'
@@ -138,7 +163,7 @@ validate_pixel_snapshot_baselines() {
       expected_selectors+="state-$state_id-$variant\n"
     done <<<"$expected_variants"
   done <<<"$expected_state_ids"
-  expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\n'
+  expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\nmac-shell-navigation-selection-light\nmac-shell-navigation-selection-dark\nmac-shell-producer-library-light\nmac-shell-producer-library-dark\nmac-shell-producer-url-focus-light\nmac-shell-producer-url-focus-dark\n'
   expected_selectors="$(printf '%b' "$expected_selectors" | sort)"
   actual_selectors="$(find "$snapshot_dir" -type f -name '*.png' -exec basename {} \; |
     sed -E 's/^.*\.(state-[^.]+|mac-shell-[^.]+)\.png$/\1/' | sort)"
@@ -151,13 +176,53 @@ validate_pixel_snapshot_baselines() {
     testMacLibraryShellPixelBaselines.mac-shell-library-light.png \
     testMacLibraryShellPixelBaselines.mac-shell-library-dark.png \
     testMacPlayerShellPixelBaselines.mac-shell-player-light.png \
-    testMacPlayerShellPixelBaselines.mac-shell-player-dark.png; do
+    testMacPlayerShellPixelBaselines.mac-shell-player-dark.png \
+    testMacNavigationSelectionPixelBaselines.mac-shell-navigation-selection-light.png \
+    testMacNavigationSelectionPixelBaselines.mac-shell-navigation-selection-dark.png \
+    testShippingMacProducerPixelBaselines.mac-shell-producer-library-light.png \
+    testShippingMacProducerPixelBaselines.mac-shell-producer-library-dark.png \
+    testShippingMacURLFocusPixelBaselines.mac-shell-producer-url-focus-light.png \
+    testShippingMacURLFocusPixelBaselines.mac-shell-producer-url-focus-dark.png; do
     [[ -s "$snapshot_dir/$shell_name" ]] || fail "missing Mac shell baseline: $shell_name"
   done
   bad_pngs="$(find "$snapshot_dir" -type f -name '*.png' -exec file {} \; |
     grep -vc 'PNG image data, 520 x 260' || true)"
   [[ "$bad_pngs" -eq 0 ]] || fail "pixel baselines contain invalid or zero-size images: $bad_pngs"
-  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=4\n' "$expected_count"
+  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=10\n' "$expected_count"
+}
+
+validate_ios_pixel_snapshot_baselines() {
+  local root="$1"
+  local snapshot_dir="$root/WiltediOSUITests/__Snapshots__/WiltediOSPixelSnapshotTests"
+  local source="$root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
+  local expected actual bad_pngs
+
+  require_tool file
+  [[ -f "$source" ]] || fail "missing iOS pixel snapshot test source: $source"
+  [[ -d "$snapshot_dir" ]] || fail "missing iOS pixel snapshot directory: $snapshot_dir"
+  grep -Fq 'wilted-listener-pixel-fixture' "$source" ||
+    fail 'iOS pixel test does not exercise the shipping listener fixture'
+  grep -Fq 'WiltedWordmark' "$root/WiltediOS/ListenerAppView.swift" ||
+    fail 'shipping listener Library has no wordmark for iOS pixel coverage'
+  for method in \
+    testListenerLibraryDarkPixelBaseline \
+    testListenerLibraryLightPixelBaseline \
+    testListenerDownloadsDarkPixelBaseline \
+    testListenerDownloadsLightPixelBaseline \
+    testListenerNowPlayingDarkPixelBaseline \
+    testListenerNowPlayingLightPixelBaseline \
+    testListenerTerminalFailureDarkPixelBaseline \
+    testListenerTerminalFailureLightPixelBaseline; do
+    grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" "$source" ||
+      fail "iOS pixel snapshot test method is missing: $method"
+  done
+
+  expected=$'listener-downloads-dark.png\nlistener-downloads-light.png\nlistener-library-dark.png\nlistener-library-light.png\nlistener-now-playing-dark.png\nlistener-now-playing-light.png\nlistener-terminal-failure-dark.png\nlistener-terminal-failure-light.png'
+  actual="$(find "$snapshot_dir" -type f -name '*.png' -exec basename {} \; | sort)"
+  [[ "$actual" == "$expected" ]] || fail 'iOS listener pixel baseline selectors are missing or unexpected'
+  bad_pngs="$(find "$snapshot_dir" -type f -name '*.png' -exec file {} \; | grep -vc 'PNG image data, 390 x 844' || true)"
+  [[ "$bad_pngs" -eq 0 ]] || fail "iOS listener pixel baselines are invalid or wrong-sized: $bad_pngs"
+  printf 'native.ios-snapshots.baselines count=8 listener-library-downloads-now-playing-terminal-failure-light-dark\n'
 }
 
 parse_result_bundle_test_count() {
@@ -168,6 +233,7 @@ parse_result_bundle_test_count() {
 expected_test_count_floor() {
   case "$1" in
     macos-unit-tests) printf '10\n' ;;
+    ios-pixel-snapshot-tests) printf '8\n' ;;
     *) printf '1\n' ;;
   esac
 }
@@ -183,6 +249,8 @@ assert_result_bundle_tests() {
       printf '%s\n' '{"totalTestCount":0}' >"$summary_file"
     elif [[ "$label" == "macos-unit-tests" ]]; then
       printf '%s\n' '{"totalTestCount":10}' >"$summary_file"
+    elif [[ "$label" == "ios-pixel-snapshot-tests" ]]; then
+      printf '%s\n' '{"totalTestCount":8}' >"$summary_file"
     else
       printf '%s\n' '{"totalTestCount":2}' >"$summary_file"
     fi
@@ -521,10 +589,27 @@ find_simulator_udid() {
 
 find_shutdown_iphone_udid() {
   require_tool xcrun
-  local udid
-  udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ && /Shutdown/ { print $2; exit }')"
-  [[ -n "$udid" ]] || fail 'no available shutdown iPhone simulator'
-  printf 'native.simulator.clean-selection udid=%s state=Shutdown\n' "$udid" >&2
+  local udid state device_list
+  device_list="$(xcrun simctl list devices available)"
+  read -r udid state <<<"$(printf '%s\n' "$device_list" | awk -F '[()]' -v device_name="$ios_ui_device_name" '
+    {
+      name=$1
+      state=$4
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", state)
+      if (name == device_name) { print $2, state; exit }
+    }')"
+  [[ -n "$udid" ]] || fail "no available $ios_ui_device_name simulator for $ios_ui_baseline_geometry geometry"
+  if [[ "$state" == "Booted" ]]; then
+    printf 'native.simulator.clean-shutdown name=%s udid=%s state=Booted\n' \
+      "$ios_ui_device_name" "$udid" >&2
+    xcrun simctl shutdown "$udid" >&2
+    state=Shutdown
+  fi
+  [[ "$state" == "Shutdown" ]] ||
+    fail "$ios_ui_device_name simulator is not available in a clean state: $state"
+  printf 'native.simulator.clean-selection name=%s geometry=%s udid=%s state=Shutdown\n' \
+    "$ios_ui_device_name" "$ios_ui_baseline_geometry" "$udid" >&2
   printf '%s\n' "$udid"
 }
 
@@ -542,6 +627,8 @@ xcode_test_leg() {
   require_tool xmllint
   assert_test_sources "$label" "$source_dir"
   project="$(find_project)"
+  [[ "$xcode_test_timeout_seconds" =~ ^[1-9][0-9]*$ ]] ||
+    fail 'WILTED_XCODE_TEST_TIMEOUT_SECONDS must be a positive integer'
   xcodebuild test \
     -project "$project" \
     -scheme "$scheme" \
@@ -550,7 +637,31 @@ xcode_test_leg() {
     -derivedDataPath "$derived_data/$label" \
     -resultBundlePath "$tmp_root/$label.xcresult" \
     -parallel-testing-enabled NO \
-    -quiet
+    -quiet &
+  local xcode_pid=$!
+  local elapsed_seconds=0
+  local xcode_status
+  while kill -0 "$xcode_pid" 2>/dev/null; do
+    if (( elapsed_seconds >= xcode_test_timeout_seconds )); then
+      status "native.timeout label=$label seconds=$xcode_test_timeout_seconds"
+      kill -TERM "$xcode_pid" 2>/dev/null || true
+      cleanup_mac_test_hosts
+      set +e
+      wait "$xcode_pid"
+      set -e
+      return 124
+    fi
+    if (( elapsed_seconds > 0 && elapsed_seconds % 30 == 0 )); then
+      status "native.heartbeat label=$label elapsed_seconds=$elapsed_seconds"
+    fi
+    sleep 1
+    ((elapsed_seconds += 1))
+  done
+  set +e
+  wait "$xcode_pid"
+  xcode_status=$?
+  set -e
+  return "$xcode_status"
 }
 
 leg_macos_unit_tests() {
@@ -698,7 +809,8 @@ leg_ios_ui_tests() (
   printf 'native.simulator.bootstatus.start udid=%s purpose=ios-ui-tests\n' "$udid" >&2
   xcrun simctl bootstatus "$udid" -b >&2
   printf 'native.simulator.ready udid=%s purpose=ios-ui-tests\n' "$udid" >&2
-  xcode_test_leg ios-ui-tests "$integration_root/WiltediOSUITests" WiltediOS "platform=iOS Simulator,id=$udid" WiltediOSUITests
+  xcode_test_leg ios-pixel-snapshot-tests "$integration_root/WiltediOSUITests" WiltediOS \
+    "platform=iOS Simulator,id=$udid" WiltediOSUITests/WiltediOSPixelSnapshotTests
 )
 
 prepare_integration_root() {
@@ -729,6 +841,7 @@ if [[ "$native_self_test" != "1" ]]; then
   prepare_integration_root
   native_project="$tmp_root/generated-first/Wilted.xcodeproj"
   validate_pixel_snapshot_baselines "$integration_root"
+  validate_ios_pixel_snapshot_baselines "$integration_root"
 else
   snapshot_validation_root="$repo_root"
   if [[ -n "$forced_snapshot_baseline" ]]; then
@@ -746,6 +859,7 @@ else
     esac
   fi
   validate_pixel_snapshot_baselines "$snapshot_validation_root"
+  validate_ios_pixel_snapshot_baselines "$repo_root"
 fi
 
 run_leg "${leg_names[0]}" "${leg_reports[0]}" leg_xcodegen_reproducible
@@ -755,8 +869,7 @@ run_leg "${leg_names[3]}" "xctest" leg_listener_tests
 run_leg "${leg_names[4]}" "xctest" leg_wiltedproducer_tests
 run_leg "${leg_names[5]}" "${leg_reports[5]}" leg_macos_unit_tests
 run_leg "${leg_names[6]}" "${leg_reports[6]}" leg_ios_unit_tests
-run_leg "${leg_names[7]}" "${leg_reports[7]}" leg_macos_ui_tests
-run_leg "${leg_names[8]}" "${leg_reports[8]}" leg_ios_ui_tests
+run_leg "${leg_names[7]}" "${leg_reports[7]}" leg_ios_ui_tests
 
 status "native.complete failed_legs=$failed_legs total_legs=$completed_legs"
 if [[ "$failed_legs" -ne 0 ]]; then

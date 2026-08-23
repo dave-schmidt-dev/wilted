@@ -84,6 +84,19 @@ public struct CloudKitDecodedRecord: Sendable {
     }
 }
 
+/// A chunk after its CloudKit asset has been explicitly fetched and verified.
+public struct CloudKitDecodedChunk: Sendable {
+    public let id: WiltedRecordID
+    public let descriptor: AudioChunkDescriptor
+    public let data: Data
+
+    public init(id: WiltedRecordID, descriptor: AudioChunkDescriptor, data: Data) {
+        self.id = id
+        self.descriptor = descriptor
+        self.data = data
+    }
+}
+
 /// Strictly translates CloudKit records to and from the CloudKit-neutral contract.
 public final class CloudKitRecordMapper: @unchecked Sendable {
     public let zoneID: CKRecordZone.ID
@@ -124,7 +137,47 @@ public final class CloudKitRecordMapper: @unchecked Sendable {
         return record
     }
 
+    /// Builds one deterministic revision-chunk record. The record is immutable
+    /// by identity; retrying the same descriptor addresses the same CloudKit row.
+    public func encodeChunk(_ envelope: WiltedRecordEnvelope, assetURL: URL) throws -> CKRecord {
+        guard envelope.id.recordType == .revisionChunk else { throw CloudKitSyncError.invalidRecordIdentity }
+        guard case let .asset(asset)? = envelope.fields["chunkAsset"] else { throw CloudKitSyncError.missingField("chunkAsset") }
+        return try encode(envelope, assetURLs: [asset.assetID: assetURL])
+    }
+
+    /// Reads a chunk's CKAsset only when explicitly requested, then validates its
+    /// declared length and digest before returning bytes to the app owner.
+    public func decodeChunk(_ record: CKRecord) throws -> CloudKitDecodedChunk {
+        guard record.recordType == WiltedRecordType.revisionChunk.rawValue else {
+            throw CloudKitSyncError.invalidRecordIdentity
+        }
+        let decoded = try decodeMetadataOnly(record)
+        let descriptor = try WiltedRecordCodec().decodeRevisionChunkRecord(decoded.envelope).value
+        guard let asset = record["chunkAsset"] as? CKAsset, let url = asset.fileURL else {
+            throw CloudKitSyncError.assetUnavailable("\(record.recordID.recordName)#chunkAsset")
+        }
+        let data: Data
+        do { data = try Data(contentsOf: url) }
+        catch { throw CloudKitSyncError.assetCopyFailed(error.localizedDescription) }
+        guard Int64(data.count) == descriptor.byteCount else {
+            throw CloudKitSyncError.invalidField("chunkAsset.byteCount")
+        }
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        guard digest == descriptor.sha256 else { throw CloudKitSyncError.invalidField("chunkAsset.sha256") }
+        return CloudKitDecodedChunk(id: decoded.envelope.id, descriptor: descriptor, data: data)
+    }
+
     public func decode(_ record: CKRecord) throws -> CloudKitDecodedRecord {
+        try decode(record, stageAssets: true)
+    }
+
+    /// Decodes record metadata while leaving every CKAsset at CloudKit's staged
+    /// URL. Callers explicitly fetch and own audio bytes only after selection.
+    public func decodeMetadataOnly(_ record: CKRecord) throws -> CloudKitDecodedRecord {
+        try decode(record, stageAssets: false)
+    }
+
+    private func decode(_ record: CKRecord, stageAssets: Bool) throws -> CloudKitDecodedRecord {
         guard record.recordID.zoneID.zoneName == zoneID.zoneName,
               record.recordID.zoneID.ownerName == zoneID.ownerName else {
             throw CloudKitSyncError.invalidZone(record.recordID.zoneID.zoneName)
@@ -140,18 +193,29 @@ public final class CloudKitRecordMapper: @unchecked Sendable {
             var fields: [String: WiltedFieldValue] = [:]
             for key in record.allKeys() {
                 guard let value = record[key] else { throw CloudKitSyncError.invalidField(key) }
-                let decoded = try decode(value, field: key, assetID: "\(record.recordID.recordName)#\(key)")
+                let decoded = try decode(value, field: key, assetID: "\(record.recordID.recordName)#\(key)", stageAsset: stageAssets,
+                                         expectedHash: expectedHash(in: record, assetField: key))
                 fields[key] = decoded.value
                 if let url = decoded.assetURL { staged[key] = url }
             }
             if fields.values.contains(where: { if case .asset = $0 { return true }; return false }) {
-                guard case let .string(contentHash)? = fields["contentHash"],
-                      contentHash.range(of: "^sha256:[0-9a-f]{64}$", options: .regularExpression) != nil
-                else { throw CloudKitSyncError.missingField("contentHash") }
+                let contentHash: String
+                if let value = fields["contentHash"].flatMap(Self.stringValue) {
+                    contentHash = value
+                } else if let value = fields["sha256"].flatMap(Self.stringValue) {
+                    contentHash = "sha256:\(value)"
+                } else {
+                    throw CloudKitSyncError.missingField("contentHash")
+                }
+                guard contentHash.range(of: "^sha256:[0-9a-f]{64}$", options: .regularExpression) != nil else {
+                    throw CloudKitSyncError.invalidField("contentHash")
+                }
                 for (key, value) in fields {
                     if case let .asset(asset) = value {
-                        guard let url = staged[key], try sha256(url: url) == contentHash else {
-                            throw CloudKitSyncError.invalidField("\(key).contentHash")
+                        if stageAssets {
+                            guard let url = staged[key], try sha256(url: url) == contentHash else {
+                                throw CloudKitSyncError.invalidField("\(key).contentHash")
+                            }
                         }
                         fields[key] = try .asset(WiltedAsset(assetID: asset.assetID, contentHash: contentHash))
                     }
@@ -268,7 +332,8 @@ public final class CloudKitRecordMapper: @unchecked Sendable {
         let assetURL: URL?
     }
 
-    private func decode(_ value: __CKRecordObjCValue, field: String, assetID: String) throws -> DecodedField {
+    private func decode(_ value: __CKRecordObjCValue, field: String, assetID: String,
+                        stageAsset: Bool, expectedHash: String?) throws -> DecodedField {
         if let value = value as? NSString { return .init(value: .string(String(value)), assetURL: nil) }
         if let value = value as? NSDate { return .init(value: .date(Timestamp(value as Date)), assetURL: nil) }
         if let value = value as? NSData { return .init(value: .bytes(Data(value)), assetURL: nil) }
@@ -282,9 +347,14 @@ public final class CloudKitRecordMapper: @unchecked Sendable {
             return .init(value: .reference(WiltedRecordReference(recordID: id)), assetURL: nil)
         }
         if let value = value as? CKAsset {
+            let hash = expectedHash ?? ("sha256:" + String(repeating: "0", count: 64))
+            guard hash.range(of: "^sha256:[0-9a-f]{64}$", options: .regularExpression) != nil else {
+                throw CloudKitSyncError.invalidField(field)
+            }
+            if !stageAsset {
+                return .init(value: .asset(try WiltedAsset(assetID: assetID, contentHash: hash)), assetURL: nil)
+            }
             guard let stager else { throw CloudKitSyncError.assetUnavailable(assetID) }
-            // The hash is validated against the ordinary contentHash field by WiltedSync.
-            let hash = "sha256:" + String(repeating: "0", count: 64)
             let url: URL
             do { url = try stager.stage(asset: value, assetID: assetID, contentHash: hash) }
             catch let error as CloudKitSyncError { throw error }
@@ -304,8 +374,20 @@ public final class CloudKitRecordMapper: @unchecked Sendable {
         switch envelope.id.recordType {
         case .item: _ = try codec.decodeArticleRecord(envelope)
         case .revision: _ = try codec.decodeRevisionRecord(envelope)
+        case .revisionChunk: _ = try codec.decodeRevisionChunkRecord(envelope)
         case .playbackState: _ = try codec.decodePlaybackRecord(envelope)
         }
+    }
+
+    private func expectedHash(in record: CKRecord, assetField: String) -> String? {
+        if assetField == "audioAsset", let value = record["contentHash"] as? NSString { return String(value) }
+        if assetField == "chunkAsset", let value = record["sha256"] as? NSString { return "sha256:\(value)" }
+        return nil
+    }
+
+    private static func stringValue(_ value: WiltedFieldValue) -> String? {
+        guard case let .string(value) = value else { return nil }
+        return value
     }
 
     private func sha256(url: URL) throws -> String {

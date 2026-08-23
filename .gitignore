@@ -18,6 +18,7 @@ etc/*.local.yaml
 .env
 .env.*
 !.env.example
+.release-state/
 
 # OS / editor
 .DS_Store
@@ -42,6 +43,7 @@ Package.resolved
 dist/
 build/
 *.log
+.logs/
 
 # Working docs kept local
 HISTORY.md

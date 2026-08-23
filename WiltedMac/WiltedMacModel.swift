@@ -73,18 +73,20 @@ final class WiltedMacModel {
     private let syncLifecycle: WiltedMacSyncLifecycle?
     private var preparationRun: PreparationRun?
     private var preparationTask: Task<Void, Never>?
+    private var syncReconciliationTask: Task<Void, Never>?
     private var fixtureRevision: StoredAudioRevision?
 #endif
 
     init(arguments: [String] = ProcessInfo.processInfo.arguments,
          syncTransportFactory: WiltedMacSyncTransportFactory? = nil,
-         assetResolver: @escaping LocalLibraryAssetResolver = { _, _ in nil }) {
+         assetResolver: @escaping LocalLibraryAssetResolver = { _, _ in nil },
+         stateDirectoryOverride: URL? = nil) {
         let usesFixtureMode = arguments.contains("--wilted-ui-fixture-article-flow")
             || arguments.contains("--wilted-ui-fixture-quarantined")
         fixtureMode = usesFixtureMode
 
 #if canImport(WiltedProducer)
-        let stateDirectory = Self.stateDirectory(fixtureMode: usesFixtureMode)
+        let stateDirectory = stateDirectoryOverride ?? Self.stateDirectory(fixtureMode: usesFixtureMode)
         let libraryURL = stateDirectory.appendingPathComponent("library.sqlite")
         let mediaDirectory = stateDirectory.appendingPathComponent("media", isDirectory: true)
         let configuredStore = try? LocalLibraryStore(url: libraryURL)
@@ -154,8 +156,28 @@ final class WiltedMacModel {
     func uploadPendingSync() {
 #if canImport(WiltedProducer)
         Task { [weak self] in
-            await self?.queueUnpublishedReadyRevisions()
+            _ = await self?.queueUnpublishedReadyRevisions()
             self?.syncLifecycle?.startUpload()
+        }
+#endif
+    }
+
+    /// Reconciles durable ready revisions when the producer launches or returns to the
+    /// foreground. The task guard makes repeated scene callbacks harmless while the
+    /// existing lifecycle coalesces any automatic send requested by the reconciliation.
+    func reconcileSyncOnLaunchOrForeground() {
+#if canImport(WiltedProducer)
+        guard !fixtureMode,
+              let syncLifecycle,
+              syncLifecycle.status.phase != .disabled,
+              syncReconciliationTask == nil else { return }
+        syncReconciliationTask = Task { [weak self] in
+            guard let self else { return }
+            let queued = await self.queueUnpublishedReadyRevisions()
+            if queued {
+                self.syncLifecycle?.startAutomaticUpload()
+            }
+            self.syncReconciliationTask = nil
         }
 #endif
     }
@@ -231,7 +253,9 @@ final class WiltedMacModel {
                 if status.terminal { break }
             }
             if self.preparation?.phase == .completed {
-                await self.queuePreparedPublication(itemID: preparedItemID)
+                if await self.queuePreparedPublication(itemID: preparedItemID) {
+                    self.syncLifecycle?.startAutomaticUpload()
+                }
             }
             self.preparationRun = nil
             self.refresh()
@@ -355,14 +379,17 @@ final class WiltedMacModel {
         )
     }
 
-    private func queuePreparedPublication(itemID: ItemID) async {
+    @discardableResult
+    private func queuePreparedPublication(itemID: ItemID, chunkedFile: AudioChunkedFile? = nil) async -> Bool {
         guard let store, let syncLifecycle,
               let article = try? await store.article(for: itemID),
               let stored = try? await store.readyRevision(for: itemID),
-              let asset = try? WiltedAsset(assetID: stored.revision.revisionID.rawValue,
-                                           contentHash: stored.revision.contentHash) else { return }
-        _ = await syncLifecycle.queueItem(article, currentRevisionID: stored.revision.revisionID)
-        _ = await syncLifecycle.queueRevision(stored.revision, audioAsset: asset)
+              let bytes = try? Data(contentsOf: stored.mediaURL),
+              let chunkedFile = chunkedFile ?? (try? AudioChunking.chunk(bytes)) else { return false }
+        let revisionResult = await syncLifecycle.queueRevision(stored.revision, chunkedFile: chunkedFile)
+        let itemResult = await syncLifecycle.queueItem(article, currentRevisionID: stored.revision.revisionID)
+        guard case .success = itemResult, case .success = revisionResult else { return false }
+        return true
     }
 
     /// Re-queues ready revisions that are durable locally but absent from the outbound queue.
@@ -377,18 +404,27 @@ final class WiltedMacModel {
     /// Membership is checked rather than sync status so a partially queued item repairs
     /// itself, and a revision whose media file is gone is skipped instead of failing the
     /// whole upload.
-    private func queueUnpublishedReadyRevisions() async {
-        guard let store, syncLifecycle != nil else { return }
-        guard let articles = try? await store.articles() else { return }
+    private func queueUnpublishedReadyRevisions() async -> Bool {
+        guard let store, syncLifecycle != nil else { return false }
+        guard let articles = try? await store.articles() else { return false }
         let state = try? await store.syncRepositoryState()
         let queued = Set((state?.pendingChanges.map(\.recordID) ?? []) + Array(state?.remoteAcknowledgedRecordIDs ?? []))
+        var didQueue = false
         for article in articles where !article.isDeleted {
             guard let stored = try? await store.readyRevision(for: article.itemID),
                   FileManager.default.fileExists(atPath: stored.mediaURL.path),
-                  let revisionRecordID = try? WiltedRecordID.revision(article.itemID, stored.revision.revisionID),
-                  !queued.contains(revisionRecordID) else { continue }
-            await queuePreparedPublication(itemID: article.itemID)
+                  let bytes = try? Data(contentsOf: stored.mediaURL),
+                  let chunkedFile = try? AudioChunking.chunk(bytes),
+                  let revisionRecordID = try? WiltedRecordID.revision(article.itemID, stored.revision.revisionID) else { continue }
+            let chunkRecordIDs = chunkedFile.manifest.chunks.compactMap {
+                try? WiltedRecordID.revisionChunk(article.itemID, stored.revision.revisionID, index: $0.index)
+            }
+            let expected = Set([revisionRecordID] + chunkRecordIDs)
+            guard !expected.isSubset(of: queued) else { continue }
+            didQueue = await queuePreparedPublication(itemID: article.itemID, chunkedFile: chunkedFile) || didQueue
         }
+        let hasSendablePending = (try? await store.syncRepositoryState())?.sendableChanges.isEmpty == false
+        return didQueue || hasSendablePending
     }
 
     private func queueCurrentPlaybackCheckpoint() async {

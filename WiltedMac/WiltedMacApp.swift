@@ -12,19 +12,26 @@ struct WiltedMacApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if usesStaticFixture {
-                WiltedRootView(
-                    fixture: WiltedPreviewFixture.fromLaunchArguments(ProcessInfo.processInfo.arguments)
-                )
-            } else {
-                WiltedMacRootView(model: model)
+            Group {
+                if usesStaticFixture {
+                    WiltedRootView(
+                        fixture: WiltedPreviewFixture.fromLaunchArguments(ProcessInfo.processInfo.arguments)
+                    )
+                } else {
+                    WiltedMacRootView(model: model)
+                }
+            }
+            .task {
+                model.reconcileSyncOnLaunchOrForeground()
             }
         }
         .commands {
             SidebarCommands()
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background || phase == .inactive {
+            if phase == .active {
+                model.reconcileSyncOnLaunchOrForeground()
+            } else if phase == .background || phase == .inactive {
                 model.checkpointForQuit()
             }
         }

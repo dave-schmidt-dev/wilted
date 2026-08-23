@@ -162,9 +162,42 @@ public actor ListenerPlaybackController {
 
     public func current() -> PlaybackState? { currentState }
 
-    public func enterBackground() {
-        nowPlaying.update(title: title, duration: engine.duration, position: engine.currentTime, rate: engine.isPlaying ? 1 : 0)
+    /// Returns a UI-only projection of the active engine position.
+    ///
+    /// This intentionally does not advance the durable playback sequence. Position snapshots
+    /// keep the in-app and system Now Playing readouts current, while persistence remains tied
+    /// to explicit lifecycle and playback transitions.
+    public func liveReadout() throws -> PlaybackState? {
+        guard engine.isPlaying, let state = currentState else { return nil }
+        let position = min(max(0, engine.currentTime), state.durationSeconds)
+        let readout = try PlaybackState(
+            itemID: state.itemID,
+            revisionID: state.revisionID,
+            sessionID: state.sessionID,
+            sequence: state.sequence,
+            positionSeconds: position,
+            durationSeconds: state.durationSeconds,
+            completed: position >= state.durationSeconds,
+            intent: .progress,
+            deviceID: state.deviceID,
+            encodedCloudKitRecordSystemFields: state.encodedCloudKitRecordSystemFields,
+            updatedAt: Timestamp(Date())
+        )
+        nowPlaying.update(title: title, duration: engine.duration, position: position, rate: 1)
+        return readout
+    }
+
+    public func enterBackground() throws -> PlaybackState? {
+        let position = engine.currentTime
+        nowPlaying.update(title: title, duration: engine.duration, position: position, rate: engine.isPlaying ? 1 : 0)
+        guard let state = currentState else {
+            emit(.init(phase: .idle, message: "Playback background state published"))
+            return nil
+        }
+        let updated = try nextState(from: state, position: position, intent: .progress, completed: false)
+        currentState = updated
         emit(.init(phase: .idle, message: "Playback background state published"))
+        return updated
     }
 
     public func install(remoteCommands: any ListenerRemoteCommands) {

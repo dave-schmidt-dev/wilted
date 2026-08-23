@@ -25,7 +25,10 @@ public actor CloudKitChangeAccumulator {
     }
 
     public func append(modified record: CKRecord) throws {
-        let decoded = try mapper.decode(record)
+        // Chunk records are immutable transport rows. They are fetched by
+        // explicit selection, never as part of metadata/catalog discovery.
+        guard record.recordType != WiltedRecordType.revisionChunk.rawValue else { return }
+        let decoded = try mapper.decodeMetadataOnly(record)
         guard !deletedRecordIDs.contains(decoded.envelope.id) else { throw CloudKitSyncError.invalidRecordIdentity }
         if let previous = decodedRecords.first(where: { $0.envelope.id == decoded.envelope.id }) {
             for url in previous.stagedAssets.values {
@@ -42,6 +45,7 @@ public actor CloudKitChangeAccumulator {
     }
 
     public func append(deleted id: CKRecord.ID, recordType: String) throws {
+        guard recordType != WiltedRecordType.revisionChunk.rawValue else { return }
         guard id.zoneID.zoneName == mapper.zoneID.zoneName,
               id.zoneID.ownerName == mapper.zoneID.ownerName,
               let type = WiltedRecordType(rawValue: recordType) else { throw CloudKitSyncError.invalidRecordIdentity }

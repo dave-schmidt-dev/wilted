@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+CENTRAL_ROOT="$ROOT/../apple_developer"
+ADAPTER="$ROOT/.release/release-adapter.json"
+for arg in "$@"; do
+  case "$arg" in
+    --adapter|--adapter=*|--repository|--repository=*|--broker|--broker=*|--executable|--executable=*|--credential|--credential=*)
+      echo "release-status: caller-selected paths and credentials are not permitted" >&2
+      exit 2
+      ;;
+  esac
+done
+[ -f "$CENTRAL_ROOT/release_tools/__main__.py" ] && [ -f "$ADAPTER" ] || {
+  echo "release-status: central release_tools or adapter is unavailable" >&2
+  exit 4
+}
+exec env PYTHONPATH="$CENTRAL_ROOT" python3 -m release_tools status --repository "$ROOT" --adapter "$ADAPTER" "$@"

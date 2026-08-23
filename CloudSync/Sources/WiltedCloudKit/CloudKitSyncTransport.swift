@@ -1,5 +1,6 @@
 import CloudKit
 import Foundation
+import WiltedDomain
 import WiltedSync
 
 /// Actor-isolated CloudKit transport. The real engine and tests use the same event seam.
@@ -151,6 +152,46 @@ public actor CloudKitSyncTransport: SyncTransport {
                 catch { await self.failFetch(error) }
             }
         }
+    }
+
+    /// Fetches only the selected revision's chunk records and reconstructs the
+    /// original bytes after validating order, sizes, per-chunk hashes, and the
+    /// whole-file hash. Metadata sync never calls this method.
+    public func fetchAudioChunks(itemID: ItemID, revisionID: RevisionID,
+                                 manifest: AudioChunkManifest) async throws -> Data {
+        guard !quarantined else { throw CloudKitSyncError.quarantined }
+        let ids = try manifest.chunks.map {
+            CKRecord.ID(recordName: try WiltedRecordID.revisionChunk(itemID, revisionID, index: $0.index).recordName,
+                        zoneID: mapper.zoneID)
+        }
+        emit(.init(phase: .fetching, message: "Fetching selected audio chunks"))
+        do { try await driver.ensureZone() }
+        catch { throw CloudKitSyncError.map(error) }
+        let records: [CKRecord]
+        do { records = try await driver.fetchRecords(ids) }
+        catch { throw CloudKitSyncError.map(error) }
+        var byID: [String: CKRecord] = [:]
+        for record in records { byID[record.recordID.recordName] = record }
+        var chunks: [Data] = []
+        chunks.reserveCapacity(manifest.chunks.count)
+        for descriptor in manifest.chunks {
+            let id = try WiltedRecordID.revisionChunk(itemID, revisionID, index: descriptor.index).recordName
+            guard let record = byID[id] else { throw CloudKitSyncError.missingField("chunk.\(descriptor.index)") }
+            let decoded = try mapper.decodeChunk(record)
+            guard decoded.descriptor == descriptor else { throw CloudKitSyncError.invalidField("chunk.\(descriptor.index).descriptor") }
+            chunks.append(decoded.data)
+        }
+        do { return try AudioChunking.reconstruct(manifest: manifest, chunks: chunks) }
+        catch let error as AudioChunkError { throw CloudKitSyncError.invalidField(error.localizedDescription) }
+    }
+
+    /// Reconstructs into a destination only after complete validation. The
+    /// shared contract's atomic write prevents corrupt partial cache files.
+    public func fetchAudioChunks(itemID: ItemID, revisionID: RevisionID,
+                                 manifest: AudioChunkManifest, to destinationURL: URL) async throws {
+        let data = try await fetchAudioChunks(itemID: itemID, revisionID: revisionID, manifest: manifest)
+        do { try data.write(to: destinationURL, options: [.atomic]) }
+        catch { throw CloudKitSyncError.assetCopyFailed(error.localizedDescription) }
     }
 
     public func cancel() async {
@@ -305,6 +346,7 @@ public actor CloudKitSyncTransport: SyncTransport {
         switch envelope.id.recordType {
         case .item: _ = try WiltedRecordCodec().decodeArticleRecord(envelope)
         case .revision: _ = try WiltedRecordCodec().decodeRevisionRecord(envelope)
+        case .revisionChunk: _ = try WiltedRecordCodec().decodeRevisionChunkRecord(envelope)
         case .playbackState: _ = try WiltedRecordCodec().decodePlaybackRecord(envelope)
         }
     }

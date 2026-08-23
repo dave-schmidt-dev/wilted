@@ -46,7 +46,7 @@ rationale: Playback state carries revision ID, position, completion, session epo
 area: ["WiltedKit/**", "WiltedMac/**", "WiltediOS/**", "CloudSync/**", "Listener/**"]
 gate_test: test-gate.sh
 threshold: 3
-rationale: CloudKit is a transfer service, not the source of truth or a real-time channel. Both apps retain local state; iOS can play cached audio offline, persisted zone changes/deletions survive relaunch, every typed account change quarantines local work until explicit review resumes the current engine, and an operation generation prevents pre-quarantine fetch/send completions from committing afterward.
+rationale: CloudKit is a transfer service, not the source of truth or a real-time channel. Both apps retain local state; completed Mac revisions automatically publish metadata plus deterministic bounded byte chunks, catalog fetches never stage audio, and iOS explicitly fetches, validates, and atomically reconstructs a selected revision before caching it for offline playback. Persisted zone changes/deletions survive relaunch, every typed account change quarantines local work until explicit review resumes the current engine, and an operation generation prevents pre-quarantine fetch/send completions from committing afterward.
 
 ### W-INV-008 — Cross-target fixtures are authoritative
 area: ["WiltedKit/**", "WiltedMacTests/**", "WiltediOSTests/**", "CloudSync/**", "Listener/**"]

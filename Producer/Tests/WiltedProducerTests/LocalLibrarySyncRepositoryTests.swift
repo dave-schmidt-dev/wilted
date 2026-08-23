@@ -94,6 +94,68 @@ final class LocalLibrarySyncRepositoryTests: XCTestCase {
         XCTAssertEqual(state.pendingChanges.map(\.recordID), [revisionRecord.id])
     }
 
+    func testRevisionChunksRemainTransportStateWithoutEnteringTheLocalCatalog() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("chunk-transport")
+        let revisionID = try RevisionID(rawValue: "rev-chunk-transport")
+        let chunked = try AudioChunking.chunk(Data("chunk-transport-bytes".utf8), chunkSize: 4)
+        let descriptor = chunked.manifest.chunks[0]
+        let asset = try WiltedAsset(assetID: "chunk-asset", contentHash: "sha256:\(descriptor.sha256)")
+        let chunkRecord = try WiltedRecordCodec().encode(
+            revisionChunk: item.itemID, revisionID: revisionID, descriptor: descriptor, chunkAsset: asset)
+        let store = try LocalLibraryStore(url: url)
+        let repository = try await LocalLibrarySyncRepository(store: store)
+
+        try await repository.commit(try await repository.stage(try SyncFetchBatch(
+            generationID: "chunk-fetch", records: [chunkRecord], engineState: Data([1]))))
+
+        let stateAfterFetch = await repository.state()
+        let inspectionAfterFetch = try await store.inspect()
+        XCTAssertEqual(stateAfterFetch.records, [chunkRecord])
+        XCTAssertEqual(inspectionAfterFetch.articleCount, 0)
+        XCTAssertEqual(inspectionAfterFetch.revisionCount, 0)
+
+        try await repository.commit(try await repository.stage(try SyncFetchBatch(
+            generationID: "chunk-delete", records: [], engineState: Data([2]), deletedRecordIDs: [chunkRecord.id])))
+
+        let stateAfterDelete = await repository.state()
+        let inspectionAfterDelete = try await store.inspect()
+        XCTAssertTrue(stateAfterDelete.records.isEmpty)
+        XCTAssertEqual(inspectionAfterDelete.articleCount, 0)
+        XCTAssertEqual(inspectionAfterDelete.revisionCount, 0)
+    }
+
+    func testManifestRevisionAndChunksQueueAsTransportStateWithoutLocalMedia() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("manifest-transport")
+        let revisionID = try RevisionID(rawValue: "rev-manifest-transport")
+        let chunked = try AudioChunking.chunk(Data("manifest-transport-bytes".utf8), chunkSize: 4)
+        let revision = try AudioRevision(
+            itemID: item.itemID, revisionID: revisionID, durationSeconds: 8,
+            byteCount: Int64(chunked.manifest.totalByteCount),
+            contentHash: "sha256:\(chunked.manifest.contentSHA256)", mediaType: "audio/mp4",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_032)), schemaVersion: 1)
+        let codec = WiltedRecordCodec()
+        let manifestRecord = try codec.encode(revision: revision, manifest: chunked.manifest)
+        let chunkRecords = try chunked.manifest.chunks.map { descriptor in
+            try codec.encode(
+                revisionChunk: item.itemID, revisionID: revisionID, descriptor: descriptor,
+                chunkAsset: try WiltedAsset(assetID: descriptor.identity, contentHash: "sha256:\(descriptor.sha256)"))
+        }
+        let store = try LocalLibraryStore(url: url)
+        let repository = try await LocalLibrarySyncRepository(store: store)
+
+        for record in [manifestRecord] + chunkRecords {
+            try await repository.enqueue(try SyncPendingChange(operation: .create, recordID: record.id, record: record))
+        }
+
+        let state = await repository.state()
+        XCTAssertEqual(state.pendingChanges.map(\.recordID), [manifestRecord.id] + chunkRecords.map(\.id))
+        let inspection = try await store.inspect()
+        XCTAssertEqual(inspection.articleCount, 0)
+        XCTAssertEqual(inspection.revisionCount, 0)
+    }
+
     func testRevisionEnqueueStillFailsWhenNoLocalMediaBacksIt() async throws {
         // The fallback must not turn a missing asset into a publishable record: an
         // unresolvable revision is still a hard failure, just no longer the only outcome.

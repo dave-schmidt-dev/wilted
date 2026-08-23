@@ -36,25 +36,73 @@ public actor SyncCoordinator {
     /// Sends queued mutations and atomically applies the transport acknowledgement.
     public func sendPending(role: SyncDeviceRole) async -> Result<SyncSendResult, Error> {
         do {
-            let state = await repository.state()
-            let changes = state.sendableChanges
+            var state = await repository.state()
             let blocked = state.conflictBlockedChanges
             // A queue that is entirely conflicted sends an empty batch and returns a
             // clean result, so without this the surface reports a completed upload
             // while every queued change is still sitting on the device (W-INV-001).
-            if changes.isEmpty, !blocked.isEmpty {
+            if state.sendableChanges.isEmpty, !blocked.isEmpty {
                 let reviewRequired = !state.accountQuarantinedRecordIDs.isEmpty
                 emit(.init(phase: .failed, message: Self.blockedMessage(count: blocked.count, accountReviewRequired: reviewRequired)))
                 return .failure(WiltedSyncError.sendBlockedByConflicts(count: blocked.count, accountReviewRequired: reviewRequired))
             }
-            let operationGeneration = await transport.operationGeneration()
-            let result = try await transport.save(changes: changes, role: role)
-            try await ensureCurrent(operationGeneration)
-            try await repository.acknowledge(result)
+
+            var results: [SyncSendResult] = []
+            let pendingChunks = state.pendingChanges.filter { $0.recordID.recordType == .revisionChunk }
+            if !pendingChunks.isEmpty {
+                // A ready revision manifest and its item pointer make the revision
+                // discoverable. Never add either to CKSyncEngine until every chunk has
+                // been acknowledged in a prior send. This remains fail-closed when a
+                // chunk is retryable or conflicted.
+                let chunks = state.sendableChanges.filter { $0.recordID.recordType == .revisionChunk }
+                guard !chunks.isEmpty else {
+                    let blockedChunks = state.conflictBlockedChanges.filter {
+                        $0.recordID.recordType == .revisionChunk
+                    }
+                    let reviewRequired = !state.accountQuarantinedRecordIDs.intersection(
+                        Set(blockedChunks.map(\.recordID))
+                    ).isEmpty
+                    emit(.init(phase: .failed, message: Self.blockedMessage(
+                        count: blockedChunks.count,
+                        accountReviewRequired: reviewRequired
+                    )))
+                    return .failure(WiltedSyncError.sendBlockedByConflicts(
+                        count: blockedChunks.count,
+                        accountReviewRequired: reviewRequired
+                    ))
+                }
+                let chunkResult = try await sendAndAcknowledge(chunks, role: role)
+                results.append(chunkResult)
+                guard chunkResult.failures.isEmpty else {
+                    let result = try combine(results)
+                    emit(.init(phase: .failed, message: Self.retryMessage(count: result.failures.count)))
+                    return .success(result)
+                }
+                state = await repository.state()
+                guard !state.pendingChanges.contains(where: {
+                    $0.recordID.recordType == .revisionChunk
+                }) else {
+                    let error = WiltedSyncError.transport(
+                        "chunk publication incomplete; ready records were withheld"
+                    )
+                    emit(.init(phase: .failed, message: String(describing: error)))
+                    return .failure(error)
+                }
+            }
+
+            let remaining = state.sendableChanges
+            if !remaining.isEmpty || results.isEmpty {
+                results.append(try await sendAndAcknowledge(remaining, role: role))
+            }
+            let result = try combine(results)
             // Read after acknowledgement: this send can conflict records of its own, so
             // the pre-send count is not what is still held.
             let held = await repository.state().conflictBlockedChanges.count
-            emit(.init(phase: .completed, message: Self.acknowledgedMessage(sent: result.acknowledgedRecordIDs.count, held: held)))
+            if result.failures.isEmpty {
+                emit(.init(phase: .completed, message: Self.acknowledgedMessage(sent: result.acknowledgedRecordIDs.count, held: held)))
+            } else {
+                emit(.init(phase: .failed, message: Self.retryMessage(count: result.failures.count)))
+            }
             return .success(result)
         } catch {
             emit(.init(phase: .failed, message: String(describing: error)))
@@ -85,6 +133,10 @@ public actor SyncCoordinator {
             : "Nothing was sent. \(subject) held by unresolved remote conflicts."
     }
 
+    public static func retryMessage(count: Int) -> String {
+        count == 1 ? "1 change needs retry." : "\(count) changes need retry."
+    }
+
     public func finishStatusStream() { continuation?.finish(); continuation = nil }
 
     private func emit(_ status: SyncStatus) { continuation?.yield(status) }
@@ -93,5 +145,22 @@ public actor SyncCoordinator {
         guard await transport.operationGeneration() == expected else {
             throw WiltedSyncError.transport("sync operation superseded by an account change")
         }
+    }
+
+    private func sendAndAcknowledge(_ changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {
+        let operationGeneration = await transport.operationGeneration()
+        let result = try await transport.save(changes: changes, role: role)
+        try await ensureCurrent(operationGeneration)
+        try await repository.acknowledge(result)
+        return result
+    }
+
+    private func combine(_ results: [SyncSendResult]) throws -> SyncSendResult {
+        try SyncSendResult(
+            engineState: results.reversed().compactMap(\.engineState).first,
+            acknowledgedRecordIDs: results.flatMap(\.acknowledgedRecordIDs),
+            serverEnvelopes: results.flatMap(\.serverEnvelopes),
+            failures: results.flatMap(\.failures)
+        )
     }
 }

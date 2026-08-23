@@ -17,9 +17,6 @@ packages:
     path: CloudSync
   WiltedListener:
     path: Listener
-  SnapshotTesting:
-    url: https://github.com/pointfreeco/swift-snapshot-testing
-    exactVersion: 1.19.4
 
 configs:
   Debug: debug
@@ -29,7 +26,7 @@ configs:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "0.1.8"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
@@ -70,6 +67,17 @@ targets:
         CODE_SIGNING_REQUIRED: YES
       configs:
         Debug:
+          # Ad-hoc ("-") cdhash changes on every rebuild, so the macOS
+          # Documents-TCC grant for com.zerodelta.wilted.mac (pinned to a
+          # bare cdhash csreq) invalidates and re-prompts every build. A
+          # certificate-anchored designated requirement survives rebuilds.
+          # Matches scripts/test-gate.sh's macos-ui-tests leg, which already
+          # overrides to this identity/team on the command line -- this makes
+          # an ordinary `xcodebuild`/Xcode Debug build stable too, not just
+          # that one gate leg. Mirrors gradus/app/project.yml's GradusMac
+          # Debug shape (Apple Development + explicit team, Manual style).
+          CODE_SIGN_IDENTITY: "Apple Development"
+          DEVELOPMENT_TEAM: 4CJ49V6QHW
           CODE_SIGN_ENTITLEMENTS: ""
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"
         Development:
@@ -77,6 +85,11 @@ targets:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"
         Release:
           CODE_SIGN_ENTITLEMENTS: WiltedMac/WiltedMacProduction.entitlements
+          CODE_SIGN_IDENTITY: "Developer ID Application"
+          CODE_SIGN_STYLE: Manual
+          DEVELOPMENT_TEAM: 4CJ49V6QHW
+          ENABLE_HARDENED_RUNTIME: YES
+          PROVISIONING_PROFILE_SPECIFIER: Wilted Developer ID
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"
     info:
       path: WiltedMac/Info.plist
@@ -122,6 +135,12 @@ targets:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"
         Release:
           CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOSProduction.entitlements
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Distribution
+          CODE_SIGNING_ALLOWED: YES
+          CODE_SIGNING_REQUIRED: YES
+          DEVELOPMENT_TEAM: 4CJ49V6QHW
+          PROVISIONING_PROFILE_SPECIFIER: Wilted App Store
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"
     info:
       path: WiltediOS/Info.plist
@@ -132,11 +151,17 @@ targets:
         CFBundlePackageType: APPL
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # Wilted uses only Apple-provided HTTPS/CloudKit transport and SHA-256
+        # integrity hashes; it does not implement non-exempt encryption.
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UIBackgroundModes:
           - audio
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
 
   WiltedMacTests:
     type: bundle.unit-test
@@ -157,8 +182,6 @@ targets:
         product: WiltedCloudKit
       - package: WiltedListener
         product: WiltedListener
-      - package: SnapshotTesting
-        product: SnapshotTesting
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.mac.tests
@@ -179,8 +202,6 @@ targets:
         product: WiltedSync
       - package: WiltedCloudKit
         product: WiltedCloudKit
-      - package: SnapshotTesting
-        product: SnapshotTesting
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.ios.tests

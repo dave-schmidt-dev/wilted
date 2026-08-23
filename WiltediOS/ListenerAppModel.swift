@@ -59,6 +59,15 @@ public enum ListenerItemState: Equatable, Sendable {
     }
 }
 
+/// The bounded, account-free states used by the shipping listener pixel tests.
+/// They describe presentation only and never enable a transport, repository,
+/// cache, or audio engine.
+public enum ListenerPixelFixtureState: String, Sendable {
+    case library
+    case nowPlaying
+    case terminalFailure
+}
+
 public struct ListenerLibraryItem: Identifiable, Equatable, Sendable {
     public let itemID: ItemID
     public let title: String
@@ -83,6 +92,7 @@ public struct ListenerLibraryItem: Identifiable, Equatable, Sendable {
 }
 
 public typealias ListenerAssetLoader = @Sendable (WiltedRecordID, WiltedAsset) async throws -> URL
+public typealias ListenerAudioChunkLoader = @Sendable (ItemID, RevisionID, AudioChunkManifest) async throws -> Data
 
 public enum ListenerAccountChangeType: String, Codable, Sendable {
     case signIn
@@ -111,6 +121,7 @@ public enum ListenerAccountChange: Sendable {
 public protocol ListenerSyncSession: Sendable {
     var transport: any SyncTransport { get }
     var assetLoader: ListenerAssetLoader { get }
+    var audioChunkLoader: ListenerAudioChunkLoader { get }
     var accountChanges: AsyncStream<ListenerAccountChange> { get }
     func cancel() async
     func resetAfterAccountChange() async
@@ -135,6 +146,7 @@ public final class WiltedListenerAppModel: ObservableObject {
     private let cache: ListenerAudioCache?
     private let playback: ListenerPlaybackController?
     private var assetLoader: ListenerAssetLoader?
+    private var audioChunkLoader: ListenerAudioChunkLoader?
     private let sessionFactory: ListenerSyncSessionFactory?
     private var session: (any ListenerSyncSession)?
     private var accountQuarantined = false
@@ -143,7 +155,12 @@ public final class WiltedListenerAppModel: ObservableObject {
     private var playbackByItem: [ItemID: PlaybackState] = [:]
     private var revisionByItem: [ItemID: AudioRevision] = [:]
     private var assetByItem: [ItemID: WiltedAsset] = [:]
+    private var manifestByItem: [ItemID: AudioChunkManifest] = [:]
     private var operationInFlight = false
+    /// Invalidates every suspended model operation when cancellation permits a retry.
+    /// A Boolean alone cannot distinguish the cancelled operation from its successor.
+    private var operationGeneration: UInt64 = 0
+    private var didStart = false
     private var cancellationRequested = false
     private var statusTasks: [Task<Void, Never>] = []
     private var decodeHadErrors = false
@@ -155,6 +172,7 @@ public final class WiltedListenerAppModel: ObservableObject {
         cache: ListenerAudioCache? = nil,
         playback: ListenerPlaybackController? = nil,
         assetLoader: ListenerAssetLoader? = nil,
+        audioChunkLoader: ListenerAudioChunkLoader? = nil,
         metadataLoader: (@Sendable () async -> ListenerMetadata?)? = nil,
         metadataSaver: (@Sendable (ListenerMetadata?) async throws -> Void)? = nil,
         unavailableMessage: String? = nil
@@ -165,6 +183,7 @@ public final class WiltedListenerAppModel: ObservableObject {
         self.cache = cache
         self.playback = playback
         self.assetLoader = assetLoader
+        self.audioChunkLoader = audioChunkLoader
         self.metadataLoader = metadataLoader
         self.metadataSaver = metadataSaver
         if let unavailableMessage { status = .failed(unavailableMessage, retryable: false) }
@@ -206,11 +225,66 @@ public final class WiltedListenerAppModel: ObservableObject {
         }
     }
 
+    /// Deterministic shipping-view data for iOS pixel tests. This intentionally
+    /// has no repository, transport, cache, or audio engine, so capturing the
+    /// listener Library cannot touch an account or device media state.
+    public static func makePixelFixture(
+        state: ListenerPixelFixtureState = .library
+    ) -> WiltedListenerAppModel {
+        let model = WiltedListenerAppModel()
+        guard let itemID = try? ItemID.derive(from: URL(string: "https://example.test/wilted-listener")!) else {
+            return model
+        }
+        model.items = [
+            ListenerLibraryItem(
+                itemID: itemID,
+                title: "A fixture article for listening",
+                source: "Wilted Test Journal",
+                revisionID: nil,
+                durationSeconds: 120,
+                asset: nil,
+                state: .downloaded
+            )
+        ]
+        switch state {
+        case .library:
+            model.status = .ready
+        case .nowPlaying:
+            guard let revisionID = try? RevisionID(rawValue: "revision-pixel-fixture"),
+                  let playback = try? PlaybackState(
+                      itemID: itemID,
+                      revisionID: revisionID,
+                      sessionID: "pixel-fixture",
+                      sequence: 1,
+                      positionSeconds: 31,
+                      durationSeconds: 120,
+                      completed: false,
+                      intent: .progress,
+                      deviceID: "pixel-fixture-device",
+                      updatedAt: Timestamp(Date(timeIntervalSince1970: 0))
+                  ) else {
+                return model
+            }
+            model.status = .playing
+            model.selectedPlayback = playback
+        case .terminalFailure:
+            model.status = .failed("iCloud account changed; sync is quarantined", retryable: false)
+        }
+        return model
+    }
+
+    /// Performs the initial metadata discovery once for the app lifetime.
+    /// Foreground transitions use `resumeForeground()` so returning from the
+    /// background still picks up producer changes without duplicate launch fetches.
+    public func start() async {
+        guard !didStart else { return }
+        didStart = true
+        await refresh()
+    }
+
     public func refresh() async {
-        guard !operationInFlight else { return }
-        operationInFlight = true
-        cancellationRequested = false
-        defer { operationInFlight = false }
+        guard let operation = beginOperation() else { return }
+        defer { finishOperation(operation) }
         status = .refreshing("Refreshing library…")
         guard let repository else {
             status = .failed("Local library unavailable", retryable: false)
@@ -220,11 +294,15 @@ public final class WiltedListenerAppModel: ObservableObject {
         if transport == nil, let sessionFactory {
             do {
                 let state = await repository.state()
-                session = try await sessionFactory(state.engineState)
-                transport = session?.transport
-                assetLoader = session?.assetLoader
-                if let session { observe(session.accountChanges) }
+                let createdSession = try await sessionFactory(state.engineState)
+                guard isCurrent(operation) else { return }
+                session = createdSession
+                transport = createdSession.transport
+                assetLoader = createdSession.assetLoader
+                audioChunkLoader = createdSession.audioChunkLoader
+                observe(createdSession.accountChanges)
             } catch {
+                guard isCurrent(operation) else { return }
                 status = .failed("Sync unavailable: \(error.localizedDescription)", retryable: true)
                 return
             }
@@ -238,10 +316,13 @@ public final class WiltedListenerAppModel: ObservableObject {
         if let transport {
             do {
                 let batch = try await transport.fetchChanges()
+                guard isCurrent(operation) else { return }
                 let staged = try await repository.stage(batch)
-                guard !cancellationRequested else { status = .idle; return }
+                guard isCurrent(operation) else { return }
                 try await repository.commit(staged)
+                guard isCurrent(operation) else { return }
                 let state = await repository.state()
+                guard isCurrent(operation) else { return }
                 let previousAssets = assetByItem
                 // Remote metadata is fetched first; audio is an explicit per-item download.
                 rebuild(from: state)
@@ -256,7 +337,9 @@ public final class WiltedListenerAppModel: ObservableObject {
                     ? .incompatible("A library item has an incompatible revision") : .ready
                 return
             } catch {
+                guard isCurrent(operation) else { return }
                 await loadLocal(repository: repository, fallback: error.localizedDescription)
+                guard isCurrent(operation) else { return }
                 if case .offline = status {
                     status = .failed("Refresh failed: \(error.localizedDescription)", retryable: true)
                 }
@@ -268,7 +351,6 @@ public final class WiltedListenerAppModel: ObservableObject {
     }
 
     public func sendPending() async {
-        guard !operationInFlight else { return }
         guard let repository, let transport else {
             status = .offline("Offline: changes will send when connected")
             return
@@ -277,12 +359,12 @@ public final class WiltedListenerAppModel: ObservableObject {
             status = .failed("iCloud account changed; sync is quarantined", retryable: false)
             return
         }
-        operationInFlight = true
-        cancellationRequested = false
-        defer { operationInFlight = false }
+        guard let operation = beginOperation() else { return }
+        defer { finishOperation(operation) }
         status = .sending("Sending playback progress…")
         do {
             let state = await repository.state()
+            guard isCurrent(operation) else { return }
             let liveItemIDs = Set(items.filter { $0.state != .deleted }.map(\.itemID))
             let sendableChanges = state.pendingChanges.filter { change in
                 guard change.recordID.recordType == .playbackState,
@@ -306,31 +388,49 @@ public final class WiltedListenerAppModel: ObservableObject {
                 return
             }
             let result = try await transport.save(changes: sendableChanges, role: .iphone)
-            guard !cancellationRequested else { status = .idle; return }
+            guard isCurrent(operation) else { return }
             try await repository.acknowledge(result)
+            guard isCurrent(operation) else { return }
             rebuild(from: await repository.state())
+            guard isCurrent(operation) else { return }
             status = result.failures.isEmpty ? .ready : .failed("Some playback changes need retry", retryable: true)
         } catch {
+            guard isCurrent(operation) else { return }
             status = .failed("Send failed: \(error.localizedDescription)", retryable: true)
         }
     }
 
     public func download(itemID: ItemID) async {
-        guard !operationInFlight, let cache, let assetLoader,
+        guard !accountQuarantined else { return }
+        guard let cache,
               let item = items.first(where: { $0.itemID == itemID }),
               let revision = revisionByItem[itemID], let asset = assetByItem[itemID] else { return }
         guard item.state == .metadataOnly else { return }
-        operationInFlight = true
-        cancellationRequested = false
-        defer { operationInFlight = false }
+        guard let operation = beginOperation() else { return }
+        defer { finishOperation(operation) }
         status = .refreshing("Downloading \(item.title)…")
         do {
-            let recordID = try WiltedRecordID.revision(itemID, revision.revisionID)
-            let sourceURL = try await assetLoader(recordID, asset)
-            _ = try await cache.store(fileURL: sourceURL, asset: asset)
+            if let manifest = manifestByItem[itemID] {
+                guard let audioChunkLoader else {
+                    throw ListenerError.cacheUnavailable(asset.assetID)
+                }
+                let data = try await audioChunkLoader(itemID, revision.revisionID, manifest)
+                guard isCurrent(operation) else { return }
+                _ = try await cache.store(data: data, asset: asset)
+            } else {
+                guard let assetLoader else {
+                    throw ListenerError.cacheUnavailable(asset.assetID)
+                }
+                let recordID = try WiltedRecordID.revision(itemID, revision.revisionID)
+                let sourceURL = try await assetLoader(recordID, asset)
+                guard isCurrent(operation) else { return }
+                _ = try await cache.store(fileURL: sourceURL, asset: asset)
+            }
+            guard isCurrent(operation) else { return }
             updateItemState(itemID: itemID, state: .downloaded)
             status = .ready
         } catch {
+            guard isCurrent(operation) else { return }
             status = .failed("Download failed: \(error.localizedDescription)", retryable: true)
         }
     }
@@ -417,17 +517,67 @@ public final class WiltedListenerAppModel: ObservableObject {
     }
 
     public func enterBackground() async {
-        await playback?.enterBackground()
-        await persistSelectedMetadata()
+        guard let playback else {
+            await persistSelectedMetadata()
+            return
+        }
+        do {
+            if let updated = try await playback.enterBackground() {
+                try await recordPlayback(updated)
+                selectedPlayback = updated
+            } else {
+                await persistSelectedMetadata()
+            }
+        } catch {
+            status = .failed("Background persistence failed: \(error.localizedDescription)", retryable: true)
+        }
     }
 
-    public func resumeForeground() async { await refresh() }
+    /// Refreshes the displayed position from the active engine without queuing a sync write.
+    public func refreshNowPlayingReadout() async {
+        guard case .playing = status, let playback else { return }
+        do {
+            guard let readout = try await playback.liveReadout() else { return }
+            playbackByItem[readout.itemID] = readout
+            selectedPlayback = readout
+        } catch {
+            status = .failed("Playback readout failed: \(error.localizedDescription)", retryable: true)
+        }
+    }
+
+    public func resumeForeground() async {
+        // Scene activation can race the view's initial task. Treat the first
+        // foreground as launch so that pair produces one catalog fetch.
+        if !didStart { await start() } else { await refresh() }
+    }
 
     public func cancel() {
-        cancellationRequested = true
-        operationInFlight = false
+        invalidateCurrentOperation()
         status = .idle
         Task { await session?.cancel() }
+    }
+
+    private func invalidateCurrentOperation() {
+        cancellationRequested = true
+        operationGeneration &+= 1
+        operationInFlight = false
+    }
+
+    private func beginOperation() -> UInt64? {
+        guard !operationInFlight else { return nil }
+        operationGeneration &+= 1
+        operationInFlight = true
+        cancellationRequested = false
+        return operationGeneration
+    }
+
+    private func isCurrent(_ operation: UInt64) -> Bool {
+        operationGeneration == operation && !cancellationRequested
+    }
+
+    private func finishOperation(_ operation: UInt64) {
+        guard operationGeneration == operation else { return }
+        operationInFlight = false
     }
 
     public func resetAfterAccountChange() async {
@@ -485,9 +635,10 @@ public final class WiltedListenerAppModel: ObservableObject {
         decodeHadErrors = false
         let previousItems = Dictionary(uniqueKeysWithValues: items.map { ($0.itemID, $0) })
         var articles: [(Article, WiltedRecordEnvelope)] = []
-        var revisions: [ItemID: (AudioRevision, WiltedAsset)] = [:]
+        var revisions: [ItemID: (AudioRevision, WiltedAsset?, AudioChunkManifest?)] = [:]
         revisionByItem = [:]
         assetByItem = [:]
+        manifestByItem = [:]
         playbackByItem = [:]
         for envelope in state.records {
             switch envelope.id.recordType {
@@ -497,11 +648,32 @@ public final class WiltedListenerAppModel: ObservableObject {
             case .revision:
                 do {
                     let decoded = try codec.decodeRevisionRecord(envelope)
-                    guard case let .asset(asset) = envelope.fields["audioAsset"] else { throw ListenerError.metadataCorrupt }
-                    revisions[decoded.value.itemID] = (decoded.value, asset)
+                    let legacyAsset: WiltedAsset?
+                    if case let .asset(asset) = envelope.fields["audioAsset"] {
+                        legacyAsset = asset
+                    } else {
+                        legacyAsset = nil
+                    }
+                    let manifest: AudioChunkManifest?
+                    if case let .bytes(data) = envelope.fields["audioManifest"] {
+                        manifest = try JSONDecoder().decode(AudioChunkManifest.self, from: data)
+                    } else {
+                        manifest = nil
+                    }
+                    guard legacyAsset != nil || manifest != nil else { throw ListenerError.metadataCorrupt }
+                    let asset = legacyAsset ?? (try? WiltedAsset(
+                        assetID: "audio:\(decoded.value.revisionID.rawValue)",
+                        contentHash: decoded.value.contentHash
+                    ))
+                    revisions[decoded.value.itemID] = (decoded.value, asset, manifest)
                     revisionByItem[decoded.value.itemID] = decoded.value
-                    assetByItem[decoded.value.itemID] = asset
+                    if let asset { assetByItem[decoded.value.itemID] = asset }
+                    if let manifest { manifestByItem[decoded.value.itemID] = manifest }
                 } catch { decodeHadErrors = true }
+            case .revisionChunk:
+                // Chunk records are fetched only after a user selects their revision;
+                // they are transport rows, never standalone library entries.
+                continue
             case .playbackState:
                 do { let decoded = try codec.decodePlayback(envelope); playbackByItem[decoded.itemID] = decoded }
                 catch { decodeHadErrors = true }
@@ -634,6 +806,7 @@ public final class WiltedListenerAppModel: ObservableObject {
     private actor LiveListenerSyncSession: ListenerSyncSession {
         nonisolated let transport: any SyncTransport
         nonisolated let assetLoader: ListenerAssetLoader
+        nonisolated let audioChunkLoader: ListenerAudioChunkLoader
         private let cloudTransport: CloudKitSyncTransport
         nonisolated let accountChanges: AsyncStream<ListenerAccountChange>
         private let accountContinuation: AsyncStream<ListenerAccountChange>.Continuation
@@ -645,6 +818,9 @@ public final class WiltedListenerAppModel: ObservableObject {
                 if let url = await transport.assetHandoff()[recordID]?.first?.value { return url }
                 if let url = mapper.resolvedAssetURL(for: asset) { return url }
                 throw ListenerError.cacheUnavailable(asset.assetID)
+            }
+            self.audioChunkLoader = { itemID, revisionID, manifest in
+                try await transport.fetchAudioChunks(itemID: itemID, revisionID: revisionID, manifest: manifest)
             }
             let (stream, continuation) = AsyncStream<ListenerAccountChange>.makeStream()
             self.accountChanges = stream
@@ -686,7 +862,9 @@ public final class WiltedListenerAppModel: ObservableObject {
                 switch event {
                 case let .quarantined(type):
                     accountQuarantined = true
+                    invalidateCurrentOperation()
                     status = .failed("\(type.userFacingName) detected; sync is quarantined", retryable: false)
+                    await session?.cancel()
                     if let repository = repository as? ListenerRepository {
                         try? await repository.quarantineAfterAccountChange()
                     }

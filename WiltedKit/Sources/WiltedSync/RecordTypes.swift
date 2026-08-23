@@ -5,6 +5,8 @@ import WiltedDomain
 public enum WiltedRecordType: String, Codable, CaseIterable, Sendable {
     case item = "WiltedItem"
     case revision = "WiltedRevision"
+    /// One immutable byte chunk belonging to a revision.
+    case revisionChunk = "WiltedRevisionChunk"
     case playbackState = "WiltedPlaybackState"
 }
 
@@ -28,6 +30,11 @@ public struct WiltedRecordID: Codable, Hashable, Sendable, CustomStringConvertib
             guard components.count == 3, components[0] == prefix,
                   (try? ItemID(rawValue: String(components[1]))) != nil,
                   (try? RevisionID(rawValue: String(components[2]))) != nil else { throw WiltedSyncError.invalidRecordIdentity }
+        case .revisionChunk:
+            guard components.count == 4, components[0] == "revisionChunk",
+                  (try? ItemID(rawValue: String(components[1]))) != nil,
+                  (try? RevisionID(rawValue: String(components[2]))) != nil,
+                  Int(components[3]).map({ $0 >= 0 }) == true else { throw WiltedSyncError.invalidRecordIdentity }
         }
         self.recordType = recordType
         self.recordName = recordName
@@ -40,6 +47,12 @@ public struct WiltedRecordID: Codable, Hashable, Sendable, CustomStringConvertib
 
     public static func revision(_ itemID: ItemID, _ revisionID: RevisionID) throws -> Self {
         try Self(recordType: .revision, recordName: "revision:\(itemID.rawValue):\(revisionID.rawValue)")
+    }
+
+    public static func revisionChunk(_ itemID: ItemID, _ revisionID: RevisionID, index: Int) throws -> Self {
+        guard index >= 0 else { throw WiltedSyncError.invalidRecordIdentity }
+        return try Self(recordType: .revisionChunk,
+                        recordName: "revisionChunk:\(itemID.rawValue):\(revisionID.rawValue):\(index)")
     }
 
     public static func playback(_ itemID: ItemID, _ revisionID: RevisionID) throws -> Self {

@@ -38,6 +38,9 @@ public actor ListenerRepository: SyncRepository {
             switch record.id.recordType {
             case .item: _ = try codec.decodeArticleRecord(record)
             case .revision: _ = try codec.decodeRevisionRecord(record)
+            // Audio chunks are transport-only assets. They are fetched by the
+            // download path and must never enter the listener catalog state.
+            case .revisionChunk: break
             case .playbackState: _ = try codec.decodePlaybackRecord(record)
             }
         }
@@ -54,10 +57,12 @@ public actor ListenerRepository: SyncRepository {
         guard staged.batch.records.isEmpty && staged.batch.deletedRecordIDs.isEmpty || effectiveEngineState != nil else {
             throw WiltedSyncError.missingEngineState
         }
+        let catalogRecords = staged.batch.records.filter { $0.id.recordType != .revisionChunk }
+        let catalogDeletedRecordIDs = staged.batch.deletedRecordIDs.filter { $0.recordType != .revisionChunk }
         var records = Dictionary(uniqueKeysWithValues: current.records.map { ($0.id, $0) })
-        let fetchedIDs = Set(staged.batch.records.map(\.id))
+        let fetchedIDs = Set(catalogRecords.map(\.id))
         let pendingIDs = Set(current.pendingChanges.map(\.recordID))
-        var deleted = Set(staged.batch.deletedRecordIDs)
+        var deleted = Set(catalogDeletedRecordIDs)
         let unsafeFamilies: Set<String>
         if staged.batch.kind == .fullSnapshot {
             unsafeFamilies = Set(current.records.compactMap { record in
@@ -117,7 +122,7 @@ public actor ListenerRepository: SyncRepository {
                 records = retained
             }
         }
-        for record in staged.batch.records { records[record.id] = record }
+        for record in catalogRecords { records[record.id] = record }
         let next = SyncRepositoryState(records: Array(records.values).sorted { $0.id.description < $1.id.description },
                                        engineState: effectiveEngineState, pendingChanges: pending,
                                        tombstones: tombstones, remoteAcknowledgedRecordIDs: current.remoteAcknowledgedRecordIDs.union(acknowledgedDeletes).union(fetchedIDs),

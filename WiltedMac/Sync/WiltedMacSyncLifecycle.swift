@@ -81,6 +81,7 @@ final class WiltedMacSyncLifecycle {
     private var running = false
     private var cancelRequested = false
     private var quarantined = false
+    private var automaticUploadRequested = false
 
     private(set) var status: WiltedMacSyncStatus
 
@@ -112,6 +113,36 @@ final class WiltedMacSyncLifecycle {
             try await enqueue(envelope, operation: .create)
             return .success(())
         } catch { return .failure(error) }
+    }
+
+    /// Queues an immutable ready revision as a manifest plus independent byte chunks.
+    ///
+    /// The manifest is the catalog-facing record. Each chunk has its own stable record
+    /// identity and asset descriptor, so retrying this method replaces the same durable
+    /// queue entries instead of creating duplicate publications.
+    func queueRevision(_ revision: AudioRevision, chunkedFile: AudioChunkedFile) async -> Result<Void, Error> {
+        do {
+            let manifest = try codec.encode(revision: revision, manifest: chunkedFile.manifest)
+            for (descriptor, _) in zip(chunkedFile.manifest.chunks, chunkedFile.chunks) {
+                let asset = try WiltedAsset(
+                    assetID: descriptor.identity,
+                    contentHash: "sha256:\(descriptor.sha256)"
+                )
+                let envelope = try codec.encode(
+                    revisionChunk: revision.itemID,
+                    revisionID: revision.revisionID,
+                    descriptor: descriptor,
+                    chunkAsset: asset
+                )
+                try await enqueue(envelope, operation: .create)
+            }
+            // Keep the discoverable ready manifest last even in the durable queue.
+            // SyncCoordinator additionally enforces a separate acknowledged chunk phase.
+            try await enqueue(manifest, operation: .create)
+            return .success(())
+        } catch {
+            return .failure(error)
+        }
     }
 
     /// Queues a playback publication while preserving its opaque sidecar.
@@ -158,6 +189,12 @@ final class WiltedMacSyncLifecycle {
             if cancelRequested { return cancelledResult() }
             switch result {
             case let .success(sent):
+                if !sent.failures.isEmpty {
+                    setStatus(.init(phase: .failed,
+                                    detail: SyncCoordinator.retryMessage(count: sent.failures.count),
+                                    generationID: nil))
+                    return .success(())
+                }
                 // A partly blocked send is still a success, so the count that moved and the
                 // count still held both have to reach the surface; a bare "uploaded" here
                 // reads as a drained queue when it is not.
@@ -188,7 +225,7 @@ final class WiltedMacSyncLifecycle {
         }
         operationTask = Task { [weak self] in
             _ = await self?.refresh()
-            self?.operationTask = nil
+            self?.finishStartedOperation()
         }
     }
 
@@ -200,8 +237,16 @@ final class WiltedMacSyncLifecycle {
         }
         operationTask = Task { [weak self] in
             _ = await self?.uploadPending()
-            self?.operationTask = nil
+            self?.finishStartedOperation()
         }
+    }
+
+    /// Requests publication for durable changes produced by the Mac processor.
+    /// Multiple completions coalesce into one follow-up send instead of starting
+    /// concurrent CloudKit operations or surfacing an avoidable busy error.
+    func startAutomaticUpload() {
+        automaticUploadRequested = true
+        scheduleAutomaticUploadIfNeeded()
     }
 
     /// Cancels the bounded lifecycle and prevents a late result from becoming success.
@@ -257,6 +302,7 @@ final class WiltedMacSyncLifecycle {
             self.cancelRequested = false
             self.quarantined = false
             self.setStatus(self.transportFactory == nil ? .disabled : Self.idleStatus)
+            self.scheduleAutomaticUploadIfNeeded()
         }
     }
 
@@ -359,6 +405,31 @@ final class WiltedMacSyncLifecycle {
         // Keep the cancellation marker through the terminal result so a
         // transport's late failure cannot replace the visible cancelled state.
         running = false
+        if operationTask == nil {
+            scheduleAutomaticUploadIfNeeded()
+        }
+    }
+
+    private func finishStartedOperation() {
+        operationTask = nil
+        scheduleAutomaticUploadIfNeeded()
+    }
+
+    private func scheduleAutomaticUploadIfNeeded() {
+        guard automaticUploadRequested,
+              operationTask == nil,
+              !running,
+              !quarantined,
+              transportFactory != nil else { return }
+        operationTask = Task { [weak self] in
+            // Keep the request latched while the task is merely queued. A second completion
+            // can arrive before this task gets a turn on the main actor; consuming the latch
+            // here makes that trigger coalesce with this send. Triggers after the send starts
+            // remain latched and schedule the intended follow-up in finishStartedOperation().
+            self?.automaticUploadRequested = false
+            _ = await self?.uploadPending()
+            self?.finishStartedOperation()
+        }
     }
 
     private func cancelledResult() -> Result<Void, Error> {
@@ -532,6 +603,33 @@ func makeWiltedMacLiveSyncTransportFactory(
                         return nil
                     }
                 }
+                if case let .asset(asset)? = envelope.fields["chunkAsset"],
+                   let chunk = try? WiltedRecordCodec().decodeRevisionChunkRecord(envelope).value,
+                   let itemID = try? ItemID(rawValue: envelope.fields["itemID"].flatMap {
+                       guard case let .string(value) = $0 else { return nil }
+                       return value
+                   } ?? ""),
+                   let revisionID = try? RevisionID(rawValue: envelope.fields["revisionID"].flatMap {
+                       guard case let .string(value) = $0 else { return nil }
+                       return value
+                   } ?? ""),
+                   let stored = try? await configuration.store.readyRevision(for: itemID),
+                   stored.revision.revisionID == revisionID {
+                    if let url = try? configuration.assetResolver(
+                        asset, stored.revision
+                    ) {
+                        assets[asset.assetID] = url
+                    } else if let url = try? materializedChunkURL(
+                        descriptor: chunk,
+                        revision: stored.revision,
+                        sourceURL: stored.mediaURL,
+                        rootURL: configuration.assetRootURL
+                    ) {
+                        assets[asset.assetID] = url
+                    } else {
+                        return nil
+                    }
+                }
                 return try? mapper.encode(envelope, assetURLs: assets)
             }
         )
@@ -548,5 +646,31 @@ func makeWiltedMacLiveSyncTransportFactory(
                                             reset: { await transport.resetAfterAccountChange() },
                                             accountSignals: transport.accountChanges)
     }
+
+}
+
+/// Materializes the requested opaque byte range into a deterministic local file for
+/// `CKAsset`. The source remains the prepared M4A; no re-encoding or remuxing occurs.
+private func materializedChunkURL(
+    descriptor: AudioChunkDescriptor,
+    revision: AudioRevision,
+    sourceURL: URL,
+    rootURL: URL
+) throws -> URL {
+    let bytes = try Data(contentsOf: sourceURL)
+    let chunked = try AudioChunking.chunk(bytes)
+    guard chunked.manifest.chunks.indices.contains(descriptor.index),
+          chunked.manifest.chunks[descriptor.index] == descriptor,
+          chunked.chunks.indices.contains(descriptor.index) else {
+        throw WiltedSyncError.invalidValue(field: "chunkAsset")
+    }
+    let chunk = chunked.chunks[descriptor.index]
+    let directory = rootURL.appendingPathComponent(".wilted-upload-chunks", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let destination = directory.appendingPathComponent(
+        "\(revision.itemID.rawValue)-\(revision.revisionID.rawValue)-\(descriptor.index).chunk"
+    )
+    try chunk.write(to: destination, options: [.atomic])
+    return destination
 }
 #endif

@@ -13,11 +13,16 @@ private actor LifecycleFakeTransport: SyncTransport {
     private let fetchError: Error?
     private let saveError: Error?
     private let delayNanoseconds: UInt64
+    private let saveGate: LifecycleSaveGate?
     private var fetchStarted = false
+    private var saveCalls = 0
+    private var savedRecordTypes: [[WiltedRecordType]] = []
     private var cancelled = false
 
-    init(batch: SyncFetchBatch, fetchError: Error? = nil, saveError: Error? = nil, delayNanoseconds: UInt64 = 0) {
-        self.batch = batch; self.fetchError = fetchError; self.saveError = saveError; self.delayNanoseconds = delayNanoseconds
+    init(batch: SyncFetchBatch, fetchError: Error? = nil, saveError: Error? = nil, delayNanoseconds: UInt64 = 0,
+         saveGate: LifecycleSaveGate? = nil) {
+        self.batch = batch; self.fetchError = fetchError; self.saveError = saveError
+        self.delayNanoseconds = delayNanoseconds; self.saveGate = saveGate
         let (stream, continuation) = AsyncStream<SyncStatus>.makeStream()
         statuses = stream; statusContinuation = continuation
     }
@@ -36,9 +41,13 @@ private actor LifecycleFakeTransport: SyncTransport {
 
     func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {
         guard role == .mac else { throw WiltedSyncError.ownershipViolation(role: role, operation: .update, recordType: .item) }
+        saveCalls += 1
+        await saveGate?.markStarted()
+        await saveGate?.waitForRelease()
         if let saveError { throw saveError }
         let acknowledged = changes.map(\.recordID)
         let envelopes = changes.compactMap(\.record)
+        savedRecordTypes.append(envelopes.map(\.id.recordType))
         return try SyncSendResult(engineState: Data([8, 8]), acknowledgedRecordIDs: acknowledged, serverEnvelopes: envelopes)
     }
 
@@ -47,6 +56,45 @@ private actor LifecycleFakeTransport: SyncTransport {
     func cancel() { cancelled = true }
 
     func wasCancelled() -> Bool { cancelled }
+
+    func saveCallCount() -> Int { saveCalls }
+
+    func sentRecordTypes() -> [WiltedRecordType] { savedRecordTypes.flatMap { $0 } }
+}
+
+private actor LifecycleSaveGate {
+    private var started = false
+    private var released = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func markStarted() {
+        started = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func waitForStart() async {
+        guard !started else { return }
+        await withCheckedContinuation { continuation in
+            if started { continuation.resume() } else { startWaiters.append(continuation) }
+        }
+    }
+
+    func release() {
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func waitForRelease() async {
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            if released { continuation.resume() } else { releaseWaiters.append(continuation) }
+        }
+    }
 }
 
 private actor SyncFactoryProbe {
@@ -107,6 +155,230 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
         let upload = await lifecycle.uploadPending()
         XCTAssertTrue(isSuccess(upload))
         XCTAssertEqual(lifecycle.status.phase, .completed)
+    }
+
+    func testQueuesManifestAndChunkRecordsWithoutCatalogAudioAsset() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("chunked-publication")
+        let revisionID = try RevisionID(rawValue: "revision-chunked-publication")
+        let bytes = Data("chunked-mac-media".utf8)
+        let chunked = try AudioChunking.chunk(bytes, chunkSize: 3)
+        let hash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let revision = try AudioRevision(itemID: item.itemID, revisionID: revisionID,
+                                         durationSeconds: 4, byteCount: Int64(bytes.count),
+                                         contentHash: hash, mediaType: "audio/mp4",
+                                         createdAt: Timestamp(Date()), schemaVersion: 1)
+        let store = try LocalLibraryStore(url: url)
+        let lifecycle = lifecycle(store, transport: LifecycleFakeTransport(
+            batch: try SyncFetchBatch(generationID: "empty", records: [], engineState: Data([1]))
+        ))
+
+        let result = await lifecycle.queueRevision(revision, chunkedFile: chunked)
+        XCTAssertTrue(isSuccess(result))
+        let pending = try await store.syncRepositoryState()?.pendingChanges ?? []
+        XCTAssertEqual(pending.count, 1 + chunked.chunks.count)
+        let revisionRecord = try XCTUnwrap(pending.first { $0.recordID.recordType == .revision }?.record)
+        XCTAssertNil(revisionRecord.fields["audioAsset"])
+        guard case .bytes = revisionRecord.fields["audioManifest"] else {
+            return XCTFail("chunked revision must carry the manifest as metadata")
+        }
+        XCTAssertEqual(pending.filter { $0.recordID.recordType == .revisionChunk }.count, chunked.chunks.count)
+        XCTAssertTrue(pending.filter { $0.recordID.recordType == .revisionChunk }.allSatisfy {
+            if case .asset = $0.record?.fields["chunkAsset"] { return true }
+            return false
+        })
+    }
+
+    func testRetryingChunkedPublicationIsIdempotent() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("chunked-retry")
+        let revisionID = try RevisionID(rawValue: "revision-chunked-retry")
+        let bytes = Data("retryable-chunked-media".utf8)
+        let chunked = try AudioChunking.chunk(bytes, chunkSize: 4)
+        let hash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let revision = try AudioRevision(itemID: item.itemID, revisionID: revisionID,
+                                         durationSeconds: 4, byteCount: Int64(bytes.count),
+                                         contentHash: hash, mediaType: "audio/mp4",
+                                         createdAt: Timestamp(Date()), schemaVersion: 1)
+        let store = try LocalLibraryStore(url: url)
+        let lifecycle = lifecycle(store, transport: LifecycleFakeTransport(
+            batch: try SyncFetchBatch(generationID: "empty", records: [], engineState: Data([1]))
+        ))
+
+        let firstQueueResult = await lifecycle.queueRevision(revision, chunkedFile: chunked)
+        XCTAssertTrue(isSuccess(firstQueueResult))
+        let first = try await store.syncRepositoryState()?.pendingChanges ?? []
+        let secondQueueResult = await lifecycle.queueRevision(revision, chunkedFile: chunked)
+        XCTAssertTrue(isSuccess(secondQueueResult))
+        let second = try await store.syncRepositoryState()?.pendingChanges ?? []
+        XCTAssertEqual(second.count, first.count)
+        XCTAssertEqual(Set(second.map(\.recordID)).count, second.count)
+        XCTAssertEqual(Set(first.map(\.recordID)), Set(second.map(\.recordID)))
+    }
+
+    func testAutomaticUploadCoalescesTriggersAndDrainsQueuedPublication() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("automatic-publication")
+        let revisionID = try RevisionID(rawValue: "revision-automatic-publication")
+        let batch = try SyncFetchBatch(generationID: "empty", records: [], engineState: Data([1]))
+        let transport = LifecycleFakeTransport(batch: batch)
+        let store = try LocalLibraryStore(url: url)
+        let lifecycle = lifecycle(store, transport: transport)
+
+        let queued = await lifecycle.queueItem(item, currentRevisionID: revisionID)
+        XCTAssertTrue(isSuccess(queued))
+        lifecycle.startAutomaticUpload()
+        lifecycle.startAutomaticUpload()
+
+        for _ in 0..<200 {
+            if lifecycle.status.phase == .completed,
+               (try? await store.syncRepositoryState())?.pendingChanges.isEmpty == true { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+
+        let saveCallCount = await transport.saveCallCount()
+        let pendingCount = try await store.syncRepositoryState()?.pendingChanges.count
+        XCTAssertEqual(saveCallCount, 1)
+        XCTAssertEqual(pendingCount, 0)
+        XCTAssertEqual(lifecycle.status.phase, .completed)
+    }
+
+    func testAutomaticUploadSchedulesFollowUpForWorkCompletedDuringActiveSend() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let first = try article("automatic-first")
+        let second = try article("automatic-second")
+        let batch = try SyncFetchBatch(generationID: "empty", records: [], engineState: Data([1]))
+        let saveGate = LifecycleSaveGate()
+        let transport = LifecycleFakeTransport(batch: batch, saveGate: saveGate)
+        let store = try LocalLibraryStore(url: url)
+        let lifecycle = lifecycle(store, transport: transport)
+
+        let firstQueued = await lifecycle.queueItem(first, currentRevisionID: try RevisionID(rawValue: "revision-automatic-first"))
+        XCTAssertTrue(isSuccess(firstQueued))
+        lifecycle.startAutomaticUpload()
+        await saveGate.waitForStart()
+
+        let secondQueued = await lifecycle.queueItem(second, currentRevisionID: try RevisionID(rawValue: "revision-automatic-second"))
+        XCTAssertTrue(isSuccess(secondQueued))
+        lifecycle.startAutomaticUpload()
+        await saveGate.release()
+
+        for _ in 0..<200 {
+            if lifecycle.status.phase == .completed,
+               (try? await store.syncRepositoryState())?.pendingChanges.isEmpty == true { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+
+        let saveCallCount = await transport.saveCallCount()
+        let pendingCount = try await store.syncRepositoryState()?.pendingChanges.count
+        XCTAssertEqual(saveCallCount, 2)
+        XCTAssertEqual(pendingCount, 0)
+    }
+
+    func testStartupReconciliationQueuesReadyRevisionAndAutomaticallySends() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wilted-mac-startup-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let libraryURL = root.appendingPathComponent("library.sqlite")
+        let mediaURL = root.appendingPathComponent("media.m4a")
+        let item = try article("startup-reconciliation")
+        let bytes = Data("startup-ready-media".utf8)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try bytes.write(to: mediaURL)
+        let hash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let revision = try AudioRevision(
+            itemID: item.itemID, revisionID: try RevisionID(rawValue: "revision-startup-reconciliation"),
+            durationSeconds: 4, byteCount: Int64(bytes.count), contentHash: hash,
+            mediaType: "audio/mp4", createdAt: Timestamp(Date()), schemaVersion: 1
+        )
+        do {
+            let store = try LocalLibraryStore(url: libraryURL)
+            try await store.save(article: item)
+            try await store.saveReadyRevision(revision, mediaURL: mediaURL)
+        }
+
+        let transport = LifecycleFakeTransport(batch: try SyncFetchBatch(
+            generationID: "empty", records: [], engineState: Data([1])
+        ))
+        let model = WiltedMacModel(
+            arguments: [],
+            syncTransportFactory: {
+                WiltedMacSyncTransportHandle(
+                    transport: transport,
+                    cancel: { await transport.cancel() }
+                )
+            },
+            stateDirectoryOverride: root
+        )
+
+        // Startup and foreground callbacks can arrive together; only one reconciliation
+        // should queue this durable revision. Publication intentionally uses two transport
+        // sends so chunks are acknowledged before the manifest and item pointer.
+        model.reconcileSyncOnLaunchOrForeground()
+        model.reconcileSyncOnLaunchOrForeground()
+        for _ in 0..<300 {
+            if await transport.saveCallCount() == 2 { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+
+        let saveCallCount = await transport.saveCallCount()
+        XCTAssertEqual(saveCallCount, 2)
+        let sentTypes = await transport.sentRecordTypes()
+        XCTAssertTrue(sentTypes.contains(.item))
+        XCTAssertTrue(sentTypes.contains(.revision))
+        XCTAssertTrue(sentTypes.contains(.revisionChunk))
+    }
+
+    func testStartupReconciliationSendsAlreadyQueuedManifestAndChunks() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wilted-mac-startup-pending-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let libraryURL = root.appendingPathComponent("library.sqlite")
+        let mediaURL = root.appendingPathComponent("media.m4a")
+        let item = try article("startup-pending")
+        let bytes = Data("startup-pending-media".utf8)
+        let chunked = try AudioChunking.chunk(bytes, chunkSize: 3)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try bytes.write(to: mediaURL)
+        let hash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let revision = try AudioRevision(
+            itemID: item.itemID, revisionID: try RevisionID(rawValue: "revision-startup-pending"),
+            durationSeconds: 4, byteCount: Int64(bytes.count), contentHash: hash,
+            mediaType: "audio/mp4", createdAt: Timestamp(Date()), schemaVersion: 1
+        )
+        let store = try LocalLibraryStore(url: libraryURL)
+        try await store.save(article: item)
+        try await store.saveReadyRevision(revision, mediaURL: mediaURL)
+
+        let transport = LifecycleFakeTransport(batch: try SyncFetchBatch(
+            generationID: "empty", records: [], engineState: Data([1])
+        ))
+        let queueLifecycle = lifecycle(store, transport: transport)
+        let queued = await queueLifecycle.queueRevision(revision, chunkedFile: chunked)
+        XCTAssertTrue(isSuccess(queued))
+
+        let model = WiltedMacModel(
+            arguments: [],
+            syncTransportFactory: {
+                WiltedMacSyncTransportHandle(
+                    transport: transport,
+                    cancel: { await transport.cancel() }
+                )
+            },
+            stateDirectoryOverride: root
+        )
+
+        model.reconcileSyncOnLaunchOrForeground()
+        for _ in 0..<300 {
+            if await transport.saveCallCount() == 2 { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+
+        let saveCallCount = await transport.saveCallCount()
+        XCTAssertEqual(saveCallCount, 2)
+        let sentTypes = await transport.sentRecordTypes()
+        XCTAssertTrue(sentTypes.contains(.revision))
+        XCTAssertTrue(sentTypes.contains(.revisionChunk))
     }
 
     func testEmptyPersistedEngineStateReadsAsAbsentRatherThanCorrupt() {

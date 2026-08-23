@@ -26,6 +26,16 @@ private func playbackState(sequence: Int64 = 1, intent: PlaybackIntent = .progre
 
 private func playbackEnvelope(_ state: PlaybackState) throws -> WiltedRecordEnvelope { try WiltedRecordCodec().encode(playback: state) }
 
+private func revisionChunkEnvelope() throws -> WiltedRecordEnvelope {
+    let (item, revision) = try ids()
+    let chunk = try WiltedRecordID.revisionChunk(item, revision, index: 0)
+    return try WiltedRecordEnvelope(id: chunk, fields: [
+        "schemaVersion": .int64(1),
+        "chunkIndex": .int64(0),
+        "asset": .asset(try asset(Data("chunk".utf8)))
+    ])
+}
+
 private func asset(_ data: Data) throws -> WiltedAsset {
     let hash = "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     return try WiltedAsset(assetID: "revision-audio", contentHash: hash)
@@ -71,6 +81,20 @@ func repositoryCommitAndRelaunch() async throws {
     let reopened = try ListenerRepository(directoryURL: directory)
     #expect((await reopened.state()).records.first?.id == envelope.id)
     #expect((await reopened.state()).engineState == Data([1]))
+}
+
+@Test("revision chunk records remain transport-only")
+func revisionChunksDoNotEnterListenerState() async throws {
+    let repository = try ListenerRepository(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+    let article = try itemEnvelope()
+    let chunk = try revisionChunkEnvelope()
+    let batch = try SyncFetchBatch(generationID: "chunk-g1", records: [article, chunk], engineState: Data([1]))
+
+    try await repository.commit(try await repository.stage(batch))
+
+    let state = await repository.state()
+    #expect(state.records.map(\.id) == [article.id])
+    #expect(state.remoteAcknowledgedRecordIDs == [article.id])
 }
 
 @Test("optional engine state preserves prior state for no-op batches")
@@ -290,25 +314,45 @@ func backgroundAndRemoteCommands() async throws {
     let controller = ListenerPlaybackController(cache: cache, engine: engine, nowPlaying: nowPlaying)
     await controller.install(remoteCommands: remote)
     _ = try await controller.play(asset: audio, title: "Remote", state: try playbackState())
-    await controller.enterBackground()
+    engine.currentTime = 12
+    let backgrounded = try await controller.enterBackground()
     let started = await controller.current()
-    #expect(started?.sequence == 2)
+    #expect(started?.sequence == 3)
+    #expect(backgrounded?.positionSeconds == 12)
     await remote.send(.pause)
     #expect((await controller.current())?.intent == .progress)
-    #expect((await controller.current())?.sequence == 3)
-    await remote.send(.play)
     #expect((await controller.current())?.sequence == 4)
+    await remote.send(.play)
+    #expect((await controller.current())?.sequence == 5)
     await remote.send(.rewind)
     let rewound = await controller.current()
     #expect(rewound?.intent == .rewind)
-    #expect(rewound?.sequence == 5)
-    #expect(rewound?.sessionID == "remote-5")
+    #expect(rewound?.sequence == 6)
+    #expect(rewound?.sessionID == "remote-6")
     await remote.send(.restart)
     let restarted = await controller.current()
     #expect(restarted?.intent == .restart)
-    #expect(restarted?.sequence == 6)
-    #expect(restarted?.sessionID == "remote-6")
+    #expect(restarted?.sequence == 7)
+    #expect(restarted?.sessionID == "remote-7")
     #expect(engine.playing == true)
     #expect(nowPlaying.updates >= 6)
     await controller.cancel()
+}
+
+@Test("live readout follows the active engine without changing durable sequence")
+func liveReadoutFollowsEngine() async throws {
+    let bytes = Data("audio".utf8)
+    let cache = try ListenerAudioCache(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+    let audio = try asset(bytes)
+    _ = try await cache.store(data: bytes, asset: audio)
+    let engine = MemoryEngine()
+    let controller = ListenerPlaybackController(cache: cache, engine: engine)
+    _ = try await controller.play(asset: audio, title: "Readout", state: try playbackState(position: 2))
+
+    engine.currentTime = 9
+    let readout = try await controller.liveReadout()
+
+    #expect(readout?.positionSeconds == 9)
+    #expect(readout?.sequence == 2)
+    #expect((await controller.current())?.positionSeconds == 2)
 }

@@ -129,7 +129,15 @@ public struct WiltedListenerLibraryView: View {
         // that carries the identifier while its children keep their own, which is what the
         // shared state views at `Shared/WiltedStateViews.swift` already do.
         .accessibilityElement(children: .contain)
+        .accessibilityLabel("Now Playing")
+        .accessibilityValue("\(Int(state.positionSeconds)) seconds")
         .accessibilityIdentifier(WiltedScreenCopy.playerIdentifier)
+        .task(id: state.sessionID) {
+            while !Task.isCancelled {
+                await model.refreshNowPlayingReadout()
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
     }
 
     private var statusColor: Color {

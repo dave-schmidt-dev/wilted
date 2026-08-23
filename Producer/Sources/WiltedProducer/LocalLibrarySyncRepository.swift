@@ -369,12 +369,22 @@ public actor LocalLibrarySyncRepository: SyncRepository {
                 articles.append(.init(article: try codec.decodeArticle(envelope), status: .remoteAcknowledged))
             case .revision:
                 let decoded = try codec.decodeRevisionRecord(envelope)
+                // A manifest revision is catalog metadata for the chunk transport. It
+                // intentionally has no playable local file, so do not attempt to apply
+                // it to the producer catalog during enqueue or fetch preparation.
+                if envelope.fields["audioAsset"] == nil,
+                   envelope.fields["audioManifest"] != nil {
+                    continue
+                }
                 guard case let .asset(asset)? = envelope.fields["audioAsset"], asset.contentHash == decoded.value.contentHash,
                       let mediaURL = try await resolveMedia(asset: asset, revision: decoded.value) else {
                     throw WiltedSyncError.invalidValue(field: "validatedLocalMedia")
                 }
                 try validateMedia(mediaURL, contentHash: decoded.value.contentHash)
                 revisions.append(.init(revision: decoded.value, mediaURL: mediaURL))
+            case .revisionChunk:
+                // Chunk rows are durable transport state, not producer catalog data.
+                break
             case .playbackState:
                 let decoded = try codec.decodePlayback(envelope)
                 let sidecar = PlaybackSystemFieldsSidecar(encodedSystemFields: envelope.sidecar?.encodedSystemFields,

@@ -114,6 +114,8 @@ public protocol CloudKitEngineDriver: Sendable {
     var events: AsyncStream<CloudKitEngineEvent> { get async }
     func ensureZone() async throws
     func fetchChanges() async throws
+    /// Fetches records by identity for explicit, on-demand asset retrieval.
+    func fetchRecords(_ ids: [CKRecord.ID]) async throws -> [CKRecord]
     func sendChanges() async throws
     func cancelOperations() async
     func resetZoneBootstrap() async
@@ -124,6 +126,10 @@ public protocol CloudKitEngineDriver: Sendable {
 public extension CloudKitEngineDriver {
     func ensureZone() async throws {}
     func resetZoneBootstrap() async {}
+    func fetchRecords(_ ids: [CKRecord.ID]) async throws -> [CKRecord] {
+        guard ids.isEmpty else { throw CloudKitSyncError.cloudKit(code: -1, message: "Explicit record fetch is unavailable") }
+        return []
+    }
 }
 
 /// The production driver. It does not expose CKSyncEngine to WiltedSync or tests.
@@ -132,6 +138,7 @@ public extension CloudKitEngineDriver {
 /// resets its live state for account-change events; other recovery that
 /// intentionally discards state must create a new driver with `nil` state.
 public actor LiveCloudKitEngineDriver: CloudKitEngineDriver {
+    private let database: CKDatabase
     private let engine: CKSyncEngine
     private let delegate: CloudKitEngineDelegateProxy
     private let zoneBootstrap: any CloudKitZoneBootstrap
@@ -140,6 +147,7 @@ public actor LiveCloudKitEngineDriver: CloudKitEngineDriver {
                 automaticallySync: Bool = false,
                 zoneBootstrap: (any CloudKitZoneBootstrap)? = nil,
                 recordProvider: @escaping @Sendable (CKRecord.ID) async -> CKRecord? = { _ in nil }) {
+        self.database = database
         let delegate = CloudKitEngineDelegateProxy(recordProvider: recordProvider)
         self.delegate = delegate
         var configuration = CKSyncEngine.Configuration(database: database, stateSerialization: stateSerialization, delegate: delegate)
@@ -151,6 +159,11 @@ public actor LiveCloudKitEngineDriver: CloudKitEngineDriver {
     public var events: AsyncStream<CloudKitEngineEvent> { get async { delegate.events } }
     public func ensureZone() async throws { try await zoneBootstrap.ensureZone() }
     public func fetchChanges() async throws { try await engine.fetchChanges() }
+    public func fetchRecords(_ ids: [CKRecord.ID]) async throws -> [CKRecord] {
+        guard !ids.isEmpty else { return [] }
+        let results = try await database.records(for: ids)
+        return try results.map { try $0.value.get() }
+    }
     public func sendChanges() async throws {
         try await engine.sendChanges()
     }

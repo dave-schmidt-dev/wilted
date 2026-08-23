@@ -139,10 +139,7 @@ private struct WiltedMacLibraryView: View {
                 WiltedMacSyncControls(model: model)
 
                 HStack(spacing: WiltedTheme.Spacing.medium) {
-                    TextField("https://example.com/article", text: $model.urlDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .font(WiltedTheme.font(.body))
-                        .accessibilityIdentifier("wilted-article-url")
+                    WiltedMacArticleURLField(text: $model.urlDraft)
                     Button("Add Article") {
                         model.addArticle()
                     }
@@ -176,6 +173,39 @@ private struct WiltedMacLibraryView: View {
         }
         .background(WiltedTheme.color(.page, scheme: colorScheme))
         .accessibilityIdentifier("wilted-mac-library-detail")
+    }
+}
+
+/// A tokenized field border replaces macOS's system-blue focus treatment.
+struct WiltedMacArticleURLField: View {
+    @Binding var text: String
+    let focusedOverride: Bool?
+    @FocusState private var isFocused: Bool
+    @Environment(\.colorScheme) private var colorScheme
+
+    init(text: Binding<String>, focusedOverride: Bool? = nil) {
+        _text = text
+        self.focusedOverride = focusedOverride
+    }
+
+    var body: some View {
+        TextField("https://example.com/article", text: $text)
+            .textFieldStyle(.plain)
+            .font(WiltedTheme.font(.body))
+            .padding(.horizontal, WiltedTheme.Spacing.medium)
+            .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+            .background(WiltedTheme.color(.card, scheme: colorScheme), in: RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(
+                        isFocused || focusedOverride == true
+                            ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme)
+                            : WiltedTheme.color(.steel, scheme: colorScheme),
+                        lineWidth: isFocused || focusedOverride == true ? 2 : 1
+                    )
+            )
+            .focused($isFocused)
+            .accessibilityIdentifier("wilted-article-url")
     }
 }
 

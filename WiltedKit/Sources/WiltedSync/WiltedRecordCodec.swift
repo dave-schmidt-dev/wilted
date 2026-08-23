@@ -91,6 +91,28 @@ public struct WiltedRecordCodec: Sendable {
         return try WiltedRecordEnvelope(id: .revision(revision.itemID, revision.revisionID), fields: fields, sidecar: sidecar)
     }
 
+    /// Encodes a revision's metadata and immutable chunk manifest without placing
+    /// audio bytes on the revision record. Chunk bytes are separate records.
+    public func encode(revision: AudioRevision, manifest: AudioChunkManifest,
+                       sidecar: WiltedOpaqueSidecar? = nil,
+                       opaqueFields: [String: WiltedFieldValue] = [:]) throws -> WiltedRecordEnvelope {
+        guard manifest.totalByteCount == revision.byteCount,
+              "sha256:\(manifest.contentSHA256)" == revision.contentHash else {
+            throw WiltedSyncError.invalidValue(field: "audioManifest")
+        }
+        let itemReference = try WiltedRecordReference(recordID: .item(revision.itemID))
+        var fields: [String: WiltedFieldValue] = [
+            "itemID": .string(revision.itemID.rawValue), "revisionID": .string(revision.revisionID.rawValue),
+            "itemReference": .reference(itemReference), "durationSeconds": .double(revision.durationSeconds),
+            "byteCount": .int64(revision.byteCount), "contentHash": .string(revision.contentHash),
+            "mediaType": .string(revision.mediaType), "createdAt": .date(revision.createdAt),
+            "schemaVersion": .int64(Int64(Self.currentSchemaVersion)), "readiness": .string("ready"),
+            "audioManifest": .bytes(try JSONEncoder().encode(manifest)),
+        ]
+        fields.merge(opaqueFields) { existing, _ in existing }
+        return try WiltedRecordEnvelope(id: .revision(revision.itemID, revision.revisionID), fields: fields, sidecar: sidecar)
+    }
+
     public func decodeRevisionRecord(_ envelope: WiltedRecordEnvelope) throws -> WiltedDecodedRecord<AudioRevision> {
         try validate(envelope, expected: .revision)
         let item = try itemID(envelope)
@@ -98,18 +120,73 @@ public struct WiltedRecordCodec: Sendable {
         guard envelope.id == (try .revision(item, revisionID)) else { throw WiltedSyncError.invalidRecordIdentity }
         let reference = try reference(envelope, "itemReference")
         guard reference.recordID == (try .item(item)) else { throw WiltedSyncError.invalidRecordIdentity }
-        let asset = try asset(envelope, "audioAsset")
-        guard asset.contentHash == (try string(envelope, "contentHash")) else { throw WiltedSyncError.invalidValue(field: "audioAsset.contentHash") }
+        if let assetValue = envelope.fields["audioAsset"] {
+            guard case let .asset(asset) = assetValue else { throw WiltedSyncError.invalidFieldType("audioAsset") }
+            guard asset.contentHash == (try string(envelope, "contentHash")) else { throw WiltedSyncError.invalidValue(field: "audioAsset.contentHash") }
+        } else if let manifestValue = envelope.fields["audioManifest"] {
+            guard case let .bytes(data) = manifestValue,
+                  let manifest = try? JSONDecoder().decode(AudioChunkManifest.self, from: data),
+                  manifest.totalByteCount == (try int64(envelope, "byteCount")),
+                  "sha256:\(manifest.contentSHA256)" == (try string(envelope, "contentHash")) else {
+                throw WiltedSyncError.invalidValue(field: "audioManifest")
+            }
+        } else {
+            throw WiltedSyncError.missingRequiredField("audioAsset or audioManifest")
+        }
         guard try string(envelope, "readiness") == "ready" else { throw WiltedSyncError.invalidValue(field: "readiness") }
         let revision = try AudioRevision(itemID: item, revisionID: revisionID,
                                          durationSeconds: double(envelope, "durationSeconds"), byteCount: int64(envelope, "byteCount"),
                                          contentHash: string(envelope, "contentHash"), mediaType: string(envelope, "mediaType"),
                                          createdAt: date(envelope, "createdAt"), schemaVersion: Int(int64(envelope, "schemaVersion")))
-        let known = Set(["itemID", "revisionID", "itemReference", "durationSeconds", "byteCount", "contentHash", "mediaType", "createdAt", "schemaVersion", "readiness", "audioAsset"])
+        let known = Set(["itemID", "revisionID", "itemReference", "durationSeconds", "byteCount", "contentHash", "mediaType", "createdAt", "schemaVersion", "readiness", "audioAsset", "audioManifest"])
         return WiltedDecodedRecord(value: revision, envelope: envelope, opaqueFields: envelope.fields.filter { !known.contains($0.key) })
     }
 
     public func decodeRevision(_ envelope: WiltedRecordEnvelope) throws -> AudioRevision { try decodeRevisionRecord(envelope).value }
+
+    /// Encodes one immutable chunk record. The bytes are supplied separately by
+    /// the CloudKit adapter through the `chunkAsset` descriptor.
+    public func encode(revisionChunk itemID: ItemID, revisionID: RevisionID,
+                       descriptor: AudioChunkDescriptor, chunkAsset: WiltedAsset,
+                       sidecar: WiltedOpaqueSidecar? = nil,
+                       opaqueFields: [String: WiltedFieldValue] = [:]) throws -> WiltedRecordEnvelope {
+        guard chunkAsset.contentHash == "sha256:\(descriptor.sha256)" else {
+            throw WiltedSyncError.invalidValue(field: "chunkAsset.contentHash")
+        }
+        let revisionReference = try WiltedRecordReference(recordID: .revision(itemID, revisionID))
+        var fields: [String: WiltedFieldValue] = [
+            "itemID": .string(itemID.rawValue), "revisionID": .string(revisionID.rawValue),
+            "revisionReference": .reference(revisionReference), "identity": .string(descriptor.identity),
+            "index": .int64(Int64(descriptor.index)), "byteCount": .int64(descriptor.byteCount),
+            "sha256": .string(descriptor.sha256), "schemaVersion": .int64(Int64(Self.currentSchemaVersion)),
+            "chunkAsset": .asset(chunkAsset),
+        ]
+        fields.merge(opaqueFields) { existing, _ in existing }
+        return try WiltedRecordEnvelope(id: .revisionChunk(itemID, revisionID, index: descriptor.index),
+                                        fields: fields, sidecar: sidecar)
+    }
+
+    public func decodeRevisionChunkRecord(_ envelope: WiltedRecordEnvelope) throws -> WiltedDecodedRecord<AudioChunkDescriptor> {
+        try validate(envelope, expected: .revisionChunk)
+        guard case let .string(itemValue)? = envelope.fields["itemID"],
+              case let .string(revisionValue)? = envelope.fields["revisionID"],
+              let itemID = try? ItemID(rawValue: itemValue),
+              let revisionID = try? RevisionID(rawValue: revisionValue),
+              envelope.id == (try .revisionChunk(itemID, revisionID, index: Int(int64(envelope, "index")))) else {
+            throw WiltedSyncError.invalidRecordIdentity
+        }
+        let reference = try reference(envelope, "revisionReference")
+        guard reference.recordID == (try .revision(itemID, revisionID)) else { throw WiltedSyncError.invalidRecordIdentity }
+        let descriptor = try AudioChunkDescriptor(identity: string(envelope, "identity"),
+                                                   index: Int(int64(envelope, "index")),
+                                                   byteCount: int64(envelope, "byteCount"),
+                                                   sha256: string(envelope, "sha256"))
+        let asset = try asset(envelope, "chunkAsset")
+        guard asset.contentHash == "sha256:\(descriptor.sha256)" else { throw WiltedSyncError.invalidValue(field: "chunkAsset.contentHash") }
+        let known = Set(["itemID", "revisionID", "revisionReference", "identity", "index", "byteCount", "sha256", "schemaVersion", "chunkAsset"])
+        return WiltedDecodedRecord(value: descriptor, envelope: envelope,
+                                   opaqueFields: envelope.fields.filter { !known.contains($0.key) })
+    }
 
     /// Encodes playback state and both non-cascading references.
     public func encode(playback: PlaybackState, sidecar: WiltedOpaqueSidecar? = nil,
@@ -164,7 +241,8 @@ public struct WiltedRecordCodec: Sendable {
     private func requiredFields(for type: WiltedRecordType) -> [String] {
         switch type {
         case .item: return ["itemID", "canonicalURL", "title", "source", "createdAt", "isDeleted", "schemaVersion", "currentRevisionID"]
-        case .revision: return ["itemID", "revisionID", "itemReference", "durationSeconds", "byteCount", "contentHash", "mediaType", "createdAt", "schemaVersion", "readiness", "audioAsset"]
+        case .revision: return ["itemID", "revisionID", "itemReference", "durationSeconds", "byteCount", "contentHash", "mediaType", "createdAt", "schemaVersion", "readiness"]
+        case .revisionChunk: return ["itemID", "revisionID", "revisionReference", "identity", "index", "byteCount", "sha256", "schemaVersion", "chunkAsset"]
         case .playbackState: return ["itemID", "revisionID", "itemReference", "revisionReference", "sessionID", "sequence", "positionSeconds", "durationSeconds", "completed", "intent", "deviceID", "updatedAt", "schemaVersion"]
         }
     }
