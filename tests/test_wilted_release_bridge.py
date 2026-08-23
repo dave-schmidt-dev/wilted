@@ -115,7 +115,7 @@ class IdentityAllocationTests(unittest.TestCase):
             proof = BRIDGE.allocate_identity(get=get, root=Path(temporary))
 
         self.assertEqual(proof["productKey"], "wilted-ios")
-        self.assertEqual(proof["marketingVersion"], "0.1.8")
+        self.assertEqual(proof["marketingVersion"], "0.2.0")
         self.assertEqual(proof["buildNumber"], 10)
         self.assertEqual(proof["remoteHighestMarketingVersion"], "0.1.7")
         self.assertEqual(proof["remoteHighestBuildNumber"], 9)
@@ -141,7 +141,7 @@ class IdentityAllocationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             proof = BRIDGE.allocate_identity(get=get, root=Path(temporary))
 
-        self.assertEqual(proof["marketingVersion"], "0.1.8")
+        self.assertEqual(proof["marketingVersion"], "0.2.0")
         self.assertEqual(proof["buildNumber"], 8)
         self.assertEqual(proof["remoteHighestMarketingVersion"], "0.1.7")
         self.assertEqual(proof["remoteHighestBuildNumber"], 7)
@@ -157,9 +157,9 @@ class IdentityAllocationTests(unittest.TestCase):
     def test_identity_allocation_advances_past_a_locally_failed_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            manifest = root / ".git/release-state/wilted-ios/candidates/0.1.8-1/manifest.json"
+            manifest = root / ".git/release-state/wilted-ios/candidates/0.2.0-1/manifest.json"
             manifest.parent.mkdir(parents=True)
-            manifest.write_text(json.dumps({"immutable": True, "release": {"marketingVersion": "0.1.8", "buildNumber": "1"}}), encoding="utf-8")
+            manifest.write_text(json.dumps({"immutable": True, "release": {"marketingVersion": "0.2.0", "buildNumber": "1"}}), encoding="utf-8")
 
             def get(path: str, _: str) -> dict:
                 if path.startswith("/apps?"):
