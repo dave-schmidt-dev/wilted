@@ -1,7 +1,7 @@
 # Wilted Device-Acceptance Correction Spec
 
-**Date:** 2026-08-23  
-**Status:** Authoritative pre-Hydra plan  
+**Date:** 2026-08-23
+**Status:** Authoritative pre-Hydra plan
 **Scope:** Correct the iPhone acceptance failures found in the 0.2.0 MVP and make the Mac-to-iPhone contract observable and truthful.
 
 ## Current disposition
@@ -39,9 +39,9 @@ Each lane has exclusive ownership of its listed surfaces. Lanes may not edit ano
 
 ### Lane 1 — Transcript data path
 
-**Owner:** Transcript persistence, CloudKit mapping, migration, and sync contract.  
-**Owns:** Transcript model/repository, CloudKit record mapping and schema artifacts, producer transcript extraction boundary, and related data tests.  
-**Depends on:** Existing audio/item identity and current sync transport.  
+**Owner:** Transcript persistence, CloudKit mapping, migration, and sync contract.
+**Owns:** Transcript model/repository, CloudKit record mapping and schema artifacts, producer transcript extraction boundary, and related data tests.
+**Depends on:** Existing audio/item identity and current sync transport.
 **Publishes checkpoint:** Versioned transcript interface with stable item ID, transcript text, language/format metadata, revision identity, and availability state. The checkpoint includes migration status, CloudKit field mapping, and fixture data for Lane 3.
 
 **Required work:** Preserve transcript text before/after TTS, sync it bidirectionally where supported, handle absent/stale transcript states explicitly, and expose a read-only consumer interface for both UIs.
@@ -50,8 +50,8 @@ Each lane has exclusive ownership of its listed surfaces. Lanes may not edit ano
 
 ### Lane 2 — Listener/Mac observability
 
-**Owner:** Mac producer/listener status and the iOS-observable sync/download facts.  
-**Owns:** Persisted last successful fetch/send timestamps and outcomes, local download count/byte aggregation, and the producer-status interface.  
+**Owner:** Mac producer/listener status and the iOS-observable sync/download facts.
+**Owns:** Persisted last successful fetch/send timestamps and outcomes, local download count/byte aggregation, and the producer-status interface.
 **Depends on:** Existing producer and sync events; Lane 1’s stable item/revision identity where transcript status is shown.
 
 **Required work:** Persist and expose last successful iPhone fetch, last successful Mac fetch, and last successful Mac send with timestamps and failure states. Derive download count and bytes from local records. Define a producer identity contract before any “connected Mac” label is permitted; until then, display “Mac status unavailable” or equivalent truthful copy.
@@ -62,8 +62,8 @@ Each lane has exclusive ownership of its listed surfaces. Lanes may not edit ano
 
 ### Lane 3 — Cross-platform presentation
 
-**Owner:** iOS and Mac presentation, interaction, accessibility, and visual acceptance.  
-**Owns:** Screen hierarchy, labels, action controls, transcript presentation, Downloads layout, Settings content, and UI/pixel tests.  
+**Owner:** iOS and Mac presentation, interaction, accessibility, and visual acceptance.
+**Owns:** Screen hierarchy, labels, action controls, transcript presentation, Downloads layout, Settings content, and UI/pixel tests.
 **Depends on:** Lane 1 and Lane 2 interface checkpoints. It may use fixtures before integration but may not invent production fields.
 
 **Required work:** Remove the duplicate iOS “Library” heading; render playback actions as buttons with clear affordance and states; replace the giant Downloads capsule with a readable list/card layout; add transcript content and unavailable/loading/error states; add Settings sections for truthful sync/fetch/download facts; keep Mac presentation consistent with its persisted status contract.
