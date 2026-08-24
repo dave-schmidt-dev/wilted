@@ -17,6 +17,20 @@ for wrapper in "$root/app/release-status" "$root/app/release-testflight"; do
   }
 done
 
+prepare_branch="$(awk '/^[[:space:]]*--prepare-only\)/,/^[[:space:]]*;;/' "$root/app/release-testflight")"
+grep -Fq -- '--successor-correction' <<<"$prepare_branch" || {
+  echo 'release-testflight prepare wrapper omitted successor correction' >&2
+  exit 1
+}
+
+for operation in --stage --upload; do
+  operation_branch="$(awk "/^[[:space:]]*${operation}\\)/,/^[[:space:]]*;;/" "$root/app/release-testflight")"
+  if grep -Fq -- '--successor-correction' <<<"$operation_branch"; then
+    echo "release-testflight ${operation} wrapper must not use successor correction" >&2
+    exit 1
+  fi
+done
+
 temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-release-bridge.XXXXXX")"
 trap 'rm -rf "$temporary_root"' EXIT
 cp "$bridge" "$temporary_root/bridge.py"
