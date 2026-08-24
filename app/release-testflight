@@ -31,7 +31,7 @@ candidate_manifest() {
 case "${1:-}" in
   --prepare-only)
     [ "$#" -eq 1 ] || exit 64
-    exec env PYTHONPATH="$CENTRAL_ROOT" python3 -m release_tools testflight --repository "$ROOT" --adapter "$ADAPTER" --successor-correction
+    exec env PYTHONPATH="$CENTRAL_ROOT" python3 -m release_tools testflight --repository "$ROOT" --adapter "$ADAPTER"
     ;;
   --stage)
     [ "$#" -eq 1 ] || exit 64
