@@ -285,7 +285,7 @@ assert_snapshot_contract() {
   assert_contains 'expected_test_count_floor' "$gate"
   assert_contains 'macos-unit-tests) printf' "$gate"
   assert_contains 'ios-pixel-snapshot-tests) printf' "$gate"
-  assert_contains "printf '%s\\n' '{\"totalTestCount\":9}'" "$gate"
+  assert_contains "printf '%s\\n' '{\"totalTestCount\":11}'" "$gate"
   for method in \
     testEveryPreviewStateHasLightAndDarkPixelBaselines \
     testPixelSnapshotSelectorsAreUniqueAndComplete \
@@ -302,6 +302,8 @@ assert_snapshot_contract() {
     testListenerLibraryLightPixelBaseline \
     testListenerDownloadsDarkPixelBaseline \
     testListenerDownloadsLightPixelBaseline \
+    testListenerSettingsDarkPixelBaseline \
+    testListenerSettingsLightPixelBaseline \
     testListenerNowPlayingDarkPixelBaseline \
     testListenerNowPlayingLightPixelBaseline \
     testListenerTerminalFailureDarkPixelBaseline \
@@ -462,7 +464,7 @@ mvp_missing_log="$tmp_dir/mvp-missing.log"
 mvp_missing_status="$(run_case mvp-missing "$mvp_missing_log" \
   env NATIVE_FORCE_MISSING_IOS_MVP_JOURNEY=1 bash "$gate")"
 [[ "$mvp_missing_status" -ne 0 ]] || { cat "$mvp_missing_log" >&2; exit 1; }
-assert_contains 'native.insufficient-tests label=ios-pixel-snapshot-tests reported=8 expected_minimum=9' "$mvp_missing_log"
+assert_contains 'native.insufficient-tests label=ios-pixel-snapshot-tests reported=10 expected_minimum=11' "$mvp_missing_log"
 assert_contains 'native.failed count=1' "$mvp_missing_log"
 
 package_zero_log="$tmp_dir/package-zero.log"

@@ -26,6 +26,20 @@ private func playbackState(sequence: Int64 = 1, intent: PlaybackIntent = .progre
 
 private func playbackEnvelope(_ state: PlaybackState) throws -> WiltedRecordEnvelope { try WiltedRecordCodec().encode(playback: state) }
 
+private func transcriptEnvelope() throws -> WiltedRecordEnvelope {
+    let (item, revision) = try ids()
+    let transcript = try Transcript(
+        itemID: item,
+        revisionID: revision,
+        availability: .available,
+        text: "Listener transcript",
+        format: .plainText,
+        languageCode: "en",
+        updatedAt: Timestamp(Date())
+    )
+    return try WiltedRecordCodec().encode(transcript: transcript)
+}
+
 private func revisionChunkEnvelope() throws -> WiltedRecordEnvelope {
     let (item, revision) = try ids()
     let chunk = try WiltedRecordID.revisionChunk(item, revision, index: 0)
@@ -95,6 +109,17 @@ func revisionChunksDoNotEnterListenerState() async throws {
     let state = await repository.state()
     #expect(state.records.map(\.id) == [article.id])
     #expect(state.remoteAcknowledgedRecordIDs == [article.id])
+}
+
+@Test("transcript records validate and enter listener state")
+func transcriptRecordsEnterListenerState() async throws {
+    let repository = try ListenerRepository(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+    let transcript = try transcriptEnvelope()
+    let batch = try SyncFetchBatch(generationID: "transcript-g1", records: [transcript], engineState: Data([1]))
+
+    try await repository.commit(try await repository.stage(batch))
+
+    #expect((await repository.state()).records.map(\.id) == [transcript.id])
 }
 
 @Test("optional engine state preserves prior state for no-op batches")
@@ -181,6 +206,19 @@ func malformedOptionalMetadata() async throws {
     #expect((await repository.state()).records.isEmpty)
 }
 
+@Test("listener fetch observability persists success and failure without identity")
+func listenerFetchObservabilityPersistsAcrossRelaunch() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let repository = try ListenerRepository(directoryURL: directory)
+    let date = Date(timeIntervalSince1970: 1_700_000_123)
+    try await repository.recordSuccessfulFetch(at: date)
+    try await repository.recordFetchFailure("network unavailable")
+    let reopened = try ListenerRepository(directoryURL: directory)
+    let value = await reopened.loadObservability()
+    #expect(value?.lastSuccessfulFetchAt == date)
+    #expect(value?.lastFetchFailure == "network unavailable")
+}
+
 @Test("acknowledgement rejects unknown IDs and preserves retry work")
 func acknowledgementValidation() async throws {
     let repository = try ListenerRepository(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
@@ -264,6 +302,19 @@ func cacheValidationAndPreservation() async throws {
     do { _ = try await cache.store(data: Data("bad".utf8), asset: bad); Issue.record("expected hash failure") }
     catch let error as ListenerError { #expect(error == .cacheHashMismatch("revision-audio")) }
     #expect(await cache.url(for: goodAsset) == url)
+}
+
+@Test("audio cache statistics count only downloaded regular files")
+func audioCacheStatistics() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let cache = try ListenerAudioCache(rootURL: root)
+    let first = Data("first".utf8)
+    let second = Data("second".utf8)
+    _ = try await cache.store(data: first, asset: try asset(first))
+    _ = try await cache.store(data: second, asset: try asset(second))
+    try Data("partial".utf8).write(to: root.appendingPathComponent(".incoming-test.tmp"))
+    let stats = try await cache.statistics()
+    #expect(stats == ListenerDownloadStatistics(fileCount: 2, byteCount: Int64(first.count + second.count)))
 }
 
 @Test("offline playback supports resume, rewind, restart, interruption, and route changes")

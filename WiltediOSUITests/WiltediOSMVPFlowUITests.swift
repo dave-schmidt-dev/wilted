@@ -11,20 +11,36 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         let library = app.descendants(matching: .any)["wilted-library"]
         XCTAssertTrue(library.waitForExistence(timeout: 5))
 
+        let transcript = app.buttons["Transcript"]
+        XCTAssertTrue(transcript.waitForExistence(timeout: 5))
+        XCTAssertEqual(transcript.elementType, .button)
+        transcript.tap()
+        XCTAssertTrue(app.staticTexts["This local fixture transcript is available without contacting iCloud."].waitForExistence(timeout: 5))
+
         let download = app.buttons["Download"]
         XCTAssertTrue(download.waitForExistence(timeout: 5))
+        XCTAssertEqual(download.elementType, .button)
         download.tap()
 
         let remove = app.buttons["Remove Download"]
         XCTAssertTrue(remove.waitForExistence(timeout: 5))
 
+        let settingsTab = app.tabBars.buttons["Settings"]
+        XCTAssertTrue(settingsTab.waitForExistence(timeout: 5))
+        settingsTab.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-settings"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-settings-producer"].label.contains("Unavailable"))
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-settings-download-count"].label.contains("1 file"))
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-settings-download-bytes"].exists)
+
         let downloadsTab = app.tabBars.buttons["Downloads"]
         XCTAssertTrue(downloadsTab.waitForExistence(timeout: 5))
         downloadsTab.tap()
-        let downloadedItem = app.buttons.matching(
-            NSPredicate(format: "label BEGINSWITH %@", "A fixture article for listening")
-        ).firstMatch
+        // The Downloads card is not itself a play action. The explicit Play
+        // button owns the interaction after the card layout correction.
+        let downloadedItem = app.buttons.matching(identifier: "Play").firstMatch
         XCTAssertTrue(downloadedItem.waitForExistence(timeout: 5))
+        XCTAssertEqual(downloadedItem.elementType, .button)
         downloadedItem.tap()
 
         let libraryTab = app.tabBars.buttons["Library"]
@@ -35,6 +51,7 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
 
         let nowPlayingControl = app.descendants(matching: .any)["wilted-player-play-pause"]
         XCTAssertTrue(nowPlayingControl.waitForExistence(timeout: 5))
+        XCTAssertEqual(nowPlayingControl.elementType, .button)
         XCTAssertEqual(nowPlayingControl.label, "Pause")
         nowPlayingControl.tap()
         let status = app.descendants(matching: .any)["wilted-listener-status"]

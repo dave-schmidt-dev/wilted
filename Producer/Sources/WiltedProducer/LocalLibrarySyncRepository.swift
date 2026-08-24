@@ -11,6 +11,7 @@ public actor LocalLibrarySyncRepository: SyncRepository {
     private struct PreparedBatch: Sendable {
         let articles: [LocalLibrarySyncCommit.ArticleApply]
         let revisions: [LocalLibrarySyncCommit.RevisionApply]
+        let transcripts: [LocalLibrarySyncCommit.TranscriptApply]
         let playbacks: [LocalLibrarySyncCommit.PlaybackApply]
     }
 
@@ -178,7 +179,8 @@ public actor LocalLibrarySyncRepository: SyncRepository {
                 return .init(recordID: itemRecord, status: .conflicted)
             }
             try await store.applySyncCommit(LocalLibrarySyncCommit(state: candidate, articles: articles,
-                                                                    revisions: prepared.revisions, playbacks: prepared.playbacks,
+                                                                    revisions: prepared.revisions, transcripts: prepared.transcripts,
+                                                                    playbacks: prepared.playbacks,
                                                                     statusUpdates: conflictStatusUpdates, deletions: deletions,
                                                                     lastFetchAt: Timestamp(Date())))
             storedState = candidate
@@ -194,7 +196,7 @@ public actor LocalLibrarySyncRepository: SyncRepository {
     public func enqueue(_ change: SyncPendingChange) async throws {
         emit(.init(phase: .staging, message: "Staging local mutation"))
         do {
-            var prepared = PreparedBatch(articles: [], revisions: [], playbacks: [])
+            var prepared = PreparedBatch(articles: [], revisions: [], transcripts: [], playbacks: [])
             if let record = change.record {
                 let records = try await prepare([record])
                 prepared = records
@@ -227,7 +229,8 @@ public actor LocalLibrarySyncRepository: SyncRepository {
             let status: LocalLibrarySyncStatus = .pendingUpload
             let pendingArticles = prepared.articles.map { LocalLibrarySyncCommit.ArticleApply(article: $0.article, status: status) }
             try await store.applySyncCommit(LocalLibrarySyncCommit(state: candidate, articles: pendingArticles,
-                                                                    revisions: prepared.revisions, playbacks: prepared.playbacks))
+                                                                    revisions: prepared.revisions, transcripts: prepared.transcripts,
+                                                                    playbacks: prepared.playbacks))
             storedState = candidate
             emit(.init(phase: .completed, message: "Local mutation queued"))
         } catch {
@@ -328,7 +331,7 @@ public actor LocalLibrarySyncRepository: SyncRepository {
             try await store.applySyncCommit(LocalLibrarySyncCommit(
                 state: candidate,
                 articles: prepared.articles.map { .init(article: $0.article, status: .remoteAcknowledged) },
-                revisions: prepared.revisions, playbacks: prepared.playbacks,
+                revisions: prepared.revisions, transcripts: prepared.transcripts, playbacks: prepared.playbacks,
                 statusUpdates: statusUpdates, deletions: deletions, lastSendAt: Timestamp(Date())))
             storedState = candidate
             emit(.init(phase: .completed, message: "Send acknowledgement committed"))
@@ -362,6 +365,7 @@ public actor LocalLibrarySyncRepository: SyncRepository {
     private func prepare(_ envelopes: [WiltedRecordEnvelope]) async throws -> PreparedBatch {
         var articles: [LocalLibrarySyncCommit.ArticleApply] = []
         var revisions: [LocalLibrarySyncCommit.RevisionApply] = []
+        var transcripts: [LocalLibrarySyncCommit.TranscriptApply] = []
         var playbacks: [LocalLibrarySyncCommit.PlaybackApply] = []
         for envelope in envelopes {
             switch envelope.id.recordType {
@@ -385,6 +389,8 @@ public actor LocalLibrarySyncRepository: SyncRepository {
             case .revisionChunk:
                 // Chunk rows are durable transport state, not producer catalog data.
                 break
+            case .transcript:
+                transcripts.append(.init(transcript: try codec.decodeTranscript(envelope)))
             case .playbackState:
                 let decoded = try codec.decodePlayback(envelope)
                 let sidecar = PlaybackSystemFieldsSidecar(encodedSystemFields: envelope.sidecar?.encodedSystemFields,
@@ -392,7 +398,7 @@ public actor LocalLibrarySyncRepository: SyncRepository {
                 playbacks.append(.init(state: decoded, sidecar: sidecar))
             }
         }
-        return PreparedBatch(articles: articles, revisions: revisions, playbacks: playbacks)
+        return PreparedBatch(articles: articles, revisions: revisions, transcripts: transcripts, playbacks: playbacks)
     }
 
     private func validateMedia(_ url: URL, contentHash: String) throws {

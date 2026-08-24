@@ -131,6 +131,56 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
         )
     }
 
+    func testObservabilityDefaultsToUnavailableIdentityAndRestoresTimestamps() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let fetched = Timestamp(Date(timeIntervalSince1970: 1_700_000_100))
+        let sent = Timestamp(Date(timeIntervalSince1970: 1_700_000_200))
+        try await store.save(syncState: LocalLibrarySyncState(key: "private-zone", lastFetchAt: fetched, lastSendAt: sent))
+        let lifecycle = lifecycle(store, transport: LifecycleFakeTransport(
+            batch: try SyncFetchBatch(generationID: "empty", records: [], engineState: Data([1]))
+        ))
+        for _ in 0..<100 where lifecycle.observability.lastSuccessfulFetchAt == nil {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(lifecycle.observability.producerIdentity, .unavailable)
+        XCTAssertEqual(lifecycle.observability.lastSuccessfulFetchAt, fetched.date)
+        XCTAssertEqual(lifecycle.observability.lastSuccessfulSendAt, sent.date)
+    }
+
+    func testRefreshReturnsWithCurrentObservability() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let lifecycle = lifecycle(store, transport: LifecycleFakeTransport(
+            batch: try SyncFetchBatch(generationID: "observability-fetch", records: [], engineState: Data([1]))
+        ))
+
+        let result = await lifecycle.refresh()
+        let state = try await store.syncState(for: "private-zone")
+
+        XCTAssertTrue(isSuccess(result))
+        XCTAssertEqual(lifecycle.observability.lastSuccessfulFetchAt, state?.lastFetchAt?.date)
+        XCTAssertNotNil(lifecycle.observability.lastSuccessfulFetchAt)
+    }
+
+    func testUploadReturnsWithCurrentObservability() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let lifecycle = lifecycle(store, transport: LifecycleFakeTransport(
+            batch: try SyncFetchBatch(generationID: "observability-upload", records: [], engineState: Data([1]))
+        ))
+        let queued = await lifecycle.queueItem(try article("observability-upload"),
+                                               currentRevisionID: try RevisionID(rawValue: "revision-observability-upload"))
+        XCTAssertTrue(isSuccess(queued))
+
+        let result = await lifecycle.uploadPending()
+        let state = try await store.syncState(for: "private-zone")
+
+        XCTAssertTrue(isSuccess(result))
+        XCTAssertEqual(lifecycle.observability.lastSuccessfulSendAt, state?.lastSendAt?.date)
+        XCTAssertNotNil(lifecycle.observability.lastSuccessfulSendAt)
+    }
+
     func testQueuesItemRevisionAndPlaybackThenUploads() async throws {
         let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let item = try article(); let revisionID = try RevisionID(rawValue: "revision-mac")
@@ -300,33 +350,39 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
         let transport = LifecycleFakeTransport(batch: try SyncFetchBatch(
             generationID: "empty", records: [], engineState: Data([1])
         ))
-        let model = WiltedMacModel(
-            arguments: [],
-            syncTransportFactory: {
-                WiltedMacSyncTransportHandle(
-                    transport: transport,
-                    cancel: { await transport.cancel() }
-                )
-            },
-            stateDirectoryOverride: root
-        )
+        do {
+            let model = WiltedMacModel(
+                arguments: [],
+                syncTransportFactory: {
+                    WiltedMacSyncTransportHandle(
+                        transport: transport,
+                        cancel: { await transport.cancel() }
+                    )
+                },
+                stateDirectoryOverride: root
+            )
 
-        // Startup and foreground callbacks can arrive together; only one reconciliation
-        // should queue this durable revision. Publication intentionally uses two transport
-        // sends so chunks are acknowledged before the manifest and item pointer.
-        model.reconcileSyncOnLaunchOrForeground()
-        model.reconcileSyncOnLaunchOrForeground()
-        for _ in 0..<300 {
-            if await transport.saveCallCount() == 2 { break }
-            try await Task.sleep(nanoseconds: 1_000_000)
+            // Startup and foreground callbacks can arrive together; only one reconciliation
+            // should queue this durable revision. Publication intentionally uses two transport
+            // sends so chunks are acknowledged before the manifest and item pointer.
+            model.reconcileSyncOnLaunchOrForeground()
+            model.reconcileSyncOnLaunchOrForeground()
+            for _ in 0..<300 {
+                if await transport.saveCallCount() == 2,
+                   model.syncStatus.phase == .completed,
+                   model.syncObservability.lastSuccessfulSendAt != nil { break }
+                try await Task.sleep(nanoseconds: 1_000_000)
+            }
+
+            let saveCallCount = await transport.saveCallCount()
+            XCTAssertEqual(saveCallCount, 2)
+            XCTAssertEqual(model.syncStatus.phase, .completed)
+            XCTAssertNotNil(model.syncObservability.lastSuccessfulSendAt)
+            let sentTypes = await transport.sentRecordTypes()
+            XCTAssertTrue(sentTypes.contains(.item))
+            XCTAssertTrue(sentTypes.contains(.revision))
+            XCTAssertTrue(sentTypes.contains(.revisionChunk))
         }
-
-        let saveCallCount = await transport.saveCallCount()
-        XCTAssertEqual(saveCallCount, 2)
-        let sentTypes = await transport.sentRecordTypes()
-        XCTAssertTrue(sentTypes.contains(.item))
-        XCTAssertTrue(sentTypes.contains(.revision))
-        XCTAssertTrue(sentTypes.contains(.revisionChunk))
     }
 
     func testStartupReconciliationSendsAlreadyQueuedManifestAndChunks() async throws {
@@ -346,39 +402,46 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
             durationSeconds: 4, byteCount: Int64(bytes.count), contentHash: hash,
             mediaType: "audio/mp4", createdAt: Timestamp(Date()), schemaVersion: 1
         )
-        let store = try LocalLibraryStore(url: libraryURL)
-        try await store.save(article: item)
-        try await store.saveReadyRevision(revision, mediaURL: mediaURL)
-
         let transport = LifecycleFakeTransport(batch: try SyncFetchBatch(
             generationID: "empty", records: [], engineState: Data([1])
         ))
-        let queueLifecycle = lifecycle(store, transport: transport)
-        let queued = await queueLifecycle.queueRevision(revision, chunkedFile: chunked)
-        XCTAssertTrue(isSuccess(queued))
-
-        let model = WiltedMacModel(
-            arguments: [],
-            syncTransportFactory: {
-                WiltedMacSyncTransportHandle(
-                    transport: transport,
-                    cancel: { await transport.cancel() }
-                )
-            },
-            stateDirectoryOverride: root
-        )
-
-        model.reconcileSyncOnLaunchOrForeground()
-        for _ in 0..<300 {
-            if await transport.saveCallCount() == 2 { break }
-            try await Task.sleep(nanoseconds: 1_000_000)
+        do {
+            let store = try LocalLibraryStore(url: libraryURL)
+            try await store.save(article: item)
+            try await store.saveReadyRevision(revision, mediaURL: mediaURL)
+            let queueLifecycle = lifecycle(store, transport: transport)
+            let queued = await queueLifecycle.queueRevision(revision, chunkedFile: chunked)
+            XCTAssertTrue(isSuccess(queued))
         }
 
-        let saveCallCount = await transport.saveCallCount()
-        XCTAssertEqual(saveCallCount, 2)
-        let sentTypes = await transport.sentRecordTypes()
-        XCTAssertTrue(sentTypes.contains(.revision))
-        XCTAssertTrue(sentTypes.contains(.revisionChunk))
+        do {
+            let model = WiltedMacModel(
+                arguments: [],
+                syncTransportFactory: {
+                    WiltedMacSyncTransportHandle(
+                        transport: transport,
+                        cancel: { await transport.cancel() }
+                    )
+                },
+                stateDirectoryOverride: root
+            )
+
+            model.reconcileSyncOnLaunchOrForeground()
+            for _ in 0..<300 {
+                if await transport.saveCallCount() == 2,
+                   model.syncStatus.phase == .completed,
+                   model.syncObservability.lastSuccessfulSendAt != nil { break }
+                try await Task.sleep(nanoseconds: 1_000_000)
+            }
+
+            let saveCallCount = await transport.saveCallCount()
+            XCTAssertEqual(saveCallCount, 2)
+            XCTAssertEqual(model.syncStatus.phase, .completed)
+            XCTAssertNotNil(model.syncObservability.lastSuccessfulSendAt)
+            let sentTypes = await transport.sentRecordTypes()
+            XCTAssertTrue(sentTypes.contains(.revision))
+            XCTAssertTrue(sentTypes.contains(.revisionChunk))
+        }
     }
 
     func testEmptyPersistedEngineStateReadsAsAbsentRatherThanCorrupt() {

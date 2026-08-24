@@ -145,6 +145,14 @@ final class WiltedMacModel {
 #endif
     }
 
+    var syncObservability: WiltedMacObservability {
+#if canImport(WiltedProducer)
+        syncLifecycle?.observability ?? .unavailable
+#else
+        .unavailable
+#endif
+    }
+
     /// Starts the explicit manual refresh action.
     func refreshSync() {
 #if canImport(WiltedProducer)

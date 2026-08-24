@@ -55,7 +55,7 @@ struct WiltediOSApp: App {
                 || arguments.contains("--wilted-ui-fixture-playing")
             let initialSelection: WiltedNavigation = arguments.contains("--wilted-listener-pixel-downloads")
                 ? .downloads
-                : .library
+                : arguments.contains("--wilted-listener-pixel-settings") ? .settings : .library
             Group {
 #if DEBUG
                 if mvpFixtureMode {
@@ -133,7 +133,10 @@ struct WiltediOSApp: App {
                 : AnyView(WiltedListenerLibraryView(model: model)),
             iOSDownloads: fixtureMode
                 ? AnyView(WiltedDownloadsShell())
-                : AnyView(WiltedListenerDownloadsView(model: model))
+                : AnyView(WiltedListenerDownloadsView(model: model)),
+            iOSSettings: fixtureMode
+                ? AnyView(WiltedSettingsShell())
+                : AnyView(WiltedListenerSettingsView(model: model))
         )
     }
 }

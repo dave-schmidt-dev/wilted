@@ -84,6 +84,9 @@ final class ListenerAppModelTests: XCTestCase {
         let library = WiltedListenerAppModel.makePixelFixture()
         XCTAssertEqual(library.status, .ready)
         XCTAssertEqual(library.items.count, 1)
+        XCTAssertEqual(library.transcriptsByItem.values.first?.availability, .available)
+        XCTAssertEqual(library.downloadStatistics.fileCount, 1)
+        XCTAssertNotNil(library.syncObservability.lastSuccessfulFetchAt)
 
         let playing = WiltedListenerAppModel.makePixelFixture(state: .nowPlaying)
         XCTAssertEqual(playing.status, .playing)
@@ -92,6 +95,58 @@ final class ListenerAppModelTests: XCTestCase {
         let failure = WiltedListenerAppModel.makePixelFixture(state: .terminalFailure)
         XCTAssertEqual(failure.status, .failed("iCloud account changed; sync is quarantined", retryable: false))
         XCTAssertEqual(failure.items.count, 1)
+    }
+
+    func testCatalogPublishesOnlyTranscriptMatchingTheCurrentRevision() async throws {
+        let url = URL(string: "https://example.test/transcript-listener")!
+        let itemID = try ItemID.derive(from: url)
+        let currentRevisionID = try RevisionID(rawValue: "revision-current")
+        let oldRevisionID = try RevisionID(rawValue: "revision-old")
+        let hash = "sha256:" + String(repeating: "a", count: 64)
+        let asset = try WiltedAsset(assetID: "transcript-audio", contentHash: hash)
+        let article = try Article(itemID: itemID, canonicalURL: url, title: "Transcript article",
+                                  source: "Test", createdAt: Timestamp(Date()))
+        let revision = try AudioRevision(itemID: itemID, revisionID: currentRevisionID,
+                                         durationSeconds: 30, byteCount: 16, contentHash: hash,
+                                         mediaType: "audio/m4a", createdAt: Timestamp(Date()), schemaVersion: 1)
+        let current = try Transcript(itemID: itemID, revisionID: currentRevisionID,
+                                     availability: .available, text: "Current transcript",
+                                     languageCode: "en", updatedAt: Timestamp(Date()))
+        let old = try Transcript(itemID: itemID, revisionID: oldRevisionID,
+                                 availability: .available, text: "Old transcript",
+                                 languageCode: "en", updatedAt: Timestamp(Date()))
+        let codec = WiltedRecordCodec()
+        let repository = StaticSyncRepository(state: SyncRepositoryState(records: [
+            try codec.encode(article: article, currentRevisionID: currentRevisionID),
+            try codec.encode(revision: revision, audioAsset: asset),
+            try codec.encode(transcript: old),
+            try codec.encode(transcript: current),
+        ]))
+        let model = WiltedListenerAppModel(repository: repository)
+
+        await model.refresh()
+
+        XCTAssertEqual(model.transcriptsByItem[itemID], current)
+    }
+
+    func testSettingsFactsLoadPersistedFetchAndCacheStatistics() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WiltedSettingsFacts-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = try ListenerRepository(directoryURL: root)
+        let cache = try ListenerAudioCache(rootURL: root.appendingPathComponent("Audio", isDirectory: true))
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        try await repository.recordSuccessfulFetch(at: date)
+        let bytes = Data("settings-cache".utf8)
+        let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let asset = try WiltedAsset(assetID: "settings-cache", contentHash: "sha256:\(digest)")
+        _ = try await cache.store(data: bytes, asset: asset)
+        let model = WiltedListenerAppModel(repository: repository, cache: cache)
+
+        await model.start()
+
+        XCTAssertEqual(model.syncObservability.lastSuccessfulFetchAt, date)
+        XCTAssertEqual(model.downloadStatistics, ListenerDownloadStatistics(fileCount: 1, byteCount: Int64(bytes.count)))
     }
 
     func testEveryTypedAccountChangeQuarantinesTheListener() async throws {

@@ -1,0 +1,28 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "valid-transcript-publish-decode",
+  "operation": "publishDecode",
+  "expectedValid": true,
+  "records": [
+    {
+      "recordType": "WiltedTranscript",
+      "zoneName": "WiltedZone",
+      "recordName": "transcript:item-transcript:rev-transcript-v1",
+      "fields": {
+        "itemID": {"type": "String", "value": "item-transcript"},
+        "revisionID": {"type": "String", "value": "rev-transcript-v1"},
+        "itemReference": {"type": "Reference", "value": {"recordType": "WiltedItem", "recordName": "item:item-transcript", "zoneName": "WiltedZone", "action": "none"}},
+        "revisionReference": {"type": "Reference", "value": {"recordType": "WiltedRevision", "recordName": "revision:item-transcript:rev-transcript-v1", "zoneName": "WiltedZone", "action": "none"}},
+        "availability": {"type": "String", "value": "available"},
+        "text": {"type": "String", "value": "Fixture transcript text."},
+        "format": {"type": "String", "value": "text/plain"},
+        "languageCode": {"type": "String", "value": "en-US"},
+        "updatedAt": {"type": "Date", "value": "2026-08-23T20:00:00Z"},
+        "schemaVersion": {"type": "Int64", "value": 1}
+      }
+    }
+  ],
+  "sidecars": {
+    "transcript:item-transcript:rev-transcript-v1": {"encodedSystemFieldsBase64": "AQI=", "changeTag": "tag-transcript-1"}
+  }
+}

@@ -22,6 +22,22 @@ private func validEnvelope(_ suffix: String = "alpha", opaque: [String: WiltedFi
 
 private func mapper(stager: CloudKitAssetStaging? = nil) throws -> CloudKitRecordMapper { try CloudKitRecordMapper(stager: stager) }
 
+@Test("transcript records map through CloudKit without contacting a database")
+func transcriptCloudKitMappingRoundTrip() throws {
+    let (item, revisionID) = try article("transcript")
+    let transcript = try Transcript(itemID: item.itemID, revisionID: revisionID,
+                                    availability: .available, text: "CloudKit transcript text.",
+                                    languageCode: "en-US", updatedAt: item.createdAt)
+    let codec = WiltedRecordCodec()
+    let envelope = try codec.encode(transcript: transcript)
+    let mapped = try mapper().encode(envelope)
+    #expect(mapped.recordType == WiltedRecordType.transcript.rawValue)
+    #expect(mapped.recordID.recordName == "transcript:\(item.itemID.rawValue):\(revisionID.rawValue)")
+    let decoded = try mapper().decodeMetadataOnly(mapped)
+    #expect(try codec.decodeTranscript(decoded.envelope) == transcript)
+    #expect(decoded.envelope.sidecar?.encodedSystemFields != nil)
+}
+
 private actor SaveGate {
     private(set) var calls = 0
     var released = false

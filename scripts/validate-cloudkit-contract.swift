@@ -110,8 +110,8 @@ for recordType in recordsObject.keys.sorted() {
                                       optional: try fieldSpecs(raw["optionalFields"], "schema.records.\(recordType).optionalFields"),
                                       references: try (raw["references"] as? [Any] ?? []).map { try string($0, "schema.records.\(recordType).references") })
 }
-let expectedRecordTypes = Set(["WiltedItem", "WiltedRevision", "WiltedPlaybackState"])
-guard Set(records.keys) == expectedRecordTypes else { throw ContractError("invalid-contract", "schema must define exactly the three Wilted record families") }
+let expectedRecordTypes = Set(["WiltedItem", "WiltedRevision", "WiltedTranscript", "WiltedPlaybackState"])
+guard Set(records.keys) == expectedRecordTypes else { throw ContractError("invalid-contract", "schema must define exactly the four Wilted record families") }
 
 func validateDate(_ value: Any?, _ path: String) throws {
     let text = try string(value, path)
@@ -139,6 +139,16 @@ func validateType(_ field: JSONObject, _ spec: FieldSpec, _ path: String) throws
         }
         if spec.logicalType == "httpsURL", !text.hasPrefix("https://") { try fail("invalid-url", "\(path).value must use https") }
         if spec.logicalType == "sha256", !text.hasPrefix("sha256:") { try fail("invalid-hash", "\(path).value must use sha256:<value>") }
+        if spec.logicalType == "boundedTranscriptText", text.utf8.count > 500_000 {
+            try fail("transcript-too-large", "\(path).value exceeds the 500000-byte transcript limit")
+        }
+        if spec.logicalType == "bcp47" {
+            let pattern = try! NSRegularExpression(pattern: #"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$"#)
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            guard text.utf8.count <= 35, pattern.firstMatch(in: text, range: range) != nil else {
+                try fail("invalid-language-code", "\(path).value must be a BCP 47 language tag")
+            }
+        }
         if !spec.enumValues.isEmpty && !spec.enumValues.contains(text) { try fail("invalid-enum", "\(path).value is not allowed") }
     case "Int64":
         let n = try integer(value, "\(path).value")
@@ -174,6 +184,7 @@ func recordName(_ recordType: String, _ fields: JSONObject) throws -> String {
     switch recordType {
     case "WiltedItem": return "item:\(item)"
     case "WiltedRevision": return "revision:\(item):\(try string((fields["revisionID"] as? JSONObject)?["value"], "fields.revisionID.value"))"
+    case "WiltedTranscript": return "transcript:\(item):\(try string((fields["revisionID"] as? JSONObject)?["value"], "fields.revisionID.value"))"
     case "WiltedPlaybackState": return "playback:\(item):\(try string((fields["revisionID"] as? JSONObject)?["value"], "fields.revisionID.value"))"
     default: try fail("unknown-record-type", "\(recordType) is not frozen")
     }
@@ -192,6 +203,16 @@ func validateRecord(_ raw: JSONObject) throws -> (type: String, name: String) {
     for key in names {
         let field = try object(fields[key], "\(recordType).\(key)")
         try validateType(field, spec.required[key] ?? spec.optional[key]!, "\(recordType).\(key)")
+    }
+    if recordType == "WiltedTranscript" {
+        let availability = try string((fields["availability"] as? JSONObject)?["value"], "WiltedTranscript.availability.value")
+        let hasText = fields["text"] != nil
+        if ["available", "stale"].contains(availability), !hasText {
+            try fail("missing-transcript-text", "WiltedTranscript.text is required for available or stale content")
+        }
+        if ["absent", "oversized", "malformed"].contains(availability), hasText {
+            try fail("unexpected-transcript-text", "WiltedTranscript.text must be absent for unavailable content")
+        }
     }
     guard name == (try recordName(recordType, fields)) else { try fail("unstable-record-name", "\(recordType) record name does not follow the stable rule") }
     for referenceName in spec.references {

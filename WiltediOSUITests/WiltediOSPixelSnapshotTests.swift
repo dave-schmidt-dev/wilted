@@ -24,6 +24,14 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
         assertSnapshot(launch(screen: .downloads, dark: false), named: "listener-downloads-light")
     }
 
+    func testListenerSettingsDarkPixelBaseline() {
+        assertSnapshot(launch(screen: .settings, dark: true), named: "listener-settings-dark")
+    }
+
+    func testListenerSettingsLightPixelBaseline() {
+        assertSnapshot(launch(screen: .settings, dark: false), named: "listener-settings-light")
+    }
+
     func testListenerNowPlayingDarkPixelBaseline() {
         assertSnapshot(launch(screen: .nowPlaying, dark: true), named: "listener-now-playing-dark")
     }
@@ -43,6 +51,7 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
     private enum Screen: String {
         case library
         case downloads
+        case settings
         case nowPlaying
         case terminalFailure = "terminal-failure"
 
@@ -50,13 +59,14 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
             switch self {
             case .nowPlaying: "nowPlaying"
             case .terminalFailure: "terminalFailure"
-            case .library, .downloads: "library"
+            case .library, .downloads, .settings: "library"
             }
         }
 
         var readyIdentifier: String {
             switch self {
             case .downloads: "wilted-downloads"
+            case .settings: "wilted-settings"
             case .nowPlaying: "wilted-player"
             case .library, .terminalFailure: "wilted-listener-status"
             }
@@ -70,6 +80,7 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
             "--wilted-listener-pixel-fixture",
             "--wilted-listener-pixel-state=\(screen.fixtureState)"
         ] + (screen == .downloads ? ["--wilted-listener-pixel-downloads"] : [])
+            + (screen == .settings ? ["--wilted-listener-pixel-settings"] : [])
             + ["--wilted-listener-pixel-appearance=\(dark ? "dark" : "light")"]
         app.launch()
         XCTAssertTrue(

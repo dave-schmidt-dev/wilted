@@ -1,0 +1,38 @@
+{
+  "interfaceVersion": 1,
+  "domainType": "WiltedDomain.Transcript",
+  "identity": {
+    "itemID": "existing ItemID",
+    "revisionID": "existing immutable AudioRevision RevisionID",
+    "recordName": "transcript:<itemID>:<revisionID>"
+  },
+  "fields": {
+    "availability": ["absent", "available", "stale", "oversized", "malformed"],
+    "text": {"nullable": true, "maximumUTF8Bytes": 500000},
+    "format": ["text/plain"],
+    "languageCode": {"nullable": true, "format": "BCP 47"},
+    "updatedAt": "UTC timestamp",
+    "schemaVersion": 1
+  },
+  "persistence": {
+    "storeSchema": 4,
+    "migration": "lightweight-v3-to-v4-additive-transcript-entity",
+    "rollback": "v3 stores contain no transcript rows; migration does not rewrite article, revision, playback, or sync state",
+    "readAPI": "LocalLibraryStore.transcript(for:revisionID:)"
+  },
+  "cloudKit": {
+    "recordType": "WiltedTranscript",
+    "zone": "WiltedZone",
+    "references": ["WiltedItem", "WiltedRevision"],
+    "writer": "mac",
+    "iphoneMutation": "forbidden",
+    "livePromotionPerformed": false
+  },
+  "fixtures": [
+    {"availability": "available", "text": "Fixture transcript text.", "format": "text/plain", "languageCode": "en-US"},
+    {"availability": "absent", "text": null, "format": "text/plain", "languageCode": null},
+    {"availability": "stale", "text": "Prior revision transcript.", "format": "text/plain", "languageCode": "en"},
+    {"availability": "oversized", "text": null, "format": "text/plain", "languageCode": null},
+    {"availability": "malformed", "text": null, "format": "text/plain", "languageCode": null}
+  ]
+}

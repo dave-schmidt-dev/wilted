@@ -23,13 +23,13 @@ work until explicit recovery.
 | Library, empty | Refresh; empty-library copy; Send Playback Progress | Refresh and send are disabled while refresh/send is busy | Source inventory; attended current-patch capture pending |
 | Library, refreshing/sending | Status text and Cancel during a busy operation | Refresh/send disabled; Cancel stops the operation | Source inventory; current-patch run pending |
 | Library, retryable failure | Retry; error status | Retry is shown only for retryable failures | Source inventory; current-patch run pending |
-| Library, metadata-only article | Article title/source/state; Download; Play | Play disabled until audio is downloaded | Explicit-download behavior implemented; device evidence pending |
-| Library, downloaded article | Play; Remove Download; Send Playback Progress | Remove preserves metadata while deleting local media; Play uses the local cache | Prior fixture screenshots cover this shape; current-patch device evidence pending |
+| Library, metadata-only article | Article title/source/state; Transcript disclosure; Download button; disabled Play button | Play remains disabled until audio is downloaded; transcript reports unavailable/oversized/malformed truthfully when text cannot be shown | Current light/dark pixel baselines and UI journey; physical-device evidence pending |
+| Library, downloaded article | Transcript disclosure; Play button; Remove Download button; Send Playback Progress button | Remove preserves metadata while deleting local media; Play uses the local cache | Current light/dark pixel baselines and UI journey; physical-device evidence pending |
 | Library, deleted/incompatible/unavailable item | Status label and article state | Playback is unavailable; sync recovery is handled by the account/session boundary | Source-inventoried; Production/device evidence pending |
-| Library, selected playback panel | Rewind, Pause, Restart; position readout | Readout follows the active engine without creating a durable progress event each second | Implementation and unit coverage present; attended audio evidence pending |
+| Library, selected playback panel | Transcript disclosure; Rewind, Play/Pause, Restart buttons; position readout | Readout follows the active engine without creating a durable progress event each second | Current now-playing baselines and UI journey; attended physical audio evidence pending |
 | Downloads, empty | Downloads tab; empty copy | No playable row exists | Prior fixture screenshot; current-patch capture pending |
-| Downloads, populated | Select a downloaded article to play | Only downloaded items appear | Source inventory; physical-device evidence pending |
-| Settings | Read-only Audio / Local speech row | No editable settings or role controls | Source-inventoried; attended review pending |
+| Downloads, populated | Download summary with real file count/bytes; article card; explicit Play button | Only downloaded items appear; size is derived from the local audio cache | Current light/dark pixel baselines and UI journey; physical-device evidence pending |
+| Settings | Connected Mac: Unavailable; Last sync; Downloads count/size; Audio: Local speech | Facts are read-only and persisted/derived; no producer identity is fabricated when CloudKit cannot provide one | Current light/dark pixel baselines, repository/model tests, and UI journey |
 | Terminal sync failure/quarantine | Error/status copy and recovery boundary | Account changes quarantine local work; explicit session recovery is required | Prior fixture screenshot; current Production/account evidence pending |
 
 The iOS tab bar contains Library, Downloads, and Settings. Library is the only
@@ -44,7 +44,7 @@ fourth tab.
 | Library sidebar, empty | Select Library; empty-library copy | No article row is selectable | New producer snapshot files are present; attended current-patch capture pending |
 | Library sidebar, article row | Select an article to open Now Playing | Row status is Ready to play or Preparing | Source inventory; attended signed-build evidence pending |
 | Add an article | HTTPS URL field; Add Article | Article preparation starts only through the producer action | New URL-focus/producer snapshots are present; current-patch gate pending |
-| Sync normal | Refresh; Upload; status/detail | Both actions are disabled when sync is disabled or quarantined | Source inventory; Production CloudKit evidence pending |
+| Sync normal | Refresh; Upload; status/detail; last successful fetch/send facts | Both actions are disabled when sync is disabled or quarantined; successful operations return only after facts are current | Lifecycle/unit evidence; Production CloudKit evidence pending |
 | Sync fetching/sending/staging | Status/detail; Cancel | Cancel appears during fetching, sending, or staging | Source inventory; attended recovery exercise pending |
 | Sync quarantined | Use Current iCloud Account | Refresh and Upload remain disabled until explicit recovery | Source inventory; account-change/device evidence pending |
 | Preparation in progress | Progress, stage detail, Cancel when cancellable | Cancellation stops without replacing the last valid saved audio | Source inventory; current-patch run pending |
@@ -74,16 +74,17 @@ inspection or simulator snapshots:
 
 The walkthrough is complete as a source-backed candidate inventory. On
 2026-08-23, final `make validate` passed its 10 Phase 0 legs and all 8 native
-legs, including CloudSync 44, 32 Mac unit tests, 38 iOS unit tests, 162 Mac pixel
-baselines, and the clean-simulator UI leg 9/9: eight pixel cases plus the
-account-free journey. Focused checks also passed the listener model 24/24 and a
-Release build containing no MVP fixture symbols.
+legs, including WiltedKit 66, CloudSync 45, Listener 20, Producer 73, 35 Mac
+unit/pixel tests, 40 iOS unit tests, 162 Mac pixel baselines, and the
+clean-simulator UI leg 11/11: ten light/dark route baselines plus the account-free
+journey. Focused checks also proved oversized transcript degradation preserves
+ready audio and Mac refresh/upload observability is current on return.
 That journey reached Download, Downloads selection, the playback panel, account
 quarantine, and recovery through the shipping listener views. After fixing the
 playback status observer race and now-playing toggle, it passed 1/1 with
 explicit paused, resumed-playing, and recovery assertions. The
 journey uses deterministic local audio and does not prove CloudKit or physical
-audio behavior. Existing 2026-08-21 device
-captures and prior release receipts remain historical evidence only. Task 7
-remains pending until the physical-device, Production CloudKit, App Store
-Connect, and TestFlight boundaries are independently evidenced and reviewed.
+audio behavior. Existing 2026-08-21 device captures and prior release receipts
+remain historical evidence only. Physical-device, Production CloudKit, App Store
+Connect, and TestFlight boundaries remain pending until independently evidenced
+and reviewed.

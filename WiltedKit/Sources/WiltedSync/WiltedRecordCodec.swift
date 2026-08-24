@@ -144,6 +144,64 @@ public struct WiltedRecordCodec: Sendable {
 
     public func decodeRevision(_ envelope: WiltedRecordEnvelope) throws -> AudioRevision { try decodeRevisionRecord(envelope).value }
 
+    /// Encodes transcript state independently from audio bytes so retrying or fetching
+    /// transcript content never requires restaging the immutable audio asset.
+    public func encode(transcript: Transcript, sidecar: WiltedOpaqueSidecar? = nil,
+                       opaqueFields: [String: WiltedFieldValue] = [:]) throws -> WiltedRecordEnvelope {
+        let itemReference = try WiltedRecordReference(recordID: .item(transcript.itemID))
+        let revisionReference = try WiltedRecordReference(recordID: .revision(transcript.itemID, transcript.revisionID))
+        var fields: [String: WiltedFieldValue] = [
+            "itemID": .string(transcript.itemID.rawValue),
+            "revisionID": .string(transcript.revisionID.rawValue),
+            "itemReference": .reference(itemReference),
+            "revisionReference": .reference(revisionReference),
+            "availability": .string(transcript.availability.rawValue),
+            "format": .string(transcript.format.rawValue),
+            "updatedAt": .date(transcript.updatedAt),
+            "schemaVersion": .int64(Int64(transcript.schemaVersion)),
+        ]
+        if let text = transcript.text { fields["text"] = .string(text) }
+        if let languageCode = transcript.languageCode { fields["languageCode"] = .string(languageCode) }
+        fields.merge(opaqueFields) { existing, _ in existing }
+        return try WiltedRecordEnvelope(id: .transcript(transcript.itemID, transcript.revisionID),
+                                        fields: fields, sidecar: sidecar)
+    }
+
+    public func decodeTranscriptRecord(_ envelope: WiltedRecordEnvelope) throws -> WiltedDecodedRecord<Transcript> {
+        try validate(envelope, expected: .transcript)
+        let item = try itemID(envelope)
+        let revisionID = try RevisionID(rawValue: string(envelope, "revisionID"))
+        guard envelope.id == (try .transcript(item, revisionID)),
+              try reference(envelope, "itemReference").recordID == .item(item),
+              try reference(envelope, "revisionReference").recordID == .revision(item, revisionID),
+              let availability = TranscriptAvailability(rawValue: try string(envelope, "availability")),
+              let format = TranscriptFormat(rawValue: try string(envelope, "format")) else {
+            throw WiltedSyncError.invalidRecordIdentity
+        }
+        let transcript: Transcript
+        do {
+            transcript = try Transcript(
+                itemID: item,
+                revisionID: revisionID,
+                availability: availability,
+                text: try optionalString(envelope, "text"),
+                format: format,
+                languageCode: try optionalString(envelope, "languageCode"),
+                updatedAt: date(envelope, "updatedAt"),
+                schemaVersion: Int(int64(envelope, "schemaVersion"))
+            )
+        } catch {
+            throw WiltedSyncError.invalidValue(field: "transcript")
+        }
+        let known = Set(["itemID", "revisionID", "itemReference", "revisionReference", "availability", "text", "format", "languageCode", "updatedAt", "schemaVersion"])
+        return WiltedDecodedRecord(value: transcript, envelope: envelope,
+                                   opaqueFields: envelope.fields.filter { !known.contains($0.key) })
+    }
+
+    public func decodeTranscript(_ envelope: WiltedRecordEnvelope) throws -> Transcript {
+        try decodeTranscriptRecord(envelope).value
+    }
+
     /// Encodes one immutable chunk record. The bytes are supplied separately by
     /// the CloudKit adapter through the `chunkAsset` descriptor.
     public func encode(revisionChunk itemID: ItemID, revisionID: RevisionID,
@@ -243,6 +301,7 @@ public struct WiltedRecordCodec: Sendable {
         case .item: return ["itemID", "canonicalURL", "title", "source", "createdAt", "isDeleted", "schemaVersion", "currentRevisionID"]
         case .revision: return ["itemID", "revisionID", "itemReference", "durationSeconds", "byteCount", "contentHash", "mediaType", "createdAt", "schemaVersion", "readiness"]
         case .revisionChunk: return ["itemID", "revisionID", "revisionReference", "identity", "index", "byteCount", "sha256", "schemaVersion", "chunkAsset"]
+        case .transcript: return ["itemID", "revisionID", "itemReference", "revisionReference", "availability", "format", "updatedAt", "schemaVersion"]
         case .playbackState: return ["itemID", "revisionID", "itemReference", "revisionReference", "sessionID", "sequence", "positionSeconds", "durationSeconds", "completed", "intent", "deviceID", "updatedAt", "schemaVersion"]
         }
     }

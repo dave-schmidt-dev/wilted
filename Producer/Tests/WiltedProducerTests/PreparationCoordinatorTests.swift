@@ -59,7 +59,7 @@ struct PreparationCoordinatorTests {
                 try Data("candidate".utf8).write(to: destination)
                 return try assemblyResult(itemID: itemID, mediaURL: destination)
             },
-            save: { _ in throw TestPreparationError.saveFailed }
+            save: { _, _ in throw TestPreparationError.saveFailed }
         )
 
         let run = await coordinator.start(url: fixture.articleURL)
@@ -69,6 +69,44 @@ struct PreparationCoordinatorTests {
         #expect(statuses.filter(\.terminal).count == 1)
         #expect(try Data(contentsOf: prior) == Data("prior".utf8))
         #expect(try fixture.candidateFiles().isEmpty)
+    }
+
+    @Test func extractedTextSurvivesSynthesisAndIsPersistedWithTheReadyRevision() async throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        let coordinator = fixture.coordinator(assembly: { _, itemID, destination, _ in
+            try Data("candidate".utf8).write(to: destination)
+            return try assemblyResult(itemID: itemID, mediaURL: destination)
+        })
+
+        let statuses = await collect((await coordinator.start(url: fixture.articleURL)).statuses)
+        #expect(statuses.last?.stage == .completed)
+        let itemID = try ItemID.derive(from: fixture.articleURL)
+        let transcript = try await fixture.store.transcript(for: itemID, revisionID: RevisionID(rawValue: "rev-test"))
+        #expect(transcript?.availability == .available)
+        #expect(transcript?.text == "Fixture article body.")
+    }
+
+    @Test func oversized_transcript_preserves_ready_audio() async throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        let body = String(repeating: "x", count: Transcript.maximumTextUTF8Bytes + 1)
+        let coordinator = fixture.coordinator(body: body, assembly: { _, itemID, destination, _ in
+            try Data("candidate".utf8).write(to: destination)
+            return try assemblyResult(itemID: itemID, mediaURL: destination)
+        })
+
+        let statuses = await collect((await coordinator.start(url: fixture.articleURL)).statuses)
+        let itemID = try ItemID.derive(from: fixture.articleURL)
+        let revisionID = try RevisionID(rawValue: "rev-test")
+        let storedRevision = try await fixture.store.readyRevision(for: itemID, revisionID: revisionID)
+        let transcript = try await fixture.store.transcript(for: itemID, revisionID: revisionID)
+
+        #expect(statuses.last?.stage == .completed)
+        #expect(storedRevision?.revision.readiness == .ready)
+        #expect(storedRevision?.mediaURL.lastPathComponent.hasPrefix("candidate-") == true)
+        #expect(transcript?.availability == .oversized)
+        #expect(transcript?.text == nil)
     }
 
     @Test func olderCompletionCannotRelinquishNewerRunCancellationOwnership() async throws {
@@ -120,6 +158,7 @@ private struct CoordinatorFixture {
     }
 
     func coordinator(
+        body: String = "Fixture article body.",
         assembly: @escaping PreparationCoordinator.AssemblyOperation,
         save: PreparationCoordinator.SaveOperation? = nil
     ) -> PreparationCoordinator {
@@ -129,7 +168,7 @@ private struct CoordinatorFixture {
             extraction: { url in
                 ExtractedArticle(
                     sourceURL: url, canonicalURL: url, title: "Fixture", source: "example.test",
-                    author: nil, body: "Fixture article body."
+                    author: nil, body: body
                 )
             },
             synthesis: { _ in SpeechSynthesisResult(requestID: "fixture", samples: [0, 0.1, -0.1], sampleRate: 24_000) },

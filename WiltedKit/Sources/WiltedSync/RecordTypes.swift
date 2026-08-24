@@ -1,12 +1,13 @@
 import Foundation
 import WiltedDomain
 
-/// The three record types in Wilted's CloudKit-neutral transfer contract.
+/// The record types in Wilted's CloudKit-neutral transfer contract.
 public enum WiltedRecordType: String, Codable, CaseIterable, Sendable {
     case item = "WiltedItem"
     case revision = "WiltedRevision"
     /// One immutable byte chunk belonging to a revision.
     case revisionChunk = "WiltedRevisionChunk"
+    case transcript = "WiltedTranscript"
     case playbackState = "WiltedPlaybackState"
 }
 
@@ -25,8 +26,13 @@ public struct WiltedRecordID: Codable, Hashable, Sendable, CustomStringConvertib
         switch recordType {
         case .item:
             guard components.count == 2, components[0] == "item", (try? ItemID(rawValue: String(components[1]))) != nil else { throw WiltedSyncError.invalidRecordIdentity }
-        case .revision, .playbackState:
-            let prefix = recordType == .revision ? "revision" : "playback"
+        case .revision, .transcript, .playbackState:
+            let prefix: String
+            switch recordType {
+            case .revision: prefix = "revision"
+            case .transcript: prefix = "transcript"
+            default: prefix = "playback"
+            }
             guard components.count == 3, components[0] == prefix,
                   (try? ItemID(rawValue: String(components[1]))) != nil,
                   (try? RevisionID(rawValue: String(components[2]))) != nil else { throw WiltedSyncError.invalidRecordIdentity }
@@ -57,6 +63,10 @@ public struct WiltedRecordID: Codable, Hashable, Sendable, CustomStringConvertib
 
     public static func playback(_ itemID: ItemID, _ revisionID: RevisionID) throws -> Self {
         try Self(recordType: .playbackState, recordName: "playback:\(itemID.rawValue):\(revisionID.rawValue)")
+    }
+
+    public static func transcript(_ itemID: ItemID, _ revisionID: RevisionID) throws -> Self {
+        try Self(recordType: .transcript, recordName: "transcript:\(itemID.rawValue):\(revisionID.rawValue)")
     }
 
     public var description: String { "\(recordType.rawValue)/\(zoneName)/\(recordName)" }

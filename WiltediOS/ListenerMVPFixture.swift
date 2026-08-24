@@ -49,6 +49,14 @@ struct ListenerMVPFixture: View {
                 createdAt: Timestamp(Date(timeIntervalSince1970: 0)),
                 schemaVersion: 1
             )
+            let transcript = try Transcript(
+                itemID: itemID,
+                revisionID: revisionID,
+                availability: .available,
+                text: "This local fixture transcript is available without contacting iCloud.",
+                languageCode: "en",
+                updatedAt: Timestamp(Date(timeIntervalSince1970: 0))
+            )
             model.installMVPFixture(
                 item: ListenerLibraryItem(
                     itemID: itemID,
@@ -60,7 +68,8 @@ struct ListenerMVPFixture: View {
                     state: .metadataOnly
                 ),
                 revision: revision,
-                asset: asset
+                asset: asset,
+                transcript: transcript
             )
             return model
         } catch {
@@ -78,6 +87,9 @@ struct ListenerMVPFixture: View {
 
             WiltedListenerDownloadsView(model: model)
                 .tabItem { Label(WiltedScreenCopy.downloads, systemImage: "arrow.down.circle") }
+
+            WiltedListenerSettingsView(model: model)
+                .tabItem { Label(WiltedScreenCopy.settings, systemImage: "gearshape") }
         }
     }
 

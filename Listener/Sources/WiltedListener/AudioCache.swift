@@ -3,6 +3,16 @@ import Foundation
 import WiltedDomain
 import WiltedSync
 
+public struct ListenerDownloadStatistics: Codable, Equatable, Sendable {
+    public let fileCount: Int
+    public let byteCount: Int64
+
+    public init(fileCount: Int = 0, byteCount: Int64 = 0) {
+        self.fileCount = fileCount
+        self.byteCount = byteCount
+    }
+}
+
 /// A content-addressed audio cache. Invalid bytes never replace a valid entry.
 public actor ListenerAudioCache {
     public nonisolated let statuses: AsyncStream<SyncStatus>
@@ -40,6 +50,23 @@ public actor ListenerAudioCache {
     }
 
     public func remove(_ asset: WiltedAsset) throws { try? FileManager.default.removeItem(at: destination(for: asset)) }
+
+    /// Derives truthful local download facts from the content-addressed cache.
+    /// Temporary or hidden files are excluded so an interrupted write cannot inflate the count.
+    public func statistics() throws -> ListenerDownloadStatistics {
+        let files = try FileManager.default.contentsOfDirectory(
+            at: rootURL, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey], options: [.skipsHiddenFiles]
+        )
+        var count = 0
+        var bytes: Int64 = 0
+        for file in files {
+            let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true else { continue }
+            count += 1
+            bytes += Int64(values.fileSize ?? 0)
+        }
+        return ListenerDownloadStatistics(fileCount: count, byteCount: bytes)
+    }
 
     private func storeValidated(bytes: Data, asset: WiltedAsset) throws -> URL {
         let destination = destination(for: asset)

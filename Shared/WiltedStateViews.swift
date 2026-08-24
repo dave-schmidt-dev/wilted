@@ -109,12 +109,6 @@ public struct WiltedLibraryShell: View {
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.section) {
-                HStack(spacing: WiltedTheme.Spacing.small) {
-                    WiltedMark(size: 32, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-                    Text(WiltedScreenCopy.library)
-                        .font(WiltedTheme.font(.display))
-                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                }
                 if fixture.state == .emptyLibrary {
                     Text(WiltedScreenCopy.noArticles)
                         .font(WiltedTheme.font(.body))

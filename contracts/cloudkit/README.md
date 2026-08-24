@@ -1,7 +1,7 @@
 # CloudKit contract freeze
 
 `schema.json` is the credential-free, machine-readable Phase 0 contract for
-Wilted's private CloudKit database. It freezes one custom zone, three record
+Wilted's private CloudKit database. It freezes one custom zone, four record
 families, field types, record-name construction, references, query indexes,
 ownership, schema compatibility, and failure behavior. No custom query indexes
 are frozen yet: Phase 0 has no implemented adapter queries, and record-name
@@ -23,7 +23,7 @@ later owner configuration change; there is no automatic eviction, and local
 `Remove Download` does not free remote asset budget. `CKError.quotaExceeded`
 remains a separate actionable failure below this policy.
 
-Fixtures under `fixtures/` include one valid publish/decode case and invalid
+Fixtures under `fixtures/` include valid core and transcript publish/decode cases and invalid
 missing-field, wrong-type, unsupported-schema, out-of-zone-reference, and
 non-allowlisted-query cases. Run the dependency-free validator with:
 

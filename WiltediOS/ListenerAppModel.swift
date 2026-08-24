@@ -140,6 +140,9 @@ public final class WiltedListenerAppModel: ObservableObject {
     @Published public private(set) var status: ListenerAppStatus = .idle
     @Published public private(set) var selectedItemID: ItemID?
     @Published public private(set) var selectedPlayback: PlaybackState?
+    @Published public private(set) var transcriptsByItem: [ItemID: Transcript] = [:]
+    @Published public private(set) var downloadStatistics = ListenerDownloadStatistics()
+    @Published public private(set) var syncObservability = ListenerSyncObservability()
 
     private let repository: (any SyncRepository)?
     private var transport: (any SyncTransport)?
@@ -237,23 +240,35 @@ public final class WiltedListenerAppModel: ObservableObject {
         guard let itemID = try? ItemID.derive(from: URL(string: "https://example.test/wilted-listener")!) else {
             return model
         }
+        guard let revisionID = try? RevisionID(rawValue: "revision-pixel-fixture") else { return model }
         model.items = [
             ListenerLibraryItem(
                 itemID: itemID,
                 title: "A fixture article for listening",
                 source: "Wilted Test Journal",
-                revisionID: nil,
+                revisionID: revisionID,
                 durationSeconds: 120,
                 asset: nil,
                 state: .downloaded
             )
         ]
+        model.transcriptsByItem[itemID] = try? Transcript(
+            itemID: itemID,
+            revisionID: revisionID,
+            availability: .available,
+            text: "This fixture transcript proves saved article text remains available while listening.",
+            languageCode: "en",
+            updatedAt: Timestamp(Date(timeIntervalSince1970: 1_787_515_200))
+        )
+        model.downloadStatistics = ListenerDownloadStatistics(fileCount: 1, byteCount: 1_245_184)
+        model.syncObservability = ListenerSyncObservability(
+            lastSuccessfulFetchAt: Date(timeIntervalSince1970: 1_787_515_200)
+        )
         switch state {
         case .library:
             model.status = .ready
         case .nowPlaying:
-            guard let revisionID = try? RevisionID(rawValue: "revision-pixel-fixture"),
-                  let playback = try? PlaybackState(
+            guard let playback = try? PlaybackState(
                       itemID: itemID,
                       revisionID: revisionID,
                       sessionID: "pixel-fixture",
@@ -281,6 +296,7 @@ public final class WiltedListenerAppModel: ObservableObject {
     public func start() async {
         guard !didStart else { return }
         didStart = true
+        await refreshPresentationFacts()
         await refresh()
     }
 
@@ -323,6 +339,10 @@ public final class WiltedListenerAppModel: ObservableObject {
                 guard isCurrent(operation) else { return }
                 try await repository.commit(staged)
                 guard isCurrent(operation) else { return }
+                if let listenerRepository = repository as? ListenerRepository {
+                    try? await listenerRepository.recordSuccessfulFetch()
+                }
+                await refreshSyncObservability()
                 let state = await repository.state()
                 guard isCurrent(operation) else { return }
                 let previousAssets = assetByItem
@@ -340,6 +360,10 @@ public final class WiltedListenerAppModel: ObservableObject {
                 return
             } catch {
                 guard isCurrent(operation) else { return }
+                if let listenerRepository = repository as? ListenerRepository {
+                    try? await listenerRepository.recordFetchFailure(error.localizedDescription)
+                }
+                await refreshSyncObservability()
                 await loadLocal(repository: repository, fallback: error.localizedDescription)
                 guard isCurrent(operation) else { return }
                 if case .offline = status {
@@ -430,6 +454,7 @@ public final class WiltedListenerAppModel: ObservableObject {
             }
             guard isCurrent(operation) else { return }
             updateItemState(itemID: itemID, state: .downloaded)
+            await refreshDownloadStatistics()
             status = .ready
         } catch {
             guard isCurrent(operation) else { return }
@@ -444,6 +469,7 @@ public final class WiltedListenerAppModel: ObservableObject {
         defer { operationInFlight = false }
         if selectedItemID == itemID { await pause() }
         try? await cache.remove(asset)
+        await refreshDownloadStatistics()
         let item = items[index]
         items[index] = ListenerLibraryItem(itemID: item.itemID, title: item.title, source: item.source,
                                            revisionID: item.revisionID, durationSeconds: item.durationSeconds,
@@ -594,12 +620,15 @@ public final class WiltedListenerAppModel: ObservableObject {
     /// Installs deterministic catalog state for the account-free UI fixture.
     /// This is internal to the app target so the production composition cannot
     /// accidentally use fixture data.
-    func installMVPFixture(item: ListenerLibraryItem, revision: AudioRevision, asset: WiltedAsset) {
+    func installMVPFixture(item: ListenerLibraryItem, revision: AudioRevision, asset: WiltedAsset,
+                           transcript: Transcript? = nil) {
         items = [item]
         revisionByItem = [item.itemID: revision]
         assetByItem = [item.itemID: asset]
         manifestByItem = [:]
         playbackByItem = [:]
+        transcriptsByItem = transcript.map { [item.itemID: $0] } ?? [:]
+        downloadStatistics = ListenerDownloadStatistics()
         status = .ready
     }
 
@@ -660,6 +689,7 @@ public final class WiltedListenerAppModel: ObservableObject {
                                                asset: item.asset, state: downloaded ? .downloaded : .metadataOnly))
         }
         items = updated
+        await refreshDownloadStatistics()
     }
 
     private func rebuild(from state: SyncRepositoryState) {
@@ -672,6 +702,7 @@ public final class WiltedListenerAppModel: ObservableObject {
         assetByItem = [:]
         manifestByItem = [:]
         playbackByItem = [:]
+        var transcriptRecords: [WiltedRecordID: Transcript] = [:]
         for envelope in state.records {
             switch envelope.id.recordType {
             case .item:
@@ -706,6 +737,9 @@ public final class WiltedListenerAppModel: ObservableObject {
                 // Chunk records are fetched only after a user selects their revision;
                 // they are transport rows, never standalone library entries.
                 continue
+            case .transcript:
+                do { transcriptRecords[envelope.id] = try codec.decodeTranscript(envelope) }
+                catch { decodeHadErrors = true }
             case .playbackState:
                 do { let decoded = try codec.decodePlayback(envelope); playbackByItem[decoded.itemID] = decoded }
                 catch { decodeHadErrors = true }
@@ -728,7 +762,34 @@ public final class WiltedListenerAppModel: ObservableObject {
                                 asset: nil, state: .deleted)
         })
         items = rebuilt.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        transcriptsByItem = Dictionary(uniqueKeysWithValues: rebuilt.compactMap { item in
+            guard let revisionID = item.revisionID,
+                  let recordID = try? WiltedRecordID.transcript(item.itemID, revisionID),
+                  let transcript = transcriptRecords[recordID] else { return nil }
+            return (item.itemID, transcript)
+        })
         selectedPlayback = selectedItemID.flatMap { playbackByItem[$0] }
+    }
+
+    private func refreshPresentationFacts() async {
+        await refreshDownloadStatistics()
+        await refreshSyncObservability()
+    }
+
+    private func refreshDownloadStatistics() async {
+        guard let cache else {
+            downloadStatistics = ListenerDownloadStatistics()
+            return
+        }
+        downloadStatistics = (try? await cache.statistics()) ?? ListenerDownloadStatistics()
+    }
+
+    private func refreshSyncObservability() async {
+        guard let listenerRepository = repository as? ListenerRepository else {
+            syncObservability = ListenerSyncObservability()
+            return
+        }
+        syncObservability = await listenerRepository.loadObservability() ?? ListenerSyncObservability()
     }
 
     /// Builds the playback state for an item that has never been played.

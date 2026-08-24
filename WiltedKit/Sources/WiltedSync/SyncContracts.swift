@@ -16,7 +16,7 @@ public struct SyncOwnershipPolicy: Sendable {
         case .mac:
             switch operation {
             case .create: return true
-            case .update: return recordType == .item || recordType == .playbackState
+            case .update: return recordType == .item || recordType == .transcript || recordType == .playbackState
             case .delete: return true
             }
         case .iphone:

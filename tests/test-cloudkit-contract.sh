@@ -28,11 +28,43 @@ for expected in \
   "PASS 06-invalid-query.json" \
   "PASS 07-valid-publication-budget.json" \
   "PASS 08-invalid-revision-budget.json" \
-  "PASS 09-invalid-aggregate-budget.json"; do
+  "PASS 09-invalid-aggregate-budget.json" \
+  "PASS 10-valid-transcript.json"; do
   if ! printf '%s\n' "$output" | grep -Fqx "$expected"; then
     echo "error: missing fixture result: $expected" >&2
     exit 1
   fi
 done
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+transcript_fixture="$fixture_dir/10-valid-transcript.json"
+
+expect_transcript_rejection() {
+  local name="$1"
+  if ! swift "$validator" "$tmp_dir/$name" >"$tmp_dir/$name.out" 2>&1; then
+    echo "error: invalid transcript fixture was not rejected cleanly: $name" >&2
+    cat "$tmp_dir/$name.out" >&2
+    exit 1
+  fi
+  if ! grep -Fq "PASS case.json" "$tmp_dir/$name.out"; then
+    echo "error: invalid transcript fixture did not report a passing rejection: $name" >&2
+    cat "$tmp_dir/$name.out" >&2
+    exit 1
+  fi
+}
+
+mkdir "$tmp_dir/unstable-name" "$tmp_dir/invalid-language" "$tmp_dir/missing-text"
+sed -e 's/"expectedValid": true/"expectedValid": false, "expectedError": "unstable-record-name"/' \
+  -e 's/transcript:item-transcript:rev-transcript-v1/transcript:wrong:identity/g' \
+  "$transcript_fixture" >"$tmp_dir/unstable-name/case.json"
+sed -e 's/"expectedValid": true/"expectedValid": false, "expectedError": "invalid-language-code"/' \
+  -e 's/"en-US"/"en_US"/' "$transcript_fixture" >"$tmp_dir/invalid-language/case.json"
+sed -e 's/"expectedValid": true/"expectedValid": false, "expectedError": "missing-transcript-text"/' \
+  -e '/"text":/d' "$transcript_fixture" >"$tmp_dir/missing-text/case.json"
+
+expect_transcript_rejection unstable-name
+expect_transcript_rejection invalid-language
+expect_transcript_rejection missing-text
 
 echo "CloudKit contract gate passed"

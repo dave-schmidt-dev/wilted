@@ -233,6 +233,14 @@ private struct WiltedMacSyncControls: View {
                 .font(WiltedTheme.font(.caption))
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .accessibilityIdentifier("wilted-sync-detail")
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                Text("Producer identity: \(model.syncObservability.producerIdentity.label)")
+                Text("Last fetch: \(model.syncObservability.lastSuccessfulFetchAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Not yet")")
+                Text("Last send: \(model.syncObservability.lastSuccessfulSendAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Not yet")")
+            }
+            .font(WiltedTheme.font(.utility))
+            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            .accessibilityIdentifier("wilted-sync-observability")
             HStack(spacing: WiltedTheme.Spacing.small) {
                 Button("Refresh") { model.refreshSync() }
                     .disabled(model.syncStatus.phase == .disabled || model.syncStatus.phase == .quarantined)

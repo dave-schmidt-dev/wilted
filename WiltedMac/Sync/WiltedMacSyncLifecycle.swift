@@ -51,6 +51,28 @@ struct WiltedMacSyncStatus: Equatable, Sendable {
     static let disabled = Self(phase: .disabled, detail: "Sync is not configured.", generationID: nil)
 }
 
+struct WiltedMacProducerIdentity: Equatable, Sendable {
+    enum State: Equatable, Sendable { case unavailable }
+    let state: State
+    var label: String {
+        switch state { case .unavailable: "Unavailable" }
+    }
+
+    static let unavailable = Self(state: .unavailable)
+}
+
+struct WiltedMacObservability: Equatable, Sendable {
+    let producerIdentity: WiltedMacProducerIdentity
+    let lastSuccessfulFetchAt: Date?
+    let lastSuccessfulSendAt: Date?
+
+    static let unavailable = Self(
+        producerIdentity: .unavailable,
+        lastSuccessfulFetchAt: nil,
+        lastSuccessfulSendAt: nil
+    )
+}
+
 enum WiltedMacSyncLifecycleError: Error, Equatable, Sendable {
     case unavailable
     case operationInProgress
@@ -84,6 +106,7 @@ final class WiltedMacSyncLifecycle {
     private var automaticUploadRequested = false
 
     private(set) var status: WiltedMacSyncStatus
+    private(set) var observability = WiltedMacObservability.unavailable
 
     init(store: LocalLibraryStore,
          transportFactory: WiltedMacSyncTransportFactory? = nil,
@@ -92,6 +115,9 @@ final class WiltedMacSyncLifecycle {
         self.transportFactory = transportFactory
         self.assetResolver = assetResolver
         status = transportFactory == nil ? .disabled : Self.idleStatus
+        Task { [weak self] in
+            await self?.refreshObservability()
+        }
     }
 
     var isBusy: Bool { running }
@@ -166,6 +192,7 @@ final class WiltedMacSyncLifecycle {
             switch result {
             case let .success(batch):
                 setStatus(.init(phase: .completed, detail: "Sync completed.", generationID: batch.generationID))
+                await refreshObservability()
                 return .success(())
             case let .failure(error):
                 setStatus(.init(phase: .failed, detail: String(describing: error), generationID: nil))
@@ -205,6 +232,7 @@ final class WiltedMacSyncLifecycle {
                 setStatus(.init(phase: .completed,
                                 detail: SyncCoordinator.acknowledgedMessage(sent: sent.acknowledgedRecordIDs.count, held: held),
                                 generationID: nil))
+                await refreshObservability()
                 return .success(())
             case let .failure(error):
                 setStatus(.init(phase: .failed, detail: Self.detail(for: error), generationID: nil))
@@ -478,6 +506,15 @@ final class WiltedMacSyncLifecycle {
     }
 
     private func setStatus(_ value: WiltedMacSyncStatus) { status = value }
+
+    private func refreshObservability() async {
+        let state = try? await store.syncState(for: "private-zone")
+        observability = WiltedMacObservability(
+            producerIdentity: .unavailable,
+            lastSuccessfulFetchAt: state?.lastFetchAt?.date,
+            lastSuccessfulSendAt: state?.lastSendAt?.date
+        )
+    }
 
     private func apply(_ event: SyncStatus) {
         if cancelRequested { return }

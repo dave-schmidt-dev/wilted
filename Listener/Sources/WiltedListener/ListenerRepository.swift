@@ -2,18 +2,32 @@ import Foundation
 import WiltedDomain
 import WiltedSync
 
+/// Persisted facts about the listener's sync boundary. This intentionally contains no
+/// producer identity: an iCloud account owner token is not a device identity.
+public struct ListenerSyncObservability: Codable, Equatable, Sendable {
+    public let lastSuccessfulFetchAt: Date?
+    public let lastFetchFailure: String?
+
+    public init(lastSuccessfulFetchAt: Date? = nil, lastFetchFailure: String? = nil) {
+        self.lastSuccessfulFetchAt = lastSuccessfulFetchAt
+        self.lastFetchFailure = lastFetchFailure
+    }
+}
+
 /// A durable, actor-isolated iPhone repository. The file is replaced atomically after every mutation.
 public actor ListenerRepository: SyncRepository {
     public nonisolated let statuses: AsyncStream<SyncStatus>
     private let statusContinuation: AsyncStream<SyncStatus>.Continuation
     private let stateURL: URL
     private let metadataURL: URL
+    private let observabilityURL: URL
     private var current: SyncRepositoryState
     private var generation = 0
 
     public init(directoryURL: URL) throws {
         self.stateURL = directoryURL.appendingPathComponent("listener-state.json")
         self.metadataURL = directoryURL.appendingPathComponent("listener-metadata.json")
+        self.observabilityURL = directoryURL.appendingPathComponent("listener-observability.json")
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         let (stream, continuation) = AsyncStream<SyncStatus>.makeStream()
         self.statuses = stream
@@ -38,6 +52,7 @@ public actor ListenerRepository: SyncRepository {
             switch record.id.recordType {
             case .item: _ = try codec.decodeArticleRecord(record)
             case .revision: _ = try codec.decodeRevisionRecord(record)
+            case .transcript: _ = try codec.decodeTranscriptRecord(record)
             // Audio chunks are transport-only assets. They are fetched by the
             // download path and must never enter the listener catalog state.
             case .revisionChunk: break
@@ -256,6 +271,30 @@ public actor ListenerRepository: SyncRepository {
             emit(.init(phase: .failed, message: "Optional listener metadata was ignored"))
             return nil
         }
+    }
+
+    /// Records a successful remote fetch and clears the previous fetch failure.
+    public func recordSuccessfulFetch(at date: Date = Date()) throws {
+        try saveObservability(ListenerSyncObservability(lastSuccessfulFetchAt: date))
+    }
+
+    /// Records a bounded, user-safe description of a failed fetch without inventing freshness.
+    public func recordFetchFailure(_ message: String) throws {
+        let prior = loadObservability()
+        try saveObservability(ListenerSyncObservability(
+            lastSuccessfulFetchAt: prior?.lastSuccessfulFetchAt,
+            lastFetchFailure: message
+        ))
+    }
+
+    public func saveObservability(_ value: ListenerSyncObservability?) throws {
+        if let value { try atomicWrite(JSONEncoder().encode(value), to: observabilityURL) }
+        else { try? FileManager.default.removeItem(at: observabilityURL) }
+    }
+
+    public func loadObservability() -> ListenerSyncObservability? {
+        guard let data = try? Data(contentsOf: observabilityURL) else { return nil }
+        return try? JSONDecoder().decode(ListenerSyncObservability.self, from: data)
     }
 
     private func snapshot(records: [WiltedRecordID: WiltedRecordEnvelope]? = nil,

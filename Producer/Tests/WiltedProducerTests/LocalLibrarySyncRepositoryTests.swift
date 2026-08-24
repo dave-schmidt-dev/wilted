@@ -64,6 +64,57 @@ final class LocalLibrarySyncRepositoryTests: XCTestCase {
         XCTAssertTrue(state.records.isEmpty)
     }
 
+    func testTranscriptFetchPersistsAndItemDeletionCascadesIt() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("transcript-fetch")
+        let revisionID = try RevisionID(rawValue: "rev-transcript-fetch")
+        let transcript = try Transcript(itemID: item.itemID, revisionID: revisionID,
+                                        availability: .available, text: "Remote transcript text.",
+                                        updatedAt: item.createdAt)
+        let codec = WiltedRecordCodec()
+        let itemRecord = try codec.encode(article: item, currentRevisionID: revisionID)
+        let transcriptRecord = try codec.encode(transcript: transcript)
+        let store = try LocalLibraryStore(url: url)
+        let repository = try await LocalLibrarySyncRepository(store: store)
+
+        let fetched = try SyncFetchBatch(generationID: "transcript-fetch", records: [itemRecord, transcriptRecord],
+                                         engineState: Data([1]))
+        try await repository.commit(try await repository.stage(fetched))
+        let fetchedTranscript = try await store.transcript(for: item.itemID, revisionID: revisionID)
+        XCTAssertEqual(fetchedTranscript, transcript)
+
+        let deleted = try SyncFetchBatch(generationID: "transcript-delete", records: [], engineState: Data([2]),
+                                         deletedRecordIDs: [itemRecord.id])
+        try await repository.commit(try await repository.stage(deleted))
+        let deletedTranscript = try await store.transcript(for: item.itemID, revisionID: revisionID)
+        XCTAssertNil(deletedTranscript)
+    }
+
+    func testPendingTranscriptSurvivesAccountChangeQuarantineAndRelaunch() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("transcript-account")
+        let transcript = try Transcript(itemID: item.itemID, revisionID: RevisionID(rawValue: "rev-transcript-account"),
+                                        availability: .available, text: "Local transcript text.", updatedAt: item.createdAt)
+        let envelope = try WiltedRecordCodec().encode(transcript: transcript)
+        let store = try LocalLibraryStore(url: url)
+        let repository = try await LocalLibrarySyncRepository(store: store)
+        try await repository.enqueue(try SyncPendingChange(operation: .create, recordID: envelope.id, record: envelope))
+        try await repository.quarantineAfterAccountChange()
+
+        let state = await repository.state()
+        XCTAssertEqual(state.pendingChanges.map(\.recordID), [envelope.id])
+        XCTAssertTrue(state.conflictedRecordIDs.contains(envelope.id))
+        let quarantinedTranscript = try await store.transcript(for: transcript.itemID, revisionID: transcript.revisionID)
+        XCTAssertEqual(quarantinedTranscript, transcript)
+
+        let reopenedStore = try LocalLibraryStore(url: url)
+        let reopened = try await LocalLibrarySyncRepository(store: reopenedStore)
+        let reopenedState = await reopened.state()
+        let reopenedTranscript = try await reopenedStore.transcript(for: transcript.itemID, revisionID: transcript.revisionID)
+        XCTAssertTrue(reopenedState.conflictedRecordIDs.contains(envelope.id))
+        XCTAssertEqual(reopenedTranscript, transcript)
+    }
+
     func testReadyRevisionEnqueuesWithTheDefaultResolverByFallingBackToTheStore() async throws {
         // The shipping Mac app builds this repository without an asset resolver, so the
         // default nil-returning one has to resolve durable media through the store. Before

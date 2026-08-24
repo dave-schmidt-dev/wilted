@@ -66,6 +66,10 @@ final class LocalLibraryStoreTests: XCTestCase {
         let migratedSidecar = try await migrated.playbackSidecar(for: item.itemID, revisionID: rev.revisionID)
         XCTAssertEqual(migratedStatus, .localOnly)
         XCTAssertNil(migratedSidecar?.changeTag)
+        let migratedTranscript = try await migrated.transcript(for: item.itemID, revisionID: rev.revisionID)
+        let migratedInspection = try await migrated.inspect()
+        XCTAssertNil(migratedTranscript)
+        XCTAssertEqual(migratedInspection.schemaVersion, .v4)
     }
 
     func testPriorRevisionIsPreservedAndImmutableWhenNewRevisionIsSaved() async throws {
@@ -82,6 +86,43 @@ final class LocalLibraryStoreTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? LocalLibraryStoreError, .immutableRevision(old.revisionID))
         }
+    }
+
+    func testTranscriptPersistsWithRevisionAndSurvivesRelaunch() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article()
+        let rev = try revision(for: item, id: "rev-transcript")
+        let transcript = try Transcript(itemID: item.itemID, revisionID: rev.revisionID,
+                                        availability: .available, text: "Persisted article text.",
+                                        languageCode: "en", updatedAt: rev.createdAt)
+        do {
+            let store = try LocalLibraryStore(url: url)
+            try await store.saveReadyRevision(rev, mediaURL: URL(fileURLWithPath: "/tmp/transcript.m4a"),
+                                              transcript: transcript)
+            let inspection = try await store.inspect()
+            XCTAssertEqual(inspection.transcriptCount, 1)
+        }
+        let reopened = try LocalLibraryStore(url: url)
+        let reopenedTranscript = try await reopened.transcript(for: item.itemID, revisionID: rev.revisionID)
+        XCTAssertEqual(reopenedTranscript, transcript)
+    }
+
+    func testTranscriptAndRevisionIdentityMustMatchBeforeAtomicSave() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article()
+        let rev = try revision(for: item, id: "rev-a")
+        let transcript = try Transcript(itemID: item.itemID, revisionID: RevisionID(rawValue: "rev-b"),
+                                        availability: .available, text: "Text", updatedAt: rev.createdAt)
+        let store = try LocalLibraryStore(url: url)
+        do {
+            try await store.saveReadyRevision(rev, mediaURL: URL(fileURLWithPath: "/tmp/rev-a.m4a"),
+                                              transcript: transcript)
+            XCTFail("Expected identity mismatch")
+        } catch {
+            XCTAssertEqual(error as? LocalLibraryStoreError, .revisionBelongsToDifferentItem)
+        }
+        let savedRevision = try await store.readyRevision(for: item.itemID)
+        XCTAssertNil(savedRevision)
     }
 
     func testPlaybackRequiresMatchingStableItemAndRevision() async throws {

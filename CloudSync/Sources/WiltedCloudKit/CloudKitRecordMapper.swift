@@ -375,6 +375,7 @@ public final class CloudKitRecordMapper: @unchecked Sendable {
         case .item: _ = try codec.decodeArticleRecord(envelope)
         case .revision: _ = try codec.decodeRevisionRecord(envelope)
         case .revisionChunk: _ = try codec.decodeRevisionChunkRecord(envelope)
+        case .transcript: _ = try codec.decodeTranscriptRecord(envelope)
         case .playbackState: _ = try codec.decodePlaybackRecord(envelope)
         }
     }
@@ -398,6 +399,7 @@ public final class CloudKitRecordMapper: @unchecked Sendable {
     private func typeFromRecordName(_ name: String) throws -> WiltedRecordType {
         if name.hasPrefix("item:") { return .item }
         if name.hasPrefix("revision:") { return .revision }
+        if name.hasPrefix("transcript:") { return .transcript }
         if name.hasPrefix("playback:") { return .playbackState }
         throw CloudKitSyncError.invalidRecordIdentity
     }

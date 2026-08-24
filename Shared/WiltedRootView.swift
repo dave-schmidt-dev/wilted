@@ -60,17 +60,20 @@ public struct WiltedRootView: View {
     private let fixture: WiltedPreviewFixture
     private let iOSLibrary: AnyView?
     private let iOSDownloads: AnyView?
+    private let iOSSettings: AnyView?
 
     public init(
         initialSelection: WiltedNavigation = .library,
         fixture: WiltedPreviewFixture = WiltedPreviewFixture(state: .emptyLibrary),
         iOSLibrary: AnyView? = nil,
-        iOSDownloads: AnyView? = nil
+        iOSDownloads: AnyView? = nil,
+        iOSSettings: AnyView? = nil
     ) {
         _selection = State(initialValue: initialSelection)
         self.fixture = fixture
         self.iOSLibrary = iOSLibrary
         self.iOSDownloads = iOSDownloads
+        self.iOSSettings = iOSSettings
     }
 
     public var body: some View {
@@ -145,7 +148,11 @@ public struct WiltedRootView: View {
             WiltedDownloadsShell()
             #endif
         case .settings:
+            #if os(iOS)
+            if let iOSSettings { iOSSettings } else { WiltedSettingsShell() }
+            #else
             WiltedSettingsShell()
+            #endif
         }
     }
 }

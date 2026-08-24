@@ -362,6 +362,7 @@ public actor CloudKitSyncTransport: SyncTransport {
         case .item: _ = try WiltedRecordCodec().decodeArticleRecord(envelope)
         case .revision: _ = try WiltedRecordCodec().decodeRevisionRecord(envelope)
         case .revisionChunk: _ = try WiltedRecordCodec().decodeRevisionChunkRecord(envelope)
+        case .transcript: _ = try WiltedRecordCodec().decodeTranscriptRecord(envelope)
         case .playbackState: _ = try WiltedRecordCodec().decodePlaybackRecord(envelope)
         }
     }

@@ -12,6 +12,7 @@
     "identityComparison": "byte-exact",
     "WiltedItem": "item:<itemID>",
     "WiltedRevision": "revision:<itemID>:<revisionID>",
+    "WiltedTranscript": "transcript:<itemID>:<revisionID>",
     "WiltedPlaybackState": "playback:<itemID>:<revisionID>"
   },
   "records": {
@@ -52,6 +53,23 @@
       },
       "references": ["itemReference"]
     },
+    "WiltedTranscript": {
+      "requiredFields": {
+        "itemID": {"cloudKitType": "String", "logicalType": "identifier"},
+        "revisionID": {"cloudKitType": "String", "logicalType": "identifier"},
+        "itemReference": {"cloudKitType": "Reference", "referenceTarget": "WiltedItem", "referenceAction": "none"},
+        "revisionReference": {"cloudKitType": "Reference", "referenceTarget": "WiltedRevision", "referenceAction": "none"},
+        "availability": {"cloudKitType": "String", "enum": ["absent", "available", "stale", "oversized", "malformed"]},
+        "format": {"cloudKitType": "String", "enum": ["text/plain"]},
+        "updatedAt": {"cloudKitType": "Date", "logicalType": "utcISO8601"},
+        "schemaVersion": {"cloudKitType": "Int64", "logicalType": "supportedSchemaVersion"}
+      },
+      "optionalFields": {
+        "text": {"cloudKitType": "String", "logicalType": "boundedTranscriptText"},
+        "languageCode": {"cloudKitType": "String", "logicalType": "bcp47"}
+      },
+      "references": ["itemReference", "revisionReference"]
+    },
     "WiltedPlaybackState": {
       "requiredFields": {
         "itemID": {"cloudKitType": "String", "logicalType": "identifier"},
@@ -74,7 +92,7 @@
   },
   "queryIndexAllowlist": [],
   "ownership": {
-    "mac": {"create": ["WiltedItem", "WiltedRevision", "WiltedPlaybackState"], "update": ["WiltedItem", "WiltedPlaybackState"], "delete": ["WiltedItem", "WiltedRevision", "WiltedPlaybackState"]},
+    "mac": {"create": ["WiltedItem", "WiltedRevision", "WiltedTranscript", "WiltedPlaybackState"], "update": ["WiltedItem", "WiltedTranscript", "WiltedPlaybackState"], "delete": ["WiltedItem", "WiltedRevision", "WiltedTranscript", "WiltedPlaybackState"]},
     "iphone": {"create": ["WiltedPlaybackState"], "update": ["WiltedPlaybackState"], "delete": []},
     "sharedRules": ["WiltedPlaybackState saves use the last fetched change tag", "iPhone never creates or mutates article or audio records", "playback deletion follows its item"]
   },
@@ -96,7 +114,7 @@
   "deletion": {
     "tombstoneFields": ["itemID", "generationID", "requestedAt", "remoteAcknowledged"],
     "retainUntil": "remote delete acknowledgement",
-    "cascade": ["WiltedRevision", "WiltedPlaybackState"],
+    "cascade": ["WiltedRevision", "WiltedTranscript", "WiltedPlaybackState"],
     "localPlayback": "may remain usable until cached media is explicitly removed"
   },
   "generationSweep": {
@@ -135,6 +153,6 @@
     "absentMeans": "unknown",
     "decoder": "preserve-opaque-unknown-fields-when-supported",
     "writer": "never-invent-values-or-write-undeclared-fields",
-    "knownOptionalFields": ["author", "publishedTime", "voiceIdentifier", "synthesisSettingsHash"]
+    "knownOptionalFields": ["author", "publishedTime", "voiceIdentifier", "synthesisSettingsHash", "text", "languageCode"]
   }
 }

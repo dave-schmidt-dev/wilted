@@ -241,6 +241,7 @@ func authoritativePublishFixture() throws {
         case .item: _ = try codec.decodeArticle(withSidecar)
         case .revision: _ = try codec.decodeRevision(withSidecar)
         case .revisionChunk: _ = try codec.decodeRevisionChunkRecord(withSidecar)
+        case .transcript: _ = try codec.decodeTranscript(withSidecar)
         case .playbackState: _ = try codec.decodePlayback(withSidecar)
         }
         let roundTrip = try #require(JSONSerialization.jsonObject(with: encoder.encode(record)) as? [String: Any])
