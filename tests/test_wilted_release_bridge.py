@@ -36,9 +36,15 @@ class IdentityAllocationTests(unittest.TestCase):
             patch.object(BRIDGE, "_candidate_context", return_value=("upload-1", "app-1", "build-1")) as context,
             patch.object(BRIDGE, "_internal_group", return_value="group-1"),
         ):
-            BRIDGE.tester_group_candidate("0.1.8-10")
+            proof = BRIDGE.tester_group_candidate("0.1.8-10")
 
         self.assertEqual(context.call_args.kwargs["bearer"], "live-bearer")
+        self.assertEqual(proof["candidateId"], "0.1.8-10")
+        self.assertEqual(proof["lane"], "standard")
+        self.assertEqual(proof["groupIdentifierHash"], hashlib.sha256(b"group-1").hexdigest())
+
+    def test_project_configuration_prepares_the_next_patch_successor(self) -> None:
+        self.assertEqual(BRIDGE.marketing_version(), "0.2.2")
 
     def test_assignment_reconciliation_is_read_only_and_binds_the_exact_group_and_build(self) -> None:
         for index, (group_builds, expected) in enumerate((([], "absent"), ([{"type": "builds", "id": "build-1"}], "found")), start=1):
@@ -182,7 +188,7 @@ class IdentityAllocationTests(unittest.TestCase):
             proof = BRIDGE.allocate_identity(get=get, root=Path(temporary))
 
         self.assertEqual(proof["productKey"], "wilted-ios")
-        self.assertEqual(proof["marketingVersion"], "0.2.0")
+        self.assertEqual(proof["marketingVersion"], "0.2.2")
         self.assertEqual(proof["buildNumber"], 10)
         self.assertEqual(proof["remoteHighestMarketingVersion"], "0.1.7")
         self.assertEqual(proof["remoteHighestBuildNumber"], 9)
@@ -208,7 +214,7 @@ class IdentityAllocationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             proof = BRIDGE.allocate_identity(get=get, root=Path(temporary))
 
-        self.assertEqual(proof["marketingVersion"], "0.2.0")
+        self.assertEqual(proof["marketingVersion"], "0.2.2")
         self.assertEqual(proof["buildNumber"], 8)
         self.assertEqual(proof["remoteHighestMarketingVersion"], "0.1.7")
         self.assertEqual(proof["remoteHighestBuildNumber"], 7)
@@ -224,9 +230,9 @@ class IdentityAllocationTests(unittest.TestCase):
     def test_identity_allocation_advances_past_a_locally_failed_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            manifest = root / ".git/release-state/wilted-ios/candidates/0.2.0-1/manifest.json"
+            manifest = root / ".git/release-state/wilted-ios/candidates/0.2.2-1/manifest.json"
             manifest.parent.mkdir(parents=True)
-            manifest.write_text(json.dumps({"immutable": True, "release": {"marketingVersion": "0.2.0", "buildNumber": "1"}}), encoding="utf-8")
+            manifest.write_text(json.dumps({"immutable": True, "release": {"marketingVersion": "0.2.2", "buildNumber": "1"}}), encoding="utf-8")
 
             def get(path: str, _: str) -> dict:
                 if path.startswith("/apps?"):

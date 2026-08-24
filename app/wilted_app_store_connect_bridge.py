@@ -851,7 +851,13 @@ def tester_group_candidate(candidate: str) -> dict[str, Any]:
         candidate, bearer=bearer, request=request
     )
     group_id = _internal_group(app_id, bearer=bearer, request=request)
-    return _proof("tester-group", candidate, uploaded, groupIdentifierHash=hashlib.sha256(group_id.encode()).hexdigest())
+    return _proof(
+        "tester-group",
+        candidate,
+        uploaded,
+        groupIdentifierHash=hashlib.sha256(group_id.encode()).hexdigest(),
+        lane="standard",
+    )
 
 
 def assignment_reconcile_candidate(
