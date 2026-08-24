@@ -32,7 +32,7 @@ PRODUCT = "wilted-ios"
 BUNDLE_ID = "com.zerodelta.wilted.ios"
 INTERNAL_GROUP_NAME = "Wilted Internal Testers"
 API_BASE = "https://api.appstoreconnect.apple.com/v1"
-OPERATIONS = frozenset({"app-registration", "identity-allocation", "build-lookup", "upload", "processing", "compliance", "tester-group", "assignment", "device-health", "notification"})
+OPERATIONS = frozenset({"app-registration", "identity-allocation", "build-lookup", "upload", "processing", "compliance", "tester-group", "assignment-reconcile", "assignment", "device-health", "notification"})
 _CANDIDATE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _POSITIVE = re.compile(r"^[1-9][0-9]*$")
@@ -87,7 +87,7 @@ def write_json(path: Path, payload: Mapping[str, Any], *, exclusive: bool = Fals
 def blocked(operation: str, candidate: str | None, reason: str) -> int:
     payload: dict[str, Any] = {
         "proofVersion": "1.0.0",
-        "operationClass": {"identity-allocation": "identityAllocation", "build-lookup": "buildLookup", "tester-group": "testerGroup", "device-health": "deviceHealth"}.get(operation, operation),
+        "operationClass": {"identity-allocation": "identityAllocation", "build-lookup": "buildLookup", "tester-group": "testerGroup", "assignment-reconcile": "assignmentReconcile", "device-health": "deviceHealth"}.get(operation, operation),
         "result": "blocked", "observedAt": now(), "reason": reason, "code": reason,
         "responseSha256": digest({"operation": operation, "candidateId": candidate, "reason": reason}),
     }
@@ -678,13 +678,14 @@ def process_candidate(
 def _candidate_context(
     candidate: str,
     *,
+    root: Path = ROOT,
     bearer: str | None = None,
     request: Callable[[str, str, str, Mapping[str, Any] | None], Mapping[str, Any]] | None = None,
 ) -> tuple[str, str, str]:
     """Resolve only the exact processed build required by post-upload operations."""
 
-    version, build = _candidate_release(candidate)
-    uploaded = _uploaded_identifier(candidate)
+    version, build = _candidate_release(candidate, root=root)
+    uploaded = _uploaded_identifier(candidate, root=root)
     if request is None:
         bearer = token()
         request = lambda method, path, bearer, body: request_json(path, bearer, method=method, body=body)
@@ -696,7 +697,13 @@ def _candidate_context(
         "include": "preReleaseVersion", "fields[builds]": "version,processingState,preReleaseVersion",
         "fields[preReleaseVersions]": "version", "limit": "200",
     })
-    build_id, state = _exact_build(request("GET", f"/builds?{query}", bearer, None), version=version, build=build)
+    response = request("GET", f"/builds?{query}", bearer, None)
+    links = response.get("links")
+    if links is not None and not isinstance(links, Mapping):
+        raise ASCError("app-store-connect-pagination-invalid")
+    if isinstance(links, Mapping) and links.get("next") is not None:
+        raise ASCError("app-store-connect-pagination-unexpected")
+    build_id, state = _exact_build(response, version=version, build=build)
     if state != "VALID":
         raise ASCError("app-store-connect-processing-not-valid")
     return uploaded, app_id, build_id
@@ -747,9 +754,82 @@ def _internal_group(
     return _resource(created, "betaGroups")["id"]
 
 
+def _existing_internal_group(
+    app_id: str,
+    *,
+    bearer: str,
+    request: Callable[[str, str, str, Mapping[str, Any] | None], Mapping[str, Any]],
+) -> str:
+    """Resolve the fixed internal group without provisioning or selecting a fallback."""
+
+    response = request("GET", f"/apps/{app_id}/betaGroups?limit=200", bearer, None)
+    data = response.get("data")
+    links = response.get("links")
+    if not isinstance(data, list):
+        raise ASCError("app-store-connect-tester-group-response-invalid")
+    if links is not None and not isinstance(links, Mapping):
+        raise ASCError("app-store-connect-tester-group-pagination-invalid")
+    if isinstance(links, Mapping) and links.get("next") is not None:
+        raise ASCError("app-store-connect-tester-group-pagination-unexpected")
+
+    matches: list[str] = []
+    for item in data:
+        attributes = item.get("attributes") if isinstance(item, Mapping) else None
+        identifier = item.get("id") if isinstance(item, Mapping) else None
+        if (
+            not isinstance(item, Mapping)
+            or item.get("type") != "betaGroups"
+            or not isinstance(identifier, str)
+            or not identifier
+            or not isinstance(attributes, Mapping)
+            or not isinstance(attributes.get("name"), str)
+            or not isinstance(attributes.get("isInternalGroup"), bool)
+        ):
+            raise ASCError("app-store-connect-tester-group-response-invalid")
+        if attributes["name"] == INTERNAL_GROUP_NAME and attributes["isInternalGroup"]:
+            matches.append(identifier)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ASCError("app-store-connect-tester-group-ambiguous")
+    raise ASCError("app-store-connect-tester-group-unavailable")
+
+
+def _group_contains_build(
+    group_id: str,
+    build_id: str,
+    *,
+    bearer: str,
+    request: Callable[[str, str, str, Mapping[str, Any] | None], Mapping[str, Any]],
+) -> bool:
+    """Return whether one exact build is already visible in one exact group."""
+
+    response = request("GET", f"/betaGroups/{group_id}/builds?limit=200", bearer, None)
+    data = response.get("data")
+    links = response.get("links")
+    if not isinstance(data, list):
+        raise ASCError("app-store-connect-group-builds-response-invalid")
+    if links is not None and not isinstance(links, Mapping):
+        raise ASCError("app-store-connect-group-builds-pagination-invalid")
+    if isinstance(links, Mapping) and links.get("next") is not None:
+        raise ASCError("app-store-connect-group-builds-pagination-unexpected")
+    for item in data:
+        identifier = item.get("id") if isinstance(item, Mapping) else None
+        if (
+            not isinstance(item, Mapping)
+            or item.get("type") != "builds"
+            or not isinstance(identifier, str)
+            or not identifier
+        ):
+            raise ASCError("app-store-connect-group-builds-response-invalid")
+        if identifier == build_id:
+            return True
+    return False
+
+
 def _proof(operation: str, candidate: str, uploaded: str, **observed: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "proofVersion": "1.0.0", "operationClass": {"tester-group": "testerGroup", "device-health": "deviceHealth"}.get(operation, operation),
+        "proofVersion": "1.0.0", "operationClass": {"tester-group": "testerGroup", "assignment-reconcile": "assignmentReconcile", "device-health": "deviceHealth"}.get(operation, operation),
         "candidateId": candidate, "uploadedBuildIdentifier": uploaded, "result": "passed", "observedAt": now(), **observed,
     }
     payload.setdefault("responseSha256", digest({"operation": operation, "candidateId": candidate, "uploadedBuildIdentifier": uploaded, **observed}))
@@ -772,6 +852,37 @@ def tester_group_candidate(candidate: str) -> dict[str, Any]:
     )
     group_id = _internal_group(app_id, bearer=bearer, request=request)
     return _proof("tester-group", candidate, uploaded, groupIdentifierHash=hashlib.sha256(group_id.encode()).hexdigest())
+
+
+def assignment_reconcile_candidate(
+    candidate: str,
+    *,
+    root: Path = ROOT,
+    request: Callable[[str, str, str, Mapping[str, Any] | None], Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Read-only reconciliation of the exact uploaded build's group assignment."""
+
+    if not _CANDIDATE.fullmatch(candidate):
+        raise ASCError("candidate-identity-invalid")
+    if request is None:
+        bearer, request = _request_context()
+    else:
+        bearer = "test"
+    uploaded, app_id, build_id = _candidate_context(
+        candidate, root=root, bearer=bearer, request=request
+    )
+    group_id = _existing_internal_group(app_id, bearer=bearer, request=request)
+    found = _group_contains_build(group_id, build_id, bearer=bearer, request=request)
+    return _proof(
+        "assignment-reconcile",
+        candidate,
+        uploaded,
+        lookupResult="found" if found else "absent",
+        remoteIdentifier=uploaded,
+        remoteBuildIdentifier=build_id,
+        groupIdentifierHash=hashlib.sha256(group_id.encode()).hexdigest(),
+        lane="standard",
+    )
 
 
 def assignment_candidate(candidate: str) -> dict[str, Any]:
@@ -893,6 +1004,7 @@ def main(argv: list[str] | None = None) -> int:
     post_upload_operations: Mapping[str, Callable[[str], dict[str, Any]]] = {
         "compliance": compliance_candidate,
         "tester-group": tester_group_candidate,
+        "assignment-reconcile": assignment_reconcile_candidate,
         "assignment": assignment_candidate,
         "device-health": device_health_candidate,
         "notification": notification_candidate,

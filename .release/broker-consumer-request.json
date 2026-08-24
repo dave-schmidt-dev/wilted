@@ -1,8 +1,8 @@
 {
   "schemaVersion": "1.0.0",
   "consumer": "wilted-app-store-connect-bridge",
-  "purpose": "Registered Wilted iOS TestFlight identity, exact build lookup, upload, processing, compliance, internal tester, assignment, device-health, and notification operations.",
-  "allowedOperations": ["identity-allocation", "build-lookup", "upload", "processing", "compliance", "tester-group", "assignment", "notification", "device-health"],
+  "purpose": "Registered Wilted iOS TestFlight identity, exact build lookup, upload, processing, compliance, internal tester, read-only assignment reconciliation, assignment, device-health, and notification operations.",
+  "allowedOperations": ["identity-allocation", "build-lookup", "upload", "processing", "compliance", "tester-group", "assignment-reconcile", "assignment", "notification", "device-health"],
   "credentialTransport": "ram-backed broker injection",
   "writeAuthority": "project-owned adapter only"
 }

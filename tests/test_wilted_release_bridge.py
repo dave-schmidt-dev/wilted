@@ -40,6 +40,73 @@ class IdentityAllocationTests(unittest.TestCase):
 
         self.assertEqual(context.call_args.kwargs["bearer"], "live-bearer")
 
+    def test_assignment_reconciliation_is_read_only_and_binds_the_exact_group_and_build(self) -> None:
+        for index, (group_builds, expected) in enumerate((([], "absent"), ([{"type": "builds", "id": "build-1"}], "found")), start=1):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                candidate = f"0.2.0-{index}"
+                manifest = root / ".git/release-state/wilted-ios/candidates" / candidate / "manifest.json"
+                manifest.parent.mkdir(parents=True)
+                manifest.write_text(json.dumps({"formatVersion": 2, "immutable": True, "productIdentifier": "wilted-ios", "candidateId": candidate, "release": {"frozen": True, "marketingVersion": "0.2.0", "buildNumber": index}}), encoding="utf-8")
+                upload = root / ".release-state/evidence" / candidate / "upload.json"
+                upload.parent.mkdir(parents=True)
+                upload.write_text(json.dumps({"result": "passed", "candidateId": candidate, "uploadedBuildIdentifier": "upload-1"}), encoding="utf-8")
+                requests: list[tuple[str, str, dict | None]] = []
+
+                def request(method: str, path: str, _: str, body: dict | None) -> dict:
+                    requests.append((method, path, body))
+                    if path.startswith("/apps?"):
+                        return {"data": [{"type": "apps", "id": "app-1", "attributes": {"bundleId": BRIDGE.BUNDLE_ID}}]}
+                    if path.startswith("/builds?"):
+                        return {"data": [{"type": "builds", "id": "build-1", "attributes": {"version": str(index), "processingState": "VALID"}, "relationships": {"preReleaseVersion": {"data": {"type": "preReleaseVersions", "id": "pre-1"}}}}], "included": [{"type": "preReleaseVersions", "id": "pre-1", "attributes": {"version": "0.2.0"}}]}
+                    if path == "/apps/app-1/betaGroups?limit=200":
+                        return {"data": [{"type": "betaGroups", "id": "group-1", "attributes": {"name": BRIDGE.INTERNAL_GROUP_NAME, "isInternalGroup": True}}]}
+                    self.assertEqual(path, "/betaGroups/group-1/builds?limit=200")
+                    return {"data": group_builds}
+
+                proof = BRIDGE.assignment_reconcile_candidate(candidate, root=root, request=request)
+
+            self.assertEqual(proof["lookupResult"], expected)
+            self.assertEqual(proof["uploadedBuildIdentifier"], "upload-1")
+            self.assertEqual(proof["remoteIdentifier"], "upload-1")
+            self.assertEqual(proof["remoteBuildIdentifier"], "build-1")
+            self.assertEqual(proof["groupIdentifierHash"], hashlib.sha256(b"group-1").hexdigest())
+            self.assertEqual(proof["lane"], "standard")
+            self.assertTrue(all(method == "GET" and body is None for method, _, body in requests))
+            self.assertIn(("GET", "/apps/app-1/betaGroups?limit=200", None), requests)
+            self.assertIn(("GET", "/betaGroups/group-1/builds?limit=200", None), requests)
+
+    def test_assignment_reconciliation_fails_closed_for_ambiguous_or_malformed_groups(self) -> None:
+        for group_response, builds_response, error in (
+            ({"data": [{"type": "betaGroups", "id": "group-1", "attributes": {"name": BRIDGE.INTERNAL_GROUP_NAME, "isInternalGroup": True}}, {"type": "betaGroups", "id": "group-2", "attributes": {"name": BRIDGE.INTERNAL_GROUP_NAME, "isInternalGroup": True}}]}, None, "app-store-connect-tester-group-ambiguous"),
+            ({"data": [{"type": "betaGroups", "id": "group-1", "attributes": {"name": BRIDGE.INTERNAL_GROUP_NAME, "isInternalGroup": True}}]}, {"data": {}}, "app-store-connect-group-builds-response-invalid"),
+            ({"data": [{"type": "betaGroups", "id": "group-1", "attributes": {"name": BRIDGE.INTERNAL_GROUP_NAME, "isInternalGroup": True}}], "links": {"next": "https://api.example.invalid/v1/betaGroups?page=2"}}, None, "app-store-connect-tester-group-pagination-unexpected"),
+        ):
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                candidate = "0.2.0-1"
+                manifest = root / ".git/release-state/wilted-ios/candidates" / candidate / "manifest.json"
+                manifest.parent.mkdir(parents=True)
+                manifest.write_text(json.dumps({"formatVersion": 2, "immutable": True, "productIdentifier": "wilted-ios", "candidateId": candidate, "release": {"frozen": True, "marketingVersion": "0.2.0", "buildNumber": 1}}), encoding="utf-8")
+                upload = root / ".release-state/evidence" / candidate / "upload.json"
+                upload.parent.mkdir(parents=True)
+                upload.write_text(json.dumps({"result": "passed", "candidateId": candidate, "uploadedBuildIdentifier": "upload-1"}), encoding="utf-8")
+
+                def request(method: str, path: str, _: str, body: dict | None) -> dict:
+                    self.assertEqual((method, body), ("GET", None))
+                    if path.startswith("/apps?"):
+                        return {"data": [{"type": "apps", "id": "app-1", "attributes": {"bundleId": BRIDGE.BUNDLE_ID}}]}
+                    if path.startswith("/builds?"):
+                        return {"data": [{"type": "builds", "id": "build-1", "attributes": {"version": "1", "processingState": "VALID"}, "relationships": {"preReleaseVersion": {"data": {"type": "preReleaseVersions", "id": "pre-1"}}}}], "included": [{"type": "preReleaseVersions", "id": "pre-1", "attributes": {"version": "0.2.0"}}]}
+                    if path == "/apps/app-1/betaGroups?limit=200":
+                        return group_response
+                    self.assertEqual(path, "/betaGroups/group-1/builds?limit=200")
+                    assert builds_response is not None
+                    return builds_response
+
+                with self.assertRaisesRegex(BRIDGE.ASCError, error):
+                    BRIDGE.assignment_reconcile_candidate(candidate, root=root, request=request)
+
     def test_notification_validates_a_created_resource_for_the_exact_build(self) -> None:
         requests: list[tuple[str, str, str, dict | None]] = []
 
