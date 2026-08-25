@@ -41,6 +41,19 @@ enum WiltedMacSyncPhase: String, Sendable {
     case failed
     case cancelled
     case quarantined
+
+    /// Emphasis only. The row always spells the phase out, so colour is never
+    /// the sole carrier of state (W-INV-010). The listener already tinted a
+    /// quarantined account; the producer showed it in plain secondary text.
+    var tone: WiltedStatusTone {
+        switch self {
+        case .disabled, .idle, .cancelled: .neutral
+        case .staging, .fetching, .sending: .active
+        case .completed: .positive
+        case .quarantined: .caution
+        case .failed: .failure
+        }
+    }
 }
 
 struct WiltedMacSyncStatus: Equatable, Sendable {

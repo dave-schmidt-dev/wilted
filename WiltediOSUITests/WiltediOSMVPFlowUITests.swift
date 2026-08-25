@@ -10,6 +10,9 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
 
         let library = app.descendants(matching: .any)["wilted-library"]
         XCTAssertTrue(library.waitForExistence(timeout: 5))
+        for title in ["Library", "Now Playing", "Downloads", "Settings"] {
+            XCTAssertTrue(app.tabBars.buttons[title].waitForExistence(timeout: 5))
+        }
 
         let transcript = app.buttons["Transcript"]
         XCTAssertTrue(transcript.waitForExistence(timeout: 5))
@@ -38,13 +41,15 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         downloadsTab.tap()
         // The Downloads card is not itself a play action. The explicit Play
         // button owns the interaction after the card layout correction.
-        let downloadedItem = app.buttons.matching(identifier: "Play").firstMatch
+        let downloadedItem = app.buttons
+            .matching(NSPredicate(format: "label == %@", "Play"))
+            .firstMatch
         XCTAssertTrue(downloadedItem.waitForExistence(timeout: 5))
         XCTAssertEqual(downloadedItem.elementType, .button)
         downloadedItem.tap()
 
-        let libraryTab = app.tabBars.buttons["Library"]
-        libraryTab.tap()
+        let nowPlayingTab = app.tabBars.buttons["Now Playing"]
+        nowPlayingTab.tap()
         let player = app.descendants(matching: .any)["wilted-player"]
         XCTAssertTrue(player.waitForExistence(timeout: 5))
         XCTAssertTrue(player.value as? String == "12 seconds")
@@ -54,7 +59,7 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         XCTAssertEqual(nowPlayingControl.elementType, .button)
         XCTAssertEqual(nowPlayingControl.label, "Pause")
         nowPlayingControl.tap()
-        let status = app.descendants(matching: .any)["wilted-listener-status"]
+        let status = app.descendants(matching: .any)["wilted-now-playing-status"]
         XCTAssertTrue(waitForLabel("Playback paused", on: status))
 
         let resumeControl = app.descendants(matching: .any)["wilted-player-play-pause"]

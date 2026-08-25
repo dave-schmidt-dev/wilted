@@ -250,6 +250,27 @@ assert_capability_source_contract() {
 
 assert_capability_source_contract
 
+# A leg function that is defined but never invoked is invisible: the macOS UI
+# leg was dropped from the run list in 040e7b8 while `leg_macos_ui_tests` stayed
+# in the file, so for two days nothing drove the real Mac window and a window
+# composition the owner rejected on sight cleared a green gate. Assert the leg
+# is executed, not merely present, and pin its floor so an empty suite cannot
+# pass either.
+assert_macos_ui_leg_is_executed() {
+  assert_contains 'leg_macos_ui_tests()' "$gate"
+  assert_contains 'run_leg "${leg_names[7]}" "${leg_reports[7]}" leg_macos_ui_tests' "$gate"
+  assert_contains '  macos-ui-tests' "$gate"
+  assert_contains "macos-ui-tests) printf '7" "$gate"
+  assert_contains '-only-testing:WiltedMacUITests' "$gate"
+  for method in \
+    testEachDestinationExclusivelyOccupiesTheDetailRegion \
+    testSidebarListsDestinationsOnlyAndNotTheArticleList; do
+    assert_contains "$method" "$repo_root/WiltedMacUITests/WiltedMacSmokeUITests.swift"
+  done
+}
+
+assert_macos_ui_leg_is_executed
+
 assert_snapshot_contract() {
   assert_contains 'validate_pixel_snapshot_baselines' "$gate"
   assert_contains 'validate_ios_pixel_snapshot_baselines' "$gate"
@@ -345,7 +366,7 @@ assert_ios_ui_clean_simulator_contract() {
   local shutdown_line
   local trap_line
 
-  assert_contains 'run_leg "${leg_names[7]}" "${leg_reports[7]}" leg_ios_ui_tests' "$gate"
+  assert_contains 'run_leg "${leg_names[8]}" "${leg_reports[8]}" leg_ios_ui_tests' "$gate"
   assert_contains 'find_shutdown_iphone_udid' "$gate"
   assert_contains "ios_ui_device_name='iPhone 17 Pro'" "$gate"
   assert_contains 'ios_ui_baseline_geometry' "$gate"
@@ -401,8 +422,11 @@ assert_ios_mvp_journey_contract() {
   assert_contains 'ListenerMVPFixture.makeModel()' "$app"
   assert_contains 'testAccountFreeListenerJourneyDownloadsPlaysResumesAndRecovers' "$journey"
   assert_contains 'wilted-player-play-pause' "$journey"
-  assert_contains 'Button(playbackIsPlaying ? "Pause" : "Play")' "$listener_view"
-  assert_contains 'await model.play(itemID: itemID)' "$listener_view"
+  # The permanent Now Playing tab owns the transport control. Assert its
+  # accessible action label and resume behavior without coupling this contract
+  # to a particular SwiftUI Button initializer.
+  assert_contains 'title: playbackIsPlaying ? "Pause" : "Play"' "$listener_view"
+  assert_contains 'await model.play(itemID: state.itemID)' "$listener_view"
   assert_contains 'XCTAssertEqual(resumeControl.label, "Play")' "$journey"
   if rg -q 'app\.buttons\["Play"\]' "$journey"; then
     printf '%s\n' 'assertion failed: MVP resume must use the now-playing control identifier' >&2
@@ -438,7 +462,7 @@ assert_result_bundle_contract
 success_log="$tmp_dir/success.log"
 success_status="$(run_case success "$success_log" bash "$gate")"
 [[ "$success_status" -eq 0 ]] || { cat "$success_log" >&2; exit 1; }
-assert_contains 'native.passed count=8' "$success_log"
+assert_contains 'native.passed count=9' "$success_log"
 
 forced_log="$tmp_dir/forced.log"
 forced_status="$(run_case forced "$forced_log" env NATIVE_FORCE_FAIL_LEG=macos-unit-tests bash "$gate")"
@@ -511,4 +535,4 @@ for snapshot_failure in missing zero malformed; do
   assert_contains 'native.error' "$snapshot_log"
 done
 
-printf '%s\n' 'native gate aggregate meta-test passed (eight native Xcode legs plus CloudSync and Listener SwiftPM; forced and zero-test failures are fail-closed)'
+printf '%s\n' 'native gate aggregate meta-test passed (nine native Xcode legs including the macOS UI leg, plus CloudSync and Listener SwiftPM; forced and zero-test failures are fail-closed)'

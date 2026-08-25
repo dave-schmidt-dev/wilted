@@ -152,7 +152,11 @@ public final class WiltedListenerAppModel: ObservableObject {
     private var audioChunkLoader: ListenerAudioChunkLoader?
     private let sessionFactory: ListenerSyncSessionFactory?
     private var session: (any ListenerSyncSession)?
-    private var accountQuarantined = false
+    /// Published so the listener can offer account review the way the producer
+    /// does. While this was private the quarantined status was non-retryable
+    /// and no control was drawn, which left the shipping listener with no way
+    /// out of quarantine at all.
+    @Published public private(set) var accountQuarantined = false
     private let metadataLoader: (@Sendable () async -> ListenerMetadata?)?
     private let metadataSaver: (@Sendable (ListenerMetadata?) async throws -> Void)?
     private var playbackByItem: [ItemID: PlaybackState] = [:]
@@ -285,6 +289,11 @@ public final class WiltedListenerAppModel: ObservableObject {
             model.status = .playing
             model.selectedPlayback = playback
         case .terminalFailure:
+            // The quarantine flag, not just its message. Setting only the
+            // status reproduced the *appearance* of a quarantined listener
+            // without the condition, so the baseline recorded a screen with no
+            // recovery control and nothing flagged it as a dead end.
+            model.accountQuarantined = true
             model.status = .failed("iCloud account changed; sync is quarantined", retryable: false)
         }
         return model
@@ -613,6 +622,23 @@ public final class WiltedListenerAppModel: ObservableObject {
         guard let session else { return }
         await session.resetAfterAccountChange()
         accountQuarantined = false
+        status = .ready
+    }
+
+    /// The single account-review entry point the listener UI calls.
+    ///
+    /// `resetAfterAccountChange()` only recovers when a live sync session
+    /// exists. A listener can also be quarantined before one is established —
+    /// and the account-free fixture never has one — so this covers both rather
+    /// than leaving the control inert in exactly the states it is needed.
+    public func recoverFromAccountChange() async {
+        guard accountQuarantined else { return }
+        if session != nil {
+            await resetAfterAccountChange()
+            return
+        }
+        accountQuarantined = false
+        await updateDownloadedStates()
         status = .ready
     }
 

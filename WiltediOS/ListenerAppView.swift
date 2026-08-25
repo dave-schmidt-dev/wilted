@@ -1,76 +1,115 @@
 import SwiftUI
 import WiltedDomain
 
+/// Maps the listener's status to the shared tone vocabulary.
+///
+/// This switch used to be written twice in this file and a third time on the
+/// Mac, so the same condition could render three different colors.
+private extension ListenerAppStatus {
+    var tone: WiltedStatusTone {
+        switch self {
+        case .failed, .incompatible, .deleted: .failure
+        case .offline: .caution
+        case .refreshing, .sending: .active
+        case .playing: .positive
+        case .idle, .ready, .paused: .neutral
+        }
+    }
+}
+
+/// Shared adapter from a domain transcript to the shared disclosure.
+private struct WiltedTranscriptDisclosure: View {
+    let transcript: Transcript?
+    let identifier: String
+
+    var body: some View {
+        WiltedTranscriptSection(
+            isReadable: isReadable,
+            title: transcript?.availability == .stale ? "Transcript (may be outdated)" : "Transcript",
+            text: transcript?.text,
+            unavailableLabel: unavailableLabel,
+            identifier: identifier
+        )
+    }
+
+    private var isReadable: Bool {
+        guard let transcript, let text = transcript.text, !text.isEmpty else { return false }
+        return transcript.availability == .available || transcript.availability == .stale
+    }
+
+    private var unavailableLabel: String {
+        switch transcript?.availability {
+        case .oversized: "Transcript unavailable: article text is too large"
+        case .malformed: "Transcript unavailable: article text could not be read"
+        default: "Transcript unavailable"
+        }
+    }
+}
+
 public struct WiltedListenerLibraryView: View {
     @ObservedObject private var model: WiltedListenerAppModel
+    @Environment(\.colorScheme) private var colorScheme
 
     public init(model: WiltedListenerAppModel) { self.model = model }
 
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.section) {
-                HStack(spacing: WiltedTheme.Spacing.small) {
-                    Spacer()
-                    Button("Refresh") { Task { await model.refresh() } }
-                        .buttonStyle(.bordered)
-                        .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
-                        .disabled(model.status.isBusy)
-                        .accessibilityIdentifier("wilted-listener-refresh")
-                }
-
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
                 Text(model.status.message)
                     .font(WiltedTheme.font(.utility))
-                    .foregroundStyle(statusColor)
+                    .foregroundStyle(model.status.tone.color(colorScheme))
                     .accessibilityIdentifier("wilted-listener-status")
 
                 if model.status.isBusy {
                     Button("Cancel") { model.cancel() }
                         .buttonStyle(.bordered)
+                        .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
                         .accessibilityIdentifier("wilted-listener-cancel")
-                }
-
-                if model.items.isEmpty {
-                    Text(WiltedScreenCopy.noArticles)
-                        .font(WiltedTheme.font(.body))
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                } else {
-                    ForEach(model.items) { item in
-                        itemRow(item)
-                    }
                 }
 
                 if case .failed(_, retryable: true) = model.status {
                     Button("Retry") { Task { await model.refresh() } }
                         .buttonStyle(.borderedProminent)
+                        .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
                         .accessibilityIdentifier("wilted-listener-retry")
                 }
 
-                Button("Send Playback Progress") { Task { await model.sendPending() } }
-                    .buttonStyle(.bordered)
-                    .disabled(model.status.isBusy)
-                    .accessibilityIdentifier("wilted-listener-send")
+                // A quarantined listener previously showed only a red line.
+                // Review is the one action that can move it forward, and it is
+                // worded and gated exactly as it is on the Mac.
+                if model.accountQuarantined {
+                    WiltedAccountRecoveryNotice {
+                        Task { await model.recoverFromAccountChange() }
+                    }
+                }
 
-                if let selected = model.selectedPlayback {
-                    nowPlaying(selected)
+                if model.items.isEmpty {
+                    ContentUnavailableView(
+                        WiltedScreenCopy.libraryEmpty,
+                        systemImage: "tray",
+                        description: Text(WiltedScreenCopy.libraryEmptyDetailListener)
+                    )
+                    .accessibilityIdentifier("wilted-listener-empty-state")
+                } else {
+                    ForEach(model.items) { item in
+                        itemRow(item)
+                    }
                 }
             }
             .padding(WiltedTheme.Spacing.xLarge)
         }
         .background(WiltedTheme.color(.page, scheme: colorScheme))
-        // Library is the listener's home and the only tab wrapped in a
-        // `NavigationStack`, so it carries the wordmark for the app the way
-        // the producer's window toolbar does on the Mac. Downloads and
-        // Settings keep plain titles rather than repeating the brand.
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationTitle(WiltedScreenCopy.library)
+        // Refresh belongs in the navigation bar, not floating in the content.
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                WiltedWordmark(height: 18)
+            ToolbarItem(placement: .primaryAction) {
+                Button("Refresh") { Task { await model.refresh() } }
+                    .disabled(model.status.isBusy)
+                    .accessibilityIdentifier("wilted-listener-refresh")
             }
         }
         .accessibilityIdentifier(WiltedScreenCopy.libraryIdentifier)
     }
-
-    @Environment(\.colorScheme) private var colorScheme
 
     private func itemRow(_ item: ListenerLibraryItem) -> some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
@@ -80,7 +119,10 @@ public struct WiltedListenerLibraryView: View {
                     Text(item.source).font(WiltedTheme.font(.utility))
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     Text(item.state.label).font(WiltedTheme.font(.utility))
-                        .foregroundStyle(item.state == .downloaded ? WiltedTheme.color(.success, scheme: colorScheme) : WiltedTheme.color(.error, scheme: colorScheme))
+                        .foregroundStyle(
+                            (item.state == .downloaded ? WiltedStatusTone.positive : .failure)
+                                .color(colorScheme)
+                        )
                 }
                 Spacer()
                 Button("Play") { Task { await model.play(itemID: item.itemID) } }
@@ -102,56 +144,109 @@ public struct WiltedListenerLibraryView: View {
                 identifier: "wilted-transcript-\(item.itemID.rawValue)"
             )
         }
-        .padding(WiltedTheme.Spacing.large)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(WiltedTheme.color(.card, scheme: colorScheme))
-        .overlay(Rectangle().stroke(WiltedTheme.color(.steel, scheme: colorScheme), lineWidth: 1))
+        .wiltedCard(colorScheme)
+    }
+}
+
+/// The listener's single authoritative playback surface. Library and Downloads
+/// start media; this permanent destination owns every in-app transport.
+public struct WiltedListenerNowPlayingView: View {
+    @ObservedObject private var model: WiltedListenerAppModel
+    @Environment(\.colorScheme) private var colorScheme
+
+    public init(model: WiltedListenerAppModel) { self.model = model }
+
+    public var body: some View {
+        Group {
+            if let state = model.selectedPlayback {
+                player(state)
+            } else {
+                WiltedNowPlayingEmptyView(detail: WiltedScreenCopy.nowPlayingEmptyDetailListener)
+            }
+        }
+        .navigationTitle(WiltedScreenCopy.nowPlaying)
     }
 
-    private func nowPlaying(_ state: PlaybackState) -> some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-            Text("Now Playing").font(WiltedTheme.font(.title))
-            Text("\(Int(state.positionSeconds)) / \(Int(state.durationSeconds)) seconds")
-                .font(WiltedTheme.font(.utility))
-            HStack {
-                Button("Rewind") { Task { await model.rewind() } }
-                    .buttonStyle(.bordered)
-                    .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
-                    .accessibilityIdentifier(WiltedScreenCopy.playerRewindIdentifier)
-                Button(playbackIsPlaying ? "Pause" : "Play") {
-                    Task { await togglePlayback() }
+    private func player(_ state: PlaybackState) -> some View {
+        ScrollView {
+            VStack(spacing: WiltedTheme.Spacing.large) {
+                WiltedMark(size: 64, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+
+                VStack(spacing: WiltedTheme.Spacing.xSmall) {
+                    Text(selectedItem?.title ?? WiltedScreenCopy.nowPlaying)
+                        .font(WiltedTheme.font(.title))
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                        .multilineTextAlignment(.center)
+                    if let source = selectedItem?.source {
+                        Text(source)
+                            .font(WiltedTheme.font(.utility))
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    }
                 }
-                    .buttonStyle(.borderedProminent)
-                    .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
-                    .accessibilityIdentifier(WiltedScreenCopy.playerPlayPauseIdentifier)
+
+                ProgressView(value: boundedPosition(state), total: max(1, state.durationSeconds))
+                    .tint(WiltedTheme.color(.progress, scheme: colorScheme))
+                    .accessibilityLabel("Playback progress")
+                    .accessibilityValue(progressLabel(state))
+
+                Text(progressLabel(state))
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+
+                Text(model.status.message)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(model.status.tone.color(colorScheme))
+                    .accessibilityIdentifier("wilted-now-playing-status")
+
+                HStack(spacing: WiltedTheme.Spacing.medium) {
+                    transportButton(
+                        title: "Rewind 15 seconds",
+                        symbol: "gobackward.15",
+                        identifier: WiltedScreenCopy.playerRewindIdentifier
+                    ) { await model.seekBackward() }
+
+                    transportButton(
+                        title: playbackIsPlaying ? "Pause" : "Play",
+                        symbol: playbackIsPlaying ? "pause.fill" : "play.fill",
+                        identifier: WiltedScreenCopy.playerPlayPauseIdentifier,
+                        prominent: true
+                    ) { await togglePlayback(state) }
+
+                    transportButton(
+                        title: "Skip forward 30 seconds",
+                        symbol: "goforward.30",
+                        identifier: WiltedScreenCopy.playerForwardIdentifier
+                    ) { await model.seekForward() }
+                }
+
                 Button("Restart") { Task { await model.restart() } }
                     .buttonStyle(.bordered)
-                    .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+                    .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
                     .accessibilityIdentifier("wilted-listener-restart")
+
+                WiltedTranscriptDisclosure(
+                    transcript: model.transcriptsByItem[state.itemID],
+                    identifier: "wilted-now-playing-transcript"
+                )
             }
-            WiltedTranscriptDisclosure(
-                transcript: model.transcriptsByItem[state.itemID],
-                identifier: "wilted-now-playing-transcript"
-            )
+            .padding(WiltedTheme.Spacing.xLarge)
         }
-        .padding(WiltedTheme.Spacing.large)
-        // A `VStack` is not an accessibility element, so an identifier applied here does not
-        // name the panel: SwiftUI pushes it down onto every leaf inside and overwrites the
-        // identifiers the transport buttons set for themselves. Rewind, Pause, and Restart
-        // all reported as `wilted-player`, which is unaddressable for tests and, worse,
-        // indistinguishable under VoiceOver. Declaring the container makes it a real element
-        // that carries the identifier while its children keep their own, which is what the
-        // shared state views at `Shared/WiltedStateViews.swift` already do.
+        .background(WiltedTheme.color(.page, scheme: colorScheme))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Now Playing")
-        .accessibilityValue("\(Int(state.positionSeconds)) seconds")
+        .accessibilityLabel("Now Playing. \(selectedItem?.title ?? "Selected article")")
+        .accessibilityValue("\(Int(boundedPosition(state))) seconds")
         .accessibilityIdentifier(WiltedScreenCopy.playerIdentifier)
         .task(id: state.sessionID) {
             while !Task.isCancelled {
                 await model.refreshNowPlayingReadout()
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                try? await Task.sleep(for: .seconds(1))
             }
         }
+    }
+
+    private var selectedItem: ListenerLibraryItem? {
+        guard let itemID = model.selectedPlayback?.itemID else { return nil }
+        return model.items.first { $0.itemID == itemID }
     }
 
     private var playbackIsPlaying: Bool {
@@ -159,70 +254,117 @@ public struct WiltedListenerLibraryView: View {
         return false
     }
 
-    private func togglePlayback() async {
+    private func boundedPosition(_ state: PlaybackState) -> Double {
+        max(0, min(state.positionSeconds, state.durationSeconds))
+    }
+
+    private func progressLabel(_ state: PlaybackState) -> String {
+        "\(Int(boundedPosition(state))) of \(Int(state.durationSeconds)) seconds"
+    }
+
+    private func togglePlayback(_ state: PlaybackState) async {
         if playbackIsPlaying {
             await model.pause()
-        } else if let itemID = model.selectedItemID {
-            await model.play(itemID: itemID)
+        } else {
+            await model.play(itemID: state.itemID)
         }
     }
 
-    private var statusColor: Color {
-        switch model.status {
-        case .failed, .incompatible, .deleted: WiltedTheme.color(.error, scheme: colorScheme)
-        case .offline: WiltedTheme.color(.stale, scheme: colorScheme)
-        default: WiltedTheme.color(.secondaryText, scheme: colorScheme)
+    @ViewBuilder
+    private func transportButton(
+        title: String,
+        symbol: String,
+        identifier: String,
+        prominent: Bool = false,
+        action: @escaping () async -> Void
+    ) -> some View {
+        if prominent {
+            Button { Task { await action() } } label: {
+                transportIcon(symbol)
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityLabel(title)
+            .accessibilityIdentifier(identifier)
+        } else {
+            Button { Task { await action() } } label: {
+                transportIcon(symbol)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityLabel(title)
+            .accessibilityIdentifier(identifier)
         }
+    }
+
+    private func transportIcon(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.title3)
+            .frame(
+                width: WiltedTheme.Spacing.minimumTouchTarget,
+                height: WiltedTheme.Spacing.minimumTouchTarget
+            )
     }
 }
 
 public struct WiltedListenerDownloadsView: View {
     @ObservedObject private var model: WiltedListenerAppModel
+    @Environment(\.colorScheme) private var colorScheme
 
     public init(model: WiltedListenerAppModel) { self.model = model }
 
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
-                Text(WiltedScreenCopy.downloads)
-                    .font(WiltedTheme.font(.display))
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 let downloaded = model.items.filter { $0.state == .downloaded }
                 if downloaded.isEmpty {
-                    Text(WiltedScreenCopy.noDownloads)
-                        .font(WiltedTheme.font(.body))
-                        .accessibilityIdentifier(WiltedScreenCopy.downloadsEmptyIdentifier)
+                    ContentUnavailableView(
+                        WiltedScreenCopy.noDownloads,
+                        systemImage: "arrow.down.circle",
+                        description: Text("Download an article from Library to listen offline.")
+                    )
+                    .accessibilityIdentifier(WiltedScreenCopy.downloadsEmptyIdentifier)
                 } else {
                     Text(downloadSummary)
                         .font(WiltedTheme.font(.utility))
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-downloads-summary")
                     ForEach(downloaded) { item in
-                        HStack(alignment: .center, spacing: WiltedTheme.Spacing.medium) {
-                            VStack(alignment: .leading) {
-                                Text(item.title).font(WiltedTheme.font(.title))
-                                Text(item.source).font(WiltedTheme.font(.utility))
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            Button("Play") { Task { await model.play(itemID: item.itemID) } }
-                                .buttonStyle(.borderedProminent)
-                                .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
-                                .accessibilityIdentifier("wilted-listener-download-\(item.itemID.rawValue)")
-                        }
-                        .padding(WiltedTheme.Spacing.large)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(WiltedTheme.color(.card, scheme: colorScheme))
-                        .overlay(Rectangle().stroke(WiltedTheme.color(.steel, scheme: colorScheme), lineWidth: 1))
+                        downloadRow(item)
                     }
                 }
             }
             .padding(WiltedTheme.Spacing.xLarge)
         }
         .background(WiltedTheme.color(.page, scheme: colorScheme))
+        .navigationTitle(WiltedScreenCopy.downloads)
         .accessibilityIdentifier(WiltedScreenCopy.downloadsIdentifier)
     }
 
-    @Environment(\.colorScheme) private var colorScheme
+    /// The same item carries the same actions here as it does in Library.
+    /// Removing a download from the screen that lists downloads was previously
+    /// impossible — it was offered only in Library.
+    private func downloadRow(_ item: ListenerLibraryItem) -> some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+            HStack(alignment: .top, spacing: WiltedTheme.Spacing.medium) {
+                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                    Text(item.title).font(WiltedTheme.font(.title))
+                    Text(item.source).font(WiltedTheme.font(.utility))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Button("Play") { Task { await model.play(itemID: item.itemID) } }
+                    .buttonStyle(.borderedProminent)
+                    .frame(
+                        minWidth: WiltedTheme.Spacing.minimumTouchTarget,
+                        minHeight: WiltedTheme.Spacing.minimumTouchTarget
+                    )
+                    .accessibilityIdentifier("wilted-listener-download-\(item.itemID.rawValue)")
+            }
+            Button("Remove Download") { Task { await model.removeDownload(itemID: item.itemID) } }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("wilted-downloads-remove-\(item.itemID.rawValue)")
+        }
+        .wiltedCard(colorScheme)
+    }
 
     private var downloadSummary: String {
         let count = model.downloadStatistics.fileCount
@@ -246,34 +388,60 @@ public struct WiltedListenerSettingsView: View {
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
-                Text(WiltedScreenCopy.settings)
-                    .font(WiltedTheme.font(.display))
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-
-                settingsCard(title: "Sync") {
-                    settingsRow("Connected Mac", value: "Unavailable", identifier: "wilted-settings-producer")
+                WiltedSettingsCard(title: WiltedScreenCopy.sync) {
+                    WiltedSettingsRow("Connected Mac", value: "Unavailable", identifier: "wilted-settings-producer")
                     Divider()
-                    settingsRow("Last successful sync", value: lastSyncLabel, identifier: "wilted-settings-last-sync")
+                    WiltedSettingsRow("Last successful sync", value: lastSyncLabel, identifier: "wilted-settings-last-sync")
                     if let failure = model.syncObservability.lastFetchFailure {
                         Divider()
-                        settingsRow("Last sync issue", value: failure, identifier: "wilted-settings-sync-error")
+                        WiltedSettingsRow(
+                            "Last sync issue",
+                            value: failure,
+                            identifier: "wilted-settings-sync-error",
+                            tone: .failure
+                        )
+                    }
+
+                    // Sync plumbing lives with the rest of sync. This sat in
+                    // the Library list, presented as a primary listener action.
+                    Button(WiltedScreenCopy.sendPlaybackProgress) { Task { await model.sendPending() } }
+                        .buttonStyle(.bordered)
+                        .disabled(model.status.isBusy)
+                        .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+                        .padding(.top, WiltedTheme.Spacing.xSmall)
+                        .accessibilityIdentifier("wilted-listener-send")
+
+                    if model.accountQuarantined {
+                        WiltedAccountRecoveryNotice(identifier: "wilted-settings-use-current-account") {
+                            Task { await model.recoverFromAccountChange() }
+                        }
                     }
                 }
 
-                settingsCard(title: "Downloads") {
-                    settingsRow("Saved audio", value: downloadCountLabel, identifier: "wilted-settings-download-count")
+                WiltedSettingsCard(title: WiltedScreenCopy.downloads) {
+                    WiltedSettingsRow("Saved audio", value: downloadCountLabel, identifier: "wilted-settings-download-count")
                     Divider()
-                    settingsRow("Storage used", value: storageLabel, identifier: "wilted-settings-download-bytes")
+                    WiltedSettingsRow("Storage used", value: storageLabel, identifier: "wilted-settings-download-bytes")
                 }
 
-                settingsCard(title: "Audio") {
-                    settingsRow(WiltedScreenCopy.audio, value: WiltedScreenCopy.audioValue,
-                                identifier: WiltedScreenCopy.audioRowIdentifier)
+                WiltedSettingsCard(title: WiltedScreenCopy.audio) {
+                    // The row used to repeat its card's title verbatim.
+                    WiltedSettingsRow(
+                        WiltedScreenCopy.audioMode,
+                        value: WiltedScreenCopy.audioValue,
+                        identifier: WiltedScreenCopy.audioRowIdentifier
+                    )
                 }
+
+                WiltedWordmark(height: 16)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.top, WiltedTheme.Spacing.large)
+                    .accessibilityLabel("Wilted")
             }
             .padding(WiltedTheme.Spacing.xLarge)
         }
         .background(WiltedTheme.color(.page, scheme: colorScheme))
+        .navigationTitle(WiltedScreenCopy.settings)
         .accessibilityIdentifier(WiltedScreenCopy.settingsIdentifier)
     }
 
@@ -290,78 +458,9 @@ public struct WiltedListenerSettingsView: View {
         Self.byteFormatter.string(fromByteCount: model.downloadStatistics.byteCount)
     }
 
-    private func settingsCard<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            Text(title)
-                .font(WiltedTheme.font(.title))
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-            content()
-        }
-        .padding(WiltedTheme.Spacing.large)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(WiltedTheme.color(.card, scheme: colorScheme), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(WiltedTheme.color(.steel, scheme: colorScheme), lineWidth: 1)
-        )
-    }
-
-    private func settingsRow(_ label: String, value: String, identifier: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: WiltedTheme.Spacing.medium) {
-            Text(label)
-                .font(WiltedTheme.font(.body))
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-            Spacer(minLength: WiltedTheme.Spacing.large)
-            Text(value)
-                .font(WiltedTheme.font(.utility))
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .multilineTextAlignment(.trailing)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(label), \(value)")
-        .accessibilityIdentifier(identifier)
-    }
-
     private static let byteFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter
     }()
-}
-
-private struct WiltedTranscriptDisclosure: View {
-    let transcript: Transcript?
-    let identifier: String
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        Group {
-            if let transcript, let text = transcript.text,
-               transcript.availability == .available || transcript.availability == .stale {
-                DisclosureGroup(transcript.availability == .stale ? "Transcript (may be outdated)" : "Transcript") {
-                    Text(text)
-                        .font(WiltedTheme.font(.body))
-                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                        .textSelection(.enabled)
-                        .padding(.top, WiltedTheme.Spacing.small)
-                }
-                .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-            } else {
-                Label(unavailableLabel, systemImage: "doc.text.magnifyingglass")
-                    .font(WiltedTheme.font(.utility))
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityIdentifier(identifier)
-    }
-
-    private var unavailableLabel: String {
-        switch transcript?.availability {
-        case .oversized: "Transcript unavailable: article text is too large"
-        case .malformed: "Transcript unavailable: article text could not be read"
-        case .absent, .none: "Transcript unavailable"
-        case .available, .stale: "Transcript unavailable"
-        }
-    }
 }

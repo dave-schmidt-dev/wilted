@@ -60,7 +60,7 @@ final class WiltedVisualSystemTests: XCTestCase {
     }
 
     func testNativeInteractionContract() {
-        XCTAssertEqual(WiltedNavigation.allCases.map(\.title), ["Library", "Downloads", "Settings"])
+        XCTAssertEqual(WiltedNavigation.allCases.map(\.title), ["Library", "Now Playing", "Downloads", "Settings"])
         XCTAssertEqual(WiltedScreenCopy.libraryEmpty, "Your library is empty")
         XCTAssertEqual(WiltedScreenCopy.noArticles, "No articles yet")
         XCTAssertEqual(WiltedScreenCopy.addArticle, "Add Article")
@@ -74,6 +74,8 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertEqual(WiltedScreenCopy.downloads, "Downloads")
         XCTAssertEqual(WiltedScreenCopy.noDownloads, "No Downloads")
         XCTAssertEqual(WiltedScreenCopy.downloadsEmptyIdentifier, "wilted-no-downloads")
+        XCTAssertEqual(WiltedScreenCopy.nowPlaying, "Now Playing")
+        XCTAssertEqual(WiltedScreenCopy.nowPlayingEmptyIdentifier, "wilted-player-empty")
         XCTAssertEqual(WiltedScreenCopy.downloadsIdentifier, "wilted-downloads")
         XCTAssertEqual(WiltedScreenCopy.settings, "Settings")
         XCTAssertEqual(WiltedScreenCopy.settingsIdentifier, "wilted-settings")
@@ -91,6 +93,46 @@ final class WiltedVisualSystemTests: XCTestCase {
                 "dark-xxxLarge-motion-full", "dark-xxxLarge-motion-reduced"
             ]
         )
+    }
+
+    /// The producer window has no Downloads destination, so its copy must not
+    /// send the reader to one. This was shipped: the Mac empty player told the
+    /// reader to visit Downloads, and no pixel baseline could catch it because
+    /// the Mac baselines always render the player, never the empty state.
+    func testProducerCopyNamesOnlyProducerDestinations() {
+        let producerDestinations = WiltedNavigation.allCases.filter { $0 != .downloads }
+        XCTAssertEqual(producerDestinations.map(\.title), ["Library", "Now Playing", "Settings"])
+
+        XCTAssertFalse(
+            WiltedScreenCopy.nowPlayingEmptyDetailProducer.contains(WiltedScreenCopy.downloads),
+            "Producer copy must not point at a destination the Mac window does not have."
+        )
+        XCTAssertTrue(
+            WiltedScreenCopy.nowPlayingEmptyDetailProducer.contains(WiltedScreenCopy.library)
+        )
+        // The listener does have Downloads, so its wording legitimately differs.
+        XCTAssertTrue(
+            WiltedScreenCopy.nowPlayingEmptyDetailListener.contains(WiltedScreenCopy.downloads)
+        )
+        XCTAssertFalse(
+            WiltedScreenCopy.libraryEmptyDetailProducer.contains(WiltedScreenCopy.downloads)
+        )
+    }
+
+    /// Emphasis without letting colour carry state alone: every phase still
+    /// renders its own name, and only the phases that mean something distinct
+    /// get a non-neutral tone.
+    func testSyncPhasesCarryTheirOwnToneAndText() {
+        let expected: [(WiltedMacSyncPhase, WiltedStatusTone)] = [
+            (.disabled, .neutral), (.idle, .neutral), (.cancelled, .neutral),
+            (.staging, .active), (.fetching, .active), (.sending, .active),
+            (.completed, .positive), (.quarantined, .caution), (.failed, .failure)
+        ]
+        for (phase, tone) in expected {
+            XCTAssertEqual(phase.tone, tone, "wrong tone for \(phase.rawValue)")
+            XCTAssertFalse(phase.rawValue.isEmpty)
+        }
+        XCTAssertEqual(WiltedMacSyncPhase.quarantined.rawValue.capitalized, "Quarantined")
     }
 
     func testDeterministicRenderArtifactDoesNotDrift() {

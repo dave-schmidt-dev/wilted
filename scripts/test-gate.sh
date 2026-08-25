@@ -49,9 +49,10 @@ leg_names=(
   wiltedproducer-tests
   macos-unit-tests
   ios-unit-tests
+  macos-ui-tests
   ios-pixel-snapshot-tests
 )
-leg_reports=(none xctest xctest xctest xctest count count count)
+leg_reports=(none xctest xctest xctest xctest count count count count)
 declare -i failed_legs=0
 declare -i completed_legs=0
 native_project=""
@@ -102,6 +103,7 @@ validate_pixel_snapshot_baselines() {
   local expected_count expected_state_ids actual_state_ids state_id state_count
   local expected_variants actual_variants variant_count shell_name bad_pngs
   local expected_selectors actual_selectors duplicate_selectors empty_pngs
+  local window_baselines window_name png_path png_name
   local snapshot_test_source method
 
   require_tool file
@@ -186,10 +188,28 @@ validate_pixel_snapshot_baselines() {
     testShippingMacURLFocusPixelBaselines.mac-shell-producer-url-focus-dark.png; do
     [[ -s "$snapshot_dir/$shell_name" ]] || fail "missing Mac shell baseline: $shell_name"
   done
-  bad_pngs="$(find "$snapshot_dir" -type f -name '*.png' -exec file {} \; |
-    grep -vc 'PNG image data, 520 x 260' || true)"
+  # Component baselines render at card scale. The two window shells render at
+  # window scale so the detail region is not cropped out of the capture, and
+  # both sizes are pinned here so a silent shrink back to the card canvas
+  # cannot pass the gate.
+  window_baselines=$'testShippingMacProducerPixelBaselines.mac-shell-producer-library-light.png\ntestShippingMacProducerPixelBaselines.mac-shell-producer-library-dark.png\ntestMacNavigationSelectionPixelBaselines.mac-shell-navigation-selection-light.png\ntestMacNavigationSelectionPixelBaselines.mac-shell-navigation-selection-dark.png'
+  while IFS= read -r window_name; do
+    [[ -n "$window_name" ]] || continue
+    file "$snapshot_dir/$window_name" | grep -Fq 'PNG image data, 1100 x 700' ||
+      fail "Mac window-scale baseline is not 1100 x 700: $window_name"
+  done <<<"$window_baselines"
+  bad_pngs=0
+  while IFS= read -r png_path; do
+    [[ -n "$png_path" ]] || continue
+    png_name="$(basename "$png_path")"
+    printf '%s\n' "$window_baselines" | grep -Fxq "$png_name" && continue
+    file "$png_path" | grep -Fq 'PNG image data, 520 x 260' || {
+      bad_pngs=$((bad_pngs + 1))
+      printf 'native.snapshots.unexpected-size name=%s\n' "$png_name" >&2
+    }
+  done < <(find "$snapshot_dir" -type f -name '*.png' -print)
   [[ "$bad_pngs" -eq 0 ]] || fail "pixel baselines contain invalid or zero-size images: $bad_pngs"
-  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=10\n' "$expected_count"
+  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=10 window_shells=4\n' "$expected_count"
 }
 
 validate_ios_pixel_snapshot_baselines() {
@@ -235,7 +255,8 @@ parse_result_bundle_test_count() {
 
 expected_test_count_floor() {
   case "$1" in
-    macos-unit-tests) printf '10\n' ;;
+    macos-unit-tests) printf '30\n' ;;
+    macos-ui-tests) printf '7\n' ;;
     ios-pixel-snapshot-tests) printf '11\n' ;;
     *) printf '1\n' ;;
   esac
@@ -253,7 +274,9 @@ assert_result_bundle_tests() {
     elif [[ "$label" == "ios-pixel-snapshot-tests" && "$forced_missing_ios_mvp_journey" == "1" ]]; then
       printf '%s\n' '{"totalTestCount":10}' >"$summary_file"
     elif [[ "$label" == "macos-unit-tests" ]]; then
-      printf '%s\n' '{"totalTestCount":10}' >"$summary_file"
+      printf '%s\n' '{"totalTestCount":30}' >"$summary_file"
+    elif [[ "$label" == "macos-ui-tests" ]]; then
+      printf '%s\n' '{"totalTestCount":7}' >"$summary_file"
     elif [[ "$label" == "ios-pixel-snapshot-tests" ]]; then
       printf '%s\n' '{"totalTestCount":11}' >"$summary_file"
     else
@@ -881,7 +904,8 @@ run_leg "${leg_names[3]}" "xctest" leg_listener_tests
 run_leg "${leg_names[4]}" "xctest" leg_wiltedproducer_tests
 run_leg "${leg_names[5]}" "${leg_reports[5]}" leg_macos_unit_tests
 run_leg "${leg_names[6]}" "${leg_reports[6]}" leg_ios_unit_tests
-run_leg "${leg_names[7]}" "${leg_reports[7]}" leg_ios_ui_tests
+run_leg "${leg_names[7]}" "${leg_reports[7]}" leg_macos_ui_tests
+run_leg "${leg_names[8]}" "${leg_reports[8]}" leg_ios_ui_tests
 
 status "native.complete failed_legs=$failed_legs total_legs=$completed_legs"
 if [[ "$failed_legs" -ne 0 ]]; then

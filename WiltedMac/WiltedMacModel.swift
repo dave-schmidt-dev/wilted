@@ -19,6 +19,48 @@ struct WiltedMacArticle: Identifiable, Hashable, Sendable {
     let isReady: Bool
 }
 
+/// Presentation view of a stored transcript.
+///
+/// The domain `Transcript` lives behind `canImport(WiltedProducer)`, so the
+/// producer keeps a local shape here for the same reason `WiltedMacArticle`
+/// exists: the views stay compilable without the producer package, and UI code
+/// never handles a domain type directly.
+struct WiltedMacTranscript: Equatable, Sendable {
+    enum Availability: String, Sendable {
+        case available
+        case stale
+        case oversized
+        case malformed
+        case absent
+    }
+
+    let availability: Availability
+    let text: String?
+
+    var isReadable: Bool {
+        (availability == .available || availability == .stale) && !(text ?? "").isEmpty
+    }
+
+    /// Says why text is missing instead of silently showing nothing. The
+    /// listener already did this; the producer showed no transcript at all.
+    var unavailableLabel: String {
+        switch availability {
+        case .oversized: "Transcript unavailable: article text is too large"
+        case .malformed: "Transcript unavailable: article text could not be read"
+        case .absent, .available, .stale: "Transcript unavailable"
+        }
+    }
+
+    var disclosureTitle: String {
+        availability == .stale ? "Transcript (may be outdated)" : "Transcript"
+    }
+
+    /// The listener always shows this row and explains why text is missing.
+    /// The producer rendered nothing at all when it had no transcript loaded,
+    /// so this is what a missing one resolves to.
+    static let unavailable = WiltedMacTranscript(availability: .absent, text: nil)
+}
+
 struct WiltedMacPreparation: Equatable, Sendable {
     enum Phase: String, Sendable {
         case preparing
@@ -52,17 +94,59 @@ struct WiltedMacPreparation: Equatable, Sendable {
     let cancellable: Bool
 }
 
+/// The producer's permanent destinations.
+///
+/// These mirror the listener's tabs minus Downloads, which is listener-only:
+/// Mac audio is local the moment it is produced. Exactly one destination fills
+/// the detail region at a time — an earlier composition rendered Library
+/// unconditionally and merely appended a player, so selecting a destination
+/// changed nothing and the window read as three competing regions.
+enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable {
+    case library
+    case nowPlaying
+    case settings
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .library: WiltedScreenCopy.library
+        case .nowPlaying: WiltedScreenCopy.nowPlaying
+        case .settings: WiltedScreenCopy.settings
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .library: "books.vertical"
+        case .nowPlaying: "waveform"
+        case .settings: "gearshape"
+        }
+    }
+}
+
 /// Main-actor presentation state for the local Mac producer.
 @Observable
 @MainActor
 final class WiltedMacModel {
     var urlDraft = ""
+    var selectedNavigation: WiltedMacNavigation = .library
     private(set) var articles: [WiltedMacArticle] = []
     private(set) var preparation: WiltedMacPreparation?
     private(set) var selectedArticleID: String?
     private(set) var isNowPlaying = false
     private(set) var isPlaying = false
     private(set) var playbackError: String?
+    /// Readout state the listener already published. The producer's player
+    /// showed transports and nothing else, so the Mac could not answer "how
+    /// far in am I?" — a question the same audio answers on iPhone.
+    private(set) var playbackPositionSeconds: TimeInterval = 0
+    private(set) var playbackDurationSeconds: TimeInterval = 0
+    private(set) var currentTranscript: WiltedMacTranscript?
+    /// Set only when a route operation actually failed. The recovery control
+    /// is gated on this so it does not advertise a fix for a fault that has
+    /// not happened, matching how every other recovery control here behaves.
+    private(set) var audioRouteFault = false
 
     let fixtureMode: Bool
 
@@ -83,6 +167,10 @@ final class WiltedMacModel {
          stateDirectoryOverride: URL? = nil) {
         let usesFixtureMode = arguments.contains("--wilted-ui-fixture-article-flow")
             || arguments.contains("--wilted-ui-fixture-quarantined")
+            || arguments.contains("--wilted-ui-smoke")
+            || arguments.contains("--wilted-ui-fixture-ready")
+            || arguments.contains("--wilted-ui-fixture-playing")
+            || arguments.contains("--wilted-ui-fixture-preparing")
         fixtureMode = usesFixtureMode
 
 #if canImport(WiltedProducer)
@@ -122,9 +210,16 @@ final class WiltedMacModel {
         }
 
         if usesFixtureMode {
-            installFixture(ready: arguments.contains("--wilted-ui-fixture-ready"))
+            installFixture(
+                ready: arguments.contains("--wilted-ui-fixture-ready") || arguments.contains("--wilted-ui-fixture-playing"),
+                preparing: arguments.contains("--wilted-ui-fixture-preparing")
+            )
             if arguments.contains("--wilted-ui-fixture-quarantined") {
                 syncLifecycle?.quarantineAccount()
+            }
+            if arguments.contains("--wilted-ui-fixture-playing"), let firstArticle = articles.first(where: { $0.isReady }) {
+                openNowPlaying(for: firstArticle)
+                togglePlayback()
             }
         } else {
             // The account-review gate is durable state, so it has to be restored before
@@ -218,6 +313,27 @@ final class WiltedMacModel {
 
     var canCancelPreparation: Bool { preparation?.cancellable == true }
 
+    /// The player's one-line status, matching the listener's status channel so
+    /// the same condition reads the same way on both platforms. Never color
+    /// alone: the tone accompanies this text rather than replacing it.
+    var playbackStatusMessage: String {
+        if let playbackError { return playbackError }
+        if isPlaying { return "Playing" }
+        if isNowPlaying { return "Paused" }
+        return "Ready"
+    }
+
+    var playbackStatusTone: WiltedStatusTone {
+        if playbackError != nil { return .failure }
+        if isPlaying { return .active }
+        return .neutral
+    }
+
+    /// Elapsed and total, in the listener's wording.
+    var playbackProgressLabel: String {
+        "\(Int(playbackPositionSeconds)) of \(Int(playbackDurationSeconds)) seconds"
+    }
+
     func addArticle() {
         guard let url = URL(string: urlDraft.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             preparation = WiltedMacPreparation(
@@ -285,9 +401,14 @@ final class WiltedMacModel {
     }
 
     func openNowPlaying(for article: WiltedMacArticle) {
+        guard article.isReady else { return }
         selectedArticleID = article.id
         isNowPlaying = true
+        selectedNavigation = .nowPlaying
         playbackError = nil
+        currentTranscript = nil
+        playbackPositionSeconds = 0
+        playbackDurationSeconds = 0
 #if canImport(WiltedProducer)
         guard let playback else { return }
         guard let fixtureRevision else {
@@ -299,6 +420,8 @@ final class WiltedMacModel {
                 do {
                     try await playback.load(revision)
                     self.isPlaying = playback.isPlaying
+                    self.refreshPlaybackReadout()
+                    await self.loadTranscript(itemID: itemID, revisionID: revision.revision.revisionID)
                 } catch { self.playbackError = "Audio could not be loaded." }
             }
             return
@@ -308,10 +431,50 @@ final class WiltedMacModel {
             do {
                 try await playback.load(fixtureRevision)
                 self.isPlaying = playback.isPlaying
+                self.refreshPlaybackReadout()
+                if let itemID = try? ItemID(rawValue: article.id) {
+                    await self.loadTranscript(
+                        itemID: itemID,
+                        revisionID: fixtureRevision.revision.revisionID
+                    )
+                }
             } catch { self.playbackError = "Audio could not be loaded." }
         }
 #endif
     }
+
+    /// Republishes elapsed/total from the controller.
+    ///
+    /// `PlaybackController` advances its own position, but nothing observed it
+    /// while audio ran, so the producer's readout would freeze at the loaded
+    /// value. The player view drives this on a one-second cadence, matching
+    /// the listener's `refreshNowPlayingReadout`.
+    func refreshPlaybackReadout() {
+#if canImport(WiltedProducer)
+        guard let playback else { return }
+        playbackDurationSeconds = playback.durationSeconds
+        playbackPositionSeconds = min(max(0, playback.positionSeconds), max(0, playback.durationSeconds))
+        isPlaying = playback.isPlaying
+#endif
+    }
+
+#if canImport(WiltedProducer)
+    private func loadTranscript(itemID: ItemID, revisionID: RevisionID) async {
+        guard let store else { return }
+        guard let stored = try? await store.transcript(for: itemID, revisionID: revisionID) else {
+            currentTranscript = WiltedMacTranscript(availability: .absent, text: nil)
+            return
+        }
+        let availability: WiltedMacTranscript.Availability = switch stored.availability {
+        case .available: .available
+        case .stale: .stale
+        case .oversized: .oversized
+        case .malformed: .malformed
+        case .absent: .absent
+        }
+        currentTranscript = WiltedMacTranscript(availability: availability, text: stored.text)
+    }
+#endif
 
     func togglePlayback() {
 #if canImport(WiltedProducer)
@@ -321,12 +484,22 @@ final class WiltedMacModel {
             do {
                 try await playback.toggle()
                 self.isPlaying = playback.isPlaying
+                self.refreshPlaybackReadout()
                 await self.queueCurrentPlaybackCheckpoint()
-            } catch { self.playbackError = "Playback is unavailable." }
+            } catch { self.reportAudioRouteFault("Playback is unavailable.") }
         }
 #else
         isPlaying.toggle()
 #endif
+    }
+
+    /// Returns to Library without changing playback state.
+    ///
+    /// The player no longer draws its own back button — the sidebar is
+    /// permanent, so a second way back was redundant and the listener has no
+    /// equivalent — but menu and keyboard paths still need the operation.
+    func returnToLibrary() {
+        selectedNavigation = .library
     }
 
     func rewind() { seek(by: -15) }
@@ -340,10 +513,18 @@ final class WiltedMacModel {
             guard let self else { return }
             do {
                 try await playback.restart()
+                self.refreshPlaybackReadout()
                 await self.queueCurrentPlaybackCheckpoint()
             } catch { self.playbackError = "Playback restart is unavailable." }
         }
 #endif
+    }
+
+    /// Records a playback fault that a route recovery can plausibly clear, so
+    /// the recovery control appears only when it has something to act on.
+    func reportAudioRouteFault(_ message: String) {
+        playbackError = message
+        audioRouteFault = true
     }
 
     func recoverAudioRoute() {
@@ -351,9 +532,18 @@ final class WiltedMacModel {
         guard let playback else { return }
         Task { [weak self] in
             guard let self else { return }
-            do { try await playback.recoverFromRouteChange() }
-            catch { self.playbackError = "Audio route recovery failed." }
+            do {
+                try await playback.recoverFromRouteChange()
+                self.audioRouteFault = false
+                self.playbackError = nil
+                self.refreshPlaybackReadout()
+            } catch {
+                self.playbackError = "Audio route recovery failed."
+            }
         }
+#else
+        audioRouteFault = false
+        playbackError = nil
 #endif
     }
 
@@ -463,7 +653,16 @@ final class WiltedMacModel {
         }
     }
 
-    private func installFixture(ready: Bool) {
+    private func installFixture(ready: Bool, preparing: Bool = false) {
+        if preparing {
+            let url = URL(string: "https://example.test/wilted-preparing-fixture")!
+            guard let itemID = try? ItemID.derive(from: url) else { return }
+            articles = [WiltedMacArticle(
+                id: itemID.rawValue, title: "Preparing article", source: "Example source",
+                url: url, isReady: false
+            )]
+            return
+        }
         guard ready, let store else { return }
         let url = URL(string: "https://example.test/wilted-fixture")!
         guard let itemID = try? ItemID.derive(from: url),
@@ -479,13 +678,24 @@ final class WiltedMacModel {
               ) else { return }
         let mediaURL = URL(fileURLWithPath: "/tmp/wilted-fixture.m4a")
         fixtureRevision = StoredAudioRevision(revision: revision, mediaURL: mediaURL)
+        let fixtureTranscript = try? Transcript(
+            itemID: itemID,
+            revisionID: revisionID,
+            availability: .available,
+            text: "This fixture transcript proves saved article text stays readable while listening.",
+            updatedAt: Timestamp(Date())
+        )
         articles = [WiltedMacArticle(
             id: itemID.rawValue, title: article.title, source: article.source,
             url: article.canonicalURL, isReady: true
         )]
         Task {
             try? await store.save(article: article)
-            try? await store.saveReadyRevision(revision, mediaURL: mediaURL)
+            if let fixtureTranscript {
+                try? await store.saveReadyRevision(revision, mediaURL: mediaURL, transcript: fixtureTranscript)
+            } else {
+                try? await store.saveReadyRevision(revision, mediaURL: mediaURL)
+            }
         }
     }
 
@@ -496,8 +706,9 @@ final class WiltedMacModel {
             do {
                 try await playback.seek(by: seconds)
                 self.isPlaying = playback.isPlaying
+                self.refreshPlaybackReadout()
                 await self.queueCurrentPlaybackCheckpoint()
-            } catch { self.playbackError = "Playback is unavailable." }
+            } catch { self.reportAudioRouteFault("Playback is unavailable.") }
         }
     }
 

@@ -38,7 +38,7 @@ final class WiltedVisualSystemTests: XCTestCase {
     }
 
     func testLiteralNavigationAndTouchTargetContract() {
-        XCTAssertEqual(WiltedNavigation.allCases.map(\.title), ["Library", "Downloads", "Settings"])
+        XCTAssertEqual(WiltedNavigation.allCases.map(\.title), ["Library", "Now Playing", "Downloads", "Settings"])
         XCTAssertEqual(WiltedScreenCopy.libraryEmpty, "Your library is empty")
         XCTAssertEqual(WiltedScreenCopy.noArticles, "No articles yet")
         XCTAssertEqual(WiltedScreenCopy.addArticle, "Add Article")
@@ -52,6 +52,8 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertEqual(WiltedScreenCopy.downloads, "Downloads")
         XCTAssertEqual(WiltedScreenCopy.noDownloads, "No Downloads")
         XCTAssertEqual(WiltedScreenCopy.downloadsEmptyIdentifier, "wilted-no-downloads")
+        XCTAssertEqual(WiltedScreenCopy.nowPlaying, "Now Playing")
+        XCTAssertEqual(WiltedScreenCopy.nowPlayingEmptyIdentifier, "wilted-player-empty")
         XCTAssertEqual(WiltedScreenCopy.downloadsIdentifier, "wilted-downloads")
         XCTAssertEqual(WiltedScreenCopy.settings, "Settings")
         XCTAssertEqual(WiltedScreenCopy.settingsIdentifier, "wilted-settings")

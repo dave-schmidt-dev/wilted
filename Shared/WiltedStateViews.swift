@@ -59,13 +59,7 @@ public struct WiltedStateCard: View {
                     .accessibilityIdentifier(WiltedScreenCopy.stateActionIdentifier)
             }
         }
-        .padding(WiltedTheme.Spacing.large)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(WiltedTheme.color(.card, scheme: colorScheme))
-        .overlay(
-            Rectangle()
-                .stroke(WiltedTheme.color(.steel, scheme: colorScheme), lineWidth: 1)
-        )
+        .wiltedCard(colorScheme)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(fixture.state.accessibilityStatus)
         .accessibilityIdentifier(fixture.state.accessibilityIdentifier)
@@ -163,6 +157,43 @@ public struct WiltedDownloadsShell: View {
     }
 }
 
+/// Truthful placeholder for a reachable Now Playing destination with no
+/// selected article. It stays actionable without pretending playback exists.
+public struct WiltedNowPlayingEmptyView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    private let detail: String
+
+    /// Deliberately without a default. A default would let a new surface
+    /// inherit the other platform's wording silently, which is how the Mac
+    /// came to point at a Downloads destination it does not have.
+    public init(detail: String) {
+        self.detail = detail
+    }
+
+    public var body: some View {
+        VStack(spacing: WiltedTheme.Spacing.large) {
+            Image(systemName: "waveform")
+                .font(WiltedTheme.font(.display))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .accessibilityHidden(true)
+            Text(WiltedScreenCopy.nowPlayingEmpty)
+                .font(WiltedTheme.font(.title))
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+            Text(detail)
+                .font(WiltedTheme.font(.body))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(WiltedTheme.Spacing.xLarge)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(WiltedTheme.color(.page, scheme: colorScheme))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(WiltedScreenCopy.nowPlayingEmpty). \(detail)")
+        .accessibilityIdentifier(WiltedScreenCopy.nowPlayingEmptyIdentifier)
+    }
+}
+
 public struct WiltedSettingsShell: View {
     @Environment(\.colorScheme) private var colorScheme
 
@@ -173,22 +204,13 @@ public struct WiltedSettingsShell: View {
             Text(WiltedScreenCopy.settings)
                 .font(WiltedTheme.font(.display))
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-            HStack {
-                Text(WiltedScreenCopy.audio)
-                    .font(WiltedTheme.font(.body))
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                Spacer()
-                Text(WiltedScreenCopy.audioValue)
-                    .font(WiltedTheme.font(.utility))
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            WiltedSettingsCard(title: WiltedScreenCopy.audio) {
+                WiltedSettingsRow(
+                    WiltedScreenCopy.audioMode,
+                    value: WiltedScreenCopy.audioValue,
+                    identifier: WiltedScreenCopy.audioRowIdentifier
+                )
             }
-            .padding(.horizontal, WiltedTheme.Spacing.medium)
-            .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
-            .background(WiltedTheme.color(.card, scheme: colorScheme))
-            .overlay(Rectangle().stroke(WiltedTheme.color(.steel, scheme: colorScheme), lineWidth: 1))
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("\(WiltedScreenCopy.audio), \(WiltedScreenCopy.audioValue)")
-            .accessibilityIdentifier(WiltedScreenCopy.audioRowIdentifier)
             Spacer()
         }
         .padding(WiltedTheme.Spacing.xLarge)

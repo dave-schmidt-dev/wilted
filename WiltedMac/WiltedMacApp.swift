@@ -12,18 +12,10 @@ struct WiltedMacApp: App {
 
     var body: some Scene {
         WindowGroup {
-            Group {
-                if usesStaticFixture {
-                    WiltedRootView(
-                        fixture: WiltedPreviewFixture.fromLaunchArguments(ProcessInfo.processInfo.arguments)
-                    )
-                } else {
-                    WiltedMacRootView(model: model)
+            WiltedMacRootView(model: model)
+                .task {
+                    model.reconcileSyncOnLaunchOrForeground()
                 }
-            }
-            .task {
-                model.reconcileSyncOnLaunchOrForeground()
-            }
         }
         .commands {
             SidebarCommands()
@@ -35,12 +27,5 @@ struct WiltedMacApp: App {
                 model.checkpointForQuit()
             }
         }
-    }
-
-    private var usesStaticFixture: Bool {
-        let arguments = ProcessInfo.processInfo.arguments
-        return arguments.contains("--wilted-ui-smoke")
-            || arguments.contains("--wilted-ui-fixture-ready") && !arguments.contains("--wilted-ui-fixture-article-flow")
-            || arguments.contains("--wilted-ui-fixture-playing") && !arguments.contains("--wilted-ui-fixture-article-flow")
     }
 }

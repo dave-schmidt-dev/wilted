@@ -81,6 +81,7 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
             "--wilted-listener-pixel-state=\(screen.fixtureState)"
         ] + (screen == .downloads ? ["--wilted-listener-pixel-downloads"] : [])
             + (screen == .settings ? ["--wilted-listener-pixel-settings"] : [])
+            + (screen == .nowPlaying ? ["--wilted-listener-pixel-now-playing"] : [])
             + ["--wilted-listener-pixel-appearance=\(dark ? "dark" : "light")"]
         app.launch()
         XCTAssertTrue(

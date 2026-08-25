@@ -8,7 +8,15 @@ import XCTest
 /// host window and user accessibility settings.
 @MainActor
 final class WiltedPixelSnapshotTests: XCTestCase {
+    /// Single surfaces and state cards render at card scale.
     private let canvas = CGSize(width: 520, height: 260)
+    /// Whole-window compositions render at window scale.
+    ///
+    /// The split-view shells were previously captured on the 520x260 card
+    /// canvas, where the sidebar collapses and renders as a blank rectangle —
+    /// so the pixel suite never actually saw the navigation it was meant to
+    /// verify, and a composition whose sidebar did nothing cleared the gate.
+    private let windowCanvas = CGSize(width: 1100, height: 700)
 
     fileprivate static let visualFixtures = WiltedPreviewFixture.matrix
     fileprivate static let visualVariants = WiltedVisualVariant.matrix
@@ -64,6 +72,49 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                              "Preparing baseline must contain rendered progress content.")
     }
 
+    /// Window baselines are captured at window scale and their detail region
+    /// is genuinely rendered.
+    ///
+    /// **These baselines do not cover the sidebar, and cannot.** A
+    /// `NavigationSplitView`'s navigation column is hosted in a separate
+    /// AppKit split-view hierarchy that `NSHostingView.cacheDisplay` does not
+    /// draw, so it records as a flat rectangle at any canvas size. That is
+    /// precisely why a composition whose sidebar selection did nothing cleared
+    /// this suite and was only caught in attended acceptance.
+    ///
+    /// Sidebar behavior is therefore owned by the Mac XCUITest suite, which
+    /// drives the real app: `testEachDestinationExclusivelyOccupiesTheDetailRegion`
+    /// and `testSidebarListsDestinationsOnlyAndNotTheArticleList`. This test
+    /// asserts only what the pixel path can honestly see, and pins the
+    /// detail-region origin so a future change cannot quietly shrink these
+    /// back to the card canvas where even the detail region was cropped.
+    func testWindowBaselinesCaptureTheDetailRegionAtWindowScale() throws {
+        for appearance in ["light", "dark"] {
+            for shell in ["producer-library", "navigation-selection"] {
+                let testName = shell == "producer-library"
+                    ? "testShippingMacProducerPixelBaselines"
+                    : "testMacNavigationSelectionPixelBaselines"
+                let bitmap = try baselineBitmap(testName: testName, name: "mac-shell-\(shell)-\(appearance)")
+
+                XCTAssertEqual(bitmap.pixelsWide, Int(windowCanvas.width),
+                               "\(shell)-\(appearance) must be captured at window scale")
+                XCTAssertEqual(bitmap.pixelsHigh, Int(windowCanvas.height),
+                               "\(shell)-\(appearance) must be captured at window scale")
+
+                // Sample past the sidebar column into the detail region.
+                let detail = NSRect(
+                    x: 260, y: 0,
+                    width: bitmap.pixelsWide - 260,
+                    height: bitmap.pixelsHigh
+                )
+                XCTAssertGreaterThan(
+                    distinctColorCount(in: bitmap, region: detail), 8,
+                    "\(shell)-\(appearance) detail region is blank; the destination did not render."
+                )
+            }
+        }
+    }
+
     func testMacLibraryShellPixelBaselines() {
         for appearance in WiltedAppearance.allCases {
             let variant = WiltedVisualVariant(
@@ -103,11 +154,14 @@ final class WiltedPixelSnapshotTests: XCTestCase {
             )
             assertSnapshot(
                 render(
+                    // Settings, not Downloads: Downloads is listener-only and
+                    // is no longer offered as a Mac destination.
                     WiltedRootView(
-                        initialSelection: .downloads,
+                        initialSelection: .settings,
                         fixture: WiltedPreviewFixture(state: .ready)
                     ),
-                    variant: variant
+                    variant: variant,
+                    size: windowCanvas
                 ),
                 named: WiltedSnapshotContract.shellName(kind: "navigation-selection", appearance: appearance),
                 testName: "testMacNavigationSelectionPixelBaselines"
@@ -126,7 +180,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                 reduceMotion: false
             )
             assertSnapshot(
-                render(WiltedMacRootView(model: model), variant: variant),
+                render(WiltedMacRootView(model: model), variant: variant, size: windowCanvas),
                 named: WiltedSnapshotContract.shellName(kind: "producer-library", appearance: appearance),
                 testName: "testShippingMacProducerPixelBaselines"
             )
@@ -154,7 +208,12 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         }
     }
 
-    private func render<V: View>(_ view: V, variant: WiltedVisualVariant) -> NSImage {
+    private func render<V: View>(
+        _ view: V,
+        variant: WiltedVisualVariant,
+        size: CGSize? = nil
+    ) -> NSImage {
+        let canvas = size ?? self.canvas
         let content = view
             .environment(\.colorScheme, variant.appearance == .dark ? .dark : .light)
             .environment(
@@ -293,10 +352,14 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         return try XCTUnwrap(NSBitmapImageRep(data: Data(contentsOf: baseline)))
     }
 
-    private func distinctColorCount(in bitmap: NSBitmapImageRep) -> Int {
+    private func distinctColorCount(
+        in bitmap: NSBitmapImageRep,
+        region: NSRect? = nil
+    ) -> Int {
+        let bounds = region ?? NSRect(x: 0, y: 0, width: bitmap.pixelsWide, height: bitmap.pixelsHigh)
         var colors = Set<UInt32>()
-        for y in 0..<bitmap.pixelsHigh {
-            for x in 0..<bitmap.pixelsWide {
+        for y in Int(bounds.minY)..<min(Int(bounds.maxY), bitmap.pixelsHigh) {
+            for x in Int(bounds.minX)..<min(Int(bounds.maxX), bitmap.pixelsWide) {
                 guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
                 let red = UInt32((color.redComponent * 255).rounded())
                 let green = UInt32((color.greenComponent * 255).rounded())

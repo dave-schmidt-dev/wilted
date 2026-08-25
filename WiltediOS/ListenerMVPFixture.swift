@@ -8,9 +8,8 @@ import WiltedSync
 
 /// Account-free composition used only by the listener's production-view UI test.
 ///
-/// The fixture hosts `WiltedListenerLibraryView` and
-/// `WiltedListenerDownloadsView` directly, with a local source file and cache.
-/// It never constructs a Shared preview shell, sync transport, or CloudKit client.
+/// The fixture hosts the same root and listener views as the shipping app, with
+/// a local source file and cache. Only the recovery control is fixture-specific.
 @MainActor
 struct ListenerMVPFixture: View {
     @ObservedObject var model: WiltedListenerAppModel
@@ -78,19 +77,13 @@ struct ListenerMVPFixture: View {
     }
 
     var body: some View {
-        TabView {
-            NavigationStack {
-                WiltedListenerLibraryView(model: model)
-                    .safeAreaInset(edge: .bottom) { fixtureControls }
-            }
-            .tabItem { Label(WiltedScreenCopy.library, systemImage: "books.vertical") }
-
-            WiltedListenerDownloadsView(model: model)
-                .tabItem { Label(WiltedScreenCopy.downloads, systemImage: "arrow.down.circle") }
-
-            WiltedListenerSettingsView(model: model)
-                .tabItem { Label(WiltedScreenCopy.settings, systemImage: "gearshape") }
-        }
+        WiltedRootView(
+            iOSLibrary: AnyView(WiltedListenerLibraryView(model: model)),
+            iOSNowPlaying: AnyView(WiltedListenerNowPlayingView(model: model)),
+            iOSDownloads: AnyView(WiltedListenerDownloadsView(model: model)),
+            iOSSettings: AnyView(WiltedListenerSettingsView(model: model)),
+            iOSOverlay: AnyView(fixtureControls)
+        )
     }
 
     @ViewBuilder

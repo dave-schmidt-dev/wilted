@@ -1,6 +1,17 @@
 import AppKit
 import SwiftUI
 
+/// The producer window.
+///
+/// One sidebar of permanent destinations, and exactly one of them filling the
+/// detail region. The previous composition rendered the Library surface
+/// unconditionally and merely *appended* a player pane, so selecting a
+/// destination changed nothing, the sidebar repeated the article list the
+/// detail already showed, and "Add an article" stayed in the middle of the
+/// window no matter what was selected. Owner acceptance rejected that on
+/// 2026-08-25. Playback no longer needs to sit beside the producer surface to
+/// stay reachable — the sidebar keeps Now Playing one click away, which is the
+/// same guarantee the listener's tab bar gives.
 struct WiltedMacRootView: View {
     @Bindable private var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
@@ -11,40 +22,47 @@ struct WiltedMacRootView: View {
 
     var body: some View {
         NavigationSplitView {
-            List {
-                Section("Library") {
-                    ForEach(model.articles) { article in
-                        Button {
-                            model.openNowPlaying(for: article)
-                        } label: {
-                            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                                Text(article.title)
-                                    .font(WiltedTheme.font(.body))
-                                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                                    .lineLimit(2)
-                                Text(article.isReady ? "Ready to play" : "Preparing")
-                                    .font(WiltedTheme.font(.caption))
-                                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("wilted-article-row")
+            List(selection: $model.selectedNavigation) {
+                ForEach(WiltedMacNavigation.allCases) { destination in
+                    Button {
+                        model.selectedNavigation = destination
+                    } label: {
+                        Label(destination.title, systemImage: destination.symbolName)
+                            .foregroundStyle(
+                                model.selectedNavigation == destination
+                                    ? WiltedTheme.color(.primaryText, scheme: colorScheme)
+                                    : WiltedTheme.color(.secondaryText, scheme: colorScheme)
+                            )
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    if model.articles.isEmpty {
-                        Text("Your library is empty")
-                            .font(WiltedTheme.font(.body))
-                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                            .accessibilityIdentifier("wilted-mac-empty-library")
-                    }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
+                    .listRowBackground(
+                        model.selectedNavigation == destination
+                            ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.24)
+                            : Color.clear
+                    )
+                    .accessibilityIdentifier("wilted-navigation-\(destination.rawValue)")
                 }
             }
+            // The sidebar carries a page-token background rather than the
+            // default AppKit material. It matches the rest of the palette, and
+            // the material was additionally invisible to offscreen rendering,
+            // which is why the navigation column recorded as a blank rectangle
+            // in every Mac pixel baseline.
+            .scrollContentBackground(.hidden)
+            .background(WiltedTheme.color(.page, scheme: colorScheme))
+            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 260)
             .navigationTitle("Wilted")
-            .accessibilityIdentifier("wilted-mac-library")
+            .accessibilityIdentifier("wilted-mac-sidebar")
         } detail: {
-            if model.isNowPlaying, let article = model.currentArticle {
-                WiltedMacNowPlayingView(model: model, article: article)
-            } else {
+            switch model.selectedNavigation {
+            case .library:
                 WiltedMacLibraryView(model: model)
+            case .nowPlaying:
+                WiltedMacNowPlayingView(model: model)
+            case .settings:
+                WiltedMacSettingsView(model: model)
             }
         }
         .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
@@ -92,30 +110,34 @@ private struct WiltedWindowTitleHider: NSViewRepresentable {
     }
 }
 
-/// The producer card treatment: a `.card` fill with a hairline `.steel` edge,
-/// matching `Shared/WiltedStateViews.swift` so the two surfaces cannot drift.
-private struct WiltedMacCard: ViewModifier {
-    let colorScheme: ColorScheme
+/// Every destination opens with its own name, at one weight, in one place.
+/// Three different title treatments across the two apps is what let a
+/// composer heading pass for a destination heading.
+private struct WiltedMacDestination<Content: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let title: String
+    let identifier: String
+    @ViewBuilder let content: Content
 
-    func body(content: Content) -> some View {
-        content
-            .padding(WiltedTheme.Spacing.large)
-            .background(
-                WiltedTheme.color(.card, scheme: colorScheme),
-                in: RoundedRectangle(cornerRadius: 8)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(WiltedTheme.color(.steel, scheme: colorScheme), lineWidth: 1)
-            )
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xLarge) {
+                Text(title)
+                    .font(WiltedTheme.font(.display))
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                content
+            }
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(WiltedTheme.Spacing.section)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(WiltedTheme.color(.page, scheme: colorScheme))
+        .accessibilityIdentifier(identifier)
     }
 }
 
-private extension View {
-    func wiltedCard(_ colorScheme: ColorScheme) -> some View {
-        modifier(WiltedMacCard(colorScheme: colorScheme))
-    }
-}
+// MARK: - Library
 
 private struct WiltedMacLibraryView: View {
     @Bindable private var model: WiltedMacModel
@@ -126,53 +148,57 @@ private struct WiltedMacLibraryView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xLarge) {
-                Text("Add an article")
-                    .font(WiltedTheme.font(.display))
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                Text("Paste an HTTPS article URL. Wilted keeps the saved article and audio on this Mac.")
-                    .font(WiltedTheme.font(.body))
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .fixedSize(horizontal: false, vertical: true)
+        WiltedMacDestination(title: WiltedScreenCopy.library, identifier: "wilted-mac-library-detail") {
+            composer
 
-                WiltedMacSyncControls(model: model)
+            if let preparation = model.preparation {
+                WiltedMacPreparationView(model: model, preparation: preparation)
+            }
 
-                HStack(spacing: WiltedTheme.Spacing.medium) {
-                    WiltedMacArticleURLField(text: $model.urlDraft)
-                    Button("Add Article") {
-                        model.addArticle()
-                    }
-                    .keyboardShortcut(.return)
-                    .accessibilityIdentifier("wilted-add-article-url")
-                }
-
-                if let preparation = model.preparation {
-                    WiltedMacPreparationView(model: model, preparation: preparation)
-                }
-
-                if model.articles.isEmpty {
-                    ContentUnavailableView(
-                        "Your library is empty", systemImage: "tray",
-                        description: Text("Add an article to start listening.")
-                    )
-                    .accessibilityIdentifier("wilted-mac-empty-state")
-                } else {
-                    VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-                        Text("Saved articles")
-                            .font(WiltedTheme.font(.title))
-                            .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                        ForEach(model.articles) { article in
-                            WiltedMacArticleRow(model: model, article: article)
-                        }
+            if model.articles.isEmpty {
+                ContentUnavailableView(
+                    WiltedScreenCopy.libraryEmpty,
+                    systemImage: "tray",
+                    description: Text(WiltedScreenCopy.libraryEmptyDetailProducer)
+                )
+                .accessibilityIdentifier("wilted-mac-empty-state")
+            } else {
+                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+                    Text(WiltedScreenCopy.savedArticles)
+                        .font(WiltedTheme.font(.title))
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    ForEach(model.articles) { article in
+                        WiltedMacArticleRow(model: model, article: article)
                     }
                 }
             }
-            .frame(maxWidth: 760, alignment: .leading)
-            .padding(WiltedTheme.Spacing.section)
         }
-        .background(WiltedTheme.color(.page, scheme: colorScheme))
-        .accessibilityIdentifier("wilted-mac-library-detail")
+    }
+
+    /// The composer is a card inside Library, not the page itself. As the
+    /// page's own heading it read as an unrelated form sitting where the
+    /// library was supposed to be.
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+            Text(WiltedScreenCopy.addArticleTitle)
+                .font(WiltedTheme.font(.title))
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+            Text(WiltedScreenCopy.addArticleDetail)
+                .font(WiltedTheme.font(.body))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: WiltedTheme.Spacing.medium) {
+                WiltedMacArticleURLField(text: $model.urlDraft)
+                Button(WiltedScreenCopy.addArticle) {
+                    model.addArticle()
+                }
+                .keyboardShortcut(.return)
+                .accessibilityIdentifier("wilted-add-article-url")
+            }
+        }
+        .wiltedCard(colorScheme)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-mac-composer")
     }
 }
 
@@ -194,9 +220,12 @@ struct WiltedMacArticleURLField: View {
             .font(WiltedTheme.font(.body))
             .padding(.horizontal, WiltedTheme.Spacing.medium)
             .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
-            .background(WiltedTheme.color(.card, scheme: colorScheme), in: RoundedRectangle(cornerRadius: 6))
+            .background(
+                WiltedTheme.color(.page, scheme: colorScheme),
+                in: RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
+            )
             .overlay(
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
                     .stroke(
                         isFocused || focusedOverride == true
                             ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme)
@@ -206,61 +235,6 @@ struct WiltedMacArticleURLField: View {
             )
             .focused($isFocused)
             .accessibilityIdentifier("wilted-article-url")
-    }
-}
-
-private struct WiltedMacSyncControls: View {
-    let model: WiltedMacModel
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            HStack {
-                Label("Sync", systemImage: "arrow.triangle.2.circlepath")
-                    .font(WiltedTheme.font(.title))
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                Spacer()
-                Text(model.syncStatus.phase.rawValue.capitalized)
-                    .font(WiltedTheme.font(.utility))
-                    .foregroundStyle(
-                        model.syncStatus.phase == .failed
-                            ? WiltedTheme.color(.error, scheme: colorScheme)
-                            : WiltedTheme.color(.secondaryText, scheme: colorScheme)
-                    )
-                    .accessibilityIdentifier("wilted-sync-status")
-            }
-            Text(model.syncStatus.detail)
-                .font(WiltedTheme.font(.caption))
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .accessibilityIdentifier("wilted-sync-detail")
-            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                Text("Producer identity: \(model.syncObservability.producerIdentity.label)")
-                Text("Last fetch: \(model.syncObservability.lastSuccessfulFetchAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Not yet")")
-                Text("Last send: \(model.syncObservability.lastSuccessfulSendAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Not yet")")
-            }
-            .font(WiltedTheme.font(.utility))
-            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-            .accessibilityIdentifier("wilted-sync-observability")
-            HStack(spacing: WiltedTheme.Spacing.small) {
-                Button("Refresh") { model.refreshSync() }
-                    .disabled(model.syncStatus.phase == .disabled || model.syncStatus.phase == .quarantined)
-                    .accessibilityIdentifier("wilted-sync-refresh")
-                Button("Upload") { model.uploadPendingSync() }
-                    .disabled(model.syncStatus.phase == .disabled || model.syncStatus.phase == .quarantined)
-                    .accessibilityIdentifier("wilted-sync-upload")
-                if model.syncStatus.phase == .fetching || model.syncStatus.phase == .sending || model.syncStatus.phase == .staging {
-                    Button("Cancel") { model.cancelSync() }
-                        .accessibilityIdentifier("wilted-sync-cancel")
-                }
-                if model.syncStatus.phase == .quarantined {
-                    Button("Use Current iCloud Account") { model.resetSyncAccount() }
-                        .accessibilityIdentifier("wilted-sync-use-current-account")
-                }
-            }
-        }
-        .wiltedCard(colorScheme)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-sync-controls")
     }
 }
 
@@ -319,14 +293,12 @@ private struct WiltedMacArticleRow: View {
                 Text(article.isReady ? "Ready to play" : "Preparing")
                     .font(WiltedTheme.font(.utility))
                     .foregroundStyle(
-                        article.isReady
-                            ? WiltedTheme.color(.success, scheme: colorScheme)
-                            : WiltedTheme.color(.secondaryText, scheme: colorScheme)
+                        (article.isReady ? WiltedStatusTone.positive : .neutral).color(colorScheme)
                     )
             }
             Spacer()
             if article.isReady {
-                Button("Open Now Playing") {
+                Button(WiltedScreenCopy.openPlayer) {
                     model.openNowPlaying(for: article)
                 }
                 .accessibilityIdentifier("wilted-open-now-playing")
@@ -338,64 +310,231 @@ private struct WiltedMacArticleRow: View {
     }
 }
 
+// MARK: - Now Playing
+
+/// The producer's player, carrying the same components as the listener's:
+/// mark, title, source, progress, elapsed/total, status, transports, restart,
+/// and transcript. It previously had transports and nothing else, so the Mac
+/// could not answer how far into an article it was.
 private struct WiltedMacNowPlayingView: View {
     let model: WiltedMacModel
-    let article: WiltedMacArticle
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(spacing: WiltedTheme.Spacing.xLarge) {
-            WiltedMark(size: 64, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-            Text("Now Playing")
-                .font(WiltedTheme.font(.display))
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-            Text(article.title)
-                .font(WiltedTheme.font(.title))
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                .multilineTextAlignment(.center)
-            Text(article.source)
-                .font(WiltedTheme.font(.body))
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-
-            HStack(spacing: WiltedTheme.Spacing.large) {
-                Button { model.rewind() } label: {
-                    Image(systemName: "gobackward.15")
-                }
-                .accessibilityLabel("Rewind 15 seconds")
-                .accessibilityIdentifier("wilted-player-rewind")
-                Button { model.togglePlayback() } label: {
-                    Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
-                }
-                .accessibilityLabel(model.isPlaying ? "Pause" : "Play")
-                .accessibilityIdentifier("wilted-player-play-pause")
-                Button { model.forward() } label: {
-                    Image(systemName: "goforward.30")
-                }
-                .accessibilityLabel("Skip forward 30 seconds")
-                .accessibilityIdentifier("wilted-player-forward")
-            }
-            .buttonStyle(.bordered)
-            .font(WiltedTheme.font(.title))
-
-            Button("Restart") { model.restartPlayback() }
-                .accessibilityIdentifier("wilted-player-restart")
-
-            Button("Recover audio route") { model.recoverAudioRoute() }
-                .accessibilityIdentifier("wilted-player-route-recovery")
-                .font(WiltedTheme.font(.caption))
-
-            if let error = model.playbackError {
-                Text(error)
-                    .font(WiltedTheme.font(.body))
-                    .foregroundStyle(WiltedTheme.color(.error, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-player-error")
+        Group {
+            if let article = model.currentArticle {
+                player(article)
+            } else {
+                WiltedNowPlayingEmptyView(detail: WiltedScreenCopy.nowPlayingEmptyDetailProducer)
+                    .accessibilityIdentifier("wilted-now-playing")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(WiltedTheme.Spacing.section)
         .background(WiltedTheme.color(.page, scheme: colorScheme))
+    }
+
+    private func player(_ article: WiltedMacArticle) -> some View {
+        ScrollView {
+            VStack(spacing: WiltedTheme.Spacing.large) {
+                WiltedMark(size: 64, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+
+                VStack(spacing: WiltedTheme.Spacing.xSmall) {
+                    Text(article.title)
+                        .font(WiltedTheme.font(.title))
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                        .multilineTextAlignment(.center)
+                    Text(article.source)
+                        .font(WiltedTheme.font(.utility))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                }
+
+                ProgressView(
+                    value: model.playbackPositionSeconds,
+                    total: max(1, model.playbackDurationSeconds)
+                )
+                .tint(WiltedTheme.color(.progress, scheme: colorScheme))
+                .accessibilityLabel("Playback progress")
+                .accessibilityValue(model.playbackProgressLabel)
+                .accessibilityIdentifier("wilted-now-playing-progress")
+
+                Text(model.playbackProgressLabel)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+
+                Text(model.playbackStatusMessage)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(model.playbackStatusTone.color(colorScheme))
+                    .accessibilityIdentifier("wilted-now-playing-status")
+
+                HStack(spacing: WiltedTheme.Spacing.medium) {
+                    transport("gobackward.15", label: "Rewind 15 seconds",
+                              identifier: WiltedScreenCopy.playerRewindIdentifier) { model.rewind() }
+                    transport(model.isPlaying ? "pause.fill" : "play.fill",
+                              label: model.isPlaying ? "Pause" : "Play",
+                              identifier: WiltedScreenCopy.playerPlayPauseIdentifier,
+                              prominent: true) { model.togglePlayback() }
+                    transport("goforward.30", label: "Skip forward 30 seconds",
+                              identifier: WiltedScreenCopy.playerForwardIdentifier) { model.forward() }
+                }
+
+                Button("Restart") { model.restartPlayback() }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("wilted-player-restart")
+
+                // Always rendered, like the listener's. A missing transcript
+                // resolves to a row that says so; it does not disappear.
+                let transcript = model.currentTranscript ?? .unavailable
+                WiltedTranscriptSection(
+                    isReadable: transcript.isReadable,
+                    title: transcript.disclosureTitle,
+                    text: transcript.text,
+                    unavailableLabel: transcript.unavailableLabel,
+                    identifier: "wilted-now-playing-transcript"
+                )
+
+                if let error = model.playbackError {
+                    Text(error)
+                        .font(WiltedTheme.font(.body))
+                        .foregroundStyle(WiltedTheme.color(.error, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-player-error")
+                }
+
+                // Offered only against a fault it can actually clear, the way
+                // account review is offered only while sync is quarantined.
+                if model.audioRouteFault {
+                    Button("Recover audio route") { model.recoverAudioRoute() }
+                        .buttonStyle(.bordered)
+                        .font(WiltedTheme.font(.caption))
+                        .accessibilityIdentifier("wilted-player-route-recovery")
+                }
+            }
+            .frame(maxWidth: 520)
+            .frame(maxWidth: .infinity)
+            .padding(WiltedTheme.Spacing.section)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Now Playing. \(article.title)")
         .accessibilityIdentifier("wilted-now-playing")
+        .task(id: article.id) {
+            while !Task.isCancelled {
+                model.refreshPlaybackReadout()
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func transport(
+        _ symbol: String,
+        label: String,
+        identifier: String,
+        prominent: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        let icon = Image(systemName: symbol)
+            .font(.title3)
+            .frame(
+                width: WiltedTheme.Spacing.minimumTouchTarget,
+                height: WiltedTheme.Spacing.minimumTouchTarget
+            )
+        if prominent {
+            Button(action: action) { icon }
+                .buttonStyle(.borderedProminent)
+                .accessibilityLabel(label)
+                .accessibilityIdentifier(identifier)
+        } else {
+            Button(action: action) { icon }
+                .buttonStyle(.bordered)
+                .accessibilityLabel(label)
+                .accessibilityIdentifier(identifier)
+        }
+    }
+}
+
+// MARK: - Settings
+
+/// Sync used to sit inside Library, above the article composer, which is both
+/// the wrong altitude and out of step with the listener, where the same facts
+/// live in Settings.
+private struct WiltedMacSettingsView: View {
+    let model: WiltedMacModel
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        WiltedMacDestination(title: WiltedScreenCopy.settings, identifier: "wilted-mac-settings") {
+            syncCard
+            WiltedSettingsCard(title: WiltedScreenCopy.audio) {
+                WiltedSettingsRow(
+                    WiltedScreenCopy.audioMode,
+                    value: WiltedScreenCopy.audioValue,
+                    identifier: WiltedScreenCopy.audioRowIdentifier
+                )
+            }
+        }
+    }
+
+    private var syncCard: some View {
+        WiltedSettingsCard(title: WiltedScreenCopy.sync) {
+            WiltedSettingsRow(
+                "Status",
+                value: model.syncStatus.phase.rawValue.capitalized,
+                identifier: "wilted-sync-status",
+                tone: model.syncStatus.phase.tone
+            )
+            Divider()
+            WiltedSettingsRow(
+                "Detail",
+                value: model.syncStatus.detail,
+                identifier: "wilted-sync-detail"
+            )
+            Divider()
+            WiltedSettingsRow(
+                "Producer identity",
+                value: model.syncObservability.producerIdentity.label,
+                identifier: "wilted-sync-producer-identity"
+            )
+            Divider()
+            WiltedSettingsRow("Last fetch", value: lastFetchLabel, identifier: "wilted-sync-last-fetch")
+            Divider()
+            WiltedSettingsRow("Last send", value: lastSendLabel, identifier: "wilted-sync-last-send")
+
+            HStack(spacing: WiltedTheme.Spacing.small) {
+                Button("Refresh") { model.refreshSync() }
+                    .disabled(syncActionsDisabled)
+                    .accessibilityIdentifier("wilted-sync-refresh")
+                Button("Upload") { model.uploadPendingSync() }
+                    .disabled(syncActionsDisabled)
+                    .accessibilityIdentifier("wilted-sync-upload")
+                if model.syncStatus.phase == .fetching
+                    || model.syncStatus.phase == .sending
+                    || model.syncStatus.phase == .staging {
+                    Button("Cancel") { model.cancelSync() }
+                        .accessibilityIdentifier("wilted-sync-cancel")
+                }
+            }
+            .padding(.top, WiltedTheme.Spacing.xSmall)
+
+            if model.syncStatus.phase == .quarantined {
+                WiltedAccountRecoveryNotice(identifier: "wilted-sync-use-current-account") {
+                    model.resetSyncAccount()
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-sync-controls")
+    }
+
+    private var syncActionsDisabled: Bool {
+        model.syncStatus.phase == .disabled || model.syncStatus.phase == .quarantined
+    }
+
+    private var lastFetchLabel: String {
+        model.syncObservability.lastSuccessfulFetchAt
+            .map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Not yet"
+    }
+
+    private var lastSendLabel: String {
+        model.syncObservability.lastSuccessfulSendAt
+            .map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Not yet"
     }
 }
