@@ -129,8 +129,10 @@ omission: Wilted has no account of its own, so there is nothing to enrol in.
 - A quarantined iCloud account shows the same detail copy and the same **Use Current iCloud
   Account** control as the Mac. Before this change a quarantined iPhone showed a
   non-retryable red line and had no way out.
-- An empty library shows **No articles yet** with *Articles you prepare on your Mac appear
-  here.* — listener wording.
+- An empty library shows **Your library is empty** with *Articles you prepare on your Mac
+  appear here.* Both apps share the title and differ only on the detail line, because only
+  the Mac can act on it. (**No articles yet** exists in `WiltedScreenCopy` but is used only
+  by the preview shell, not by either shipping library.)
 - Each article is a card with title, source, and local availability. **Play** is disabled
   until audio is downloaded. Metadata-only items expose **Download**; downloaded items
   expose **Remove Download**. **Transcript** is a disclosure when readable and states why
