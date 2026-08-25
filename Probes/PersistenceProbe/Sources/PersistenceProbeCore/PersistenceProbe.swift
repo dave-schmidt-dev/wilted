@@ -134,10 +134,16 @@ public struct PersistenceInspection: Codable, Equatable, Sendable {
 
 // Keep the entity names stable across schema versions. SwiftData derives the
 // persistent entity name from the nested type name, not its schema namespace.
+//
+// The deletion flag is `isRemoved` for the reason spelled out in
+// `LocalLibraryStore`: SwiftData reserves both `isDeleted` and `deleted`, and a
+// `@Model` property using either reads back `false` no matter what is on disk.
+// This probe exists to catch persistence defects, so a field it cannot read
+// back would make its own deletion check vacuous.
 enum PersistenceSchemaV1Models {
     @Model final class ArticleRecord {
-        @Attribute(.unique) var id: String; var canonicalURL: String; var title: String; var createdAt: Date; var deleted: Bool; var schemaVersion: Int
-        init(id: String, canonicalURL: String, title: String, createdAt: Date, deleted: Bool, schemaVersion: Int) { self.id=id; self.canonicalURL=canonicalURL; self.title=title; self.createdAt=createdAt; self.deleted=deleted; self.schemaVersion=schemaVersion }
+        @Attribute(.unique) var id: String; var canonicalURL: String; var title: String; var createdAt: Date; var isRemoved: Bool; var schemaVersion: Int
+        init(id: String, canonicalURL: String, title: String, createdAt: Date, deleted: Bool, schemaVersion: Int) { self.id=id; self.canonicalURL=canonicalURL; self.title=title; self.createdAt=createdAt; self.isRemoved=deleted; self.schemaVersion=schemaVersion }
     }
     @Model final class RevisionRecord {
         @Attribute(.unique) var id: String; var itemID: String; var duration: Double; var byteCount: Int; var contentHash: String; var mediaType: String; var createdAt: Date; var readiness: String; var schemaVersion: Int
@@ -163,8 +169,8 @@ enum PersistenceSchemaV1Models {
 
 enum PersistenceSchemaV2Models {
     @Model final class ArticleRecord {
-        @Attribute(.unique) var id: String; var canonicalURL: String; var title: String; var source: String?; var createdAt: Date; var deleted: Bool; var schemaVersion: Int
-        init(_ v:ProbeArticle,schemaVersion:Int=2){id=v.id;canonicalURL=v.canonicalURL;title=v.title;source=v.source;createdAt=v.createdAt;deleted=v.deleted;self.schemaVersion=schemaVersion}
+        @Attribute(.unique) var id: String; var canonicalURL: String; var title: String; var source: String?; var createdAt: Date; var isRemoved: Bool; var schemaVersion: Int
+        init(_ v:ProbeArticle,schemaVersion:Int=2){id=v.id;canonicalURL=v.canonicalURL;title=v.title;source=v.source;createdAt=v.createdAt;isRemoved=v.deleted;self.schemaVersion=schemaVersion}
     }
     @Model final class RevisionRecord {
         @Attribute(.unique) var id:String; var itemID:String; var duration:Double; var byteCount:Int; var contentHash:String; var mediaType:String; var mediaLocation:String?; var createdAt:Date; var readiness:String; var schemaVersion:Int
@@ -268,7 +274,7 @@ public actor PersistenceStore {
         descriptor.fetchLimit = 1
         guard let record = try context.fetch(descriptor).first else { return nil }
         return ProbeArticle(id: record.id, canonicalURL: record.canonicalURL, title: record.title,
-                            source: record.source, createdAt: record.createdAt, deleted: record.deleted)
+                            source: record.source, createdAt: record.createdAt, deleted: record.isRemoved)
     }
 
     public func fetchPlayback(id: String) throws -> ProbePlayback? {

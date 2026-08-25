@@ -11,9 +11,11 @@ final class WiltedMacSmokeUITests: XCTestCase {
 
         let navLibrary = app.descendants(matching: .any)["wilted-navigation-library"]
         let navNowPlaying = app.descendants(matching: .any)["wilted-navigation-nowPlaying"]
+        let navProcessor = app.descendants(matching: .any)["wilted-navigation-processor"]
         let navSettings = app.descendants(matching: .any)["wilted-navigation-settings"]
         XCTAssertTrue(navLibrary.waitForExistence(timeout: 5))
         XCTAssertTrue(navNowPlaying.waitForExistence(timeout: 5))
+        XCTAssertTrue(navProcessor.waitForExistence(timeout: 5))
         XCTAssertTrue(navSettings.waitForExistence(timeout: 5))
 
         // Library owns the composer and the empty state.
@@ -44,8 +46,14 @@ final class WiltedMacSmokeUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter().wait(for: [composerGone], timeout: 5), .completed)
 
+        navProcessor.click()
+        let processorDetail = app.descendants(matching: .any)["wilted-mac-processor-detail"]
+        XCTAssertTrue(processorDetail.waitForExistence(timeout: 5))
+        XCTAssertFalse(syncControls.exists)
+
         navSettings.click()
         XCTAssertTrue(syncControls.waitForExistence(timeout: 5))
+        XCTAssertFalse(processorDetail.exists)
         let playerGone = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == false"), object: player
         )
@@ -56,6 +64,58 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(urlField.waitForExistence(timeout: 5))
         XCTAssertTrue(emptyState.exists)
         XCTAssertFalse(syncControls.exists)
+    }
+
+    /// Preparation history was written to the journal and read by nothing, so
+    /// a run that failed while the window was closed left no trace.
+    func testProcessorReportsActiveWorkAndRunHistory() {
+        let app = launch(arguments: ["--wilted-ui-smoke"])
+
+        let navProcessor = app.descendants(matching: .any)["wilted-navigation-processor"]
+        XCTAssertTrue(navProcessor.waitForExistence(timeout: 5))
+        navProcessor.click()
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-mac-processor-detail"].waitForExistence(timeout: 5)
+        )
+        // A fixture library has never prepared anything, so both regions
+        // state their emptiness rather than rendering nothing at all.
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-processor-idle"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-processor-empty"].exists)
+    }
+
+    /// The library had no removal path, so anything prepared once stayed on
+    /// screen permanently, including rows written before fixture mode moved to
+    /// a temporary directory.
+    func testLibraryRowOffersRemoval() {
+        let app = launch(arguments: ["--wilted-ui-fixture-ready"])
+
+        let row = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-article-row-'"))
+            .firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+
+        let actions = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-article-actions-'"))
+            .firstMatch
+        XCTAssertTrue(actions.waitForExistence(timeout: 5))
+        actions.click()
+
+        // Drive the removal rather than merely proving the control is drawn.
+        // This is the library's only destructive path, so "the menu exists" is
+        // not evidence that pressing it removes anything.
+        let remove = app.menuItems["Remove"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 5))
+        remove.click()
+
+        XCTAssertTrue(
+            row.waitForNonExistence(timeout: 10),
+            "Remove left the article on screen; the row must disappear once the item is tombstoned."
+        )
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-mac-empty-state"].waitForExistence(timeout: 10),
+            "Removing the only article must fall back to the empty state."
+        )
     }
 
     /// The sidebar lists destinations only. It used to repeat every article the

@@ -1,7 +1,53 @@
 import SwiftUI
 
+/// Elapsed and total playback time, in a form a person can read.
+///
+/// Both apps previously printed a raw second count, so a half-hour article
+/// read "1743 seconds". Seconds are the right storage unit and the wrong
+/// display unit. Kept beside the screen copy because that is what this is:
+/// the words the player says about time.
+public enum WiltedDuration {
+    /// `h:mm:ss` at an hour or more, `m:ss` below it. Negative and
+    /// non-finite inputs collapse to zero rather than printing `-1:-30`.
+    public static func clock(_ seconds: TimeInterval) -> String {
+        let total = Int(bounded(seconds).rounded())
+        let (hours, minutes, secs) = (total / 3600, (total % 3600) / 60, total % 60)
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, secs)
+            : String(format: "%d:%02d", minutes, secs)
+    }
+
+    /// The spoken form. VoiceOver reading "1743" is the same defect as
+    /// printing it, and it cannot infer units from a colon.
+    public static func spoken(_ seconds: TimeInterval) -> String {
+        let total = Int(bounded(seconds).rounded())
+        let (hours, minutes, secs) = (total / 3600, (total % 3600) / 60, total % 60)
+        var parts: [String] = []
+        if hours > 0 { parts.append("\(hours) hour\(hours == 1 ? "" : "s")") }
+        if minutes > 0 { parts.append("\(minutes) minute\(minutes == 1 ? "" : "s")") }
+        if secs > 0 || parts.isEmpty { parts.append("\(secs) second\(secs == 1 ? "" : "s")") }
+        return parts.joined(separator: " ")
+    }
+
+    /// The player's one-line readout: elapsed against total.
+    public static func progress(position: TimeInterval, duration: TimeInterval) -> String {
+        "\(clock(position)) of \(clock(duration))"
+    }
+
+    /// The spoken readout, for accessibility values.
+    public static func spokenProgress(position: TimeInterval, duration: TimeInterval) -> String {
+        "\(spoken(position)) of \(spoken(duration))"
+    }
+
+    private static func bounded(_ seconds: TimeInterval) -> TimeInterval {
+        seconds.isFinite ? max(0, seconds) : 0
+    }
+}
+
 public enum WiltedScreenCopy {
     public static let rootIdentifier = "wilted-root"
+    public static let processor = "Processor"
+    public static let processorIdentifier = "wilted-processor"
     public static let library = "Library"
     public static let libraryIdentifier = "wilted-library"
     public static let libraryEmpty = "Your library is empty"
@@ -164,12 +210,6 @@ public struct WiltedRootView: View {
                     .tag(WiltedNavigation.nowPlaying)
 
                 NavigationStack {
-                    destination(for: .downloads)
-                }
-                    .tabItem { Label(WiltedScreenCopy.downloads, systemImage: WiltedNavigation.downloads.symbolName) }
-                    .tag(WiltedNavigation.downloads)
-
-                NavigationStack {
                     destination(for: .settings)
                 }
                     .tabItem { Label(WiltedScreenCopy.settings, systemImage: WiltedNavigation.settings.symbolName) }
@@ -177,7 +217,7 @@ public struct WiltedRootView: View {
             }
             // Fixture-only recovery controls are injected above the selected
             // navigation stack. A bottom inset occupies the tab bar's hit
-            // region and can intercept Now Playing and Downloads taps.
+            // region and can intercept Now Playing taps.
             .safeAreaInset(edge: .top, spacing: 0) {
                 if let iOSOverlay { iOSOverlay }
             }

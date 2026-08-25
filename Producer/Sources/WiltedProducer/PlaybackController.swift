@@ -65,6 +65,17 @@ public final class PlaybackController {
     public private(set) var positionSeconds: TimeInterval = 0
     public private(set) var durationSeconds: TimeInterval = 0
     public private(set) var isPlaying = false
+    /// The playhead as the audio engine reports it right now.
+    ///
+    /// `positionSeconds` is checkpoint state: it moves only when something
+    /// causal happens (load, seek, checkpoint), because that is the value
+    /// that gets persisted and synced. A readout that polls it while audio
+    /// runs therefore sees it frozen at the last checkpoint, which is why the
+    /// producer's elapsed time only moved when a transport button was
+    /// pressed. These two are the display reads, and they write nothing.
+    public var livePositionSeconds: TimeInterval { clamp(backend.currentTime) }
+    public var liveIsPlaying: Bool { backend.isPlaying }
+
     public private(set) var sessionID: String?
     public private(set) var sequence: Int64 = 1
     public private(set) var intent: PlaybackIntent = .progress

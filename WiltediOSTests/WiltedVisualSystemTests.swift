@@ -90,4 +90,30 @@ final class WiltedVisualSystemTests: XCTestCase {
         )
         XCTAssertEqual(signatures.count, WiltedPreviewState.allCases.count * WiltedVisualVariant.matrix.count)
     }
+
+    /// The reported defect: a 29-minute article read "1743 seconds" on both
+    /// platforms. These lock the format, not just the fix.
+    func testDurationsReadAsClockTimeRatherThanRawSeconds() {
+        XCTAssertEqual(WiltedDuration.clock(1743), "29:03")
+        XCTAssertEqual(WiltedDuration.clock(120), "2:00")
+        XCTAssertEqual(WiltedDuration.clock(0), "0:00")
+        XCTAssertEqual(WiltedDuration.clock(9), "0:09")
+        XCTAssertEqual(WiltedDuration.clock(3600), "1:00:00")
+        XCTAssertEqual(WiltedDuration.clock(3661), "1:01:01")
+        // Nothing may print a negative or non-finite clock.
+        XCTAssertEqual(WiltedDuration.clock(-90), "0:00")
+        XCTAssertEqual(WiltedDuration.clock(.infinity), "0:00")
+        XCTAssertEqual(WiltedDuration.clock(.nan), "0:00")
+        XCTAssertEqual(WiltedDuration.progress(position: 31, duration: 1743), "0:31 of 29:03")
+    }
+
+    /// VoiceOver cannot infer units from a colon, so the spoken form must carry
+    /// the words. Reading "twenty-nine oh three" is the same defect as printing
+    /// "1743".
+    func testSpokenDurationsCarryUnitsRatherThanColons() {
+        for value in [WiltedDuration.spoken(1743), WiltedDuration.spokenProgress(position: 31, duration: 1743)] {
+            XCTAssertFalse(value.contains(":"), "spoken duration must not rely on a colon: \(value)")
+            XCTAssertTrue(value.lowercased().contains("minute"), "spoken duration must name its units: \(value)")
+        }
+    }
 }

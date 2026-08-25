@@ -16,14 +16,6 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
         assertSnapshot(launch(screen: .library, dark: false), named: "listener-library-light")
     }
 
-    func testListenerDownloadsDarkPixelBaseline() {
-        assertSnapshot(launch(screen: .downloads, dark: true), named: "listener-downloads-dark")
-    }
-
-    func testListenerDownloadsLightPixelBaseline() {
-        assertSnapshot(launch(screen: .downloads, dark: false), named: "listener-downloads-light")
-    }
-
     func testListenerSettingsDarkPixelBaseline() {
         assertSnapshot(launch(screen: .settings, dark: true), named: "listener-settings-dark")
     }
@@ -50,7 +42,6 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
 
     private enum Screen: String {
         case library
-        case downloads
         case settings
         case nowPlaying
         case terminalFailure = "terminal-failure"
@@ -59,13 +50,12 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
             switch self {
             case .nowPlaying: "nowPlaying"
             case .terminalFailure: "terminalFailure"
-            case .library, .downloads, .settings: "library"
+            case .library, .settings: "library"
             }
         }
 
         var readyIdentifier: String {
             switch self {
-            case .downloads: "wilted-downloads"
             case .settings: "wilted-settings"
             case .nowPlaying: "wilted-player"
             case .library, .terminalFailure: "wilted-listener-status"
@@ -79,7 +69,7 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
             "-ApplePersistenceIgnoreState", "YES",
             "--wilted-listener-pixel-fixture",
             "--wilted-listener-pixel-state=\(screen.fixtureState)"
-        ] + (screen == .downloads ? ["--wilted-listener-pixel-downloads"] : [])
+        ]
             + (screen == .settings ? ["--wilted-listener-pixel-settings"] : [])
             + (screen == .nowPlaying ? ["--wilted-listener-pixel-now-playing"] : [])
             + ["--wilted-listener-pixel-appearance=\(dark ? "dark" : "light")"]

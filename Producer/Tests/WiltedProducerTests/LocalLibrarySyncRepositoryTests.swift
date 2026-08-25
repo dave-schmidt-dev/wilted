@@ -64,6 +64,35 @@ final class LocalLibrarySyncRepositoryTests: XCTestCase {
         XCTAssertTrue(state.records.isEmpty)
     }
 
+    /// A peer deletes by flag, not by removing the record: the envelope carries
+    /// `isDeleted: 1` and `applySyncCommit` writes it onto the stored article. That
+    /// write went to a property SwiftData shadowed until 2026-08-25, so a remote
+    /// deletion silently read back as live. Hard record removal (above) took a
+    /// different path and never caught it.
+    func testRemoteFlagDeletionIsPersistedOnTheStoredArticle() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let live = try article("remote-flag-delete")
+        let store = try LocalLibraryStore(url: url)
+        let repository = try await LocalLibrarySyncRepository(store: store)
+        try await repository.commit(try await repository.stage(
+            try SyncFetchBatch(generationID: "fetch", records: [try record(for: live)], engineState: Data([1]))))
+        let before = try await store.article(for: live.itemID)
+        XCTAssertEqual(before?.isDeleted, false)
+
+        let removed = try Article(
+            itemID: live.itemID, canonicalURL: live.canonicalURL, title: live.title, source: live.source,
+            author: live.author, publishedTime: live.publishedTime, createdAt: live.createdAt, isDeleted: true
+        )
+        try await repository.commit(try await repository.stage(
+            try SyncFetchBatch(generationID: "flag-delete", records: [try record(for: removed)], engineState: Data([2]))))
+        let after = try await store.article(for: live.itemID)
+        XCTAssertEqual(after?.isDeleted, true, "a remotely flagged deletion must persist")
+
+        let reopened = try LocalLibraryStore(url: url)
+        let reread = try await reopened.article(for: live.itemID)?.isDeleted
+        XCTAssertEqual(reread, true)
+    }
+
     func testTranscriptFetchPersistsAndItemDeletionCascadesIt() async throws {
         let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let item = try article("transcript-fetch")

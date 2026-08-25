@@ -2,18 +2,21 @@ import XCTest
 
 @MainActor
 final class WiltediOSSmokeUITests: XCTestCase {
-    func testFourPersistentTabsReachFunctionalListenerViews() {
+    func testThreePersistentTabsReachFunctionalListenerViews() {
         let app = XCUIApplication()
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES", "--wilted-ui-smoke"]
         app.launch()
 
         let libraryTab = app.tabBars.buttons["Library"]
         let nowPlayingTab = app.tabBars.buttons["Now Playing"]
-        let downloadsTab = app.tabBars.buttons["Downloads"]
         let settingsTab = app.tabBars.buttons["Settings"]
-        for tab in [libraryTab, nowPlayingTab, downloadsTab, settingsTab] {
+        for tab in [libraryTab, nowPlayingTab, settingsTab] {
             XCTAssertTrue(tab.waitForExistence(timeout: 5))
         }
+        // Downloads was a strict subset of Library rendered with the same
+        // card and the same actions. It is a filter on Library now, so a
+        // fourth tab would be the redundancy this removed.
+        XCTAssertFalse(app.tabBars.buttons["Downloads"].exists)
 
         let library = app.descendants(matching: .any)["wilted-library"]
         XCTAssertTrue(library.waitForExistence(timeout: 5))
@@ -27,11 +30,12 @@ final class WiltediOSSmokeUITests: XCTestCase {
         XCTAssertTrue(emptyPlayer.label.contains("Nothing is playing"))
         XCTAssertTrue(app.navigationBars["Now Playing"].exists)
 
-        downloadsTab.tap()
-        let downloads = app.descendants(matching: .any)["wilted-downloads"]
-        XCTAssertTrue(downloads.waitForExistence(timeout: 5))
+        libraryTab.tap()
+        let scope = app.descendants(matching: .any)["wilted-library-scope"]
+        XCTAssertTrue(scope.waitForExistence(timeout: 5))
+        app.buttons["Downloads"].firstMatch.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-downloads-summary"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Play"].firstMatch.exists)
-        XCTAssertTrue(downloadsTab.isSelected)
 
         settingsTab.tap()
         let settings = app.descendants(matching: .any)["wilted-settings"]

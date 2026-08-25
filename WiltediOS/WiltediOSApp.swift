@@ -62,9 +62,8 @@ struct WiltediOSApp: App {
                 : arguments.contains("--wilted-listener-pixel-appearance=dark")
                     ? .dark
                     : nil
-            let initialSelection: WiltedNavigation = arguments.contains("--wilted-listener-pixel-downloads")
-                ? .downloads
-                : arguments.contains("--wilted-listener-pixel-settings")
+            // Downloads is a Library filter now, not a destination.
+            let initialSelection: WiltedNavigation = arguments.contains("--wilted-listener-pixel-settings")
                     ? .settings
                     : arguments.contains("--wilted-listener-pixel-now-playing")
                         || arguments.contains("--wilted-ui-fixture-playing")
@@ -140,7 +139,6 @@ struct WiltediOSApp: App {
             initialSelection: initialSelection,
             iOSLibrary: AnyView(WiltedListenerLibraryView(model: model)),
             iOSNowPlaying: AnyView(WiltedListenerNowPlayingView(model: model)),
-            iOSDownloads: AnyView(WiltedListenerDownloadsView(model: model)),
             iOSSettings: AnyView(WiltedListenerSettingsView(model: model))
         )
     }

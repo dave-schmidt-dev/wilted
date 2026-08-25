@@ -17,6 +17,50 @@ struct WiltedMacArticle: Identifiable, Hashable, Sendable {
     let source: String
     let url: URL
     let isReady: Bool
+    /// Present once audio exists. The library row states how long an article
+    /// takes to listen to, which is the one fact that decides whether to
+    /// start it now, and it was the only list in the app that withheld it.
+    let durationSeconds: TimeInterval?
+}
+
+/// Presentation view of one recorded preparation attempt.
+///
+/// The producer runs one preparation at a time and keeps a journal of every
+/// status each attempt emitted. Nothing surfaced that journal, so a run that
+/// failed overnight left no trace a reader could find. This is the row shape
+/// the Processor destination lists.
+struct WiltedMacProcessorRun: Identifiable, Equatable, Sendable {
+    enum Outcome: String, Sendable {
+        case running, succeeded, failed, cancelled
+    }
+
+    let id: String
+    let title: String
+    let source: String
+    let stage: String
+    let detail: String
+    let fraction: Double?
+    let outcome: Outcome
+    let updatedAt: Date
+
+    /// Colour is emphasis only; `outcomeLabel` always states the outcome.
+    var tone: WiltedStatusTone {
+        switch outcome {
+        case .running: .active
+        case .succeeded: .positive
+        case .cancelled: .neutral
+        case .failed: .failure
+        }
+    }
+
+    var outcomeLabel: String {
+        switch outcome {
+        case .running: "Running"
+        case .succeeded: "Succeeded"
+        case .failed: "Failed"
+        case .cancelled: "Cancelled"
+        }
+    }
 }
 
 /// Presentation view of a stored transcript.
@@ -86,6 +130,15 @@ struct WiltedMacPreparation: Equatable, Sendable {
             case .failed: "Preparation failed"
             }
         }
+
+        /// A finished run. The Processor destination shows the active card
+        /// only while work is genuinely in flight.
+        var isTerminal: Bool {
+            switch self {
+            case .completed, .cancelled, .failed: true
+            default: false
+            }
+        }
     }
 
     let phase: Phase
@@ -104,6 +157,7 @@ struct WiltedMacPreparation: Equatable, Sendable {
 enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable {
     case library
     case nowPlaying
+    case processor
     case settings
 
     var id: Self { self }
@@ -112,6 +166,7 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
         switch self {
         case .library: WiltedScreenCopy.library
         case .nowPlaying: WiltedScreenCopy.nowPlaying
+        case .processor: WiltedScreenCopy.processor
         case .settings: WiltedScreenCopy.settings
         }
     }
@@ -120,6 +175,7 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
         switch self {
         case .library: "books.vertical"
         case .nowPlaying: "waveform"
+        case .processor: "gearshape.2"
         case .settings: "gearshape"
         }
     }
@@ -142,6 +198,12 @@ final class WiltedMacModel {
     /// far in am I?" — a question the same audio answers on iPhone.
     private(set) var playbackPositionSeconds: TimeInterval = 0
     private(set) var playbackDurationSeconds: TimeInterval = 0
+    /// Every recorded preparation attempt, newest first.
+    private(set) var processorRuns: [WiltedMacProcessorRun] = []
+    /// Progress for an in-flight transcript backfill (W-INV-001: a network
+    /// fetch never runs without the surface saying so).
+    private(set) var transcriptBackfillStatus: String?
+    private(set) var isBackfillingTranscript = false
     private(set) var currentTranscript: WiltedMacTranscript?
     /// Set only when a route operation actually failed. The recovery control
     /// is gated on this so it does not advertise a fix for a fault that has
@@ -331,7 +393,12 @@ final class WiltedMacModel {
 
     /// Elapsed and total, in the listener's wording.
     var playbackProgressLabel: String {
-        "\(Int(playbackPositionSeconds)) of \(Int(playbackDurationSeconds)) seconds"
+        WiltedDuration.progress(position: playbackPositionSeconds, duration: playbackDurationSeconds)
+    }
+
+    /// The spoken form of the same readout.
+    var playbackProgressSpokenLabel: String {
+        WiltedDuration.spokenProgress(position: playbackPositionSeconds, duration: playbackDurationSeconds)
     }
 
     func addArticle() {
@@ -453,8 +520,11 @@ final class WiltedMacModel {
 #if canImport(WiltedProducer)
         guard let playback else { return }
         playbackDurationSeconds = playback.durationSeconds
-        playbackPositionSeconds = min(max(0, playback.positionSeconds), max(0, playback.durationSeconds))
-        isPlaying = playback.isPlaying
+        // The live engine read, not the checkpointed one. `positionSeconds`
+        // only moves on load, seek, and checkpoint, so polling it left the
+        // readout frozen between transport presses.
+        playbackPositionSeconds = min(max(0, playback.livePositionSeconds), max(0, playback.durationSeconds))
+        isPlaying = playback.liveIsPlaying
 #endif
     }
 
@@ -636,6 +706,165 @@ final class WiltedMacModel {
         _ = await syncLifecycle.queuePlayback(state, sidecar: opaque)
     }
 
+    /// Removes an article from the library.
+    ///
+    /// Marks the stored article deleted and records a local tombstone, which
+    /// is what `refresh()` and the sync repository both already read. The
+    /// library had no removal path at all, so anything prepared once —
+    /// including a stray fixture row written before fixture mode moved to a
+    /// temporary directory — stayed on screen permanently.
+    ///
+    /// Local only. Publishing the tombstone to CloudKit rides the existing
+    /// pending-change path and is not triggered from here.
+    func removeArticle(_ article: WiltedMacArticle) {
+#if canImport(WiltedProducer)
+        guard let store else { return }
+        if selectedArticleID == article.id {
+            selectedArticleID = nil
+            isNowPlaying = false
+            currentTranscript = nil
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            guard let itemID = try? ItemID(rawValue: article.id) else { return }
+            guard let stored = try? await store.articles().first(where: { $0.itemID == itemID }) else { return }
+            guard let deleted = try? Article(
+                itemID: stored.itemID, canonicalURL: stored.canonicalURL, title: stored.title,
+                source: stored.source, author: stored.author, publishedTime: stored.publishedTime,
+                createdAt: stored.createdAt, isDeleted: true
+            ) else { return }
+            try? await store.save(article: deleted)
+            // Keyed by item, deliberately. `record(tombstone:)` upserts on `id`,
+            // and this is the only path in the producer that writes one, so
+            // removing the same article twice leaves one row rather than two.
+            let tombstone = LocalLibraryTombstone(
+                id: itemID.rawValue,
+                itemID: itemID,
+                requestedAt: Timestamp(Date())
+            )
+            try? await store.record(tombstone: tombstone)
+            self.refresh()
+        }
+#endif
+    }
+
+    /// Fetches and stores the transcript for an already-prepared article.
+    ///
+    /// Transcript persistence shipped on 2026-08-23; anything prepared before
+    /// that has audio and no text, and re-preparing cannot fix it because the
+    /// revision ID is derived from the same content and `saveReadyRevision`
+    /// refuses to re-point an existing revision. The text is re-extracted from
+    /// the canonical URL and saved against the existing revision, so no new
+    /// revision, media file, or synthesis run is created.
+    func backfillCurrentTranscript() {
+#if canImport(WiltedProducer)
+        guard !isBackfillingTranscript, let store, let article = currentArticle else { return }
+        isBackfillingTranscript = true
+        transcriptBackfillStatus = "Fetching article text…"
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.isBackfillingTranscript = false }
+            guard let itemID = try? ItemID(rawValue: article.id),
+                  let revision = try? await store.readyRevision(for: itemID) else {
+                self.transcriptBackfillStatus = "This article has no saved audio to attach text to."
+                return
+            }
+            do {
+                let extracted = try await NativeArticleExtractor().extract(article.url) { stage, _ in
+                    Task { @MainActor [weak self] in
+                        self?.transcriptBackfillStatus = "Fetching article text: \(stage.rawValue)"
+                    }
+                }
+                let oversized = extracted.body.utf8.count > Transcript.maximumTextUTF8Bytes
+                let transcript = try Transcript(
+                    itemID: itemID,
+                    revisionID: revision.revision.revisionID,
+                    availability: oversized ? .oversized : .available,
+                    text: oversized ? nil : extracted.body,
+                    updatedAt: Timestamp(Date())
+                )
+                try await store.save(transcript: transcript)
+                await self.loadTranscript(itemID: itemID, revisionID: revision.revision.revisionID)
+                self.transcriptBackfillStatus = oversized
+                    ? "The article text is too large to store."
+                    : nil
+            } catch {
+                // Named, not swallowed: the reader has to know whether to retry.
+                self.transcriptBackfillStatus = Self.backfillFailureMessage(error)
+            }
+        }
+#endif
+    }
+
+    /// A sentence a reader can act on, never a raw error dump.
+    ///
+    /// `ArticleExtractionError` already writes for people, so it passes through.
+    /// Transport failures are matched by code rather than rendered: a `URLError`
+    /// only has readable `localizedDescription` when URLSession populated it, and
+    /// otherwise falls back to `The operation couldn't be completed.
+    /// (NSURLErrorDomain error -1009.)`. Everything unmatched collapses to one
+    /// generic line, because printing a domain and code into the player is the
+    /// same defect as printing `1743` for a duration.
+    static func backfillFailureMessage(_ error: Error) -> String {
+#if canImport(WiltedProducer)
+        if let extraction = error as? ArticleExtractionError, let text = extraction.errorDescription {
+            return text
+        }
+#endif
+        if let url = error as? URLError {
+            switch url.code {
+            case .notConnectedToInternet, .networkConnectionLost:
+                return "Wilted could not reach the article. Check your connection and try again."
+            case .timedOut:
+                return "The article server did not respond in time. Try again."
+            case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+                return "Wilted could not reach that site."
+            default:
+                break
+            }
+        }
+        return "Could not fetch the article text. Check the link and try again."
+    }
+
+    /// Reloads the preparation run history behind the Processor destination.
+    func refreshProcessorRuns() {
+#if canImport(WiltedProducer)
+        guard let store else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            guard let runs = try? await store.preparationRuns() else { return }
+            let titles = Dictionary(
+                uniqueKeysWithValues: ((try? await store.articles()) ?? [])
+                    .map { ($0.itemID.rawValue, ($0.title, $0.source)) }
+            )
+            self.processorRuns = runs.map { run in
+                let known = titles[run.itemID.rawValue]
+                let outcome: WiltedMacProcessorRun.Outcome = if !run.isTerminal {
+                    .running
+                } else {
+                    switch run.outcome {
+                    case .succeeded: .succeeded
+                    case .cancelled: .cancelled
+                    default: .failed
+                    }
+                }
+                return WiltedMacProcessorRun(
+                    id: run.requestID,
+                    // A run that failed before extraction never learned a
+                    // title, so the item identity is all there is to name it.
+                    title: known?.0 ?? "Unknown article",
+                    source: known?.1 ?? run.itemID.rawValue,
+                    stage: run.stage.rawValue,
+                    detail: run.failure?.message ?? run.detail,
+                    fraction: run.fraction,
+                    outcome: outcome,
+                    updatedAt: run.updatedAt.date
+                )
+            }
+        }
+#endif
+    }
+
     private func refresh() {
         guard let store else { return }
         Task { [weak self] in
@@ -646,7 +875,8 @@ final class WiltedMacModel {
                 let revision = try? await store.readyRevision(for: article.itemID)
                 values.append(WiltedMacArticle(
                     id: article.itemID.rawValue, title: article.title, source: article.source,
-                    url: article.canonicalURL, isReady: revision != nil
+                    url: article.canonicalURL, isReady: revision != nil,
+                    durationSeconds: revision?.revision.durationSeconds
                 ))
             }
             self.articles = values
@@ -659,7 +889,7 @@ final class WiltedMacModel {
             guard let itemID = try? ItemID.derive(from: url) else { return }
             articles = [WiltedMacArticle(
                 id: itemID.rawValue, title: "Preparing article", source: "Example source",
-                url: url, isReady: false
+                url: url, isReady: false, durationSeconds: nil
             )]
             return
         }
@@ -687,7 +917,7 @@ final class WiltedMacModel {
         )
         articles = [WiltedMacArticle(
             id: itemID.rawValue, title: article.title, source: article.source,
-            url: article.canonicalURL, isReady: true
+            url: article.canonicalURL, isReady: true, durationSeconds: revision.durationSeconds
         )]
         Task {
             try? await store.save(article: article)

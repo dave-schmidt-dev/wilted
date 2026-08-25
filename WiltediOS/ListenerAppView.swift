@@ -49,6 +49,7 @@ private struct WiltedTranscriptDisclosure: View {
 public struct WiltedListenerLibraryView: View {
     @ObservedObject private var model: WiltedListenerAppModel
     @Environment(\.colorScheme) private var colorScheme
+    @State private var scope: LibraryScope = .all
 
     public init(model: WiltedListenerAppModel) { self.model = model }
 
@@ -83,6 +84,20 @@ public struct WiltedListenerLibraryView: View {
                     }
                 }
 
+                // Downloads was a separate tab listing `items.filter { $0.state
+                // == .downloaded }` with the same card and the same actions, so
+                // it was a strict subset of this screen rendered twice. It is a
+                // filter over one list, which is what it always was.
+                if !model.items.isEmpty {
+                    Picker("Show", selection: $scope) {
+                        ForEach(LibraryScope.allCases) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("wilted-library-scope")
+                }
+
                 if model.items.isEmpty {
                     ContentUnavailableView(
                         WiltedScreenCopy.libraryEmpty,
@@ -90,10 +105,27 @@ public struct WiltedListenerLibraryView: View {
                         description: Text(WiltedScreenCopy.libraryEmptyDetailListener)
                     )
                     .accessibilityIdentifier("wilted-listener-empty-state")
+                } else if visibleItems.isEmpty {
+                    ContentUnavailableView(
+                        WiltedScreenCopy.noDownloads,
+                        systemImage: "arrow.down.circle",
+                        description: Text("Download an article to listen offline.")
+                    )
+                    .accessibilityIdentifier(WiltedScreenCopy.downloadsEmptyIdentifier)
                 } else {
-                    ForEach(model.items) { item in
-                        itemRow(item)
+                    if scope == .downloaded {
+                        Text(downloadSummary)
+                            .font(WiltedTheme.font(.utility))
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            .accessibilityIdentifier("wilted-downloads-summary")
                     }
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
+                            if index > 0 { Divider() }
+                            itemRow(item)
+                        }
+                    }
+                    .wiltedCard(colorScheme)
                 }
             }
             .padding(WiltedTheme.Spacing.xLarge)
@@ -111,40 +143,107 @@ public struct WiltedListenerLibraryView: View {
         .accessibilityIdentifier(WiltedScreenCopy.libraryIdentifier)
     }
 
+    /// Two lines and one action. The previous row stacked title, source,
+    /// state, a Play button, a Download button, and an expandable transcript
+    /// into a card each, so three articles filled the screen. The transcript
+    /// still lives in Now Playing, which is where it is read.
     private func itemRow(_ item: ListenerLibraryItem) -> some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                    Text(item.title).font(WiltedTheme.font(.title))
-                    Text(item.source).font(WiltedTheme.font(.utility))
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    Text(item.state.label).font(WiltedTheme.font(.utility))
-                        .foregroundStyle(
-                            (item.state == .downloaded ? WiltedStatusTone.positive : .failure)
-                                .color(colorScheme)
-                        )
-                }
-                Spacer()
+        HStack(spacing: WiltedTheme.Spacing.medium) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title)
+                    .font(WiltedTheme.font(.body))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(metaLine(item))
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(
+                        item.state == .downloaded
+                            ? WiltedTheme.color(.secondaryText, scheme: colorScheme)
+                            : WiltedStatusTone.caution.color(colorScheme)
+                    )
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if item.state == .downloaded {
                 Button("Play") { Task { await model.play(itemID: item.itemID) } }
                     .buttonStyle(.borderedProminent)
-                    .disabled(item.state != .downloaded)
                     .accessibilityIdentifier("wilted-listener-play-\(item.itemID.rawValue)")
-            }
-            if item.state == .metadataOnly {
+            } else if item.state == .metadataOnly {
                 Button("Download") { Task { await model.download(itemID: item.itemID) } }
                     .buttonStyle(.bordered)
                     .accessibilityIdentifier("wilted-listener-download-action-\(item.itemID.rawValue)")
-            } else if item.state == .downloaded {
-                Button("Remove Download") { Task { await model.removeDownload(itemID: item.itemID) } }
-                    .buttonStyle(.bordered)
-                    .accessibilityIdentifier("wilted-listener-remove-download-\(item.itemID.rawValue)")
             }
-            WiltedTranscriptDisclosure(
-                transcript: model.transcriptsByItem[item.itemID],
-                identifier: "wilted-transcript-\(item.itemID.rawValue)"
-            )
+
+            if item.state == .downloaded {
+                Menu {
+                    Button("Remove Download", role: .destructive) {
+                        Task { await model.removeDownload(itemID: item.itemID) }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .accessibilityLabel("More actions for \(item.title)")
+                }
+                .accessibilityIdentifier("wilted-listener-item-actions-\(item.itemID.rawValue)")
+            }
         }
-        .wiltedCard(colorScheme)
+        .padding(.vertical, WiltedTheme.Spacing.small)
+        .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-listener-item-\(item.itemID.rawValue)")
+    }
+
+    /// `text.npr.org · 28:56 · Downloaded`, dropping any part it lacks.
+    /// `Wilted Test Journal · 2:00`, plus a state word only when no control
+    /// already says it.
+    ///
+    /// A **Play** button next to the words *Downloaded*, or **Download** next
+    /// to *Metadata available; download required*, states the same fact twice
+    /// and pushed the line past the row width so it truncated to `· …`. States
+    /// with no button keep their word, because there is nothing else to carry
+    /// them and colour alone may not (W-INV-010).
+    private func metaLine(_ item: ListenerLibraryItem) -> String {
+        var parts = [item.source]
+        if let seconds = item.durationSeconds, seconds > 0 {
+            parts.append(WiltedDuration.clock(seconds))
+        }
+        switch item.state {
+        case .downloaded, .metadataOnly: break
+        case .deleted, .incompatibleRevision, .unavailable: parts.append(item.state.label)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var visibleItems: [ListenerLibraryItem] {
+        scope == .downloaded ? model.items.filter { $0.state == .downloaded } : model.items
+    }
+
+    private var downloadSummary: String {
+        let count = model.downloadStatistics.fileCount
+        let noun = count == 1 ? "download" : "downloads"
+        return "\(count) \(noun) • \(Self.byteFormatter.string(fromByteCount: model.downloadStatistics.byteCount))"
+    }
+
+    private static let byteFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter
+    }()
+}
+
+/// Which slice of the library is on screen.
+enum LibraryScope: String, CaseIterable, Identifiable, Sendable {
+    case all
+    case downloaded
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .all: "All"
+        case .downloaded: WiltedScreenCopy.downloads
+        }
     }
 }
 
@@ -234,7 +333,10 @@ public struct WiltedListenerNowPlayingView: View {
         .background(WiltedTheme.color(.page, scheme: colorScheme))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Now Playing. \(selectedItem?.title ?? "Selected article")")
-        .accessibilityValue("\(Int(boundedPosition(state))) seconds")
+        .accessibilityValue(WiltedDuration.spokenProgress(
+            position: boundedPosition(state),
+            duration: state.durationSeconds
+        ))
         .accessibilityIdentifier(WiltedScreenCopy.playerIdentifier)
         .task(id: state.sessionID) {
             while !Task.isCancelled {
@@ -259,7 +361,7 @@ public struct WiltedListenerNowPlayingView: View {
     }
 
     private func progressLabel(_ state: PlaybackState) -> String {
-        "\(Int(boundedPosition(state))) of \(Int(state.durationSeconds)) seconds"
+        WiltedDuration.progress(position: boundedPosition(state), duration: state.durationSeconds)
     }
 
     private func togglePlayback(_ state: PlaybackState) async {
@@ -303,80 +405,6 @@ public struct WiltedListenerNowPlayingView: View {
                 height: WiltedTheme.Spacing.minimumTouchTarget
             )
     }
-}
-
-public struct WiltedListenerDownloadsView: View {
-    @ObservedObject private var model: WiltedListenerAppModel
-    @Environment(\.colorScheme) private var colorScheme
-
-    public init(model: WiltedListenerAppModel) { self.model = model }
-
-    public var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
-                let downloaded = model.items.filter { $0.state == .downloaded }
-                if downloaded.isEmpty {
-                    ContentUnavailableView(
-                        WiltedScreenCopy.noDownloads,
-                        systemImage: "arrow.down.circle",
-                        description: Text("Download an article from Library to listen offline.")
-                    )
-                    .accessibilityIdentifier(WiltedScreenCopy.downloadsEmptyIdentifier)
-                } else {
-                    Text(downloadSummary)
-                        .font(WiltedTheme.font(.utility))
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .accessibilityIdentifier("wilted-downloads-summary")
-                    ForEach(downloaded) { item in
-                        downloadRow(item)
-                    }
-                }
-            }
-            .padding(WiltedTheme.Spacing.xLarge)
-        }
-        .background(WiltedTheme.color(.page, scheme: colorScheme))
-        .navigationTitle(WiltedScreenCopy.downloads)
-        .accessibilityIdentifier(WiltedScreenCopy.downloadsIdentifier)
-    }
-
-    /// The same item carries the same actions here as it does in Library.
-    /// Removing a download from the screen that lists downloads was previously
-    /// impossible — it was offered only in Library.
-    private func downloadRow(_ item: ListenerLibraryItem) -> some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-            HStack(alignment: .top, spacing: WiltedTheme.Spacing.medium) {
-                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                    Text(item.title).font(WiltedTheme.font(.title))
-                    Text(item.source).font(WiltedTheme.font(.utility))
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Button("Play") { Task { await model.play(itemID: item.itemID) } }
-                    .buttonStyle(.borderedProminent)
-                    .frame(
-                        minWidth: WiltedTheme.Spacing.minimumTouchTarget,
-                        minHeight: WiltedTheme.Spacing.minimumTouchTarget
-                    )
-                    .accessibilityIdentifier("wilted-listener-download-\(item.itemID.rawValue)")
-            }
-            Button("Remove Download") { Task { await model.removeDownload(itemID: item.itemID) } }
-                .buttonStyle(.bordered)
-                .accessibilityIdentifier("wilted-downloads-remove-\(item.itemID.rawValue)")
-        }
-        .wiltedCard(colorScheme)
-    }
-
-    private var downloadSummary: String {
-        let count = model.downloadStatistics.fileCount
-        let noun = count == 1 ? "download" : "downloads"
-        return "\(count) \(noun) • \(Self.byteFormatter.string(fromByteCount: model.downloadStatistics.byteCount))"
-    }
-
-    private static let byteFormatter: ByteCountFormatter = {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        return formatter
-    }()
 }
 
 public struct WiltedListenerSettingsView: View {
@@ -433,10 +461,20 @@ public struct WiltedListenerSettingsView: View {
                     )
                 }
 
-                WiltedWordmark(height: 16)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.top, WiltedTheme.Spacing.large)
-                    .accessibilityLabel("Wilted")
+                // A bare mark here only repeated the brand. Paired with the
+                // build it identifies, it answers the question an alpha
+                // tester actually has about the screen they are looking at.
+                VStack(spacing: WiltedTheme.Spacing.xSmall) {
+                    WiltedWordmark(height: 16)
+                    Text(Self.versionLabel)
+                        .font(WiltedTheme.font(.utility))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.top, WiltedTheme.Spacing.large)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Wilted \(Self.versionLabel)")
+                .accessibilityIdentifier("wilted-settings-version")
             }
             .padding(WiltedTheme.Spacing.xLarge)
         }
@@ -453,6 +491,13 @@ public struct WiltedListenerSettingsView: View {
         let count = model.downloadStatistics.fileCount
         return "\(count) \(count == 1 ? "file" : "files")"
     }
+
+    static let versionLabel: String = {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "0.0"
+        let build = info?["CFBundleVersion"] as? String ?? "0"
+        return "Version \(short) (\(build))"
+    }()
 
     private var storageLabel: String {
         Self.byteFormatter.string(fromByteCount: model.downloadStatistics.byteCount)

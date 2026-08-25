@@ -57,8 +57,9 @@ omission: Wilted has no account of its own, so there is nothing to enrol in.
 
 ### Window and navigation
 
-- Two columns. The sidebar carries the Wilted wordmark and three destinations, each with a
-  literal label and an icon: **Library**, **Now Playing**, **Settings**.
+- Two columns. The sidebar carries the Wilted wordmark and four destinations, each with a
+  literal label and an icon: **Library**, **Now Playing**, **Processor**, **Settings**. The
+  window title text beside the wordmark is removed; the brand is stated once.
 - The selected destination is indicated by both a filled row and its title as the detail
   region's heading, so selection is never carried by colour alone.
 - Downloads is deliberately absent. Mac audio is local the moment it is produced, so there
@@ -73,9 +74,16 @@ omission: Wilted has no account of its own, so there is nothing to enrol in.
   preparation and Return is its keyboard shortcut. The button is never disabled: empty or
   non-HTTPS input is rejected in place with *Enter a complete HTTPS article URL.* in the
   same card, so a rejected press always says why rather than doing nothing.
-- **Saved articles** lists each saved article as a card with title, source, and readiness.
-  A ready row exposes **Open Now Playing**; a preparing row does not, and says
-  **Preparing**.
+- **Saved articles** is a two-line list, not a card per article: title on the first line,
+  then `source · length` on the second — `text.npr.org · 28:56`. The second line adds a state
+  word only when no control already carries it: a ready row exposes **Open Now Playing**, so
+  it does not also spell out *Ready to play*, while a preparing row has no control at all and
+  keeps its **Preparing**.
+- Every row carries an actions menu with **Remove**, which is the library's first removal
+  path — anything prepared once previously stayed on screen permanently. Removal marks the
+  article deleted and records a tombstone, and it is now verified end to end: the store could
+  not persist a deletion at all until 2026-08-25, because a SwiftData property-name collision
+  made every article read back as live no matter what was on disk.
 - An empty library shows **Your library is empty** with *Add an article to start
   listening.* — producer wording, not the listener's.
 - Preparation reports the current stage, a progress bar, a detail line, and **Cancel**
@@ -92,12 +100,34 @@ omission: Wilted has no account of its own, so there is nothing to enrol in.
   (`0 of 120 seconds`), a status line, transports **Rewind 15 seconds** / **Play**–**Pause**
   / **Skip forward 30 seconds**, **Restart**, and a **Transcript** disclosure. This is the
   same component set the listener shows, in the same order.
-- The readout refreshes on a one-second cadence while audio runs, so the producer can
-  answer "how far in am I?" — it previously froze at the loaded value.
+- The readout refreshes on a one-second cadence while audio runs and reads the live audio
+  engine, not the last checkpoint. It previously polled `PlaybackController.positionSeconds`,
+  which only moves on load, seek, and checkpoint, so elapsed time advanced only when a
+  transport button was pressed.
+- Times are `h:mm:ss` past an hour and `m:ss` below it, on both platforms. Both apps
+  previously printed a raw second count, so a half-hour article read "1743 seconds".
 - The transcript row is always present. When text is unreadable it says why (absent,
-  oversized, malformed) instead of disappearing.
+  oversized, malformed) instead of disappearing, and offers **Fetch transcript**. Transcript
+  persistence shipped 2026-08-23, so anything prepared before that has audio and no text;
+  re-preparing cannot fix it because the revision ID is derived from the same content and an
+  existing revision cannot be re-pointed. The control re-extracts the text from the canonical
+  URL and saves it against the existing revision, creating no new revision, media, or
+  synthesis run.
 - A playback error is shown in the player. **Recover audio route** appears only once a
   route operation has actually failed.
+
+### Processor
+
+- Visibility into the preparation pipeline, which previously had none: the coordinator
+  journals every status a run emits and nothing read that journal back, so a run that failed
+  while the window was closed left no trace.
+- **Active** shows the in-flight preparation card, or states that nothing is preparing.
+- **Recent runs** lists every recorded attempt newest first — title, the last detail or the
+  failure message, outcome (**Running** / **Succeeded** / **Failed** / **Cancelled**), and
+  timestamp. Outcome is always a word; tone only emphasises it.
+- This is the Swift producer's own history. The Python queue, podcast ingestion, and
+  ad-stripping pipeline live in a separate `wilted-old` project and are not wired to this
+  app; the MVP explicitly excludes them.
 
 ### Settings
 
@@ -116,8 +146,11 @@ omission: Wilted has no account of its own, so there is nothing to enrol in.
 
 ### Tab bar
 
-- **Library**, **Now Playing**, **Downloads**, **Settings** are always present, each owning
-  a `NavigationStack`. No feature requires reaching a preceding page first.
+- **Library**, **Now Playing**, **Settings** are always present, each owning a
+  `NavigationStack`. No feature requires reaching a preceding page first.
+- Downloads is no longer a tab. It listed `items.filter { $0.state == .downloaded }` with the
+  same card and the same actions as Library, so it was a strict subset of Library rendered
+  twice. It is a scope filter on Library now.
 
 ### Library
 
@@ -133,10 +166,16 @@ omission: Wilted has no account of its own, so there is nothing to enrol in.
   appear here.* Both apps share the title and differ only on the detail line, because only
   the Mac can act on it. (**No articles yet** exists in `WiltedScreenCopy` but is used only
   by the preview shell, not by either shipping library.)
-- Each article is a card with title, source, and local availability. **Play** is disabled
-  until audio is downloaded. Metadata-only items expose **Download**; downloaded items
-  expose **Remove Download**. **Transcript** is a disclosure when readable and states why
-  when it is not.
+- A segmented **All** / **Downloads** control scopes the list. The **Downloads** scope adds
+  the saved-file count and storage size above the rows.
+- Each article is a two-line row: title, then `source · length`. Downloaded items expose
+  **Play** and an actions menu with **Remove Download**; metadata-only items expose
+  **Download**. Those two states add no word to the meta line, because the button beside it
+  already states them and the repetition pushed the line past the row width until it
+  truncated to `· …`. Deleted, incompatible-revision, and unavailable rows keep their word,
+  since they have no control to carry it and colour may not carry it alone (W-INV-010).
+- The per-row transcript disclosure is gone — it is read in Now Playing, where it was
+  already duplicated, and it was the single largest contributor to row height.
 
 ### Now Playing
 
@@ -146,19 +185,14 @@ omission: Wilted has no account of its own, so there is nothing to enrol in.
 - With playback: mark, title, source, progress bar, `31 of 120 seconds`, status line,
   the three transports, **Restart**, and **Transcript**.
 
-### Downloads
-
-- Empty: **No Downloads**.
-- Populated: saved-file count and storage size, then one card per downloaded article with
-  its own **Play** and **Remove Download**. Transports live in the Now Playing tab.
-
 ### Settings
 
 - **Sync**: **Connected Mac**, **Last successful sync**, **Last sync issue** when one
   exists, and **Send Playback Progress** (disabled while another operation is active).
 - **Downloads**: **Saved audio**, **Storage used**.
 - **Audio**: **Speech mode** → **Local speech**.
-- A Wilted wordmark closes the screen.
+- The screen closes with the wordmark and the running build, `Version 0.2.2 (1)`. A bare
+  mark only repeated the brand.
 
 ## Parity: what matches and what legitimately differs
 
@@ -172,14 +206,17 @@ Matches by construction — these are shared components, so they cannot drift:
 | Account-change recovery | `WiltedAccountRecoveryNotice` |
 | Transcript disclosure | `WiltedTranscriptSection` |
 | Empty player | `WiltedNowPlayingEmptyView` |
+| Elapsed/total time format | `WiltedDuration` |
 | Screen copy | `WiltedScreenCopy` |
 
 Divergences that are role, not drift:
 
 - The Mac produces: URL composer, preparation stages, Upload. The iPhone consumes:
   Download, Remove Download, Send Playback Progress.
-- The iPhone has a Downloads destination; the Mac does not, because Mac audio is already
-  local. Copy that names a destination is split per platform for exactly this reason.
+- The iPhone scopes its library by download state; the Mac does not, because Mac audio is
+  already local. Copy that names a destination is split per platform for this reason.
+- The Mac has a Processor destination; the iPhone does not, because the iPhone prepares
+  nothing.
 - Navigation idiom: split view on Mac, tab bar on iPhone.
 - Mac Sync reports producer-side fields (producer identity, last fetch, last send); iPhone
   Sync reports listener-side fields (connected Mac, last successful sync).

@@ -10,8 +10,9 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     case v2 = 2
     case v3 = 3
     case v4 = 4
+    case v5 = 5
 
-    public static let current: LocalLibrarySchemaVersion = .v4
+    public static let current: LocalLibrarySchemaVersion = .v5
 }
 
 /// The local ownership state used by generation-based remote reconciliation.
@@ -187,6 +188,51 @@ public struct PreparationJournalEntry: Codable, Equatable, Sendable {
     }
 }
 
+/// One preparation attempt, summarised from its journal entries.
+///
+/// The journal records every status a run emitted, which is the right shape
+/// for diagnosis and the wrong shape for a list: a single article produces a
+/// dozen rows. This collapses a run to what a reader needs — what it was
+/// working on, where it got to, and whether it finished.
+public struct PreparationRunSummary: Equatable, Sendable, Identifiable {
+    public let requestID: String
+    public let itemID: ItemID
+    public let startedAt: Timestamp
+    public let updatedAt: Timestamp
+    public let stage: PreparationStage
+    public let detail: String
+    public let fraction: Double?
+    public let isTerminal: Bool
+    public let outcome: PreparationOutcome?
+    public let failure: ProducerError?
+
+    public var id: String { requestID }
+
+    public init(
+        requestID: String,
+        itemID: ItemID,
+        startedAt: Timestamp,
+        updatedAt: Timestamp,
+        stage: PreparationStage,
+        detail: String,
+        fraction: Double?,
+        isTerminal: Bool,
+        outcome: PreparationOutcome?,
+        failure: ProducerError?
+    ) {
+        self.requestID = requestID
+        self.itemID = itemID
+        self.startedAt = startedAt
+        self.updatedAt = updatedAt
+        self.stage = stage
+        self.detail = detail
+        self.fraction = fraction
+        self.isTerminal = isTerminal
+        self.outcome = outcome
+        self.failure = failure
+    }
+}
+
 public struct LocalLibraryInspection: Equatable, Sendable {
     public let schemaVersion: LocalLibrarySchemaVersion
     public let articleCount: Int
@@ -198,6 +244,9 @@ public struct LocalLibraryInspection: Equatable, Sendable {
 
 // Keep model names and property names stable: SwiftData's lightweight migration
 // uses them as the persistent identity across schema versions.
+//
+// V1-V3 keep `isDeleted` because that is the column name those stores were
+// written with. V5 renames it; see the note there for why.
 private enum LocalLibrarySchemaV1Models {
     @Model final class ArticleRecord {
         @Attribute(.unique) var id: String
@@ -544,14 +593,63 @@ private enum LocalLibrarySchemaV4: VersionedSchema {
     }
 }
 
+private enum LocalLibrarySchemaV5Models {
+    /// V4's article with its deletion flag renamed, and nothing else changed.
+    ///
+    /// The flag may not be called `isDeleted` OR `deleted`: SwiftData reserves
+    /// both, and a `@Model` stored property using either name writes its column
+    /// and then reads back `false` forever. The setter is unambiguous, so the
+    /// value lands on disk correctly and only the Swift getter lies — which is
+    /// what kept this quiet enough to ship. `ZISDELETED` read 1 while every
+    /// article still looked alive, so Remove appeared to do nothing and a
+    /// remotely deleted item never disappeared. Both broken names and this
+    /// working one were confirmed against a standalone SwiftData program; do
+    /// not "tidy" it back to something shorter.
+    ///
+    /// `originalName` carries the existing `ZISDELETED` column across, so the
+    /// V4 -> V5 stage renames it in place rather than dropping the values.
+    @Model final class ArticleRecord {
+        @Attribute(.unique) var id: String
+        var canonicalURL: String
+        var title: String
+        var source: String
+        var author: String?
+        var publishedTime: Date?
+        var createdAt: Date
+        @Attribute(originalName: "isDeleted") var isRemoved: Bool
+        var syncStatus: String = LocalLibrarySyncStatus.localOnly.rawValue
+        var schemaVersion: Int
+
+        init(_ article: Article, schemaVersion: Int = 5) {
+            id = article.itemID.rawValue; canonicalURL = article.canonicalURL.absoluteString
+            title = article.title; source = article.source; author = article.author
+            publishedTime = article.publishedTime?.date; createdAt = article.createdAt.date
+            isRemoved = article.isDeleted; syncStatus = LocalLibrarySyncStatus.localOnly.rawValue
+            self.schemaVersion = schemaVersion
+        }
+    }
+}
+
+private enum LocalLibrarySchemaV5: VersionedSchema {
+    static let versionIdentifier = Schema.Version(5, 0, 0)
+    static var models: [any PersistentModel.Type] {
+        [LocalLibrarySchemaV5Models.ArticleRecord.self, LocalLibrarySchemaV3Models.RevisionRecord.self,
+         LocalLibrarySchemaV3Models.PreparationRecord.self, LocalLibrarySchemaV3Models.PlaybackRecord.self,
+         LocalLibrarySchemaV3Models.SyncStateRecord.self, LocalLibrarySchemaV3Models.TombstoneRecord.self,
+         LocalLibrarySchemaV3Models.RepositoryStateRecord.self, LocalLibrarySchemaV4Models.TranscriptRecord.self]
+    }
+}
+
 private enum LocalLibraryMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [LocalLibrarySchemaV1.self, LocalLibrarySchemaV2.self, LocalLibrarySchemaV3.self, LocalLibrarySchemaV4.self]
+        [LocalLibrarySchemaV1.self, LocalLibrarySchemaV2.self, LocalLibrarySchemaV3.self,
+         LocalLibrarySchemaV4.self, LocalLibrarySchemaV5.self]
     }
     static var stages: [MigrationStage] {
         [.lightweight(fromVersion: LocalLibrarySchemaV1.self, toVersion: LocalLibrarySchemaV2.self),
          .lightweight(fromVersion: LocalLibrarySchemaV2.self, toVersion: LocalLibrarySchemaV3.self),
-         .lightweight(fromVersion: LocalLibrarySchemaV3.self, toVersion: LocalLibrarySchemaV4.self)]
+         .lightweight(fromVersion: LocalLibrarySchemaV3.self, toVersion: LocalLibrarySchemaV4.self),
+         .lightweight(fromVersion: LocalLibrarySchemaV4.self, toVersion: LocalLibrarySchemaV5.self)]
     }
 }
 
@@ -567,7 +665,7 @@ public actor LocalLibraryStore {
         self.url = url
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV4.self)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV5.self)
         let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         if migrate {
             container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
@@ -605,27 +703,27 @@ public actor LocalLibraryStore {
 
     public func save(article: Article) throws {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.ArticleRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>())
         if let existing = records.first(where: { $0.id == article.itemID.rawValue }) {
             existing.canonicalURL = article.canonicalURL.absoluteString; existing.title = article.title
             existing.source = article.source; existing.author = article.author
             existing.publishedTime = article.publishedTime?.date; existing.createdAt = article.createdAt.date
-            existing.isDeleted = article.isDeleted; existing.schemaVersion = LocalLibrarySchemaVersion.current.rawValue
-        } else { context.insert(LocalLibrarySchemaV3Models.ArticleRecord(article)) }
+            existing.isRemoved = article.isDeleted; existing.schemaVersion = LocalLibrarySchemaVersion.current.rawValue
+        } else { context.insert(LocalLibrarySchemaV5Models.ArticleRecord(article)) }
         try context.save()
     }
 
     public func article(for itemID: ItemID) throws -> Article? {
         let context = ModelContext(container)
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.ArticleRecord>()).first(where: { $0.id == itemID.rawValue }) else { return nil }
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>()).first(where: { $0.id == itemID.rawValue }) else { return nil }
         return try Article(itemID: try ItemID(rawValue: record.id), canonicalURL: URL(string: record.canonicalURL)!,
                            title: record.title, source: record.source, author: record.author,
-                           publishedTime: record.publishedTime.map(Timestamp.init), createdAt: Timestamp(record.createdAt), isDeleted: record.isDeleted)
+                           publishedTime: record.publishedTime.map(Timestamp.init), createdAt: Timestamp(record.createdAt), isDeleted: record.isRemoved)
     }
 
     public func articles() throws -> [Article] {
         let context = ModelContext(container)
-        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.ArticleRecord>())
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>())
             .sorted { $0.createdAt > $1.createdAt }
             .compactMap { record in
                 guard let itemID = try? ItemID(rawValue: record.id),
@@ -633,7 +731,7 @@ public actor LocalLibraryStore {
                 return try? Article(
                     itemID: itemID, canonicalURL: canonicalURL, title: record.title, source: record.source,
                     author: record.author, publishedTime: record.publishedTime.map(Timestamp.init),
-                    createdAt: Timestamp(record.createdAt), isDeleted: record.isDeleted
+                    createdAt: Timestamp(record.createdAt), isDeleted: record.isRemoved
                 )
             }
     }
@@ -758,6 +856,43 @@ public actor LocalLibraryStore {
             guard let status = try? JSONDecoder().decode(PreparationStatus.self, from: record.statusData), let itemID = try? ItemID(rawValue: record.itemID) else { return nil }
             return PreparationJournalEntry(id: record.id, itemID: itemID, requestID: record.requestID, status: status)
         }
+    }
+
+    /// Every recorded preparation attempt, newest first.
+    ///
+    /// A run that emitted no terminal status is reported as non-terminal at
+    /// whatever stage it last reached, rather than being dropped. A process
+    /// that died mid-synthesis is exactly the run a reader most wants to see.
+    public func preparationRuns(limit: Int = 200) throws -> [PreparationRunSummary] {
+        let context = ModelContext(container)
+        let decoder = JSONDecoder()
+        var byRequest: [String: [(Date, PreparationStatus, ItemID)]] = [:]
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>()) {
+            guard let status = try? decoder.decode(PreparationStatus.self, from: record.statusData),
+                  let itemID = try? ItemID(rawValue: record.itemID) else { continue }
+            byRequest[record.requestID, default: []].append((record.emittedAt, status, itemID))
+        }
+        return byRequest.compactMap { requestID, entries -> PreparationRunSummary? in
+            let ordered = entries.sorted { $0.0 < $1.0 }
+            guard let first = ordered.first, let last = ordered.last else { return nil }
+            let terminal = ordered.last(where: { $0.1.terminal })?.1
+            let representative = terminal ?? last.1
+            return PreparationRunSummary(
+                requestID: requestID,
+                itemID: last.2,
+                startedAt: Timestamp(first.0),
+                updatedAt: Timestamp(last.0),
+                stage: representative.stage,
+                detail: representative.detail,
+                fraction: representative.fraction,
+                isTerminal: terminal != nil,
+                outcome: terminal?.terminalResult?.outcome,
+                failure: terminal?.terminalResult?.error
+            )
+        }
+        .sorted { $0.updatedAt.date > $1.updatedAt.date }
+        .prefix(max(0, limit))
+        .map { $0 }
     }
 
     public func save(playback state: PlaybackState) throws {
@@ -893,7 +1028,7 @@ public actor LocalLibraryStore {
     /// Sets the local/remote status used by generation absence deletion.
     public func setSyncStatus(_ status: LocalLibrarySyncStatus, for itemID: ItemID) throws {
         let context = ModelContext(container)
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.ArticleRecord>()).first(where: { $0.id == itemID.rawValue }) else { return }
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>()).first(where: { $0.id == itemID.rawValue }) else { return }
         record.syncStatus = status.rawValue
         try context.save()
     }
@@ -901,7 +1036,7 @@ public actor LocalLibraryStore {
     /// Loads the sync status for one local item.
     public func syncStatus(for itemID: ItemID) throws -> LocalLibrarySyncStatus? {
         let context = ModelContext(container)
-        guard let raw = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.ArticleRecord>()).first(where: { $0.id == itemID.rawValue })?.syncStatus else { return nil }
+        guard let raw = try context.fetch(FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>()).first(where: { $0.id == itemID.rawValue })?.syncStatus else { return nil }
         return LocalLibrarySyncStatus(rawValue: raw)
     }
 
@@ -909,7 +1044,7 @@ public actor LocalLibraryStore {
     @discardableResult
     public func finalizeSnapshot(generationID: String, fetchComplete: Bool, seenRemoteItemIDs: Set<ItemID>) throws -> LocalLibrarySnapshotResult {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.ArticleRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>())
         let seen = Set(seenRemoteItemIDs.map(\.rawValue))
         let deleted: [ItemID]
         if fetchComplete {
@@ -935,7 +1070,7 @@ public actor LocalLibraryStore {
     /// Applies one validated sync transaction in a single SwiftData context save.
     public func applySyncCommit(_ commit: LocalLibrarySyncCommit) throws {
         let context = ModelContext(container)
-        let articles = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.ArticleRecord>())
+        let articles = try context.fetch(FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>())
         let revisions = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
         let transcripts = try context.fetch(FetchDescriptor<LocalLibrarySchemaV4Models.TranscriptRecord>())
         let playbacks = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
@@ -968,10 +1103,10 @@ public actor LocalLibraryStore {
                 existing.canonicalURL = applied.article.canonicalURL.absoluteString; existing.title = applied.article.title
                 existing.source = applied.article.source; existing.author = applied.article.author
                 existing.publishedTime = applied.article.publishedTime?.date; existing.createdAt = applied.article.createdAt.date
-                existing.isDeleted = applied.article.isDeleted; existing.syncStatus = applied.status.rawValue
+                existing.isRemoved = applied.article.isDeleted; existing.syncStatus = applied.status.rawValue
                 existing.schemaVersion = LocalLibrarySchemaVersion.current.rawValue
             } else {
-                let record = LocalLibrarySchemaV3Models.ArticleRecord(applied.article)
+                let record = LocalLibrarySchemaV5Models.ArticleRecord(applied.article)
                 record.syncStatus = applied.status.rawValue
                 context.insert(record)
             }
@@ -1085,7 +1220,7 @@ public actor LocalLibraryStore {
     public func inspect() throws -> LocalLibraryInspection {
         let context = ModelContext(container)
         return LocalLibraryInspection(schemaVersion: .current,
-                                      articleCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV3Models.ArticleRecord>()),
+                                      articleCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>()),
                                       revisionCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>()),
                                       preparationCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>()),
                                       playbackCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>()),

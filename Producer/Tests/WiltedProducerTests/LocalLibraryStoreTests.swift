@@ -24,6 +24,33 @@ final class LocalLibraryStoreTests: XCTestCase {
                           deviceID: "device-mac", updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_010)))
     }
 
+    /// Marking an article deleted has to survive a round trip. Nothing covered
+    /// this, and the producer's Remove action depends on it entirely.
+    func testDeletingAnArticleSurvivesAReadBack() async throws {
+        let url = makeURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let article = try article()
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(article: article)
+        var flags = try await store.articles().map(\.isDeleted)
+        XCTAssertEqual(flags, [false])
+
+        let deleted = try Article(
+            itemID: article.itemID, canonicalURL: article.canonicalURL, title: article.title,
+            source: article.source, author: article.author, publishedTime: article.publishedTime,
+            createdAt: article.createdAt, isDeleted: true
+        )
+        try await store.save(article: deleted)
+        flags = try await store.articles().map(\.isDeleted)
+        XCTAssertEqual(flags, [true], "in-process read back")
+        let single = try await store.article(for: article.itemID)?.isDeleted
+        XCTAssertEqual(single, true, "single-item read back")
+
+        let reopened = try LocalLibraryStore(url: url)
+        flags = try await reopened.articles().map(\.isDeleted)
+        XCTAssertEqual(flags, [true], "read back after reopen")
+    }
+
     func testInterruptedStoreReopensWithArticleRevisionPreparationAndPlayback() async throws {
         let url = makeURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
@@ -69,7 +96,30 @@ final class LocalLibraryStoreTests: XCTestCase {
         let migratedTranscript = try await migrated.transcript(for: item.itemID, revisionID: rev.revisionID)
         let migratedInspection = try await migrated.inspect()
         XCTAssertNil(migratedTranscript)
-        XCTAssertEqual(migratedInspection.schemaVersion, .v4)
+        XCTAssertEqual(migratedInspection.schemaVersion, .v5)
+    }
+
+    /// The V4 -> V5 stage renames the deletion column. A read-back inside one
+    /// schema version cannot catch a rename that drops its values, so this
+    /// walks a deleted article from a frozen V2 store all the way to V5.
+    func testDeletionFlagSurvivesMigrationFromV2() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let live = try article()
+        let removed = try Article(
+            itemID: live.itemID, canonicalURL: live.canonicalURL, title: live.title,
+            source: live.source, author: live.author, publishedTime: live.publishedTime,
+            createdAt: live.createdAt, isDeleted: true
+        )
+        let rev = try revision(for: removed, id: "rev-deleted-migration")
+        try LocalLibraryStore.createV2MigrationFixture(
+            at: url, article: removed, playback: try playback(for: removed, revision: rev, position: 3)
+        )
+
+        let migrated = try LocalLibraryStore(url: url)
+        let flags = try await migrated.articles().map(\.isDeleted)
+        XCTAssertEqual(flags, [true], "the deletion flag must survive the column rename")
+        let single = try await migrated.article(for: removed.itemID)?.isDeleted
+        XCTAssertEqual(single, true)
     }
 
     func testPriorRevisionIsPreservedAndImmutableWhenNewRevisionIsSaved() async throws {

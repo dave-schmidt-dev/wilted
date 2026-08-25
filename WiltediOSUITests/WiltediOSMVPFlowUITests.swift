@@ -10,23 +10,23 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
 
         let library = app.descendants(matching: .any)["wilted-library"]
         XCTAssertTrue(library.waitForExistence(timeout: 5))
-        for title in ["Library", "Now Playing", "Downloads", "Settings"] {
+        for title in ["Library", "Now Playing", "Settings"] {
             XCTAssertTrue(app.tabBars.buttons[title].waitForExistence(timeout: 5))
         }
-
-        let transcript = app.buttons["Transcript"]
-        XCTAssertTrue(transcript.waitForExistence(timeout: 5))
-        XCTAssertEqual(transcript.elementType, .button)
-        transcript.tap()
-        XCTAssertTrue(app.staticTexts["This local fixture transcript is available without contacting iCloud."].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.tabBars.buttons["Downloads"].exists)
 
         let download = app.buttons["Download"]
         XCTAssertTrue(download.waitForExistence(timeout: 5))
         XCTAssertEqual(download.elementType, .button)
         download.tap()
 
-        let remove = app.buttons["Remove Download"]
-        XCTAssertTrue(remove.waitForExistence(timeout: 5))
+        // Remove Download moved into the row's actions menu when the row
+        // became two lines. It is still reachable from the list, not only
+        // from a screen the listener has to navigate to first.
+        let actions = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "wilted-listener-item-actions-"))
+            .firstMatch
+        XCTAssertTrue(actions.waitForExistence(timeout: 5))
 
         let settingsTab = app.tabBars.buttons["Settings"]
         XCTAssertTrue(settingsTab.waitForExistence(timeout: 5))
@@ -36,11 +36,9 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["wilted-settings-download-count"].label.contains("1 file"))
         XCTAssertTrue(app.descendants(matching: .any)["wilted-settings-download-bytes"].exists)
 
-        let downloadsTab = app.tabBars.buttons["Downloads"]
-        XCTAssertTrue(downloadsTab.waitForExistence(timeout: 5))
-        downloadsTab.tap()
-        // The Downloads card is not itself a play action. The explicit Play
-        // button owns the interaction after the card layout correction.
+        app.tabBars.buttons["Library"].tap()
+        // Downloads is a filter on Library now. The row is not itself a play
+        // action; the explicit Play button owns the interaction.
         let downloadedItem = app.buttons
             .matching(NSPredicate(format: "label == %@", "Play"))
             .firstMatch
@@ -52,7 +50,14 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         nowPlayingTab.tap()
         let player = app.descendants(matching: .any)["wilted-player"]
         XCTAssertTrue(player.waitForExistence(timeout: 5))
-        XCTAssertTrue(player.value as? String == "12 seconds")
+        XCTAssertTrue((player.value as? String ?? "").contains("12 seconds"), player.value as? String ?? "")
+
+        // The transcript left the library row when the row became two lines.
+        // Now Playing is where it is read, and it is still one tap away.
+        let transcript = app.buttons["Transcript"]
+        XCTAssertTrue(transcript.waitForExistence(timeout: 5))
+        transcript.tap()
+        XCTAssertTrue(app.staticTexts["This local fixture transcript is available without contacting iCloud."].waitForExistence(timeout: 5))
 
         let nowPlayingControl = app.descendants(matching: .any)["wilted-player-play-pause"]
         XCTAssertTrue(nowPlayingControl.waitForExistence(timeout: 5))

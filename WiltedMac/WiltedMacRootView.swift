@@ -61,12 +61,20 @@ struct WiltedMacRootView: View {
                 WiltedMacLibraryView(model: model)
             case .nowPlaying:
                 WiltedMacNowPlayingView(model: model)
+            case .processor:
+                WiltedMacProcessorView(model: model)
             case .settings:
                 WiltedMacSettingsView(model: model)
             }
         }
         .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
         .toolbar { wordmark }
+        // Three names for the same thing sat in one toolbar: the mark, the
+        // window title beside it, and the destination heading below. macOS 26
+        // draws the title as its own toolbar item, which `titleVisibility`
+        // no longer suppresses, so remove the item where the API exists and
+        // keep the AppKit fallback for macOS 14.
+        .wiltedRemovingToolbarTitle()
         .background(WiltedWindowTitleHider())
         .accessibilityIdentifier("wilted-mac-root")
     }
@@ -86,6 +94,17 @@ struct WiltedMacRootView: View {
             ToolbarItem(placement: .navigation) {
                 WiltedWordmark(height: 16)
             }
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func wiltedRemovingToolbarTitle() -> some View {
+        if #available(macOS 15.0, *) {
+            toolbar(removing: .title)
+        } else {
+            self
         }
     }
 }
@@ -167,9 +186,13 @@ private struct WiltedMacLibraryView: View {
                     Text(WiltedScreenCopy.savedArticles)
                         .font(WiltedTheme.font(.title))
                         .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                    ForEach(model.articles) { article in
-                        WiltedMacArticleRow(model: model, article: article)
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(model.articles.enumerated()), id: \.element.id) { index, article in
+                            if index > 0 { Divider() }
+                            WiltedMacArticleRow(model: model, article: article)
+                        }
                     }
+                    .wiltedCard(colorScheme)
                 }
             }
         }
@@ -283,31 +306,173 @@ private struct WiltedMacArticleRow: View {
 
     var body: some View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
-            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(article.title)
                     .font(WiltedTheme.font(.body))
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                Text(article.source)
-                    .font(WiltedTheme.font(.utility))
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                Text(article.isReady ? "Ready to play" : "Preparing")
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                // Source and length on one line. Three stacked lines and a
+                // card each meant four articles filled the window; a library
+                // is a list to scan, not a page to read.
+                Text(metaLine)
                     .font(WiltedTheme.font(.utility))
                     .foregroundStyle(
-                        (article.isReady ? WiltedStatusTone.positive : .neutral).color(colorScheme)
+                        article.isReady
+                            ? WiltedTheme.color(.secondaryText, scheme: colorScheme)
+                            : WiltedStatusTone.active.color(colorScheme)
                     )
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
+
             if article.isReady {
                 Button(WiltedScreenCopy.openPlayer) {
                     model.openNowPlaying(for: article)
                 }
                 .accessibilityIdentifier("wilted-open-now-playing")
             }
+
+            Menu {
+                Button("Remove", role: .destructive) { model.removeArticle(article) }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .accessibilityLabel("More actions for \(article.title)")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityIdentifier("wilted-article-actions-\(article.id)")
         }
-        .wiltedCard(colorScheme)
+        .padding(.vertical, WiltedTheme.Spacing.small)
+        .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-article-row-\(article.id)")
     }
+
+    /// `text.npr.org · 28:56`, plus **Preparing** while the row has no button.
+    ///
+    /// A ready row already carries **Open Now Playing**, so spelling out
+    /// *Ready to play* beside it repeats the same fact. A preparing row has no
+    /// control at all, so its word stays.
+    private var metaLine: String {
+        var parts = [article.source]
+        if let seconds = article.durationSeconds, seconds > 0 {
+            parts.append(WiltedDuration.clock(seconds))
+        }
+        if !article.isReady { parts.append("Preparing") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+// MARK: - Processor
+
+/// Visibility into the preparation pipeline.
+///
+/// The producer runs one preparation at a time and journals every status it
+/// emits, but nothing read that journal back: a run that failed while the
+/// window was closed left no trace a reader could find, and the only evidence
+/// preparation had ever happened was whether an article appeared in Library.
+/// This lists what is running now and every attempt that came before it.
+private struct WiltedMacProcessorView: View {
+    let model: WiltedMacModel
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        WiltedMacDestination(title: WiltedScreenCopy.processor, identifier: "wilted-mac-processor-detail") {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+                Text("Active")
+                    .font(WiltedTheme.font(.title))
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                if let preparation = model.preparation, !preparation.phase.isTerminal {
+                    WiltedMacPreparationView(model: model, preparation: preparation)
+                } else {
+                    Text("Nothing is preparing. Add an article in Library to start a run.")
+                        .font(WiltedTheme.font(.body))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-processor-idle")
+                }
+            }
+
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+                HStack {
+                    Text("Recent runs")
+                        .font(WiltedTheme.font(.title))
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    Spacer()
+                    Text(runCountLabel)
+                        .font(WiltedTheme.font(.utility))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                }
+                if model.processorRuns.isEmpty {
+                    Text("No preparation has been recorded on this Mac yet.")
+                        .font(WiltedTheme.font(.body))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-processor-empty")
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(model.processorRuns.enumerated()), id: \.element.id) { index, run in
+                            if index > 0 { Divider() }
+                            runRow(run)
+                        }
+                    }
+                    .wiltedCard(colorScheme)
+                }
+            }
+        }
+        .task {
+            // Polled rather than pushed: the journal is written by the
+            // coordinator's own actor and this destination has no hook into
+            // it. One second matches the player's readout cadence.
+            while !Task.isCancelled {
+                model.refreshProcessorRuns()
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    private var runCountLabel: String {
+        let count = model.processorRuns.count
+        return "\(count) recorded"
+    }
+
+    private func runRow(_ run: WiltedMacProcessorRun) -> some View {
+        HStack(alignment: .top, spacing: WiltedTheme.Spacing.medium) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(run.title)
+                    .font(WiltedTheme.font(.body))
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(run.detail)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .trailing, spacing: 2) {
+                // The word always carries the outcome; the tone only
+                // emphasises it (W-INV-010).
+                Text(run.outcomeLabel)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(run.tone.color(colorScheme))
+                Text(Self.stamp.string(from: run.updatedAt))
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            }
+        }
+        .padding(.vertical, WiltedTheme.Spacing.small)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("wilted-processor-run-\(run.id)")
+    }
+
+    private static let stamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
 }
 
 // MARK: - Now Playing
@@ -354,7 +519,7 @@ private struct WiltedMacNowPlayingView: View {
                 )
                 .tint(WiltedTheme.color(.progress, scheme: colorScheme))
                 .accessibilityLabel("Playback progress")
-                .accessibilityValue(model.playbackProgressLabel)
+                .accessibilityValue(model.playbackProgressSpokenLabel)
                 .accessibilityIdentifier("wilted-now-playing-progress")
 
                 Text(model.playbackProgressLabel)
@@ -391,6 +556,26 @@ private struct WiltedMacNowPlayingView: View {
                     unavailableLabel: transcript.unavailableLabel,
                     identifier: "wilted-now-playing-transcript"
                 )
+
+                // Offered only when there is genuinely no text to show, on the
+                // same principle as the audio-route and account-review
+                // controls. Articles prepared before transcripts shipped have
+                // audio and no text, and re-preparing cannot fix it because
+                // the revision is immutable, so this is their only route.
+                if !transcript.isReadable {
+                    Button(model.isBackfillingTranscript ? "Fetching transcript…" : "Fetch transcript") {
+                        model.backfillCurrentTranscript()
+                    }
+                    .disabled(model.isBackfillingTranscript)
+                    .accessibilityIdentifier("wilted-now-playing-fetch-transcript")
+                }
+                if let status = model.transcriptBackfillStatus {
+                    Text(status)
+                        .font(WiltedTheme.font(.utility))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wilted-now-playing-transcript-status")
+                }
 
                 if let error = model.playbackError {
                     Text(error)

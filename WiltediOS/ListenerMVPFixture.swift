@@ -80,7 +80,6 @@ struct ListenerMVPFixture: View {
         WiltedRootView(
             iOSLibrary: AnyView(WiltedListenerLibraryView(model: model)),
             iOSNowPlaying: AnyView(WiltedListenerNowPlayingView(model: model)),
-            iOSDownloads: AnyView(WiltedListenerDownloadsView(model: model)),
             iOSSettings: AnyView(WiltedListenerSettingsView(model: model)),
             iOSOverlay: AnyView(fixtureControls)
         )
