@@ -11,7 +11,10 @@ run_case() {
   local output="$2"
   shift 2
   set +e
-  env NATIVE_SELF_TEST=1 "$@" >"$output" 2>&1
+  # Every pre-existing case asserts against a gate that RUNS the macOS UI leg.
+  # The leg now defers unless opted in, so opt in here; the deferral path has
+  # its own dedicated cases below, which re-override this to 0.
+  env NATIVE_SELF_TEST=1 WILTED_MAC_UI=1 "$@" >"$output" 2>&1
   local result=$?
   set -e
   printf 'meta-test[%s] status=%s\n' "$label" "$result" >&2
@@ -533,4 +536,63 @@ for snapshot_failure in missing zero malformed; do
   assert_contains 'native.error' "$snapshot_log"
 done
 
-printf '%s\n' 'native gate aggregate meta-test passed (nine native Xcode legs including the macOS UI leg, plus CloudSync and Listener SwiftPM; forced and zero-test failures are fail-closed)'
+# The macOS UI leg drives real HID events through WindowServer and cannot run
+# headless, so it defers unless explicitly opted into. The danger of any skip
+# mechanism is that a skipped leg reads as a passed leg. These cases exist to
+# prove it never does.
+assert_deferred_mac_ui_contract() {
+  assert_contains 'wilted_mac_ui="${WILTED_MAC_UI:-0}"' "$gate"
+  assert_contains 'is_deferred_leg()' "$gate"
+  assert_contains '[[ "$1" == "macos-ui-tests" && "$wilted_mac_ui" != "1" ]]' "$gate"
+  assert_contains 'native.leg.deferred' "$gate"
+  assert_contains 'deferred_leg_names' "$gate"
+  # The Makefile must keep an opt-in route, or the leg becomes unreachable
+  # rather than deferred.
+  assert_contains 'WILTED_MAC_UI=1 bash scripts/test-gate.sh' "$repo_root/Makefile"
+}
+assert_deferred_mac_ui_contract
+
+# Default: the leg defers, says so by name, and the summary carries the debt.
+mac_ui_deferred_log="$tmp_dir/mac-ui-deferred.log"
+mac_ui_deferred_status="$(run_case mac-ui-deferred "$mac_ui_deferred_log" \
+  env WILTED_MAC_UI=0 bash "$gate")"
+[[ "$mac_ui_deferred_status" -eq 0 ]] || { cat "$mac_ui_deferred_log" >&2; exit 1; }
+assert_contains 'native.leg.deferred name=macos-ui-tests' "$mac_ui_deferred_log"
+assert_contains 'native.deferred count=1 legs=macos-ui-tests' "$mac_ui_deferred_log"
+# A deferred run must never emit the unqualified pass line, because that is the
+# line a human or a script reads as "every leg ran".
+assert_contains 'native.passed count=8 deferred=1' "$mac_ui_deferred_log"
+if grep -Eq 'native\.passed count=[0-9]+$' "$mac_ui_deferred_log"; then
+  printf '%s\n' 'assertion failed: deferred run emitted an unqualified native.passed line' >&2
+  cat "$mac_ui_deferred_log" >&2
+  exit 1
+fi
+# A deferred leg is not a completed leg.
+if grep -Fq 'native.leg.complete name=macos-ui-tests' "$mac_ui_deferred_log"; then
+  printf '%s\n' 'assertion failed: deferred macOS UI leg reported completion' >&2
+  cat "$mac_ui_deferred_log" >&2
+  exit 1
+fi
+
+# Opted in: the leg actually runs and the summary claims no deferral.
+mac_ui_optin_log="$tmp_dir/mac-ui-optin.log"
+mac_ui_optin_status="$(run_case mac-ui-optin "$mac_ui_optin_log" env WILTED_MAC_UI=1 bash "$gate")"
+[[ "$mac_ui_optin_status" -eq 0 ]] || { cat "$mac_ui_optin_log" >&2; exit 1; }
+assert_contains 'native.leg.start name=macos-ui-tests' "$mac_ui_optin_log"
+assert_contains 'native.leg.complete name=macos-ui-tests status=0' "$mac_ui_optin_log"
+assert_contains 'native.passed count=9' "$mac_ui_optin_log"
+if grep -Fq 'native.leg.deferred' "$mac_ui_optin_log"; then
+  printf '%s\n' 'assertion failed: opted-in run still deferred the macOS UI leg' >&2
+  cat "$mac_ui_optin_log" >&2
+  exit 1
+fi
+
+# Deferral must not become a way to hide a real failure: an opted-in forced
+# failure still fails the gate.
+mac_ui_failure_log="$tmp_dir/mac-ui-failure.log"
+mac_ui_failure_status="$(run_case mac-ui-failure "$mac_ui_failure_log" \
+  env WILTED_MAC_UI=1 NATIVE_FORCE_FAIL_LEG=macos-ui-tests bash "$gate")"
+[[ "$mac_ui_failure_status" -ne 0 ]] || { cat "$mac_ui_failure_log" >&2; exit 1; }
+assert_contains 'native.failed count=1' "$mac_ui_failure_log"
+
+printf '%s\n' 'native gate aggregate meta-test passed (nine native Xcode legs; the macOS UI leg defers unless WILTED_MAC_UI=1 and its deferral is fail-loud; forced and zero-test failures are fail-closed)'

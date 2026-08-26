@@ -2,6 +2,35 @@
 
 > Native Mac producer and iOS listener contract for the post-reset project. Invariant identifiers use the harvest-compatible `W-INV-*` namespace and must not be confused with the archived Python charter.
 
+## What `gate_test: test-gate.sh` proves
+
+Every invariant below names `test-gate.sh` as its gate. As of 2026-08-26 that
+script runs eight of its nine legs unconditionally and **defers the ninth**,
+`macos-ui-tests`, unless `WILTED_MAC_UI=1` (`make native-ui`).
+
+macOS XCUITest has no headless mode. It drives real HID events through
+WindowServer, so the leg seizes the cursor, keyboard, and window focus for its
+entire run and cannot share a machine with its operator. Deferring it by
+default is a deliberate trade, recorded here because it changes what a green
+gate means.
+
+A deferred leg is not a passed leg. The gate counts deferrals separately, names
+them in `native.deferred`, and never emits an unqualified `native.passed` when
+any leg was deferred; `tests/test-native-gate.sh` asserts all three and is
+mutation-tested against both the "silently pass" and "never defer" regressions.
+So a green `make validate` is honest about owing the Mac UI leg, but it is not
+evidence that leg ran. Only `make native-ui` is.
+
+Invariants whose evidence depends on the real Mac UI surface — W-INV-005 and
+W-INV-010 in particular — are therefore only fully gated by `make native-ui`.
+Two facts about the Mac UI suite make it irreplaceable rather than merely
+convenient, and both were measured rather than assumed (see HISTORY.md,
+2026-08-26): a `NavigationSplitView`'s navigation column is not drawn by
+`NSHostingView.cacheDisplay`, so no pixel baseline can cover the sidebar; and
+the AppKit accessibility tree does not materialize without an attached AX
+client, so no offscreen unit test can prove an accessibility identifier or
+label reached the tree.
+
 ## Standing invariants
 
 ### W-INV-001 — No silent blocking waits

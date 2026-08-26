@@ -13,6 +13,14 @@ forced_zero_leg="${NATIVE_FORCE_ZERO_TEST_LEG:-}"
 forced_snapshot_baseline="${NATIVE_FORCE_SNAPSHOT_BASELINE:-}"
 forced_missing_ios_mvp_journey="${NATIVE_FORCE_MISSING_IOS_MVP_JOURNEY:-0}"
 wilted_development_team="${WILTED_DEVELOPMENT_TEAM:-4CJ49V6QHW}"
+# macOS XCUITest has no headless mode: it drives real HID events through
+# WindowServer, so the macos-ui-tests leg seizes the operator's cursor,
+# keyboard, and window focus for its whole run. It is therefore opt-in and
+# defers by default. A deferred leg is NOT a passed leg -- it is counted and
+# reported separately, and `native.passed` names it, so a green gate can never
+# be read as evidence the Mac UI suite ran. Opt in with `make native-ui` or
+# WILTED_MAC_UI=1.
+wilted_mac_ui="${WILTED_MAC_UI:-0}"
 xcode_test_timeout_seconds="${WILTED_XCODE_TEST_TIMEOUT_SECONDS:-300}"
 # The iOS pixel baselines were recorded on iPhone 17 Pro. Selecting it by name
 # keeps the UI leg from silently using a different first-listed iPhone model.
@@ -55,6 +63,8 @@ leg_names=(
 leg_reports=(none xctest xctest xctest xctest count count count count)
 declare -i failed_legs=0
 declare -i completed_legs=0
+declare -i deferred_legs=0
+deferred_leg_names=()
 native_project=""
 integration_root=""
 
@@ -69,6 +79,10 @@ fail() {
 
 is_forced_failure() {
   [[ "$forced_fail_leg" == "$1" ]]
+}
+
+is_deferred_leg() {
+  [[ "$1" == "macos-ui-tests" && "$wilted_mac_ui" != "1" ]]
 }
 
 is_forced_zero() {
@@ -419,6 +433,13 @@ run_leg() {
   local output_file="$tmp_root/$name.log"
   local result_bundle="$tmp_root/$name.xcresult"
   local command_status=0
+
+  if is_deferred_leg "$name"; then
+    deferred_legs+=1
+    deferred_leg_names+=("$name")
+    status "native.leg.deferred name=$name reason=takes-over-the-screen rerun=\"make native-ui\""
+    return 0
+  fi
 
   status "native.leg.start name=$name"
   if is_forced_failure "$name"; then
@@ -905,9 +926,16 @@ run_leg "${leg_names[6]}" "${leg_reports[6]}" leg_ios_unit_tests
 run_leg "${leg_names[7]}" "${leg_reports[7]}" leg_macos_ui_tests
 run_leg "${leg_names[8]}" "${leg_reports[8]}" leg_ios_ui_tests
 
-status "native.complete failed_legs=$failed_legs total_legs=$completed_legs"
+status "native.complete failed_legs=$failed_legs total_legs=$completed_legs deferred_legs=$deferred_legs"
 if [[ "$failed_legs" -ne 0 ]]; then
   status "native.failed count=$failed_legs"
   exit 1
 fi
-status "native.passed count=$completed_legs"
+if [[ "$deferred_legs" -ne 0 ]]; then
+  # Named, not merely counted. This line is the only thing standing between a
+  # green gate and the false claim that every leg ran.
+  status "native.deferred count=$deferred_legs legs=${deferred_leg_names[*]} rerun=\"make native-ui\""
+  status "native.passed count=$completed_legs deferred=$deferred_legs"
+else
+  status "native.passed count=$completed_legs"
+fi
