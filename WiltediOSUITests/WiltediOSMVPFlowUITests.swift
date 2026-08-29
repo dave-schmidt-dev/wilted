@@ -10,7 +10,7 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
 
         let library = app.descendants(matching: .any)["wilted-library"]
         XCTAssertTrue(library.waitForExistence(timeout: 5))
-        for title in ["Library", "Now Playing", "Settings"] {
+        for title in ["Larder", "Now Playing", "Settings"] {
             XCTAssertTrue(app.tabBars.buttons[title].waitForExistence(timeout: 5))
         }
         XCTAssertFalse(app.tabBars.buttons["Downloads"].exists)
@@ -36,8 +36,8 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["wilted-settings-download-count"].label.contains("1 file"))
         XCTAssertTrue(app.descendants(matching: .any)["wilted-settings-download-bytes"].exists)
 
-        app.tabBars.buttons["Library"].tap()
-        // Downloads is a filter on Library now. The row is not itself a play
+        app.tabBars.buttons["Larder"].tap()
+        // Downloads is a filter on Larder now. The row is not itself a play
         // action; the explicit Play button owns the interaction.
         let downloadedItem = app.buttons
             .matching(NSPredicate(format: "label == %@", "Play"))
@@ -81,7 +81,7 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         let recover = app.descendants(matching: .any)["wilted-listener-fixture-recover"]
         XCTAssertTrue(recover.waitForExistence(timeout: 5))
         recover.tap()
-        XCTAssertTrue(app.staticTexts["Library ready"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Larder ready"].waitForExistence(timeout: 5))
     }
 
     private func waitForLabel(_ label: String, on element: XCUIElement) -> Bool {

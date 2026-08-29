@@ -46,11 +46,11 @@ public enum WiltedDuration {
 
 public enum WiltedScreenCopy {
     public static let rootIdentifier = "wilted-root"
-    public static let processor = "Processor"
+    public static let processor = "Prep"
     public static let processorIdentifier = "wilted-processor"
-    public static let library = "Library"
+    public static let library = "Larder"
     public static let libraryIdentifier = "wilted-library"
-    public static let libraryEmpty = "Your library is empty"
+    public static let libraryEmpty = "Your larder is empty"
     /// Both apps say the same thing about an empty library and then differ
     /// only on what the reader can do about it, because only Mac produces.
     public static let libraryEmptyDetailProducer = "Add an article to start listening."
@@ -71,13 +71,11 @@ public enum WiltedScreenCopy {
     public static let downloadsEmptyIdentifier = "wilted-no-downloads"
     public static let nowPlaying = "Now Playing"
     public static let nowPlayingEmpty = "Nothing is playing"
-    /// The two apps have different destination sets, so copy that names a
-    /// destination cannot be one string. The Mac has no Downloads: audio is
-    /// local the moment it is produced. Telling a producer to visit a place
-    /// its window does not have is the same defect as listing it in the
-    /// sidebar.
-    public static let nowPlayingEmptyDetailProducer = "Choose a ready article in Library, then return here for playback controls."
-    public static let nowPlayingEmptyDetailListener = "Choose a downloaded article from Library or Downloads, then return here for playback controls."
+    /// The two apps use different readiness language: Mac audio is ready after
+    /// preparation, while listener audio is ready after download. Both route
+    /// the reader through Larder because Downloads is no longer a destination.
+    public static let nowPlayingEmptyDetailProducer = "Choose a ready article in Larder, then return here for playback controls."
+    public static let nowPlayingEmptyDetailListener = "Choose a downloaded article in Larder, then return here for playback controls."
     public static let nowPlayingEmptyIdentifier = "wilted-player-empty"
     public static let settings = "Settings"
     public static let settingsIdentifier = "wilted-settings"

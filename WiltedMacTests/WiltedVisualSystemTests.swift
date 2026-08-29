@@ -60,8 +60,8 @@ final class WiltedVisualSystemTests: XCTestCase {
     }
 
     func testNativeInteractionContract() {
-        XCTAssertEqual(WiltedNavigation.allCases.map(\.title), ["Library", "Now Playing", "Downloads", "Settings"])
-        XCTAssertEqual(WiltedScreenCopy.libraryEmpty, "Your library is empty")
+        XCTAssertEqual(WiltedNavigation.allCases.map(\.title), ["Larder", "Now Playing", "Downloads", "Settings"])
+        XCTAssertEqual(WiltedScreenCopy.libraryEmpty, "Your larder is empty")
         XCTAssertEqual(WiltedScreenCopy.noArticles, "No articles yet")
         XCTAssertEqual(WiltedScreenCopy.addArticle, "Add Article")
         XCTAssertEqual(WiltedScreenCopy.addArticleIdentifier, "wilted-add-article")
@@ -101,7 +101,7 @@ final class WiltedVisualSystemTests: XCTestCase {
     /// the Mac baselines always render the player, never the empty state.
     func testProducerCopyNamesOnlyProducerDestinations() {
         let producerDestinations = WiltedNavigation.allCases.filter { $0 != .downloads }
-        XCTAssertEqual(producerDestinations.map(\.title), ["Library", "Now Playing", "Settings"])
+        XCTAssertEqual(producerDestinations.map(\.title), ["Larder", "Now Playing", "Settings"])
 
         XCTAssertFalse(
             WiltedScreenCopy.nowPlayingEmptyDetailProducer.contains(WiltedScreenCopy.downloads),
@@ -111,9 +111,8 @@ final class WiltedVisualSystemTests: XCTestCase {
             WiltedScreenCopy.nowPlayingEmptyDetailProducer.contains(WiltedScreenCopy.library)
         )
         // The listener does have Downloads, so its wording legitimately differs.
-        XCTAssertTrue(
-            WiltedScreenCopy.nowPlayingEmptyDetailListener.contains(WiltedScreenCopy.downloads)
-        )
+        XCTAssertTrue(WiltedScreenCopy.nowPlayingEmptyDetailListener.contains(WiltedScreenCopy.library))
+        XCTAssertFalse(WiltedScreenCopy.nowPlayingEmptyDetailListener.contains(WiltedScreenCopy.downloads))
         XCTAssertFalse(
             WiltedScreenCopy.libraryEmptyDetailProducer.contains(WiltedScreenCopy.downloads)
         )
@@ -143,7 +142,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         )
         XCTAssertEqual(
             WiltedPreviewState.emptyLibrary.renderSignature(variant: variant),
-            "1d1e7e2ce1d523c3"
+            "d31aaa7abef44caa"
         )
         let signatures = Set(
             WiltedPreviewState.allCases.flatMap { state in

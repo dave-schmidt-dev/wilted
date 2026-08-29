@@ -162,6 +162,32 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertEqual(forward.label, "Skip forward 30 seconds")
     }
 
+    /// An unconstrained empty-player detail used to change the window's
+    /// content minimum and grow an 1100x800 window to the screen's height.
+    func testSelectingEmptyNowPlayingDoesNotResizeWindow() {
+        let app = launch(arguments: ["--wilted-ui-smoke"])
+
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        let before = window.frame
+
+        let navNowPlaying = app.descendants(matching: .any)["wilted-navigation-nowPlaying"]
+        XCTAssertTrue(navNowPlaying.waitForExistence(timeout: 5))
+        navNowPlaying.click()
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-now-playing"].waitForExistence(timeout: 5)
+        )
+        let emptyPlayerScreenshot = XCTAttachment(screenshot: window.screenshot())
+        emptyPlayerScreenshot.name = "mac-now-playing-empty"
+        emptyPlayerScreenshot.lifetime = .keepAlways
+        add(emptyPlayerScreenshot)
+        let after = window.frame
+
+        XCTAssertEqual(after.width, before.width, accuracy: 1)
+        XCTAssertLessThanOrEqual(after.height, before.height + 1)
+    }
+
     /// Producer parity with the listener: the Mac player reports where it is,
     /// not just what its transports do.
     func testPlayerReportsProgressAndStatusLikeTheListener() {

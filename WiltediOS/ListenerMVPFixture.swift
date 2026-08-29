@@ -89,7 +89,7 @@ struct ListenerMVPFixture: View {
     private var fixtureControls: some View {
         switch model.status {
         case .failed(_, retryable: false):
-            Button("Recover Library") { Task { await model.recoverMVPFixture() } }
+            Button("Recover Larder") { Task { await model.recoverMVPFixture() } }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("wilted-listener-fixture-recover")
                 .padding()

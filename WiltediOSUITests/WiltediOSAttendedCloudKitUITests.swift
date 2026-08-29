@@ -114,10 +114,10 @@ final class WiltediOSAttendedCloudKitUITests: XCTestCase {
         let send = app.descendants(matching: .any)["wilted-listener-send"]
         XCTAssertTrue(reveal(app, send, swipingUp: false), "send control never became reachable")
         if send.isEnabled { send.tap() }
-        // Only a completed send reaches "Library ready". A queue held by conflicts reports
+        // Only a completed send reaches "Larder ready". A queue held by conflicts reports
         // "Nothing was sent…", which a settled-looking status check would have accepted as
         // success: that is precisely the failure this journey has to be able to see.
-        XCTAssertTrue(waitForStatus(app, equalTo: "Library ready", timeout: 120),
+        XCTAssertTrue(waitForStatus(app, equalTo: "Larder ready", timeout: 120),
                       "playback send never completed; status: \(statusText(app))")
 
         // Reconciliation across relaunch: the restored position must not rewind. The baseline

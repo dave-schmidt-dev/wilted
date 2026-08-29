@@ -12,9 +12,9 @@ final class ListenerAppModelTests: XCTestCase {
         await model.refresh()
 
         guard case let .failed(message, retryable) = model.status else {
-            return XCTFail("Expected a visible local-library failure")
+            return XCTFail("Expected a visible local-larder failure")
         }
-        XCTAssertTrue(message.contains("Local library unavailable"))
+        XCTAssertTrue(message.contains("Local larder unavailable"))
         XCTAssertFalse(retryable)
     }
 

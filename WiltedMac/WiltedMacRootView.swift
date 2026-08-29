@@ -388,7 +388,7 @@ private struct WiltedMacProcessorView: View {
                 if let preparation = model.preparation, !preparation.phase.isTerminal {
                     WiltedMacPreparationView(model: model, preparation: preparation)
                 } else {
-                    Text("Nothing is preparing. Add an article in Library to start a run.")
+                    Text("Nothing is preparing. Add an article in Larder to start a run.")
                         .font(WiltedTheme.font(.body))
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-processor-idle")
@@ -486,16 +486,18 @@ private struct WiltedMacNowPlayingView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Group {
-            if let article = model.currentArticle {
-                player(article)
-            } else {
-                WiltedNowPlayingEmptyView(detail: WiltedScreenCopy.nowPlayingEmptyDetailProducer)
-                    .accessibilityIdentifier("wilted-now-playing")
+        GeometryReader { geometry in
+            Group {
+                if let article = model.currentArticle {
+                    player(article)
+                } else {
+                    WiltedNowPlayingEmptyView(detail: WiltedScreenCopy.nowPlayingEmptyDetailProducer)
+                        .accessibilityIdentifier("wilted-now-playing")
+                }
             }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .background(WiltedTheme.color(.page, scheme: colorScheme))
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(WiltedTheme.color(.page, scheme: colorScheme))
     }
 
     private func player(_ article: WiltedMacArticle) -> some View {

@@ -7,7 +7,7 @@ final class WiltediOSSmokeUITests: XCTestCase {
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES", "--wilted-ui-smoke"]
         app.launch()
 
-        let libraryTab = app.tabBars.buttons["Library"]
+        let libraryTab = app.tabBars.buttons["Larder"]
         let nowPlayingTab = app.tabBars.buttons["Now Playing"]
         let settingsTab = app.tabBars.buttons["Settings"]
         for tab in [libraryTab, nowPlayingTab, settingsTab] {

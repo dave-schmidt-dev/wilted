@@ -426,7 +426,7 @@ final class WiltedMacModel {
 #if canImport(WiltedProducer)
         guard let coordinator else {
             preparation = WiltedMacPreparation(
-                phase: .failed, detail: "The local library is unavailable.", fraction: nil, cancellable: false
+                phase: .failed, detail: "The local larder is unavailable.", fraction: nil, cancellable: false
             )
             return
         }

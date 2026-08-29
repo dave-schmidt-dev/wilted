@@ -26,7 +26,7 @@ public enum ListenerAppStatus: Equatable, Sendable {
         case .idle: "Ready"
         case let .refreshing(message), let .sending(message), let .offline(message),
              let .deleted(message), let .incompatible(message): message
-        case .ready: "Library ready"
+        case .ready: "Larder ready"
         case .playing: "Playing offline"
         case .paused: "Playback paused"
         case let .failed(message, _): message
@@ -65,6 +65,7 @@ public enum ListenerItemState: Equatable, Sendable {
 public enum ListenerPixelFixtureState: String, Sendable {
     case library
     case nowPlaying
+    case emptyNowPlaying
     case terminalFailure
 }
 
@@ -230,7 +231,7 @@ public final class WiltedListenerAppModel: ObservableObject {
             )
 #endif
         } catch {
-            return WiltedListenerAppModel(unavailableMessage: "Local library unavailable: \(error.localizedDescription)")
+            return WiltedListenerAppModel(unavailableMessage: "Local larder unavailable: \(error.localizedDescription)")
         }
     }
 
@@ -241,6 +242,10 @@ public final class WiltedListenerAppModel: ObservableObject {
         state: ListenerPixelFixtureState = .library
     ) -> WiltedListenerAppModel {
         let model = WiltedListenerAppModel()
+        if state == .emptyNowPlaying {
+            model.status = .ready
+            return model
+        }
         guard let itemID = try? ItemID.derive(from: URL(string: "https://example.test/wilted-listener")!) else {
             return model
         }
@@ -269,7 +274,7 @@ public final class WiltedListenerAppModel: ObservableObject {
             lastSuccessfulFetchAt: Date(timeIntervalSince1970: 1_787_515_200)
         )
         switch state {
-        case .library:
+        case .library, .emptyNowPlaying:
             model.status = .ready
         case .nowPlaying:
             guard let playback = try? PlaybackState(
@@ -312,9 +317,9 @@ public final class WiltedListenerAppModel: ObservableObject {
     public func refresh() async {
         guard let operation = beginOperation() else { return }
         defer { finishOperation(operation) }
-        status = .refreshing("Refreshing library…")
+        status = .refreshing("Refreshing larder…")
         guard let repository else {
-            status = .failed("Local library unavailable", retryable: false)
+            status = .failed("Local larder unavailable", retryable: false)
             return
         }
 
@@ -365,7 +370,7 @@ public final class WiltedListenerAppModel: ObservableObject {
                     : items.contains(where: { $0.state == .deleted })
                     ? .deleted("An item was deleted remotely")
                     : items.contains(where: { $0.state == .incompatibleRevision })
-                    ? .incompatible("A library item has an incompatible revision") : .ready
+                    ? .incompatible("A larder item has an incompatible revision") : .ready
                 return
             } catch {
                 guard isCurrent(operation) else { return }
@@ -689,7 +694,7 @@ public final class WiltedListenerAppModel: ObservableObject {
         else if items.contains(where: { $0.state == .deleted }) { status = .deleted("An item was deleted remotely") }
         else if items.isEmpty { status = .offline(fallback) }
         else if items.contains(where: { $0.state == .incompatibleRevision }) {
-            status = .incompatible("A library item has an incompatible revision")
+            status = .incompatible("A larder item has an incompatible revision")
         } else { status = .offline(fallback) }
     }
 

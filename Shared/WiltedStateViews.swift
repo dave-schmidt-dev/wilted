@@ -186,7 +186,7 @@ public struct WiltedNowPlayingEmptyView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(WiltedTheme.Spacing.xLarge)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity)
         .background(WiltedTheme.color(.page, scheme: colorScheme))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(WiltedScreenCopy.nowPlayingEmpty). \(detail)")

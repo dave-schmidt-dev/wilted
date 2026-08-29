@@ -32,6 +32,14 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
         assertSnapshot(launch(screen: .nowPlaying, dark: false), named: "listener-now-playing-light")
     }
 
+    func testListenerEmptyNowPlayingDarkPixelBaseline() {
+        assertSnapshot(launch(screen: .emptyNowPlaying, dark: true), named: "listener-now-playing-empty-dark")
+    }
+
+    func testListenerEmptyNowPlayingLightPixelBaseline() {
+        assertSnapshot(launch(screen: .emptyNowPlaying, dark: false), named: "listener-now-playing-empty-light")
+    }
+
     func testListenerTerminalFailureDarkPixelBaseline() {
         assertSnapshot(launch(screen: .terminalFailure, dark: true), named: "listener-terminal-failure-dark")
     }
@@ -44,11 +52,13 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
         case library
         case settings
         case nowPlaying
+        case emptyNowPlaying = "empty-now-playing"
         case terminalFailure = "terminal-failure"
 
         var fixtureState: String {
             switch self {
             case .nowPlaying: "nowPlaying"
+            case .emptyNowPlaying: "emptyNowPlaying"
             case .terminalFailure: "terminalFailure"
             case .library, .settings: "library"
             }
@@ -58,6 +68,7 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
             switch self {
             case .settings: "wilted-settings"
             case .nowPlaying: "wilted-player"
+            case .emptyNowPlaying: "wilted-player-empty"
             case .library, .terminalFailure: "wilted-listener-status"
             }
         }
@@ -71,7 +82,7 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
             "--wilted-listener-pixel-state=\(screen.fixtureState)"
         ]
             + (screen == .settings ? ["--wilted-listener-pixel-settings"] : [])
-            + (screen == .nowPlaying ? ["--wilted-listener-pixel-now-playing"] : [])
+            + ([.nowPlaying, .emptyNowPlaying].contains(screen) ? ["--wilted-listener-pixel-now-playing"] : [])
             + ["--wilted-listener-pixel-appearance=\(dark ? "dark" : "light")"]
         app.launch()
         XCTAssertTrue(

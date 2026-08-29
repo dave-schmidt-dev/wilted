@@ -56,7 +56,7 @@ public enum WiltedPreviewState: CaseIterable, Hashable, Identifiable, Sendable {
 
     public var title: String {
         switch self {
-        case .emptyLibrary: "Your library is empty"
+        case .emptyLibrary: "Your larder is empty"
         case .preparing(let stage): stage.title
         case .cancelling: "Cancelling preparation"
         case .extractionFailure: "Article text is unavailable"
@@ -69,7 +69,7 @@ public enum WiltedPreviewState: CaseIterable, Hashable, Identifiable, Sendable {
         case .iCloudUnavailable: "iCloud is unavailable"
         case .offlineCached: "Offline audio available"
         case .downloadFailure: "Download failed"
-        case .deletedRemotely: "Removed from the library"
+        case .deletedRemotely: "Removed from the larder"
         case .incompatibleRevision: "Revision is incompatible"
         }
     }
@@ -86,7 +86,7 @@ public enum WiltedPreviewState: CaseIterable, Hashable, Identifiable, Sendable {
         case .paused: "Playback is paused."
         case .completed: "You reached the end of this revision."
         case .syncPending: "Changes will send when the connection is available."
-        case .iCloudUnavailable: "The local library remains available while iCloud is offline."
+        case .iCloudUnavailable: "The local larder remains available while iCloud is offline."
         case .offlineCached: "This download can play without a connection."
         case .downloadFailure: "The audio was not saved. Try the download again."
         case .deletedRemotely: "The source item was removed on another device."

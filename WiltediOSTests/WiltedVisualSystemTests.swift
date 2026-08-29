@@ -38,8 +38,8 @@ final class WiltedVisualSystemTests: XCTestCase {
     }
 
     func testLiteralNavigationAndTouchTargetContract() {
-        XCTAssertEqual(WiltedNavigation.allCases.map(\.title), ["Library", "Now Playing", "Downloads", "Settings"])
-        XCTAssertEqual(WiltedScreenCopy.libraryEmpty, "Your library is empty")
+        XCTAssertEqual(WiltedNavigation.allCases.map(\.title), ["Larder", "Now Playing", "Downloads", "Settings"])
+        XCTAssertEqual(WiltedScreenCopy.libraryEmpty, "Your larder is empty")
         XCTAssertEqual(WiltedScreenCopy.noArticles, "No articles yet")
         XCTAssertEqual(WiltedScreenCopy.addArticle, "Add Article")
         XCTAssertEqual(WiltedScreenCopy.addArticleIdentifier, "wilted-add-article")
@@ -81,7 +81,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         )
         XCTAssertEqual(
             WiltedPreviewState.emptyLibrary.renderSignature(variant: variant),
-            "1d1e7e2ce1d523c3"
+            "d31aaa7abef44caa"
         )
         let signatures = Set(
             WiltedPreviewState.allCases.flatMap { state in
