@@ -79,10 +79,6 @@ public enum WiltedScreenCopy {
     public static let nowPlayingEmptyIdentifier = "wilted-player-empty"
     public static let settings = "Settings"
     public static let settingsIdentifier = "wilted-settings"
-    public static let audio = "Audio"
-    public static let audioValue = "Local speech"
-    public static let audioMode = "Speech mode"
-    public static let audioRowIdentifier = "wilted-audio-setting"
     public static let sync = "Sync"
     /// Account recovery is worded identically on both platforms. Before this
     /// was shared, only the Mac had the control at all; the listener showed a

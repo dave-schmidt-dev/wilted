@@ -53,6 +53,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
 
         navSettings.click()
         XCTAssertTrue(syncControls.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-audio-setting"].exists)
         XCTAssertFalse(processorDetail.exists)
         let playerGone = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == false"), object: player

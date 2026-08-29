@@ -41,11 +41,7 @@ final class WiltediOSSmokeUITests: XCTestCase {
         let settings = app.descendants(matching: .any)["wilted-settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
         let audioSetting = app.descendants(matching: .any)["wilted-audio-setting"]
-        XCTAssertTrue(audioSetting.waitForExistence(timeout: 5))
-        // The row no longer repeats its card's title; the card is "Audio"
-        // and the row states which mode is in use.
-        XCTAssertTrue(audioSetting.label.contains("Speech mode"))
-        XCTAssertTrue(audioSetting.label.contains("Local speech"))
+        XCTAssertFalse(audioSetting.exists)
         XCTAssertTrue(settingsTab.isSelected)
 
         libraryTab.tap()
@@ -73,5 +69,13 @@ final class WiltediOSSmokeUITests: XCTestCase {
         XCTAssertEqual(rewind.label, "Rewind 15 seconds")
         XCTAssertEqual(playPause.label, "Pause")
         XCTAssertEqual(forward.label, "Skip forward 30 seconds")
+        let restart = app.descendants(matching: .any)["wilted-listener-restart"]
+        let transcript = app.descendants(matching: .any)["wilted-now-playing-transcript"]
+        XCTAssertTrue(restart.exists)
+        XCTAssertTrue(transcript.exists)
+        XCTAssertLessThan(restart.frame.maxY, transcript.frame.minY)
+        XCTAssertGreaterThan(transcript.frame.height, restart.frame.height)
+        transcript.swipeUp()
+        XCTAssertTrue(restart.exists)
     }
 }

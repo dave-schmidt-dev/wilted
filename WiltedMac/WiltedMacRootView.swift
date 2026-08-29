@@ -650,13 +650,6 @@ private struct WiltedMacSettingsView: View {
     var body: some View {
         WiltedMacDestination(title: WiltedScreenCopy.settings, identifier: "wilted-mac-settings") {
             syncCard
-            WiltedSettingsCard(title: WiltedScreenCopy.audio) {
-                WiltedSettingsRow(
-                    WiltedScreenCopy.audioMode,
-                    value: WiltedScreenCopy.audioValue,
-                    identifier: WiltedScreenCopy.audioRowIdentifier
-                )
-            }
         }
     }
 

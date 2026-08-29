@@ -17,13 +17,13 @@ private extension ListenerAppStatus {
     }
 }
 
-/// Shared adapter from a domain transcript to the shared disclosure.
-private struct WiltedTranscriptDisclosure: View {
+/// Shared adapter from a domain transcript to the persistent player panel.
+private struct WiltedListenerTranscriptPanel: View {
     let transcript: Transcript?
     let identifier: String
 
     var body: some View {
-        WiltedTranscriptSection(
+        WiltedTranscriptPanel(
             isReadable: isReadable,
             title: transcript?.availability == .stale ? "Transcript (may be outdated)" : "Transcript",
             text: transcript?.text,
@@ -267,21 +267,9 @@ public struct WiltedListenerNowPlayingView: View {
     }
 
     private func player(_ state: PlaybackState) -> some View {
-        ScrollView {
-            VStack(spacing: WiltedTheme.Spacing.large) {
-                WiltedMark(size: 64, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-
-                VStack(spacing: WiltedTheme.Spacing.xSmall) {
-                    Text(selectedItem?.title ?? WiltedScreenCopy.nowPlaying)
-                        .font(WiltedTheme.font(.title))
-                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                        .multilineTextAlignment(.center)
-                    if let source = selectedItem?.source {
-                        Text(source)
-                            .font(WiltedTheme.font(.utility))
-                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    }
-                }
+        GeometryReader { _ in
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+                identity
 
                 ProgressView(value: boundedPosition(state), total: max(1, state.durationSeconds))
                     .tint(WiltedTheme.color(.progress, scheme: colorScheme))
@@ -323,12 +311,14 @@ public struct WiltedListenerNowPlayingView: View {
                     .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
                     .accessibilityIdentifier("wilted-listener-restart")
 
-                WiltedTranscriptDisclosure(
+                WiltedListenerTranscriptPanel(
                     transcript: model.transcriptsByItem[state.itemID],
                     identifier: "wilted-now-playing-transcript"
                 )
+                .layoutPriority(1)
             }
             .padding(WiltedTheme.Spacing.xLarge)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .background(WiltedTheme.color(.page, scheme: colorScheme))
         .accessibilityElement(children: .contain)
@@ -349,6 +339,26 @@ public struct WiltedListenerNowPlayingView: View {
     private var selectedItem: ListenerLibraryItem? {
         guard let itemID = model.selectedPlayback?.itemID else { return nil }
         return model.items.first { $0.itemID == itemID }
+    }
+
+    private var identity: some View {
+        HStack(spacing: WiltedTheme.Spacing.medium) {
+            WiltedMark(size: 40, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                Text(selectedItem?.title ?? WiltedScreenCopy.nowPlaying)
+                    .font(WiltedTheme.font(.title))
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    .lineLimit(2)
+                if let source = selectedItem?.source {
+                    Text(source)
+                        .font(WiltedTheme.font(.utility))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .lineLimit(1)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var playbackIsPlaying: Bool {
@@ -450,15 +460,6 @@ public struct WiltedListenerSettingsView: View {
                     WiltedSettingsRow("Saved audio", value: downloadCountLabel, identifier: "wilted-settings-download-count")
                     Divider()
                     WiltedSettingsRow("Storage used", value: storageLabel, identifier: "wilted-settings-download-bytes")
-                }
-
-                WiltedSettingsCard(title: WiltedScreenCopy.audio) {
-                    // The row used to repeat its card's title verbatim.
-                    WiltedSettingsRow(
-                        WiltedScreenCopy.audioMode,
-                        value: WiltedScreenCopy.audioValue,
-                        identifier: WiltedScreenCopy.audioRowIdentifier
-                    )
                 }
 
                 // A bare mark here only repeated the brand. Paired with the

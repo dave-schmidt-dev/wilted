@@ -202,7 +202,7 @@ public struct WiltedPreviewFixture: Identifiable, Hashable, Sendable {
 
     public init(
         state: WiltedPreviewState,
-        articleTitle: String = "A quiet signal in the noise",
+        articleTitle: String = "Fixture article",
         sourceLabel: String = "Example source"
     ) {
         self.id = state.id

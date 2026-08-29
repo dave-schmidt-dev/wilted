@@ -190,6 +190,71 @@ public struct WiltedTranscriptSection: View {
     }
 }
 
+/// A persistent transcript panel for constrained playback surfaces.
+///
+/// The player keeps transport controls outside this scroll view, so reading a
+/// long article never scrolls those controls away. The panel fills only the
+/// height its parent reserves and owns its own vertical scrolling.
+public struct WiltedTranscriptPanel: View {
+    @Environment(\.colorScheme) private var colorScheme
+    private let isReadable: Bool
+    private let title: String
+    private let text: String?
+    private let unavailableLabel: String
+    private let identifier: String
+
+    public init(
+        isReadable: Bool,
+        title: String,
+        text: String?,
+        unavailableLabel: String,
+        identifier: String
+    ) {
+        self.isReadable = isReadable
+        self.title = title
+        self.text = text
+        self.unavailableLabel = unavailableLabel
+        self.identifier = identifier
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+            Text(title)
+                .font(WiltedTheme.font(.title))
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+
+            Divider()
+
+            ScrollView {
+                Group {
+                    if isReadable, let text {
+                        Text(text)
+                            .font(WiltedTheme.font(.body))
+                            .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                            .textSelection(.enabled)
+                    } else {
+                        Label(unavailableLabel, systemImage: "doc.text.magnifyingglass")
+                            .font(WiltedTheme.font(.utility))
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .accessibilityIdentifier(identifier)
+        }
+        .padding(WiltedTheme.Spacing.medium)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(
+            WiltedTheme.color(.card, scheme: colorScheme),
+            in: RoundedRectangle(cornerRadius: WiltedTheme.Radius.card)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: WiltedTheme.Radius.card)
+                .stroke(WiltedTheme.color(.steel, scheme: colorScheme), lineWidth: 1)
+        )
+    }
+}
+
 /// A titled group of settings rows.
 public struct WiltedSettingsCard<Content: View>: View {
     @Environment(\.colorScheme) private var colorScheme

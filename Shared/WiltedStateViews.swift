@@ -204,20 +204,11 @@ public struct WiltedSettingsShell: View {
             Text(WiltedScreenCopy.settings)
                 .font(WiltedTheme.font(.display))
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-            WiltedSettingsCard(title: WiltedScreenCopy.audio) {
-                WiltedSettingsRow(
-                    WiltedScreenCopy.audioMode,
-                    value: WiltedScreenCopy.audioValue,
-                    identifier: WiltedScreenCopy.audioRowIdentifier
-                )
-            }
             Spacer()
         }
         .padding(WiltedTheme.Spacing.xLarge)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(WiltedTheme.color(.page, scheme: colorScheme))
-        // The audio row owns its combined label and identifier; containment
-        // prevents the settings shell from replacing that child element.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(WiltedScreenCopy.settingsIdentifier)
     }

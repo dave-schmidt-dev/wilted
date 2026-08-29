@@ -52,11 +52,9 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         XCTAssertTrue(player.waitForExistence(timeout: 5))
         XCTAssertTrue((player.value as? String ?? "").contains("12 seconds"), player.value as? String ?? "")
 
-        // The transcript left the library row when the row became two lines.
-        // Now Playing is where it is read, and it is still one tap away.
-        let transcript = app.buttons["Transcript"]
+        // The transcript panel is persistent in Now Playing.
+        let transcript = app.descendants(matching: .any)["wilted-now-playing-transcript"]
         XCTAssertTrue(transcript.waitForExistence(timeout: 5))
-        transcript.tap()
         XCTAssertTrue(app.staticTexts["This local fixture transcript is available without contacting iCloud."].waitForExistence(timeout: 5))
 
         let nowPlayingControl = app.descendants(matching: .any)["wilted-player-play-pause"]

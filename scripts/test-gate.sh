@@ -246,13 +246,15 @@ validate_ios_pixel_snapshot_baselines() {
     testListenerSettingsLightPixelBaseline \
     testListenerNowPlayingDarkPixelBaseline \
     testListenerNowPlayingLightPixelBaseline \
+    testListenerEmptyNowPlayingDarkPixelBaseline \
+    testListenerEmptyNowPlayingLightPixelBaseline \
     testListenerTerminalFailureDarkPixelBaseline \
     testListenerTerminalFailureLightPixelBaseline; do
     grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" "$source" ||
       fail "iOS pixel snapshot test method is missing: $method"
   done
 
-  expected=$'listener-library-dark.png\nlistener-library-light.png\nlistener-now-playing-dark.png\nlistener-now-playing-light.png\nlistener-settings-dark.png\nlistener-settings-light.png\nlistener-terminal-failure-dark.png\nlistener-terminal-failure-light.png'
+  expected=$'listener-library-dark.png\nlistener-library-light.png\nlistener-now-playing-dark.png\nlistener-now-playing-empty-dark.png\nlistener-now-playing-empty-light.png\nlistener-now-playing-light.png\nlistener-settings-dark.png\nlistener-settings-light.png\nlistener-terminal-failure-dark.png\nlistener-terminal-failure-light.png'
   actual="$(find "$snapshot_dir" -type f -name '*.png' -exec basename {} \; | sort)"
   [[ "$actual" == "$expected" ]] || fail 'iOS listener pixel baseline selectors are missing or unexpected'
   bad_pngs="$(find "$snapshot_dir" -type f -name '*.png' -exec file {} \; | grep -vc 'PNG image data, 390 x 844' || true)"
@@ -269,7 +271,7 @@ expected_test_count_floor() {
   case "$1" in
     macos-unit-tests) printf '30\n' ;;
     macos-ui-tests) printf '9\n' ;;
-    ios-pixel-snapshot-tests) printf '9\n' ;;
+    ios-pixel-snapshot-tests) printf '11\n' ;;
     *) printf '1\n' ;;
   esac
 }
@@ -284,13 +286,13 @@ assert_result_bundle_tests() {
     if is_forced_zero "$label"; then
       printf '%s\n' '{"totalTestCount":0}' >"$summary_file"
     elif [[ "$label" == "ios-pixel-snapshot-tests" && "$forced_missing_ios_mvp_journey" == "1" ]]; then
-      printf '%s\n' '{"totalTestCount":8}' >"$summary_file"
+      printf '%s\n' '{"totalTestCount":10}' >"$summary_file"
     elif [[ "$label" == "macos-unit-tests" ]]; then
       printf '%s\n' '{"totalTestCount":30}' >"$summary_file"
     elif [[ "$label" == "macos-ui-tests" ]]; then
       printf '%s\n' '{"totalTestCount":9}' >"$summary_file"
     elif [[ "$label" == "ios-pixel-snapshot-tests" ]]; then
-      printf '%s\n' '{"totalTestCount":9}' >"$summary_file"
+      printf '%s\n' '{"totalTestCount":11}' >"$summary_file"
     else
       printf '%s\n' '{"totalTestCount":2}' >"$summary_file"
     fi

@@ -57,9 +57,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertEqual(WiltedScreenCopy.downloadsIdentifier, "wilted-downloads")
         XCTAssertEqual(WiltedScreenCopy.settings, "Settings")
         XCTAssertEqual(WiltedScreenCopy.settingsIdentifier, "wilted-settings")
-        XCTAssertEqual(WiltedScreenCopy.audio, "Audio")
-        XCTAssertEqual(WiltedScreenCopy.audioRowIdentifier, "wilted-audio-setting")
-        XCTAssertFalse(WiltedScreenCopy.audioValue.isEmpty)
+        XCTAssertEqual(WiltedPreviewFixture(state: .ready).articleTitle, "Fixture article")
         XCTAssertEqual(WiltedTheme.Spacing.minimumTouchTarget, 44)
         XCTAssertEqual(WiltedMark.geometrySignature, "single-stroke-w:balanced-d6:v2")
         XCTAssertEqual(
