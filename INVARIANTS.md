@@ -47,17 +47,17 @@ gate_test: test-gate.sh
 threshold: 3
 rationale: Mac owns ingestion, preparation, and publication; iOS is a listener. No target silently assumes the other's responsibilities.
 
-### W-INV-003 — Stable IDs and immutable audio revisions
+### W-INV-003 — Source-kind-namespaced stable IDs and immutable audio revisions
 area: ["WiltedKit/**", "Producer/**", "WiltedMac/**", "WiltediOS/**"]
 gate_test: test-gate.sh
 threshold: 3
-rationale: Stable item identity and immutable revision identity prevent mutations from attaching playback or delivery state to the wrong audio.
+rationale: Stable item identity and immutable revision identity prevent mutations from attaching playback or delivery state to the wrong audio. Existing article identity remains unchanged. Podcast feed ItemID derives from its canonical feed URL; podcast episode ItemID derives from canonical feed URL plus normalized RSS GUID, falling back to canonical enclosure URL only when the GUID is absent. Both podcast ItemID derivations are source-kind-namespaced so they cannot collide with articles. Downloaded-media RevisionID is source-kind-namespaced and derived from the verified audio content hash, so unchanged bytes retain identity across re-downloads or enclosure URL churn, changed bytes produce a new immutable revision, and podcast revisions cannot collide with TTS revisions.
 
 ### W-INV-004 — Atomic producer outputs
 area: ["Producer/**", "WiltedMac/**"]
 gate_test: test-gate.sh
 threshold: 3
-rationale: A failed or cancelled preparation never replaces the last valid media; a ready revision is exposed only after its complete, self-contained transfer file is durable.
+rationale: A failed or cancelled preparation never replaces the last valid media; a ready revision is exposed only after its complete, self-contained transfer file is durable. Podcast enclosure downloads remain temporary until bounds, content hash, and media validation succeed and one atomic move publishes the immutable local revision. Cancellation or failure removes only temporary bytes and preserves every prior playable revision.
 
 ### W-INV-005 — UI does not write producer state
 area: ["WiltedMac/**", "WiltedKit/**"]
@@ -87,7 +87,7 @@ rationale: Publish, decode, merge, completion, deletion, version mismatch, offli
 area: ["README.md", "TASKS.md", "WiltedMac/**", "WiltediOS/**"]
 gate_test: test-gate.sh
 threshold: 3
-rationale: Portal capability configuration, local tests, simulator results, effective signed entitlements, Development CloudKit runtime, Production CloudKit, physical-device behavior, App Store Connect processing, and user-visible TestFlight are distinct evidence; none substitutes for another.
+rationale: Native Mac daily use is implemented and reaches Phase 3 Mac owner acceptance before fresh iPhone or CloudKit qualification begins. Mac owner acceptance, portal capability configuration, local tests, simulator results, effective signed entitlements, Development CloudKit runtime, Production CloudKit, physical-device behavior, App Store Connect processing, and user-visible TestFlight are distinct evidence; none substitutes for another.
 
 ### W-INV-010 — Zero Delta Lettuce remains legible and native
 area: ["Shared/**", "WiltedMac/**", "WiltediOS/**"]

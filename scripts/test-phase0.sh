@@ -185,6 +185,7 @@ run_leg_sync() {
   fi
 }
 
+run_leg_async "assert-mac-first-docs" "$repo_root/scripts/assert-mac-first-docs.sh"
 run_leg_async "test-contract-fixtures" "$repo_root/tests/test-contract-fixtures.sh"
 run_leg_async "test-domain-contract" "$repo_root/tests/test-domain-contract.sh"
 run_leg_async "test-cloudkit-contract" "$repo_root/tests/test-cloudkit-contract.sh"

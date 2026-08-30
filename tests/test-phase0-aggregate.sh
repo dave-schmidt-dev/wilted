@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 phase0_script="$repo_root/scripts/test-phase0.sh"
 
 expected_legs=(
+  "assert-mac-first-docs"
   "test-contract-fixtures"
   "test-domain-contract"
   "test-cloudkit-contract"
@@ -75,6 +76,8 @@ assert_contains() {
     exit 1
   fi
 }
+
+assert_contains 'run_leg_async "assert-mac-first-docs" "$repo_root/scripts/assert-mac-first-docs.sh"' "$phase0_script"
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/wilted-phase0-agg.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
