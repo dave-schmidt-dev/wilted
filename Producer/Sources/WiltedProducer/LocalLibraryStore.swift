@@ -11,8 +11,9 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     case v3 = 3
     case v4 = 4
     case v5 = 5
+    case v6 = 6
 
-    public static let current: LocalLibrarySchemaVersion = .v5
+    public static let current: LocalLibrarySchemaVersion = .v6
 }
 
 /// The local ownership state used by generation-based remote reconciliation.
@@ -158,7 +159,125 @@ public enum LocalLibraryStoreError: Error, Equatable, Sendable {
     case immutableRevision(RevisionID)
     case revisionBelongsToDifferentItem
     case invalidPreparationStatus(String)
+    case invalidPodcastState(String)
+    case migrationPreflightFailed(String)
 }
+
+public enum PodcastDownloadStatus: String, Codable, Equatable, Sendable {
+    case queued
+    case downloading
+    case completed
+    case failed
+    case cancelled
+}
+
+public struct PodcastSubscription: Codable, Equatable, Sendable {
+    public let feedID: ItemID
+    public let subscribedAt: Timestamp
+    public let enabled: Bool
+
+    public init(feedID: ItemID, subscribedAt: Timestamp, enabled: Bool = true) {
+        self.feedID = feedID; self.subscribedAt = subscribedAt; self.enabled = enabled
+    }
+}
+
+public struct PodcastDownload: Codable, Equatable, Sendable {
+    public let episodeID: ItemID
+    public let status: PodcastDownloadStatus
+    public let bytesReceived: Int64
+    public let expectedByteCount: Int64?
+    public let localURL: URL?
+    public let contentHash: String?
+    public let updatedAt: Timestamp
+
+    public var itemID: ItemID { episodeID }
+
+    public init(episodeID: ItemID, status: PodcastDownloadStatus = .queued,
+                bytesReceived: Int64 = 0, expectedByteCount: Int64? = nil,
+                localURL: URL? = nil, contentHash: String? = nil, updatedAt: Timestamp) throws {
+        guard bytesReceived >= 0, expectedByteCount == nil || expectedByteCount! > 0 else {
+            throw LocalLibraryStoreError.invalidPodcastState("download byte counts")
+        }
+        if let expectedByteCount, bytesReceived > expectedByteCount {
+            throw LocalLibraryStoreError.invalidPodcastState("download exceeds expected byte count")
+        }
+        if let contentHash, contentHash.range(of: #"^sha256:[0-9a-f]{64}$"#, options: .regularExpression) == nil {
+            throw LocalLibraryStoreError.invalidPodcastState("download content hash")
+        }
+        if status == .completed && (localURL == nil || contentHash == nil) {
+            throw LocalLibraryStoreError.invalidPodcastState("completed download requires local media and content hash")
+        }
+        self.episodeID = episodeID; self.status = status; self.bytesReceived = bytesReceived
+        self.expectedByteCount = expectedByteCount; self.localURL = localURL
+        self.contentHash = contentHash; self.updatedAt = updatedAt
+    }
+}
+
+public struct PodcastArtwork: Codable, Equatable, Sendable {
+    public let id: String
+    public let ownerID: ItemID
+    public let remoteURL: URL?
+    public let localURL: URL?
+    public let contentHash: String?
+    public let byteCount: Int64?
+    public let updatedAt: Timestamp
+
+    public var itemID: ItemID { ownerID }
+
+    public init(id: String, ownerID: ItemID, remoteURL: URL? = nil, localURL: URL? = nil,
+                contentHash: String? = nil, byteCount: Int64? = nil, updatedAt: Timestamp) throws {
+        guard !id.isEmpty, id.utf8.count <= 256, byteCount == nil || byteCount! > 0 else {
+            throw LocalLibraryStoreError.invalidPodcastState("artwork metadata")
+        }
+        if let contentHash, contentHash.range(of: #"^sha256:[0-9a-f]{64}$"#, options: .regularExpression) == nil {
+            throw LocalLibraryStoreError.invalidPodcastState("artwork content hash")
+        }
+        self.id = id; self.ownerID = ownerID; self.remoteURL = remoteURL; self.localURL = localURL
+        self.contentHash = contentHash; self.byteCount = byteCount; self.updatedAt = updatedAt
+    }
+}
+
+public struct PodcastQueueEntry: Codable, Equatable, Sendable {
+    public let episodeID: ItemID
+    public let position: Int
+    public let addedAt: Timestamp
+
+    public var itemID: ItemID { episodeID }
+
+    public init(episodeID: ItemID, position: Int, addedAt: Timestamp) throws {
+        guard position >= 0 else { throw LocalLibraryStoreError.invalidPodcastState("queue position") }
+        self.episodeID = episodeID; self.position = position; self.addedAt = addedAt
+    }
+}
+
+public struct PodcastPlaybackSpeed: Codable, Equatable, Sendable {
+    public let itemID: ItemID
+    public let speed: Double
+    public let updatedAt: Timestamp
+
+    public init(itemID: ItemID, speed: Double, updatedAt: Timestamp) throws {
+        guard speed.isFinite, speed >= 0.5, speed <= 2.0 else {
+            throw LocalLibraryStoreError.invalidPodcastState("playback speed")
+        }
+        self.itemID = itemID; self.speed = speed; self.updatedAt = updatedAt
+    }
+}
+
+public struct LocalLibraryMigrationPreflight: Equatable, Sendable {
+    public let sourceURL: URL
+    public let retainedURL: URL
+    public let retainedFiles: [URL]
+
+    public init(sourceURL: URL, retainedURL: URL, retainedFiles: [URL]) {
+        self.sourceURL = sourceURL; self.retainedURL = retainedURL; self.retainedFiles = retainedFiles
+    }
+}
+
+public typealias PodcastFeedSubscription = PodcastSubscription
+public typealias PodcastDownloadState = PodcastDownload
+public typealias PodcastArtworkAsset = PodcastArtwork
+public typealias UpNextEntry = PodcastQueueEntry
+public typealias PodcastPlaybackRate = PodcastPlaybackSpeed
 
 public struct StoredAudioRevision: Codable, Equatable, Sendable {
     public let revision: AudioRevision
@@ -640,7 +759,140 @@ private enum LocalLibrarySchemaV5: VersionedSchema {
     }
 }
 
+private enum LocalLibrarySchemaV6Models {
+    @Model final class PodcastFeedRecord {
+        @Attribute(.unique) var id: String
+        var canonicalURL: String
+        var title: String
+        var author: String?
+        var artworkURL: String?
+        var createdAt: Date
+
+        init(_ value: PodcastFeed) {
+            id = value.itemID.rawValue; canonicalURL = value.canonicalURL.absoluteString
+            title = value.title; author = value.author; artworkURL = value.artworkURL?.absoluteString
+            createdAt = value.createdAt.date
+        }
+    }
+
+    @Model final class PodcastEpisodeRecord {
+        @Attribute(.unique) var id: String
+        var feedID: String
+        var feedURL: String
+        var rssGUID: String?
+        var title: String
+        var author: String?
+        var publishedTime: Date?
+        var enclosureURL: String
+        var enclosureMediaType: String
+        var enclosureByteCount: Int64?
+        var durationSeconds: Double?
+        var artworkURL: String?
+        var createdAt: Date
+
+        init(_ value: PodcastEpisode) {
+            id = value.itemID.rawValue; feedID = value.feedID.rawValue; feedURL = value.feedURL.absoluteString
+            rssGUID = value.rssGUID; title = value.title; author = value.author
+            publishedTime = value.publishedTime?.date; enclosureURL = value.enclosureURL.absoluteString
+            enclosureMediaType = value.enclosureMediaType; enclosureByteCount = value.enclosureByteCount
+            durationSeconds = value.durationSeconds; artworkURL = value.artworkURL?.absoluteString
+            createdAt = value.createdAt.date
+        }
+    }
+
+    @Model final class PodcastSubscriptionRecord {
+        @Attribute(.unique) var feedID: String
+        var subscribedAt: Date
+        var enabled: Bool
+
+        init(_ value: PodcastSubscription) {
+            feedID = value.feedID.rawValue; subscribedAt = value.subscribedAt.date; enabled = value.enabled
+        }
+    }
+
+    @Model final class PodcastDownloadRecord {
+        @Attribute(.unique) var episodeID: String
+        var status: String
+        var bytesReceived: Int64
+        var expectedByteCount: Int64?
+        var localURL: String?
+        var contentHash: String?
+        var updatedAt: Date
+
+        init(_ value: PodcastDownload) {
+            episodeID = value.episodeID.rawValue; status = value.status.rawValue
+            bytesReceived = value.bytesReceived; expectedByteCount = value.expectedByteCount
+            localURL = value.localURL?.absoluteString; contentHash = value.contentHash; updatedAt = value.updatedAt.date
+        }
+    }
+
+    @Model final class PodcastArtworkRecord {
+        @Attribute(.unique) var id: String
+        var ownerID: String
+        var remoteURL: String?
+        var localURL: String?
+        var contentHash: String?
+        var byteCount: Int64?
+        var updatedAt: Date
+
+        init(_ value: PodcastArtwork) {
+            id = value.id; ownerID = value.ownerID.rawValue; remoteURL = value.remoteURL?.absoluteString
+            localURL = value.localURL?.absoluteString; contentHash = value.contentHash
+            byteCount = value.byteCount; updatedAt = value.updatedAt.date
+        }
+    }
+
+    @Model final class PodcastQueueRecord {
+        @Attribute(.unique) var episodeID: String
+        var position: Int
+        var addedAt: Date
+
+        init(_ value: PodcastQueueEntry) {
+            episodeID = value.episodeID.rawValue; position = value.position; addedAt = value.addedAt.date
+        }
+    }
+
+    @Model final class PodcastPlaybackSpeedRecord {
+        @Attribute(.unique) var itemID: String
+        var speed: Double
+        var updatedAt: Date
+
+        init(_ value: PodcastPlaybackSpeed) {
+            itemID = value.itemID.rawValue; speed = value.speed; updatedAt = value.updatedAt.date
+        }
+    }
+}
+
+private enum LocalLibrarySchemaV6: VersionedSchema {
+    static let versionIdentifier = Schema.Version(6, 0, 0)
+    static var models: [any PersistentModel.Type] {
+        LocalLibrarySchemaV5.models + [
+            LocalLibrarySchemaV6Models.PodcastFeedRecord.self,
+            LocalLibrarySchemaV6Models.PodcastEpisodeRecord.self,
+            LocalLibrarySchemaV6Models.PodcastSubscriptionRecord.self,
+            LocalLibrarySchemaV6Models.PodcastDownloadRecord.self,
+            LocalLibrarySchemaV6Models.PodcastArtworkRecord.self,
+            LocalLibrarySchemaV6Models.PodcastQueueRecord.self,
+            LocalLibrarySchemaV6Models.PodcastPlaybackSpeedRecord.self,
+        ]
+    }
+}
+
 private enum LocalLibraryMigrationPlan: SchemaMigrationPlan {
+    static var schemas: [any VersionedSchema.Type] {
+        [LocalLibrarySchemaV1.self, LocalLibrarySchemaV2.self, LocalLibrarySchemaV3.self,
+         LocalLibrarySchemaV4.self, LocalLibrarySchemaV5.self, LocalLibrarySchemaV6.self]
+    }
+    static var stages: [MigrationStage] {
+        [.lightweight(fromVersion: LocalLibrarySchemaV1.self, toVersion: LocalLibrarySchemaV2.self),
+         .lightweight(fromVersion: LocalLibrarySchemaV2.self, toVersion: LocalLibrarySchemaV3.self),
+         .lightweight(fromVersion: LocalLibrarySchemaV3.self, toVersion: LocalLibrarySchemaV4.self),
+         .lightweight(fromVersion: LocalLibrarySchemaV4.self, toVersion: LocalLibrarySchemaV5.self),
+         .lightweight(fromVersion: LocalLibrarySchemaV5.self, toVersion: LocalLibrarySchemaV6.self)]
+    }
+}
+
+private enum LocalLibraryV5MigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
         [LocalLibrarySchemaV1.self, LocalLibrarySchemaV2.self, LocalLibrarySchemaV3.self,
          LocalLibrarySchemaV4.self, LocalLibrarySchemaV5.self]
@@ -658,20 +910,184 @@ public actor LocalLibraryStore {
     public let url: URL
     public let schemaVersion: LocalLibrarySchemaVersion = .current
     public let cloudKitDatabase: String? = nil
+    public let migrationBackupURL: URL?
 
     private let container: ModelContainer
 
     public init(url: URL, migrate: Bool = true) throws {
+        try self.init(url: url, migrate: migrate, migrationFailure: nil, retainingAt: nil)
+    }
+
+    #if DEBUG
+    /// Test-only seam used to prove that the retained copy is complete when a
+    /// forward migration fails after preflight and before the live container opens.
+    internal init(url: URL, migrate: Bool = true,
+                  migrationFailure: (@Sendable () throws -> Void)?, retainingAt: URL? = nil) throws {
         self.url = url
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV5.self)
+        var retainedURL: URL?
+        if migrate, FileManager.default.fileExists(atPath: url.path), !Self.hasV6PodcastTables(at: url) {
+            // This runs before ModelContainer sees the source URL. The retained
+            // copy is the rollback artifact if a forward migration fails.
+            retainedURL = try Self.migrationPreflight(at: url, retainingAt: retainingAt).retainedURL
+            try migrationFailure?()
+        }
+        migrationBackupURL = retainedURL
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV6.self)
         let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         if migrate {
             container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
                                             configurations: [configuration])
         } else {
             container = try ModelContainer(for: schema, configurations: [configuration])
+        }
+    }
+
+    #else
+    private init(url: URL, migrate: Bool, migrationFailure: (@Sendable () throws -> Void)?, retainingAt: URL?) throws {
+        self.url = url
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var retainedURL: URL?
+        if migrate, FileManager.default.fileExists(atPath: url.path), !Self.hasV6PodcastTables(at: url) {
+            // This runs before ModelContainer sees the source URL. The retained
+            // copy is the rollback artifact if a forward migration fails.
+            retainedURL = try Self.migrationPreflight(at: url).retainedURL
+        }
+        migrationBackupURL = retainedURL
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV6.self)
+        let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
+        if migrate {
+            container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
+                                            configurations: [configuration])
+        } else {
+            container = try ModelContainer(for: schema, configurations: [configuration])
+        }
+    }
+    #endif
+
+    /// Checkpoints the source WAL and verifies a complete V5 rollback copy before
+    /// the live V6 migration is allowed to open the source database.
+    public nonisolated static func migrationPreflight(at sourceURL: URL, retainingAt destinationURL: URL? = nil) throws -> LocalLibraryMigrationPreflight {
+        let manager = FileManager.default
+        guard manager.fileExists(atPath: sourceURL.path) else {
+            throw LocalLibraryStoreError.migrationPreflightFailed("source store does not exist")
+        }
+        let sourceDirectory = sourceURL.deletingLastPathComponent()
+        let sourceName = sourceURL.lastPathComponent
+        if let destinationURL,
+           destinationURL.deletingLastPathComponent().standardizedFileURL == sourceDirectory.standardizedFileURL {
+            throw LocalLibraryStoreError.migrationPreflightFailed("retained destination must not share the source directory")
+        }
+        try checkpointSQLite(at: sourceURL)
+        let retainedDirectory = destinationURL?.deletingLastPathComponent()
+            ?? sourceDirectory.appendingPathComponent("\(sourceName).v5-\(UUID().uuidString)", isDirectory: true)
+        try manager.createDirectory(at: retainedDirectory, withIntermediateDirectories: true)
+        let retainedURL = destinationURL ?? retainedDirectory.appendingPathComponent(sourceName)
+        let retainedName = retainedURL.lastPathComponent
+        let files = try manager.contentsOfDirectory(at: sourceDirectory, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent == sourceName || $0.lastPathComponent.hasPrefix("\(sourceName)-") }
+        guard files.contains(where: { $0.standardizedFileURL == sourceURL.standardizedFileURL }) else {
+            throw LocalLibraryStoreError.migrationPreflightFailed("source store disappeared")
+        }
+        let checkpointedFiles = try files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }).map { file in
+            (url: file, bytes: try Data(contentsOf: file))
+        }
+        // Validate a disposable clone. SwiftData may checkpoint or remove WAL
+        // sidecars as it opens a store, so opening retainedURL itself would make
+        // the rollback artifact differ from the post-checkpoint source.
+        let validationDirectory = manager.temporaryDirectory.appendingPathComponent("wilted-v5-validation-\(UUID().uuidString)", isDirectory: true)
+        try manager.createDirectory(at: validationDirectory, withIntermediateDirectories: true)
+        let validationURL = validationDirectory.appendingPathComponent(sourceName)
+        // The checkpointed main file is self-contained. Keep sidecars out of the
+        // disposable validation clone because SQLite may delete them on open.
+        try manager.copyItem(at: sourceURL, to: validationURL)
+        do {
+            let schema = Schema(versionedSchema: LocalLibrarySchemaV5.self)
+            let configuration = ModelConfiguration(schema: schema, url: validationURL, cloudKitDatabase: .none)
+            _ = try ModelContainer(for: schema, configurations: [configuration])
+        } catch {
+            // Legacy V1-V4 stores are still supported. Upgrade only the disposable
+            // validation clone to V5; the retained copy and source remain untouched.
+            do {
+                let schema = Schema(versionedSchema: LocalLibrarySchemaV5.self)
+                let configuration = ModelConfiguration(schema: schema, url: validationURL, cloudKitDatabase: .none)
+                _ = try ModelContainer(for: schema, migrationPlan: LocalLibraryV5MigrationPlan.self,
+                                        configurations: [configuration])
+                let reopenedConfiguration = ModelConfiguration(schema: schema, url: validationURL, cloudKitDatabase: .none)
+                _ = try ModelContainer(for: schema, configurations: [reopenedConfiguration])
+            } catch {
+                try? manager.removeItem(at: validationDirectory)
+                throw LocalLibraryStoreError.migrationPreflightFailed("retained V5 copy could not be opened: \(error)")
+            }
+        }
+        try? manager.removeItem(at: validationDirectory)
+        // Copy only after validation has closed so SQLite cannot clean up the
+        // rollback artifact's sidecars. This preserves every post-checkpoint
+        // source file, including zero-length WAL/SHM files.
+        var retainedFiles: [URL] = []
+        for file in checkpointedFiles {
+            let suffix = file.url.lastPathComponent == sourceName
+                ? ""
+                : String(file.url.lastPathComponent.dropFirst(sourceName.count))
+            let copy = retainedDirectory.appendingPathComponent(retainedName + suffix)
+            try file.bytes.write(to: copy, options: .atomic)
+            retainedFiles.append(copy)
+        }
+        guard manager.fileExists(atPath: retainedURL.path) else {
+            throw LocalLibraryStoreError.migrationPreflightFailed("retained V5 store was not written")
+        }
+        return LocalLibraryMigrationPreflight(sourceURL: sourceURL, retainedURL: retainedURL, retainedFiles: retainedFiles)
+    }
+
+    private nonisolated static func hasV6PodcastTables(at url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        let result = runSQLite(url: url, sql: "SELECT name FROM sqlite_master WHERE lower(name) LIKE '%podcastfeed%' LIMIT 1;")
+        return result.status == 0 && !result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private nonisolated static func checkpointSQLite(at url: URL) throws {
+        let result = runSQLite(url: url, sql: "PRAGMA wal_checkpoint(TRUNCATE);")
+        guard result.status == 0 else {
+            throw LocalLibraryStoreError.migrationPreflightFailed("SQLite WAL checkpoint failed: \(result.output)")
+        }
+        let walURL = URL(fileURLWithPath: "\(url.path)-wal")
+        let walByteCount = FileManager.default.fileExists(atPath: walURL.path)
+            ? (try? FileManager.default.attributesOfItem(atPath: walURL.path)[.size] as? NSNumber)?.int64Value
+            : nil
+        try validateWALCheckpointOutput(result.output, walByteCount: walByteCount)
+    }
+
+    private nonisolated static func validateWALCheckpointOutput(_ output: String, walByteCount: Int64?) throws {
+        let fields = output.split { character in
+            character == "|" || character == " " || character == "\t" || character == "\r" || character == "\n"
+        }
+        guard fields.count == 3, let busy = Int(fields[0]), let log = Int(fields[1]), let checkpointed = Int(fields[2]),
+              busy == 0, log == checkpointed, walByteCount == nil || walByteCount == 0 else {
+            throw LocalLibraryStoreError.migrationPreflightFailed("SQLite WAL checkpoint was busy or incomplete: \(output)")
+        }
+    }
+
+    #if DEBUG
+    /// Deterministic parser seam for WAL checkpoint failure cases.
+    internal nonisolated static func validateWALCheckpointOutputForTesting(_ output: String, walByteCount: Int64? = nil) throws {
+        try validateWALCheckpointOutput(output, walByteCount: walByteCount)
+    }
+    #endif
+
+    private nonisolated static func runSQLite(url: URL, sql: String) -> (status: Int32, output: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        process.arguments = [url.path, sql]
+        let pipe = Pipe()
+        process.standardOutput = pipe; process.standardError = pipe
+        do {
+            try process.run(); process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+        } catch {
+            return (127, String(describing: error))
         }
     }
 
@@ -687,6 +1103,43 @@ public actor LocalLibraryStore {
         context.insert(LocalLibrarySchemaV2Models.ArticleRecord(article))
         context.insert(LocalLibrarySchemaV2Models.PlaybackRecord(playback))
         try context.save()
+    }
+
+    /// Builds a frozen V5 store for the forward-migration and rollback-copy tests.
+    nonisolated internal static func createV5MigrationFixture(at url: URL, article: Article, playback: PlaybackState) throws {
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV5.self)
+        let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
+        let container = try ModelContainer(for: schema, configurations: [configuration])
+        let context = ModelContext(container)
+        context.insert(LocalLibrarySchemaV5Models.ArticleRecord(article))
+        context.insert(LocalLibrarySchemaV3Models.RevisionRecord(playbackRevision(playback), mediaURL: URL(fileURLWithPath: "/tmp/v5.m4a")))
+        context.insert(LocalLibrarySchemaV3Models.PlaybackRecord(playback))
+        let transcript = try Transcript(itemID: playback.itemID, revisionID: playback.revisionID,
+                                        availability: .available, text: "V5 transcript", updatedAt: playback.updatedAt)
+        context.insert(LocalLibrarySchemaV4Models.TranscriptRecord(transcript))
+        let status = try PreparationStatus(stage: .completed, detail: "V5 ready", fraction: 1, cancellable: false,
+                                            terminalResult: try PreparationTerminalResult(outcome: .succeeded, revisionID: playback.revisionID),
+                                            emittedAt: playback.updatedAt)
+        context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(
+            PreparationJournalEntry(id: "v5-prep", itemID: playback.itemID, requestID: "v5-request", status: status)))
+        context.insert(LocalLibrarySchemaV3Models.SyncStateRecord(
+            LocalLibrarySyncState(key: "private-zone", engineState: Data([5]), lastFetchAt: playback.updatedAt, lastSendAt: playback.updatedAt)))
+        context.insert(LocalLibrarySchemaV3Models.TombstoneRecord(
+            LocalLibraryTombstone(id: "v5-tombstone", itemID: playback.itemID, generationID: "v5-generation", requestedAt: playback.updatedAt)))
+        context.insert(LocalLibrarySchemaV3Models.RepositoryStateRecord(
+            stateData: try JSONEncoder().encode(SyncRepositoryState(engineState: Data([5])))))
+        try context.save()
+    }
+
+    private nonisolated static func playbackRevision(_ playback: PlaybackState) -> AudioRevision {
+        // The V5 fixture only needs a valid immutable revision envelope. Its
+        // media URL is intentionally local and is not read during migration.
+        return try! AudioRevision(itemID: playback.itemID, revisionID: playback.revisionID,
+                                  durationSeconds: playback.durationSeconds, byteCount: 1,
+                                  contentHash: "sha256:" + String(repeating: "5", count: 64), mediaType: "audio/mp4",
+                                  createdAt: playback.updatedAt, schemaVersion: 3)
     }
 
     /// Corrupts repository metadata for deterministic decoder-failure tests.
@@ -1215,6 +1668,187 @@ public actor LocalLibraryStore {
         let context = ModelContext(container)
         guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RepositoryStateRecord>()).first(where: { $0.key == "private-zone" }) else { return nil }
         return try JSONDecoder().decode(SyncRepositoryState.self, from: record.stateData)
+    }
+
+    // MARK: Podcast catalog and local listening state
+
+    public func save(feed: PodcastFeed) throws {
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastFeedRecord>())
+        if let existing = records.first(where: { $0.id == feed.itemID.rawValue }) {
+            existing.canonicalURL = feed.canonicalURL.absoluteString; existing.title = feed.title
+            existing.author = feed.author; existing.artworkURL = feed.artworkURL?.absoluteString; existing.createdAt = feed.createdAt.date
+        } else { context.insert(LocalLibrarySchemaV6Models.PodcastFeedRecord(feed)) }
+        try context.save()
+    }
+
+    public func save(podcastFeed feed: PodcastFeed) throws { try save(feed: feed) }
+
+    public func podcastFeed(for feedID: ItemID) throws -> PodcastFeed? {
+        let context = ModelContext(container)
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastFeedRecord>()).first(where: { $0.id == feedID.rawValue }),
+              let canonicalURL = URL(string: record.canonicalURL) else { return nil }
+        return try PodcastFeed(itemID: feedID, canonicalURL: canonicalURL, title: record.title,
+                               author: record.author, artworkURL: record.artworkURL.flatMap(URL.init), createdAt: Timestamp(record.createdAt))
+    }
+
+    public func podcastFeeds() throws -> [PodcastFeed] {
+        let context = ModelContext(container)
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastFeedRecord>()).sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }.compactMap { record in
+            guard let id = try? ItemID(rawValue: record.id), let url = URL(string: record.canonicalURL) else { return nil }
+            return try? PodcastFeed(itemID: id, canonicalURL: url, title: record.title, author: record.author,
+                                    artworkURL: record.artworkURL.flatMap(URL.init), createdAt: Timestamp(record.createdAt))
+        }
+    }
+
+    public func save(episode: PodcastEpisode) throws {
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastEpisodeRecord>())
+        if let existing = records.first(where: { $0.id == episode.itemID.rawValue }) {
+            existing.feedID = episode.feedID.rawValue; existing.feedURL = episode.feedURL.absoluteString; existing.rssGUID = episode.rssGUID
+            existing.title = episode.title; existing.author = episode.author; existing.publishedTime = episode.publishedTime?.date
+            existing.enclosureURL = episode.enclosureURL.absoluteString; existing.enclosureMediaType = episode.enclosureMediaType
+            existing.enclosureByteCount = episode.enclosureByteCount; existing.durationSeconds = episode.durationSeconds
+            existing.artworkURL = episode.artworkURL?.absoluteString; existing.createdAt = episode.createdAt.date
+        } else { context.insert(LocalLibrarySchemaV6Models.PodcastEpisodeRecord(episode)) }
+        try context.save()
+    }
+
+    public func save(podcastEpisode episode: PodcastEpisode) throws { try save(episode: episode) }
+
+    public func podcastEpisode(for episodeID: ItemID) throws -> PodcastEpisode? {
+        let context = ModelContext(container)
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastEpisodeRecord>()).first(where: { $0.id == episodeID.rawValue }),
+              let feedID = try? ItemID(rawValue: record.feedID), let feedURL = URL(string: record.feedURL),
+              let enclosureURL = URL(string: record.enclosureURL) else { return nil }
+        return try PodcastEpisode(itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: record.rssGUID,
+                                  title: record.title, author: record.author, publishedTime: record.publishedTime.map(Timestamp.init),
+                                  enclosureURL: enclosureURL, enclosureMediaType: record.enclosureMediaType,
+                                  enclosureByteCount: record.enclosureByteCount, durationSeconds: record.durationSeconds,
+                                  artworkURL: record.artworkURL.flatMap(URL.init), createdAt: Timestamp(record.createdAt))
+    }
+
+    public func podcastEpisodes(for feedID: ItemID? = nil) throws -> [PodcastEpisode] {
+        let context = ModelContext(container)
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastEpisodeRecord>()).filter { feedID == nil || $0.feedID == feedID!.rawValue }.sorted { ($0.publishedTime ?? $0.createdAt) > ($1.publishedTime ?? $1.createdAt) }.compactMap { record in
+            guard let id = try? ItemID(rawValue: record.id), let fid = try? ItemID(rawValue: record.feedID), let feedURL = URL(string: record.feedURL), let enclosureURL = URL(string: record.enclosureURL) else { return nil }
+            return try? PodcastEpisode(itemID: id, feedID: fid, feedURL: feedURL, rssGUID: record.rssGUID, title: record.title,
+                                       author: record.author, publishedTime: record.publishedTime.map(Timestamp.init), enclosureURL: enclosureURL,
+                                       enclosureMediaType: record.enclosureMediaType, enclosureByteCount: record.enclosureByteCount,
+                                       durationSeconds: record.durationSeconds, artworkURL: record.artworkURL.flatMap(URL.init), createdAt: Timestamp(record.createdAt))
+        }
+    }
+
+    public func save(subscription: PodcastSubscription) throws {
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastSubscriptionRecord>())
+        if let existing = records.first(where: { $0.feedID == subscription.feedID.rawValue }) {
+            existing.subscribedAt = subscription.subscribedAt.date; existing.enabled = subscription.enabled
+        } else { context.insert(LocalLibrarySchemaV6Models.PodcastSubscriptionRecord(subscription)) }
+        try context.save()
+    }
+
+    public func save(feedSubscription subscription: PodcastSubscription) throws { try save(subscription: subscription) }
+
+    public func subscription(for feedID: ItemID) throws -> PodcastSubscription? {
+        let context = ModelContext(container)
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastSubscriptionRecord>()).first(where: { $0.feedID == feedID.rawValue }) else { return nil }
+        return PodcastSubscription(feedID: feedID, subscribedAt: Timestamp(record.subscribedAt), enabled: record.enabled)
+    }
+
+    public func subscriptions() throws -> [PodcastSubscription] {
+        let context = ModelContext(container)
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastSubscriptionRecord>()).compactMap { record in
+            guard let feedID = try? ItemID(rawValue: record.feedID) else { return nil }
+            return PodcastSubscription(feedID: feedID, subscribedAt: Timestamp(record.subscribedAt), enabled: record.enabled)
+        }
+    }
+
+    public func save(download: PodcastDownload) throws {
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
+        if let existing = records.first(where: { $0.episodeID == download.episodeID.rawValue }) {
+            existing.status = download.status.rawValue; existing.bytesReceived = download.bytesReceived; existing.expectedByteCount = download.expectedByteCount
+            existing.localURL = download.localURL?.absoluteString; existing.contentHash = download.contentHash; existing.updatedAt = download.updatedAt.date
+        } else { context.insert(LocalLibrarySchemaV6Models.PodcastDownloadRecord(download)) }
+        try context.save()
+    }
+
+    public func save(downloadState download: PodcastDownload) throws { try save(download: download) }
+
+    public func download(for episodeID: ItemID) throws -> PodcastDownload? {
+        let context = ModelContext(container)
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>()).first(where: { $0.episodeID == episodeID.rawValue }),
+              let episodeID = try? ItemID(rawValue: record.episodeID), let status = PodcastDownloadStatus(rawValue: record.status) else { return nil }
+        return try PodcastDownload(episodeID: episodeID, status: status, bytesReceived: record.bytesReceived,
+                                   expectedByteCount: record.expectedByteCount, localURL: record.localURL.flatMap(URL.init),
+                                   contentHash: record.contentHash, updatedAt: Timestamp(record.updatedAt))
+    }
+
+    public func downloads() throws -> [PodcastDownload] {
+        let context = ModelContext(container)
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>()).compactMap { record in
+            guard let episodeID = try? ItemID(rawValue: record.episodeID), let status = PodcastDownloadStatus(rawValue: record.status) else { return nil }
+            return try? PodcastDownload(episodeID: episodeID, status: status, bytesReceived: record.bytesReceived,
+                                        expectedByteCount: record.expectedByteCount, localURL: record.localURL.flatMap(URL.init),
+                                        contentHash: record.contentHash, updatedAt: Timestamp(record.updatedAt))
+        }
+    }
+
+    public func save(artwork: PodcastArtwork) throws {
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>())
+        if let existing = records.first(where: { $0.id == artwork.id }) {
+            existing.ownerID = artwork.ownerID.rawValue; existing.remoteURL = artwork.remoteURL?.absoluteString; existing.localURL = artwork.localURL?.absoluteString
+            existing.contentHash = artwork.contentHash; existing.byteCount = artwork.byteCount; existing.updatedAt = artwork.updatedAt.date
+        } else { context.insert(LocalLibrarySchemaV6Models.PodcastArtworkRecord(artwork)) }
+        try context.save()
+    }
+
+    public func save(artworkAsset artwork: PodcastArtwork) throws { try save(artwork: artwork) }
+
+    public func artwork(for id: String) throws -> PodcastArtwork? {
+        let context = ModelContext(container)
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>()).first(where: { $0.id == id }), let ownerID = try? ItemID(rawValue: record.ownerID) else { return nil }
+        return try PodcastArtwork(id: record.id, ownerID: ownerID, remoteURL: record.remoteURL.flatMap(URL.init), localURL: record.localURL.flatMap(URL.init), contentHash: record.contentHash, byteCount: record.byteCount, updatedAt: Timestamp(record.updatedAt))
+    }
+
+    public func save(queueEntry: PodcastQueueEntry) throws {
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
+        if let existing = records.first(where: { $0.episodeID == queueEntry.episodeID.rawValue }) {
+            existing.position = queueEntry.position; existing.addedAt = queueEntry.addedAt.date
+        } else { context.insert(LocalLibrarySchemaV6Models.PodcastQueueRecord(queueEntry)) }
+        try context.save()
+    }
+
+    public func queue() throws -> [PodcastQueueEntry] {
+        let context = ModelContext(container)
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>()).sorted { $0.position < $1.position }.compactMap { record in
+            guard let episodeID = try? ItemID(rawValue: record.episodeID) else { return nil }
+            return try? PodcastQueueEntry(episodeID: episodeID, position: record.position, addedAt: Timestamp(record.addedAt))
+        }
+    }
+
+    public func upNext() throws -> [PodcastQueueEntry] { try queue() }
+
+    public func save(upNext entry: PodcastQueueEntry) throws { try save(queueEntry: entry) }
+
+    public func save(playbackSpeed: PodcastPlaybackSpeed) throws {
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastPlaybackSpeedRecord>())
+        if let existing = records.first(where: { $0.itemID == playbackSpeed.itemID.rawValue }) {
+            existing.speed = playbackSpeed.speed; existing.updatedAt = playbackSpeed.updatedAt.date
+        } else { context.insert(LocalLibrarySchemaV6Models.PodcastPlaybackSpeedRecord(playbackSpeed)) }
+        try context.save()
+    }
+
+    public func save(playbackRate speed: PodcastPlaybackSpeed) throws { try save(playbackSpeed: speed) }
+
+    public func playbackSpeed(for itemID: ItemID) throws -> PodcastPlaybackSpeed? {
+        let context = ModelContext(container)
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastPlaybackSpeedRecord>()).first(where: { $0.itemID == itemID.rawValue }) else { return nil }
+        return try PodcastPlaybackSpeed(itemID: itemID, speed: record.speed, updatedAt: Timestamp(record.updatedAt))
     }
 
     public func inspect() throws -> LocalLibraryInspection {
