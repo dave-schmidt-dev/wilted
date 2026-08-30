@@ -18,6 +18,107 @@ final class DomainTests: XCTestCase {
         XCTAssertNotEqual(first, third)
     }
 
+    func testPodcastFeedAndEpisodeIdentitiesAreNamespacedAndStable() throws {
+        let feedURL = try XCTUnwrap(URL(string: "HTTPS://Podcasts.Example.TEST:443/feed.xml#ignored"))
+        let firstEnclosure = try XCTUnwrap(URL(string: "https://cdn.example.test/episode-v1.mp3"))
+        let changedEnclosure = try XCTUnwrap(URL(string: "https://cdn.example.test/episode-v2.mp3"))
+
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let guidFirst = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL,
+            rssGUID: "  episode-guid-001\n",
+            enclosureURL: firstEnclosure
+        )
+        let guidChangedEnclosure = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL,
+            rssGUID: "episode-guid-001",
+            enclosureURL: changedEnclosure
+        )
+        let guidless = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL,
+            rssGUID: nil,
+            enclosureURL: firstEnclosure
+        )
+        let article = try ItemID.derive(from: firstEnclosure)
+
+        XCTAssertEqual(feedID, try ItemID.derivePodcastFeed(from: URL(string: "https://podcasts.example.test/feed.xml")!))
+        XCTAssertEqual(guidFirst, guidChangedEnclosure)
+        XCTAssertNotEqual(guidless, article)
+        XCTAssertNotEqual(guidless, try ItemID.derivePodcastEpisode(
+            feedURL: feedURL,
+            rssGUID: nil,
+            enclosureURL: changedEnclosure
+        ))
+        XCTAssertTrue(feedID.rawValue.range(of: #"^item-[0-9a-f]{64}$"#, options: .regularExpression) != nil)
+        XCTAssertTrue(guidFirst.rawValue.range(of: #"^item-[0-9a-f]{64}$"#, options: .regularExpression) != nil)
+    }
+
+    func testPodcastIdentityRejectsInvalidMetadataAndNonHTTPSURLs() throws {
+        let feedURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/feed.xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://cdn.example.test/episode.mp3"))
+        XCTAssertThrowsError(try ItemID.derivePodcastFeed(from: URL(string: "http://podcasts.example.test/feed.xml")!))
+        XCTAssertThrowsError(try ItemID.derivePodcastEpisode(
+            feedURL: feedURL,
+            rssGUID: "   ",
+            enclosureURL: enclosureURL
+        ))
+        XCTAssertThrowsError(try ItemID.derivePodcastEpisode(
+            feedURL: feedURL,
+            rssGUID: nil,
+            enclosureURL: URL(string: "http://cdn.example.test/episode.mp3")!
+        ))
+    }
+
+    func testPodcastModelsValidateIdentityURLsAndMetadata() throws {
+        let timestamp = try Timestamp(iso8601: "2026-08-29T12:00:00Z")
+        let feedURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/feed.xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://cdn.example.test/episode.mp3"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let episodeID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL,
+            rssGUID: "episode-guid-001",
+            enclosureURL: enclosureURL
+        )
+
+        XCTAssertNoThrow(try PodcastFeed(
+            itemID: feedID,
+            canonicalURL: feedURL,
+            title: "Example Podcast",
+            artworkURL: URL(string: "https://podcasts.example.test/artwork.jpg"),
+            createdAt: timestamp
+        ))
+        let episode = try PodcastEpisode(
+            itemID: episodeID,
+            feedID: feedID,
+            feedURL: feedURL,
+            rssGUID: " episode-guid-001 ",
+            title: "Episode 1",
+            enclosureURL: enclosureURL,
+            enclosureMediaType: "audio/mpeg",
+            enclosureByteCount: 1_024,
+            durationSeconds: 60,
+            createdAt: timestamp
+        )
+        XCTAssertEqual(episode.rssGUID, "episode-guid-001")
+
+        XCTAssertThrowsError(try PodcastFeed(
+            itemID: feedID,
+            canonicalURL: feedURL,
+            title: "   ",
+            createdAt: timestamp
+        ))
+        XCTAssertThrowsError(try PodcastEpisode(
+            itemID: episodeID,
+            feedID: feedID,
+            feedURL: feedURL,
+            rssGUID: "episode-guid-001",
+            title: "Episode 1",
+            enclosureURL: enclosureURL,
+            enclosureMediaType: "video/mp4",
+            createdAt: timestamp
+        ))
+    }
+
     func testArticleRejectsIdentityThatDoesNotMatchCanonicalURL() throws {
         let url = try XCTUnwrap(URL(string: "https://example.test/article"))
         let timestamp = try Timestamp(iso8601: "2026-08-17T12:00:00Z")
@@ -55,6 +156,43 @@ final class DomainTests: XCTestCase {
         XCTAssertEqual(first, second)
         XCTAssertNotEqual(first, changed)
         XCTAssertTrue(first.rawValue.range(of: #"^rev-[0-9a-f]{64}$"#, options: .regularExpression) != nil)
+    }
+
+    func testDownloadedAudioRevisionIdentityUsesVerifiedContentHash() throws {
+        let unchangedHash = "sha256:" + String(repeating: "a", count: 64)
+        let changedHash = "sha256:" + String(repeating: "b", count: 64)
+        let firstDownload = try RevisionID.derive(downloadedAudioContentHash: unchangedHash)
+        let redownload = try RevisionID.derive(downloadedAudioContentHash: unchangedHash)
+        let changedBytes = try RevisionID.derive(downloadedAudioContentHash: changedHash)
+        let tts = try RevisionID.derive(
+            extractedTextSHA256: String(repeating: "a", count: 64),
+            voiceID: "af_heart",
+            synthesisSettingsCanonicalJSON: try RevisionID.canonicalJSON(["speed": 1.0, "voice": "af_heart"]),
+            audioFormatCanonicalJSON: try RevisionID.canonicalJSON(["codec": "aac", "rate": 44_100])
+        )
+
+        XCTAssertEqual(firstDownload, redownload)
+        XCTAssertNotEqual(firstDownload, changedBytes)
+        XCTAssertNotEqual(firstDownload, tts)
+        XCTAssertTrue(firstDownload.rawValue.range(of: #"^rev-[0-9a-f]{64}$"#, options: .regularExpression) != nil)
+        XCTAssertThrowsError(try RevisionID.derive(downloadedAudioContentHash: String(repeating: "a", count: 64)))
+        XCTAssertThrowsError(try RevisionID.derive(downloadedAudioContentHash: "sha256:" + String(repeating: "A", count: 64)))
+    }
+
+    func testExistingArticleAndTTSIdentifierShapesRemainByteStable() throws {
+        XCTAssertEqual(
+            try ItemID.derive(from: URL(string: "HTTPS://Example.COM:443/a?q=1#fragment")!).rawValue,
+            "item-e644b002bae6e8a77466d56f39a165e2d4ad0fb3072cbd4e96356cabc762be6b"
+        )
+        XCTAssertEqual(
+            try RevisionID.derive(
+                extractedTextSHA256: String(repeating: "a", count: 64),
+                voiceID: "af_heart",
+                synthesisSettingsCanonicalJSON: try RevisionID.canonicalJSON(["speed": 1.0, "voice": "af_heart"]),
+                audioFormatCanonicalJSON: try RevisionID.canonicalJSON(["codec": "aac", "rate": 44_100])
+            ).rawValue,
+            "rev-987eab9c26153880067aa476f8824265fcb32e186376e73acce481201e87f47b"
+        )
     }
 
     func testCanonicalJSONSortsKeys() throws {
