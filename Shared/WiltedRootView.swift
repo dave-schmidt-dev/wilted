@@ -60,6 +60,15 @@ public enum WiltedScreenCopy {
     public static let addArticleTitle = "Add an article"
     public static let addArticleDetail = "Paste an HTTPS article URL. Wilted keeps the saved article and audio on this Mac."
     public static let savedArticles = "Saved articles"
+    public static let feeds = "Podcast feeds"
+    public static let feedsIdentifier = "wilted-podcast-feeds"
+    public static let feedsEmpty = "No podcast feeds yet"
+    public static let feedsEmptyDetail = "Subscribe above and the feed appears here with its own controls."
+    /// Wilted refreshes only when asked and downloads only what the listener
+    /// picks, so the Feeds card says so rather than letting an absent schedule
+    /// read as a hidden one.
+    public static let feedsPolicy = "Feeds refresh when you choose Refresh. No feed downloads audio on its own; "
+        + "use Download on an episode to keep it offline."
     public static let addArticleIdentifier = "wilted-add-article"
     public static let openPlayer = "Open Now Playing"
     public static let openPlayerIdentifier = "wilted-open-player"

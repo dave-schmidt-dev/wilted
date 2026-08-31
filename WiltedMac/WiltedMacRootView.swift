@@ -249,6 +249,8 @@ private struct WiltedMacLibraryView: View {
 
             podcastControls
 
+            feedManagement
+
             if let preparation = model.preparation {
                 WiltedMacPreparationView(model: model, preparation: preparation)
             }
@@ -333,6 +335,88 @@ private struct WiltedMacLibraryView: View {
         .wiltedCard(colorScheme)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-podcast-controls")
+    }
+
+    /// Feeds the app follows, with the controls that were previously missing:
+    /// the subscription list itself, a per-feed switch, and unsubscribe. The
+    /// card also states the refresh and download policy, because an app with no
+    /// schedule at all should say so rather than let its absence read as a
+    /// setting the reader cannot find.
+    private var feedManagement: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+            Text(WiltedScreenCopy.feeds)
+                .font(WiltedTheme.font(.title))
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+            Text(WiltedScreenCopy.feedsPolicy)
+                .font(WiltedTheme.font(.utility))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("wilted-podcast-feeds-policy")
+            if model.withheldPodcastEpisodeCount > 0 {
+                Text("\(model.withheldPodcastEpisodeCount) older episodes stayed in their feeds.")
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-podcast-feeds-withheld")
+            }
+            if model.subscriptions.isEmpty {
+                Text(WiltedScreenCopy.feedsEmptyDetail)
+                    .font(WiltedTheme.font(.body))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-podcast-feeds-empty")
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(model.subscriptions.enumerated()), id: \.element.id) { index, subscription in
+                        if index > 0 { Divider() }
+                        feedRow(subscription)
+                    }
+                }
+            }
+        }
+        .wiltedCard(colorScheme)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(WiltedScreenCopy.feedsIdentifier)
+    }
+
+    /// One feed's row.
+    ///
+    /// The text column claims the remaining width with a frame rather than a
+    /// `Spacer`, and the row aligns on centers rather than the first text
+    /// baseline. Both matter: pairing a baseline-aligned `HStack` with a
+    /// `Spacer` around a truncating `Text` column made `NSHostingView` layout
+    /// stop converging, which hung the pixel-snapshot render indefinitely
+    /// rather than failing.
+    private func feedRow(_ subscription: WiltedMacSubscription) -> some View {
+        HStack(spacing: WiltedTheme.Spacing.medium) {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                Text(subscription.title)
+                    .font(WiltedTheme.font(.body))
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                Text(subscription.feedURL.host ?? subscription.feedURL.absoluteString)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(subscription.enabled
+                     ? "\(subscription.episodeCount) episodes in Larder"
+                     : "\(subscription.episodeCount) episodes kept, hidden from Larder")
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-podcast-feed-count-\(subscription.id)")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Toggle("Show in Larder", isOn: Binding(
+                get: { subscription.enabled },
+                set: { model.setSubscription(subscription, enabled: $0) }
+            ))
+            .labelsHidden()
+            .accessibilityLabel("Show \(subscription.title) in Larder")
+            .accessibilityIdentifier("wilted-podcast-feed-enabled-\(subscription.id)")
+            Button("Unsubscribe") { model.unsubscribe(subscription) }
+                .accessibilityIdentifier("wilted-podcast-feed-unsubscribe-\(subscription.id)")
+        }
+        .padding(.vertical, WiltedTheme.Spacing.small)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-podcast-feed-row-\(subscription.id)")
     }
 
     /// The composer is a card inside Library, not the page itself. As the

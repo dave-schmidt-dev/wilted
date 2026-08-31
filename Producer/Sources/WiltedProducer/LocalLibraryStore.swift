@@ -1792,9 +1792,15 @@ public actor LocalLibraryStore {
     /// `podcastSubscriptionMinimumBackfill` episodes, so subscribing to an
     /// infrequent podcast does not present an empty feed.
     ///
-    /// An episode with no published date is admitted during backfill only.
-    /// Without a date there is no evidence it is new, and admitting it on every
-    /// refresh would leak an undated back catalogue in one refresh at a time.
+    /// An episode with no published date never clears a horizon, in either
+    /// direction. Without a date there is no evidence it is new, and admitting
+    /// undated items on refresh would leak an undated back catalogue a refresh
+    /// at a time -- while admitting all of them on backfill would leak the same
+    /// catalogue in one go. Undated episodes reach the Larder only through the
+    /// `podcastSubscriptionMinimumBackfill` top-up, which is bounded. The cost
+    /// is that a feed publishing no dates at all stalls at that count; every
+    /// feed in the 2026-08-31 survey dates its episodes, and the withheld count
+    /// on the Feeds card makes the stall visible rather than silent.
     ///
     /// Episodes whose feed has no subscription are saved unconditionally: the
     /// caller loaded a feed Wilted does not follow, and there is no horizon to
@@ -1823,15 +1829,14 @@ public actor LocalLibraryStore {
             }
             var kept = group.filter { episode in
                 if existing.contains(episode.itemID.rawValue) { return true }
-                guard let published = episode.publishedTime?.date else { return admission == .backfill }
+                guard let published = episode.publishedTime?.date else { return false }
                 return published >= horizon
             }
             if admission == .backfill, kept.count < Self.podcastSubscriptionMinimumBackfill {
-                let newest = group
-                    .sorted { ($0.publishedTime?.date ?? .distantPast) > ($1.publishedTime?.date ?? .distantPast) }
-                    .prefix(Self.podcastSubscriptionMinimumBackfill)
                 let keptIDs = Set(kept.map(\.itemID.rawValue))
-                kept.append(contentsOf: newest.filter { !keptIDs.contains($0.itemID.rawValue) })
+                kept.append(contentsOf: Self.newestFirst(group)
+                    .filter { !keptIDs.contains($0.itemID.rawValue) }
+                    .prefix(Self.podcastSubscriptionMinimumBackfill - kept.count))
             }
             admitted.append(contentsOf: kept)
         }
@@ -1858,6 +1863,23 @@ public actor LocalLibraryStore {
     public static let podcastSubscriptionBackfillWindow: TimeInterval = 30 * 24 * 60 * 60
     /// The floor under that window, so an infrequent podcast is never empty.
     public static let podcastSubscriptionMinimumBackfill = 5
+
+    /// A feed's episodes newest first, undated ones last.
+    ///
+    /// Ties keep the order the feed gave. That matters because Swift's sort is
+    /// not stable: a group whose episodes share a date -- or carry no date at
+    /// all -- would otherwise be shuffled, and the backfill top-up would admit
+    /// an arbitrary handful instead of the ones the feed lists first.
+    private static func newestFirst(_ episodes: [PodcastEpisode]) -> [PodcastEpisode] {
+        episodes.enumerated().sorted { lhs, rhs in
+            switch (lhs.element.publishedTime?.date, rhs.element.publishedTime?.date) {
+            case let (left?, right?) where left != right: return left > right
+            case (nil, .some): return false
+            case (.some, nil): return true
+            default: return lhs.offset < rhs.offset
+            }
+        }.map(\.element)
+    }
 
     private static func admissionHorizon(subscribedAt: Date, admission: PodcastEpisodeAdmission) -> Date {
         switch admission {

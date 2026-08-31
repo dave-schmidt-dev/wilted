@@ -66,6 +66,18 @@ enum WiltedMacEpisodeDownloadState: Equatable, Sendable {
     case cancelled
 }
 
+/// One row of the Feeds card: a podcast Wilted follows, and what following it
+/// currently yields.
+struct WiltedMacSubscription: Identifiable, Hashable, Sendable {
+    /// The feed's `ItemID`, which is what the store keys a subscription on.
+    let id: String
+    let title: String
+    let feedURL: URL
+    let episodeCount: Int
+    let subscribedAt: Date
+    var enabled: Bool
+}
+
 struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     let id: String
     let title: String
@@ -288,6 +300,11 @@ final class WiltedMacModel {
     private(set) var startupState: WiltedMacStartupState = .loading(attempt: 0)
     var urlDraft = ""
     var podcastFeedURLDraft = ""
+    /// Episodes the last refresh loaded but did not keep, either because the
+    /// feed exceeded the client's episode ceiling or because they published
+    /// before the subscription. Reported so a partial view of a feed is never
+    /// presented as the whole feed.
+    var withheldPodcastEpisodeCount = 0
     var librarySearchQuery = ""
     var libraryFilter: WiltedMacLibraryFilter = .all
     var libraryOrder: WiltedMacLibraryOrder = .newest
@@ -333,6 +350,9 @@ final class WiltedMacModel {
     private var coordinator: PreparationCoordinator?
     private var playback: PlaybackController?
     private var syncLifecycle: WiltedMacSyncLifecycle?
+    /// Podcast feeds Wilted follows, newest subscription first.
+    var subscriptions: [WiltedMacSubscription] = []
+
     private let libraryURL: URL
     private let mediaDirectory: URL
     private let syncTransportFactory: WiltedMacSyncTransportFactory?
@@ -659,6 +679,7 @@ final class WiltedMacModel {
                 let values = try await self.loadLibrary(from: store)
                 self.articles = values.articles
                 self.episodes = values.episodes
+                self.subscriptions = values.subscriptions
                 self.podcastOperationMessage = "\(episode.title) is available offline."
             } catch PodcastDownloadCoordinatorError.cancelled {
                 self.updateEpisode(episode.id) { $0.downloadState = .cancelled }
@@ -683,6 +704,55 @@ final class WiltedMacModel {
         let downloads = Array(podcastDownloadTasks.values)
         await refresh?.value
         for task in downloads { await task.value }
+    }
+
+    /// Turns a feed's episodes on or off in the Larder without unsubscribing.
+    func setSubscription(_ subscription: WiltedMacSubscription, enabled: Bool) {
+#if canImport(WiltedProducer)
+        guard let store, let feedID = try? ItemID(rawValue: subscription.id) else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await store.save(subscription: PodcastSubscription(
+                    feedID: feedID, subscribedAt: Timestamp(subscription.subscribedAt), enabled: enabled
+                ))
+                let values = try await self.loadLibrary(from: store)
+                self.articles = values.articles
+                self.episodes = values.episodes
+                self.subscriptions = values.subscriptions
+                self.podcastOperationMessage = enabled
+                    ? "\(subscription.title) is showing in Larder again."
+                    : "\(subscription.title) is hidden from Larder. Wilted still keeps its episodes."
+            } catch {
+                self.podcastOperationMessage = "\(subscription.title) could not be updated."
+            }
+        }
+#endif
+    }
+
+    /// Unsubscribes and clears every record the feed owned.
+    ///
+    /// Audio already downloaded stays on disk: an audio revision is identified
+    /// by its content, so removing files here could break an episode from
+    /// another feed that happens to share them.
+    func unsubscribe(_ subscription: WiltedMacSubscription) {
+#if canImport(WiltedProducer)
+        guard let store, let feedID = try? ItemID(rawValue: subscription.id) else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let removed = try await store.unsubscribeFromPodcast(feedID: feedID)
+                let values = try await self.loadLibrary(from: store)
+                self.articles = values.articles
+                self.episodes = values.episodes
+                self.subscriptions = values.subscriptions
+                self.podcastOperationMessage =
+                    "Unsubscribed from \(subscription.title) and removed \(removed) episode\(removed == 1 ? "" : "s")."
+            } catch {
+                self.podcastOperationMessage = "\(subscription.title) could not be unsubscribed."
+            }
+        }
+#endif
     }
 
     func removeEpisode(_ episode: WiltedMacEpisode) {
@@ -715,23 +785,37 @@ final class WiltedMacModel {
         }
     }
 
+    /// Loads each feed and stores what the subscription horizon admits.
+    ///
+    /// The subscription is written before its episodes: the horizon rule reads
+    /// it, so a feed subscribed to after its episodes were offered would admit
+    /// nothing. Anything the feed published but Wilted did not keep is counted
+    /// and reported -- a truncated back catalogue must never read as the whole
+    /// feed.
     private func refreshPodcastURLs(_ urls: [URL], subscribing: Bool) async throws {
         guard let store else { throw CancellationError() }
+        var withheld = 0
         for url in urls {
             try Task.checkCancellation()
             let loaded = try await podcastFeedClient.load(url)
             try await store.save(feed: loaded.feed)
-            for episode in loaded.episodes { try await store.save(episode: episode) }
             if subscribing {
                 try await store.save(subscription: PodcastSubscription(
                     feedID: loaded.feed.itemID, subscribedAt: Timestamp(Date())
                 ))
             }
+            let admission = try await store.savePodcastEpisodes(
+                loaded.episodes, admission: subscribing ? .backfill : .incremental
+            )
+            withheld += loaded.droppedEpisodeCount + admission.skipped
         }
+        withheldPodcastEpisodeCount = withheld
         let values = try await loadLibrary(from: store)
         articles = values.articles
         episodes = values.episodes
+        subscriptions = values.subscriptions
     }
+
 #endif
 
     private func updateEpisode(_ id: String, transform: (inout WiltedMacEpisode) -> Void) {
@@ -1457,6 +1541,7 @@ final class WiltedMacModel {
             let library = try await loadLibrary(from: configuredStore)
             articles = library.articles
             episodes = library.episodes
+            subscriptions = library.subscriptions
             await restorePodcastPlayback()
             startupState = .ready
             if pendingSyncReconciliation {
@@ -1561,7 +1646,8 @@ final class WiltedMacModel {
         refreshPlaybackReadout()
     }
 
-    private func loadLibrary(from store: LocalLibraryStore) async throws -> (articles: [WiltedMacArticle], episodes: [WiltedMacEpisode]) {
+    private func loadLibrary(from store: LocalLibraryStore) async throws
+        -> (articles: [WiltedMacArticle], episodes: [WiltedMacEpisode], subscriptions: [WiltedMacSubscription]) {
         var articleValues: [WiltedMacArticle] = []
         for article in try await store.articles() where !article.isDeleted {
             let revision = try await store.readyRevision(for: article.itemID)
@@ -1572,7 +1658,18 @@ final class WiltedMacModel {
             ))
         }
         let feeds = Dictionary(uniqueKeysWithValues: try await store.podcastFeeds().map { ($0.itemID, $0) })
-        let subscribed = Set(try await store.subscriptions().filter(\.enabled).map(\.feedID))
+        let allSubscriptions = try await store.subscriptions()
+        let subscribed = Set(allSubscriptions.filter(\.enabled).map(\.feedID))
+        var episodeCounts: [ItemID: Int] = [:]
+        for episode in try await store.podcastEpisodes() { episodeCounts[episode.feedID, default: 0] += 1 }
+        let subscriptionValues = allSubscriptions.compactMap { subscription -> WiltedMacSubscription? in
+            guard let feed = feeds[subscription.feedID] else { return nil }
+            return WiltedMacSubscription(
+                id: subscription.feedID.rawValue, title: feed.title, feedURL: feed.canonicalURL,
+                episodeCount: episodeCounts[subscription.feedID] ?? 0,
+                subscribedAt: subscription.subscribedAt.date, enabled: subscription.enabled
+            )
+        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         let downloads = Dictionary(uniqueKeysWithValues: try await store.downloads().map { ($0.episodeID, $0) })
         var episodeValues: [WiltedMacEpisode] = []
         for episode in try await store.podcastEpisodes() where subscribed.contains(episode.feedID) {
@@ -1606,7 +1703,7 @@ final class WiltedMacModel {
                 playbackSeconds: playbackState?.positionSeconds ?? 0, downloadState: downloadState
             ))
         }
-        return (articleValues, episodeValues)
+        return (articleValues, episodeValues, subscriptionValues)
     }
 
     private nonisolated static func startupFailure(libraryURL: URL, canRetry: Bool) -> WiltedMacStartupFailure {
@@ -1650,6 +1747,7 @@ final class WiltedMacModel {
             guard let values = try? await self.loadLibrary(from: store) else { return }
             self.articles = values.articles
             self.episodes = values.episodes
+            self.subscriptions = values.subscriptions
         }
     }
 
@@ -1725,6 +1823,28 @@ final class WiltedMacModel {
             durationSeconds: episode.durationSeconds, playbackSeconds: 0,
             downloadState: fixtureDownloadFailuresRemaining > 0 ? .notDownloaded : .completed
         )]
+        // The Feeds card reads `subscriptions`, which only the store-backed load
+        // path populates. Fixture mode assigns the library directly, so it has
+        // to supply the same rows -- including a feed the listener has hidden,
+        // so the card's hidden-from-Larder state is covered by evidence rather
+        // than assumed. The hidden feed is written to the store too, so a
+        // reload during a test agrees with what was drawn.
+        let hiddenFeedURL = URL(string: "https://fixtures.example.test/quiet-season.xml")!
+        let hiddenFeed = try? PodcastFeed(
+            itemID: ItemID.derivePodcastFeed(from: hiddenFeedURL), canonicalURL: hiddenFeedURL,
+            title: "Quiet Season", createdAt: Timestamp(Date(timeIntervalSince1970: 1_699_740_800))
+        )
+        subscriptions = [
+            WiltedMacSubscription(
+                id: feedID.rawValue, title: feed.title, feedURL: feedURL, episodeCount: 1,
+                subscribedAt: Date(timeIntervalSince1970: 1_699_827_200), enabled: true
+            ),
+        ] + (hiddenFeed.map { hidden in
+            [WiltedMacSubscription(
+                id: hidden.itemID.rawValue, title: hidden.title, feedURL: hiddenFeedURL, episodeCount: 0,
+                subscribedAt: Date(timeIntervalSince1970: 1_699_740_800), enabled: false
+            )]
+        } ?? [])
         let mediaURL = mediaDirectory.appendingPathComponent("fixture-podcast.mp3")
         try? FileManager.default.createDirectory(at: mediaDirectory, withIntermediateDirectories: true)
         _ = FileManager.default.createFile(atPath: mediaURL.path, contents: Data([0]))
@@ -1740,6 +1860,13 @@ final class WiltedMacModel {
             try? await store.save(subscription: PodcastSubscription(
                 feedID: feedID, subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_699_827_200))
             ))
+            if let hiddenFeed {
+                try? await store.save(feed: hiddenFeed)
+                try? await store.save(subscription: PodcastSubscription(
+                    feedID: hiddenFeed.itemID,
+                    subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_699_740_800)), enabled: false
+                ))
+            }
             if let revision { try? await store.saveReadyRevision(revision, mediaURL: mediaURL) }
         }
     }

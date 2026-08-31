@@ -513,9 +513,13 @@ final class WiltedVisualSystemTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let feedURL = URL(string: "https://podcasts.example.test/persisted.xml")!
+        // Dates are wall-clock relative because the subscription's admission
+        // horizon is the moment `subscribeToPodcastFeed` runs. The first
+        // episode sits just inside the backfill window; the refreshed one is
+        // dated ahead of the subscription so it is unambiguously new.
         let loader = SequencedPodcastFeedLoader(documents: [
-            Self.podcastXML(title: "Stored first episode", guid: "stored-1"),
-            Self.podcastXML(title: "Stored refreshed episode", guid: "stored-2")
+            Self.podcastXML(title: "Stored first episode", guid: "stored-1", published: Date().addingTimeInterval(-3_600)),
+            Self.podcastXML(title: "Stored refreshed episode", guid: "stored-2", published: Date().addingTimeInterval(3_600))
         ])
         let model = WiltedMacModel(
             arguments: [],
@@ -556,9 +560,18 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertEqual(refreshedSubscriptions.filter(\.enabled).count, 1)
     }
 
-    private static func podcastXML(title: String, guid: String) -> Data {
-        Data("""
-        <rss><channel><title>Stored show</title><item><title>\(title)</title><guid>\(guid)</guid><enclosure url="https://cdn.example.test/\(guid).mp3" type="audio/mpeg" /></item></channel></rss>
+    private static let rfc822: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+        return formatter
+    }()
+
+    private static func podcastXML(title: String, guid: String, published: Date? = nil) -> Data {
+        let pubDate = published.map { "<pubDate>\(rfc822.string(from: $0))</pubDate>" } ?? ""
+        return Data("""
+        <rss><channel><title>Stored show</title><item><title>\(title)</title><guid>\(guid)</guid>\(pubDate)<enclosure url="https://cdn.example.test/\(guid).mp3" type="audio/mpeg" /></item></channel></rss>
         """.utf8)
     }
 

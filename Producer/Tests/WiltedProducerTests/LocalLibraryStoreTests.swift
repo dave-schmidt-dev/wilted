@@ -603,7 +603,7 @@ final class LocalLibraryStoreTests: XCTestCase {
 
     /// An undated episode has no evidence it is new. Admitting it on every
     /// refresh would leak an undated back catalogue in one refresh at a time.
-    func testUndatedEpisodesAreAdmittedOnBackfillButNotOnRefresh() async throws {
+    func testUndatedEpisodesReachTheLarderOnlyThroughTheBackfillFloor() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let origin = Date(timeIntervalSince1970: 1_700_000_000)
         let feedURL = URL(string: "https://podcasts.example.test/undated/feed.xml")!
@@ -625,6 +625,31 @@ final class LocalLibraryStoreTests: XCTestCase {
         let afterBackfill = try await store.podcastEpisodes(for: feed.itemID).count
         XCTAssertEqual(backfill.skipped, 0)
         XCTAssertEqual(afterBackfill, 3)
+    }
+
+    /// The undated path is bounded, not open. A feed that dates nothing gets the
+    /// backfill floor and no more, in the order the feed listed -- so the cap
+    /// admits the newest items a dateless feed offers rather than an arbitrary
+    /// five, and a later refresh adds none of the remainder.
+    func testAnAllUndatedFeedIsCappedAtTheBackfillFloor() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/dateless/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [], undated: 8)
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+
+        let backfill = try await store.savePodcastEpisodes(all, admission: .backfill)
+        let stored = try await store.podcastEpisodes(for: feed.itemID).compactMap(\.rssGUID).sorted()
+        XCTAssertEqual(backfill.saved.count, LocalLibraryStore.podcastSubscriptionMinimumBackfill)
+        XCTAssertEqual(backfill.skipped, 3)
+        XCTAssertEqual(stored, ["undated-0", "undated-1", "undated-2", "undated-3", "undated-4"])
+
+        let refresh = try await store.savePodcastEpisodes(all, admission: .incremental)
+        let afterRefresh = try await store.podcastEpisodes(for: feed.itemID).compactMap(\.rssGUID).sorted()
+        XCTAssertEqual(refresh.skipped, 3, "the remainder stays out on every later refresh")
+        XCTAssertEqual(afterRefresh, stored)
     }
 
     /// Nothing already in the Larder may be evicted by the horizon rule -- a

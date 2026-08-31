@@ -266,11 +266,12 @@ assert_macos_ui_leg_is_executed() {
   assert_contains 'leg_macos_ui_tests()' "$gate"
   assert_contains 'run_leg "${leg_names[7]}" "${leg_reports[7]}" leg_macos_ui_tests' "$gate"
   assert_contains '  macos-ui-tests' "$gate"
-  assert_contains "macos-ui-tests) printf '9" "$gate"
+  assert_contains "macos-ui-tests) printf '13" "$gate"
   assert_contains '-only-testing:WiltedMacUITests' "$gate"
   for method in \
     testEachDestinationExclusivelyOccupiesTheDetailRegion \
-    testSidebarListsDestinationsOnlyAndNotTheArticleList; do
+    testSidebarListsDestinationsOnlyAndNotTheArticleList \
+    testLarderListsPodcastFeedsWithPerFeedControls; do
     assert_contains "$method" "$repo_root/WiltedMacUITests/WiltedMacSmokeUITests.swift"
   done
 }
@@ -312,7 +313,7 @@ assert_snapshot_contract() {
   assert_contains 'expected_test_count_floor' "$gate"
   assert_contains 'macos-unit-tests) printf' "$gate"
   assert_contains 'ios-pixel-snapshot-tests) printf' "$gate"
-  assert_contains "printf '%s\\n' '{\"totalTestCount\":9}'" "$gate"
+  assert_contains "printf '%s\\n' '{\"totalTestCount\":13}'" "$gate"
   for method in \
     testEveryPreviewStateHasLightAndDarkPixelBaselines \
     testPixelSnapshotSelectorsAreUniqueAndComplete \

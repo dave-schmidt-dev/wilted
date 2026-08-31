@@ -102,6 +102,50 @@ final class WiltedMacSmokeUITests: XCTestCase {
         )
     }
 
+    /// The reported gap: subscriptions existed in the store with nowhere to see
+    /// or manage them. Larder must list every feed with its own switch and
+    /// unsubscribe, and state the refresh and download policy rather than
+    /// leaving an absent schedule to read as a hidden one.
+    func testLarderListsPodcastFeedsWithPerFeedControls() {
+        let app = launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
+
+        let card = app.descendants(matching: .any)["wilted-podcast-feeds"]
+        XCTAssertTrue(card.waitForExistence(timeout: 8))
+        XCTAssertTrue(
+            app.descendants(matching: .any).matching(
+                NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-row-'")
+            ).count >= 2,
+            "every subscribed feed needs a row, including one the listener has hidden"
+        )
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-podcast-feeds-policy"].exists,
+            "the card must state the refresh and download policy"
+        )
+
+        let toggle = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-enabled-'")
+        ).firstMatch
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        let unsubscribe = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-unsubscribe-'")
+        ).firstMatch
+        XCTAssertTrue(unsubscribe.waitForExistence(timeout: 5))
+
+        // Drive unsubscribe rather than merely proving the button is drawn: it
+        // is the destructive path, and "the control exists" is not evidence it
+        // removes anything.
+        let rowsBefore = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-row-'")
+        ).count
+        unsubscribe.click()
+        let message = app.descendants(matching: .any)["wilted-podcast-operation-message"]
+        XCTAssertTrue(message.waitForExistence(timeout: 8))
+        let rowsAfter = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-row-'")
+        ).count
+        XCTAssertLessThan(rowsAfter, rowsBefore, "unsubscribing must remove the feed's row")
+    }
+
     func testMixedLarderSearchFiltersDownloadRetryAndSelection() {
         let app = launch(arguments: [
             "--wilted-ui-fixture-article-flow", "--wilted-ui-fixture-ready",
