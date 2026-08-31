@@ -1,0 +1,258 @@
+import Foundation
+import Testing
+@testable import WiltedProducer
+
+@Suite("Podcast feed client")
+struct PodcastFeedClientTests {
+    private let sourceURL = URL(string: "https://podcasts.example.test/feed.xml")!
+    private let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+
+    @Test func loadsBoundedNamespacedMetadata() async throws {
+        let result = try await client(xml: """
+        <rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel>
+          <title> Example Show </title><itunes:author> Presenter </itunes:author><itunes:image href="https://images.example.test/show.jpg" />
+          <item><title>Episode one</title><guid> stable-guid </guid><pubDate>Tue, 14 Nov 2023 22:13:20 GMT</pubDate><itunes:duration>01:02:03</itunes:duration><itunes:author>Guest</itunes:author><enclosure url="https://cdn.example.test/one.mp3" type="audio/mpeg" length="42" /></item>
+          <item><title>No media</title></item>
+        </channel></rss>
+        """).load(sourceURL)
+        #expect(result.feed.title == "Example Show")
+        #expect(result.feed.author == "Presenter")
+        #expect(result.feed.artworkURL?.absoluteString == "https://images.example.test/show.jpg")
+        #expect(result.episodes.count == 1)
+        #expect(result.episodes[0].rssGUID == "stable-guid")
+        #expect(result.episodes[0].durationSeconds == 3_723)
+        #expect(result.episodes[0].enclosureByteCount == 42)
+    }
+
+    @Test func acceptsOptionalFieldsAndLowercasesMediaType() async throws {
+        let result = try await client(xml: "<rss><channel><title>Show</title><item><title>Episode</title><enclosure url=\"https://cdn.example.test/one.m4a\" type=\"AUDIO/X-M4A; charset=binary\" /></item></channel></rss>").load(sourceURL)
+        #expect(result.feed.author == nil)
+        #expect(result.episodes[0].rssGUID == nil)
+        #expect(result.episodes[0].enclosureMediaType == "audio/x-m4a")
+    }
+
+    @Test func rejectsInitialAndFinalNonHTTPSURLs() async {
+        await expect(.invalidURL) {
+            try await PodcastFeedClient(loader: StubLoader(response: .init(url: self.sourceURL, statusCode: 200, data: Data()))).load(URL(string: "http://podcasts.example.test/feed.xml")!)
+        }
+        await expect(.invalidURL) { try await client(finalURL: URL(string: "http://podcasts.example.test/feed.xml")!).load(self.sourceURL) }
+    }
+
+    @Test func preservesRedirectDowngradeFailure() async {
+        await expect(.redirectDowngrade) { try await PodcastFeedClient(loader: RedirectDowngradeLoader()).load(self.sourceURL) }
+    }
+
+    @Test func rejectsBadStatusAndOversizedResponses() async {
+        await expect(.invalidResponse(503)) { try await client(status: 503).load(self.sourceURL) }
+        await expect(.responseTooLarge) {
+            try await PodcastFeedClient(loader: StubLoader(response: .init(url: self.sourceURL, statusCode: 200, data: Data(repeating: 0, count: PodcastFeedClient.maximumFeedBytes + 1)))).load(self.sourceURL)
+        }
+    }
+
+    @Test func URLSessionLoaderEnforcesDeclaredAndStreamedLimits() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FeedURLProtocol.self]
+        let loader = URLSessionPodcastFeedLoader(configuration: configuration)
+        await expect(.responseTooLarge) {
+            try await loader.load(URL(string: "https://podcasts.example.test/feed.xml?case=header")!, maximumBytes: 1)
+        }
+        await expect(.responseTooLarge) {
+            try await loader.load(URL(string: "https://podcasts.example.test/feed.xml?case=stream")!, maximumBytes: 1)
+        }
+    }
+
+    @Test func URLSessionLoaderAllowsHTTPSRedirectsAndRejectsDowngrades() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FeedURLProtocol.self]
+        let loader = URLSessionPodcastFeedLoader(configuration: configuration)
+        let response = try await loader.load(URL(string: "https://podcasts.example.test/feed.xml?case=redirect")!, maximumBytes: 1_024)
+        #expect(response.url.query == "case=success")
+        await expect(.redirectDowngrade) {
+            try await loader.load(URL(string: "https://podcasts.example.test/feed.xml?case=downgrade")!, maximumBytes: 1_024)
+        }
+    }
+
+    @Test func rejectsMalformedXMLAndExternalEntities() async {
+        await expect(.malformedXML) { try await client(xml: "<rss><channel><title>broken</channel></rss>").load(self.sourceURL) }
+        await expect(.externalEntity) { try await client(xml: "<!DOCTYPE rss [<!ENTITY xxe SYSTEM 'https://evil.example.test/a'>]><rss><channel><title>&xxe;</title></channel></rss>").load(self.sourceURL) }
+        let longPrefix = "<!--\(String(repeating: "x", count: 65 * 1_024))-->"
+        await expect(.externalEntity) {
+            try await client(xml: "\(longPrefix)<!DOCTYPE rss [<!ENTITY xxe SYSTEM 'https://evil.example.test/a'>]><rss><channel><title>&xxe;</title></channel></rss>").load(self.sourceURL)
+        }
+        var utf16 = Data([0xFF, 0xFE])
+        utf16.append("<!DOCTYPE rss [<!ENTITY xxe SYSTEM 'https://evil.example.test/a'>]><rss><channel><title>&xxe;</title></channel></rss>".data(using: .utf16LittleEndian)!)
+        let utf16Document = utf16
+        await expect(.externalEntity) { try await client(data: utf16Document).load(self.sourceURL) }
+    }
+
+    @Test func allowsEntitySyntaxInsideCommentsAndCDATA() async throws {
+        let result = try await client(xml: "<rss><channel><!-- <!DOCTYPE example> --><description><![CDATA[<!ENTITY example SYSTEM 'https://example.test/a'>]]></description><title>Show</title></channel></rss>").load(sourceURL)
+        #expect(result.feed.title == "Show")
+    }
+
+    @Test func rejectsInvalidEnclosures() async {
+        await expect(.invalidMetadata("enclosure URL")) { try await client(xml: feed(item: "<enclosure url=\"http://cdn.example.test/one.mp3\" type=\"audio/mpeg\" />")).load(self.sourceURL) }
+        await expect(.unsupportedEnclosureMediaType("video/mp4")) { try await client(xml: feed(item: "<enclosure url=\"https://cdn.example.test/one.mp4\" type=\"video/mp4\" />")).load(self.sourceURL) }
+    }
+
+    @Test func rejectsInvalidDurationsAsMetadata() async {
+        for duration in ["0", "-5", "nan", "inf", "10::20"] {
+            await expect(.invalidMetadata("episode duration")) {
+                try await client(xml: feed(item: "<itunes:duration>\(duration)</itunes:duration><enclosure url=\"https://cdn.example.test/one.mp3\" type=\"audio/mpeg\" />")).load(self.sourceURL)
+            }
+        }
+    }
+
+    @Test func mapsDomainValidationFailuresToInvalidMetadata() async {
+        let path = String(repeating: "a", count: 4_100)
+        await expectInvalidMetadata {
+            try await client(xml: feed(item: "<enclosure url=\"https://cdn.example.test/\(path)\" type=\"audio/mpeg\" />")).load(self.sourceURL)
+        }
+    }
+
+    @Test func rejectsNonHTTPSArtwork() async {
+        await expect(.invalidMetadata("channel artwork")) {
+            try await client(xml: "<rss xmlns:itunes=\"http://www.itunes.com/dtds/podcast-1.0.dtd\"><channel><title>Show</title><itunes:image href=\"http://images.example.test/show.jpg\" /></channel></rss>").load(self.sourceURL)
+        }
+        await expect(.invalidMetadata("episode artwork")) {
+            try await client(xml: feed(item: "<itunes:image href=\"http://images.example.test/episode.jpg\" /><enclosure url=\"https://cdn.example.test/one.mp3\" type=\"audio/mpeg\" />")).load(self.sourceURL)
+        }
+    }
+
+    @Test func mapsTaskCancellationToTypedCancellation() async {
+        let task = Task {
+            try await PodcastFeedClient(loader: WaitingLoader()).load(sourceURL)
+        }
+        task.cancel()
+        await expect(.cancelled) { _ = try await task.value }
+    }
+
+    @Test func URLSessionLoaderDoesNotStartRequestAfterCancellation() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FeedURLProtocol.self]
+        let gate = RequestStartGate()
+        let loader = URLSessionPodcastFeedLoader(configuration: configuration) {
+            await gate.waitForRelease()
+        }
+        FeedURLProtocol.resetCancellationRequestCount()
+        let task = Task {
+            try await loader.load(URL(string: "https://podcasts.example.test/feed.xml?case=cancel")!, maximumBytes: 1_024)
+        }
+        await gate.waitUntilEntered()
+        task.cancel()
+        await gate.release()
+        await expect(.cancelled) { _ = try await task.value }
+        #expect(FeedURLProtocol.cancellationRequestCount == 0)
+    }
+
+    private func client(xml: String = "<rss><channel><title>Show</title></channel></rss>", status: Int = 200, finalURL: URL? = nil) -> PodcastFeedClient {
+        client(data: Data(xml.utf8), status: status, finalURL: finalURL)
+    }
+
+    private func client(data: Data, status: Int = 200, finalURL: URL? = nil) -> PodcastFeedClient {
+        PodcastFeedClient(loader: StubLoader(response: .init(url: finalURL ?? sourceURL, statusCode: status, data: data)), now: { fixedNow })
+    }
+
+    private func feed(item: String) -> String { "<rss><channel><title>Show</title><item><title>Episode</title>\(item)</item></channel></rss>" }
+
+    private func expect<T: Sendable>(_ expected: PodcastFeedClientError, _ operation: @escaping @Sendable () async throws -> T) async {
+        do { _ = try await operation(); Issue.record("Expected \(expected)") }
+        catch let error as PodcastFeedClientError { #expect(error == expected) }
+        catch { Issue.record("Unexpected error: \(error)") }
+    }
+
+    private func expectInvalidMetadata<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async {
+        do { _ = try await operation(); Issue.record("Expected invalid metadata") }
+        catch PodcastFeedClientError.invalidMetadata { }
+        catch { Issue.record("Unexpected error: \(error)") }
+    }
+}
+
+private struct StubLoader: PodcastFeedLoading {
+    let response: PodcastFeedHTTPResponse
+    func load(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse { response }
+}
+
+private struct WaitingLoader: PodcastFeedLoading {
+    func load(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
+        try await Task.sleep(for: .seconds(10))
+        return PodcastFeedHTTPResponse(url: url, statusCode: 200, data: Data())
+    }
+}
+
+private struct RedirectDowngradeLoader: PodcastFeedLoading {
+    func load(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
+        throw PodcastFeedClientError.redirectDowngrade
+    }
+}
+
+private final class FeedURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let cancellationRequests = RequestCounter()
+
+    static var cancellationRequestCount: Int { cancellationRequests.value }
+    static func resetCancellationRequestCount() { cancellationRequests.reset() }
+
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "podcasts.example.test" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let requestCase = request.url?.query ?? ""
+        if requestCase == "case=cancel" { Self.cancellationRequests.increment() }
+        if requestCase == "case=redirect" || requestCase == "case=downgrade" {
+            let target = URL(string: requestCase == "case=redirect"
+                ? "https://podcasts.example.test/feed.xml?case=success"
+                : "http://podcasts.example.test/feed.xml?case=success")!
+            let response = HTTPURLResponse(url: request.url!, statusCode: 302, httpVersion: "HTTP/1.1", headerFields: ["Location": target.absoluteString])!
+            client?.urlProtocol(self, wasRedirectedTo: URLRequest(url: target), redirectResponse: response)
+            return
+        }
+        let isHeaderCase = requestCase == "case=header"
+        let headers = isHeaderCase ? ["Content-Length": "2"] : [:]
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if requestCase == "case=success" {
+            client?.urlProtocol(self, didLoad: Data("<rss><channel><title>Show</title></channel></rss>".utf8))
+        } else if !isHeaderCase {
+            client?.urlProtocol(self, didLoad: Data([0]))
+            client?.urlProtocol(self, didLoad: Data([1]))
+        }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class RequestCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int { lock.withLock { count } }
+    func increment() { lock.withLock { count += 1 } }
+    func reset() { lock.withLock { count = 0 } }
+}
+
+private actor RequestStartGate {
+    private var entered = false
+    private var released = false
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func waitForRelease() async {
+        entered = true
+        enteredWaiters.forEach { $0.resume() }
+        enteredWaiters.removeAll()
+        guard !released else { return }
+        await withCheckedContinuation { releaseWaiters.append($0) }
+    }
+
+    func waitUntilEntered() async {
+        guard !entered else { return }
+        await withCheckedContinuation { enteredWaiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        releaseWaiters.forEach { $0.resume() }
+        releaseWaiters.removeAll()
+    }
+}

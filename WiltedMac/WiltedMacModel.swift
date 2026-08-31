@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import AppKit
 
 #if canImport(WiltedProducer)
 import WiltedDomain
@@ -21,6 +22,93 @@ struct WiltedMacArticle: Identifiable, Hashable, Sendable {
     /// takes to listen to, which is the one fact that decides whether to
     /// start it now, and it was the only list in the app that withheld it.
     let durationSeconds: TimeInterval?
+    let createdAt: Date
+
+    init(
+        id: String,
+        title: String,
+        source: String,
+        url: URL,
+        isReady: Bool,
+        durationSeconds: TimeInterval?,
+        createdAt: Date = .distantPast
+    ) {
+        self.id = id
+        self.title = title
+        self.source = source
+        self.url = url
+        self.isReady = isReady
+        self.durationSeconds = durationSeconds
+        self.createdAt = createdAt
+    }
+}
+
+enum WiltedMacLibraryFilter: String, CaseIterable, Identifiable, Sendable {
+    case all = "All"
+    case unplayed = "Unplayed"
+    case inProgress = "In Progress"
+    case finished = "Finished"
+    var id: Self { self }
+}
+
+enum WiltedMacLibraryOrder: String, CaseIterable, Identifiable, Sendable {
+    case newest = "Newest"
+    case oldest = "Oldest"
+    var id: Self { self }
+}
+
+enum WiltedMacEpisodeDownloadState: Equatable, Sendable {
+    case notDownloaded
+    case queued
+    case downloading(received: Int64, expected: Int64?)
+    case completed
+    case failed
+    case cancelled
+}
+
+struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
+    let id: String
+    let title: String
+    let feedTitle: String
+    let summary: String
+    let artworkURL: URL?
+    let releasedAt: Date
+    let durationSeconds: TimeInterval?
+    let playbackSeconds: TimeInterval
+    var downloadState: WiltedMacEpisodeDownloadState
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.title == rhs.title && lhs.feedTitle == rhs.feedTitle &&
+            lhs.summary == rhs.summary && lhs.artworkURL == rhs.artworkURL && lhs.releasedAt == rhs.releasedAt &&
+            lhs.durationSeconds == rhs.durationSeconds && lhs.playbackSeconds == rhs.playbackSeconds &&
+            lhs.downloadState == rhs.downloadState
+    }
+
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+enum WiltedMacLibraryItem: Identifiable, Hashable, Sendable {
+    case article(WiltedMacArticle)
+    case episode(WiltedMacEpisode)
+
+    var id: String {
+        switch self { case .article(let value): value.id; case .episode(let value): value.id }
+    }
+    var title: String {
+        switch self { case .article(let value): value.title; case .episode(let value): value.title }
+    }
+    var source: String {
+        switch self { case .article(let value): value.source; case .episode(let value): value.feedTitle }
+    }
+    var date: Date {
+        switch self { case .article(let value): value.createdAt; case .episode(let value): value.releasedAt }
+    }
+    var progress: (position: TimeInterval, duration: TimeInterval?) {
+        switch self {
+        case .article(let value): (0, value.durationSeconds)
+        case .episode(let value): (value.playbackSeconds, value.durationSeconds)
+        }
+    }
 }
 
 /// Presentation view of one recorded preparation attempt.
@@ -149,14 +237,10 @@ struct WiltedMacPreparation: Equatable, Sendable {
 
 /// The producer's permanent destinations.
 ///
-/// These mirror the listener's tabs minus Downloads, which is listener-only:
-/// Mac audio is local the moment it is produced. Exactly one destination fills
-/// the detail region at a time — an earlier composition rendered Library
-/// unconditionally and merely appended a player, so selecting a destination
-/// changed nothing and the window read as three competing regions.
+/// Library, preparation, and settings remain work destinations. Playback is
+/// owned by the persistent bottom rail instead of competing for navigation.
 enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable {
     case library
-    case nowPlaying
     case processor
     case settings
 
@@ -165,7 +249,6 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
     var title: String {
         switch self {
         case .library: WiltedScreenCopy.library
-        case .nowPlaying: WiltedScreenCopy.nowPlaying
         case .processor: WiltedScreenCopy.processor
         case .settings: WiltedScreenCopy.settings
         }
@@ -174,20 +257,46 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
     var symbolName: String {
         switch self {
         case .library: "books.vertical"
-        case .nowPlaying: "waveform"
         case .processor: "gearshape.2"
         case .settings: "gearshape"
         }
     }
 }
 
+#if canImport(WiltedProducer)
+typealias WiltedMacStoreBootstrap = @Sendable (URL) async throws -> LocalLibraryStore
+#endif
+
+struct WiltedMacStartupFailure: Equatable, Sendable {
+    let message: String
+    let retainedV5StoreURL: URL?
+    let canRetry: Bool
+}
+
+enum WiltedMacStartupState: Equatable, Sendable {
+    case loading(attempt: Int)
+    case ready
+    case failed(WiltedMacStartupFailure)
+}
+
 /// Main-actor presentation state for the local Mac producer.
 @Observable
 @MainActor
 final class WiltedMacModel {
+    private static let maximumStartupAttempts = 2
+
+    private(set) var startupState: WiltedMacStartupState = .loading(attempt: 0)
     var urlDraft = ""
+    var podcastFeedURLDraft = ""
+    var librarySearchQuery = ""
+    var libraryFilter: WiltedMacLibraryFilter = .all
+    var libraryOrder: WiltedMacLibraryOrder = .newest
     var selectedNavigation: WiltedMacNavigation = .library
     private(set) var articles: [WiltedMacArticle] = []
+    private(set) var episodes: [WiltedMacEpisode] = []
+    private(set) var podcastOperationMessage: String?
+    private(set) var isRefreshingPodcasts = false
+    private(set) var selectedLibraryItemID: String?
     private(set) var preparation: WiltedMacPreparation?
     private(set) var selectedArticleID: String?
     private(set) var isNowPlaying = false
@@ -205,6 +314,13 @@ final class WiltedMacModel {
     private(set) var transcriptBackfillStatus: String?
     private(set) var isBackfillingTranscript = false
     private(set) var currentTranscript: WiltedMacTranscript?
+    private(set) var podcastQueueIDs: [String] = []
+    private(set) var currentPodcastEpisodeID: String?
+    private(set) var playbackRate: Double = 1
+    private(set) var playbackVolume: Double = 1
+    private(set) var playbackOperationStatus: String?
+    private(set) var articlePublicationCount = 0
+    private(set) var articlePlaybackCheckpointCount = 0
     /// Set only when a route operation actually failed. The recovery control
     /// is gated on this so it does not advertise a fix for a fault that has
     /// not happened, matching how every other recovery control here behaves.
@@ -213,68 +329,78 @@ final class WiltedMacModel {
     let fixtureMode: Bool
 
 #if canImport(WiltedProducer)
-    private let store: LocalLibraryStore?
-    private let coordinator: PreparationCoordinator?
-    private let playback: PlaybackController?
-    private let syncLifecycle: WiltedMacSyncLifecycle?
+    private var store: LocalLibraryStore?
+    private var coordinator: PreparationCoordinator?
+    private var playback: PlaybackController?
+    private var syncLifecycle: WiltedMacSyncLifecycle?
+    private let libraryURL: URL
+    private let mediaDirectory: URL
+    private let syncTransportFactory: WiltedMacSyncTransportFactory?
+    private let assetResolver: LocalLibraryAssetResolver
+    private let storeBootstrap: WiltedMacStoreBootstrap
+    private let retainedArtifactPresenter: (URL) -> Void
+    private var startupAttemptCount = 0
+    private var startupTask: Task<Void, Never>?
+    private var pendingSyncReconciliation = false
     private var preparationRun: PreparationRun?
     private var preparationTask: Task<Void, Never>?
     private var syncReconciliationTask: Task<Void, Never>?
+    private var podcastRefreshTask: Task<Void, Never>?
+    private var podcastDownloadTasks: [String: Task<Void, Never>] = [:]
+    private var podcastDownloadCoordinator: PodcastDownloadCoordinator?
+    private var hiddenEpisodeIDs: Set<String> = []
+    private var fixtureDownloadFailuresRemaining = 0
+    private let podcastFeedClient: PodcastFeedClient
     private var fixtureRevision: StoredAudioRevision?
+    private var fixturePodcastInstallTask: Task<Void, Never>?
+    private var playbackOperationTask: Task<Void, Never>?
+    private var isPodcastPlayback = false
 #endif
 
     init(arguments: [String] = ProcessInfo.processInfo.arguments,
          syncTransportFactory: WiltedMacSyncTransportFactory? = nil,
          assetResolver: @escaping LocalLibraryAssetResolver = { _, _ in nil },
-         stateDirectoryOverride: URL? = nil) {
+         stateDirectoryOverride: URL? = nil,
+         storeBootstrap: WiltedMacStoreBootstrap? = nil,
+         retainedArtifactPresenter: ((URL) -> Void)? = nil,
+         podcastFeedClient: PodcastFeedClient = PodcastFeedClient()) {
         let usesFixtureMode = arguments.contains("--wilted-ui-fixture-article-flow")
             || arguments.contains("--wilted-ui-fixture-quarantined")
             || arguments.contains("--wilted-ui-smoke")
             || arguments.contains("--wilted-ui-fixture-ready")
             || arguments.contains("--wilted-ui-fixture-playing")
             || arguments.contains("--wilted-ui-fixture-preparing")
+            || arguments.contains("--wilted-ui-fixture-podcasts")
+            || arguments.contains("--wilted-ui-fixture-download-failure")
         fixtureMode = usesFixtureMode
 
 #if canImport(WiltedProducer)
         let stateDirectory = stateDirectoryOverride ?? Self.stateDirectory(fixtureMode: usesFixtureMode)
-        let libraryURL = stateDirectory.appendingPathComponent("library.sqlite")
-        let mediaDirectory = stateDirectory.appendingPathComponent("media", isDirectory: true)
-        let configuredStore = try? LocalLibraryStore(url: libraryURL)
-        store = configuredStore
-        coordinator = configuredStore.map {
-            PreparationCoordinator(store: $0, mediaDirectory: mediaDirectory)
+        self.libraryURL = stateDirectory.appendingPathComponent("library.sqlite")
+        self.mediaDirectory = stateDirectory.appendingPathComponent("media", isDirectory: true)
+        self.syncTransportFactory = syncTransportFactory
+        self.assetResolver = assetResolver
+        self.storeBootstrap = storeBootstrap ?? { url in
+            try await Task.detached(priority: .userInitiated) {
+                try LocalLibraryStore(url: url)
+            }.value
         }
-        playback = configuredStore.map {
-            PlaybackController(
-                store: $0,
-                backend: usesFixtureMode ? WiltedFixturePlaybackBackend() : AVAudioPlayerBackend(),
-                deviceID: "mac"
-            )
+        self.retainedArtifactPresenter = retainedArtifactPresenter ?? { url in
+            NSWorkspace.shared.activateFileViewerSelecting([url])
         }
-        var selectedSyncFactory = syncTransportFactory
-#if WILTED_CLOUDKIT_LIVE
-        if !usesFixtureMode, selectedSyncFactory == nil, let configuredStore {
-            let liveConfiguration = WiltedMacLiveSyncConfiguration(
-                database: CKContainer(identifier: "iCloud.com.zerodelta.wilted").privateCloudDatabase,
-                assetRootURL: mediaDirectory,
-                store: configuredStore,
-                assetResolver: assetResolver
-            )
-            selectedSyncFactory = makeWiltedMacLiveSyncTransportFactory(configuration: liveConfiguration)
-        }
-#endif
-        syncLifecycle = configuredStore.map {
-            WiltedMacSyncLifecycle(
-                store: $0,
-                transportFactory: usesFixtureMode ? nil : selectedSyncFactory,
-                assetResolver: assetResolver
-            )
-        }
+        self.podcastFeedClient = podcastFeedClient
+        fixtureDownloadFailuresRemaining = arguments.contains("--wilted-ui-fixture-download-failure") ? 1 : 0
 
         if usesFixtureMode {
+            let configuredStore = try? LocalLibraryStore(url: self.libraryURL)
+            configureStoreDependencies(configuredStore)
+            startupState = configuredStore == nil
+                ? .failed(Self.startupFailure(libraryURL: self.libraryURL, canRetry: false))
+                : .ready
             installFixture(
                 ready: arguments.contains("--wilted-ui-fixture-ready") || arguments.contains("--wilted-ui-fixture-playing"),
-                preparing: arguments.contains("--wilted-ui-fixture-preparing")
+                preparing: arguments.contains("--wilted-ui-fixture-preparing"),
+                podcasts: arguments.contains("--wilted-ui-fixture-podcasts")
             )
             if arguments.contains("--wilted-ui-fixture-quarantined") {
                 syncLifecycle?.quarantineAccount()
@@ -283,14 +409,75 @@ final class WiltedMacModel {
                 openNowPlaying(for: firstArticle)
                 togglePlayback()
             }
-        } else {
-            // The account-review gate is durable state, so it has to be restored before
-            // the panel decides whether to show the review control.
-            syncLifecycle?.restoreAccountQuarantine()
-            refresh()
         }
 #else
         _ = arguments
+#endif
+    }
+
+    var libraryItems: [WiltedMacLibraryItem] {
+        let query = librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let combined = articles.map(WiltedMacLibraryItem.article) +
+            episodes.filter { !hiddenEpisodeIDs.contains($0.id) }.map(WiltedMacLibraryItem.episode)
+        let filtered = combined.filter { item in
+            let matchesQuery = query.isEmpty || item.title.localizedCaseInsensitiveContains(query) ||
+                item.source.localizedCaseInsensitiveContains(query)
+            guard matchesQuery else { return false }
+            let progress = item.progress
+            let finished = progress.duration.map { $0 > 0 && progress.position >= $0 * 0.95 } ?? false
+            switch libraryFilter {
+            case .all: return true
+            case .unplayed: return progress.position <= 0 && !finished
+            case .inProgress: return progress.position > 0 && !finished
+            case .finished: return finished
+            }
+        }
+        return filtered.sorted {
+            if $0.date != $1.date { return libraryOrder == .newest ? $0.date > $1.date : $0.date < $1.date }
+            return $0.id < $1.id
+        }
+    }
+
+    func selectLibraryItem(_ id: String) { selectedLibraryItemID = id }
+
+    /// Starts production persistence only after the root surface has made its
+    /// loading state visible. Fixture modes are already ready at construction.
+    func startStoreBootstrap() {
+#if canImport(WiltedProducer)
+        guard case .loading = startupState else { return }
+        beginStoreBootstrap()
+#endif
+    }
+
+#if canImport(WiltedProducer)
+    private func beginStoreBootstrap() {
+        guard !fixtureMode, startupTask == nil, startupAttemptCount < Self.maximumStartupAttempts else { return }
+        startupAttemptCount += 1
+        startupState = .loading(attempt: startupAttemptCount)
+        startupTask = Task { [weak self] in
+            await self?.performStoreBootstrap()
+        }
+    }
+#endif
+
+    func retryStoreBootstrap() {
+#if canImport(WiltedProducer)
+        guard case let .failed(failure) = startupState, failure.canRetry else { return }
+        beginStoreBootstrap()
+#endif
+    }
+
+    func presentRetainedV5Store() {
+#if canImport(WiltedProducer)
+        guard case let .failed(failure) = startupState, let url = failure.retainedV5StoreURL else { return }
+        retainedArtifactPresenter(url)
+#endif
+    }
+
+    /// Deterministic test seam; production does not wait on this task.
+    func waitForStoreBootstrap() async {
+#if canImport(WiltedProducer)
+        await startupTask?.value
 #endif
     }
 
@@ -332,8 +519,20 @@ final class WiltedMacModel {
     /// existing lifecycle coalesces any automatic send requested by the reconciliation.
     func reconcileSyncOnLaunchOrForeground() {
 #if canImport(WiltedProducer)
-        guard !fixtureMode,
-              let syncLifecycle,
+        guard !fixtureMode else { return }
+        switch startupState {
+        case let .loading(attempt):
+            pendingSyncReconciliation = true
+            if attempt == 0 {
+                startStoreBootstrap()
+            }
+            return
+        case .failed:
+            return
+        case .ready:
+            break
+        }
+        guard let syncLifecycle,
               syncLifecycle.status.phase != .disabled,
               syncReconciliationTask == nil else { return }
         syncReconciliationTask = Task { [weak self] in
@@ -352,6 +551,206 @@ final class WiltedMacModel {
 #if canImport(WiltedProducer)
         syncLifecycle?.cancel()
 #endif
+    }
+
+    func subscribeToPodcastFeed() {
+#if canImport(WiltedProducer)
+        guard let url = URL(string: podcastFeedURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)),
+              url.scheme?.lowercased() == "https", url.host != nil else {
+            podcastOperationMessage = "Enter a complete HTTPS podcast feed URL."
+            return
+        }
+        startPodcastRefresh(urls: [url], subscribing: true)
+#endif
+    }
+
+    func refreshPodcastFeeds() {
+#if canImport(WiltedProducer)
+        guard let store, podcastRefreshTask == nil else { return }
+        isRefreshingPodcasts = true
+        podcastOperationMessage = "Refreshing subscribed podcasts…"
+        podcastRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let subscriptions = try await store.subscriptions().filter(\.enabled)
+                var urls: [URL] = []
+                for subscription in subscriptions {
+                    if let url = try await store.podcastFeed(for: subscription.feedID)?.canonicalURL {
+                        urls.append(url)
+                    }
+                }
+                try await self.refreshPodcastURLs(urls, subscribing: false)
+                self.podcastOperationMessage = "Podcast episodes are up to date."
+            } catch is CancellationError {
+                self.podcastOperationMessage = "Podcast refresh cancelled."
+            } catch PodcastFeedClientError.cancelled {
+                self.podcastOperationMessage = "Podcast refresh cancelled."
+            } catch {
+                self.podcastOperationMessage = "Podcasts could not be refreshed. Check your connection and retry."
+            }
+            self.isRefreshingPodcasts = false
+            self.podcastRefreshTask = nil
+        }
+#endif
+    }
+
+    func cancelPodcastRefresh() {
+        podcastRefreshTask?.cancel()
+        podcastRefreshTask = nil
+        isRefreshingPodcasts = false
+        podcastOperationMessage = "Podcast refresh cancelled."
+    }
+
+    func downloadEpisode(_ episode: WiltedMacEpisode) {
+#if canImport(WiltedProducer)
+        if fixtureMode {
+            guard podcastDownloadTasks[episode.id] == nil else { return }
+            updateEpisode(episode.id) { $0.downloadState = .queued }
+            podcastOperationMessage = "Queued \(episode.title) for download."
+            podcastDownloadTasks[episode.id] = Task { [weak self] in
+                await Task.yield()
+                guard let self else { return }
+                guard !Task.isCancelled else {
+                    self.updateEpisode(episode.id) { $0.downloadState = .cancelled }
+                    self.podcastOperationMessage = "Download cancelled."
+                    self.podcastDownloadTasks[episode.id] = nil
+                    return
+                }
+                self.updateEpisode(episode.id) { $0.downloadState = .downloading(received: 3, expected: 6) }
+                self.podcastOperationMessage = "Downloading \(episode.title)…"
+                await Task.yield()
+                guard !Task.isCancelled else {
+                    self.updateEpisode(episode.id) { $0.downloadState = .cancelled }
+                    self.podcastOperationMessage = "Download cancelled."
+                    self.podcastDownloadTasks[episode.id] = nil
+                    return
+                }
+                if self.fixtureDownloadFailuresRemaining > 0 {
+                    self.fixtureDownloadFailuresRemaining -= 1
+                    self.updateEpisode(episode.id) { $0.downloadState = .failed }
+                    self.podcastOperationMessage = "Download failed. Retry when you are online."
+                } else {
+                    self.updateEpisode(episode.id) { $0.downloadState = .completed }
+                    self.podcastOperationMessage = "\(episode.title) is available offline."
+                }
+                self.podcastDownloadTasks[episode.id] = nil
+            }
+            return
+        }
+        guard podcastDownloadTasks[episode.id] == nil,
+              let coordinator = podcastDownloadCoordinator,
+              let itemID = try? ItemID(rawValue: episode.id) else { return }
+        updateEpisode(episode.id) { $0.downloadState = .queued }
+        podcastOperationMessage = "Queued \(episode.title) for download."
+        podcastDownloadTasks[episode.id] = Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await coordinator.download(episodeID: itemID) { progress in
+                    Task { @MainActor [weak self] in
+                        guard self?.updateActiveEpisodeDownload(
+                            episode.id,
+                            received: progress.bytesReceived,
+                            expected: progress.expectedByteCount
+                        ) == true else { return }
+                        self?.podcastOperationMessage = "Downloading \(episode.title)…"
+                    }
+                }
+                guard let store = self.store else { throw CancellationError() }
+                let values = try await self.loadLibrary(from: store)
+                self.articles = values.articles
+                self.episodes = values.episodes
+                self.podcastOperationMessage = "\(episode.title) is available offline."
+            } catch PodcastDownloadCoordinatorError.cancelled {
+                self.updateEpisode(episode.id) { $0.downloadState = .cancelled }
+                self.podcastOperationMessage = "Download cancelled."
+            } catch {
+                self.updateEpisode(episode.id) { $0.downloadState = .failed }
+                self.podcastOperationMessage = "Download failed. Retry when you are online."
+            }
+            self.podcastDownloadTasks[episode.id] = nil
+        }
+#endif
+    }
+
+    func cancelEpisodeDownload(_ episode: WiltedMacEpisode) {
+        podcastDownloadTasks[episode.id]?.cancel()
+    }
+
+    func retryEpisodeDownload(_ episode: WiltedMacEpisode) { downloadEpisode(episode) }
+
+    func waitForPodcastOperations() async {
+        let refresh = podcastRefreshTask
+        let downloads = Array(podcastDownloadTasks.values)
+        await refresh?.value
+        for task in downloads { await task.value }
+    }
+
+    func removeEpisode(_ episode: WiltedMacEpisode) {
+        podcastDownloadTasks[episode.id]?.cancel()
+        hiddenEpisodeIDs.insert(episode.id)
+        if selectedLibraryItemID == episode.id { selectedLibraryItemID = nil }
+        podcastOperationMessage = "Removed \(episode.title) from this Larder view."
+    }
+
+#if canImport(WiltedProducer)
+    private func startPodcastRefresh(urls: [URL], subscribing: Bool) {
+        guard podcastRefreshTask == nil else { return }
+        isRefreshingPodcasts = true
+        podcastOperationMessage = subscribing ? "Adding podcast feed…" : "Refreshing subscribed podcasts…"
+        podcastRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.refreshPodcastURLs(urls, subscribing: subscribing)
+                self.podcastFeedURLDraft = ""
+                self.podcastOperationMessage = "Podcast episodes are up to date."
+            } catch is CancellationError {
+                self.podcastOperationMessage = "Podcast refresh cancelled."
+            } catch PodcastFeedClientError.cancelled {
+                self.podcastOperationMessage = "Podcast refresh cancelled."
+            } catch {
+                self.podcastOperationMessage = "Podcast feed unavailable. Check the address or retry when online."
+            }
+            self.isRefreshingPodcasts = false
+            self.podcastRefreshTask = nil
+        }
+    }
+
+    private func refreshPodcastURLs(_ urls: [URL], subscribing: Bool) async throws {
+        guard let store else { throw CancellationError() }
+        for url in urls {
+            try Task.checkCancellation()
+            let loaded = try await podcastFeedClient.load(url)
+            try await store.save(feed: loaded.feed)
+            for episode in loaded.episodes { try await store.save(episode: episode) }
+            if subscribing {
+                try await store.save(subscription: PodcastSubscription(
+                    feedID: loaded.feed.itemID, subscribedAt: Timestamp(Date())
+                ))
+            }
+        }
+        let values = try await loadLibrary(from: store)
+        articles = values.articles
+        episodes = values.episodes
+    }
+#endif
+
+    private func updateEpisode(_ id: String, transform: (inout WiltedMacEpisode) -> Void) {
+        guard let index = episodes.firstIndex(where: { $0.id == id }) else { return }
+        transform(&episodes[index])
+    }
+
+    /// Progress callbacks are delivered through queued MainActor tasks. Once
+    /// the store reload publishes a terminal state, an older callback must not
+    /// move the row backwards to downloading.
+    private func updateActiveEpisodeDownload(_ id: String, received: Int64, expected: Int64?) -> Bool {
+        guard let index = episodes.firstIndex(where: { $0.id == id }) else { return false }
+        switch episodes[index].downloadState {
+        case .queued, .downloading:
+            episodes[index].downloadState = .downloading(received: received, expected: expected)
+            return true
+        case .notDownloaded, .completed, .failed, .cancelled:
+            return false
+        }
     }
 
     /// Quarantines sync after an account-owner change.
@@ -373,12 +772,32 @@ final class WiltedMacModel {
         return articles.first(where: { $0.id == selectedArticleID })
     }
 
+    var currentEpisode: WiltedMacEpisode? {
+        guard let currentPodcastEpisodeID else { return nil }
+        return episodes.first(where: { $0.id == currentPodcastEpisodeID })
+    }
+
+    var hasCurrentPlayback: Bool { currentArticle != nil || currentEpisode != nil }
+
+    var canSelectPreviousEpisode: Bool {
+        guard isPodcastPlayback, let currentPodcastEpisodeID,
+              let index = podcastQueueIDs.firstIndex(of: currentPodcastEpisodeID) else { return false }
+        return index > podcastQueueIDs.startIndex
+    }
+
+    var canSelectNextEpisode: Bool {
+        guard isPodcastPlayback, let currentPodcastEpisodeID,
+              let index = podcastQueueIDs.firstIndex(of: currentPodcastEpisodeID) else { return false }
+        return podcastQueueIDs.index(after: index) < podcastQueueIDs.endIndex
+    }
+
     var canCancelPreparation: Bool { preparation?.cancellable == true }
 
     /// The player's one-line status, matching the listener's status channel so
     /// the same condition reads the same way on both platforms. Never color
     /// alone: the tone accompanies this text rather than replacing it.
     var playbackStatusMessage: String {
+        if !hasCurrentPlayback { return "Nothing is playing" }
         if let playbackError { return playbackError }
         if isPlaying { return "Playing" }
         if isNowPlaying { return "Paused" }
@@ -469,13 +888,7 @@ final class WiltedMacModel {
 
     func openNowPlaying(for article: WiltedMacArticle) {
         guard article.isReady else { return }
-        selectedArticleID = article.id
-        isNowPlaying = true
-        selectedNavigation = .nowPlaying
-        playbackError = nil
-        currentTranscript = nil
-        playbackPositionSeconds = 0
-        playbackDurationSeconds = 0
+        beginArticlePlaybackTransition(article)
 #if canImport(WiltedProducer)
         guard let playback else { return }
         guard let fixtureRevision else {
@@ -510,6 +923,129 @@ final class WiltedMacModel {
 #endif
     }
 
+    private func beginArticlePlaybackTransition(_ article: WiltedMacArticle) {
+        selectedArticleID = article.id
+        currentPodcastEpisodeID = nil
+        isPodcastPlayback = false
+        isNowPlaying = true
+        playbackError = nil
+        currentTranscript = nil
+        playbackPositionSeconds = 0
+        playbackDurationSeconds = 0
+    }
+
+    func addEpisodeToUpNext(_ episode: WiltedMacEpisode) {
+#if canImport(WiltedProducer)
+        guard let playback, let id = try? ItemID(rawValue: episode.id) else { return }
+        playbackOperationStatus = "Adding \(episode.title) to Up Next…"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                await self.fixturePodcastInstallTask?.value
+                try await playback.addPodcastQueueEpisode(id)
+                await self.refreshPodcastQueueState()
+                self.playbackOperationStatus = "Added \(episode.title) to Up Next."
+            } catch { self.playbackOperationStatus = "Up Next could not be updated." }
+        }
+#endif
+    }
+
+    func playEpisode(_ episode: WiltedMacEpisode) {
+#if canImport(WiltedProducer)
+        guard let playback, let id = try? ItemID(rawValue: episode.id) else { return }
+        let wasQueued = podcastQueueIDs.contains(episode.id)
+        playbackOperationStatus = "Opening \(episode.title)…"
+        playbackOperationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                await self.fixturePodcastInstallTask?.value
+                try await playback.addPodcastQueueEpisode(id)
+                try await playback.selectPodcastQueueEpisode(id, autoplay: true)
+                self.selectedArticleID = nil
+                self.currentPodcastEpisodeID = episode.id
+                self.isPodcastPlayback = true
+                self.isNowPlaying = true
+                self.currentTranscript = .unavailable
+                await self.refreshPodcastQueueState()
+                self.refreshPlaybackReadout()
+                self.playbackError = nil
+                self.playbackOperationStatus = nil
+            } catch {
+                if !wasQueued {
+                    try? await playback.removePodcastQueueEpisode(id)
+                    await self.refreshPodcastQueueState()
+                }
+                self.playbackError = "This episode's saved audio is unavailable."
+                self.playbackOperationStatus = nil
+            }
+        }
+#endif
+    }
+
+    func removeEpisodeFromUpNext(_ episodeID: String) {
+#if canImport(WiltedProducer)
+        guard let playback, let id = try? ItemID(rawValue: episodeID) else { return }
+        playbackOperationStatus = "Updating Up Next…"
+        Task { [weak self] in
+            try? await playback.removePodcastQueueEpisode(id)
+            await self?.refreshPodcastQueueState()
+            self?.playbackOperationStatus = nil
+        }
+#endif
+    }
+
+    func moveEpisodeInUpNext(from source: Int, to destination: Int) {
+#if canImport(WiltedProducer)
+        guard let playback else { return }
+        playbackOperationStatus = "Reordering Up Next…"
+        Task { [weak self] in
+            try? await playback.movePodcastQueueEpisode(from: source, to: destination)
+            await self?.refreshPodcastQueueState()
+            self?.playbackOperationStatus = nil
+        }
+#endif
+    }
+
+    func setPlaybackRate(_ value: Double) {
+        playbackRate = min(max(value, 0.5), 2)
+#if canImport(WiltedProducer)
+        playback?.setRate(Float(playbackRate))
+        guard isPodcastPlayback, let store, let id = playback?.itemID else { return }
+        let selectedRate = playbackRate
+        playbackOperationStatus = "Saving playback speed…"
+        Task { [weak self] in
+            try? await store.save(playbackSpeed: PodcastPlaybackSpeed(
+                itemID: id, speed: selectedRate, updatedAt: Timestamp(Date())
+            ))
+            self?.playbackOperationStatus = nil
+        }
+#endif
+    }
+
+    func setPlaybackVolume(_ value: Double) {
+        playbackVolume = min(max(value, 0), 1)
+#if canImport(WiltedProducer)
+        playback?.setVolume(Float(playbackVolume))
+#endif
+    }
+
+    func scrub(to value: Double) {
+        guard value.isFinite else { return }
+#if canImport(WiltedProducer)
+        guard let playback else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await playback.seek(to: value)
+                self.refreshPlaybackReadout()
+                await self.queueCurrentPlaybackCheckpoint()
+            } catch { self.reportAudioRouteFault("Playback is unavailable.") }
+        }
+#else
+        playbackPositionSeconds = min(max(value, 0), max(0, playbackDurationSeconds))
+#endif
+    }
+
     /// Republishes elapsed/total from the controller.
     ///
     /// `PlaybackController` advances its own position, but nothing observed it
@@ -525,6 +1061,7 @@ final class WiltedMacModel {
         // readout frozen between transport presses.
         playbackPositionSeconds = min(max(0, playback.livePositionSeconds), max(0, playback.durationSeconds))
         isPlaying = playback.liveIsPlaying
+        playbackRate = Double(playback.playbackRate)
 #endif
     }
 
@@ -574,6 +1111,9 @@ final class WiltedMacModel {
 
     func rewind() { seek(by: -15) }
     func forward() { seek(by: 30) }
+
+    func previousPlayback() { navigatePodcastQueue(previous: true) }
+    func nextPlayback() { navigatePodcastQueue(previous: false) }
 
     /// Starts a new playback session and publishes its durable checkpoint.
     func restartPlayback() {
@@ -628,6 +1168,42 @@ final class WiltedMacModel {
 #endif
     }
 
+    /// Deterministic model-test seam for the same checkpoint path used by
+    /// transport actions. It never contacts a live service.
+    func checkpointCurrentPlaybackForTesting() async {
+#if canImport(WiltedProducer)
+        try? await playback?.checkpoint()
+        await queueCurrentPlaybackCheckpoint()
+#endif
+    }
+
+    func completePodcastPlaybackForTesting(successfully: Bool = true) {
+#if canImport(WiltedProducer)
+        (playback?.backend as? WiltedFixturePlaybackBackend)?.finish(successfully: successfully)
+#endif
+    }
+
+    func waitForPlaybackOperationForTesting() async {
+#if canImport(WiltedProducer)
+        await playbackOperationTask?.value
+#endif
+    }
+
+    func installEpisodeForTesting(_ episode: WiltedMacEpisode) {
+        guard !episodes.contains(where: { $0.id == episode.id }) else { return }
+        episodes.append(episode)
+    }
+
+    func beginArticlePlaybackTransitionForTesting(_ article: WiltedMacArticle) {
+        beginArticlePlaybackTransition(article)
+    }
+
+#if canImport(WiltedProducer)
+    func applyPodcastPlaybackObservationForTesting(itemID: ItemID?, fault: PlaybackControllerError?) {
+        applyPodcastPlaybackObservation(itemID: itemID, fault: fault)
+    }
+#endif
+
 #if canImport(WiltedProducer)
     private func update(_ status: PreparationStatus) {
         let phase: WiltedMacPreparation.Phase
@@ -657,6 +1233,7 @@ final class WiltedMacModel {
         let revisionResult = await syncLifecycle.queueRevision(stored.revision, chunkedFile: chunkedFile)
         let itemResult = await syncLifecycle.queueItem(article, currentRevisionID: stored.revision.revisionID)
         guard case .success = itemResult, case .success = revisionResult else { return false }
+        articlePublicationCount += 1
         return true
     }
 
@@ -697,13 +1274,17 @@ final class WiltedMacModel {
 
     private func queueCurrentPlaybackCheckpoint() async {
         guard let store, let syncLifecycle, let playbackItemID = playback?.itemID,
+              selectedArticleID == playbackItemID.rawValue,
+              articles.contains(where: { $0.id == playbackItemID.rawValue }),
               let playbackRevisionID = playback?.revisionID,
               let state = try? await store.playbackState(for: playbackItemID, revisionID: playbackRevisionID) else { return }
         let sidecar = try? await store.playbackSidecar(for: playbackItemID, revisionID: playbackRevisionID)
         let opaque = sidecar.map {
             WiltedOpaqueSidecar(changeTag: $0.changeTag, encodedSystemFields: $0.encodedSystemFields)
         }
-        _ = await syncLifecycle.queuePlayback(state, sidecar: opaque)
+        if case .success = await syncLifecycle.queuePlayback(state, sidecar: opaque) {
+            articlePlaybackCheckpointCount += 1
+        }
     }
 
     /// Removes an article from the library.
@@ -865,31 +1446,220 @@ final class WiltedMacModel {
 #endif
     }
 
+#if canImport(WiltedProducer)
+    private func performStoreBootstrap() async {
+        do {
+            let configuredStore = try await storeBootstrap(libraryURL)
+            configureStoreDependencies(configuredStore)
+            // The account-review gate is durable state, so restore it before
+            // the ready surface can expose sync controls.
+            syncLifecycle?.restoreAccountQuarantine()
+            let library = try await loadLibrary(from: configuredStore)
+            articles = library.articles
+            episodes = library.episodes
+            await restorePodcastPlayback()
+            startupState = .ready
+            if pendingSyncReconciliation {
+                pendingSyncReconciliation = false
+                reconcileSyncOnLaunchOrForeground()
+            }
+        } catch {
+            configureStoreDependencies(nil)
+            let retainedURL = await Task.detached { [libraryURL] in
+                Self.retainedV5StoreURL(for: libraryURL)
+            }.value
+            startupState = .failed(WiltedMacStartupFailure(
+                message: "Wilted could not open your larder. The existing library was left in place.",
+                retainedV5StoreURL: retainedURL,
+                canRetry: startupAttemptCount < Self.maximumStartupAttempts
+            ))
+        }
+        startupTask = nil
+    }
+
+    private func configureStoreDependencies(_ configuredStore: LocalLibraryStore?) {
+        store = configuredStore
+        coordinator = configuredStore.map {
+            PreparationCoordinator(store: $0, mediaDirectory: mediaDirectory)
+        }
+        playback = configuredStore.map {
+            PlaybackController(
+                store: $0,
+                backend: fixtureMode ? WiltedFixturePlaybackBackend() : AVAudioPlayerBackend(),
+                deviceID: "mac"
+            )
+        }
+        playback?.podcastStateHandler = { [weak self] itemID, fault in
+            self?.applyPodcastPlaybackObservation(itemID: itemID, fault: fault)
+        }
+        podcastDownloadCoordinator = configuredStore.map {
+            PodcastDownloadCoordinator(store: $0, libraryDirectory: mediaDirectory)
+        }
+        var selectedSyncFactory = syncTransportFactory
+#if WILTED_CLOUDKIT_LIVE
+        if !fixtureMode, selectedSyncFactory == nil, let configuredStore {
+            let liveConfiguration = WiltedMacLiveSyncConfiguration(
+                database: CKContainer(identifier: "iCloud.com.zerodelta.wilted").privateCloudDatabase,
+                assetRootURL: mediaDirectory,
+                store: configuredStore,
+                assetResolver: assetResolver
+            )
+            selectedSyncFactory = makeWiltedMacLiveSyncTransportFactory(configuration: liveConfiguration)
+        }
+#endif
+        syncLifecycle = configuredStore.map {
+            WiltedMacSyncLifecycle(
+                store: $0,
+                transportFactory: fixtureMode ? nil : selectedSyncFactory,
+                assetResolver: assetResolver
+            )
+        }
+    }
+
+    private func restorePodcastPlayback() async {
+        guard let playback else { return }
+        playbackOperationStatus = "Restoring Up Next…"
+        await playback.restorePodcastQueue()
+        await refreshPodcastQueueState()
+        if let itemID = playback.itemID,
+           episodes.contains(where: { $0.id == itemID.rawValue }) {
+            currentPodcastEpisodeID = itemID.rawValue
+            selectedArticleID = nil
+            isPodcastPlayback = true
+            isNowPlaying = true
+            refreshPlaybackReadout()
+        }
+        playbackOperationStatus = nil
+    }
+
+    private func refreshPodcastQueueState() async {
+        guard let store, let state = try? await store.podcastQueueState() else { return }
+        podcastQueueIDs = state.episodeIDs.map(\.rawValue)
+        if isPodcastPlayback {
+            let loadedEpisodeID = playback?.itemID?.rawValue
+            let activeEpisodeID = loadedEpisodeID.flatMap { id in
+                episodes.contains(where: { $0.id == id }) ? id : nil
+            }
+            currentPodcastEpisodeID = state.currentEpisodeID?.rawValue ?? activeEpisodeID
+        }
+    }
+
+    private func applyPodcastPlaybackObservation(itemID: ItemID?, fault: PlaybackControllerError?) {
+        currentPodcastEpisodeID = itemID?.rawValue
+        if itemID != nil {
+            selectedArticleID = nil
+            isPodcastPlayback = true
+            isNowPlaying = true
+        }
+        playbackError = switch fault {
+        case .podcastMediaUnavailable?: "This episode's saved audio is unavailable."
+        case .podcastMediaUnreadable?: "This episode's saved audio could not be opened."
+        case .some: "Podcast playback could not continue."
+        case nil: nil
+        }
+        playbackOperationStatus = nil
+        refreshPlaybackReadout()
+    }
+
+    private func loadLibrary(from store: LocalLibraryStore) async throws -> (articles: [WiltedMacArticle], episodes: [WiltedMacEpisode]) {
+        var articleValues: [WiltedMacArticle] = []
+        for article in try await store.articles() where !article.isDeleted {
+            let revision = try await store.readyRevision(for: article.itemID)
+            articleValues.append(WiltedMacArticle(
+                id: article.itemID.rawValue, title: article.title, source: article.source,
+                url: article.canonicalURL, isReady: revision != nil,
+                durationSeconds: revision?.revision.durationSeconds, createdAt: article.createdAt.date
+            ))
+        }
+        let feeds = Dictionary(uniqueKeysWithValues: try await store.podcastFeeds().map { ($0.itemID, $0) })
+        let subscribed = Set(try await store.subscriptions().filter(\.enabled).map(\.feedID))
+        let downloads = Dictionary(uniqueKeysWithValues: try await store.downloads().map { ($0.episodeID, $0) })
+        var episodeValues: [WiltedMacEpisode] = []
+        for episode in try await store.podcastEpisodes() where subscribed.contains(episode.feedID) {
+            let revision = try await store.readyRevision(for: episode.itemID)
+            let playbackState: PlaybackState?
+            if let revision {
+                playbackState = try await store.playbackState(
+                    for: episode.itemID, revisionID: revision.revision.revisionID
+                )
+            } else {
+                playbackState = nil
+            }
+            let downloadState: WiltedMacEpisodeDownloadState
+            switch downloads[episode.itemID]?.status {
+            case .queued: downloadState = .queued
+            case .downloading:
+                let value = downloads[episode.itemID]!
+                downloadState = .downloading(received: value.bytesReceived, expected: value.expectedByteCount)
+            case .completed: downloadState = .completed
+            case .failed: downloadState = .failed
+            case .cancelled: downloadState = .cancelled
+            case nil: downloadState = .notDownloaded
+            }
+            let feedTitle = feeds[episode.feedID]?.title ?? "Podcast"
+            let summary = String((episode.author ?? feedTitle).prefix(180))
+            episodeValues.append(WiltedMacEpisode(
+                id: episode.itemID.rawValue, title: episode.title, feedTitle: feedTitle,
+                summary: summary, artworkURL: episode.artworkURL ?? feeds[episode.feedID]?.artworkURL,
+                releasedAt: (episode.publishedTime ?? episode.createdAt).date,
+                durationSeconds: revision?.revision.durationSeconds ?? episode.durationSeconds,
+                playbackSeconds: playbackState?.positionSeconds ?? 0, downloadState: downloadState
+            ))
+        }
+        return (articleValues, episodeValues)
+    }
+
+    private nonisolated static func startupFailure(libraryURL: URL, canRetry: Bool) -> WiltedMacStartupFailure {
+        WiltedMacStartupFailure(
+            message: "Wilted could not open your larder. The existing library was left in place.",
+            retainedV5StoreURL: retainedV5StoreURL(for: libraryURL),
+            canRetry: canRetry
+        )
+    }
+
+    private nonisolated static func retainedV5StoreURL(for libraryURL: URL) -> URL? {
+        let manager = FileManager.default
+        let directory = libraryURL.deletingLastPathComponent()
+        let prefix = "\(libraryURL.lastPathComponent).v5-"
+        let candidates = (try? manager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return candidates
+            .filter { $0.lastPathComponent.hasPrefix(prefix) }
+            .compactMap { retainedDirectory -> (URL, Date)? in
+                let retainedStore = retainedDirectory.appendingPathComponent(libraryURL.lastPathComponent)
+                guard manager.fileExists(atPath: retainedStore.path) else { return nil }
+                let values = try? retainedDirectory.resourceValues(forKeys: [.contentModificationDateKey])
+                let date = values?.contentModificationDate ?? .distantPast
+                return (retainedStore, date)
+            }
+            .sorted {
+                if $0.1 != $1.1 { return $0.1 > $1.1 }
+                return $0.0.path < $1.0.path
+            }
+            .first?.0
+    }
+#endif
+
     private func refresh() {
         guard let store else { return }
         Task { [weak self] in
             guard let self else { return }
-            guard let stored = try? await store.articles() else { return }
-            var values: [WiltedMacArticle] = []
-            for article in stored where !article.isDeleted {
-                let revision = try? await store.readyRevision(for: article.itemID)
-                values.append(WiltedMacArticle(
-                    id: article.itemID.rawValue, title: article.title, source: article.source,
-                    url: article.canonicalURL, isReady: revision != nil,
-                    durationSeconds: revision?.revision.durationSeconds
-                ))
-            }
-            self.articles = values
+            guard let values = try? await self.loadLibrary(from: store) else { return }
+            self.articles = values.articles
+            self.episodes = values.episodes
         }
     }
 
-    private func installFixture(ready: Bool, preparing: Bool = false) {
+    private func installFixture(ready: Bool, preparing: Bool = false, podcasts: Bool = false) {
         if preparing {
             let url = URL(string: "https://example.test/wilted-preparing-fixture")!
             guard let itemID = try? ItemID.derive(from: url) else { return }
             articles = [WiltedMacArticle(
                 id: itemID.rawValue, title: "Preparing article", source: "Example source",
-                url: url, isReady: false, durationSeconds: nil
+                url: url, isReady: false, durationSeconds: nil, createdAt: Date(timeIntervalSince1970: 1_700_000_000)
             )]
             return
         }
@@ -917,8 +1687,10 @@ final class WiltedMacModel {
         )
         articles = [WiltedMacArticle(
             id: itemID.rawValue, title: article.title, source: article.source,
-            url: article.canonicalURL, isReady: true, durationSeconds: revision.durationSeconds
+            url: article.canonicalURL, isReady: true, durationSeconds: revision.durationSeconds,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
         )]
+        if podcasts { installPodcastFixture(in: store) }
         Task {
             try? await store.save(article: article)
             if let fixtureTranscript {
@@ -926,6 +1698,49 @@ final class WiltedMacModel {
             } else {
                 try? await store.saveReadyRevision(revision, mediaURL: mediaURL)
             }
+        }
+    }
+
+    private func installPodcastFixture(in store: LocalLibraryStore) {
+        let feedURL = URL(string: "https://fixtures.example.test/field-notes.xml")!
+        let enclosureURL = URL(string: "https://fixtures.example.test/media/quiet-machines.mp3")!
+        guard let feedID = try? ItemID.derivePodcastFeed(from: feedURL),
+              let episodeID = try? ItemID.derivePodcastEpisode(
+                feedURL: feedURL, rssGUID: "fixture-episode-001", enclosureURL: enclosureURL
+              ),
+              let feed = try? PodcastFeed(
+                itemID: feedID, canonicalURL: feedURL, title: "Field Notes",
+                createdAt: Timestamp(Date(timeIntervalSince1970: 1_699_827_200))
+              ),
+              let episode = try? PodcastEpisode(
+                itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: "fixture-episode-001",
+                title: "Quiet Machines", author: "Field Notes desk",
+                publishedTime: Timestamp(Date(timeIntervalSince1970: 1_699_827_200)),
+                enclosureURL: enclosureURL, enclosureMediaType: "audio/mpeg", durationSeconds: 1_482,
+                createdAt: Timestamp(Date(timeIntervalSince1970: 1_699_827_200))
+              ) else { return }
+        episodes = [WiltedMacEpisode(
+            id: episodeID.rawValue, title: episode.title, feedTitle: feed.title,
+            summary: "Field Notes desk", artworkURL: nil, releasedAt: episode.createdAt.date,
+            durationSeconds: episode.durationSeconds, playbackSeconds: 0,
+            downloadState: fixtureDownloadFailuresRemaining > 0 ? .notDownloaded : .completed
+        )]
+        let mediaURL = mediaDirectory.appendingPathComponent("fixture-podcast.mp3")
+        try? FileManager.default.createDirectory(at: mediaDirectory, withIntermediateDirectories: true)
+        _ = FileManager.default.createFile(atPath: mediaURL.path, contents: Data([0]))
+        let revision = try? AudioRevision(
+            itemID: episodeID, revisionID: RevisionID(rawValue: "fixture-podcast-revision"),
+            durationSeconds: 1_482, byteCount: 1,
+            contentHash: "sha256:" + String(repeating: "9", count: 64), mediaType: "audio/mpeg",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_699_827_200)), schemaVersion: 1
+        )
+        fixturePodcastInstallTask = Task {
+            try? await store.save(feed: feed)
+            try? await store.save(episode: episode)
+            try? await store.save(subscription: PodcastSubscription(
+                feedID: feedID, subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_699_827_200))
+            ))
+            if let revision { try? await store.saveReadyRevision(revision, mediaURL: mediaURL) }
         }
     }
 
@@ -940,6 +1755,32 @@ final class WiltedMacModel {
                 await self.queueCurrentPlaybackCheckpoint()
             } catch { self.reportAudioRouteFault("Playback is unavailable.") }
         }
+    }
+
+    private func navigatePodcastQueue(previous: Bool) {
+#if canImport(WiltedProducer)
+        guard let playback, isPodcastPlayback else { return }
+        playbackOperationStatus = previous ? "Opening previous episode…" : "Opening next episode…"
+        playbackOperationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let selected = try await (previous
+                    ? playback.selectPreviousPodcastQueueEpisode()
+                    : playback.selectNextPodcastQueueEpisode())
+                if selected {
+                    await self.refreshPodcastQueueState()
+                    self.refreshPlaybackReadout()
+                    self.playbackError = nil
+                }
+                self.playbackOperationStatus = nil
+            } catch {
+                self.playbackOperationStatus = nil
+                self.playbackError = previous
+                    ? "The previous episode is unavailable."
+                    : "The next episode is unavailable."
+            }
+        }
+#endif
     }
 
     private static func stateDirectory(fixtureMode: Bool) -> URL {
@@ -962,9 +1803,21 @@ private final class WiltedFixturePlaybackBackend: PlaybackBackend {
     var duration: TimeInterval = 120
     var currentTime: TimeInterval = 0
     var isPlaying = false
-    func load(url: URL) throws { _ = url }
+    var rate: Float = 1
+    var volume: Float = 1
+    private(set) var loadedGeneration: UInt64 = 0
+    var completionHandler: (@MainActor @Sendable (UInt64, Bool) -> Void)?
+    func load(url: URL) throws {
+        loadedGeneration += 1
+        isPlaying = false
+        duration = url.lastPathComponent.contains("podcast") ? 1_482 : 120
+    }
     func play() -> Bool { isPlaying = true; return true }
     func pause() { isPlaying = false }
     func stop() { isPlaying = false }
+    func finish(successfully: Bool) {
+        isPlaying = false
+        completionHandler?(loadedGeneration, successfully)
+    }
 }
 #endif

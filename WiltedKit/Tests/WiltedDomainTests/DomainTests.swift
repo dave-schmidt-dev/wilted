@@ -3,6 +3,16 @@ import XCTest
 @testable import WiltedDomain
 
 final class DomainTests: XCTestCase {
+    func testPodcastQueueStateRetainsOrderCurrentIdentityAndNextItem() throws {
+        let first = try ItemID(rawValue: "item-" + String(repeating: "1", count: 64))
+        let second = try ItemID(rawValue: "item-" + String(repeating: "2", count: 64))
+        let state = try PodcastQueueState(episodeIDs: [first, second], currentEpisodeID: first)
+        XCTAssertEqual(state.currentIndex, 0)
+        XCTAssertEqual(state.nextEpisodeID, second)
+        XCTAssertThrowsError(try PodcastQueueState(episodeIDs: [first, first]))
+        XCTAssertThrowsError(try PodcastQueueState(episodeIDs: [first], currentEpisodeID: second))
+    }
+
     func testItemIdentityCanonicalizesURL() throws {
         let first = try ItemID.derive(from: XCTUnwrap(URL(string: "HTTPS://Example.COM:443/a?q=1#fragment")))
         let second = try ItemID.derive(from: XCTUnwrap(URL(string: "https://example.com/a?q=1")))

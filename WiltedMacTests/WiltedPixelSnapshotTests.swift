@@ -90,6 +90,15 @@ final class WiltedPixelSnapshotTests: XCTestCase {
     /// back to the card canvas where even the detail region was cropped.
     func testWindowBaselinesCaptureTheDetailRegionAtWindowScale() throws {
         for appearance in ["light", "dark"] {
+            let bitmap = try baselineBitmap(
+                testName: "testMacPlayerShellPixelBaselines",
+                name: "mac-shell-player-\(appearance)"
+            )
+            XCTAssertEqual(bitmap.pixelsWide, Int(canvas.width))
+            XCTAssertEqual(bitmap.pixelsHigh, Int(canvas.height))
+        }
+
+        for appearance in ["light", "dark"] {
             for shell in ["producer-library", "navigation-selection"] {
                 let testName = shell == "producer-library"
                     ? "testShippingMacProducerPixelBaselines"
@@ -132,13 +141,15 @@ final class WiltedPixelSnapshotTests: XCTestCase {
 
     func testMacPlayerShellPixelBaselines() {
         for appearance in WiltedAppearance.allCases {
+            let model = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"])
+            if let article = model.articles.first { model.openNowPlaying(for: article) }
             let variant = WiltedVisualVariant(
                 appearance: appearance,
                 dynamicType: .standard,
                 reduceMotion: false
             )
             assertSnapshot(
-                render(WiltedPlayerShell(fixture: WiltedPreviewFixture(state: .playing)), variant: variant),
+                render(WiltedMacCompactPlayer(model: model), variant: variant),
                 named: WiltedSnapshotContract.shellName(kind: "player", appearance: appearance),
                 testName: "testMacPlayerShellPixelBaselines"
             )
@@ -172,7 +183,11 @@ final class WiltedPixelSnapshotTests: XCTestCase {
     func testShippingMacProducerPixelBaselines() {
         for appearance in WiltedAppearance.allCases {
             let model = WiltedMacModel(
-                arguments: ["--wilted-ui-fixture-article-flow", "--wilted-ui-fixture-ready"]
+                arguments: [
+                    "--wilted-ui-fixture-article-flow",
+                    "--wilted-ui-fixture-podcasts",
+                    "--wilted-ui-fixture-ready"
+                ]
             )
             let variant = WiltedVisualVariant(
                 appearance: appearance,

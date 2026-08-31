@@ -1,6 +1,11 @@
 import AppKit
 import SwiftUI
 
+enum WiltedMacStartupAccessibility {
+    static let loading = "wilted-mac-startup-loading"
+    static let recovery = "wilted-mac-startup-recovery"
+}
+
 /// The producer window.
 ///
 /// One sidebar of permanent destinations, and exactly one of them filling the
@@ -10,8 +15,7 @@ import SwiftUI
 /// detail already showed, and "Add an article" stayed in the middle of the
 /// window no matter what was selected. Owner acceptance rejected that on
 /// 2026-08-25. Playback no longer needs to sit beside the producer surface to
-/// stay reachable — the sidebar keeps Now Playing one click away, which is the
-/// same guarantee the listener's tab bar gives.
+/// stay reachable: the bottom rail persists beneath every work destination.
 struct WiltedMacRootView: View {
     @Bindable private var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
@@ -21,6 +25,22 @@ struct WiltedMacRootView: View {
     }
 
     var body: some View {
+        Group {
+            switch model.startupState {
+            case .loading:
+                startupLoading
+            case .ready:
+                readyRoot
+            case let .failed(failure):
+                startupRecovery(failure)
+            }
+        }
+        .task {
+            model.startStoreBootstrap()
+        }
+    }
+
+    private var readyRoot: some View {
         NavigationSplitView {
             List(selection: $model.selectedNavigation) {
                 ForEach(WiltedMacNavigation.allCases) { destination in
@@ -56,15 +76,19 @@ struct WiltedMacRootView: View {
             .navigationTitle("Wilted")
             .accessibilityIdentifier("wilted-mac-sidebar")
         } detail: {
-            switch model.selectedNavigation {
-            case .library:
-                WiltedMacLibraryView(model: model)
-            case .nowPlaying:
-                WiltedMacNowPlayingView(model: model)
-            case .processor:
-                WiltedMacProcessorView(model: model)
-            case .settings:
-                WiltedMacSettingsView(model: model)
+            VStack(spacing: 0) {
+                Group {
+                    switch model.selectedNavigation {
+                    case .library:
+                        WiltedMacLibraryView(model: model)
+                    case .processor:
+                        WiltedMacProcessorView(model: model)
+                    case .settings:
+                        WiltedMacSettingsView(model: model)
+                    }
+                }
+                Divider()
+                WiltedMacCompactPlayer(model: model)
             }
         }
         .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
@@ -77,6 +101,59 @@ struct WiltedMacRootView: View {
         .wiltedRemovingToolbarTitle()
         .background(WiltedWindowTitleHider())
         .accessibilityIdentifier("wilted-mac-root")
+    }
+
+    private var startupLoading: some View {
+        VStack(spacing: WiltedTheme.Spacing.medium) {
+            ProgressView("Opening and updating your larder…")
+                .accessibilityLabel("Opening and updating your larder")
+            Text("Your saved library stays in place while Wilted checks its format.")
+                .font(WiltedTheme.font(.body))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(WiltedTheme.color(.page, scheme: colorScheme))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(WiltedMacStartupAccessibility.loading)
+    }
+
+    private func startupRecovery(_ failure: WiltedMacStartupFailure) -> some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+            Label("Your larder needs attention", systemImage: "exclamationmark.triangle")
+                .font(WiltedTheme.font(.display))
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+            Text(failure.message)
+                .font(WiltedTheme.font(.body))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            if let retainedURL = failure.retainedV5StoreURL {
+                Text("A retained V5 recovery copy is available at:")
+                    .font(WiltedTheme.font(.body))
+                Text(retainedURL.path)
+                    .font(WiltedTheme.font(.utility))
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("wilted-mac-retained-v5-location")
+                Button("Show Recovery Copy in Finder") {
+                    model.presentRetainedV5Store()
+                }
+                .accessibilityIdentifier("wilted-mac-show-retained-v5")
+            }
+            if failure.canRetry {
+                Button("Retry Opening Larder") {
+                    model.retryStoreBootstrap()
+                }
+                .accessibilityIdentifier("wilted-mac-startup-retry")
+            } else {
+                Text("Retry limit reached. Keep the recovery copy and relaunch Wilted before trying again.")
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            }
+        }
+        .frame(maxWidth: 640, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(WiltedTheme.Spacing.section)
+        .background(WiltedTheme.color(.page, scheme: colorScheme))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(WiltedMacStartupAccessibility.recovery)
     }
 
     /// The wordmark states the brand at the top of the window. macOS 26 gives
@@ -170,32 +247,92 @@ private struct WiltedMacLibraryView: View {
         WiltedMacDestination(title: WiltedScreenCopy.library, identifier: "wilted-mac-library-detail") {
             composer
 
+            podcastControls
+
             if let preparation = model.preparation {
                 WiltedMacPreparationView(model: model, preparation: preparation)
             }
 
-            if model.articles.isEmpty {
+            if model.libraryItems.isEmpty {
                 ContentUnavailableView(
-                    WiltedScreenCopy.libraryEmpty,
-                    systemImage: "tray",
-                    description: Text(WiltedScreenCopy.libraryEmptyDetailProducer)
+                    model.librarySearchQuery.isEmpty ? WiltedScreenCopy.libraryEmpty : "No matching Larder items",
+                    systemImage: model.librarySearchQuery.isEmpty ? "tray" : "magnifyingglass",
+                    description: Text(model.librarySearchQuery.isEmpty
+                        ? WiltedScreenCopy.libraryEmptyDetailProducer
+                        : "Try another search or filter.")
                 )
                 .accessibilityIdentifier("wilted-mac-empty-state")
             } else {
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-                    Text(WiltedScreenCopy.savedArticles)
+                    Text("Saved articles and episodes")
                         .font(WiltedTheme.font(.title))
                         .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(model.articles.enumerated()), id: \.element.id) { index, article in
+                        ForEach(Array(model.libraryItems.enumerated()), id: \.element.id) { index, item in
                             if index > 0 { Divider() }
-                            WiltedMacArticleRow(model: model, article: article)
+                            Group {
+                                switch item {
+                                case .article(let article):
+                                    WiltedMacArticleRow(model: model, article: article)
+                                case .episode(let episode):
+                                    WiltedMacEpisodeRow(model: model, episode: episode)
+                                }
+                            }
+                            .background(
+                                model.selectedLibraryItemID == item.id
+                                    ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.16)
+                                    : Color.clear
+                            )
+                            .onTapGesture { model.selectLibraryItem(item.id) }
                         }
                     }
                     .wiltedCard(colorScheme)
                 }
             }
         }
+        .searchable(text: $model.librarySearchQuery, prompt: "Search articles and episodes")
+        .searchScopes($model.libraryFilter) {
+            ForEach(WiltedMacLibraryFilter.allCases) { filter in
+                Text(filter.rawValue).tag(filter)
+            }
+        }
+    }
+
+    private var podcastControls: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+            HStack {
+                TextField("https://example.com/podcast.xml", text: $model.podcastFeedURLDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("wilted-podcast-feed-url")
+                Button("Subscribe") { model.subscribeToPodcastFeed() }
+                    .accessibilityIdentifier("wilted-podcast-subscribe")
+                if model.isRefreshingPodcasts {
+                    Button("Cancel Refresh") { model.cancelPodcastRefresh() }
+                        .accessibilityIdentifier("wilted-podcast-refresh-cancel")
+                } else {
+                    Button("Refresh") { model.refreshPodcastFeeds() }
+                        .accessibilityIdentifier("wilted-podcast-refresh")
+                }
+                Picker("Order", selection: $model.libraryOrder) {
+                    ForEach(WiltedMacLibraryOrder.allCases) { order in Text(order.rawValue).tag(order) }
+                }
+                .labelsHidden()
+                .frame(width: 110)
+                .accessibilityIdentifier("wilted-library-order")
+            }
+            if model.isRefreshingPodcasts {
+                ProgressView().controlSize(.small).accessibilityIdentifier("wilted-podcast-refresh-progress")
+            }
+            if let message = model.podcastOperationMessage {
+                Text(message)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-podcast-operation-message")
+            }
+        }
+        .wiltedCard(colorScheme)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-podcast-controls")
     }
 
     /// The composer is a card inside Library, not the page itself. As the
@@ -366,6 +503,116 @@ private struct WiltedMacArticleRow: View {
     }
 }
 
+private struct WiltedMacEpisodeRow: View {
+    let model: WiltedMacModel
+    let episode: WiltedMacEpisode
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        HStack(spacing: WiltedTheme.Spacing.medium) {
+            artwork
+            VStack(alignment: .leading, spacing: 2) {
+                Text(episode.title)
+                    .font(WiltedTheme.font(.body))
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    .lineLimit(1)
+                Text("\(episode.feedTitle) · \(relativeAge)")
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .lineLimit(1)
+                Text(episode.summary)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .lineLimit(2)
+                Text(progressLabel)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            downloadControl
+            Menu {
+                Button("Remove from Larder", role: .destructive) { model.removeEpisode(episode) }
+            } label: {
+                Image(systemName: "ellipsis").accessibilityLabel("More actions for \(episode.title)")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .accessibilityIdentifier("wilted-episode-actions-\(episode.id)")
+        }
+        .padding(.vertical, WiltedTheme.Spacing.small)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(model.selectedLibraryItemID == episode.id ? .isSelected : [])
+        .accessibilityIdentifier("wilted-episode-row-\(episode.id)")
+    }
+
+    @ViewBuilder private var artwork: some View {
+        if let url = episode.artworkURL {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image { image.resizable().scaledToFill() }
+                else if phase.error != nil { fallbackArtwork }
+                else { ProgressView().accessibilityLabel("Loading artwork for \(episode.title)") }
+            }
+            .frame(width: 56, height: 56).clipped()
+            .accessibilityLabel("Artwork for \(episode.title)")
+        } else { fallbackArtwork }
+    }
+
+    private var fallbackArtwork: some View {
+        RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
+            .fill(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.2))
+            .frame(width: 56, height: 56)
+            .overlay(Image(systemName: "mic.fill").accessibilityHidden(true))
+            .accessibilityLabel("Podcast artwork unavailable for \(episode.title)")
+    }
+
+    @ViewBuilder private var downloadControl: some View {
+        switch episode.downloadState {
+        case .notDownloaded:
+            Button("Download") { model.downloadEpisode(episode) }
+                .accessibilityIdentifier("wilted-episode-download-\(episode.id)")
+        case .queued:
+            Button("Cancel") { model.cancelEpisodeDownload(episode) }
+                .accessibilityLabel("Cancel queued download for \(episode.title)")
+        case .downloading(let received, let expected):
+            VStack {
+                if let expected, expected > 0 { ProgressView(value: Double(received), total: Double(expected)) }
+                else { ProgressView() }
+                Button("Cancel") { model.cancelEpisodeDownload(episode) }
+            }
+            .frame(width: 86)
+            .accessibilityIdentifier("wilted-episode-download-progress-\(episode.id)")
+        case .completed:
+            HStack {
+                Button("Play") { model.playEpisode(episode) }
+                    .accessibilityIdentifier("wilted-episode-play-\(episode.id)")
+                Button("Up Next") { model.addEpisodeToUpNext(episode) }
+                    .accessibilityIdentifier("wilted-episode-up-next-\(episode.id)")
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Available offline")
+            .accessibilityIdentifier("wilted-episode-offline-\(episode.id)")
+        case .failed, .cancelled:
+            Button("Retry") { model.retryEpisodeDownload(episode) }
+                .accessibilityIdentifier("wilted-episode-retry-\(episode.id)")
+        }
+    }
+
+    private var relativeAge: String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: episode.releasedAt, relativeTo: Date())
+    }
+
+    private var progressLabel: String {
+        guard let duration = episode.durationSeconds else { return "Duration unavailable" }
+        if episode.playbackSeconds > 0 {
+            return WiltedDuration.progress(position: episode.playbackSeconds, duration: duration)
+        }
+        return WiltedDuration.clock(duration)
+    }
+}
+
 // MARK: - Processor
 
 /// Visibility into the preparation pipeline.
@@ -475,134 +722,179 @@ private struct WiltedMacProcessorView: View {
     }()
 }
 
-// MARK: - Now Playing
-
-/// The producer's player, carrying the same components as the listener's:
-/// mark, title, source, progress, elapsed/total, status, transports, restart,
-/// and transcript. It previously had transports and nothing else, so the Mac
-/// could not answer how far into an article it was.
-private struct WiltedMacNowPlayingView: View {
-    let model: WiltedMacModel
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        GeometryReader { geometry in
-            Group {
-                if let article = model.currentArticle {
-                    player(article)
-                } else {
-                    WiltedNowPlayingEmptyView(detail: WiltedScreenCopy.nowPlayingEmptyDetailProducer)
-                        .accessibilityIdentifier("wilted-now-playing")
-                }
-            }
-            .frame(width: geometry.size.width, height: geometry.size.height)
-            .background(WiltedTheme.color(.page, scheme: colorScheme))
-        }
+// MARK: - Persistent Player
+/// A fixed footer outside every destination's scroll view. It keeps playback
+/// visible while the Larder moves and owns the complete local podcast surface.
+struct WiltedMacCompactPlayer: View {
+    private enum Expansion: Hashable {
+        case transcript
+        case upNext
     }
 
-    private func player(_ article: WiltedMacArticle) -> some View {
-        ScrollView {
-            VStack(spacing: WiltedTheme.Spacing.large) {
-                WiltedMark(size: 64, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+    @Bindable var model: WiltedMacModel
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var expansion: Expansion?
+    @FocusState private var primaryTransportFocused: Bool
+    @FocusState private var keyboardFocus: Expansion?
+    @AccessibilityFocusState private var accessibilityFocus: Expansion?
 
-                VStack(spacing: WiltedTheme.Spacing.xSmall) {
-                    Text(article.title)
-                        .font(WiltedTheme.font(.title))
-                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                        .multilineTextAlignment(.center)
-                    Text(article.source)
+    var body: some View {
+        VStack(spacing: WiltedTheme.Spacing.small) {
+            if model.hasCurrentPlayback {
+                HStack(spacing: WiltedTheme.Spacing.medium) {
+                artwork
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .lineLimit(1)
+                        .font(WiltedTheme.font(.body))
+                    Text(detail)
+                        .lineLimit(1)
                         .font(WiltedTheme.font(.utility))
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityLabel(detail)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                ProgressView(
-                    value: model.playbackPositionSeconds,
-                    total: max(1, model.playbackDurationSeconds)
-                )
-                .tint(WiltedTheme.color(.progress, scheme: colorScheme))
-                .accessibilityLabel("Playback progress")
+                Picker("Speed", selection: Binding(
+                    get: { model.playbackRate }, set: { model.setPlaybackRate($0) }
+                )) {
+                    ForEach([0.5, 0.75, 1, 1.25, 1.5, 2], id: \.self) {
+                        Text("\($0, specifier: "%g")×").tag($0)
+                    }
+                }
+                .frame(width: 82)
+                .disabled(!model.hasCurrentPlayback)
+                .accessibilityIdentifier("wilted-player-speed")
+
+                Menu {
+                    Button("Transcript") { open(.transcript) }
+                    Button("Up Next") { open(.upNext) }
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .menuStyle(.borderlessButton)
+                .accessibilityLabel("More playback options")
+                .accessibilityIdentifier("wilted-player-overflow")
+            }
+
+            HStack(spacing: WiltedTheme.Spacing.medium) {
+                transport("backward.end.fill", label: "Previous episode", id: "wilted-player-previous") {
+                    model.previousPlayback()
+                }
+                .disabled(!model.canSelectPreviousEpisode)
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .shift])
+                transport("gobackward.15", label: "Rewind 15 seconds", id: WiltedScreenCopy.playerRewindIdentifier) {
+                    model.rewind()
+                }
+                .disabled(!model.hasCurrentPlayback)
+                .keyboardShortcut(.leftArrow, modifiers: .command)
+                transport(
+                    model.isPlaying ? "pause.fill" : "play.fill",
+                    label: model.isPlaying ? "Pause" : "Play",
+                    id: WiltedScreenCopy.playerPlayPauseIdentifier
+                ) {
+                    model.togglePlayback()
+                }
+                .disabled(!model.hasCurrentPlayback)
+                .focusable()
+                .focused($primaryTransportFocused)
+                .onKeyPress(.space) {
+                    guard model.hasCurrentPlayback else { return .ignored }
+                    model.togglePlayback()
+                    return .handled
+                }
+                transport("goforward.30", label: "Skip forward 30 seconds", id: WiltedScreenCopy.playerForwardIdentifier) {
+                    model.forward()
+                }
+                .disabled(!model.hasCurrentPlayback)
+                .keyboardShortcut(.rightArrow, modifiers: .command)
+                transport("forward.end.fill", label: "Next episode", id: "wilted-player-next") {
+                    model.nextPlayback()
+                }
+                .disabled(!model.canSelectNextEpisode)
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
+                Button("Restart") { model.restartPlayback() }
+                    .disabled(!model.hasCurrentPlayback)
+                    .keyboardShortcut("r", modifiers: .command)
+                    .accessibilityIdentifier("wilted-player-restart")
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("wilted-player-keyboard-transports")
+
+            HStack {
+                Slider(value: Binding(
+                    get: { model.playbackPositionSeconds }, set: { model.scrub(to: $0) }
+                ), in: 0...max(1, model.playbackDurationSeconds)) {
+                    Text("Playback position")
+                }
+                .disabled(!model.hasCurrentPlayback)
+                .accessibilityLabel("Playback position")
                 .accessibilityValue(model.playbackProgressSpokenLabel)
-                .accessibilityIdentifier("wilted-now-playing-progress")
+                .accessibilityIdentifier("wilted-player-scrubber")
 
                 Text(model.playbackProgressLabel)
                     .font(WiltedTheme.font(.utility))
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
 
-                Text(model.playbackStatusMessage)
+                expansionButton("Transcript", expansion: .transcript, id: "wilted-player-transcript")
+                expansionButton("Up Next", expansion: .upNext, id: "wilted-player-up-next")
+
+                Button("Recover audio") { model.recoverAudioRoute() }
+                    .disabled(!model.hasCurrentPlayback || !model.audioRouteFault)
+                    .accessibilityIdentifier("wilted-player-route-recovery")
+
+                Image(systemName: "speaker.fill")
+                    .accessibilityHidden(true)
+                Slider(value: Binding(
+                    get: { model.playbackVolume }, set: { model.setPlaybackVolume($0) }
+                ), in: 0...1)
+                .frame(width: 90)
+                .disabled(!model.hasCurrentPlayback)
+                .accessibilityLabel("Volume")
+                .accessibilityIdentifier("wilted-player-volume")
+            }
+
+            Text(model.playbackStatusMessage)
+                .font(WiltedTheme.font(.utility))
+                .foregroundStyle(model.playbackStatusTone.color(colorScheme))
+                .accessibilityIdentifier("wilted-player-status")
+
+            if let expansion {
+                Divider()
+                expandedContent(expansion)
+                    .frame(maxHeight: 170)
+            }
+
+            if let status = model.playbackOperationStatus {
+                Text(status)
                     .font(WiltedTheme.font(.utility))
-                    .foregroundStyle(model.playbackStatusTone.color(colorScheme))
-                    .accessibilityIdentifier("wilted-now-playing-status")
-
-                HStack(spacing: WiltedTheme.Spacing.medium) {
-                    transport("gobackward.15", label: "Rewind 15 seconds",
-                              identifier: WiltedScreenCopy.playerRewindIdentifier) { model.rewind() }
-                    transport(model.isPlaying ? "pause.fill" : "play.fill",
-                              label: model.isPlaying ? "Pause" : "Play",
-                              identifier: WiltedScreenCopy.playerPlayPauseIdentifier,
-                              prominent: true) { model.togglePlayback() }
-                    transport("goforward.30", label: "Skip forward 30 seconds",
-                              identifier: WiltedScreenCopy.playerForwardIdentifier) { model.forward() }
-                }
-
-                Button("Restart") { model.restartPlayback() }
-                    .buttonStyle(.bordered)
-                    .accessibilityIdentifier("wilted-player-restart")
-
-                // Always rendered, like the listener's. A missing transcript
-                // resolves to a row that says so; it does not disappear.
-                let transcript = model.currentTranscript ?? .unavailable
-                WiltedTranscriptSection(
-                    isReadable: transcript.isReadable,
-                    title: transcript.disclosureTitle,
-                    text: transcript.text,
-                    unavailableLabel: transcript.unavailableLabel,
-                    identifier: "wilted-now-playing-transcript"
-                )
-
-                // Offered only when there is genuinely no text to show, on the
-                // same principle as the audio-route and account-review
-                // controls. Articles prepared before transcripts shipped have
-                // audio and no text, and re-preparing cannot fix it because
-                // the revision is immutable, so this is their only route.
-                if !transcript.isReadable {
-                    Button(model.isBackfillingTranscript ? "Fetching transcript…" : "Fetch transcript") {
-                        model.backfillCurrentTranscript()
-                    }
-                    .disabled(model.isBackfillingTranscript)
-                    .accessibilityIdentifier("wilted-now-playing-fetch-transcript")
-                }
-                if let status = model.transcriptBackfillStatus {
-                    Text(status)
-                        .font(WiltedTheme.font(.utility))
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("wilted-now-playing-transcript-status")
-                }
-
+                    .accessibilityIdentifier("wilted-player-operation-status")
+            }
                 if let error = model.playbackError {
                     Text(error)
-                        .font(WiltedTheme.font(.body))
+                        .font(WiltedTheme.font(.utility))
                         .foregroundStyle(WiltedTheme.color(.error, scheme: colorScheme))
-                        .accessibilityIdentifier("wilted-player-error")
+                        .accessibilityIdentifier("wilted-player-recoverable-error")
                 }
-
-                // Offered only against a fault it can actually clear, the way
-                // account review is offered only while sync is quarantined.
-                if model.audioRouteFault {
-                    Button("Recover audio route") { model.recoverAudioRoute() }
-                        .buttonStyle(.bordered)
-                        .font(WiltedTheme.font(.caption))
-                        .accessibilityIdentifier("wilted-player-route-recovery")
-                }
+            } else {
+                minimizedIdlePlayer
             }
-            .frame(maxWidth: 520)
-            .frame(maxWidth: .infinity)
-            .padding(WiltedTheme.Spacing.section)
         }
+        .padding(.horizontal, WiltedTheme.Spacing.medium)
+        .padding(.vertical, WiltedTheme.Spacing.small)
+        .background(WiltedTheme.color(.card, scheme: colorScheme))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Now Playing. \(article.title)")
-        .accessibilityIdentifier("wilted-now-playing")
-        .task(id: article.id) {
+        .accessibilityLabel("Playback rail")
+        .accessibilityValue(expansion == nil ? "Collapsed" : "Expanded")
+        .accessibilityIdentifier("wilted-compact-player")
+        .onExitCommand {
+            collapseExpansion()
+        }
+        .task(id: model.hasCurrentPlayback) {
+            guard model.hasCurrentPlayback else { return }
+            await Task.yield()
+            if expansion == nil, keyboardFocus == nil {
+                primaryTransportFocused = true
+            }
             while !Task.isCancelled {
                 model.refreshPlaybackReadout()
                 try? await Task.sleep(for: .seconds(1))
@@ -610,31 +902,236 @@ private struct WiltedMacNowPlayingView: View {
         }
     }
 
+    private var minimizedIdlePlayer: some View {
+        HStack(spacing: WiltedTheme.Spacing.small) {
+            Image(systemName: "play.circle")
+                .font(WiltedTheme.font(.title))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Nothing is playing")
+                    .font(WiltedTheme.font(.body))
+                Text("Choose an episode or article from Larder to start playback.")
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Text("Minimized")
+                .font(WiltedTheme.font(.utility))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Nothing is playing")
+        .accessibilityValue("Minimized")
+        .accessibilityIdentifier("wilted-player-idle")
+    }
+
     @ViewBuilder
+    private func expansionButton(
+        _ label: String,
+        expansion target: Expansion,
+        id: String
+    ) -> some View {
+        Button(label) {
+            toggle(target)
+        }
+        .focusable()
+        .focused($keyboardFocus, equals: target)
+        .onKeyPress(.space) {
+            toggle(target)
+            return .handled
+        }
+        .onKeyPress(.escape) {
+            guard expansion != nil else { return .ignored }
+            collapseExpansion()
+            return .handled
+        }
+        .accessibilityFocused($accessibilityFocus, equals: target)
+        .accessibilityValue(expansion == target ? "Expanded" : "Collapsed")
+        .accessibilityIdentifier(id)
+    }
+
+    @ViewBuilder
+    private func expandedContent(_ target: Expansion) -> some View {
+        switch target {
+        case .transcript:
+            transcriptContent
+                .accessibilityIdentifier("wilted-player-transcript-expanded")
+        case .upNext:
+            upNextContent
+                .accessibilityIdentifier("wilted-player-up-next-expanded")
+        }
+    }
+
+    private var transcriptContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                if !model.hasCurrentPlayback {
+                    Text(WiltedScreenCopy.nowPlayingEmptyDetailProducer)
+                        .font(WiltedTheme.font(.body))
+                } else if model.currentEpisode != nil {
+                    Text("Transcript unavailable for this episode")
+                        .font(WiltedTheme.font(.body))
+                        .accessibilityIdentifier("wilted-now-playing-transcript")
+                } else {
+                    let transcript = model.currentTranscript ?? .unavailable
+                    WiltedTranscriptSection(
+                        isReadable: transcript.isReadable,
+                        title: transcript.disclosureTitle,
+                        text: transcript.text,
+                        unavailableLabel: transcript.unavailableLabel,
+                        identifier: "wilted-now-playing-transcript"
+                    )
+                    if !transcript.isReadable {
+                        Button(model.isBackfillingTranscript ? "Fetching transcript…" : "Fetch transcript") {
+                            model.backfillCurrentTranscript()
+                        }
+                        .disabled(model.isBackfillingTranscript)
+                        .accessibilityIdentifier("wilted-now-playing-fetch-transcript")
+                    }
+                    if let status = model.transcriptBackfillStatus {
+                        Text(status)
+                            .font(WiltedTheme.font(.utility))
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("wilted-now-playing-transcript-status")
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var upNextContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                Text("Up Next")
+                    .font(WiltedTheme.font(.title))
+                if model.podcastQueueIDs.isEmpty {
+                    Text("Nothing queued")
+                        .font(WiltedTheme.font(.body))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                } else {
+                    ForEach(Array(model.podcastQueueIDs.enumerated()), id: \.element) { index, episodeID in
+                        let episodeTitle = queueTitle(for: episodeID)
+                        let canRemove = Self.canRemoveFromUpNext(
+                            episodeID: episodeID,
+                            currentEpisodeID: model.currentPodcastEpisodeID
+                        )
+                        HStack {
+                            Text(episodeTitle)
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Button("Remove") {
+                                model.removeEpisodeFromUpNext(episodeID)
+                            }
+                            .disabled(!canRemove)
+                            .accessibilityLabel("Remove \(episodeTitle) from Up Next")
+                            .accessibilityValue(Self.upNextRemoveAccessibilityValue(canRemove: canRemove))
+                            .accessibilityIdentifier("wilted-player-up-next-remove-\(episodeID)")
+                            Button("Move Earlier") {
+                                model.moveEpisodeInUpNext(from: index, to: index - 1)
+                            }
+                            .disabled(index == model.podcastQueueIDs.startIndex)
+                            .accessibilityLabel("Move \(episodeTitle) earlier")
+                            .accessibilityIdentifier("wilted-player-up-next-move-earlier-\(episodeID)")
+                            Button("Move Later") {
+                                model.moveEpisodeInUpNext(from: index, to: index + 1)
+                            }
+                            .disabled(index == model.podcastQueueIDs.index(before: model.podcastQueueIDs.endIndex))
+                            .accessibilityLabel("Move \(episodeTitle) later")
+                            .accessibilityIdentifier("wilted-player-up-next-move-later-\(episodeID)")
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-player-up-next-list")
+    }
+
+    @ViewBuilder
+    private var artwork: some View {
+        if let url = model.currentEpisode?.artworkURL {
+            AsyncImage(url: url) { image in
+                image.resizable().scaledToFill()
+            } placeholder: {
+                fallbackArtwork
+            }
+            .frame(width: 44, height: 44)
+            .clipped()
+        } else {
+            fallbackArtwork
+        }
+    }
+
+    private var fallbackArtwork: some View {
+        RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
+            .fill(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.2))
+            .frame(width: 44, height: 44)
+            .overlay(Image(systemName: model.currentEpisode == nil ? "doc.text.fill" : "mic.fill"))
+            .accessibilityLabel("Playback artwork unavailable")
+    }
+
+    private var title: String {
+        model.currentEpisode?.title ?? model.currentArticle?.title ?? "Nothing is playing"
+    }
+
+    private var detail: String {
+        if let episode = model.currentEpisode {
+            return "\(episode.feedTitle) · \(episode.releasedAt.formatted(date: .abbreviated, time: .omitted))"
+        }
+        return model.currentArticle?.source ?? WiltedScreenCopy.nowPlayingEmptyDetailProducer
+    }
+
+    private func queueTitle(for episodeID: String) -> String {
+        model.episodes.first(where: { $0.id == episodeID })?.title ?? "Saved episode"
+    }
+
+    static func canRemoveFromUpNext(episodeID: String, currentEpisodeID: String?) -> Bool {
+        episodeID != currentEpisodeID
+    }
+
+    static func upNextRemoveAccessibilityValue(canRemove: Bool) -> String {
+        canRemove ? "Available" : "Unavailable for the current episode"
+    }
+
+    private func open(_ target: Expansion) {
+        expansion = target
+    }
+
+    private func toggle(_ target: Expansion) {
+        if expansion == target {
+            collapseExpansion()
+        } else {
+            expansion = target
+            primaryTransportFocused = false
+            Task { @MainActor in
+                await Task.yield()
+                keyboardFocus = target
+            }
+        }
+    }
+
+    private func collapseExpansion() {
+        guard expansion != nil else { return }
+        expansion = nil
+    }
+
     private func transport(
         _ symbol: String,
         label: String,
-        identifier: String,
-        prominent: Bool = false,
+        id: String,
         action: @escaping () -> Void
     ) -> some View {
-        let icon = Image(systemName: symbol)
-            .font(.title3)
-            .frame(
-                width: WiltedTheme.Spacing.minimumTouchTarget,
-                height: WiltedTheme.Spacing.minimumTouchTarget
-            )
-        if prominent {
-            Button(action: action) { icon }
-                .buttonStyle(.borderedProminent)
-                .accessibilityLabel(label)
-                .accessibilityIdentifier(identifier)
-        } else {
-            Button(action: action) { icon }
-                .buttonStyle(.bordered)
-                .accessibilityLabel(label)
-                .accessibilityIdentifier(identifier)
+        Button(action: action) {
+            Image(systemName: symbol)
+                .frame(width: 28, height: 28)
         }
+        .buttonStyle(.borderless)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier(id)
     }
 }
 

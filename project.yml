@@ -244,6 +244,9 @@ schemes:
       targets:
         WiltedMac: all
     test:
+      # XCTest records the whole screen by default. This project captures only
+      # app-owned, window-scoped evidence, so keep system attachments off disk.
+      captureScreenshotsAutomatically: false
       targets:
         - WiltedMacTests
         - WiltedMacUITests

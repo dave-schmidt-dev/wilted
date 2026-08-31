@@ -147,11 +147,14 @@ assert_capability_source_contract() {
   }
   assert_target_config() {
     local target="$1"; local block="$2"; local config="$3"; local expected="$4"
-    printf '%s\n' "$block" | grep -Fq -- "PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.$([ "$target" = WiltedMac ] && printf mac || printf ios)" || {
+    local expected_bundle="PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.$([ "$target" = WiltedMac ] && printf mac || printf ios)"
+    local selected_config
+    selected_config="$(config_block "$block" "$config")"
+    [[ "$block" == *"$expected_bundle"* ]] || {
       printf 'assertion failed: %s bundle ID missing\n' "$target" >&2
       exit 1
     }
-    printf '%s\n' "$(config_block "$block" "$config")" | grep -Fq -- "$expected" || {
+    [[ "$selected_config" == *"$expected"* ]] || {
       printf 'assertion failed: %s %s mapping missing %s\n' "$target" "$config" "$expected" >&2
       exit 1
     }

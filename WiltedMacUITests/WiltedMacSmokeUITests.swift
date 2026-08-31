@@ -10,65 +10,48 @@ final class WiltedMacSmokeUITests: XCTestCase {
         let app = launch(arguments: ["--wilted-ui-smoke"])
 
         let navLibrary = app.descendants(matching: .any)["wilted-navigation-library"]
-        let navNowPlaying = app.descendants(matching: .any)["wilted-navigation-nowPlaying"]
         let navProcessor = app.descendants(matching: .any)["wilted-navigation-processor"]
         let navSettings = app.descendants(matching: .any)["wilted-navigation-settings"]
         XCTAssertTrue(navLibrary.waitForExistence(timeout: 5))
-        XCTAssertTrue(navNowPlaying.waitForExistence(timeout: 5))
         XCTAssertTrue(navProcessor.waitForExistence(timeout: 5))
         XCTAssertTrue(navSettings.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-navigation-nowPlaying"].exists)
 
-        // Library owns the composer and the empty state.
+        let compact = app.descendants(matching: .any)["wilted-compact-player"]
+        XCTAssertTrue(compact.waitForExistence(timeout: 5))
+        let idle = app.descendants(matching: .any)["wilted-player-idle"]
+        XCTAssertTrue(idle.waitForExistence(timeout: 5))
+        XCTAssertEqual(idle.label, "Nothing is playing")
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-player-play-pause"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-player-scrubber"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-player-speed"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-player-keyboard-transports"].exists)
+
         let emptyState = app.descendants(matching: .any)["wilted-mac-empty-state"]
         let urlField = app.descendants(matching: .any)["wilted-article-url"]
-        let addArticle = app.descendants(matching: .any)["wilted-add-article-url"]
+        let syncControls = app.descendants(matching: .any)["wilted-sync-controls"]
         XCTAssertTrue(emptyState.waitForExistence(timeout: 5))
         XCTAssertTrue(urlField.exists)
-        XCTAssertTrue(addArticle.exists)
-        XCTAssertTrue(addArticle.isEnabled)
-
-        // Sync is a Settings concern, not a Library one.
-        let syncControls = app.descendants(matching: .any)["wilted-sync-controls"]
         XCTAssertFalse(syncControls.exists)
-
-        navNowPlaying.click()
-        let player = app.descendants(matching: .any)["wilted-now-playing"]
-        XCTAssertTrue(player.waitForExistence(timeout: 5))
-
-        // An empty player must point at a destination this window actually has.
-        // AppKit surfaces a combined element's text through `value`, UIKit
-        // through `label`, so read both rather than guessing.
-        let playerText = [player.label, player.value as? String ?? ""].joined(separator: " ")
-        XCTAssertTrue(playerText.contains("Nothing is playing"), playerText)
-        XCTAssertFalse(playerText.contains("Downloads"), playerText)
-        let composerGone = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == false"), object: urlField
-        )
-        XCTAssertEqual(XCTWaiter().wait(for: [composerGone], timeout: 5), .completed)
 
         navProcessor.click()
-        let processorDetail = app.descendants(matching: .any)["wilted-mac-processor-detail"]
-        XCTAssertTrue(processorDetail.waitForExistence(timeout: 5))
-        XCTAssertFalse(syncControls.exists)
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-mac-processor-detail"].waitForExistence(timeout: 5)
+        )
+        XCTAssertTrue(compact.exists)
+        XCTAssertFalse(urlField.exists)
 
         navSettings.click()
         XCTAssertTrue(syncControls.waitForExistence(timeout: 5))
-        XCTAssertFalse(app.descendants(matching: .any)["wilted-audio-setting"].exists)
-        XCTAssertFalse(processorDetail.exists)
-        let playerGone = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == false"), object: player
-        )
-        XCTAssertEqual(XCTWaiter().wait(for: [playerGone], timeout: 5), .completed)
-        XCTAssertFalse(urlField.exists)
+        XCTAssertTrue(compact.exists)
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-mac-processor-detail"].exists)
 
         navLibrary.click()
         XCTAssertTrue(urlField.waitForExistence(timeout: 5))
         XCTAssertTrue(emptyState.exists)
+        XCTAssertTrue(compact.exists)
         XCTAssertFalse(syncControls.exists)
     }
-
-    /// Preparation history was written to the journal and read by nothing, so
-    /// a run that failed while the window was closed left no trace.
     func testProcessorReportsActiveWorkAndRunHistory() {
         let app = launch(arguments: ["--wilted-ui-smoke"])
 
@@ -119,6 +102,63 @@ final class WiltedMacSmokeUITests: XCTestCase {
         )
     }
 
+    func testMixedLarderSearchFiltersDownloadRetryAndSelection() {
+        let app = launch(arguments: [
+            "--wilted-ui-fixture-article-flow", "--wilted-ui-fixture-ready",
+            "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-download-failure"
+        ])
+        let episode = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-row-'")
+        ).firstMatch
+        XCTAssertTrue(episode.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Quiet Machines"].exists)
+        XCTAssertTrue(app.staticTexts["24:42"].exists)
+
+        episode.click()
+        XCTAssertTrue(episode.isSelected)
+
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        search.click()
+        search.typeText("Quiet")
+        XCTAssertTrue(episode.exists)
+        search.typeKey("a", modifierFlags: .command)
+        search.typeText("missing")
+        XCTAssertTrue(app.staticTexts["No matching Larder items"].waitForExistence(timeout: 3))
+        search.typeKey("a", modifierFlags: .command)
+        search.typeText("Quiet")
+
+        let download = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-download-'")
+        ).firstMatch
+        XCTAssertTrue(download.waitForExistence(timeout: 3))
+        download.click()
+        let retry = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-retry-'")
+        ).firstMatch
+        XCTAssertTrue(retry.waitForExistence(timeout: 3))
+        retry.click()
+        let offline = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-offline-'")
+        ).firstMatch
+        XCTAssertTrue(offline.waitForExistence(timeout: 3))
+
+        let actions = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-actions-'")
+        ).firstMatch
+        XCTAssertTrue(actions.waitForExistence(timeout: 3))
+        actions.click()
+        app.menuItems["Remove from Larder"].click()
+        XCTAssertFalse(episode.exists)
+        search.click()
+        search.typeKey("a", modifierFlags: .command)
+        search.typeKey(.delete, modifierFlags: [])
+        XCTAssertTrue(
+            app.staticTexts["Fixture article"].waitForExistence(timeout: 3),
+            "Article behavior remains available after episode removal"
+        )
+    }
+
     /// The sidebar lists destinations only. It used to repeat every article the
     /// Library detail already showed.
     func testSidebarListsDestinationsOnlyAndNotTheArticleList() {
@@ -137,60 +177,168 @@ final class WiltedMacSmokeUITests: XCTestCase {
             .firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 5))
 
-        // A preparing article offers no way into the player.
+        // A preparing article cannot start playback; the persistent idle rail
+        // remains truthful and minimized.
         XCTAssertFalse(app.descendants(matching: .any)["wilted-open-now-playing"].exists)
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-compact-player"]
+                .waitForExistence(timeout: 5)
+        )
+        let idle = app.descendants(matching: .any)["wilted-player-idle"]
+        XCTAssertTrue(idle.waitForExistence(timeout: 5))
         XCTAssertFalse(app.descendants(matching: .any)["wilted-player-play-pause"].exists)
     }
 
     func testReadyLibraryNavigatesToNowPlayingControls() {
         let app = launch(arguments: ["--wilted-ui-fixture-ready"])
 
+        let library = app.descendants(matching: .any)["wilted-mac-library-detail"]
         let openPlayer = app.descendants(matching: .any)["wilted-open-now-playing"]
+        XCTAssertTrue(library.waitForExistence(timeout: 5))
         XCTAssertTrue(openPlayer.waitForExistence(timeout: 5))
         openPlayer.click()
 
-        let player = app.descendants(matching: .any)["wilted-now-playing"]
-        XCTAssertTrue(player.waitForExistence(timeout: 5))
-        XCTAssertTrue(player.label.contains("Now Playing"))
+        let compact = app.descendants(matching: .any)["wilted-compact-player"]
+        XCTAssertTrue(compact.waitForExistence(timeout: 5))
+        XCTAssertTrue(library.exists, "Starting article playback must preserve the Larder destination")
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-navigation-nowPlaying"].exists)
+
         let rewind = app.descendants(matching: .any)["wilted-player-rewind"]
         let playPause = app.descendants(matching: .any)["wilted-player-play-pause"]
         let forward = app.descendants(matching: .any)["wilted-player-forward"]
         XCTAssertTrue(rewind.waitForExistence(timeout: 5))
-        XCTAssertTrue(playPause.waitForExistence(timeout: 5))
-        XCTAssertTrue(forward.waitForExistence(timeout: 5))
+        XCTAssertTrue(playPause.isEnabled)
+        XCTAssertTrue(forward.isEnabled)
         XCTAssertEqual(rewind.label, "Rewind 15 seconds")
         XCTAssertEqual(playPause.label, "Play")
         XCTAssertEqual(forward.label, "Skip forward 30 seconds")
     }
+    func testPodcastCompactPlayerPersistsAcrossLarderScrollAndExposesCompleteControls() {
+        let app = launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
+        let library = app.descendants(matching: .any)["wilted-mac-library-detail"]
+        let playEpisode = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-play-'"))
+            .firstMatch
+        XCTAssertTrue(library.waitForExistence(timeout: 5))
+        XCTAssertTrue(playEpisode.waitForExistence(timeout: 5))
+        playEpisode.click()
 
-    /// An unconstrained empty-player detail used to change the window's
-    /// content minimum and grow an 1100x800 window to the screen's height.
+        let compact = app.descendants(matching: .any)["wilted-compact-player"]
+        XCTAssertTrue(compact.waitForExistence(timeout: 5))
+        XCTAssertTrue(library.exists)
+        XCTAssertTrue(library.isHittable)
+        for identifier in [
+            "wilted-player-speed", "wilted-player-rewind", "wilted-player-play-pause",
+            "wilted-player-forward", "wilted-player-overflow", "wilted-player-transcript",
+            "wilted-player-up-next", "wilted-player-route-recovery", "wilted-player-volume",
+            "wilted-player-scrubber", "wilted-player-previous", "wilted-player-next",
+            "wilted-player-restart", "wilted-player-keyboard-transports", "wilted-player-status"
+        ] {
+            XCTAssertEqual(
+                app.descendants(matching: .any).matching(identifier: identifier).count, 1,
+                "missing or duplicate \(identifier)"
+            )
+        }
+
+        let playPause = app.descendants(matching: .any)["wilted-player-play-pause"]
+        XCTAssertEqual(playPause.label, "Pause")
+        app.typeKey(.space, modifierFlags: [])
+        XCTAssertEqual(playPause.label, "Play", "Space must invoke the compact player's primary shortcut")
+
+        let scrubber = app.descendants(matching: .any)["wilted-player-scrubber"]
+        guard let initialScrubberValue = Self.numericAXValue(of: scrubber) else {
+            return XCTFail("Playback scrubber must expose a numeric accessibility value")
+        }
+        app.descendants(matching: .any)["wilted-player-forward"].click()
+        expectation(
+            for: NSPredicate { value, _ in
+                guard let element = value as? XCUIElement,
+                      let current = Self.numericAXValue(of: element) else { return false }
+                return current > initialScrubberValue
+            },
+            evaluatedWith: scrubber
+        )
+        waitForExpectations(timeout: 2)
+
+        let transcript = app.descendants(matching: .any)["wilted-player-transcript"]
+        transcript.click()
+        let transcriptExpansion = app.descendants(matching: .any)["wilted-player-transcript-expanded"]
+        XCTAssertTrue(transcriptExpansion.waitForExistence(timeout: 5))
+        XCTAssertEqual(transcript.value as? String, "Expanded")
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(transcriptExpansion.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(transcript.value as? String, "Collapsed")
+        app.typeKey(.space, modifierFlags: [])
+        XCTAssertTrue(
+            transcriptExpansion.waitForExistence(timeout: 5),
+            "Escape must restore keyboard focus to the Transcript toggle"
+        )
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(transcriptExpansion.waitForNonExistence(timeout: 5))
+
+        let upNext = app.descendants(matching: .any)["wilted-player-up-next"]
+        upNext.click()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-player-up-next-expanded"]
+                .waitForExistence(timeout: 5)
+        )
+        XCTAssertTrue(library.exists)
+        XCTAssertTrue(library.isHittable)
+
+        let remove = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-player-up-next-remove-'")
+        ).firstMatch
+        let earlier = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-player-up-next-move-earlier-'")
+        ).firstMatch
+        let later = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-player-up-next-move-later-'")
+        ).firstMatch
+        XCTAssertTrue(remove.waitForExistence(timeout: 5))
+        XCTAssertFalse(remove.isEnabled)
+        XCTAssertEqual(remove.value as? String, "Unavailable for the current episode")
+        XCTAssertTrue(earlier.exists)
+        XCTAssertFalse(earlier.isEnabled)
+        XCTAssertTrue(later.exists)
+        XCTAssertFalse(later.isEnabled)
+
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-player-up-next-expanded"]
+                .waitForNonExistence(timeout: 5)
+        )
+        app.typeKey(.space, modifierFlags: [])
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-player-up-next-expanded"]
+                .waitForExistence(timeout: 5),
+            "Escape must restore keyboard focus to the Up Next toggle"
+        )
+        app.typeKey(.escape, modifierFlags: [])
+        library.scroll(byDeltaX: 0, deltaY: -500)
+        XCTAssertTrue(compact.exists)
+    }
     func testSelectingEmptyNowPlayingDoesNotResizeWindow() {
         let app = launch(arguments: ["--wilted-ui-smoke"])
 
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 5))
         let before = window.frame
+        let compact = app.descendants(matching: .any)["wilted-compact-player"]
+        XCTAssertTrue(compact.waitForExistence(timeout: 5))
+        let idle = app.descendants(matching: .any)["wilted-player-idle"]
+        XCTAssertTrue(idle.waitForExistence(timeout: 5))
+        XCTAssertEqual(idle.label, "Nothing is playing")
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-navigation-nowPlaying"].exists)
 
-        let navNowPlaying = app.descendants(matching: .any)["wilted-navigation-nowPlaying"]
-        XCTAssertTrue(navNowPlaying.waitForExistence(timeout: 5))
-        navNowPlaying.click()
-
-        XCTAssertTrue(
-            app.descendants(matching: .any)["wilted-now-playing"].waitForExistence(timeout: 5)
-        )
-        let emptyPlayerScreenshot = XCTAttachment(screenshot: window.screenshot())
-        emptyPlayerScreenshot.name = "mac-now-playing-empty"
-        emptyPlayerScreenshot.lifetime = .keepAlways
-        add(emptyPlayerScreenshot)
+        app.descendants(matching: .any)["wilted-navigation-processor"].click()
+        XCTAssertTrue(compact.exists)
+        app.descendants(matching: .any)["wilted-navigation-settings"].click()
+        XCTAssertTrue(compact.exists)
         let after = window.frame
 
         XCTAssertEqual(after.width, before.width, accuracy: 1)
         XCTAssertLessThanOrEqual(after.height, before.height + 1)
     }
-
-    /// Producer parity with the listener: the Mac player reports where it is,
-    /// not just what its transports do.
     func testPlayerReportsProgressAndStatusLikeTheListener() {
         let app = launch(arguments: ["--wilted-ui-fixture-ready"])
 
@@ -198,22 +346,27 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(openPlayer.waitForExistence(timeout: 5))
         openPlayer.click()
 
-        let progress = app.descendants(matching: .any)["wilted-now-playing-progress"]
+        let progress = app.descendants(matching: .any)["wilted-player-scrubber"]
         XCTAssertTrue(progress.waitForExistence(timeout: 5))
-        XCTAssertEqual(progress.label, "Playback progress")
+        XCTAssertEqual(progress.label, "Playback position")
 
-        let status = app.descendants(matching: .any)["wilted-now-playing-status"]
+        let status = app.descendants(matching: .any)["wilted-player-status"]
         XCTAssertTrue(status.waitForExistence(timeout: 5))
 
-        // The listener always offers this row; the producer used to omit it
-        // entirely whenever no transcript had loaded.
-        let transcript = app.descendants(matching: .any)["wilted-now-playing-transcript"]
-        XCTAssertTrue(transcript.waitForExistence(timeout: 5))
+        app.descendants(matching: .any)["wilted-player-transcript"].click()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-player-transcript-expanded"]
+                .waitForExistence(timeout: 5)
+        )
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-now-playing-transcript"]
+                .waitForExistence(timeout: 5)
+        )
 
-        // Route recovery is offered against a fault, not unconditionally.
-        XCTAssertFalse(app.descendants(matching: .any)["wilted-player-route-recovery"].exists)
+        let routeRecovery = app.descendants(matching: .any)["wilted-player-route-recovery"]
+        XCTAssertTrue(routeRecovery.waitForExistence(timeout: 5))
+        XCTAssertFalse(routeRecovery.isEnabled)
     }
-
     func testArticleFlowAddsThenCancelsPreparation() {
         let app = launch(arguments: ["--wilted-ui-fixture-article-flow"])
 
@@ -251,8 +404,11 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(openPlayer.waitForExistence(timeout: 5))
         openPlayer.click()
 
+        let compact = app.descendants(matching: .any)["wilted-compact-player"]
         let playPause = app.descendants(matching: .any)["wilted-player-play-pause"]
+        XCTAssertTrue(compact.waitForExistence(timeout: 5))
         XCTAssertTrue(playPause.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-mac-library-detail"].exists)
         playPause.click()
 
         let playing = XCTNSPredicateExpectation(
@@ -260,20 +416,27 @@ final class WiltedMacSmokeUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter().wait(for: [playing], timeout: 5), .completed)
 
-        // One click to the producer surface.
-        let navLibrary = app.descendants(matching: .any)["wilted-navigation-library"]
-        navLibrary.click()
-        let urlField = app.descendants(matching: .any)["wilted-article-url"]
-        XCTAssertTrue(urlField.waitForExistence(timeout: 5))
-        XCTAssertTrue(urlField.isEnabled)
+        app.descendants(matching: .any)["wilted-navigation-processor"].click()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-mac-processor-detail"].waitForExistence(timeout: 5)
+        )
+        XCTAssertTrue(compact.exists)
+        XCTAssertEqual(playPause.label, "Pause")
 
-        // One click back, with playback still running.
-        let navNowPlaying = app.descendants(matching: .any)["wilted-navigation-nowPlaying"]
-        navNowPlaying.click()
-        XCTAssertTrue(playPause.waitForExistence(timeout: 5))
+        app.descendants(matching: .any)["wilted-navigation-settings"].click()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-mac-settings"].waitForExistence(timeout: 5)
+        )
+        XCTAssertTrue(compact.exists)
+        XCTAssertEqual(playPause.label, "Pause")
+
+        app.descendants(matching: .any)["wilted-navigation-library"].click()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-mac-library-detail"].waitForExistence(timeout: 5)
+        )
+        XCTAssertTrue(compact.exists)
         XCTAssertEqual(playPause.label, "Pause")
     }
-
     func testQuarantinedSyncOffersAccountReviewAndRecoversFromSettings() {
         let app = launch(arguments: ["--wilted-ui-fixture-quarantined"])
 
@@ -305,5 +468,16 @@ final class WiltedMacSmokeUITests: XCTestCase {
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"] + arguments
         app.launch()
         return app
+    }
+
+    private static func numericAXValue(of element: XCUIElement) -> Double? {
+        switch element.value {
+        case let value as NSNumber: value.doubleValue
+        case let value as Double: value
+        case let value as Float: Double(value)
+        case let value as Int: Double(value)
+        case let value as String: Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        default: nil
+        }
     }
 }

@@ -141,6 +141,31 @@ validate_pixel_snapshot_baselines() {
     grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" "$snapshot_test_source" ||
       fail "Mac pixel snapshot test method is missing: $method"
   done
+  grep -Fq 'WiltedMacCompactPlayer(model: model)' "$snapshot_test_source" ||
+    fail 'Mac player baselines do not render the shipping compact player'
+  for identifier in \
+    wilted-compact-player wilted-player-speed wilted-player-rewind \
+    wilted-player-play-pause wilted-player-forward wilted-player-overflow \
+    wilted-player-transcript wilted-player-up-next wilted-player-route-recovery \
+    wilted-player-volume wilted-player-scrubber wilted-player-previous \
+    wilted-player-next wilted-player-restart wilted-player-keyboard-transports \
+    wilted-player-status wilted-player-transcript-expanded \
+    wilted-player-up-next-expanded wilted-player-up-next-remove- \
+    wilted-player-up-next-move-earlier- wilted-player-up-next-move-later-; do
+    grep -Fq "$identifier" \
+      "$root/WiltedMac/WiltedMacRootView.swift" "$root/Shared/WiltedRootView.swift" ||
+      fail "Mac compact player identifier is missing: $identifier"
+  done
+  grep -Fq '@FocusState private var keyboardFocus' "$root/WiltedMac/WiltedMacRootView.swift" ||
+    fail 'Mac compact player does not own keyboard focus restoration'
+  grep -Fq '@AccessibilityFocusState private var accessibilityFocus' "$root/WiltedMac/WiltedMacRootView.swift" ||
+    fail 'Mac compact player does not own accessibility focus restoration'
+  grep -Fq 'testPodcastPlaybackStaysOutOfArticleSyncWhileArticleQueuesOneCheckpoint' \
+    "$root/WiltedMacTests/WiltedVisualSystemTests.swift" ||
+    fail 'Mac podcast/article sync-isolation model selector is missing'
+  grep -Fq 'testPodcastCompactPlayerPersistsAcrossLarderScrollAndExposesCompleteControls' \
+    "$root/WiltedMacUITests/WiltedMacSmokeUITests.swift" ||
+    fail 'Mac persistent compact-player real-window selector is missing'
 
   expected_count=162
   [[ "$(find "$snapshot_dir" -type f -name '*.png' | wc -l | tr -d ' ')" -eq "$expected_count" ]] ||
@@ -267,7 +292,20 @@ parse_result_bundle_test_count() {
   jq -er '.totalTestCount | numbers | select(. > 0)' "$summary_file"
 }
 
+validate_mac_ui_selector() {
+  local selector="$1"
+  if [[ ! "$selector" =~ ^WiltedMacUITests/WiltedMacSmokeUITests/test[A-Za-z0-9_]+$ ]]; then
+    fail 'WILTED_MAC_UI_SELECTOR must name one WiltedMacSmokeUITests test method'
+    return 1
+  fi
+}
+
 expected_test_count_floor() {
+  if [[ "$1" == "macos-ui-tests" && -n "${WILTED_MAC_UI_SELECTOR:-}" ]]; then
+    validate_mac_ui_selector "$WILTED_MAC_UI_SELECTOR" || return 1
+    printf '1\n'
+    return
+  fi
   case "$1" in
     macos-unit-tests) printf '30\n' ;;
     macos-ui-tests) printf '9\n' ;;
@@ -275,6 +313,22 @@ expected_test_count_floor() {
     *) printf '1\n' ;;
   esac
 }
+
+assert_mac_ui_selector_floor_contract() {
+  local focused='WiltedMacUITests/WiltedMacSmokeUITests/testFocusedSelector'
+  [[ "$(WILTED_MAC_UI_SELECTOR="$focused" expected_test_count_floor macos-ui-tests)" == "1" ]] ||
+    fail 'validated focused Mac UI selector must require exactly one test'
+  [[ "$(unset WILTED_MAC_UI_SELECTOR; expected_test_count_floor macos-ui-tests)" == "9" ]] ||
+    fail 'default Mac UI suite must retain its nine-test floor'
+  if WILTED_MAC_UI_SELECTOR='WiltedMacUITests/OtherTests/testNope' \
+    expected_test_count_floor macos-ui-tests >/dev/null 2>&1; then
+    fail 'invalid Mac UI selector lowered the test-count floor'
+  fi
+}
+
+if [[ "$native_self_test" == "1" ]]; then
+  assert_mac_ui_selector_floor_contract
+fi
 
 assert_result_bundle_tests() {
   local label="$1"
@@ -735,6 +789,13 @@ leg_macos_ui_tests() {
   local project="$native_project"
   local label_data="$derived_data/$label"
   local runner host runner_metadata host_metadata metadata_info runner_signature_info host_signature_info
+  local only_testing_arg='-only-testing:WiltedMacUITests'
+  local requested_selector="${WILTED_MAC_UI_SELECTOR:-}"
+
+  if [[ -n "$requested_selector" ]]; then
+    validate_mac_ui_selector "$requested_selector" || return 1
+    only_testing_arg="-only-testing:$requested_selector"
+  fi
 
   if [[ ! -f "$integration_root/project.yml" ]]; then
     fail 'missing integration XcodeGen source'
@@ -755,7 +816,7 @@ leg_macos_ui_tests() {
   if ! xcodebuild build-for-testing \
     -project "$project" \
     -scheme WiltedMac \
-    -only-testing:WiltedMacUITests \
+    "$only_testing_arg" \
     -destination "$destination" \
     -derivedDataPath "$label_data" \
     -parallel-testing-enabled NO \
@@ -825,7 +886,7 @@ leg_macos_ui_tests() {
   xcodebuild test-without-building \
     -project "$project" \
     -scheme WiltedMac \
-    -only-testing:WiltedMacUITests \
+    "$only_testing_arg" \
     -destination "$destination" \
     -derivedDataPath "$label_data" \
     -resultBundlePath "$tmp_root/$label.xcresult" \

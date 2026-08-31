@@ -907,6 +907,9 @@ private enum LocalLibraryV5MigrationPlan: SchemaMigrationPlan {
 
 /// Actor-isolated SwiftData adapter for the producer's local library.
 public actor LocalLibraryStore {
+    /// Current-item identity is encoded inside the existing V6 queue record
+    /// shape so Task 2.3 does not silently mutate a released SwiftData schema.
+    private static let podcastCurrentPositionOffset = 1_000_000_000
     public let url: URL
     public let schemaVersion: LocalLibrarySchemaVersion = .current
     public let cloudKitDatabase: String? = nil
@@ -1776,6 +1779,40 @@ public actor LocalLibraryStore {
 
     public func save(downloadState download: PodcastDownload) throws { try save(download: download) }
 
+    /// Atomically commits immutable downloaded media metadata and its completed state.
+    public func finalizePodcastDownload(revision: AudioRevision, mediaURL: URL, download: PodcastDownload) throws {
+        guard revision.itemID == download.episodeID,
+              download.status == .completed,
+              download.localURL == mediaURL,
+              download.contentHash == revision.contentHash,
+              download.bytesReceived == revision.byteCount else {
+            throw LocalLibraryStoreError.invalidPodcastState("completed download revision")
+        }
+        let context = ModelContext(container)
+        let revisions = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
+        if let existing = revisions.first(where: { $0.id == revision.revisionID.rawValue }) {
+            guard existing.itemID == revision.itemID.rawValue,
+                  existing.contentHash == revision.contentHash,
+                  existing.mediaURL == mediaURL.absoluteString else {
+                throw LocalLibraryStoreError.immutableRevision(revision.revisionID)
+            }
+        } else {
+            context.insert(LocalLibrarySchemaV3Models.RevisionRecord(revision, mediaURL: mediaURL))
+        }
+        let downloads = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
+        if let existing = downloads.first(where: { $0.episodeID == download.episodeID.rawValue }) {
+            existing.status = download.status.rawValue
+            existing.bytesReceived = download.bytesReceived
+            existing.expectedByteCount = download.expectedByteCount
+            existing.localURL = download.localURL?.absoluteString
+            existing.contentHash = download.contentHash
+            existing.updatedAt = download.updatedAt.date
+        } else {
+            context.insert(LocalLibrarySchemaV6Models.PodcastDownloadRecord(download))
+        }
+        try context.save()
+    }
+
     public func download(for episodeID: ItemID) throws -> PodcastDownload? {
         let context = ModelContext(container)
         guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>()).first(where: { $0.episodeID == episodeID.rawValue }),
@@ -1814,25 +1851,100 @@ public actor LocalLibraryStore {
     }
 
     public func save(queueEntry: PodcastQueueEntry) throws {
-        let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
-        if let existing = records.first(where: { $0.episodeID == queueEntry.episodeID.rawValue }) {
-            existing.position = queueEntry.position; existing.addedAt = queueEntry.addedAt.date
-        } else { context.insert(LocalLibrarySchemaV6Models.PodcastQueueRecord(queueEntry)) }
-        try context.save()
+        var state = try podcastQueueState()
+        var ids = state.episodeIDs.filter { $0 != queueEntry.episodeID }
+        ids.insert(queueEntry.episodeID, at: min(queueEntry.position, ids.count))
+        state = try PodcastQueueState(episodeIDs: ids, currentEpisodeID: state.currentEpisodeID)
+        try replacePodcastQueue(state, addedAt: queueEntry.addedAt)
     }
 
     public func queue() throws -> [PodcastQueueEntry] {
         let context = ModelContext(container)
-        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>()).sorted { $0.position < $1.position }.compactMap { record in
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>()).sorted {
+            Self.decodedPodcastQueuePosition($0.position) < Self.decodedPodcastQueuePosition($1.position)
+        }
+        return records.enumerated().compactMap { position, record in
             guard let episodeID = try? ItemID(rawValue: record.episodeID) else { return nil }
-            return try? PodcastQueueEntry(episodeID: episodeID, position: record.position, addedAt: Timestamp(record.addedAt))
+            return try? PodcastQueueEntry(episodeID: episodeID, position: position, addedAt: Timestamp(record.addedAt))
         }
     }
 
     public func upNext() throws -> [PodcastQueueEntry] { try queue() }
 
     public func save(upNext entry: PodcastQueueEntry) throws { try save(queueEntry: entry) }
+
+    /// Replaces order and current identity in one context save. Public queue
+    /// positions are always decoded to the contiguous range `0..<count`.
+    public func replacePodcastQueue(_ state: PodcastQueueState, addedAt: Timestamp = Timestamp(Date())) throws {
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
+        let existingDates = Dictionary(uniqueKeysWithValues: records.map { ($0.episodeID, $0.addedAt) })
+        for record in records { context.delete(record) }
+        for (position, episodeID) in state.episodeIDs.enumerated() {
+            let storedPosition = position + (episodeID == state.currentEpisodeID ? Self.podcastCurrentPositionOffset : 0)
+            let entry = try PodcastQueueEntry(
+                episodeID: episodeID,
+                position: storedPosition,
+                addedAt: Timestamp(existingDates[episodeID.rawValue] ?? addedAt.date)
+            )
+            context.insert(LocalLibrarySchemaV6Models.PodcastQueueRecord(entry))
+        }
+        try context.save()
+    }
+
+    public func podcastQueueState() throws -> PodcastQueueState {
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
+            .sorted {
+                let lhs = Self.decodedPodcastQueuePosition($0.position)
+                let rhs = Self.decodedPodcastQueuePosition($1.position)
+                if lhs != rhs { return lhs < rhs }
+                return $0.episodeID < $1.episodeID
+            }
+        let ids = records.compactMap { try? ItemID(rawValue: $0.episodeID) }
+        let current = records.first(where: { $0.position >= Self.podcastCurrentPositionOffset })
+            .flatMap { try? ItemID(rawValue: $0.episodeID) }
+        return try PodcastQueueState(episodeIDs: ids, currentEpisodeID: current)
+    }
+
+    private static func decodedPodcastQueuePosition(_ position: Int) -> Int {
+        position >= podcastCurrentPositionOffset ? position - podcastCurrentPositionOffset : position
+    }
+
+    public func addPodcastQueueEpisode(_ episodeID: ItemID, addedAt: Timestamp = Timestamp(Date())) throws {
+        let state = try podcastQueueState()
+        guard !state.episodeIDs.contains(episodeID) else { return }
+        try replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: state.episodeIDs + [episodeID],
+            currentEpisodeID: state.currentEpisodeID
+        ), addedAt: addedAt)
+    }
+
+    public func removePodcastQueueEpisode(_ episodeID: ItemID) throws {
+        let state = try podcastQueueState()
+        let ids = state.episodeIDs.filter { $0 != episodeID }
+        let current = state.currentEpisodeID == episodeID ? nil : state.currentEpisodeID
+        try replacePodcastQueue(try PodcastQueueState(episodeIDs: ids, currentEpisodeID: current))
+    }
+
+    public func movePodcastQueueEpisode(from source: Int, to destination: Int) throws {
+        let state = try podcastQueueState()
+        guard state.episodeIDs.indices.contains(source), destination >= 0, destination < state.episodeIDs.count else {
+            throw LocalLibraryStoreError.invalidPodcastState("queue move")
+        }
+        var ids = state.episodeIDs
+        let value = ids.remove(at: source)
+        ids.insert(value, at: destination)
+        try replacePodcastQueue(try PodcastQueueState(episodeIDs: ids, currentEpisodeID: state.currentEpisodeID))
+    }
+
+    public func setCurrentPodcastQueueEpisode(_ episodeID: ItemID?) throws {
+        let state = try podcastQueueState()
+        try replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: state.episodeIDs,
+            currentEpisodeID: episodeID
+        ))
+    }
 
     public func save(playbackSpeed: PodcastPlaybackSpeed) throws {
         let context = ModelContext(container)

@@ -169,6 +169,35 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
     }
 }
 
+/// Durable, local-only podcast order and the episode selected for playback.
+/// Positions are derived from `episodeIDs`, so a persisted queue cannot expose
+/// gaps or duplicate ordering values after add, remove, or reorder operations.
+public struct PodcastQueueState: Codable, Equatable, Sendable {
+    public let episodeIDs: [ItemID]
+    public let currentEpisodeID: ItemID?
+
+    public init(episodeIDs: [ItemID], currentEpisodeID: ItemID? = nil) throws {
+        guard Set(episodeIDs).count == episodeIDs.count else {
+            throw DomainError.invalidValue(field: "episodeIDs", reason: "must be unique")
+        }
+        if let currentEpisodeID, !episodeIDs.contains(currentEpisodeID) {
+            throw DomainError.invalidValue(field: "currentEpisodeID", reason: "must belong to the queue")
+        }
+        self.episodeIDs = episodeIDs
+        self.currentEpisodeID = currentEpisodeID
+    }
+
+    public var currentIndex: Int? {
+        currentEpisodeID.flatMap { episodeIDs.firstIndex(of: $0) }
+    }
+
+    public var nextEpisodeID: ItemID? {
+        guard let currentIndex else { return episodeIDs.first }
+        let next = episodeIDs.index(after: currentIndex)
+        return next < episodeIDs.endIndex ? episodeIDs[next] : nil
+    }
+}
+
 public struct Article: Codable, Equatable, Sendable {
     public let itemID: ItemID
     public let canonicalURL: URL

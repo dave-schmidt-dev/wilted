@@ -4,6 +4,35 @@ import WiltedSync
 @testable import WiltedProducer
 
 final class LocalLibraryStoreTests: XCTestCase {
+    func testPodcastQueueMutationsNormalizeAndRestoreOrderAndCurrentIdentity() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let first = try ItemID(rawValue: "item-" + String(repeating: "1", count: 64))
+        let second = try ItemID(rawValue: "item-" + String(repeating: "2", count: 64))
+        let third = try ItemID(rawValue: "item-" + String(repeating: "3", count: 64))
+        var store = try LocalLibraryStore(url: url)
+        try await store.addPodcastQueueEpisode(first)
+        try await store.addPodcastQueueEpisode(second)
+        try await store.addPodcastQueueEpisode(third)
+        try await store.setCurrentPodcastQueueEpisode(second)
+        try await store.movePodcastQueueEpisode(from: 2, to: 0)
+        let firstEntries = try await store.queue()
+        let firstState = try await store.podcastQueueState()
+        XCTAssertEqual(firstEntries.map(\.position), [0, 1, 2])
+        XCTAssertEqual(firstState, try PodcastQueueState(
+            episodeIDs: [third, first, second], currentEpisodeID: second
+        ))
+
+        store = try LocalLibraryStore(url: url)
+        let reopened = try await store.podcastQueueState()
+        XCTAssertEqual(reopened.episodeIDs, [third, first, second])
+        XCTAssertEqual(reopened.currentEpisodeID, second)
+        try await store.removePodcastQueueEpisode(first)
+        let removedEntries = try await store.queue()
+        let removedState = try await store.podcastQueueState()
+        XCTAssertEqual(removedEntries.map(\.position), [0, 1])
+        XCTAssertEqual(removedState.episodeIDs, [third, second])
+    }
+
     private struct ForcedMigrationFailure: Error {}
 
     private func makeURL(_ name: String = #function) -> URL {
@@ -394,7 +423,7 @@ final class LocalLibraryStoreTests: XCTestCase {
         try await store.save(queueEntry: try PodcastQueueEntry(episodeID: episode.itemID, position: 2, addedAt: feed.createdAt))
         let queue = try await store.queue()
         XCTAssertEqual(queue.map(\.episodeID), [secondEpisode.itemID, episode.itemID])
-        XCTAssertEqual(queue.map(\.position), [0, 2])
+        XCTAssertEqual(queue.map(\.position), [0, 1])
 
         try await store.save(playbackSpeed: try PodcastPlaybackSpeed(itemID: episode.itemID, speed: 1, updatedAt: feed.createdAt))
         let updatedSpeed = try PodcastPlaybackSpeed(itemID: episode.itemID, speed: 1.75, updatedAt: feed.createdAt)
