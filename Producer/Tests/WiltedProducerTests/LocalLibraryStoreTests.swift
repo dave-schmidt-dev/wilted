@@ -543,6 +543,169 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertEqual(repositoryState, SyncRepositoryState(engineState: Data([5])))
     }
 
+    // MARK: - Podcast subscription admission
+
+    /// Builds one feed's worth of episodes at fixed offsets from `origin`, so a
+    /// test can say "published 40 days ago" without arithmetic at every call.
+    private func episodes(
+        feedURL: URL, origin: Date, daysAgo: [Int], undated: Int = 0
+    ) throws -> (feed: PodcastFeed, episodes: [PodcastEpisode]) {
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let feed = try PodcastFeed(itemID: feedID, canonicalURL: feedURL, title: "Show",
+                                   author: nil, artworkURL: nil, createdAt: Timestamp(origin))
+        func episode(_ guid: String, published: Date?) throws -> PodcastEpisode {
+            let enclosureURL = URL(string: "\(feedURL.absoluteString.replacingOccurrences(of: "/feed.xml", with: ""))/\(guid).mp3")!
+            return try PodcastEpisode(
+                itemID: ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: guid, enclosureURL: enclosureURL),
+                feedID: feedID, feedURL: feedURL, rssGUID: guid, title: guid,
+                publishedTime: published.map(Timestamp.init), enclosureURL: enclosureURL,
+                enclosureMediaType: "audio/mpeg", createdAt: Timestamp(origin)
+            )
+        }
+        var built = try daysAgo.map { days in
+            try episode("day-\(days)", published: origin.addingTimeInterval(-Double(days) * 86_400))
+        }
+        built.append(contentsOf: try (0..<undated).map { try episode("undated-\($0)", published: nil) })
+        return (feed, built)
+    }
+
+    /// Subscribing must not empty a decade of back catalogue into the Larder,
+    /// and must not present an empty feed either. The backfill window admits the
+    /// recent episodes; a later refresh admits only what published after the
+    /// subscription.
+    func testSubscriptionBackfillAdmitsRecentEpisodesAndRefreshAdmitsOnlyNewerOnes() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/backfill/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 10, 29, 31, 400, 4_000])
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+
+        let backfill = try await store.savePodcastEpisodes(all, admission: .backfill)
+        XCTAssertEqual(Set(backfill.saved.map(\.rawValue)).count, 5,
+                       "backfill admits the 30-day window plus the minimum-backfill floor")
+        XCTAssertEqual(backfill.skipped, 1)
+        var stored = try await store.podcastEpisodes(for: feed.itemID).compactMap(\.rssGUID).sorted()
+
+        XCTAssertEqual(stored, ["day-1", "day-10", "day-29", "day-31", "day-400"],
+                       "the oldest episode is beyond both the window and the floor")
+
+        // A refresh three days later: one genuinely new episode, everything else
+        // already seen or older than the subscription.
+        let later = origin.addingTimeInterval(3 * 86_400)
+        let (_, refreshed) = try episodes(feedURL: feedURL, origin: later, daysAgo: [0])
+        let increment = try await store.savePodcastEpisodes(all + refreshed, admission: .incremental)
+        XCTAssertEqual(increment.skipped, 1, "only the episode outside the store and older than the horizon is refused")
+        stored = try await store.podcastEpisodes(for: feed.itemID).compactMap(\.rssGUID).sorted()
+        XCTAssertEqual(stored, ["day-0", "day-1", "day-10", "day-29", "day-31", "day-400"])
+    }
+
+    /// An undated episode has no evidence it is new. Admitting it on every
+    /// refresh would leak an undated back catalogue in one refresh at a time.
+    func testUndatedEpisodesAreAdmittedOnBackfillButNotOnRefresh() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/undated/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1], undated: 2)
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        // Subscribed before the dated episode published, so only the undated
+        // ones are in question on the refresh.
+        try await store.save(subscription: PodcastSubscription(
+            feedID: feed.itemID, subscribedAt: Timestamp(origin.addingTimeInterval(-10 * 86_400))
+        ))
+
+        let refresh = try await store.savePodcastEpisodes(all, admission: .incremental)
+        let afterRefresh = try await store.podcastEpisodes(for: feed.itemID).count
+        XCTAssertEqual(refresh.skipped, 2)
+        XCTAssertEqual(afterRefresh, 1)
+
+        let backfill = try await store.savePodcastEpisodes(all, admission: .backfill)
+        let afterBackfill = try await store.podcastEpisodes(for: feed.itemID).count
+        XCTAssertEqual(backfill.skipped, 0)
+        XCTAssertEqual(afterBackfill, 3)
+    }
+
+    /// Nothing already in the Larder may be evicted by the horizon rule -- a
+    /// seeded episode older than the subscription has to survive every refresh.
+    func testAnEpisodeAlreadyInTheStoreSurvivesEveryRefresh() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/seeded/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [500])
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(episode: all[0])
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+
+        let result = try await store.savePodcastEpisodes(all, admission: .incremental)
+        let stored = try await store.podcastEpisodes(for: feed.itemID).compactMap(\.rssGUID)
+        XCTAssertEqual(result.skipped, 0)
+        XCTAssertEqual(stored, ["day-500"])
+    }
+
+    /// A feed Wilted does not follow has no horizon to judge against, so the
+    /// rule must not silently swallow it.
+    func testEpisodesFromAnUnsubscribedFeedAreSavedUnconditionally() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/unfollowed/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 5_000])
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+
+        let result = try await store.savePodcastEpisodes(all, admission: .incremental)
+        let stored = try await store.podcastEpisodes(for: feed.itemID).count
+        XCTAssertEqual(result.skipped, 0)
+        XCTAssertEqual(stored, 2)
+    }
+
+    /// Unsubscribing clears every record the feed owned and leaves other feeds
+    /// untouched. Media files are deliberately not deleted.
+    func testUnsubscribingRemovesTheFeedsRecordsAndSparesOtherFeeds() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let goingURL = URL(string: "https://podcasts.example.test/going/feed.xml")!
+        let stayingURL = URL(string: "https://podcasts.example.test/staying/feed.xml")!
+        let (going, goingEpisodes) = try episodes(feedURL: goingURL, origin: origin, daysAgo: [1, 2])
+        let (staying, stayingEpisodes) = try episodes(feedURL: stayingURL, origin: origin, daysAgo: [1])
+        let store = try LocalLibraryStore(url: url)
+        for (feed, list) in [(going, goingEpisodes), (staying, stayingEpisodes)] {
+            try await store.save(feed: feed)
+            try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+            for episode in list { try await store.save(episode: episode) }
+        }
+        for episode in goingEpisodes + stayingEpisodes {
+            try await store.addPodcastQueueEpisode(episode.itemID)
+            try await store.save(download: try PodcastDownload(episodeID: episode.itemID, updatedAt: Timestamp(origin)))
+            try await store.save(playbackSpeed: try PodcastPlaybackSpeed(itemID: episode.itemID, speed: 1.5, updatedAt: Timestamp(origin)))
+        }
+
+        let removed = try await store.unsubscribeFromPodcast(feedID: going.itemID)
+        let goneSubscription = try await store.subscription(for: going.itemID)
+        let goneFeed = try await store.podcastFeed(for: going.itemID)
+        let goneEpisodes = try await store.podcastEpisodes(for: going.itemID)
+        XCTAssertEqual(removed, 2)
+        XCTAssertNil(goneSubscription)
+        XCTAssertNil(goneFeed)
+        XCTAssertTrue(goneEpisodes.isEmpty)
+        for episode in goingEpisodes {
+            let download = try await store.download(for: episode.itemID)
+            let speed = try await store.playbackSpeed(for: episode.itemID)
+            XCTAssertNil(download)
+            XCTAssertNil(speed)
+        }
+        let queue = try await store.queue().map(\.episodeID)
+        let survivingSubscription = try await store.subscription(for: staying.itemID)
+        let survivingEpisodes = try await store.podcastEpisodes(for: staying.itemID)
+        let survivingDownload = try await store.download(for: stayingEpisodes[0].itemID)
+        XCTAssertEqual(queue, stayingEpisodes.map(\.itemID))
+        XCTAssertNotNil(survivingSubscription)
+        XCTAssertEqual(survivingEpisodes.count, 1)
+        XCTAssertNotNil(survivingDownload)
+    }
+
     func testForcedMigrationFailureLeavesEveryCheckpointedStoreFileIdentical() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let item = try article(); let rev = try revision(for: item, id: "v5-forced-failure")

@@ -1708,11 +1708,7 @@ public actor LocalLibraryStore {
         let context = ModelContext(container)
         let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastEpisodeRecord>())
         if let existing = records.first(where: { $0.id == episode.itemID.rawValue }) {
-            existing.feedID = episode.feedID.rawValue; existing.feedURL = episode.feedURL.absoluteString; existing.rssGUID = episode.rssGUID
-            existing.title = episode.title; existing.author = episode.author; existing.publishedTime = episode.publishedTime?.date
-            existing.enclosureURL = episode.enclosureURL.absoluteString; existing.enclosureMediaType = episode.enclosureMediaType
-            existing.enclosureByteCount = episode.enclosureByteCount; existing.durationSeconds = episode.durationSeconds
-            existing.artworkURL = episode.artworkURL?.absoluteString; existing.createdAt = episode.createdAt.date
+            Self.apply(episode, to: existing)
         } else { context.insert(LocalLibrarySchemaV6Models.PodcastEpisodeRecord(episode)) }
         try context.save()
     }
@@ -1765,6 +1761,160 @@ public actor LocalLibraryStore {
             guard let feedID = try? ItemID(rawValue: record.feedID) else { return nil }
             return PodcastSubscription(feedID: feedID, subscribedAt: Timestamp(record.subscribedAt), enabled: record.enabled)
         }
+    }
+
+    /// Which horizon a feed load is admitted against.
+    ///
+    /// `backfill` is the load that creates the subscription; `incremental` is
+    /// every later refresh.
+    public enum PodcastEpisodeAdmission: Sendable {
+        case backfill
+        case incremental
+    }
+
+    public struct PodcastEpisodeAdmissionResult: Equatable, Sendable {
+        public let saved: [ItemID]
+        public let skipped: Int
+    }
+
+    /// Persists only the episodes a subscribed feed should surface.
+    ///
+    /// Subscribing to a podcast must not empty its whole back catalogue into the
+    /// Larder: a single feed in the 2026-08-31 survey carried 2,870 episodes. An
+    /// episode is stored when Wilted already knows it -- so nothing already in
+    /// the Larder can be evicted by this rule -- or when it published on or
+    /// after the feed's admission horizon.
+    ///
+    /// The horizon is the subscription's own `subscribedAt` on a refresh, so
+    /// every genuinely new episode arrives and nothing older does. On the load
+    /// that creates the subscription it reaches back
+    /// `podcastSubscriptionBackfillWindow`, and always admits at least
+    /// `podcastSubscriptionMinimumBackfill` episodes, so subscribing to an
+    /// infrequent podcast does not present an empty feed.
+    ///
+    /// An episode with no published date is admitted during backfill only.
+    /// Without a date there is no evidence it is new, and admitting it on every
+    /// refresh would leak an undated back catalogue in one refresh at a time.
+    ///
+    /// Episodes whose feed has no subscription are saved unconditionally: the
+    /// caller loaded a feed Wilted does not follow, and there is no horizon to
+    /// judge them against.
+    @discardableResult
+    public func savePodcastEpisodes(
+        _ episodes: [PodcastEpisode],
+        admission: PodcastEpisodeAdmission
+    ) throws -> PodcastEpisodeAdmissionResult {
+        guard !episodes.isEmpty else { return PodcastEpisodeAdmissionResult(saved: [], skipped: 0) }
+        let context = ModelContext(container)
+        let subscriptions = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastSubscriptionRecord>())
+        let horizons = Dictionary(
+            subscriptions.map { ($0.feedID, Self.admissionHorizon(subscribedAt: $0.subscribedAt, admission: admission)) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let existing = Set(
+            try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastEpisodeRecord>()).map(\.id)
+        )
+
+        var admitted: [PodcastEpisode] = []
+        for (feedID, group) in Dictionary(grouping: episodes, by: \.feedID.rawValue) {
+            guard let horizon = horizons[feedID] else {
+                admitted.append(contentsOf: group)
+                continue
+            }
+            var kept = group.filter { episode in
+                if existing.contains(episode.itemID.rawValue) { return true }
+                guard let published = episode.publishedTime?.date else { return admission == .backfill }
+                return published >= horizon
+            }
+            if admission == .backfill, kept.count < Self.podcastSubscriptionMinimumBackfill {
+                let newest = group
+                    .sorted { ($0.publishedTime?.date ?? .distantPast) > ($1.publishedTime?.date ?? .distantPast) }
+                    .prefix(Self.podcastSubscriptionMinimumBackfill)
+                let keptIDs = Set(kept.map(\.itemID.rawValue))
+                kept.append(contentsOf: newest.filter { !keptIDs.contains($0.itemID.rawValue) })
+            }
+            admitted.append(contentsOf: kept)
+        }
+
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastEpisodeRecord>())
+        var byID = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for episode in admitted {
+            if let record = byID[episode.itemID.rawValue] {
+                Self.apply(episode, to: record)
+            } else {
+                let record = LocalLibrarySchemaV6Models.PodcastEpisodeRecord(episode)
+                context.insert(record)
+                byID[episode.itemID.rawValue] = record
+            }
+        }
+        try context.save()
+        return PodcastEpisodeAdmissionResult(
+            saved: admitted.map(\.itemID),
+            skipped: episodes.count - admitted.count
+        )
+    }
+
+    /// How far back the load that creates a subscription reaches.
+    public static let podcastSubscriptionBackfillWindow: TimeInterval = 30 * 24 * 60 * 60
+    /// The floor under that window, so an infrequent podcast is never empty.
+    public static let podcastSubscriptionMinimumBackfill = 5
+
+    private static func admissionHorizon(subscribedAt: Date, admission: PodcastEpisodeAdmission) -> Date {
+        switch admission {
+        case .backfill: subscribedAt.addingTimeInterval(-podcastSubscriptionBackfillWindow)
+        case .incremental: subscribedAt
+        }
+    }
+
+    /// Removes a subscription and every record Wilted stored on its behalf.
+    ///
+    /// Records only. Downloaded media files stay on disk because `RevisionID` is
+    /// derived from content alone: two episodes with identical bytes share one
+    /// audio revision, so deleting a file here could break an episode that
+    /// survives this call. Reclaiming that storage is a separate, revision-aware
+    /// job.
+    @discardableResult
+    public func unsubscribeFromPodcast(feedID: ItemID) throws -> Int {
+        let context = ModelContext(container)
+        let feed = feedID.rawValue
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastSubscriptionRecord>())
+        where record.feedID == feed { context.delete(record) }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastFeedRecord>())
+        where record.id == feed { context.delete(record) }
+
+        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastEpisodeRecord>())
+            .filter { $0.feedID == feed }
+        let episodeIDs = Set(episodes.map(\.id))
+        for record in episodes { context.delete(record) }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
+        where episodeIDs.contains(record.episodeID) { context.delete(record) }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
+        where episodeIDs.contains(record.episodeID) { context.delete(record) }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastPlaybackSpeedRecord>())
+        where episodeIDs.contains(record.itemID) { context.delete(record) }
+        // Artwork is owned by the feed as well as by its episodes.
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>())
+        where episodeIDs.contains(record.ownerID) || record.ownerID == feed { context.delete(record) }
+        try context.save()
+        return episodeIDs.count
+    }
+
+    private static func apply(
+        _ episode: PodcastEpisode,
+        to record: LocalLibrarySchemaV6Models.PodcastEpisodeRecord
+    ) {
+        record.feedID = episode.feedID.rawValue
+        record.feedURL = episode.feedURL.absoluteString
+        record.rssGUID = episode.rssGUID
+        record.title = episode.title
+        record.author = episode.author
+        record.publishedTime = episode.publishedTime?.date
+        record.enclosureURL = episode.enclosureURL.absoluteString
+        record.enclosureMediaType = episode.enclosureMediaType
+        record.enclosureByteCount = episode.enclosureByteCount
+        record.durationSeconds = episode.durationSeconds
+        record.artworkURL = episode.artworkURL?.absoluteString
+        record.createdAt = episode.createdAt.date
     }
 
     public func save(download: PodcastDownload) throws {
