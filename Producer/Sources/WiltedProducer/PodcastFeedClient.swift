@@ -85,15 +85,27 @@ public struct URLSessionPodcastFeedLoader: PodcastFeedLoading, Sendable {
 public struct LoadedPodcastFeed: Equatable, Sendable {
     public let feed: PodcastFeed
     public let episodes: [PodcastEpisode]
+    /// Episodes the feed published that this load dropped because the feed
+    /// carries more than `PodcastFeedClient.maximumEpisodeCount`. Callers report
+    /// it rather than presenting a truncated back catalogue as the whole feed.
+    public let droppedEpisodeCount: Int
 
-    public init(feed: PodcastFeed, episodes: [PodcastEpisode]) {
+    public init(feed: PodcastFeed, episodes: [PodcastEpisode], droppedEpisodeCount: Int = 0) {
+        self.droppedEpisodeCount = droppedEpisodeCount
         self.feed = feed
         self.episodes = episodes
     }
 }
 
 public struct PodcastFeedClient: Sendable {
-    public static let maximumFeedBytes = 2 * 1_024 * 1_024
+    /// Real podcast feeds are much larger than a first guess suggests: of the 29
+    /// feeds in the 2026-08-31 import survey the largest was 10.2 MiB and half
+    /// exceeded 2 MiB, so the original 2 MiB ceiling rejected most of them
+    /// outright. 16 MiB clears every surveyed feed with headroom and still
+    /// bounds what one XML document can cost.
+    public static let maximumFeedBytes = 16 * 1_024 * 1_024
+    /// Ceiling on the episodes one feed contributes. A feed with a longer back
+    /// catalogue is truncated to its newest episodes, never rejected.
     public static let maximumEpisodeCount = 500
 
     private let loader: any PodcastFeedLoading
@@ -291,7 +303,7 @@ private final class PodcastRSSParser: NSObject, XMLParserDelegate {
             throw PodcastFeedClientError.invalidMetadata("channel title")
         }
         let author = try optionalText(channelAuthor, maximum: 512, field: "channel author")
-        let artworkURL = try optionalHTTPSURL(channelArtworkURL, field: "channel artwork")
+        let artworkURL = safeArtworkURL(channelArtworkURL)
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
         let feed = try PodcastFeed(
             itemID: feedID, canonicalURL: feedURL, title: title, author: author,
@@ -311,7 +323,7 @@ private final class PodcastRSSParser: NSObject, XMLParserDelegate {
             }
             let guid = try optionalText(item.guid, maximum: 1_024, field: "episode GUID")
             let author = try optionalText(item.author, maximum: 512, field: "episode author")
-            let artworkURL = try optionalHTTPSURL(item.artworkURL, field: "episode artwork")
+            let artworkURL = safeArtworkURL(item.artworkURL)
             let episodeID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: guid, enclosureURL: enclosureURL)
             episodes.append(try PodcastEpisode(
                 itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: guid,
@@ -321,7 +333,31 @@ private final class PodcastRSSParser: NSObject, XMLParserDelegate {
                 artworkURL: artworkURL, createdAt: Timestamp(createdAt)
             ))
         }
-        return LoadedPodcastFeed(feed: feed, episodes: episodes)
+        let (kept, dropped) = Self.newestEpisodes(episodes)
+        return LoadedPodcastFeed(feed: feed, episodes: kept, droppedEpisodeCount: dropped)
+    }
+
+    /// Keeps the newest `PodcastFeedClient.maximumEpisodeCount` episodes and
+    /// reports how many were dropped.
+    ///
+    /// Recency comes from the published time; an undated episode sorts behind
+    /// every dated one because there is nothing to argue it is recent. Ties and
+    /// undated episodes keep feed order, and the survivors are returned in feed
+    /// order so truncation never reshuffles a feed that was under the ceiling.
+    static func newestEpisodes(_ episodes: [PodcastEpisode]) -> (kept: [PodcastEpisode], dropped: Int) {
+        guard episodes.count > PodcastFeedClient.maximumEpisodeCount else { return (episodes, 0) }
+        let ranked = episodes.enumerated().sorted { lhs, rhs in
+            switch (lhs.element.publishedTime?.date, rhs.element.publishedTime?.date) {
+            case let (left?, right?) where left != right: return left > right
+            case (nil, .some): return false
+            case (.some, nil): return true
+            default: return lhs.offset < rhs.offset
+            }
+        }
+        let survivors = ranked.prefix(PodcastFeedClient.maximumEpisodeCount)
+            .sorted { $0.offset < $1.offset }
+            .map(\.element)
+        return (survivors, episodes.count - survivors.count)
     }
 
     func parser(
@@ -349,9 +385,6 @@ private final class PodcastRSSParser: NSObject, XMLParserDelegate {
     ) {
         let name = elementName.lowercased()
         if name == "item" {
-            guard completedItems.count < PodcastFeedClient.maximumEpisodeCount else {
-                parseFailure = .invalidMetadata("too many episodes"); parser.abortParsing(); return
-            }
             currentItem = Item()
         }
         if name == "enclosure", currentItem != nil {
@@ -478,9 +511,14 @@ private func optionalText(_ value: String?, maximum: Int, field: String) throws 
     return bounded
 }
 
-private func optionalHTTPSURL(_ value: URL?, field: String) throws -> URL? {
-    guard let value else { return nil }
-    guard PodcastFeedClient.isHTTPS(value) else { throw PodcastFeedClientError.invalidMetadata(field) }
+/// Artwork that is not safe to fetch is dropped instead of rejecting the feed.
+///
+/// Cover art is decoration. Real feeds still advertise it over plain HTTP --
+/// Mac Power Users did in the 2026-08-31 import survey -- and refusing the whole
+/// podcast over its logo loses every episode to fix nothing. Wilted still never
+/// loads the insecure URL; it just forgets it.
+private func safeArtworkURL(_ value: URL?) -> URL? {
+    guard let value, PodcastFeedClient.isHTTPS(value) else { return nil }
     return value
 }
 

@@ -110,14 +110,69 @@ struct PodcastFeedClientTests {
         }
     }
 
-    @Test func rejectsNonHTTPSArtwork() async {
-        await expect(.invalidMetadata("channel artwork")) {
-            try await client(xml: "<rss xmlns:itunes=\"http://www.itunes.com/dtds/podcast-1.0.dtd\"><channel><title>Show</title><itunes:image href=\"http://images.example.test/show.jpg\" /></channel></rss>").load(self.sourceURL)
-        }
-        await expect(.invalidMetadata("episode artwork")) {
-            try await client(xml: feed(item: "<itunes:image href=\"http://images.example.test/episode.jpg\" /><enclosure url=\"https://cdn.example.test/one.mp3\" type=\"audio/mpeg\" />")).load(self.sourceURL)
-        }
+    /// Cover art advertised over plain HTTP is dropped, not fatal. Real feeds do
+    /// this -- Mac Power Users did in the 2026-08-31 import survey -- and losing
+    /// every episode of a podcast over its logo is the wrong trade. The insecure
+    /// URL is still never kept, so nothing can later fetch it.
+    @Test func dropsNonHTTPSArtworkAndKeepsTheFeed() async throws {
+        let channel = try await client(xml: "<rss xmlns:itunes=\"http://www.itunes.com/dtds/podcast-1.0.dtd\"><channel><title>Show</title><itunes:image href=\"http://images.example.test/show.jpg\" /><item><title>Episode</title><enclosure url=\"https://cdn.example.test/one.mp3\" type=\"audio/mpeg\" /></item></channel></rss>").load(sourceURL)
+        #expect(channel.feed.artworkURL == nil)
+        #expect(channel.episodes.count == 1)
+
+        let episode = try await client(xml: feed(item: "<itunes:image href=\"http://images.example.test/episode.jpg\" /><enclosure url=\"https://cdn.example.test/one.mp3\" type=\"audio/mpeg\" />")).load(sourceURL)
+        #expect(episode.episodes.count == 1)
+        #expect(episode.episodes[0].artworkURL == nil)
     }
+
+    /// A feed longer than the episode ceiling is truncated to its newest
+    /// episodes and reports the drop; it is never rejected outright. Two of the
+    /// listener's 29 subscribed feeds exceeded the ceiling in the 2026-08-31
+    /// survey, and rejecting them lost the entire podcast.
+    @Test func keepsNewestEpisodesWhenAFeedExceedsTheCeiling() async throws {
+        let overflow = 3
+        let total = PodcastFeedClient.maximumEpisodeCount + overflow
+        // Oldest first, so a client that merely takes the first N keeps the
+        // wrong end of the feed and this test fails.
+        let items = (0..<total).map { index in
+            let published = Date(timeIntervalSince1970: 1_700_000_000 + Double(index) * 3_600)
+            return "<item><title>Episode \(index)</title><guid>guid-\(index)</guid>"
+                + "<pubDate>\(Self.rfc822.string(from: published))</pubDate>"
+                + "<enclosure url=\"https://cdn.example.test/\(index).mp3\" type=\"audio/mpeg\" /></item>"
+        }.joined()
+        let result = try await client(xml: "<rss><channel><title>Show</title>\(items)</channel></rss>").load(sourceURL)
+
+        #expect(result.episodes.count == PodcastFeedClient.maximumEpisodeCount)
+        #expect(result.droppedEpisodeCount == overflow)
+        #expect(result.episodes.first?.rssGUID == "guid-\(overflow)")
+        #expect(result.episodes.last?.rssGUID == "guid-\(total - 1)")
+        // Feed order survives truncation.
+        let published = result.episodes.compactMap(\.publishedTime?.date)
+        #expect(published == published.sorted())
+    }
+
+    /// An undated episode cannot claim to be recent, so it yields to every dated
+    /// episode when the ceiling forces a choice.
+    @Test func undatedEpisodesLoseToDatedOnesAtTheCeiling() async throws {
+        let dated = (0..<PodcastFeedClient.maximumEpisodeCount).map { index in
+            "<item><title>Dated \(index)</title><guid>dated-\(index)</guid>"
+                + "<pubDate>\(Self.rfc822.string(from: Date(timeIntervalSince1970: 1_700_000_000 + Double(index))))</pubDate>"
+                + "<enclosure url=\"https://cdn.example.test/d\(index).mp3\" type=\"audio/mpeg\" /></item>"
+        }.joined()
+        let undated = "<item><title>Undated</title><guid>undated</guid>"
+            + "<enclosure url=\"https://cdn.example.test/u.mp3\" type=\"audio/mpeg\" /></item>"
+        let result = try await client(xml: "<rss><channel><title>Show</title>\(undated)\(dated)</channel></rss>").load(sourceURL)
+
+        #expect(result.droppedEpisodeCount == 1)
+        #expect(!result.episodes.contains { $0.rssGUID == "undated" })
+    }
+
+    private static let rfc822: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        return formatter
+    }()
 
     @Test func mapsTaskCancellationToTypedCancellation() async {
         let task = Task {
