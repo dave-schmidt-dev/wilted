@@ -1853,16 +1853,15 @@ public actor LocalLibraryStore {
     public func save(queueEntry: PodcastQueueEntry) throws {
         var state = try podcastQueueState()
         var ids = state.episodeIDs.filter { $0 != queueEntry.episodeID }
-        ids.insert(queueEntry.episodeID, at: min(queueEntry.position, ids.count))
+        ids.insert(queueEntry.episodeID, at: max(0, min(queueEntry.position, ids.count)))
         state = try PodcastQueueState(episodeIDs: ids, currentEpisodeID: state.currentEpisodeID)
         try replacePodcastQueue(state, addedAt: queueEntry.addedAt)
     }
 
     public func queue() throws -> [PodcastQueueEntry] {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>()).sorted {
-            Self.decodedPodcastQueuePosition($0.position) < Self.decodedPodcastQueuePosition($1.position)
-        }
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
+            .sorted(by: Self.podcastQueueRecordPrecedes)
         return records.enumerated().compactMap { position, record in
             guard let episodeID = try? ItemID(rawValue: record.episodeID) else { return nil }
             return try? PodcastQueueEntry(episodeID: episodeID, position: position, addedAt: Timestamp(record.addedAt))
@@ -1895,12 +1894,7 @@ public actor LocalLibraryStore {
     public func podcastQueueState() throws -> PodcastQueueState {
         let context = ModelContext(container)
         let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
-            .sorted {
-                let lhs = Self.decodedPodcastQueuePosition($0.position)
-                let rhs = Self.decodedPodcastQueuePosition($1.position)
-                if lhs != rhs { return lhs < rhs }
-                return $0.episodeID < $1.episodeID
-            }
+            .sorted(by: Self.podcastQueueRecordPrecedes)
         let ids = records.compactMap { try? ItemID(rawValue: $0.episodeID) }
         let current = records.first(where: { $0.position >= Self.podcastCurrentPositionOffset })
             .flatMap { try? ItemID(rawValue: $0.episodeID) }
@@ -1909,6 +1903,21 @@ public actor LocalLibraryStore {
 
     private static func decodedPodcastQueuePosition(_ position: Int) -> Int {
         position >= podcastCurrentPositionOffset ? position - podcastCurrentPositionOffset : position
+    }
+
+    /// The one total order every public queue read uses, so `queue()` and
+    /// `podcastQueueState()` cannot disagree about stored order. Decoded position
+    /// first, then episode ID: storage can hold two rows at the same decoded
+    /// position, and without the second key their relative order would be
+    /// whatever the sort happened to produce.
+    private static func podcastQueueRecordPrecedes(
+        _ lhs: LocalLibrarySchemaV6Models.PodcastQueueRecord,
+        _ rhs: LocalLibrarySchemaV6Models.PodcastQueueRecord
+    ) -> Bool {
+        let lhsPosition = decodedPodcastQueuePosition(lhs.position)
+        let rhsPosition = decodedPodcastQueuePosition(rhs.position)
+        if lhsPosition != rhsPosition { return lhsPosition < rhsPosition }
+        return lhs.episodeID < rhs.episodeID
     }
 
     public func addPodcastQueueEpisode(_ episodeID: ItemID, addedAt: Timestamp = Timestamp(Date())) throws {

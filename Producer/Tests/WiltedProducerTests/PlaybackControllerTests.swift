@@ -521,6 +521,74 @@ final class PlaybackControllerTests: XCTestCase {
         return StoredAudioRevision(revision: revision, mediaURL: url)
     }
 
+    /// `AVAudioPlayerBackend` keys its generation map on `ObjectIdentifier`, which
+    /// is the player's address, so an entry that outlives its player can be matched
+    /// by a later player allocated at the same address and report a superseded
+    /// generation. Only natural completion used to prune, which left an entry behind
+    /// for every superseded load and every explicit stop.
+    func testBackendDoesNotRetainGenerationKeysForPlayersItNoLongerOwns() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wilted-generation-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = try makePlayableAudio(at: directory.appendingPathComponent("first.m4a"))
+        let second = try makePlayableAudio(at: directory.appendingPathComponent("second.m4a"))
+
+        let backend = AVAudioPlayerBackend()
+        XCTAssertEqual(backend.trackedGenerationCount, 0)
+
+        try backend.load(url: first)
+        XCTAssertEqual(backend.trackedGenerationCount, 1)
+        XCTAssertEqual(backend.loadedGeneration, 1)
+
+        try backend.load(url: second)
+        XCTAssertEqual(backend.trackedGenerationCount, 1, "superseded player must not keep its generation entry")
+        XCTAssertEqual(backend.loadedGeneration, 2, "generations stay monotonic across loads")
+
+        backend.stop()
+        XCTAssertEqual(backend.trackedGenerationCount, 0, "stop must not leave the stopped player's entry behind")
+
+        try backend.load(url: first)
+        backend.stop()
+        try backend.load(url: second)
+        backend.stop()
+        XCTAssertEqual(backend.trackedGenerationCount, 0, "repeated load/stop cycles must not accumulate entries")
+        XCTAssertEqual(backend.loadedGeneration, 4)
+    }
+
+    /// A load failure leaves the backend owning the player it already had, so its
+    /// generation entry has to survive.
+    func testFailedLoadKeepsTheExistingPlayersGenerationEntry() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wilted-generation-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let playable = try makePlayableAudio(at: directory.appendingPathComponent("playable.m4a"))
+        let unreadable = directory.appendingPathComponent("missing.m4a")
+
+        let backend = AVAudioPlayerBackend()
+        try backend.load(url: playable)
+        XCTAssertEqual(backend.trackedGenerationCount, 1)
+        XCTAssertThrowsError(try backend.load(url: unreadable))
+        XCTAssertEqual(backend.trackedGenerationCount, 1, "a throwing load must not drop the live player's entry")
+        XCTAssertEqual(backend.loadedGeneration, 1, "a throwing load must not consume a generation")
+    }
+
+    private func makePlayableAudio(at url: URL) throws -> URL {
+        let samples = (0..<4_410).map { index in
+            Float(0.2 * sin(2 * Double.pi * 220 * Double(index) / 44_100))
+        }
+        _ = try AudioAssembler().assemble(
+            pcm: samples,
+            itemID: try ItemID(rawValue: "item-" + String(repeating: "9", count: 64)),
+            destinationURL: url,
+            extractedTextSHA256: String(repeating: "a", count: 64),
+            voiceID: "voice-test",
+            synthesisSettingsCanonicalJSON: "{}"
+        )
+        return url
+    }
+
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
         for _ in 0..<100 {
             if condition() { return }

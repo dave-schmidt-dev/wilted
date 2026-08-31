@@ -53,6 +53,7 @@ public final class AVAudioPlayerBackend: NSObject, PlaybackBackend, AVAudioPlaye
         next.rate = rate
         next.volume = volume
         next.prepareToPlay()
+        forgetCurrentPlayer()
         loadedGeneration &+= 1
         playerGenerations[ObjectIdentifier(next)] = loadedGeneration
         player = next
@@ -61,7 +62,25 @@ public final class AVAudioPlayerBackend: NSObject, PlaybackBackend, AVAudioPlaye
     @discardableResult
     public func play() -> Bool { player?.play() ?? false }
     public func pause() { player?.pause() }
-    public func stop() { player?.stop(); player = nil }
+    public func stop() {
+        player?.stop()
+        forgetCurrentPlayer()
+        player = nil
+    }
+
+    /// The generation map is keyed on `ObjectIdentifier`, which is the player's
+    /// address. An entry left behind for a released player can therefore be
+    /// matched by a later `AVAudioPlayer` allocated at the same address, and the
+    /// completion callback would then report a superseded generation. Drop the
+    /// entry at every point this backend stops owning the player; the natural
+    /// completion path already removes its own entry when it fires.
+    private func forgetCurrentPlayer() {
+        guard let player else { return }
+        playerGenerations.removeValue(forKey: ObjectIdentifier(player))
+    }
+
+    /// Test seam for the pruning above; the map itself stays private.
+    var trackedGenerationCount: Int { playerGenerations.count }
 
     nonisolated public func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         let playerID = ObjectIdentifier(player)
