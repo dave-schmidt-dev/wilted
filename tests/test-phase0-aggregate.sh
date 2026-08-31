@@ -13,6 +13,7 @@ expected_legs=(
   "test-speech-ipc-probe"
   "test-persistence-probe"
   "test-audio-contract-probe"
+  "test-audit-walkthrough"
 )
 if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
   expected_legs+=("test-audio-contract-ios-build")
