@@ -102,6 +102,36 @@ public struct PodcastPreparationResult: Sendable {
     public let adSegments: [PodcastAdSegment]
     public let removedSeconds: Double
     public var audioWasCut: Bool { removedSeconds > 0 }
+
+    /// What the run did, for the row: "5 ads removed (7:22) · synced
+    /// transcript". Journalled as the run's terminal detail so the answer
+    /// to "was this fully processed?" outlives the process that knew it.
+    public var summary: String {
+        Self.summary(advertisements: adSegments.count, secondsRemoved: removedSeconds, timing: transcript.timing)
+    }
+
+    public static func summary(advertisements: Int, secondsRemoved: Double, timing: TranscriptTiming) -> String {
+        var parts: [String] = []
+        if advertisements > 0, secondsRemoved > 0 {
+            let removed = clock(secondsRemoved)
+            parts.append(advertisements == 1 ? "1 ad removed (\(removed))" : "\(advertisements) ads removed (\(removed))")
+        } else {
+            parts.append("No advertisements found")
+        }
+        switch timing {
+        case .published: parts.append("synced transcript from the feed")
+        case .aligned: parts.append("synced transcript")
+        case .none: parts.append("no synced transcript")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// `h:mm:ss` at an hour or more, `m:ss` below it.
+    static func clock(_ seconds: Double) -> String {
+        let total = Int(max(0, seconds.isFinite ? seconds : 0).rounded())
+        let (hours, minutes, secs) = (total / 3600, (total % 3600) / 60, total % 60)
+        return hours > 0 ? String(format: "%d:%02d:%02d", hours, minutes, secs) : String(format: "%d:%02d", minutes, secs)
+    }
 }
 
 /// The seam between the coordinator and the Python process.
@@ -458,7 +488,7 @@ public actor PodcastPreparationPipeline {
                                           downloadedRevision: stored.revision, audioURL: audioURL, onStatus: report)
             await writes.drain()
             await journalTerminal(episodeID: episodeID, requestID: requestID, error: nil,
-                                  revisionID: result.revision.revisionID)
+                                  revisionID: result.revision.revisionID, summary: result.summary)
             return result
         } catch {
             await writes.drain()
@@ -484,7 +514,8 @@ public actor PodcastPreparationPipeline {
     }
 
     private func journalTerminal(
-        episodeID: ItemID, requestID: String, error: (any Error)?, revisionID: RevisionID?
+        episodeID: ItemID, requestID: String, error: (any Error)?, revisionID: RevisionID?,
+        summary: String? = nil
     ) async {
         let outcome: PreparationOutcome
         let producerError: ProducerError?
@@ -506,7 +537,7 @@ public actor PodcastPreparationPipeline {
                                                             error: producerError),
               let status = try? PreparationStatus(
                 stage: outcome == .succeeded ? .completed : (outcome == .cancelled ? .cancelled : .failed),
-                detail: producerError?.message ?? (outcome == .succeeded ? "Prepared." : "Cancelled."),
+                detail: producerError?.message ?? (outcome == .succeeded ? (summary ?? "Prepared.") : "Cancelled."),
                 cancellable: false, terminalResult: terminal, emittedAt: Timestamp(now())
               ) else { return }
         try? await store.record(preparation: PreparationJournalEntry(

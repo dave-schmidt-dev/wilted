@@ -362,19 +362,82 @@ final class WiltedMacModelTests: XCTestCase {
 
     // MARK: Prep page
 
-    func testVerboseProcessingSurvivesRelaunch() throws {
-        let suite = "com.zerodelta.wilted.mac.model-tests"
-        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
-        preferences.removePersistentDomain(forName: suite)
-        defer { preferences.removePersistentDomain(forName: suite) }
-        let directory = temporaryDirectory("verbose")
-        defer { try? FileManager.default.removeItem(at: directory) }
+    /// After a relaunch the row must still answer "were the advertisements
+    /// removed?", not just "is there a transcript?".
+    func testPreparedSummaryIsRecoveredFromTheJournal() throws {
+        let itemID = try ItemID(rawValue: "item-" + String(repeating: "6", count: 64))
+        let revisionID = try RevisionID(rawValue: "rev-" + String(repeating: "6", count: 64))
+        let requestID = WiltedMacModel.podcastRequestPrefix + itemID.rawValue
+        let when = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let transcript = try Transcript(
+            itemID: itemID, revisionID: revisionID, availability: .available, text: "Words.", timing: .aligned,
+            cues: [try TranscriptCue(startSeconds: 0, endSeconds: 1, text: "Words.")], updatedAt: when
+        )
+        func run(terminal: String, completion: String?) throws -> PreparationRunSummary {
+            var entries: [PreparationJournalEntry] = []
+            if let completion {
+                entries.append(PreparationJournalEntry(
+                    id: requestID + "|pipeline.complete", itemID: itemID, requestID: requestID,
+                    status: try PreparationStatus(stage: .preparing, detail: completion, cancellable: true, emittedAt: when)
+                ))
+            }
+            return PreparationRunSummary(
+                requestID: requestID, itemID: itemID, startedAt: when, updatedAt: when, stage: .completed,
+                detail: terminal, fraction: nil, isTerminal: true, outcome: .succeeded, failure: nil, entries: entries
+            )
+        }
 
-        let first = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
-        XCTAssertFalse(first.verboseProcessing, "the sentence, not the log, is the default")
-        first.verboseProcessing = true
-        let second = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
-        XCTAssertTrue(second.verboseProcessing)
+        // A current build journals the summary itself as the terminal row.
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(run: try run(terminal: "5 ads removed (7:22) · synced transcript",
+                                                         completion: "5 advertisements, 1307 cues"), transcript: transcript),
+            .prepared(summary: "5 ads removed (7:22) · synced transcript")
+        )
+        // Older builds wrote "Prepared." and counted advertisements one row
+        // earlier; zero there is the honest state of an episode the broken
+        // detector build marked prepared.
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(run: try run(terminal: "Prepared.", completion: "0 advertisements, 1345 cues"),
+                                            transcript: transcript),
+            .prepared(summary: "No advertisements found · synced transcript")
+        )
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(run: try run(terminal: "Prepared.", completion: "3 advertisements, 900 cues"),
+                                            transcript: transcript),
+            .prepared(summary: "3 ads removed · synced transcript")
+        )
+        // No journal at all: the transcript is the only evidence.
+        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: transcript),
+                       .prepared(summary: "Synced transcript"))
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(run: try run(terminal: "Prepared.", completion: nil), transcript: transcript),
+            .prepared(summary: "Synced transcript")
+        )
+    }
+
+    /// A failed run is retried from Prep, next to the reason it failed.
+    func testRetryFromPrepPreparesTheRunsEpisode() throws {
+        let directory = temporaryDirectory("retry-run")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
+            stateDirectoryOverride: directory, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        let episode = try XCTUnwrap(model.episodes.first)
+        XCTAssertEqual(episode.preparationState, .notPrepared)
+        let failed = WiltedMacProcessorRun(
+            id: WiltedMacModel.podcastRequestPrefix + episode.id, itemID: episode.id, isPodcast: true,
+            title: episode.title, source: episode.feedTitle, stage: "failed",
+            detail: "the model failed 30 of 50 requests", fraction: nil, outcome: .failed, updatedAt: Date()
+        )
+        model.retryProcessorRun(failed)
+        XCTAssertTrue(model.episodes.first?.preparationState.isRunning == true, "Retry must start a run")
+
+        let article = WiltedMacProcessorRun(
+            id: "article-request", itemID: "not-an-episode", isPodcast: false, title: "Article", source: "Web",
+            stage: "failed", detail: "Could not fetch", fraction: nil, outcome: .failed, updatedAt: Date()
+        )
+        model.retryProcessorRun(article)  // article runs have their own path; nothing to do
     }
 
     /// The journal stores the coarse stage every pipeline shares; the worker's
@@ -450,21 +513,6 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(
             WiltedMacModel.preparationLabel(for: PodcastPreparationProgress(stage: "something.new")),
             "Preparing…"
-        )
-    }
-
-    func testPreparedSummaryReportsWhatWasActuallyDone() {
-        XCTAssertEqual(
-            WiltedMacModel.preparedSummary(advertisements: 3, secondsRemoved: 185, timing: .aligned),
-            "3 ads removed (3:05) · synced transcript"
-        )
-        XCTAssertEqual(
-            WiltedMacModel.preparedSummary(advertisements: 1, secondsRemoved: 42, timing: .published),
-            "1 ad removed (0:42) · synced transcript from the feed"
-        )
-        XCTAssertEqual(
-            WiltedMacModel.preparedSummary(advertisements: 0, secondsRemoved: 0, timing: .none),
-            "No advertisements found · no synced transcript"
         )
     }
 

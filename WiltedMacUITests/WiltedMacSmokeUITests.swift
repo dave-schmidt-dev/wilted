@@ -228,7 +228,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
     /// way back. Pressing the control must actually start a run: the fixture
     /// points at no media, so the row leaves the prepared state rather than
     /// staying on the summary it started with.
-    func testPreparedEpisodeOffersToPrepareAgain() {
+    func testPreparedEpisodeOffersToPrepareAgainFromItsMenu() {
         let app = launch(arguments: [
             "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"
         ])
@@ -236,15 +236,23 @@ final class WiltedMacSmokeUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-row-'")
         ).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Synced transcript"].exists)
+        XCTAssertTrue(app.staticTexts["5 ads removed (7:22) · synced transcript"].exists,
+                      "A prepared row states what was done, not only that a transcript exists.")
+        XCTAssertEqual(
+            app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-prepare'")).count, 0,
+            "A prepared row shows no preparation button; redoing lives in its menu."
+        )
 
-        let again = app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-prepare-again-'")
-        ).firstMatch
-        XCTAssertTrue(again.waitForExistence(timeout: 3), "A prepared episode must offer Prepare again.")
+        let actions = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-actions-'"))
+            .firstMatch
+        XCTAssertTrue(actions.waitForExistence(timeout: 5))
+        actions.click()
+        let again = app.menuItems["Prepare again"]
+        XCTAssertTrue(again.waitForExistence(timeout: 5), "A prepared episode's menu must offer Prepare again.")
         again.click()
         XCTAssertTrue(
-            app.staticTexts["Synced transcript"].waitForNonExistence(timeout: 10),
+            app.staticTexts["5 ads removed (7:22) · synced transcript"].waitForNonExistence(timeout: 10),
             "Prepare again must start a run; the row kept the summary it began with."
         )
     }
@@ -266,24 +274,23 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(run.waitForExistence(timeout: 5), "The fixture's prepared episode has a journalled run.")
         XCTAssertTrue(run.staticTexts["Quiet Machines"].exists)
         XCTAssertTrue(run.staticTexts["Succeeded"].exists)
-        XCTAssertTrue(run.staticTexts["Prepared."].exists, "A finished run is narrated from what it recorded.")
+        XCTAssertTrue(run.staticTexts["5 ads removed (7:22) · synced transcript"].exists,
+                      "A finished run is narrated from what it recorded.")
 
-        let logs = app.descendants(matching: .any).matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-processor-log-'")
-        )
-        XCTAssertEqual(logs.count, 0, "The log is opt-in.")
-        XCTAssertFalse(app.staticTexts["ads.detect.calls · 50 requests, 0 failed"].exists)
+        XCTAssertFalse(app.staticTexts["ads.detect.calls · 50 requests, 0 failed"].exists, "The log is opt-in, per run.")
 
-        let verbose = app.checkBoxes["wilted-processor-verbose"]
-        XCTAssertTrue(verbose.waitForExistence(timeout: 3))
-        verbose.click()
+        let showLog = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-processor-log-toggle-'")
+        ).firstMatch
+        XCTAssertTrue(showLog.waitForExistence(timeout: 3))
+        showLog.click()
         XCTAssertTrue(
             app.staticTexts["ads.detect.calls · 50 requests, 0 failed"].waitForExistence(timeout: 5),
-            "Detailed log must list every journalled status in the worker's words."
+            "The run's log must list every journalled status in the worker's words."
         )
         XCTAssertTrue(app.staticTexts["transcript.stt.start"].exists)
 
-        verbose.click()
+        showLog.click()
         XCTAssertTrue(app.staticTexts["ads.detect.calls · 50 requests, 0 failed"].waitForNonExistence(timeout: 5))
     }
 

@@ -705,6 +705,12 @@ private struct WiltedMacEpisodeRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             downloadControl
             Menu {
+                // Redoing a good preparation is rare, so it lives here rather
+                // than as a row button; a failed one is retried from Prep,
+                // next to the reason it failed.
+                if case .prepared = episode.preparationState {
+                    Button("Prepare again") { model.prepareEpisode(episode) }
+                }
                 Button("Remove from Larder", role: .destructive) { model.removeEpisode(episode) }
             } label: {
                 Image(systemName: "ellipsis").accessibilityLabel("More actions for \(episode.title)")
@@ -773,25 +779,21 @@ private struct WiltedMacEpisodeRow: View {
         }
     }
 
-    /// Preparation runs itself after a download. This is for the episode that
-    /// arrived before it existed, for retrying one that failed, and for
-    /// redoing one whose result was wrong: a build that never loaded the ad
-    /// detector marked every episode prepared with nothing cut, and removal
-    /// is permanent, so a prepared row with no way back is a dead end.
+    /// Preparation runs itself after a download. Prepare is for the episode
+    /// that arrived before it existed. A failed run is retried on Prep, where
+    /// the reason is; a good one is redone from the row's menu.
     @ViewBuilder private var preparationControl: some View {
         switch episode.preparationState {
         case .preparing:
             Button("Stop") { model.cancelEpisodePreparation(episode) }
                 .accessibilityLabel("Stop preparing \(episode.title)")
                 .accessibilityIdentifier("wilted-episode-preparation-cancel-\(episode.id)")
-        case .prepared:
-            Button("Prepare again") { model.prepareEpisode(episode) }
-                .accessibilityLabel("Prepare \(episode.title) again")
-                .accessibilityIdentifier("wilted-episode-prepare-again-\(episode.id)")
-        case .notPrepared, .failed:
+        case .notPrepared:
             Button("Prepare") { model.prepareEpisode(episode) }
                 .accessibilityLabel("Remove advertisements and sync the transcript for \(episode.title)")
                 .accessibilityIdentifier("wilted-episode-prepare-\(episode.id)")
+        case .prepared, .failed:
+            EmptyView()
         }
     }
 
@@ -820,8 +822,11 @@ private struct WiltedMacEpisodeRow: View {
 /// preparation had ever happened was whether an article appeared in Library.
 /// This lists what is running now and every attempt that came before it.
 private struct WiltedMacProcessorView: View {
-    @Bindable var model: WiltedMacModel
+    let model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
+    /// Runs whose log is open. Per run rather than a page-wide switch: the
+    /// reader opens the one they are asking about.
+    @State private var openLogs: Set<String> = []
 
     /// Podcast runs still going. Article runs are `model.preparation`.
     private var activeRuns: [WiltedMacProcessorRun] {
@@ -840,19 +845,9 @@ private struct WiltedMacProcessorView: View {
     var body: some View {
         WiltedMacDestination(title: WiltedScreenCopy.processor, identifier: "wilted-mac-processor-detail") {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-                HStack {
-                    Text("Active")
-                        .font(WiltedTheme.font(.title))
-                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                    Spacer()
-                    // The row in Larder only says an episode is preparing.
-                    // This page says what the run is doing, and on request
-                    // everything it has said.
-                    Toggle("Detailed log", isOn: $model.verboseProcessing)
-                        .toggleStyle(.checkbox)
-                        .font(WiltedTheme.font(.utility))
-                        .accessibilityIdentifier("wilted-processor-verbose")
-                }
+                Text("Active")
+                    .font(WiltedTheme.font(.title))
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 if let preparation = model.preparation, !preparation.phase.isTerminal {
                     WiltedMacPreparationView(model: model, preparation: preparation)
                 }
@@ -926,6 +921,7 @@ private struct WiltedMacProcessorView: View {
                         .lineLimit(1)
                 }
                 Spacer()
+                logButton(run)
                 Button("Stop") { model.cancelProcessorRun(run) }
                     .accessibilityLabel("Stop preparing \(run.title)")
                     .accessibilityIdentifier("wilted-processor-stop-\(run.id)")
@@ -942,7 +938,7 @@ private struct WiltedMacProcessorView: View {
                 .font(WiltedTheme.font(.utility))
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .accessibilityIdentifier("wilted-processor-narrative-\(run.id)")
-            if model.verboseProcessing {
+            if openLogs.contains(run.id) {
                 eventLog(run)
             }
         }
@@ -963,7 +959,7 @@ private struct WiltedMacProcessorView: View {
                     Text(run.narrative)
                         .font(WiltedTheme.font(.utility))
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .lineLimit(model.verboseProcessing ? nil : 2)
+                        .lineLimit(openLogs.contains(run.id) ? nil : 2)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 VStack(alignment: .trailing, spacing: 2) {
@@ -976,16 +972,33 @@ private struct WiltedMacProcessorView: View {
                         .font(WiltedTheme.font(.utility))
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 }
+                HStack(spacing: WiltedTheme.Spacing.small) {
+                    if run.isPodcast, run.outcome == .failed {
+                        Button("Retry") { model.retryProcessorRun(run) }
+                            .accessibilityLabel("Prepare \(run.title) again")
+                            .accessibilityIdentifier("wilted-processor-retry-\(run.id)")
+                    }
+                    logButton(run)
+                }
             }
             // Contained, not combined, like the Larder rows: the texts stay
             // reachable one by one, which is how they are tested.
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("wilted-processor-run-\(run.id)")
-            if model.verboseProcessing {
+            if openLogs.contains(run.id) {
                 eventLog(run)
             }
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
+    }
+
+    private func logButton(_ run: WiltedMacProcessorRun) -> some View {
+        let open = openLogs.contains(run.id)
+        return Button(open ? "Hide log" : "Show log") {
+            if open { openLogs.remove(run.id) } else { openLogs.insert(run.id) }
+        }
+        .accessibilityLabel(open ? "Hide the log for \(run.title)" : "Show the log for \(run.title)")
+        .accessibilityIdentifier("wilted-processor-log-toggle-\(run.id)")
     }
 
     /// Every status the run journalled, in the pipeline's own words. The

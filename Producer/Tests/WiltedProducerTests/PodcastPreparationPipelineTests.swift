@@ -223,6 +223,20 @@ struct PodcastPreparationPipelineTests {
         #expect(terminal.status.terminalResult?.outcome == .succeeded)
         #expect(terminal.status.terminalResult?.revisionID != nil)
         #expect(entries.allSatisfy { $0.itemID == fixture.episodeID })
+        // The terminal row says what was done, not just that it finished:
+        // it is what a relaunched app shows under the episode.
+        #expect(terminal.status.detail == "1 ad removed (0:05) · synced transcript")
+    }
+
+    @Test func summaryStatesWhatWasActuallyDone() {
+        #expect(PodcastPreparationResult.summary(advertisements: 3, secondsRemoved: 185, timing: .aligned)
+                == "3 ads removed (3:05) · synced transcript")
+        #expect(PodcastPreparationResult.summary(advertisements: 1, secondsRemoved: 42, timing: .published)
+                == "1 ad removed (0:42) · synced transcript from the feed")
+        #expect(PodcastPreparationResult.summary(advertisements: 5, secondsRemoved: 3_722, timing: .aligned)
+                == "5 ads removed (1:02:02) · synced transcript")
+        #expect(PodcastPreparationResult.summary(advertisements: 0, secondsRemoved: 0, timing: .none)
+                == "No advertisements found · no synced transcript")
     }
 
     /// The journal is keyed by item, not attempt. Before it was cleared at the

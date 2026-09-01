@@ -428,12 +428,6 @@ final class WiltedMacModel {
         didSet { preferences.set(libraryOrder.rawValue, forKey: Self.libraryOrderPreferenceKey) }
     }
     static let libraryOrderPreferenceKey = "wilted.library.order"
-    /// Whether Prep lists every journalled status of a run or only where the
-    /// run is. Off, a reader sees a sentence; on, the pipeline's own log.
-    var verboseProcessing = false {
-        didSet { preferences.set(verboseProcessing, forKey: Self.verboseProcessingPreferenceKey) }
-    }
-    static let verboseProcessingPreferenceKey = "wilted.processor.verbose"
     private let preferences: UserDefaults
     var selectedNavigation: WiltedMacNavigation = .library
     private(set) var articles: [WiltedMacArticle] = []
@@ -582,9 +576,6 @@ final class WiltedMacModel {
         if let stored = self.preferences.string(forKey: Self.libraryOrderPreferenceKey),
            let order = WiltedMacLibraryOrder(rawValue: stored) {
             libraryOrder = order
-        }
-        if let stored = self.preferences.object(forKey: Self.verboseProcessingPreferenceKey) as? Bool {
-            verboseProcessing = stored
         }
     }
 
@@ -902,10 +893,7 @@ final class WiltedMacModel {
             do {
                 let result = try await pipeline.prepare(episodeID: itemID)
                 guard let self else { return }
-                let summary = Self.preparedSummary(
-                    advertisements: result.adSegments.count, secondsRemoved: result.removedSeconds,
-                    timing: result.transcript.timing
-                )
+                let summary = result.summary
                 self.podcastOperationMessage = "\(episode.title): \(summary)"
                 if let store = self.store {
                     let values = try await self.loadLibrary(from: store)
@@ -939,6 +927,14 @@ final class WiltedMacModel {
     /// Stops the run Prep is showing. Article runs have their own cancel.
     func cancelProcessorRun(_ run: WiltedMacProcessorRun) {
         podcastPreparationTasks[run.itemID]?.cancel()
+    }
+
+    /// Runs a podcast preparation again from its row on Prep. A failed run's
+    /// retry lives next to the failure rather than in the Larder, where the
+    /// row only says to look here.
+    func retryProcessorRun(_ run: WiltedMacProcessorRun) {
+        guard run.isPodcast, let episode = episodes.first(where: { $0.id == run.itemID }) else { return }
+        prepareEpisode(episode)
     }
 
     func cancelEpisodePreparation(_ episode: WiltedMacEpisode) {
@@ -989,25 +985,6 @@ final class WiltedMacModel {
         case "pipeline.complete": "Prepared."
         default: "Preparing…"
         }
-    }
-
-    nonisolated static func preparedSummary(
-        advertisements: Int, secondsRemoved: Double, timing: TranscriptTiming
-    ) -> String {
-        var parts: [String] = []
-        if advertisements > 0, secondsRemoved > 0 {
-            let removed = WiltedDuration.clock(secondsRemoved)
-            parts.append(advertisements == 1 ? "1 ad removed (\(removed))"
-                                             : "\(advertisements) ads removed (\(removed))")
-        } else {
-            parts.append("No advertisements found")
-        }
-        switch timing {
-        case .published: parts.append("synced transcript from the feed")
-        case .aligned: parts.append("synced transcript")
-        case .none: parts.append("no synced transcript")
-        }
-        return parts.joined(separator: " · ")
     }
 #endif
 
@@ -1970,6 +1947,30 @@ final class WiltedMacModel {
 
     static let podcastRequestPrefix = "podcast-prepare|"
 
+    /// The legacy terminal detail, from builds that journalled only that the
+    /// run had finished.
+    nonisolated static let legacyPreparedDetail = "Prepared."
+
+    /// What a finished run recorded it did, so "Synced transcript" alone never
+    /// stands in for "were the advertisements removed?" after a relaunch.
+    ///
+    /// Current builds journal the outcome summary as the terminal row. Older
+    /// ones wrote "Prepared.", but their `pipeline.complete` row still counted
+    /// the advertisements, and zero there is the honest answer for an episode
+    /// the build that never loaded the detector marked prepared.
+    nonisolated static func recordedSummary(of run: PreparationRunSummary?) -> String? {
+        guard let run, run.isTerminal, run.outcome == .succeeded else { return nil }
+        if run.detail != legacyPreparedDetail, !run.detail.isEmpty { return run.detail }
+        let completion = run.entries.last { $0.id.hasSuffix("|pipeline.complete") }?.status.detail ?? ""
+        guard let match = completion.firstMatch(of: #/^(\d+) advertisements?/#),
+              let count = Int(match.1) else { return nil }
+        switch count {
+        case 0: return "No advertisements found · synced transcript"
+        case 1: return "1 ad removed · synced transcript"
+        default: return "\(count) ads removed · synced transcript"
+        }
+    }
+
 #if canImport(WiltedProducer)
     /// The journal keys each status as `requestID|stage`, and the stage it
     /// stores is the coarse one every pipeline shares, so the worker's own
@@ -2212,8 +2213,8 @@ final class WiltedMacModel {
     ) -> WiltedMacEpisodePreparationState {
         if let run, !run.isTerminal { return .preparing(stage: "Preparing…") }
         switch transcript?.timing {
-        case .published: return .prepared(summary: "Synced transcript from the feed")
-        case .aligned: return .prepared(summary: "Synced transcript")
+        case .published: return .prepared(summary: recordedSummary(of: run) ?? "Synced transcript from the feed")
+        case .aligned: return .prepared(summary: recordedSummary(of: run) ?? "Synced transcript")
         case .none, .some(.none):
             if let run, run.isTerminal, run.outcome == .failed {
                 return .failed(preparationFailedLabel)
@@ -2316,6 +2317,10 @@ final class WiltedMacModel {
         }
     }
 
+    /// The fixture's prepared episode reads the way a real one does after a
+    /// relaunch: the journal's terminal summary, not just "synced".
+    static let fixturePreparedSummary = "5 ads removed (7:22) · synced transcript"
+
     private func installPodcastFixture(in store: LocalLibraryStore) {
         let feedURL = URL(string: "https://fixtures.example.test/field-notes.xml")!
         let enclosureURL = URL(string: "https://fixtures.example.test/media/quiet-machines.mp3")!
@@ -2339,7 +2344,7 @@ final class WiltedMacModel {
             summary: "Field Notes desk", artworkURL: nil, releasedAt: episode.createdAt.date,
             durationSeconds: episode.durationSeconds, playbackSeconds: 0,
             downloadState: fixtureDownloadFailuresRemaining > 0 ? .notDownloaded : .completed,
-            preparationState: fixtureEpisodeIsPrepared ? .prepared(summary: "Synced transcript") : .notPrepared
+            preparationState: fixtureEpisodeIsPrepared ? .prepared(summary: Self.fixturePreparedSummary) : .notPrepared
         )]
         // The Feeds card reads `subscriptions`, which only the store-backed load
         // path populates. Fixture mode assigns the library directly, so it has
@@ -2409,7 +2414,7 @@ final class WiltedMacModel {
                 }
                 if let terminal = try? PreparationTerminalResult(outcome: .succeeded, revisionID: revision?.revisionID),
                    let status = try? PreparationStatus(
-                    stage: .completed, detail: "Prepared.", cancellable: false, terminalResult: terminal,
+                    stage: .completed, detail: Self.fixturePreparedSummary, cancellable: false, terminalResult: terminal,
                     emittedAt: Timestamp(started.addingTimeInterval(300))
                    ) {
                     try? await store.record(preparation: PreparationJournalEntry(
