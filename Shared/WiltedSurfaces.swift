@@ -190,6 +190,96 @@ public struct WiltedTranscriptSection: View {
     }
 }
 
+/// One transcript line a reader can follow and jump to.
+public struct WiltedTranscriptCueLine: Identifiable, Equatable, Sendable {
+    public let id: Int
+    public let startSeconds: TimeInterval
+    public let text: String
+
+    public init(id: Int, startSeconds: TimeInterval, text: String) {
+        self.id = id
+        self.startSeconds = startSeconds
+        self.text = text
+    }
+
+    /// The timestamp shown beside the line, which is also what tapping it
+    /// seeks to.
+    public var stamp: String { WiltedDuration.clock(startSeconds) }
+}
+
+/// A transcript that follows the audio.
+///
+/// The active line is highlighted and kept on screen as playback advances, and
+/// selecting any line seeks there. Scrolling is driven by the active line's
+/// identity rather than by the clock, so a listener reading ahead is not
+/// yanked back on every tick -- only when the line actually changes.
+public struct WiltedSyncedTranscriptView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    private let cues: [WiltedTranscriptCueLine]
+    private let activeCueID: Int?
+    private let identifier: String
+    private let onSelect: (WiltedTranscriptCueLine) -> Void
+
+    public init(
+        cues: [WiltedTranscriptCueLine],
+        activeCueID: Int?,
+        identifier: String,
+        onSelect: @escaping (WiltedTranscriptCueLine) -> Void
+    ) {
+        self.cues = cues
+        self.activeCueID = activeCueID
+        self.identifier = identifier
+        self.onSelect = onSelect
+    }
+
+    public var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                    ForEach(cues) { cue in line(cue) }
+                }
+                .padding(.vertical, WiltedTheme.Spacing.small)
+            }
+            .onChange(of: activeCueID) { _, current in
+                guard let current else { return }
+                withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(current, anchor: .center) }
+            }
+        }
+        .accessibilityIdentifier(identifier)
+        .accessibilityLabel("Transcript, synchronized with playback")
+    }
+
+    @ViewBuilder private func line(_ cue: WiltedTranscriptCueLine) -> some View {
+        let isActive = cue.id == activeCueID
+        Button { onSelect(cue) } label: {
+            HStack(alignment: .firstTextBaseline, spacing: WiltedTheme.Spacing.small) {
+                Text(cue.stamp)
+                    .font(WiltedTheme.font(.utility))
+                    .monospacedDigit()
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                Text(cue.text)
+                    .font(WiltedTheme.font(.body))
+                    .foregroundStyle(WiltedTheme.color(isActive ? .primaryText : .secondaryText, scheme: colorScheme))
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.vertical, 2)
+            .padding(.horizontal, WiltedTheme.Spacing.small)
+            .background(
+                RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
+                    .fill(isActive
+                          ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.18)
+                          : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .id(cue.id)
+        .accessibilityLabel("\(cue.stamp). \(cue.text)")
+        .accessibilityAddTraits(isActive ? .isSelected : [])
+        .accessibilityIdentifier("\(identifier)-cue-\(cue.id)")
+    }
+}
+
 /// A persistent transcript panel for constrained playback surfaces.
 ///
 /// The player keeps transport controls outside this scroll view, so reading a

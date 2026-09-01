@@ -378,4 +378,124 @@ final class WiltedMacModelTests: XCTestCase {
                        .preparing(stage: "Preparing…"))
     }
 
+
+    // MARK: Transcript synchronisation
+
+    /// The reading position has to track the playback clock exactly, including
+    /// before the first cue, across a boundary, and past the last one.
+    func testCueLookupFollowsThePlaybackClock() {
+        let transcript = WiltedMacTranscript(
+            availability: .available, text: "one two three",
+            cues: [
+                WiltedMacTranscriptCue(id: 0, startSeconds: 2, endSeconds: 4, text: "one"),
+                WiltedMacTranscriptCue(id: 1, startSeconds: 4, endSeconds: 6, text: "two"),
+                WiltedMacTranscriptCue(id: 2, startSeconds: 6, endSeconds: 9, text: "three"),
+            ],
+            timingSource: "synced"
+        )
+        XCTAssertNil(transcript.cueIndex(at: 0), "nothing has been said yet")
+        XCTAssertNil(transcript.cueIndex(at: 1.99))
+        XCTAssertEqual(transcript.cueIndex(at: 2), 0)
+        XCTAssertEqual(transcript.cueIndex(at: 3.9), 0)
+        XCTAssertEqual(transcript.cueIndex(at: 4), 1)
+        XCTAssertEqual(transcript.cueIndex(at: 8.5), 2)
+        XCTAssertEqual(transcript.cueIndex(at: 500), 2, "past the end stays on the last line")
+        XCTAssertTrue(transcript.isSynchronized)
+        XCTAssertEqual(transcript.disclosureTitle, "Transcript · synced")
+    }
+
+    /// Cues arrive in order but may overlap, and a large episode carries
+    /// thousands of them: the lookup must stay correct at both ends.
+    func testCueLookupHandlesALongEpisode() {
+        let cues = (0..<5_000).map {
+            WiltedMacTranscriptCue(id: $0, startSeconds: Double($0) * 2,
+                                   endSeconds: Double($0) * 2 + 2.5, text: "line \($0)")
+        }
+        let transcript = WiltedMacTranscript(availability: .available, text: "long",
+                                             cues: cues, timingSource: "synced")
+        XCTAssertEqual(transcript.cueIndex(at: 0), 0)
+        XCTAssertEqual(transcript.cueIndex(at: 4_999), 2_499)
+        XCTAssertEqual(transcript.cueIndex(at: 9_998), 4_999)
+    }
+
+    /// A plain-text transcript is still readable; it just cannot be followed.
+    func testAnUntimedTranscriptIsReadableButNotSynchronized() {
+        let transcript = WiltedMacTranscript(availability: .available, text: "Words with no timing.")
+        XCTAssertTrue(transcript.isReadable)
+        XCTAssertFalse(transcript.isSynchronized)
+        XCTAssertNil(transcript.cueIndex(at: 10))
+        XCTAssertEqual(transcript.disclosureTitle, "Transcript")
+    }
+
+    /// The wiring the feature actually rests on: the player is what reads a
+    /// transcript, and until this landed the episode path set `.unavailable`
+    /// unconditionally, so a timed transcript in the library was unreachable.
+    func testPlayingAnEpisodeSurfacesItsSyncedTranscript() async throws {
+        let directory = temporaryDirectory("episode-transcript")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let audioURL = directory.appendingPathComponent("episode.m4a")
+
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/synced.xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/synced.mp3"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let episodeID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "synced-1", enclosureURL: enclosureURL
+        )
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+
+        let model = WiltedMacModel(
+            arguments: [],
+            stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Synced", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await store.save(episode: try PodcastEpisode(
+                    itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: "synced-1",
+                    title: "Synced episode", publishedTime: created, enclosureURL: enclosureURL,
+                    enclosureMediaType: "audio/mpeg", createdAt: created
+                ))
+                let assembled = try AudioAssembler().assemble(
+                    pcm: (0..<44_100).map { Float(0.2 * sin(2 * Double.pi * 220 * Double($0) / 44_100)) },
+                    itemID: episodeID, destinationURL: audioURL
+                )
+                try await store.finalizePodcastDownload(
+                    revision: assembled.revision, mediaURL: audioURL,
+                    download: try PodcastDownload(
+                        episodeID: episodeID, status: .completed,
+                        bytesReceived: assembled.revision.byteCount,
+                        expectedByteCount: assembled.revision.byteCount,
+                        localURL: audioURL, contentHash: assembled.revision.contentHash,
+                        updatedAt: created
+                    )
+                )
+                try await store.save(transcript: try Transcript(
+                    itemID: episodeID, revisionID: assembled.revision.revisionID,
+                    availability: .available, text: "First line. Second line.",
+                    timing: .published,
+                    cues: [try TranscriptCue(startSeconds: 0, endSeconds: 0.5, text: "First line."),
+                           try TranscriptCue(startSeconds: 0.5, endSeconds: 1.0, text: "Second line.")],
+                    updatedAt: created
+                ))
+                return store
+            }
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let episode = try XCTUnwrap(model.episodes.first)
+        model.playEpisode(episode)
+        try await settle(model)
+        defer { model.togglePlayback() }
+
+        let transcript = try XCTUnwrap(model.currentTranscript)
+        XCTAssertTrue(transcript.isSynchronized, "playing an episode has to surface its timed transcript")
+        XCTAssertEqual(transcript.cues.map(\.text), ["First line.", "Second line."])
+        XCTAssertEqual(transcript.disclosureTitle, "Transcript \u{00B7} synced from the feed")
+        XCTAssertEqual(transcript.cueIndex(at: 0.6), 1)
+    }
+
 }

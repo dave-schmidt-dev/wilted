@@ -196,6 +196,16 @@ struct WiltedMacProcessorRun: Identifiable, Equatable, Sendable {
 /// producer keeps a local shape here for the same reason `WiltedMacArticle`
 /// exists: the views stay compilable without the producer package, and UI code
 /// never handles a domain type directly.
+/// One timed line of a transcript, in the audio's own clock.
+struct WiltedMacTranscriptCue: Identifiable, Equatable, Sendable {
+    /// Position in the transcript. Start times can repeat across cues in a
+    /// published caption file, so the index is what identifies a row.
+    let id: Int
+    let startSeconds: TimeInterval
+    let endSeconds: TimeInterval
+    let text: String
+}
+
 struct WiltedMacTranscript: Equatable, Sendable {
     enum Availability: String, Sendable {
         case available
@@ -207,6 +217,28 @@ struct WiltedMacTranscript: Equatable, Sendable {
 
     let availability: Availability
     let text: String?
+    /// Empty unless the transcript's timing was measured against this exact
+    /// audio. An estimate is not timing and never appears here.
+    var cues: [WiltedMacTranscriptCue] = []
+    /// Whether the timing came from the publisher or from Wilted's own pass.
+    var timingSource: String?
+
+    /// A transcript that can follow the playback clock.
+    var isSynchronized: Bool { isReadable && !cues.isEmpty }
+
+    /// The cue covering `seconds`, for a reader following playback.
+    ///
+    /// Binary search rather than a scan: this runs on every readout tick, and
+    /// a three-hour episode carries thousands of cues.
+    func cueIndex(at seconds: TimeInterval) -> Int? {
+        guard !cues.isEmpty, seconds >= cues[0].startSeconds else { return nil }
+        var low = 0, high = cues.count - 1, found = 0
+        while low <= high {
+            let middle = (low + high) / 2
+            if cues[middle].startSeconds <= seconds { found = middle; low = middle + 1 } else { high = middle - 1 }
+        }
+        return found
+    }
 
     var isReadable: Bool {
         (availability == .available || availability == .stale) && !(text ?? "").isEmpty
@@ -223,7 +255,9 @@ struct WiltedMacTranscript: Equatable, Sendable {
     }
 
     var disclosureTitle: String {
-        availability == .stale ? "Transcript (may be outdated)" : "Transcript"
+        if availability == .stale { return "Transcript (may be outdated)" }
+        guard let timingSource else { return "Transcript" }
+        return "Transcript · \(timingSource)"
     }
 
     /// The listener always shows this row and explains why text is missing.
@@ -397,9 +431,10 @@ final class WiltedMacModel {
     private var podcastDownloadCoordinator: PodcastDownloadCoordinator?
     private var podcastPreparationPipeline: PodcastPreparationPipeline?
     private var podcastPreparationTasks: [String: Task<Void, Never>] = [:]
-    /// Removing advertisements is why preparation exists, but it is the part
-    /// that rewrites the file, so it stays switchable.
-    var removesAdvertisements = true
+    /// Removing advertisements is why preparation exists. Read once, when the
+    /// pipeline is built, so this is not a switch: a Settings control would
+    /// have to rebuild the pipeline to mean anything, and none exists yet.
+    private let removesAdvertisements = true
     private var hiddenEpisodeIDs: Set<String> = []
     private var fixtureDownloadFailuresRemaining = 0
     private let podcastFeedClient: PodcastFeedClient
@@ -759,7 +794,6 @@ final class WiltedMacModel {
                     advertisements: result.adSegments.count, secondsRemoved: result.removedSeconds,
                     timing: result.transcript.timing
                 )
-                self.updateEpisode(episode.id) { $0.preparationState = .prepared(summary: summary) }
                 self.podcastOperationMessage = "\(episode.title): \(summary)"
                 if let store = self.store {
                     let values = try await self.loadLibrary(from: store)
@@ -767,6 +801,12 @@ final class WiltedMacModel {
                     self.episodes = values.episodes
                     self.subscriptions = values.subscriptions
                 }
+                // Applied after the reload, not before. The reload derives
+                // preparation state from what the library can prove, and how
+                // many advertisements a run cut is not stored, so it would
+                // otherwise replace this run's summary with a generic one.
+                self.updateEpisode(episode.id) { $0.preparationState = .prepared(summary: summary) }
+                await self.reloadPreparedPlayback(episode.id, itemID: itemID)
                 self.refreshProcessorRuns()
             } catch is CancellationError {
                 self?.updateEpisode(episode.id) { $0.preparationState = .notPrepared }
@@ -783,6 +823,27 @@ final class WiltedMacModel {
     func cancelEpisodePreparation(_ episode: WiltedMacEpisode) {
         podcastPreparationTasks[episode.id]?.cancel()
     }
+
+#if canImport(WiltedProducer)
+    /// Re-points the player at an episode that was just prepared.
+    ///
+    /// Preparation supersedes the revision and deletes the audio it was cut
+    /// from, carrying the saved position onto the new timeline. A player still
+    /// holding the old revision would keep playing the advertisements and
+    /// would fail on its next load, so the episode is selected again, which
+    /// resumes from the carried position and picks up the new transcript.
+    private func reloadPreparedPlayback(_ episodeID: String, itemID: ItemID) async {
+        guard currentPodcastEpisodeID == episodeID, let playback else { return }
+        let wasPlaying = playback.liveIsPlaying
+        do {
+            try await playback.selectPodcastQueueEpisode(itemID, autoplay: wasPlaying)
+            refreshPlaybackReadout()
+        } catch {
+            playbackError = "This episode's saved audio is unavailable."
+        }
+        await loadEpisodeTranscript(itemID: itemID)
+    }
+#endif
 
 #if canImport(WiltedProducer)
     /// Turns the worker's own stage vocabulary into something a listener reads.
@@ -1187,6 +1248,7 @@ final class WiltedMacModel {
                 self.isNowPlaying = true
                 self.currentTranscript = .unavailable
                 await self.refreshPodcastQueueState()
+                await self.loadEpisodeTranscript(itemID: id)
                 self.refreshPlaybackReadout()
                 self.playbackError = nil
                 self.playbackOperationStatus = nil
@@ -1299,7 +1361,34 @@ final class WiltedMacModel {
         case .malformed: .malformed
         case .absent: .absent
         }
-        currentTranscript = WiltedMacTranscript(availability: availability, text: stored.text)
+        let timingSource: String? = switch stored.timing {
+        case .published: "synced from the feed"
+        case .aligned: "synced"
+        case .none: nil
+        }
+        currentTranscript = WiltedMacTranscript(
+            availability: availability, text: stored.text,
+            cues: (stored.cues ?? []).enumerated().map { index, cue in
+                WiltedMacTranscriptCue(id: index, startSeconds: cue.startSeconds,
+                                       endSeconds: cue.endSeconds, text: cue.text)
+            },
+            timingSource: timingSource
+        )
+    }
+#endif
+
+#if canImport(WiltedProducer)
+    /// Loads the transcript for whichever revision of an episode is ready now.
+    ///
+    /// The revision cannot be remembered from when the episode was downloaded:
+    /// preparation cuts the audio, which changes its bytes and therefore its
+    /// identity, so the current one has to be read back from the library.
+    private func loadEpisodeTranscript(itemID: ItemID) async {
+        guard let store, let stored = try? await store.readyRevision(for: itemID) else {
+            currentTranscript = .unavailable
+            return
+        }
+        await loadTranscript(itemID: itemID, revisionID: stored.revision.revisionID)
     }
 #endif
 
@@ -1764,6 +1853,7 @@ final class WiltedMacModel {
             isPodcastPlayback = true
             isNowPlaying = true
             refreshPlaybackReadout()
+            await loadEpisodeTranscript(itemID: itemID)
         }
         playbackOperationStatus = nil
     }
@@ -1781,6 +1871,7 @@ final class WiltedMacModel {
     }
 
     private func applyPodcastPlaybackObservation(itemID: ItemID?, fault: PlaybackControllerError?) {
+        let movedToAnotherEpisode = itemID != nil && currentPodcastEpisodeID != itemID?.rawValue
         currentPodcastEpisodeID = itemID?.rawValue
         if itemID != nil {
             selectedArticleID = nil
@@ -1795,6 +1886,13 @@ final class WiltedMacModel {
         }
         playbackOperationStatus = nil
         refreshPlaybackReadout()
+        // Continuous playback advances the queue without going through
+        // `playEpisode`, so the previous episode's transcript would otherwise
+        // stay on screen against the new audio.
+        if movedToAnotherEpisode, let itemID {
+            currentTranscript = .unavailable
+            Task { [weak self] in await self?.loadEpisodeTranscript(itemID: itemID) }
+        }
     }
 
     private func loadLibrary(from store: LocalLibraryStore) async throws
@@ -2054,6 +2152,28 @@ final class WiltedMacModel {
             }
             if let revision { try? await store.saveReadyRevision(revision, mediaURL: mediaURL) }
         }
+    }
+
+    /// Jumps playback to a transcript line the listener picked.
+    func seekToTranscriptCue(_ cue: WiltedMacTranscriptCue) {
+#if canImport(WiltedProducer)
+        guard let playback else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await playback.seek(to: cue.startSeconds)
+                self.isPlaying = playback.isPlaying
+                self.refreshPlaybackReadout()
+                await self.queueCurrentPlaybackCheckpoint()
+            } catch { self.reportAudioRouteFault("Playback is unavailable.") }
+        }
+#endif
+    }
+
+    /// The transcript line the audio is currently in, if the transcript is
+    /// synchronised with it.
+    var activeTranscriptCueID: Int? {
+        currentTranscript?.cueIndex(at: playbackPositionSeconds)
     }
 
     private func seek(by seconds: TimeInterval) {

@@ -1080,26 +1080,50 @@ struct WiltedMacCompactPlayer: View {
         }
     }
 
-    private var transcriptContent: some View {
+    @ViewBuilder private var transcriptContent: some View {
+        let transcript = model.currentTranscript ?? .unavailable
+        // A synchronised transcript owns its own scrolling: it has to move the
+        // active line to the middle as the audio advances, which a parent
+        // scroll view would fight.
+        if model.hasCurrentPlayback, transcript.isSynchronized {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                Text(transcript.disclosureTitle)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-now-playing-transcript")
+                WiltedSyncedTranscriptView(
+                    cues: transcript.cues.map {
+                        WiltedTranscriptCueLine(id: $0.id, startSeconds: $0.startSeconds, text: $0.text)
+                    },
+                    activeCueID: model.activeTranscriptCueID,
+                    identifier: "wilted-now-playing-synced-transcript"
+                ) { model.seekToTranscriptCue(transcript.cues[$0.id]) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            unsyncedTranscriptContent(transcript)
+        }
+    }
+
+    private func unsyncedTranscriptContent(_ transcript: WiltedMacTranscript) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                 if !model.hasCurrentPlayback {
                     Text(WiltedScreenCopy.nowPlayingEmptyDetailProducer)
                         .font(WiltedTheme.font(.body))
-                } else if model.currentEpisode != nil {
-                    Text("Transcript unavailable for this episode")
-                        .font(WiltedTheme.font(.body))
-                        .accessibilityIdentifier("wilted-now-playing-transcript")
                 } else {
-                    let transcript = model.currentTranscript ?? .unavailable
                     WiltedTranscriptSection(
                         isReadable: transcript.isReadable,
                         title: transcript.disclosureTitle,
                         text: transcript.text,
-                        unavailableLabel: transcript.unavailableLabel,
+                        unavailableLabel: model.currentEpisode == nil
+                            ? transcript.unavailableLabel
+                            : "Transcript unavailable. Prepare this episode to add one.",
                         identifier: "wilted-now-playing-transcript"
                     )
-                    if !transcript.isReadable {
+                    // Backfill fetches article text from the web; an episode's
+                    // transcript comes from preparation instead.
+                    if !transcript.isReadable, model.currentEpisode == nil {
                         Button(model.isBackfillingTranscript ? "Fetching transcript…" : "Fetch transcript") {
                             model.backfillCurrentTranscript()
                         }
