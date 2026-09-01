@@ -208,6 +208,36 @@ struct PodcastPreparationPipelineTests {
         #expect(FileManager.default.fileExists(atPath: fixture.audioURL.path))
     }
 
+    /// A run that failed while the window was closed still has to leave
+    /// evidence, so every status is journalled as well as reported.
+    @Test func journalsTheRunSoItsOutcomeOutlivesTheWindow() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        _ = try await fixture.pipeline(Fixture.cuttingStub()).prepare(episodeID: fixture.episodeID)
+
+        let requestID = PodcastPreparationPipeline.requestID(for: fixture.episodeID)
+        let entries = try await fixture.store.preparationJournal(for: requestID)
+        #expect(entries.contains { $0.status.stage == .preparing })
+        #expect(entries.contains { $0.status.stage == .saving })
+        let terminal = try #require(entries.last { $0.status.terminal })
+        #expect(terminal.status.terminalResult?.outcome == .succeeded)
+        #expect(terminal.status.terminalResult?.revisionID != nil)
+        #expect(entries.allSatisfy { $0.itemID == fixture.episodeID })
+    }
+
+    @Test func journalsAFailureWithTheCodeThatCausedIt() async throws {
+        let fixture = try await Fixture(installDownload: false)
+        defer { fixture.remove() }
+        _ = try? await fixture.pipeline(WorkerStub(response: [:])).prepare(episodeID: fixture.episodeID)
+
+        let entries = try await fixture.store.preparationJournal(
+            for: PodcastPreparationPipeline.requestID(for: fixture.episodeID)
+        )
+        let terminal = try #require(entries.last { $0.status.terminal })
+        #expect(terminal.status.stage == .failed)
+        #expect(terminal.status.terminalResult?.error?.code == .invalidRequest)
+    }
+
     // MARK: Transcript construction
 
     @Test func recordsAnAbsentTranscriptWhenTheWorkerFoundNoWords() throws {

@@ -77,6 +77,24 @@ public struct PodcastPreparationProgress: Equatable, Sendable {
     }
 }
 
+extension PodcastPreparationProgress {
+    /// Where this stage belongs in the journal the Processor page reads.
+    ///
+    /// The worker's vocabulary is its own -- it names transcript tiers and
+    /// ffmpeg passes -- but the durable record has one shape for every kind of
+    /// preparation, so a reader does not need to know which pipeline ran.
+    var journalStage: PreparationStage {
+        let parts = stage.split(separator: ".").map(String.init)
+        switch (parts.first ?? stage, parts.count > 1 ? parts[1] : "") {
+        case ("transcript", "published"): return .fetching
+        case ("transcript", _): return .extracting
+        case ("ads", _): return .assembling
+        case ("audio", _): return .saving
+        default: return .preparing
+        }
+    }
+}
+
 public struct PodcastPreparationResult: Sendable {
     public let revision: AudioRevision
     public let mediaURL: URL
@@ -228,6 +246,32 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
     }
 }
 
+/// Tracks the journal writes one run has started.
+///
+/// A progress callback must never block the worker, so each write is enqueued
+/// rather than awaited where it is reported. Recording them synchronously here
+/// means the run can drain the exact set before announcing its outcome, so the
+/// journal a reader sees afterwards is complete rather than still arriving.
+private final class JournalWrites: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: [Task<Void, Never>] = []
+
+    func track(_ write: Task<Void, Never>) {
+        lock.lock(); pending.append(write); lock.unlock()
+    }
+
+    func drain() async {
+        for write in take() { await write.value }
+    }
+
+    private func take() -> [Task<Void, Never>] {
+        lock.lock(); defer { lock.unlock() }
+        let writes = pending
+        pending = []
+        return writes
+    }
+}
+
 /// Buffers a worker's two output streams from their read handlers.
 ///
 /// The handlers fire on an arbitrary queue, so every access is behind one lock
@@ -324,36 +368,126 @@ public actor PodcastPreparationPipeline {
         self.now = now
     }
 
+    /// The journal key for one episode's preparation history.
+    public static func requestID(for episodeID: ItemID) -> String { "podcast-prepare|" + episodeID.rawValue }
+
     public func prepare(
         episodeID: ItemID,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void = { _ in }
     ) async throws -> PodcastPreparationResult {
+        let requestID = Self.requestID(for: episodeID)
+        let writes = JournalWrites()
+        // Every status is journalled as well as reported, so a run that failed
+        // while the window was closed still leaves evidence a reader can find.
+        // Journalling must never be the thing that fails a preparation.
+        let clock = now
+        let report: @Sendable (PodcastPreparationProgress) -> Void = { [weak self] progress in
+            onStatus(progress)
+            guard let self else { return }
+            // Stamped here rather than inside the journal task: the write is
+            // enqueued behind this actor and may not run until the run is
+            // over, and an entry timestamped then would sort after the
+            // terminal record it preceded.
+            let emittedAt = Timestamp(clock())
+            writes.track(Task { await self.journal(progress, at: emittedAt, for: episodeID, requestID: requestID) })
+        }
+
         guard let episode = try await store.podcastEpisode(for: episodeID),
               let download = try await store.download(for: episodeID), download.status == .completed,
               let audioURL = download.localURL,
               FileManager.default.fileExists(atPath: audioURL.path),
               let stored = try await store.readyRevision(for: episodeID) else {
+            await journalTerminal(episodeID: episodeID, requestID: requestID,
+                                  error: PodcastPreparationError.episodeNotDownloaded, revisionID: nil)
             throw PodcastPreparationError.episodeNotDownloaded
         }
 
-        onStatus(PodcastPreparationProgress(stage: "pipeline.start", detail: episode.title))
-        var request: [String: Any] = [
-            "protocolVersion": 1,
-            "audioPath": audioURL.path,
-            "outputPath": preparedAudioURL(for: audioURL).path,
-            "workDir": workDirectory.path,
-            "removeAds": removeAds,
-            "allowSpeechToText": allowSpeechToText,
-        ]
-        if let published = await fetchPublishedTranscript(for: episode, onStatus: onStatus) {
-            request["publishedTranscript"] = published
+        report(PodcastPreparationProgress(stage: "pipeline.start", detail: episode.title))
+        do {
+            var request: [String: Any] = [
+                "protocolVersion": 1,
+                "audioPath": audioURL.path,
+                "outputPath": preparedAudioURL(for: audioURL).path,
+                "workDir": workDirectory.path,
+                "removeAds": removeAds,
+                "allowSpeechToText": allowSpeechToText,
+            ]
+            if let published = await fetchPublishedTranscript(for: episode, onStatus: report) {
+                request["publishedTranscript"] = published
+            }
+            let response = try await runner.run(request: try JSONSerialization.data(withJSONObject: request),
+                                                onProgress: report)
+            let payload = try Self.decode(response)
+            let result = try await commit(payload, episode: episode, download: download,
+                                          downloadedRevision: stored.revision, audioURL: audioURL, onStatus: report)
+            await writes.drain()
+            await journalTerminal(episodeID: episodeID, requestID: requestID, error: nil,
+                                  revisionID: result.revision.revisionID)
+            return result
+        } catch {
+            await writes.drain()
+            await journalTerminal(episodeID: episodeID, requestID: requestID, error: error, revisionID: nil)
+            throw error
         }
+    }
 
-        let response = try await runner.run(request: try JSONSerialization.data(withJSONObject: request),
-                                            onProgress: onStatus)
-        let payload = try Self.decode(response)
-        return try await commit(payload, episode: episode, download: download,
-                                downloadedRevision: stored.revision, audioURL: audioURL, onStatus: onStatus)
+    // MARK: Journal
+
+    private func journal(
+        _ progress: PodcastPreparationProgress, at emittedAt: Timestamp,
+        for episodeID: ItemID, requestID: String
+    ) async {
+        let detail = progress.detail.isEmpty ? progress.stage : progress.detail
+        guard let status = try? PreparationStatus(
+            stage: progress.journalStage, detail: String(detail.prefix(1_024)),
+            fraction: progress.fraction, cancellable: true, emittedAt: emittedAt
+        ) else { return }
+        try? await store.record(preparation: PreparationJournalEntry(
+            id: requestID + "|" + progress.stage, itemID: episodeID, requestID: requestID, status: status
+        ))
+    }
+
+    private func journalTerminal(
+        episodeID: ItemID, requestID: String, error: (any Error)?, revisionID: RevisionID?
+    ) async {
+        let outcome: PreparationOutcome
+        let producerError: ProducerError?
+        if error == nil {
+            outcome = .succeeded
+            producerError = nil
+        } else if error is CancellationError || (error as? PodcastPreparationError) == .cancelled {
+            outcome = .cancelled
+            producerError = nil
+        } else {
+            outcome = .failed
+            let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error!)
+            producerError = try? ProducerError(code: Self.errorCode(for: error!),
+                                               message: String(message.prefix(1_024)), retryable: true,
+                                               stage: "podcast-preparation")
+        }
+        guard outcome != .failed || producerError != nil,
+              let terminal = try? PreparationTerminalResult(outcome: outcome, revisionID: revisionID,
+                                                            error: producerError),
+              let status = try? PreparationStatus(
+                stage: outcome == .succeeded ? .completed : (outcome == .cancelled ? .cancelled : .failed),
+                detail: producerError?.message ?? (outcome == .succeeded ? "Prepared." : "Cancelled."),
+                cancellable: false, terminalResult: terminal, emittedAt: Timestamp(now())
+              ) else { return }
+        try? await store.record(preparation: PreparationJournalEntry(
+            id: requestID + "|terminal", itemID: episodeID, requestID: requestID, status: status
+        ))
+    }
+
+    private static func errorCode(for error: any Error) -> ProducerErrorCode {
+        switch error as? PodcastPreparationError {
+        case .episodeNotDownloaded: .invalidRequest
+        case .workerUnavailable: .unsupported
+        case .workerTimedOut: .timedOut
+        case .malformedWorkerResponse: .protocolMismatch
+        case .preparedAudioUnreadable: .outputInvalid
+        case .cancelled: .cancelled
+        default: .failed
+        }
     }
 
     // MARK: Published transcript
