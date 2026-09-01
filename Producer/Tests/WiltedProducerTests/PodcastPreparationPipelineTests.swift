@@ -225,6 +225,40 @@ struct PodcastPreparationPipelineTests {
         #expect(entries.allSatisfy { $0.itemID == fixture.episodeID })
     }
 
+    /// The journal is keyed by item, not attempt. Before it was cleared at the
+    /// start of a run, the previous attempt's terminal row reported the next
+    /// attempt as finished while it was still running, and stage rows the new
+    /// attempt had not reached yet read as its own.
+    @Test func aSecondAttemptStartsWithAnEmptyJournal() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let requestID = PodcastPreparationPipeline.requestID(for: fixture.episodeID)
+        _ = try await fixture.pipeline(Fixture.cuttingStub()).prepare(episodeID: fixture.episodeID)
+        let firstTerminal = try #require(try await fixture.store.preparationJournal(for: requestID).last { $0.status.terminal })
+        #expect(firstTerminal.status.terminalResult?.outcome == .succeeded)
+
+        let store = fixture.store
+        let probe = ProbingWorker { [store] in
+            // Journal writes queue behind the pipeline's actor, so wait for
+            // this attempt's first row rather than reading whatever landed.
+            var running: PreparationRunSummary?
+            for _ in 0..<200 where running == nil {
+                running = try await store.preparationRuns().first { $0.requestID == requestID }
+                if running == nil { try await Task.sleep(for: .milliseconds(10)) }
+            }
+            let observed = try #require(running)
+            #expect(!observed.isTerminal, "the first attempt's terminal row must not describe the second")
+            #expect(!observed.entries.contains { $0.status.stage == .saving }, "stale stage rows must be gone")
+        }
+        _ = try? await fixture.pipeline(probe).prepare(episodeID: fixture.episodeID)
+
+        let second = try #require(try await fixture.store.preparationRuns().first { $0.requestID == requestID })
+        #expect(second.isTerminal)
+        #expect(second.outcome == .failed)
+        #expect(second.entries.last?.status.terminal == true)
+        #expect(!second.entries.contains { $0.status.stage == .saving })
+    }
+
     @Test func journalsAFailureWithTheCodeThatCausedIt() async throws {
         let fixture = try await Fixture(installDownload: false)
         defer { fixture.remove() }
@@ -451,6 +485,22 @@ private actor WorkerStub: PodcastPipelineRunning {
             answer["audioPath"] = outputPath
         }
         return try JSONSerialization.data(withJSONObject: answer)
+    }
+}
+
+/// A worker that lets a test look at the store mid-run, then fails.
+private actor ProbingWorker: PodcastPipelineRunning {
+    private let probe: @Sendable () async throws -> Void
+
+    init(probe: @escaping @Sendable () async throws -> Void) { self.probe = probe }
+
+    func run(
+        request payload: Data,
+        onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void
+    ) async throws -> Data {
+        onProgress(PodcastPreparationProgress(stage: "worker.start"))
+        try await probe()
+        throw PodcastPreparationError.workerUnavailable("probe")
     }
 }
 

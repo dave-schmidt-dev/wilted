@@ -318,7 +318,7 @@ expected_test_count_floor() {
   fi
   case "$1" in
     macos-unit-tests) printf '30\n' ;;
-    macos-ui-tests) printf '15\n' ;;
+    macos-ui-tests) printf '16\n' ;;
     ios-pixel-snapshot-tests) printf '11\n' ;;
     *) printf '1\n' ;;
   esac
@@ -328,8 +328,8 @@ assert_mac_ui_selector_floor_contract() {
   local focused='WiltedMacUITests/WiltedMacSmokeUITests/testFocusedSelector'
   [[ "$(WILTED_MAC_UI_SELECTOR="$focused" expected_test_count_floor macos-ui-tests)" == "1" ]] ||
     fail 'validated focused Mac UI selector must require exactly one test'
-  [[ "$(unset WILTED_MAC_UI_SELECTOR; expected_test_count_floor macos-ui-tests)" == "15" ]] ||
-    fail 'default Mac UI suite must retain its fifteen-test floor'
+  [[ "$(unset WILTED_MAC_UI_SELECTOR; expected_test_count_floor macos-ui-tests)" == "16" ]] ||
+    fail 'default Mac UI suite must retain its sixteen-test floor'
   if WILTED_MAC_UI_SELECTOR='WiltedMacUITests/OtherTests/testNope' \
     expected_test_count_floor macos-ui-tests >/dev/null 2>&1; then
     fail 'invalid Mac UI selector lowered the test-count floor'
@@ -354,7 +354,7 @@ assert_result_bundle_tests() {
     elif [[ "$label" == "macos-unit-tests" ]]; then
       printf '%s\n' '{"totalTestCount":30}' >"$summary_file"
     elif [[ "$label" == "macos-ui-tests" ]]; then
-      printf '%s\n' '{"totalTestCount":15}' >"$summary_file"
+      printf '%s\n' '{"totalTestCount":16}' >"$summary_file"
     elif [[ "$label" == "ios-pixel-snapshot-tests" ]]; then
       printf '%s\n' '{"totalTestCount":11}' >"$summary_file"
     else

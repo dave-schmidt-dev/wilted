@@ -408,6 +408,10 @@ public actor PodcastPreparationPipeline {
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void = { _ in }
     ) async throws -> PodcastPreparationResult {
         let requestID = Self.requestID(for: episodeID)
+        // The journal is one attempt deep. Left in place, the previous
+        // attempt's terminal row would report this one as finished before it
+        // had started, and its stale stage rows would read as this run's.
+        try? await store.clearPreparationJournal(for: requestID)
         let writes = JournalWrites()
         // Every status is journalled as well as reported, so a run that failed
         // while the window was closed still leaves evidence a reader can find.

@@ -249,6 +249,44 @@ final class WiltedMacSmokeUITests: XCTestCase {
         )
     }
 
+    /// The Larder row says only that an episode is preparing or prepared; what
+    /// the run did lives on Prep, in a sentence by default and in the worker's
+    /// own log when asked for.
+    func testPrepNarratesARunAndShowsItsLogOnRequest() {
+        let app = launch(arguments: [
+            "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"
+        ])
+        let navProcessor = app.descendants(matching: .any)["wilted-navigation-processor"]
+        XCTAssertTrue(navProcessor.waitForExistence(timeout: 5))
+        navProcessor.click()
+
+        let run = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-processor-run-podcast-prepare|'")
+        ).firstMatch
+        XCTAssertTrue(run.waitForExistence(timeout: 5), "The fixture's prepared episode has a journalled run.")
+        XCTAssertTrue(run.staticTexts["Quiet Machines"].exists)
+        XCTAssertTrue(run.staticTexts["Succeeded"].exists)
+        XCTAssertTrue(run.staticTexts["Prepared."].exists, "A finished run is narrated from what it recorded.")
+
+        let logs = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-processor-log-'")
+        )
+        XCTAssertEqual(logs.count, 0, "The log is opt-in.")
+        XCTAssertFalse(app.staticTexts["ads.detect.calls · 50 requests, 0 failed"].exists)
+
+        let verbose = app.checkBoxes["wilted-processor-verbose"]
+        XCTAssertTrue(verbose.waitForExistence(timeout: 3))
+        verbose.click()
+        XCTAssertTrue(
+            app.staticTexts["ads.detect.calls · 50 requests, 0 failed"].waitForExistence(timeout: 5),
+            "Detailed log must list every journalled status in the worker's words."
+        )
+        XCTAssertTrue(app.staticTexts["transcript.stt.start"].exists)
+
+        verbose.click()
+        XCTAssertTrue(app.staticTexts["ads.detect.calls · 50 requests, 0 failed"].waitForNonExistence(timeout: 5))
+    }
+
     /// The sidebar lists destinations only. It used to repeat every article the
     /// Library detail already showed.
     func testSidebarListsDestinationsOnlyAndNotTheArticleList() {

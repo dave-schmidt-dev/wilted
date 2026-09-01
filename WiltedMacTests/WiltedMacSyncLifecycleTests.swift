@@ -359,7 +359,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
                         cancel: { await transport.cancel() }
                     )
                 },
-                stateDirectoryOverride: root
+                stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
             )
 
             // Startup and foreground callbacks can arrive together; only one reconciliation
@@ -423,7 +423,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
                         cancel: { await transport.cancel() }
                     )
                 },
-                stateDirectoryOverride: root
+                stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
             )
 
             model.reconcileSyncOnLaunchOrForeground()

@@ -162,13 +162,40 @@ struct WiltedMacProcessorRun: Identifiable, Equatable, Sendable {
     }
 
     let id: String
+    /// The item the run prepared; a podcast run's is an episode id.
+    let itemID: String
+    let isPodcast: Bool
     let title: String
     let source: String
     let stage: String
+    /// The last thing the run said, in the pipeline's own words.
     let detail: String
+    /// The last thing the run said, in the listener's words: "Finding
+    /// advertisements…" rather than `ads.detect.calls`.
+    let narrative: String
     let fraction: Double?
     let outcome: Outcome
     let updatedAt: Date
+    /// Everything the run journalled, oldest first. Shown when the reader has
+    /// asked for the detailed log.
+    let events: [WiltedMacProcessorEvent]
+
+    init(id: String, itemID: String, isPodcast: Bool, title: String, source: String, stage: String,
+         detail: String, narrative: String? = nil, fraction: Double?, outcome: Outcome, updatedAt: Date,
+         events: [WiltedMacProcessorEvent] = []) {
+        self.id = id
+        self.itemID = itemID
+        self.isPodcast = isPodcast
+        self.title = title
+        self.source = source
+        self.stage = stage
+        self.detail = detail
+        self.narrative = narrative ?? detail
+        self.fraction = fraction
+        self.outcome = outcome
+        self.updatedAt = updatedAt
+        self.events = events
+    }
 
     /// Colour is emphasis only; `outcomeLabel` always states the outcome.
     var tone: WiltedStatusTone {
@@ -187,6 +214,21 @@ struct WiltedMacProcessorRun: Identifiable, Equatable, Sendable {
         case .failed: "Failed"
         case .cancelled: "Cancelled"
         }
+    }
+}
+
+/// One journalled status of a preparation run.
+struct WiltedMacProcessorEvent: Identifiable, Equatable, Sendable {
+    let id: String
+    let at: Date
+    /// The pipeline's own stage name, such as `ads.detect.calls`.
+    let stage: String
+    let detail: String
+    let fraction: Double?
+
+    /// "stage · detail", or just the stage when the run said nothing more.
+    var line: String {
+        detail.isEmpty || detail == stage ? stage : "\(stage) · \(detail)"
     }
 }
 
@@ -386,6 +428,12 @@ final class WiltedMacModel {
         didSet { preferences.set(libraryOrder.rawValue, forKey: Self.libraryOrderPreferenceKey) }
     }
     static let libraryOrderPreferenceKey = "wilted.library.order"
+    /// Whether Prep lists every journalled status of a run or only where the
+    /// run is. Off, a reader sees a sentence; on, the pipeline's own log.
+    var verboseProcessing = false {
+        didSet { preferences.set(verboseProcessing, forKey: Self.verboseProcessingPreferenceKey) }
+    }
+    static let verboseProcessingPreferenceKey = "wilted.processor.verbose"
     private let preferences: UserDefaults
     var selectedNavigation: WiltedMacNavigation = .library
     private(set) var articles: [WiltedMacArticle] = []
@@ -475,7 +523,7 @@ final class WiltedMacModel {
          retainedArtifactPresenter: ((URL) -> Void)? = nil,
          podcastFeedClient: PodcastFeedClient = PodcastFeedClient(),
          pastedLinkClassifier: PastedLinkClassifier = PastedLinkClassifier(),
-         preferences: UserDefaults? = nil) {
+         preferences: UserDefaults) {
         let usesFixtureMode = arguments.contains("--wilted-ui-fixture-article-flow")
             || arguments.contains("--wilted-ui-fixture-quarantined")
             || arguments.contains("--wilted-ui-smoke")
@@ -485,7 +533,10 @@ final class WiltedMacModel {
             || arguments.contains("--wilted-ui-fixture-podcasts")
             || arguments.contains("--wilted-ui-fixture-download-failure")
         fixtureMode = usesFixtureMode
-        self.preferences = preferences ?? Self.preferences(fixtureMode: usesFixtureMode)
+        // Required rather than defaulted to `.standard`: the unit-test host is
+        // the app bundle itself, so a defaulted `.standard` let tests write
+        // into the daily driver's own preferences.
+        self.preferences = usesFixtureMode ? Self.fixturePreferences() : preferences
 
 #if canImport(WiltedProducer)
         let stateDirectory = stateDirectoryOverride ?? Self.stateDirectory(fixtureMode: usesFixtureMode)
@@ -532,13 +583,15 @@ final class WiltedMacModel {
            let order = WiltedMacLibraryOrder(rawValue: stored) {
             libraryOrder = order
         }
+        if let stored = self.preferences.object(forKey: Self.verboseProcessingPreferenceKey) as? Bool {
+            verboseProcessing = stored
+        }
     }
 
     /// Fixture launches share the daily driver's bundle identifier, so they
     /// get their own defaults domain, emptied on every launch: a UI test must
     /// neither inherit the owner's choices nor leave its own behind.
-    private static func preferences(fixtureMode: Bool) -> UserDefaults {
-        guard fixtureMode else { return .standard }
+    private static func fixturePreferences() -> UserDefaults {
         let suite = "com.zerodelta.wilted.mac.ui-fixture"
         let defaults = UserDefaults(suiteName: suite) ?? .standard
         defaults.removePersistentDomain(forName: suite)
@@ -841,18 +894,13 @@ final class WiltedMacModel {
               let itemID = try? ItemID(rawValue: episode.id) else { return }
         updateEpisode(episode.id) { $0.preparationState = .preparing(stage: "Preparing…") }
         podcastOperationMessage = "Preparing \(episode.title)…"
-        // Built here rather than inside the task so it captures the model
-        // directly: the worker calls it from its own queue for minutes.
-        let report: @Sendable (PodcastPreparationProgress) -> Void = { [weak self] progress in
-            let label = Self.preparationLabel(for: progress)
-            Task { @MainActor in
-                self?.updateEpisode(episode.id) { $0.preparationState = .preparing(stage: label) }
-            }
-        }
+        // The row says only that the episode is preparing. Every status the
+        // worker emits is journalled by the pipeline, and Prep reads that
+        // journal back as the narrative and, on request, the full log.
         podcastPreparationTasks[episode.id] = Task { [weak self] in
             defer { self?.podcastPreparationTasks[episode.id] = nil }
             do {
-                let result = try await pipeline.prepare(episodeID: itemID, onStatus: report)
+                let result = try await pipeline.prepare(episodeID: itemID)
                 guard let self else { return }
                 let summary = Self.preparedSummary(
                     advertisements: result.adSegments.count, secondsRemoved: result.removedSeconds,
@@ -876,12 +924,21 @@ final class WiltedMacModel {
                 self?.updateEpisode(episode.id) { $0.preparationState = .notPrepared }
                 self?.podcastOperationMessage = "Preparation cancelled."
             } catch {
-                let message = (error as? LocalizedError)?.errorDescription ?? "Preparation failed."
-                self?.updateEpisode(episode.id) { $0.preparationState = .failed(message) }
-                self?.podcastOperationMessage = message
+                // The reason is on Prep, with the log that led to it.
+                self?.updateEpisode(episode.id) { $0.preparationState = .failed(Self.preparationFailedLabel) }
+                self?.podcastOperationMessage = "\(episode.title): \(Self.preparationFailedLabel)"
+                self?.refreshProcessorRuns()
             }
         }
 #endif
+    }
+
+    /// What a row says when its preparation failed. The cause is on Prep.
+    nonisolated static let preparationFailedLabel = "Preparation failed. See \(WiltedScreenCopy.processor)."
+
+    /// Stops the run Prep is showing. Article runs have their own cancel.
+    func cancelProcessorRun(_ run: WiltedMacProcessorRun) {
+        podcastPreparationTasks[run.itemID]?.cancel()
     }
 
     func cancelEpisodePreparation(_ episode: WiltedMacEpisode) {
@@ -925,7 +982,7 @@ final class WiltedMacModel {
         case "transcript.absent": "No transcript available."
         case "transcript.remap": "Resynchronising the transcript…"
         case "ads.model.load": "Loading the advertisement classifier…"
-        case "ads.detect.start", "ads.detect.complete": "Finding advertisements…"
+        case "ads.detect.start", "ads.detect.calls", "ads.detect.complete": "Finding advertisements…"
         case "ads.cut.start", "ads.cut.complete": "Removing advertisements…"
         case "ads.cut.refused", "ads.cut.empty": "Advertisements left in place."
         case "audio.publish": "Storing the prepared audio…"
@@ -1886,22 +1943,59 @@ final class WiltedMacModel {
                     default: .failed
                     }
                 }
+                let isPodcast = run.requestID.hasPrefix(Self.podcastRequestPrefix)
+                let events = Self.processorEvents(for: run)
+                let detail = run.failure?.message ?? run.detail
                 return WiltedMacProcessorRun(
                     id: run.requestID,
+                    itemID: run.itemID.rawValue,
+                    isPodcast: isPodcast,
                     // A run that failed before extraction never learned a
                     // title, so the item identity is all there is to name it.
                     title: known?.0 ?? "Unknown item",
                     source: known?.1 ?? run.itemID.rawValue,
                     stage: run.stage.rawValue,
-                    detail: run.failure?.message ?? run.detail,
+                    detail: detail,
+                    narrative: Self.processorNarrative(isPodcast: isPodcast, outcome: outcome, detail: detail,
+                                                       events: events),
                     fraction: run.fraction,
                     outcome: outcome,
-                    updatedAt: run.updatedAt.date
+                    updatedAt: run.updatedAt.date,
+                    events: events
                 )
             }
         }
 #endif
     }
+
+    static let podcastRequestPrefix = "podcast-prepare|"
+
+#if canImport(WiltedProducer)
+    /// The journal keys each status as `requestID|stage`, and the stage it
+    /// stores is the coarse one every pipeline shares, so the worker's own
+    /// stage name survives only in the key.
+    nonisolated static func processorEvents(for run: PreparationRunSummary) -> [WiltedMacProcessorEvent] {
+        run.entries.map { entry in
+            let prefix = run.requestID + "|"
+            let stage = entry.id.hasPrefix(prefix) ? String(entry.id.dropFirst(prefix.count)) : entry.status.stage.rawValue
+            return WiltedMacProcessorEvent(
+                id: entry.id, at: entry.status.emittedAt.date, stage: stage,
+                detail: entry.status.detail, fraction: entry.status.fraction
+            )
+        }
+    }
+
+    /// A running podcast run is narrated from its latest worker stage; a
+    /// finished one, and every article run, from what the journal recorded.
+    nonisolated static func processorNarrative(
+        isPodcast: Bool, outcome: WiltedMacProcessorRun.Outcome, detail: String, events: [WiltedMacProcessorEvent]
+    ) -> String {
+        guard isPodcast, outcome == .running, let latest = events.last(where: { !$0.stage.hasPrefix("log.") }) else {
+            return detail
+        }
+        return preparationLabel(for: PodcastPreparationProgress(stage: latest.stage, detail: latest.detail))
+    }
+#endif
 
 #if canImport(WiltedProducer)
     private func performStoreBootstrap() async {
@@ -2063,7 +2157,7 @@ final class WiltedMacModel {
         var episodeValues: [WiltedMacEpisode] = []
         let runs = Dictionary(
             uniqueKeysWithValues: ((try? await store.preparationRuns()) ?? [])
-                .filter { $0.requestID.hasPrefix("podcast-prepare|") }
+                .filter { $0.requestID.hasPrefix(Self.podcastRequestPrefix) }
                 .map { ($0.itemID, $0) }
         )
         for episode in try await store.podcastEpisodes() where subscribed.contains(episode.feedID) {
@@ -2122,7 +2216,7 @@ final class WiltedMacModel {
         case .aligned: return .prepared(summary: "Synced transcript")
         case .none, .some(.none):
             if let run, run.isTerminal, run.outcome == .failed {
-                return .failed(run.detail)
+                return .failed(preparationFailedLabel)
             }
             if transcript?.availability == .available { return .prepared(summary: "Transcript, not synced") }
             return .notPrepared
@@ -2292,6 +2386,37 @@ final class WiltedMacModel {
                 ))
             }
             if let revision { try? await store.saveReadyRevision(revision, mediaURL: mediaURL) }
+            // A prepared fixture episode has a history for Prep to read, in
+            // the worker's own vocabulary, so the detailed log is exercised
+            // through the same journal the real pipeline writes.
+            if fixtureEpisodeIsPrepared {
+                let requestID = Self.podcastRequestPrefix + episodeID.rawValue
+                let started = Date(timeIntervalSince1970: 1_699_830_000)
+                let journalled: [(String, PreparationStage, String, Double?)] = [
+                    ("pipeline.start", .preparing, episode.title, nil),
+                    ("transcript.stt.start", .extracting, "transcript.stt.start", nil),
+                    ("ads.detect.calls", .assembling, "50 requests, 0 failed", nil),
+                    ("ads.cut.complete", .assembling, "442.12 s removed", 0.9),
+                ]
+                for (offset, (stage, coarse, detail, fraction)) in journalled.enumerated() {
+                    guard let status = try? PreparationStatus(
+                        stage: coarse, detail: detail, fraction: fraction, cancellable: true,
+                        emittedAt: Timestamp(started.addingTimeInterval(Double(offset) * 60))
+                    ) else { continue }
+                    try? await store.record(preparation: PreparationJournalEntry(
+                        id: requestID + "|" + stage, itemID: episodeID, requestID: requestID, status: status
+                    ))
+                }
+                if let terminal = try? PreparationTerminalResult(outcome: .succeeded, revisionID: revision?.revisionID),
+                   let status = try? PreparationStatus(
+                    stage: .completed, detail: "Prepared.", cancellable: false, terminalResult: terminal,
+                    emittedAt: Timestamp(started.addingTimeInterval(300))
+                   ) {
+                    try? await store.record(preparation: PreparationJournalEntry(
+                        id: requestID + "|terminal", itemID: episodeID, requestID: requestID, status: status
+                    ))
+                }
+            }
         }
     }
 

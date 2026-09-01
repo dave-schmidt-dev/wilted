@@ -7,7 +7,7 @@ struct WiltedMacApp: App {
     @State private var model: WiltedMacModel
 
     init() {
-        _model = State(initialValue: WiltedMacModel(arguments: ProcessInfo.processInfo.arguments))
+        _model = State(initialValue: WiltedMacModel(arguments: ProcessInfo.processInfo.arguments, preferences: .standard))
     }
 
     var body: some Scene {

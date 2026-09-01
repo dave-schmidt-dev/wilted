@@ -78,7 +78,7 @@ final class WiltedMacModelTests: XCTestCase {
                 let store = try LocalLibraryStore(url: url)
                 try await store.save(article: article)
                 return store
-            }
+            }, preferences: WiltedMacTestPreferences.ephemeral()
         )
 
         XCTAssertEqual(model.startupState, .loading(attempt: 0))
@@ -103,7 +103,7 @@ final class WiltedMacModelTests: XCTestCase {
             arguments: [],
             stateDirectoryOverride: directory,
             storeBootstrap: { url in try await bootstrap.run(at: url) },
-            retainedArtifactPresenter: { presentedURL = $0 }
+            retainedArtifactPresenter: { presentedURL = $0 }, preferences: WiltedMacTestPreferences.ephemeral()
         )
 
         model.startStoreBootstrap()
@@ -129,7 +129,7 @@ final class WiltedMacModelTests: XCTestCase {
         let model = WiltedMacModel(
             arguments: [],
             stateDirectoryOverride: directory,
-            storeBootstrap: { url in try await bootstrap.run(at: url) }
+            storeBootstrap: { url in try await bootstrap.run(at: url) }, preferences: WiltedMacTestPreferences.ephemeral()
         )
 
         model.startStoreBootstrap()
@@ -153,7 +153,7 @@ final class WiltedMacModelTests: XCTestCase {
         let model = WiltedMacModel(
             arguments: [],
             stateDirectoryOverride: directory,
-            storeBootstrap: { url in try await bootstrap.run(at: url) }
+            storeBootstrap: { url in try await bootstrap.run(at: url) }, preferences: WiltedMacTestPreferences.ephemeral()
         )
 
         model.startStoreBootstrap()
@@ -174,7 +174,7 @@ final class WiltedMacModelTests: XCTestCase {
 
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
-            stateDirectoryOverride: directory
+            stateDirectoryOverride: directory, preferences: WiltedMacTestPreferences.ephemeral()
         )
 
         XCTAssertTrue(model.fixtureMode)
@@ -215,7 +215,7 @@ final class WiltedMacModelTests: XCTestCase {
                     ))
                 }
                 return store
-            }
+            }, preferences: WiltedMacTestPreferences.ephemeral()
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
@@ -295,7 +295,7 @@ final class WiltedMacModelTests: XCTestCase {
             podcastFeedClient: PodcastFeedClient(
                 loader: FixedBodyLoader(body: Data()),
                 now: { Date(timeIntervalSince1970: 1_700_000_000) }
-            )
+            ), preferences: WiltedMacTestPreferences.ephemeral()
         )
         relaunched.startStoreBootstrap()
         await relaunched.waitForStoreBootstrap()
@@ -352,12 +352,81 @@ final class WiltedMacModelTests: XCTestCase {
         let directory = temporaryDirectory("fixture-order")
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let fixture = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: directory)
+        let fixture = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: directory, preferences: WiltedMacTestPreferences.ephemeral())
         XCTAssertEqual(fixture.libraryOrder, .newest)
         fixture.libraryOrder = .oldest
 
-        let relaunched = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: directory)
+        let relaunched = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: directory, preferences: WiltedMacTestPreferences.ephemeral())
         XCTAssertEqual(relaunched.libraryOrder, .newest, "a fixture launch leaves nothing behind for the next one")
+    }
+
+    // MARK: Prep page
+
+    func testVerboseProcessingSurvivesRelaunch() throws {
+        let suite = "com.zerodelta.wilted.mac.model-tests"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        preferences.removePersistentDomain(forName: suite)
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let directory = temporaryDirectory("verbose")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let first = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        XCTAssertFalse(first.verboseProcessing, "the sentence, not the log, is the default")
+        first.verboseProcessing = true
+        let second = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        XCTAssertTrue(second.verboseProcessing)
+    }
+
+    /// The journal stores the coarse stage every pipeline shares; the worker's
+    /// own stage name survives only in the entry key, and that is what the
+    /// detailed log has to show.
+    func testProcessorEventsRecoverTheWorkerStageFromTheJournalKey() throws {
+        let itemID = try ItemID(rawValue: "item-" + String(repeating: "8", count: 64))
+        let requestID = WiltedMacModel.podcastRequestPrefix + itemID.rawValue
+        let when = Date(timeIntervalSince1970: 1_700_000_000)
+        func entry(_ id: String, _ stage: PreparationStage, _ detail: String, at offset: TimeInterval) throws -> PreparationJournalEntry {
+            PreparationJournalEntry(
+                id: id, itemID: itemID, requestID: requestID,
+                status: try PreparationStatus(stage: stage, detail: detail, cancellable: true,
+                                              emittedAt: Timestamp(when.addingTimeInterval(offset)))
+            )
+        }
+        let run = PreparationRunSummary(
+            requestID: requestID, itemID: itemID, startedAt: Timestamp(when), updatedAt: Timestamp(when),
+            stage: .assembling, detail: "50 requests, 0 failed", fraction: nil, isTerminal: false,
+            outcome: nil, failure: nil,
+            entries: [
+                try entry(requestID + "|transcript.stt.start", .extracting, "transcript.stt.start", at: 0),
+                try entry(requestID + "|ads.detect.calls", .assembling, "50 requests, 0 failed", at: 60),
+                try entry(requestID + "|log.warning.1", .assembling, "wilted.ads: FA is not enabled", at: 61),
+                try entry("legacy-key-without-prefix", .saving, "Storing", at: 62),
+            ]
+        )
+
+        let events = WiltedMacModel.processorEvents(for: run)
+        XCTAssertEqual(events.map(\.stage), ["transcript.stt.start", "ads.detect.calls", "log.warning.1", "saving"])
+        XCTAssertEqual(events[0].line, "transcript.stt.start", "a status with no detail is just its stage")
+        XCTAssertEqual(events[1].line, "ads.detect.calls · 50 requests, 0 failed")
+        XCTAssertEqual(events[2].at, when.addingTimeInterval(61))
+
+        // A running podcast run is narrated from its latest real stage; a
+        // forwarded warning is not a stage.
+        XCTAssertEqual(
+            WiltedMacModel.processorNarrative(isPodcast: true, outcome: .running, detail: "wilted.ads: FA is not enabled",
+                                              events: Array(events.prefix(3))),
+            "Finding advertisements…"
+        )
+        // Finished runs, and article runs, say what the journal recorded.
+        XCTAssertEqual(
+            WiltedMacModel.processorNarrative(isPodcast: true, outcome: .failed, detail: "the model failed 30 of 50 requests",
+                                              events: events),
+            "the model failed 30 of 50 requests"
+        )
+        XCTAssertEqual(
+            WiltedMacModel.processorNarrative(isPodcast: false, outcome: .running, detail: "Extracting the article…",
+                                              events: events),
+            "Extracting the article…"
+        )
     }
 
     // MARK: Preparation presentation
@@ -429,8 +498,9 @@ final class WiltedMacModelTests: XCTestCase {
             stage: .failed, detail: "Wilted could not start the preparation pipeline.",
             fraction: nil, isTerminal: true, outcome: .failed, failure: nil
         )
+        // The row says only that it failed; the reason and the log are on Prep.
         XCTAssertEqual(WiltedMacModel.preparationState(run: failed, transcript: nil),
-                       .failed("Wilted could not start the preparation pipeline."))
+                       .failed(WiltedMacModel.preparationFailedLabel))
         // A transcript outranks an old failure: the words are there.
         XCTAssertEqual(WiltedMacModel.preparationState(run: failed, transcript: try transcript(.aligned)),
                        .prepared(summary: "Synced transcript"))
@@ -547,7 +617,7 @@ final class WiltedMacModelTests: XCTestCase {
                     updatedAt: created
                 ))
                 return store
-            }
+            }, preferences: WiltedMacTestPreferences.ephemeral()
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
@@ -578,7 +648,7 @@ final class WiltedMacModelTests: XCTestCase {
                 loader: FixedBodyLoader(body: Data(feedXML.utf8)),
                 now: { Date(timeIntervalSince1970: 1_700_000_000) }
             ),
-            pastedLinkClassifier: PastedLinkClassifier(loader: FixedBodyLoader(body: Data(document.utf8)))
+            pastedLinkClassifier: PastedLinkClassifier(loader: FixedBodyLoader(body: Data(document.utf8))), preferences: WiltedMacTestPreferences.ephemeral()
         )
     }
 
@@ -617,7 +687,7 @@ final class WiltedMacModelTests: XCTestCase {
                 loader: FixedBodyLoader(body: Data("<rss><channel><title>Direct show</title></channel></rss>".utf8)),
                 now: { Date(timeIntervalSince1970: 1_700_000_000) }
             ),
-            pastedLinkClassifier: PastedLinkClassifier(loader: FailingLoader())
+            pastedLinkClassifier: PastedLinkClassifier(loader: FailingLoader()), preferences: WiltedMacTestPreferences.ephemeral()
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
@@ -668,7 +738,7 @@ final class WiltedMacModelTests: XCTestCase {
         let model = WiltedMacModel(
             arguments: [],
             stateDirectoryOverride: directory,
-            pastedLinkClassifier: PastedLinkClassifier(loader: FailingLoader())
+            pastedLinkClassifier: PastedLinkClassifier(loader: FailingLoader()), preferences: WiltedMacTestPreferences.ephemeral()
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
@@ -691,7 +761,7 @@ final class WiltedMacModelTests: XCTestCase {
         let model = WiltedMacModel(
             arguments: [],
             stateDirectoryOverride: directory,
-            pastedLinkClassifier: PastedLinkClassifier(loader: FailingLoader())
+            pastedLinkClassifier: PastedLinkClassifier(loader: FailingLoader()), preferences: WiltedMacTestPreferences.ephemeral()
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()

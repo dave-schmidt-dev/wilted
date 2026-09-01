@@ -820,18 +820,46 @@ private struct WiltedMacEpisodeRow: View {
 /// preparation had ever happened was whether an article appeared in Library.
 /// This lists what is running now and every attempt that came before it.
 private struct WiltedMacProcessorView: View {
-    let model: WiltedMacModel
+    @Bindable var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
+
+    /// Podcast runs still going. Article runs are `model.preparation`.
+    private var activeRuns: [WiltedMacProcessorRun] {
+        model.processorRuns.filter { $0.isPodcast && $0.outcome == .running }
+    }
+
+    private var recentRuns: [WiltedMacProcessorRun] {
+        model.processorRuns.filter { !($0.isPodcast && $0.outcome == .running) }
+    }
+
+    private var hasActiveArticle: Bool {
+        if let preparation = model.preparation, !preparation.phase.isTerminal { return true }
+        return false
+    }
 
     var body: some View {
         WiltedMacDestination(title: WiltedScreenCopy.processor, identifier: "wilted-mac-processor-detail") {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-                Text("Active")
-                    .font(WiltedTheme.font(.title))
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                HStack {
+                    Text("Active")
+                        .font(WiltedTheme.font(.title))
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    Spacer()
+                    // The row in Larder only says an episode is preparing.
+                    // This page says what the run is doing, and on request
+                    // everything it has said.
+                    Toggle("Detailed log", isOn: $model.verboseProcessing)
+                        .toggleStyle(.checkbox)
+                        .font(WiltedTheme.font(.utility))
+                        .accessibilityIdentifier("wilted-processor-verbose")
+                }
                 if let preparation = model.preparation, !preparation.phase.isTerminal {
                     WiltedMacPreparationView(model: model, preparation: preparation)
-                } else {
+                }
+                ForEach(activeRuns) { run in
+                    activeRunCard(run)
+                }
+                if !hasActiveArticle && activeRuns.isEmpty {
                     Text("Nothing is preparing. Add an article in Larder to start a run.")
                         .font(WiltedTheme.font(.body))
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
@@ -849,14 +877,14 @@ private struct WiltedMacProcessorView: View {
                         .font(WiltedTheme.font(.utility))
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 }
-                if model.processorRuns.isEmpty {
+                if recentRuns.isEmpty {
                     Text("No preparation has been recorded on this Mac yet.")
                         .font(WiltedTheme.font(.body))
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-processor-empty")
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(model.processorRuns.enumerated()), id: \.element.id) { index, run in
+                        ForEach(Array(recentRuns.enumerated()), id: \.element.id) { index, run in
                             if index > 0 { Divider() }
                             runRow(run)
                         }
@@ -877,44 +905,126 @@ private struct WiltedMacProcessorView: View {
     }
 
     private var runCountLabel: String {
-        let count = model.processorRuns.count
+        let count = recentRuns.count
         return "\(count) recorded"
     }
 
-    private func runRow(_ run: WiltedMacProcessorRun) -> some View {
-        HStack(alignment: .top, spacing: WiltedTheme.Spacing.medium) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(run.title)
-                    .font(WiltedTheme.font(.body))
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Text(run.detail)
-                    .font(WiltedTheme.font(.utility))
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .lineLimit(2)
+    /// A podcast run in progress: what it is doing now, a way to stop it,
+    /// and the log if asked for.
+    private func activeRunCard(_ run: WiltedMacProcessorRun) -> some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(run.title)
+                        .font(WiltedTheme.font(.title))
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(run.source)
+                        .font(WiltedTheme.font(.utility))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .lineLimit(1)
+                }
+                Spacer()
+                Button("Stop") { model.cancelProcessorRun(run) }
+                    .accessibilityLabel("Stop preparing \(run.title)")
+                    .accessibilityIdentifier("wilted-processor-stop-\(run.id)")
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .trailing, spacing: 2) {
-                // The word always carries the outcome; the tone only
-                // emphasises it (W-INV-010).
-                Text(run.outcomeLabel)
-                    .font(WiltedTheme.font(.utility))
-                    .foregroundStyle(run.tone.color(colorScheme))
-                Text(Self.stamp.string(from: run.updatedAt))
-                    .font(WiltedTheme.font(.utility))
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            if let fraction = run.fraction {
+                ProgressView(value: fraction)
+                    .tint(WiltedTheme.color(.progress, scheme: colorScheme))
+                    .accessibilityValue("\(Int(fraction * 100)) percent")
+            } else {
+                ProgressView()
+                    .tint(WiltedTheme.color(.progress, scheme: colorScheme))
+            }
+            Text(run.narrative)
+                .font(WiltedTheme.font(.utility))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .accessibilityIdentifier("wilted-processor-narrative-\(run.id)")
+            if model.verboseProcessing {
+                eventLog(run)
+            }
+        }
+        .wiltedCard(colorScheme)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-processor-active-\(run.id)")
+    }
+
+    private func runRow(_ run: WiltedMacProcessorRun) -> some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+            HStack(alignment: .top, spacing: WiltedTheme.Spacing.medium) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(run.title)
+                        .font(WiltedTheme.font(.body))
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(run.narrative)
+                        .font(WiltedTheme.font(.utility))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .lineLimit(model.verboseProcessing ? nil : 2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .trailing, spacing: 2) {
+                    // The word always carries the outcome; the tone only
+                    // emphasises it (W-INV-010).
+                    Text(run.outcomeLabel)
+                        .font(WiltedTheme.font(.utility))
+                        .foregroundStyle(run.tone.color(colorScheme))
+                    Text(Self.stamp.string(from: run.updatedAt))
+                        .font(WiltedTheme.font(.utility))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                }
+            }
+            // Contained, not combined, like the Larder rows: the texts stay
+            // reachable one by one, which is how they are tested.
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("wilted-processor-run-\(run.id)")
+            if model.verboseProcessing {
+                eventLog(run)
             }
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("wilted-processor-run-\(run.id)")
+    }
+
+    /// Every status the run journalled, in the pipeline's own words. The
+    /// vocabulary is the worker's on purpose: this is the view for someone
+    /// working out why a run did what it did.
+    private func eventLog(_ run: WiltedMacProcessorRun) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if run.events.isEmpty {
+                Text("Nothing journalled yet.")
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            }
+            ForEach(run.events) { event in
+                HStack(alignment: .top, spacing: WiltedTheme.Spacing.small) {
+                    Text(Self.clock.string(from: event.at))
+                        .font(WiltedTheme.font(.utility).monospacedDigit())
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    Text(event.line)
+                        .font(WiltedTheme.font(.utility))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("wilted-processor-event-\(event.id)")
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-processor-log-\(run.id)")
     }
 
     private static let stamp: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
+        return formatter
+    }()
+
+    private static let clock: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()
 }

@@ -326,6 +326,9 @@ public struct PreparationRunSummary: Equatable, Sendable, Identifiable {
     public let isTerminal: Bool
     public let outcome: PreparationOutcome?
     public let failure: ProducerError?
+    /// Every status the run journalled, oldest first. The summary fields
+    /// above describe where the run is; this is how it got there.
+    public let entries: [PreparationJournalEntry]
 
     public var id: String { requestID }
 
@@ -339,7 +342,8 @@ public struct PreparationRunSummary: Equatable, Sendable, Identifiable {
         fraction: Double?,
         isTerminal: Bool,
         outcome: PreparationOutcome?,
-        failure: ProducerError?
+        failure: ProducerError?,
+        entries: [PreparationJournalEntry] = []
     ) {
         self.requestID = requestID
         self.itemID = itemID
@@ -351,6 +355,7 @@ public struct PreparationRunSummary: Equatable, Sendable, Identifiable {
         self.isTerminal = isTerminal
         self.outcome = outcome
         self.failure = failure
+        self.entries = entries
     }
 }
 
@@ -1480,6 +1485,19 @@ public actor LocalLibraryStore {
         try context.save()
     }
 
+    /// Forgets one request's journal. A request identifier names an item, not
+    /// an attempt, so a second attempt writes over the first's rows; without
+    /// this the first attempt's terminal row would outlive it and report the
+    /// second as finished while it was still running.
+    public func clearPreparationJournal(for requestID: String) throws {
+        let context = ModelContext(container)
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>())
+        where record.requestID == requestID {
+            context.delete(record)
+        }
+        try context.save()
+    }
+
     public func preparationJournal(for requestID: String) throws -> [PreparationJournalEntry] {
         let context = ModelContext(container)
         return try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>()).filter { $0.requestID == requestID }.sorted { $0.emittedAt < $1.emittedAt }.compactMap { record in
@@ -1496,28 +1514,31 @@ public actor LocalLibraryStore {
     public func preparationRuns(limit: Int = 200) throws -> [PreparationRunSummary] {
         let context = ModelContext(container)
         let decoder = JSONDecoder()
-        var byRequest: [String: [(Date, PreparationStatus, ItemID)]] = [:]
+        var byRequest: [String: [PreparationJournalEntry]] = [:]
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>()) {
             guard let status = try? decoder.decode(PreparationStatus.self, from: record.statusData),
                   let itemID = try? ItemID(rawValue: record.itemID) else { continue }
-            byRequest[record.requestID, default: []].append((record.emittedAt, status, itemID))
+            byRequest[record.requestID, default: []].append(
+                PreparationJournalEntry(id: record.id, itemID: itemID, requestID: record.requestID, status: status)
+            )
         }
         return byRequest.compactMap { requestID, entries -> PreparationRunSummary? in
-            let ordered = entries.sorted { $0.0 < $1.0 }
+            let ordered = entries.sorted { $0.status.emittedAt.date < $1.status.emittedAt.date }
             guard let first = ordered.first, let last = ordered.last else { return nil }
-            let terminal = ordered.last(where: { $0.1.terminal })?.1
-            let representative = terminal ?? last.1
+            let terminal = ordered.last(where: { $0.status.terminal })?.status
+            let representative = terminal ?? last.status
             return PreparationRunSummary(
                 requestID: requestID,
-                itemID: last.2,
-                startedAt: Timestamp(first.0),
-                updatedAt: Timestamp(last.0),
+                itemID: last.itemID,
+                startedAt: first.status.emittedAt,
+                updatedAt: last.status.emittedAt,
                 stage: representative.stage,
                 detail: representative.detail,
                 fraction: representative.fraction,
                 isTerminal: terminal != nil,
                 outcome: terminal?.terminalResult?.outcome,
-                failure: terminal?.terminalResult?.error
+                failure: terminal?.terminalResult?.error,
+                entries: ordered
             )
         }
         .sorted { $0.updatedAt.date > $1.updatedAt.date }

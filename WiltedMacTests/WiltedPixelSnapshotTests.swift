@@ -141,7 +141,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
 
     func testMacPlayerShellPixelBaselines() {
         for appearance in WiltedAppearance.allCases {
-            let model = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"])
+            let model = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"], preferences: WiltedMacTestPreferences.ephemeral())
             if let article = model.articles.first { model.openNowPlaying(for: article) }
             let variant = WiltedVisualVariant(
                 appearance: appearance,
@@ -187,7 +187,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                     "--wilted-ui-fixture-article-flow",
                     "--wilted-ui-fixture-podcasts",
                     "--wilted-ui-fixture-ready"
-                ]
+                ], preferences: WiltedMacTestPreferences.ephemeral()
             )
             let variant = WiltedVisualVariant(
                 appearance: appearance,

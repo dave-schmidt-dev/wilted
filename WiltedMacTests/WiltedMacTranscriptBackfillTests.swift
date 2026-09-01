@@ -54,7 +54,7 @@ final class WiltedMacArticleRemovalTests: XCTestCase {
 
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
-            stateDirectoryOverride: directory
+            stateDirectoryOverride: directory, preferences: WiltedMacTestPreferences.ephemeral()
         )
         try await poll("fixture article never reached the library") { !model.articles.isEmpty }
         let article = try XCTUnwrap(model.articles.first)

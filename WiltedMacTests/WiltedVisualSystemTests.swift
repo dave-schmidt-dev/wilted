@@ -63,7 +63,7 @@ final class WiltedVisualSystemTests: XCTestCase {
             }
         }
 
-        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: root)
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral())
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
         XCTAssertEqual(model.libraryItems.map(\.id), episodeIDs.reversed().map(\.rawValue) + [article.itemID.rawValue])
@@ -97,7 +97,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: podcastRoot) }
         let podcastModel = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
-            stateDirectoryOverride: podcastRoot
+            stateDirectoryOverride: podcastRoot, preferences: WiltedMacTestPreferences.ephemeral()
         )
         let podcast = try XCTUnwrap(podcastModel.episodes.first)
         podcastModel.playEpisode(podcast)
@@ -144,7 +144,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
-            stateDirectoryOverride: root
+            stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
         )
         let episode = try XCTUnwrap(model.episodes.first)
         model.playEpisode(episode)
@@ -182,7 +182,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
-            stateDirectoryOverride: root
+            stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
         )
         let episode = try XCTUnwrap(model.episodes.first)
         XCTAssertTrue(model.podcastQueueIDs.isEmpty)
@@ -208,7 +208,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
-            stateDirectoryOverride: root
+            stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
         )
         let first = try XCTUnwrap(model.episodes.first)
         model.playEpisode(first)
@@ -275,7 +275,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
-            stateDirectoryOverride: root
+            stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
         )
         let playingEpisode = try XCTUnwrap(model.episodes.first)
         model.playEpisode(playingEpisode)
@@ -315,7 +315,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
-            stateDirectoryOverride: root
+            stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
         )
         let episode = try XCTUnwrap(model.episodes.first)
         model.playEpisode(episode)
@@ -348,7 +348,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
-            stateDirectoryOverride: root
+            stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
         )
         let episode = try XCTUnwrap(model.episodes.first)
         model.playEpisode(episode)
@@ -428,7 +428,7 @@ final class WiltedVisualSystemTests: XCTestCase {
             episodeIDs: [episodeID], currentEpisodeID: episodeID
         ))
 
-        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: root)
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral())
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
 
@@ -443,7 +443,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         let model = WiltedMacModel(arguments: [
             "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts",
             "--wilted-ui-fixture-download-failure"
-        ])
+        ], preferences: WiltedMacTestPreferences.ephemeral())
         let episode = try XCTUnwrap(model.episodes.first)
         model.downloadEpisode(episode)
         await model.waitForPodcastOperations()
@@ -458,7 +458,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         model.removeEpisode(try XCTUnwrap(model.episodes.first))
         XCTAssertFalse(model.libraryItems.contains { $0.id == episode.id })
 
-        let cancelled = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
+        let cancelled = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"], preferences: WiltedMacTestPreferences.ephemeral())
         let cancellingEpisode = try XCTUnwrap(cancelled.episodes.first)
         cancelled.downloadEpisode(cancellingEpisode)
         cancelled.cancelEpisodeDownload(cancellingEpisode)
@@ -490,7 +490,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         let model = WiltedMacModel(
             arguments: [],
             stateDirectoryOverride: root,
-            podcastFeedClient: PodcastFeedClient(loader: CancelledPodcastFeedLoader())
+            podcastFeedClient: PodcastFeedClient(loader: CancelledPodcastFeedLoader()), preferences: WiltedMacTestPreferences.ephemeral()
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
@@ -526,7 +526,7 @@ final class WiltedVisualSystemTests: XCTestCase {
             podcastFeedClient: PodcastFeedClient(
                 loader: loader,
                 now: { Date(timeIntervalSince1970: 1_700_000_000) }
-            )
+            ), preferences: WiltedMacTestPreferences.ephemeral()
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
