@@ -204,6 +204,43 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertEqual(reopenedTranscript, transcript)
     }
 
+    /// The pipeline reads the published transcript URL off the stored episode
+    /// when it prepares one, so a source that survives the feed parser but not
+    /// the store is the same as no source at all.
+    func testPublishedTranscriptSourcesSurviveTheStoreAndAnUpdate() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let (feed, plain) = try podcastValues()
+        let sources = [try PodcastTranscriptSource(url: XCTUnwrap(URL(string: "https://cdn.example.test/one.html")),
+                                                   mediaType: "text/html"),
+                       try PodcastTranscriptSource(url: XCTUnwrap(URL(string: "https://cdn.example.test/one.vtt")),
+                                                   mediaType: "text/vtt", languageCode: "en", isCaptions: true)]
+        let episode = try PodcastEpisode(itemID: plain.itemID, feedID: plain.feedID, feedURL: plain.feedURL,
+                                         rssGUID: plain.rssGUID, title: plain.title, author: plain.author,
+                                         publishedTime: plain.publishedTime, enclosureURL: plain.enclosureURL,
+                                         enclosureMediaType: plain.enclosureMediaType,
+                                         enclosureByteCount: plain.enclosureByteCount,
+                                         durationSeconds: plain.durationSeconds, artworkURL: plain.artworkURL,
+                                         transcriptSources: sources, createdAt: plain.createdAt)
+        do {
+            let store = try LocalLibraryStore(url: url)
+            try await store.save(feed: feed)
+            try await store.save(episode: episode)
+        }
+        let reopened = try LocalLibraryStore(url: url)
+        let loaded = try await reopened.podcastEpisode(for: episode.itemID)
+        XCTAssertEqual(loaded, episode)
+        XCTAssertEqual(loaded?.timedTranscriptSource?.mediaType, "text/vtt")
+        let listed = try await reopened.podcastEpisodes(for: feed.itemID)
+        XCTAssertEqual(listed, [episode])
+
+        // A publisher who withdraws a transcript must clear the column, not
+        // leave the old URL behind for the pipeline to keep fetching.
+        try await reopened.save(episode: plain)
+        let cleared = try await reopened.podcastEpisode(for: episode.itemID)
+        XCTAssertEqual(cleared?.transcriptSources, [])
+        XCTAssertNil(cleared?.timedTranscriptSource)
+    }
+
     func testTimedTranscriptPersistsCuesAndProvenanceAcrossRelaunch() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let item = try article()

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import WiltedDomain
 @testable import WiltedProducer
 
 @Suite("Podcast feed client")
@@ -22,6 +23,76 @@ struct PodcastFeedClientTests {
         #expect(result.episodes[0].rssGUID == "stable-guid")
         #expect(result.episodes[0].durationSeconds == 3_723)
         #expect(result.episodes[0].enclosureByteCount == 42)
+    }
+
+    @Test func capturesPublishedTranscriptsAndPrefersTimedCaptions() async throws {
+        let result = try await client(xml: """
+        <rss xmlns:podcast="https://podcastindex.org/namespace/1.0"><channel><title>Show</title>
+          <item><title>Episode</title>
+            <podcast:transcript url="https://cdn.example.test/one.html" type="text/html" />
+            <podcast:transcript url="https://cdn.example.test/one.srt" type="application/x-subrip" language="en" />
+            <podcast:transcript url="https://cdn.example.test/one.vtt" type="text/vtt" language="en" rel="captions" />
+            <enclosure url="https://cdn.example.test/one.mp3" type="audio/mpeg" />
+          </item>
+        </channel></rss>
+        """).load(sourceURL)
+        let sources = result.episodes[0].transcriptSources
+        #expect(sources.count == 3)
+        #expect(sources.map(\.mediaType) == ["text/html", "application/x-subrip", "text/vtt"])
+        #expect(sources.map(\.carriesTiming) == [false, true, true])
+        #expect(sources[2].isCaptions)
+        #expect(sources[2].languageCode == "en")
+        // Captions win over the SRT that appears first: captions are authored
+        // against the audio clock by definition.
+        #expect(result.episodes[0].timedTranscriptSource?.mediaType == "text/vtt")
+    }
+
+    /// A transcript is an optional extra. One bad entry must cost that entry
+    /// and nothing else -- refusing the feed would cost every episode in it.
+    @Test func skipsUnusableTranscriptEntriesWithoutFailingTheFeed() async throws {
+        let result = try await client(xml: """
+        <rss xmlns:podcast="https://podcastindex.org/namespace/1.0"><channel><title>Show</title>
+          <item><title>Episode</title>
+            <podcast:transcript url="http://cdn.example.test/insecure.vtt" type="text/vtt" />
+            <podcast:transcript url="https://cdn.example.test/no-type.vtt" />
+            <podcast:transcript url="not a url at all" type="text/vtt" />
+            <podcast:transcript url="https://cdn.example.test/good.vtt" type="text/vtt" language="not valid!" />
+            <podcast:transcript url="https://cdn.example.test/good.vtt" type="text/vtt" />
+            <podcast:transcript url="https://cdn.example.test/good.vtt" type="text/vtt" />
+            <enclosure url="https://cdn.example.test/one.mp3" type="audio/mpeg" />
+          </item>
+        </channel></rss>
+        """).load(sourceURL)
+        #expect(result.episodes.count == 1)
+        let sources = result.episodes[0].transcriptSources
+        #expect(sources.map(\.url.absoluteString) == ["https://cdn.example.test/good.vtt"],
+                "insecure, typeless, unparseable, bad-language, and duplicate entries all drop")
+    }
+
+    @Test func boundsPublishedTranscriptsPerEpisode() async throws {
+        let tags = (0..<20).map {
+            "<podcast:transcript url=\"https://cdn.example.test/\($0).vtt\" type=\"text/vtt\" />"
+        }.joined()
+        let result = try await client(xml: """
+        <rss xmlns:podcast="https://podcastindex.org/namespace/1.0"><channel><title>Show</title>
+          <item><title>Episode</title>\(tags)<enclosure url="https://cdn.example.test/one.mp3" type="audio/mpeg" /></item>
+        </channel></rss>
+        """).load(sourceURL)
+        #expect(result.episodes[0].transcriptSources.count == PodcastEpisode.maximumTranscriptSources)
+    }
+
+    @Test func reportsNoTimedSourceWhenOnlyProseIsPublished() async throws {
+        let result = try await client(xml: """
+        <rss xmlns:podcast="https://podcastindex.org/namespace/1.0"><channel><title>Show</title>
+          <item><title>Episode</title>
+            <podcast:transcript url="https://cdn.example.test/one.html" type="text/html" />
+            <enclosure url="https://cdn.example.test/one.mp3" type="audio/mpeg" />
+          </item>
+        </channel></rss>
+        """).load(sourceURL)
+        #expect(result.episodes[0].transcriptSources.count == 1)
+        #expect(result.episodes[0].timedTranscriptSource == nil,
+                "a web page is words without a clock, so nothing may be synchronised from it")
     }
 
     @Test func acceptsOptionalFieldsAndLowercasesMediaType() async throws {

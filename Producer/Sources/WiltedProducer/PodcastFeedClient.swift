@@ -272,6 +272,7 @@ private final class PodcastRSSParser: NSObject, XMLParserDelegate {
         var enclosureLength: Int64?
         var duration: Double?
         var artworkURL: URL?
+        var transcriptSources: [PodcastTranscriptSource] = []
     }
 
     private let feedURL: URL
@@ -330,7 +331,8 @@ private final class PodcastRSSParser: NSObject, XMLParserDelegate {
                 title: title, author: author, publishedTime: item.publishedAt.map(Timestamp.init),
                 enclosureURL: enclosureURL, enclosureMediaType: enclosureType,
                 enclosureByteCount: item.enclosureLength, durationSeconds: item.duration,
-                artworkURL: artworkURL, createdAt: Timestamp(createdAt)
+                artworkURL: artworkURL, transcriptSources: item.transcriptSources,
+                createdAt: Timestamp(createdAt)
             ))
         }
         let (kept, dropped) = Self.newestEpisodes(episodes)
@@ -393,11 +395,36 @@ private final class PodcastRSSParser: NSObject, XMLParserDelegate {
             currentItem?.enclosureLength = attributeDict["length"].flatMap(Int64.init).flatMap { $0 > 0 ? $0 : nil }
         } else if name == "image", let href = attributeDict["href"], let url = URL(string: href.trimmingCharacters(in: .whitespacesAndNewlines)) {
             if currentItem != nil { currentItem?.artworkURL = url } else { channelArtworkURL = url }
+        } else if name == "transcript", currentItem != nil {
+            appendTranscriptSource(attributeDict)
         }
         if capturesText(name) {
             textElement = name
             text = ""
         }
+    }
+
+    /// Records one `<podcast:transcript>` tag.
+    ///
+    /// A malformed or unsupported entry is skipped rather than failing the
+    /// feed. A transcript is an optional extra: refusing the whole feed because
+    /// one publisher wrote a bad transcript URL would cost the episodes too.
+    /// The cap is the domain's, applied here so a feed cannot make the episode
+    /// initialiser throw from the parse path.
+    private func appendTranscriptSource(_ attributes: [String: String]) {
+        guard var item = currentItem, item.transcriptSources.count < PodcastEpisode.maximumTranscriptSources else { return }
+        guard let href = attributes["url"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let url = URL(string: href), PodcastFeedClient.isHTTPS(url),
+              let type = attributes["type"]?.trimmingCharacters(in: .whitespacesAndNewlines), !type.isEmpty else { return }
+        let language = attributes["language"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let source = try? PodcastTranscriptSource(
+            url: url, mediaType: type,
+            languageCode: (language?.isEmpty ?? true) ? nil : language,
+            isCaptions: attributes["rel"]?.lowercased() == "captions"
+        ) else { return }
+        guard !item.transcriptSources.contains(where: { $0.url == source.url }) else { return }
+        item.transcriptSources.append(source)
+        currentItem = item
     }
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {

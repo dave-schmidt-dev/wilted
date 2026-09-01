@@ -43,7 +43,6 @@ public struct PodcastFeed: Codable, Equatable, Sendable {
         try validatePodcastText(title, field: "title", maxLength: 1_024)
         if let author { try validatePodcastText(author, field: "author", maxLength: 512) }
         let normalizedArtworkURL = try artworkURL.map { try validatePodcastURL($0, field: "artworkURL") }
-
         self.itemID = itemID
         self.canonicalURL = normalizedURL
         self.title = title
@@ -70,6 +69,65 @@ public struct PodcastFeed: Codable, Equatable, Sendable {
 }
 
 /// Podcast episode metadata whose identity is independent from mutable enclosure URLs when a GUID exists.
+/// A transcript the feed itself publishes for one episode, from a
+/// `<podcast:transcript>` tag.
+///
+/// A feed may list several -- different languages, or the same words as both
+/// WebVTT and a plain web page. They are kept as published rather than reduced
+/// to one at parse time, because which one is usable depends on what the
+/// caller needs: only some formats carry timing, and a caller that must
+/// synchronise with audio cannot settle for one that does not.
+public struct PodcastTranscriptSource: Codable, Equatable, Sendable {
+    /// Formats whose timing is stated by the publisher rather than inferred.
+    /// A `text/html` or `text/plain` transcript is words without a clock; it
+    /// can be read, but nothing about it says when anything was said.
+    public static let timedMediaTypes: Set<String> = [
+        "text/vtt",
+        "application/x-subrip",
+        "application/srt",
+        "text/srt",
+        "application/json",
+    ]
+
+    public let url: URL
+    public let mediaType: String
+    public let languageCode: String?
+    /// `rel="captions"`, which marks a source intended to be displayed
+    /// alongside playback rather than read on its own.
+    public let isCaptions: Bool
+
+    public var carriesTiming: Bool { Self.timedMediaTypes.contains(mediaType) }
+
+    public init(url: URL, mediaType: String, languageCode: String? = nil, isCaptions: Bool = false) throws {
+        let normalizedURL = try validatePodcastURL(url, field: "transcriptSource.url")
+        let normalizedType = mediaType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard normalizedType.range(of: #"^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$"#,
+                                   options: .regularExpression) != nil else {
+            throw DomainError.invalidValue(field: "transcriptSource.mediaType", reason: "must be a media type")
+        }
+        if let languageCode {
+            guard languageCode.utf8.count <= 35,
+                  languageCode.range(of: "^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$", options: .regularExpression) != nil else {
+                throw DomainError.invalidValue(field: "transcriptSource.languageCode", reason: "must be a BCP 47 language tag")
+            }
+        }
+        self.url = normalizedURL
+        self.mediaType = normalizedType
+        self.languageCode = languageCode
+        self.isCaptions = isCaptions
+    }
+
+    private enum CodingKeys: CodingKey { case url, mediaType, languageCode, isCaptions }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(url: c.decode(URL.self, forKey: .url),
+                      mediaType: c.decode(String.self, forKey: .mediaType),
+                      languageCode: c.decodeIfPresent(String.self, forKey: .languageCode),
+                      isCaptions: c.decodeIfPresent(Bool.self, forKey: .isCaptions) ?? false)
+    }
+}
+
 public struct PodcastEpisode: Codable, Equatable, Sendable {
     public let itemID: ItemID
     public let feedID: ItemID
@@ -83,7 +141,23 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
     public let enclosureByteCount: Int64?
     public let durationSeconds: Double?
     public let artworkURL: URL?
+    /// Transcripts the feed publishes for this episode, in feed order.
+    ///
+    /// Deliberately outside `itemID` derivation: a publisher adding or fixing a
+    /// transcript URL must not re-identify an episode already in the Larder,
+    /// with its download and playback position attached.
+    public let transcriptSources: [PodcastTranscriptSource]
     public let createdAt: Timestamp
+
+    /// The most useful published transcript for synchronising with audio, or
+    /// nil when the feed publishes none that carries timing. Captions win ties
+    /// because they are authored against the audio clock by definition.
+    public var timedTranscriptSource: PodcastTranscriptSource? {
+        let timed = transcriptSources.filter(\.carriesTiming)
+        return timed.first(where: \.isCaptions) ?? timed.first
+    }
+
+    public static let maximumTranscriptSources = 8
 
     public init(
         itemID: ItemID,
@@ -98,6 +172,7 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
         enclosureByteCount: Int64? = nil,
         durationSeconds: Double? = nil,
         artworkURL: URL? = nil,
+        transcriptSources: [PodcastTranscriptSource] = [],
         createdAt: Timestamp
     ) throws {
         let normalizedFeedURL = try validatePodcastURL(feedURL, field: "feedURL")
@@ -127,6 +202,9 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
             throw DomainError.invalidValue(field: "durationSeconds", reason: "must be finite and greater than zero")
         }
         let normalizedArtworkURL = try artworkURL.map { try validatePodcastURL($0, field: "artworkURL") }
+        guard transcriptSources.count <= Self.maximumTranscriptSources else {
+            throw DomainError.invalidValue(field: "transcriptSources", reason: "must not exceed 8 published transcripts")
+        }
 
         self.itemID = itemID
         self.feedID = feedID
@@ -141,12 +219,13 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
         self.enclosureByteCount = enclosureByteCount
         self.durationSeconds = durationSeconds
         self.artworkURL = normalizedArtworkURL
+        self.transcriptSources = transcriptSources
         self.createdAt = createdAt
     }
 
     private enum CodingKeys: CodingKey {
         case itemID, feedID, feedURL, rssGUID, title, author, publishedTime, enclosureURL
-        case enclosureMediaType, enclosureByteCount, durationSeconds, artworkURL, createdAt
+        case enclosureMediaType, enclosureByteCount, durationSeconds, artworkURL, transcriptSources, createdAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -164,6 +243,7 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
             enclosureByteCount: container.decodeIfPresent(Int64.self, forKey: .enclosureByteCount),
             durationSeconds: container.decodeIfPresent(Double.self, forKey: .durationSeconds),
             artworkURL: container.decodeIfPresent(URL.self, forKey: .artworkURL),
+            transcriptSources: container.decodeIfPresent([PodcastTranscriptSource].self, forKey: .transcriptSources) ?? [],
             createdAt: container.decode(Timestamp.self, forKey: .createdAt)
         )
     }

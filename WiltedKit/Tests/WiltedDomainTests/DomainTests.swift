@@ -13,6 +13,63 @@ final class DomainTests: XCTestCase {
         XCTAssertThrowsError(try PodcastQueueState(episodeIDs: [first], currentEpisodeID: second))
     }
 
+    func testPublishedTranscriptSourcesSeparateTimedFormatsFromProse() throws {
+        let url = try XCTUnwrap(URL(string: "https://cdn.example.test/one"))
+        for type in ["text/vtt", "application/x-subrip", "application/srt", "text/srt", "application/json"] {
+            XCTAssertTrue(try PodcastTranscriptSource(url: url, mediaType: type).carriesTiming, type)
+        }
+        for type in ["text/html", "text/plain", "application/pdf"] {
+            XCTAssertFalse(try PodcastTranscriptSource(url: url, mediaType: type).carriesTiming, type)
+        }
+        XCTAssertEqual(try PodcastTranscriptSource(url: url, mediaType: " TEXT/VTT ").mediaType, "text/vtt")
+        XCTAssertThrowsError(try PodcastTranscriptSource(url: url, mediaType: "not-a-media-type"))
+        XCTAssertThrowsError(try PodcastTranscriptSource(url: XCTUnwrap(URL(string: "http://cdn.example.test/one")),
+                                                          mediaType: "text/vtt"))
+        XCTAssertThrowsError(try PodcastTranscriptSource(url: url, mediaType: "text/vtt", languageCode: "en_US"))
+    }
+
+    /// A publisher fixing a transcript URL must not re-identify an episode that
+    /// already has a download and a playback position attached to it.
+    func testTranscriptSourcesStayOutOfEpisodeIdentityAndRoundTrip() throws {
+        let feedURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/feed.xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/one.mp3"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let itemID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "one", enclosureURL: enclosureURL)
+        func make(_ sources: [PodcastTranscriptSource]) throws -> PodcastEpisode {
+            try PodcastEpisode(itemID: itemID, feedID: feedID, feedURL: feedURL, rssGUID: "one", title: "One",
+                               enclosureURL: enclosureURL, enclosureMediaType: "audio/mpeg",
+                               transcriptSources: sources, createdAt: Timestamp(Date(timeIntervalSince1970: 1)))
+        }
+        let vtt = try PodcastTranscriptSource(url: XCTUnwrap(URL(string: "https://cdn.example.test/one.vtt")),
+                                              mediaType: "text/vtt")
+        let bare = try make([])
+        let withSource = try make([vtt])
+        XCTAssertEqual(bare.itemID, withSource.itemID)
+        XCTAssertEqual(bare.transcriptSources, [])
+        XCTAssertNil(bare.timedTranscriptSource)
+        XCTAssertEqual(try JSONDecoder().decode(PodcastEpisode.self, from: JSONEncoder().encode(withSource)), withSource)
+        XCTAssertThrowsError(try make(Array(repeating: vtt, count: PodcastEpisode.maximumTranscriptSources + 1)))
+    }
+
+    /// An episode encoded before transcript sources existed has no such key.
+    func testEpisodesEncodedBeforeTranscriptSourcesExistedStillDecode() throws {
+        let json = """
+        {"itemID":"item-9d3f8dd4b0a4a5e93c1b0a5a1f0ba1a2a0a6ad3f2c6f0d5b7a1e4c9f3b2d8e0a",
+         "feedID":"item-0","feedURL":"https://podcasts.example.test/feed.xml","title":"One",
+         "enclosureURL":"https://podcasts.example.test/one.mp3","enclosureMediaType":"audio/mpeg",
+         "createdAt":"1970-01-01T00:00:01Z"}
+        """
+        // Identity will not match this hand-written fixture, so the assertion is
+        // that decoding reaches the identity check rather than failing earlier on
+        // a missing `transcriptSources` key.
+        XCTAssertThrowsError(try JSONDecoder().decode(PodcastEpisode.self, from: Data(json.utf8))) { error in
+            guard case DomainError.invalidValue(let field, _) = error else {
+                return XCTFail("expected a domain identity failure, got \(error)")
+            }
+            XCTAssertEqual(field, "feedID")
+        }
+    }
+
     func testItemIdentityCanonicalizesURL() throws {
         let first = try ItemID.derive(from: XCTUnwrap(URL(string: "HTTPS://Example.COM:443/a?q=1#fragment")))
         let second = try ItemID.derive(from: XCTUnwrap(URL(string: "https://example.com/a?q=1")))
