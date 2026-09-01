@@ -161,6 +161,18 @@ struct PodcastDownloadCoordinatorTests {
         #expect(m4aResult.mediaURL.pathExtension == "m4a")
     }
 
+    @Test func usesMp3StagingExtensionForValidatedMpegTransfer() async throws {
+        let fixture = try await Fixture(mediaType: "audio/mpeg")
+        defer { fixture.remove() }
+        let validator = StagingExtensionValidator()
+        let coordinator = PodcastDownloadCoordinator(
+            store: fixture.store, libraryDirectory: fixture.libraryDirectory,
+            transport: EventTransport(fixture.successEvents), mediaValidator: validator
+        )
+        _ = try await coordinator.download(episodeID: fixture.episodeID)
+        #expect(await validator.stagedURL()?.pathExtension == "mp3")
+    }
+
     @Test func cancellationPersistsStateAndRemovesOwnedStaging() async throws {
         let fixture = try await Fixture()
         defer { fixture.remove() }
@@ -384,6 +396,20 @@ private struct EventTransport: PodcastDownloadTransporting {
                 continuation.finish()
             }
         }
+    }
+}
+
+private actor StagingExtensionValidator: PodcastMediaValidating {
+    private var mediaURL: URL?
+
+    func duration(of url: URL, onStatus: @escaping @Sendable (String) -> Void) async throws -> Double {
+        mediaURL = url
+        onStatus("validating")
+        return 12
+    }
+
+    func stagedURL() -> URL? {
+        mediaURL
     }
 }
 

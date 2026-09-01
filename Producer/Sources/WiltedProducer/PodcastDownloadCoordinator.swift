@@ -193,6 +193,7 @@ public actor PodcastDownloadCoordinator {
         var expected = episode.enclosureByteCount
         var responseSeen = false
         var responseMediaType: String?
+        let storedMediaType: String
         let queued = try PodcastDownload(episodeID: episodeID, status: .queued, updatedAt: Timestamp(now()))
         try await store.save(download: queued)
         onStatus(.init(stage: .queued, bytesReceived: 0, expectedByteCount: expected))
@@ -205,6 +206,7 @@ public actor PodcastDownloadCoordinator {
             if let declared = episode.enclosureByteCount, declared > maximumBytes {
                 throw PodcastDownloadCoordinatorError.declaredSizeTooLarge(declared)
             }
+            storedMediaType = try Self.validatedMediaType(episode.enclosureMediaType)
         } catch let error as PodcastDownloadCoordinatorError {
             try? await store.save(download: PodcastDownload(
                 episodeID: episodeID, status: .failed, bytesReceived: 0,
@@ -214,7 +216,8 @@ public actor PodcastDownloadCoordinator {
         }
 
         let stagingDirectory = libraryDirectory.appendingPathComponent(".podcast-staging", isDirectory: true)
-        let stagingURL = stagingDirectory.appendingPathComponent(UUID().uuidString + ".download")
+        let stagingExtension = Self.fileExtension(for: storedMediaType)
+        let stagingURL = stagingDirectory.appendingPathComponent(UUID().uuidString + "." + stagingExtension)
         let handle: FileHandle
         do {
             try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
@@ -252,7 +255,7 @@ public actor PodcastDownloadCoordinator {
                         throw PodcastDownloadCoordinatorError.invalidResponse(response.statusCode)
                     }
                     let actualType = try Self.validatedMediaType(response.mediaType)
-                    let episodeType = try Self.validatedMediaType(episode.enclosureMediaType)
+                    let episodeType = storedMediaType
                     guard actualType == episodeType else {
                         throw PodcastDownloadCoordinatorError.mediaTypeMismatch(expected: episodeType, actual: actualType)
                     }
