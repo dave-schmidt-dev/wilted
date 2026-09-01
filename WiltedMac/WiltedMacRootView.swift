@@ -348,12 +348,14 @@ private struct WiltedMacLibraryView: View {
                 .font(WiltedTheme.font(.title))
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             Text(WiltedScreenCopy.feedsPolicy)
-                .font(WiltedTheme.font(.utility))
+                .font(WiltedTheme.font(.body))
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("wilted-podcast-feeds-policy")
             if model.withheldPodcastEpisodeCount > 0 {
-                Text("\(model.withheldPodcastEpisodeCount) older episodes stayed in their feeds.")
+                Text(model.withheldPodcastEpisodeCount == 1
+                     ? "1 older episode stayed in its feed."
+                     : "\(model.withheldPodcastEpisodeCount) older episodes stayed in their feeds.")
                     .font(WiltedTheme.font(.utility))
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-podcast-feeds-withheld")
@@ -377,6 +379,15 @@ private struct WiltedMacLibraryView: View {
         .accessibilityIdentifier(WiltedScreenCopy.feedsIdentifier)
     }
 
+    /// What one feed currently contributes, in words rather than a bare count,
+    /// because "1 episodes" in a shipping window reads as a defect.
+    private static func feedCountSummary(_ subscription: WiltedMacSubscription) -> String {
+        let noun = subscription.episodeCount == 1 ? "episode" : "episodes"
+        return subscription.enabled
+            ? "\(subscription.episodeCount) \(noun) in Larder"
+            : "\(subscription.episodeCount) \(noun) kept, hidden from Larder"
+    }
+
     /// One feed's row.
     ///
     /// The text column claims the remaining width with a frame rather than a
@@ -396,9 +407,7 @@ private struct WiltedMacLibraryView: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(subscription.enabled
-                     ? "\(subscription.episodeCount) episodes in Larder"
-                     : "\(subscription.episodeCount) episodes kept, hidden from Larder")
+                Text(Self.feedCountSummary(subscription))
                     .font(WiltedTheme.font(.utility))
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-podcast-feed-count-\(subscription.id)")
