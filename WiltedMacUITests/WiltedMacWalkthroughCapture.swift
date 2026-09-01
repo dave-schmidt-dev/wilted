@@ -66,9 +66,13 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
 
     private func captureFeeds(into root: URL) throws {
         let app = launch(["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
+        let navigate = element(app, "wilted-navigation-feeds")
+        XCTAssertTrue(navigate.waitForExistence(timeout: 15))
+        navigate.click()
         let card = element(app, "wilted-podcast-feeds")
         XCTAssertTrue(card.waitForExistence(timeout: 15))
-        // The idle frame already shows the card as found. This one records what
+        try write(app, "4.2-feeds-page", into: root)
+        // The page frame above shows the feeds as found. This one records what
         // the switch actually does, so the report is not left asserting an
         // effect it never captured.
         let toggle = app.descendants(matching: .any).matching(
@@ -80,7 +84,7 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-count-'")
         ).firstMatch
         XCTAssertTrue(count.waitForExistence(timeout: 10))
-        try write(app, "4.2-larder-feed-hidden", into: root)
+        try write(app, "4.3-feeds-feed-hidden", into: root)
         app.terminate()
     }
 

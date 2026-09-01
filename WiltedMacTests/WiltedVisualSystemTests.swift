@@ -631,12 +631,19 @@ final class WiltedVisualSystemTests: XCTestCase {
 
     func testNativeInteractionContract() {
         XCTAssertEqual(WiltedNavigation.allCases.map(\.title), ["Larder", "Now Playing", "Downloads", "Settings"])
-        XCTAssertEqual(WiltedMacNavigation.allCases.map(\.title), ["Larder", "Prep", "Settings"])
+        XCTAssertEqual(WiltedMacNavigation.allCases.map(\.title), ["Larder", "Podcast feeds", "Prep", "Settings"])
         XCTAssertFalse(WiltedMacNavigation.allCases.map(\.rawValue).contains("nowPlaying"))
         XCTAssertEqual(WiltedScreenCopy.libraryEmpty, "Your larder is empty")
         XCTAssertEqual(WiltedScreenCopy.noArticles, "No articles yet")
         XCTAssertEqual(WiltedScreenCopy.addArticle, "Add Article")
         XCTAssertEqual(WiltedScreenCopy.addArticleIdentifier, "wilted-add-article")
+        // Larder's one box takes both kinds, so its label names neither.
+        XCTAssertEqual(WiltedScreenCopy.addLink, "Add")
+        XCTAssertEqual(WiltedScreenCopy.addLinkTitle, "Add an article or podcast")
+        // Feeds is a destination now, so the empty card must not tell the
+        // reader to subscribe "above" on a page with no add box.
+        XCTAssertFalse(WiltedScreenCopy.feedsEmptyDetail.contains("above"))
+        XCTAssertTrue(WiltedScreenCopy.feedsEmptyDetail.contains(WiltedScreenCopy.library))
         XCTAssertEqual(WiltedScreenCopy.stateActionIdentifier, "wilted-state-action")
         XCTAssertEqual(WiltedScreenCopy.libraryIdentifier, "wilted-library")
         XCTAssertEqual(
@@ -671,7 +678,7 @@ final class WiltedVisualSystemTests: XCTestCase {
     /// the Mac baselines always render the player, never the empty state.
     func testProducerCopyNamesOnlyProducerDestinations() {
         let producerDestinations = WiltedMacNavigation.allCases
-        XCTAssertEqual(producerDestinations.map(\.title), ["Larder", "Prep", "Settings"])
+        XCTAssertEqual(producerDestinations.map(\.title), ["Larder", "Podcast feeds", "Prep", "Settings"])
 
         XCTAssertFalse(
             WiltedScreenCopy.nowPlayingEmptyDetailProducer.contains(WiltedScreenCopy.downloads),

@@ -10,9 +10,11 @@ final class WiltedMacSmokeUITests: XCTestCase {
         let app = launch(arguments: ["--wilted-ui-smoke"])
 
         let navLibrary = app.descendants(matching: .any)["wilted-navigation-library"]
+        let navFeeds = app.descendants(matching: .any)["wilted-navigation-feeds"]
         let navProcessor = app.descendants(matching: .any)["wilted-navigation-processor"]
         let navSettings = app.descendants(matching: .any)["wilted-navigation-settings"]
         XCTAssertTrue(navLibrary.waitForExistence(timeout: 5))
+        XCTAssertTrue(navFeeds.waitForExistence(timeout: 5))
         XCTAssertTrue(navProcessor.waitForExistence(timeout: 5))
         XCTAssertTrue(navSettings.waitForExistence(timeout: 5))
         XCTAssertFalse(app.descendants(matching: .any)["wilted-navigation-nowPlaying"].exists)
@@ -34,12 +36,25 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(urlField.exists)
         XCTAssertFalse(syncControls.exists)
 
+        // Feeds is its own destination, so the feed card must leave Larder and
+        // the add box must not follow it onto the Feeds page.
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-podcast-feeds"].exists)
+        navFeeds.click()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-mac-feeds-detail"].waitForExistence(timeout: 5)
+        )
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-podcast-feeds"].exists)
+        XCTAssertTrue(compact.exists)
+        XCTAssertFalse(urlField.exists)
+        XCTAssertFalse(emptyState.exists)
+
         navProcessor.click()
         XCTAssertTrue(
             app.descendants(matching: .any)["wilted-mac-processor-detail"].waitForExistence(timeout: 5)
         )
         XCTAssertTrue(compact.exists)
         XCTAssertFalse(urlField.exists)
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-mac-feeds-detail"].exists)
 
         navSettings.click()
         XCTAssertTrue(syncControls.waitForExistence(timeout: 5))
@@ -51,6 +66,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(emptyState.exists)
         XCTAssertTrue(compact.exists)
         XCTAssertFalse(syncControls.exists)
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-podcast-feeds"].exists)
     }
     func testProcessorReportsActiveWorkAndRunHistory() {
         let app = launch(arguments: ["--wilted-ui-smoke"])
@@ -103,11 +119,15 @@ final class WiltedMacSmokeUITests: XCTestCase {
     }
 
     /// The reported gap: subscriptions existed in the store with nowhere to see
-    /// or manage them. Larder must list every feed with its own switch and
-    /// unsubscribe, and state the refresh and download policy rather than
+    /// or manage them. The Feeds page must list every feed with its own switch
+    /// and unsubscribe, and state the refresh and download policy rather than
     /// leaving an absent schedule to read as a hidden one.
-    func testLarderListsPodcastFeedsWithPerFeedControls() {
+    func testFeedsPageListsPodcastFeedsWithPerFeedControls() {
         let app = launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
+
+        let navFeeds = app.descendants(matching: .any)["wilted-navigation-feeds"]
+        XCTAssertTrue(navFeeds.waitForExistence(timeout: 8))
+        navFeeds.click()
 
         let card = app.descendants(matching: .any)["wilted-podcast-feeds"]
         XCTAssertTrue(card.waitForExistence(timeout: 8))

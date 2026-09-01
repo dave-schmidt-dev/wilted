@@ -271,7 +271,7 @@ assert_macos_ui_leg_is_executed() {
   for method in \
     testEachDestinationExclusivelyOccupiesTheDetailRegion \
     testSidebarListsDestinationsOnlyAndNotTheArticleList \
-    testLarderListsPodcastFeedsWithPerFeedControls; do
+    testFeedsPageListsPodcastFeedsWithPerFeedControls; do
     assert_contains "$method" "$repo_root/WiltedMacUITests/WiltedMacSmokeUITests.swift"
   done
 }

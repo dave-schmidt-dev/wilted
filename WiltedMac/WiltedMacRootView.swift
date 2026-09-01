@@ -81,6 +81,8 @@ struct WiltedMacRootView: View {
                     switch model.selectedNavigation {
                     case .library:
                         WiltedMacLibraryView(model: model)
+                    case .feeds:
+                        WiltedMacFeedsView(model: model)
                     case .processor:
                         WiltedMacProcessorView(model: model)
                     case .settings:
@@ -247,9 +249,7 @@ private struct WiltedMacLibraryView: View {
         WiltedMacDestination(title: WiltedScreenCopy.library, identifier: "wilted-mac-library-detail") {
             composer
 
-            podcastControls
-
-            feedManagement
+            libraryControls
 
             if let preparation = model.preparation {
                 WiltedMacPreparationView(model: model, preparation: preparation)
@@ -300,7 +300,108 @@ private struct WiltedMacLibraryView: View {
         }
     }
 
-    private var podcastControls: some View {
+    /// What Larder itself needs: the order of the list, and the running report
+    /// for whatever the reader last asked of an item. Refresh and the feed list
+    /// moved to Feeds, so this page stays about the saved items.
+    private var libraryControls: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+            HStack {
+                Picker("Order", selection: $model.libraryOrder) {
+                    ForEach(WiltedMacLibraryOrder.allCases) { order in Text(order.rawValue).tag(order) }
+                }
+                .labelsHidden()
+                .frame(width: 110)
+                .accessibilityIdentifier("wilted-library-order")
+                Spacer(minLength: 0)
+            }
+            WiltedMacPodcastOperationMessage(model: model)
+        }
+        .wiltedCard(colorScheme)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-podcast-controls")
+    }
+
+    /// One box for both kinds of address.
+    ///
+    /// It is a card inside Library, not the page itself: as the page's own
+    /// heading it read as an unrelated form sitting where the library was
+    /// supposed to be. The status line below the field is not decoration --
+    /// classifying an address can take a network round trip, and a button that
+    /// pauses without saying so reads as a broken one.
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+            Text(WiltedScreenCopy.addLinkTitle)
+                .font(WiltedTheme.font(.title))
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+            Text(WiltedScreenCopy.addLinkDetail)
+                .font(WiltedTheme.font(.body))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: WiltedTheme.Spacing.medium) {
+                WiltedMacLinkField(text: $model.urlDraft)
+                Button(WiltedScreenCopy.addLink) {
+                    model.addPastedLink()
+                }
+                .keyboardShortcut(.return)
+                .accessibilityIdentifier("wilted-add-link")
+            }
+            if let status = model.linkDraftStatus {
+                Text(status)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-link-status")
+            }
+            if let advertised = model.advertisedFeed {
+                advertisedFeedOffer(advertised)
+            }
+        }
+        .wiltedCard(colorScheme)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-mac-composer")
+    }
+
+    /// The page that was just saved publishes a feed. Following it is a
+    /// separate decision, so it is offered as an action rather than taken.
+    private func advertisedFeedOffer(_ feedURL: URL) -> some View {
+        HStack(spacing: WiltedTheme.Spacing.medium) {
+            Text("That page publishes a feed at \(feedURL.host ?? feedURL.absoluteString).")
+                .font(WiltedTheme.font(.utility))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Subscribe") { model.subscribeToAdvertisedFeed() }
+                .accessibilityIdentifier("wilted-advertised-feed-subscribe")
+            Button("Not Now") { model.dismissAdvertisedFeed() }
+                .accessibilityIdentifier("wilted-advertised-feed-dismiss")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-advertised-feed")
+    }
+}
+
+// MARK: - Feeds
+
+/// Feed upkeep, on its own page.
+///
+/// Subscribing happens in Larder's one add box; this page is what the app does
+/// with a feed once it is followed -- refresh it, hide it, or drop it.
+private struct WiltedMacFeedsView: View {
+    @Bindable private var model: WiltedMacModel
+    @Environment(\.colorScheme) private var colorScheme
+
+    init(model: WiltedMacModel) {
+        _model = Bindable(model)
+    }
+
+    var body: some View {
+        WiltedMacDestination(title: WiltedScreenCopy.feeds, identifier: "wilted-mac-feeds-detail") {
+            refreshControls
+            feedManagement
+        }
+    }
+
+    private var refreshControls: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
             HStack {
                 if model.isRefreshingPodcasts {
@@ -310,36 +411,26 @@ private struct WiltedMacLibraryView: View {
                     Button("Refresh") { model.refreshPodcastFeeds() }
                         .accessibilityIdentifier("wilted-podcast-refresh")
                 }
-                Picker("Order", selection: $model.libraryOrder) {
-                    ForEach(WiltedMacLibraryOrder.allCases) { order in Text(order.rawValue).tag(order) }
-                }
-                .labelsHidden()
-                .frame(width: 110)
-                .accessibilityIdentifier("wilted-library-order")
+                Spacer(minLength: 0)
             }
             if model.isRefreshingPodcasts {
                 ProgressView().controlSize(.small).accessibilityIdentifier("wilted-podcast-refresh-progress")
             }
-            if let message = model.podcastOperationMessage {
-                Text(message)
-                    .font(WiltedTheme.font(.utility))
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-podcast-operation-message")
-            }
+            WiltedMacPodcastOperationMessage(model: model)
         }
         .wiltedCard(colorScheme)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-podcast-controls")
     }
 
-    /// Feeds the app follows, with the controls that were previously missing:
-    /// the subscription list itself, a per-feed switch, and unsubscribe. The
+    /// The subscription list itself, a per-feed switch, and unsubscribe. The
     /// card also states the refresh and download policy, because an app with no
     /// schedule at all should say so rather than let its absence read as a
     /// setting the reader cannot find.
     private var feedManagement: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            Text(WiltedScreenCopy.feeds)
+            // Not "Podcast feeds" again: that is the page's own heading now.
+            Text("Subscriptions")
                 .font(WiltedTheme.font(.title))
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             Text(WiltedScreenCopy.feedsPolicy)
@@ -422,63 +513,25 @@ private struct WiltedMacLibraryView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-podcast-feed-row-\(subscription.id)")
     }
+}
 
-    /// One box for both kinds of address.
-    ///
-    /// It is a card inside Library, not the page itself: as the page's own
-    /// heading it read as an unrelated form sitting where the library was
-    /// supposed to be. The status line below the field is not decoration --
-    /// classifying an address can take a network round trip, and a button that
-    /// pauses without saying so reads as a broken one.
-    private var composer: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            Text(WiltedScreenCopy.addLinkTitle)
-                .font(WiltedTheme.font(.title))
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-            Text(WiltedScreenCopy.addLinkDetail)
-                .font(WiltedTheme.font(.body))
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: WiltedTheme.Spacing.medium) {
-                WiltedMacLinkField(text: $model.urlDraft)
-                Button(WiltedScreenCopy.addLink) {
-                    model.addPastedLink()
-                }
-                .keyboardShortcut(.return)
-                .accessibilityIdentifier("wilted-add-link")
-            }
-            if let status = model.linkDraftStatus {
-                Text(status)
-                    .font(WiltedTheme.font(.utility))
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("wilted-link-status")
-            }
-            if let advertised = model.advertisedFeed {
-                advertisedFeedOffer(advertised)
-            }
-        }
-        .wiltedCard(colorScheme)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-mac-composer")
-    }
+/// The running report for the last podcast action.
+///
+/// Downloads and preparation are reported from Larder and refreshes from Feeds,
+/// so both pages render it. Only one destination is on screen at a time, which
+/// keeps the identifier unique.
+private struct WiltedMacPodcastOperationMessage: View {
+    let model: WiltedMacModel
+    @Environment(\.colorScheme) private var colorScheme
 
-    /// The page that was just saved publishes a feed. Following it is a
-    /// separate decision, so it is offered as an action rather than taken.
-    private func advertisedFeedOffer(_ feedURL: URL) -> some View {
-        HStack(spacing: WiltedTheme.Spacing.medium) {
-            Text("That page publishes a feed at \(feedURL.host ?? feedURL.absoluteString).")
+    var body: some View {
+        if let message = model.podcastOperationMessage {
+            Text(message)
                 .font(WiltedTheme.font(.utility))
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Subscribe") { model.subscribeToAdvertisedFeed() }
-                .accessibilityIdentifier("wilted-advertised-feed-subscribe")
-            Button("Not Now") { model.dismissAdvertisedFeed() }
-                .accessibilityIdentifier("wilted-advertised-feed-dismiss")
+                .accessibilityIdentifier("wilted-podcast-operation-message")
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-advertised-feed")
     }
 }
 

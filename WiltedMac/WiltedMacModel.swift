@@ -310,10 +310,14 @@ struct WiltedMacPreparation: Equatable, Sendable {
 
 /// The producer's permanent destinations.
 ///
-/// Library, preparation, and settings remain work destinations. Playback is
-/// owned by the persistent bottom rail instead of competing for navigation.
+/// Library, feeds, preparation, and settings remain work destinations.
+/// Playback is owned by the persistent bottom rail instead of competing for
+/// navigation. Feeds is its own destination because Larder is for the things
+/// worth reading and listening to; which sources supply them is upkeep, and it
+/// was pushing the actual library below the fold.
 enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable {
     case library
+    case feeds
     case processor
     case settings
 
@@ -322,6 +326,7 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
     var title: String {
         switch self {
         case .library: WiltedScreenCopy.library
+        case .feeds: WiltedScreenCopy.feeds
         case .processor: WiltedScreenCopy.processor
         case .settings: WiltedScreenCopy.settings
         }
@@ -330,6 +335,7 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
     var symbolName: String {
         switch self {
         case .library: "books.vertical"
+        case .feeds: "dot.radiowaves.left.and.right"
         case .processor: "gearshape.2"
         case .settings: "gearshape"
         }
