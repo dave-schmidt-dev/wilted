@@ -109,6 +109,21 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
             try write(app, "6.3-up-next-expanded", into: root)
             upNext.click()
         }
+
+        // Notes exist only for an episode, so this frame comes from the
+        // podcast fixture's episode rather than the playing article.
+        let playEpisode = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-play-'")
+        ).firstMatch
+        if playEpisode.waitForExistence(timeout: 5) {
+            playEpisode.click()
+            let notes = element(app, "wilted-player-notes")
+            XCTAssertTrue(notes.waitForExistence(timeout: 10))
+            notes.click()
+            XCTAssertTrue(element(app, "wilted-player-notes-expanded").waitForExistence(timeout: 10))
+            try write(app, "6.4-notes-expanded", into: root)
+            notes.click()
+        }
         app.terminate()
     }
 

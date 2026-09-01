@@ -47,9 +47,23 @@ class FakeSegment:
     text: str
 
 
-def install_fake_wilted(parse_results=None, parse_error=None):
-    """Stand in for the previous project's `wilted` package."""
+def install_fake_wilted(parse_results=None, parse_error=None, transcriptions=None):
+    """Stand in for the previous project's `wilted` package.
+
+    `transcriptions` maps a model name to the segments the daemon returns for
+    it, or to an exception it raises.
+    """
     transcribe = types.ModuleType("wilted.transcribe")
+
+    def transcribe_audio(audio_path, model_name="mlx-community/parakeet-tdt-1.1b", **_):
+        outcome = (transcriptions or {}).get(model_name)
+        if isinstance(outcome, Exception):
+            raise outcome
+        if outcome is None:
+            raise RuntimeError(f"no fake transcription for {model_name}")
+        return outcome
+
+    transcribe.transcribe_audio = transcribe_audio
 
     def parser(name):
         def parse(body):
@@ -460,6 +474,86 @@ class PreflightTests(unittest.TestCase):
         self.assertTrue(result["ok"])
 
 
+class GlossaryTests(unittest.TestCase):
+    """The show-notes glossary, with a fixed dictionary so the system word
+    list's gaps do not decide what passes."""
+
+    DICTIONARY = frozenset("""
+    a the and of is are it this week in tech at big why spending trillion higher than seems
+    police hiding their use surveillance cameras flock apple online platform lawsuit
+    dismiss concede meta vision pro air tag using use see me plate for mean back center data
+    future volt hidden reveal trash rare book train head court landmark trial
+    """.split())
+    NOTES = (
+        "Meta faces a $1.4 trillion lawsuit, and Flock cameras are sparking a revolt.\n\n"
+        "- Meta heads to court in a landmark trial\n"
+        "- Why Big Tech's AI Spending Is $3 Trillion Higher Than It Seems\n"
+        "- Hidden Airtag reveals Amazon is trashing rare books to train AI\n"
+        "- Police Are Hiding Their Use of Flock Surveillance Cameras\n"
+        "- Go Flock Yourself\n"
+        "- Apple is laying off staffers working on the Vision Pro and Siri\n"
+        "- NVIDIA to Back Ohio Data Center\n\n"
+        "Host: Leo Laporte (https://twit.tv/people/leo-laporte)\n\n"
+        "Guests: Sam Abuelsamid and Fr. Robert Ballecer, SJ (https://bsky.app/profile/padresj)\n\n"
+        "Sponsors:\n- adaptivesecurity.com (https://www.adaptivesecurity.com/?utm_campaign=2026_NA_Podcast)\n"
+        "- claude.ai/technology\n"
+    )
+
+    def glossary(self):
+        return wp.build_glossary(self.NOTES, "TWiT 1098: Usain Volt - Meta and the Future", self.DICTIONARY)
+
+    def test_names_sites_and_products_are_found_and_headline_words_are_not(self):
+        terms = self.glossary()
+        for expected in ["Leo Laporte", "Sam Abuelsamid", "Vision Pro", "NVIDIA", "Siri", "adaptivesecurity.com",
+                         "claude.ai", "twit.tv", "Usain", "Laporte", "Abuelsamid", "Ballecer", "Airtag", "Amazon"]:
+            self.assertIn(expected, terms)
+        for unwanted in ["Why", "Spending", "Higher", "Seems", "Police", "Hiding", "Their", "Use", "Surveillance",
+                         "Meta's", "Tech's", "AI", "NA", "Podcast", "Host", "Guests", "Sponsors", "Back", "Hidden"]:
+            self.assertNotIn(unwanted, terms)
+        # "Meta" and "Flock" are ordinary words that earn a casing rule only by
+        # being written capitalized three times and never in lower case.
+        self.assertIn("Flock", terms)
+        self.assertIn("Meta", terms)
+        self.assertEqual(terms[0], "Fr Robert Ballecer SJ", "longest phrase first so it wins over its parts")
+        self.assertEqual(wp.build_glossary("", "", self.DICTIONARY), [])
+
+    def test_exact_hits_take_the_notes_casing_and_keep_possessives(self):
+        cues = [{"startSeconds": 0, "endSeconds": 1, "text": "leo laporte said meta's vision pro and flock cameras"}]
+        out, edits = wp.apply_glossary(cues, self.glossary(), self.DICTIONARY)
+        self.assertEqual(out[0]["text"], "Leo Laporte said Meta's Vision Pro and Flock cameras")
+        self.assertEqual(edits, 4)
+        self.assertEqual(cues[0]["text"], "leo laporte said meta's vision pro and flock cameras", "input is not mutated")
+
+    def test_near_misses_are_respelled_but_real_words_are_left_alone(self):
+        cues = [{"startSeconds": 0, "endSeconds": 1, "text": (
+            "sama boul samad joined us on twit dot t v and adaptive security dot com sponsors us "
+            "while nvidia's chips ship and everyone is using an air tag and see me later"
+        )}]
+        out, _ = wp.apply_glossary(cues, self.glossary(), self.DICTIONARY)
+        self.assertEqual(out[0]["text"], (
+            "Sam Abuelsamid joined us on twit.tv and adaptivesecurity.com sponsors us "
+            "while NVIDIA's chips ship and everyone is using an Airtag and see me later"
+        ))
+
+    def test_marks_around_a_corrected_name_survive_it(self):
+        cues = [{"startSeconds": 0, "endSeconds": 1, "text": "That is Sam Abul Samed. \"Meta's\" (nvidia), leo laporte!"}]
+        out, _ = wp.apply_glossary(cues, self.glossary(), self.DICTIONARY)
+        self.assertEqual(out[0]["text"], "That is Sam Abuelsamid. \"Meta's\" (NVIDIA), Leo Laporte!")
+
+    def test_the_stage_is_reported_and_never_fatal(self):
+        cues = [{"startSeconds": 0, "endSeconds": 1, "text": "hello nvidia"}]
+        with redirect_stderr(io.StringIO()) as err:
+            out = wp.polish_with_notes({"episodeNotes": self.NOTES}, cues)
+        self.assertEqual(out[0]["text"], "hello NVIDIA")
+        stages = [json.loads(line)["stage"] for line in err.getvalue().splitlines()]
+        self.assertEqual(stages, ["transcript.glossary.terms", "transcript.glossary.complete"])
+        self.assertEqual(wp.polish_with_notes({}, cues), cues, "no notes, no pass")
+        with mock.patch.object(wp, "build_glossary", side_effect=RuntimeError("boom")):
+            with redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(wp.polish_with_notes({"episodeNotes": "x"}, cues), cues)
+        self.assertIn("transcript.glossary.failed", err.getvalue())
+
+
 class RunTests(unittest.TestCase):
     def setUp(self):
         self.audio = Path(REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py")
@@ -479,6 +573,50 @@ class RunTests(unittest.TestCase):
         self.assertFalse(result["audioChanged"])
         self.assertEqual(result["removedSeconds"], 0.0)
         self.assertEqual(result["audioPath"], str(self.audio))
+
+    def test_show_notes_correct_the_transcript_before_it_is_returned(self):
+        install_fake_wilted({"vtt": [FakeSegment(0, 2, "leo laporte"), FakeSegment(2, 4, "on twit dot t v")]})
+        with redirect_stderr(io.StringIO()):
+            result = wp.run({
+                "audioPath": str(self.audio), "removeAds": False, "allowSpeechToText": False,
+                "episodeNotes": "Host: Leo Laporte (https://twit.tv/people/leo-laporte)",
+                "publishedTranscript": {"body": "WEBVTT", "mediaType": "text/vtt", "url": "https://x.test/a.vtt"},
+            })
+        self.assertEqual(result["text"], "Leo Laporte on twit.tv")
+        self.assertEqual([c["text"] for c in result["cues"]], ["Leo Laporte", "on twit.tv"])
+
+    def test_the_readable_pass_replaces_the_plain_transcript_when_it_heard_as_much(self):
+        plain = [FakeSegment(0, 2, "hello there world"), FakeSegment(2, 4, "leo laporte here")]
+        readable = [FakeSegment(0, 2, "Hello there, world."), FakeSegment(2, 4, "Leo Laporte here.")]
+        install_fake_wilted(transcriptions={"mlx-community/parakeet-tdt-1.1b": plain, wp.READABLE_STT_MODEL: readable})
+        with redirect_stderr(io.StringIO()) as err:
+            result = wp.run({"audioPath": str(self.audio), "removeAds": False})
+        self.assertEqual(result["timing"], "aligned")
+        self.assertEqual(result["text"], "Hello there, world. Leo Laporte here.")
+        stages = [json.loads(line)["stage"] for line in err.getvalue().splitlines()]
+        self.assertIn("transcript.stt.readable.complete", stages)
+
+    def test_a_short_or_failed_readable_pass_keeps_the_plain_transcript(self):
+        plain = [FakeSegment(0, 2, "one two three four five six seven eight nine ten")]
+        install_fake_wilted(transcriptions={"mlx-community/parakeet-tdt-1.1b": plain,
+                                            wp.READABLE_STT_MODEL: [FakeSegment(0, 1, "One, two.")]})
+        with redirect_stderr(io.StringIO()) as err:
+            result = wp.run({"audioPath": str(self.audio), "removeAds": False})
+        self.assertEqual(result["text"], "one two three four five six seven eight nine ten")
+        self.assertIn("transcript.stt.readable.rejected", err.getvalue())
+
+        install_fake_wilted(transcriptions={"mlx-community/parakeet-tdt-1.1b": plain,
+                                            wp.READABLE_STT_MODEL: RuntimeError("daemon gone")})
+        with redirect_stderr(io.StringIO()) as err:
+            result = wp.run({"audioPath": str(self.audio), "removeAds": False})
+        self.assertEqual(result["text"], "one two three four five six seven eight nine ten")
+        self.assertIn("transcript.stt.readable.failed", err.getvalue())
+
+        install_fake_wilted(transcriptions={"mlx-community/parakeet-tdt-1.1b": plain})
+        with redirect_stderr(io.StringIO()) as err:
+            result = wp.run({"audioPath": str(self.audio), "removeAds": False, "readableTranscript": False})
+        self.assertEqual(result["text"], "one two three four five six seven eight nine ten")
+        self.assertNotIn("transcript.stt.readable", err.getvalue())
 
     def test_no_transcript_of_any_kind_still_returns_a_result(self):
         install_fake_wilted()

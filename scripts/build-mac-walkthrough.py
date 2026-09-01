@@ -159,6 +159,15 @@ def build(captures, commit, date_iso, date_human, previous):
             "<code>wilted-player-up-next-expanded</code> in the same inline position, with the rail's transport "
             "row still reachable. The queue reads &ldquo;Nothing queued&rdquo; because the fixture queues nothing.",
             captures),
+        "notes": figure(
+            "fig-playback-notes", "6.4-notes-expanded",
+            "The show notes panel expanded inline above the bottom rail while a fixture episode plays",
+            "<strong>6.4 Notes, expanded inline.</strong> With the fixture episode playing, "
+            "<code>wilted-player-notes</code> appears between Transcript and Up Next (it is absent for an "
+            "article, which has its own text) and expands <code>wilted-player-notes-expanded</code>: the feed's "
+            "show notes as plain text at <code>wilted-player-notes-text</code>, every address a link. The Larder "
+            "row for the same episode leads with these notes' opening sentence instead of the author.",
+            captures),
         "prep": figure(
             "fig-prep-frame", "7.1-prep-with-playback",
             "The Prep destination with the bottom rail still carrying its playing state",
@@ -262,6 +271,7 @@ def build(captures, commit, date_iso, date_human, previous):
 {figures["rail"]}
 {figures["transcript"]}
 {figures["upnext"]}
+{figures["notes"]}
 <p>Keyboard handling: the transport row is reachable by Tab, the expanded panels return focus to their toggle on collapse, and Escape collapses an expanded panel rather than leaving it open behind a route change.</p>
 </section>
 

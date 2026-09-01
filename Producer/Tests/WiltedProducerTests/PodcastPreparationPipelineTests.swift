@@ -35,6 +35,9 @@ struct PodcastPreparationPipelineTests {
         #expect(published["mediaType"] as? String == "text/vtt")
         #expect((published["body"] as? String)?.contains("WEBVTT") == true)
         #expect(request["audioPath"] as? String == fixture.audioURL.path)
+        // The show notes ride along as the worker's glossary.
+        #expect(request["episodeNotes"] as? String == "Host: Leo Laporte (https://twit.tv/people/leo-laporte)")
+        #expect(request["episodeTitle"] as? String == "Episode")
         #expect(result.transcript.timing == .published)
         #expect(result.transcript.cues?.count == 2)
         #expect(result.revision.revisionID == fixture.revisionID)
@@ -575,6 +578,7 @@ private struct Fixture {
             itemID: episodeID, feedID: try ItemID.derivePodcastFeed(from: feedURL), feedURL: feedURL,
             rssGUID: "e1", title: "Episode", enclosureURL: enclosureURL, enclosureMediaType: "audio/mpeg",
             enclosureByteCount: 19, transcriptSources: sources,
+            notes: "Host: Leo Laporte (https://twit.tv/people/leo-laporte)",
             createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
         ))
 

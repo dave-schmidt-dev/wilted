@@ -108,7 +108,11 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     let id: String
     let title: String
     let feedTitle: String
+    /// One line for the row: the notes' opening paragraph when the feed
+    /// publishes notes, otherwise the author or the show.
     let summary: String
+    /// The feed's show notes in full, for the Now Playing pane.
+    var notes: String? = nil
     let artworkURL: URL?
     let releasedAt: Date
     let durationSeconds: TimeInterval?
@@ -118,7 +122,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.id == rhs.id && lhs.title == rhs.title && lhs.feedTitle == rhs.feedTitle &&
-            lhs.summary == rhs.summary && lhs.artworkURL == rhs.artworkURL && lhs.releasedAt == rhs.releasedAt &&
+            lhs.summary == rhs.summary && lhs.notes == rhs.notes && lhs.artworkURL == rhs.artworkURL && lhs.releasedAt == rhs.releasedAt &&
             lhs.durationSeconds == rhs.durationSeconds && lhs.playbackSeconds == rhs.playbackSeconds &&
             lhs.downloadState == rhs.downloadState && lhs.preparationState == rhs.preparationState
     }
@@ -991,6 +995,10 @@ final class WiltedMacModel {
         case "transcript.stt.start": "Transcribing the audio…"
         case "transcript.stt.complete": "Transcribed."
         case "transcript.stt.failed": "Transcription unavailable."
+        case "transcript.stt.readable.start": "Transcribing again for reading…"
+        case "transcript.stt.readable.complete": "Readable transcript ready."
+        case "transcript.stt.readable.failed", "transcript.stt.readable.rejected": "Keeping the plain transcript."
+        case "transcript.glossary.terms", "transcript.glossary.complete": "Correcting names from the show notes…"
         case "transcript.prose.extract", "transcript.prose.accepted": "Reading the episode page…"
         case "transcript.absent": "No transcript available."
         case "transcript.remap": "Resynchronising the transcript…"
@@ -2211,10 +2219,10 @@ final class WiltedMacModel {
             case nil: downloadState = .notDownloaded
             }
             let feedTitle = feeds[episode.feedID]?.title ?? "Podcast"
-            let summary = String((episode.author ?? feedTitle).prefix(180))
             episodeValues.append(WiltedMacEpisode(
                 id: episode.itemID.rawValue, title: episode.title, feedTitle: feedTitle,
-                summary: summary, artworkURL: episode.artworkURL ?? feeds[episode.feedID]?.artworkURL,
+                summary: Self.episodeSummary(notes: episode.notes, fallback: episode.author ?? feedTitle),
+                notes: episode.notes, artworkURL: episode.artworkURL ?? feeds[episode.feedID]?.artworkURL,
                 releasedAt: (episode.publishedTime ?? episode.createdAt).date,
                 durationSeconds: revision?.revision.durationSeconds ?? episode.durationSeconds,
                 playbackSeconds: playbackState?.positionSeconds ?? 0, downloadState: downloadState,
@@ -2222,6 +2230,23 @@ final class WiltedMacModel {
             ))
         }
         return (articleValues, episodeValues, subscriptionValues)
+    }
+
+    static let fixtureEpisodeNotes = """
+    A walk through the machines that keep the field office quiet.
+
+    Guest: Ada Ferris (https://example.com/ada)
+    Sponsor: Quiet Co, code WILTED at https://example.com/quiet
+    """
+
+    /// The row's one-liner. The notes' first paragraph says what the episode
+    /// is about; the author or show name, the old summary, only says who made it.
+    nonisolated static func episodeSummary(notes: String?, fallback: String) -> String {
+        let opening = notes?
+            .components(separatedBy: "\n")
+            .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }?
+            .trimmingCharacters(in: .whitespaces)
+        return String((opening ?? fallback).prefix(180))
     }
 
     /// What the library already knows about an episode's preparation.
@@ -2371,7 +2396,8 @@ final class WiltedMacModel {
               ) else { return }
         episodes = [WiltedMacEpisode(
             id: episodeID.rawValue, title: episode.title, feedTitle: feed.title,
-            summary: "Field Notes desk", artworkURL: nil, releasedAt: episode.createdAt.date,
+            summary: Self.episodeSummary(notes: Self.fixtureEpisodeNotes, fallback: "Field Notes desk"),
+            notes: Self.fixtureEpisodeNotes, artworkURL: nil, releasedAt: episode.createdAt.date,
             durationSeconds: episode.durationSeconds, playbackSeconds: 0,
             downloadState: fixtureDownloadFailuresRemaining > 0 ? .notDownloaded : .completed,
             preparationState: fixtureEpisodeIsPrepared ? .prepared(summary: Self.fixturePreparedSummary) : .notPrepared

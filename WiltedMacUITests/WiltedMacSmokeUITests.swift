@@ -369,7 +369,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         for identifier in [
             "wilted-player-speed", "wilted-player-rewind", "wilted-player-play-pause",
             "wilted-player-forward", "wilted-player-overflow", "wilted-player-transcript",
-            "wilted-player-up-next", "wilted-player-route-recovery", "wilted-player-volume",
+            "wilted-player-notes", "wilted-player-up-next", "wilted-player-route-recovery", "wilted-player-volume",
             "wilted-player-scrubber", "wilted-player-previous", "wilted-player-next",
             "wilted-player-restart", "wilted-player-keyboard-transports", "wilted-player-status"
         ] {
@@ -414,6 +414,21 @@ final class WiltedMacSmokeUITests: XCTestCase {
         )
         app.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(transcriptExpansion.waitForNonExistence(timeout: 5))
+
+        let notes = app.descendants(matching: .any)["wilted-player-notes"]
+        notes.click()
+        let notesText = app.descendants(matching: .any)["wilted-player-notes-text"]
+        XCTAssertTrue(notesText.waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            (notesText.value as? String ?? notesText.label).contains("Guest: Ada Ferris"),
+            "Show notes pane must show the feed's notes"
+        )
+        XCTAssertEqual(notes.value as? String, "Expanded")
+        XCTAssertEqual(notes.label, "Hide Notes")
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-player-notes-expanded"].waitForNonExistence(timeout: 5)
+        )
 
         let upNext = app.descendants(matching: .any)["wilted-player-up-next"]
         upNext.click()

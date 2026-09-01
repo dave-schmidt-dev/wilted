@@ -47,6 +47,57 @@ struct PodcastFeedClientTests {
         #expect(result.episodes[0].timedTranscriptSource?.mediaType == "text/vtt")
     }
 
+    /// Show notes arrive as CDATA-wrapped HTML under two or three element
+    /// names. The fullest is kept as readable text with its links, because the
+    /// hosts, guests, and sponsor addresses in it are the words speech-to-text
+    /// gets wrong.
+    @Test func capturesShowNotesAsReadableTextWithLinks() async throws {
+        let result = try await client(xml: """
+        <rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel>
+          <title>Show</title><description>Channel blurb that is not an episode's notes</description>
+          <item><title>Episode</title>
+            <description>Short summary.</description>
+            <content:encoded><![CDATA[<p>As AI-generated video blurs reality &amp; new Macs ship, who&#8217;s left behind?</p><ul>
+            <li>NVIDIA&#39;s Profit Doubles</li>
+            <li>  Apple&nbsp;Introduces   M6</li></ul>
+            <p><strong>Host:</strong> <a href="https://twit.tv/people/leo-laporte">Leo Laporte</a></p>
+            <p><strong>Guests:</strong> <a href="https://www.mollywhite.net/" target="_blank">Molly White</a></p>
+            <p><strong>Sponsors:</strong><ul><li><a href="http://ZipRecruiter.com/twit" rel="sponsored">ZipRecruiter.com/twit</a></li></ul></p>
+            <script>alert(1)</script>]]></content:encoded>
+            <itunes:summary>Short summary.</itunes:summary>
+            <enclosure url="https://cdn.example.test/one.mp3" type="audio/mpeg" />
+          </item>
+        </channel></rss>
+        """).load(sourceURL)
+        let notes = try #require(result.episodes[0].notes)
+        #expect(notes == """
+        As AI-generated video blurs reality & new Macs ship, who’s left behind?
+
+        - NVIDIA's Profit Doubles
+        - Apple Introduces M6
+
+        Host: Leo Laporte (https://twit.tv/people/leo-laporte)
+
+        Guests: Molly White (https://www.mollywhite.net/)
+
+        Sponsors:
+        - ZipRecruiter.com/twit
+        """)
+        #expect(!notes.contains("Channel blurb"))
+    }
+
+    @Test func showNotesAreOptionalAndOverLongNotesAreCutNotRefused() async throws {
+        let bare = try await client(xml: feed(item: #"<enclosure url="https://cdn.example.test/one.mp3" type="audio/mpeg" />"#)).load(sourceURL)
+        #expect(bare.episodes[0].notes == nil)
+        let blank = try await client(xml: feed(item: #"<description><![CDATA[<p> </p>]]></description><enclosure url="https://cdn.example.test/one.mp3" type="audio/mpeg" />"#)).load(sourceURL)
+        #expect(blank.episodes[0].notes == nil)
+        let long = String(repeating: "word ", count: 20_000)
+        let cut = try await client(xml: feed(item: "<description>\(long)</description><enclosure url=\"https://cdn.example.test/one.mp3\" type=\"audio/mpeg\" />")).load(sourceURL)
+        let notes = try #require(cut.episodes[0].notes)
+        #expect(notes.count <= PodcastEpisode.maximumNotesLength)
+        #expect(notes.hasPrefix("word word"))
+    }
+
     /// A transcript is an optional extra. One bad entry must cost that entry
     /// and nothing else -- refusing the feed would cost every episode in it.
     @Test func skipsUnusableTranscriptEntriesWithoutFailingTheFeed() async throws {

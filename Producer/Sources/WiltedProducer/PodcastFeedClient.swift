@@ -273,6 +273,10 @@ private final class PodcastRSSParser: NSObject, XMLParserDelegate {
         var duration: Double?
         var artworkURL: URL?
         var transcriptSources: [PodcastTranscriptSource] = []
+        /// Candidate show notes keyed by element, resolved after the item
+        /// closes: feeds publish the same notes under two or three names and
+        /// the fullest one is not always first.
+        var notesCandidates: [String: String] = [:]
     }
 
     private let feedURL: URL
@@ -332,12 +336,34 @@ private final class PodcastRSSParser: NSObject, XMLParserDelegate {
                 enclosureURL: enclosureURL, enclosureMediaType: enclosureType,
                 enclosureByteCount: item.enclosureLength, durationSeconds: item.duration,
                 artworkURL: artworkURL, transcriptSources: item.transcriptSources,
+                notes: Self.notes(from: item.notesCandidates),
                 createdAt: Timestamp(createdAt)
             ))
         }
         let (kept, dropped) = Self.newestEpisodes(episodes)
         return LoadedPodcastFeed(feed: feed, episodes: kept, droppedEpisodeCount: dropped)
     }
+
+    /// Show notes are an optional extra, like transcripts: they never fail the
+    /// feed. The longest candidate wins because `content:encoded` is usually
+    /// the full notes and `description` a summary of them, but not always, and
+    /// the longer one is never the worse glossary. Over-long notes are cut,
+    /// not refused.
+    static func notes(from candidates: [String: String]) -> String? {
+        let text = candidates.values
+            .map(plainText(fromHTML:))
+            .filter { !$0.isEmpty }
+            .max { $0.count < $1.count }
+        guard let text else { return nil }
+        return String(text.prefix(PodcastEpisode.maximumNotesLength))
+    }
+
+    /// Element names, as `XMLParser` reports them with namespaces processed,
+    /// that carry show notes; `encoded` is `content:encoded`, `summary` is
+    /// `itunes:summary`.
+    static let notesElements: Set<String> = ["description", "encoded", "summary"]
+    /// Notes may run long; every other captured field is bounded far lower.
+    static let maximumNotesBytes = 65_536
 
     /// Keeps the newest `PodcastFeedClient.maximumEpisodeCount` episodes and
     /// reports how many were dropped.
@@ -428,7 +454,25 @@ private final class PodcastRSSParser: NSObject, XMLParserDelegate {
     }
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {
-        guard textElement != nil else { return }
+        append(string, to: parser)
+    }
+
+    /// Notes are almost always CDATA-wrapped HTML, which arrives here rather
+    /// than as characters.
+    func parser(_ parser: XMLParser, foundCDATA CDATABlock: Data) {
+        guard let string = String(data: CDATABlock, encoding: .utf8) else { return }
+        append(string, to: parser)
+    }
+
+    private func append(_ string: String, to parser: XMLParser) {
+        guard let textElement else { return }
+        if Self.notesElements.contains(textElement) {
+            // Over-long notes are truncated at the item, not fatal to the feed;
+            // stop accumulating rather than abort.
+            guard text.utf8.count < Self.maximumNotesBytes else { return }
+            text.append(string)
+            return
+        }
         guard text.utf8.count + string.utf8.count <= 4_096 else {
             parseFailure = .invalidMetadata("text field too long"); parser.abortParsing(); return
         }
@@ -451,6 +495,9 @@ private final class PodcastRSSParser: NSObject, XMLParserDelegate {
     private func capturesText(_ name: String) -> Bool {
         switch name {
         case "title", "guid", "pubdate", "published", "updated", "duration", "author", "creator", "managingeditor": true
+        // Notes only matter on an item; a channel description is not captured
+        // at all, so it cannot trip the per-field byte limit either.
+        case _ where Self.notesElements.contains(name): currentItem != nil
         default: false
         }
     }
@@ -460,6 +507,7 @@ private final class PodcastRSSParser: NSObject, XMLParserDelegate {
         guard !value.isEmpty else { return }
         if currentItem != nil {
             switch element {
+            case _ where Self.notesElements.contains(element): currentItem?.notesCandidates[element] = value
             case "title": currentItem?.title = value
             case "guid": currentItem?.guid = value
             case "author", "creator": currentItem?.author = value
@@ -520,6 +568,93 @@ private func decodeXMLDocument(_ data: Data) -> String {
         return String(data: data, encoding: .utf16LittleEndian) ?? ""
     }
     return String(decoding: data, as: UTF8.self)
+}
+
+/// Show notes as readable text: block tags become line breaks, list items
+/// become dashes, links keep their address after the text (the address is
+/// often the only spelling of a sponsor or a guest's site that speech-to-text
+/// will never produce), everything else is stripped, and entities decoded.
+///
+/// Hand-rolled rather than `NSAttributedString(html:)`: that route loads
+/// WebKit, must run on the main thread, and is the wrong tool for a parser
+/// that runs off it on every refresh. Plain text without tags is also a
+/// safer thing to keep and hand to a language model than markup.
+func plainText(fromHTML html: String) -> String {
+    var text = html
+    func replace(_ pattern: String, with template: String) {
+        text = text.replacingOccurrences(
+            of: pattern, with: template, options: [.regularExpression, .caseInsensitive]
+        )
+    }
+    replace(#"<\s*(script|style)[^>]*>[\s\S]*?<\s*/\s*\1\s*>"#, with: "")
+    replace(#"<!--[\s\S]*?-->"#, with: "")
+    replace(#"<\s*a\b[^>]*\bhref\s*=\s*"([^"]*)"[^>]*>([\s\S]*?)<\s*/\s*a\s*>"#, with: "$2 ($1)")
+    replace(#"<\s*a\b[^>]*\bhref\s*=\s*'([^']*)'[^>]*>([\s\S]*?)<\s*/\s*a\s*>"#, with: "$2 ($1)")
+    replace(#"<\s*br\s*/?\s*>"#, with: "\n")
+    // An item opens its own line; its close adds nothing, or every list
+    // would be double-spaced.
+    replace(#"<\s*li\b[^>]*>"#, with: "\n- ")
+    replace(#"<\s*/\s*li\s*>"#, with: "")
+    replace(#"<\s*/\s*(p|div|ul|ol|h[1-6]|tr|blockquote|pre|table)\s*>"#, with: "\n")
+    replace(#"<\s*(p|div|h[1-6]|tr|blockquote|pre|table)\b[^>]*>"#, with: "\n")
+    replace(#"<[^>]+>"#, with: "")
+    text = decodingHTMLEntities(text)
+    // "text (url)" where the text already is the address reads twice; keep one.
+    replace(#"(\S+) \(\s*(https?://)?(www\.)?\1/?\s*\)"#, with: "$1")
+    // ICU spells a code point `\x{...}`; Swift's `\u{...}` is not a regex
+    // escape and an invalid pattern silently replaces nothing.
+    let lines = text.components(separatedBy: "\n").map {
+        $0.replacingOccurrences(of: #"[ \t\x{00A0}]+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+    var collapsed: [String] = []
+    for line in lines where !(line.isEmpty && collapsed.last?.isEmpty != false) {
+        // Markup indentation between items became a blank line; consecutive
+        // items stay together.
+        if line.hasPrefix("- "), collapsed.last == "", collapsed.dropLast().last?.hasPrefix("- ") == true {
+            collapsed.removeLast()
+        }
+        collapsed.append(line)
+    }
+    return collapsed.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func decodingHTMLEntities(_ text: String) -> String {
+    let named: [String: String] = [
+        "amp": "&", "lt": "<", "gt": ">", "quot": "\"", "apos": "'", "nbsp": "\u{00A0}",
+        "ndash": "\u{2013}", "mdash": "\u{2014}", "hellip": "\u{2026}", "copy": "\u{00A9}",
+        "lsquo": "\u{2018}", "rsquo": "\u{2019}", "ldquo": "\u{201C}", "rdquo": "\u{201D}",
+    ]
+    var result = ""
+    var remainder = Substring(text)
+    while let ampersand = remainder.firstIndex(of: "&") {
+        result += remainder[..<ampersand]
+        let afterAmpersand = remainder[remainder.index(after: ampersand)...]
+        guard let semicolon = afterAmpersand.firstIndex(of: ";"),
+              afterAmpersand.distance(from: afterAmpersand.startIndex, to: semicolon) <= 8 else {
+            result.append("&")
+            remainder = afterAmpersand
+            continue
+        }
+        let name = String(afterAmpersand[..<semicolon])
+        let decoded: String?
+        if name.hasPrefix("#x") || name.hasPrefix("#X") {
+            decoded = UInt32(name.dropFirst(2), radix: 16).flatMap(Unicode.Scalar.init).map { String(Character($0)) }
+        } else if name.hasPrefix("#") {
+            decoded = UInt32(name.dropFirst()).flatMap(Unicode.Scalar.init).map { String(Character($0)) }
+        } else {
+            decoded = named[name]
+        }
+        if let decoded {
+            result += decoded
+            remainder = afterAmpersand[afterAmpersand.index(after: semicolon)...]
+        } else {
+            result.append("&")
+            remainder = afterAmpersand
+        }
+    }
+    result += remainder
+    return result
 }
 
 private func normalizedMediaType(_ value: String?) -> String? {

@@ -143,7 +143,7 @@ final class LocalLibraryStoreTests: XCTestCase {
         let migratedTranscript = try await migrated.transcript(for: item.itemID, revisionID: rev.revisionID)
         let migratedInspection = try await migrated.inspect()
         XCTAssertNil(migratedTranscript)
-        XCTAssertEqual(migratedInspection.schemaVersion, .v8)
+        XCTAssertEqual(migratedInspection.schemaVersion, .v9)
     }
 
     /// The V4 -> V5 stage renames the deletion column. A read-back inside one
@@ -239,6 +239,34 @@ final class LocalLibraryStoreTests: XCTestCase {
         let cleared = try await reopened.podcastEpisode(for: episode.itemID)
         XCTAssertEqual(cleared?.transcriptSources, [])
         XCTAssertNil(cleared?.timedTranscriptSource)
+    }
+
+    /// Show notes ride on the episode row: preparation reads them as the
+    /// glossary for correcting the transcript and the Larder shows them.
+    func testShowNotesSurviveTheStoreAndAreClearedWhenTheFeedDropsThem() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let (feed, plain) = try podcastValues()
+        let notes = "Host: Leo Laporte\n\nGuests: Molly White (https://www.mollywhite.net/)"
+        let noted = try PodcastEpisode(itemID: plain.itemID, feedID: plain.feedID, feedURL: plain.feedURL,
+                                       rssGUID: plain.rssGUID, title: plain.title, author: plain.author,
+                                       publishedTime: plain.publishedTime, enclosureURL: plain.enclosureURL,
+                                       enclosureMediaType: plain.enclosureMediaType,
+                                       enclosureByteCount: plain.enclosureByteCount,
+                                       durationSeconds: plain.durationSeconds, artworkURL: plain.artworkURL,
+                                       notes: notes, createdAt: plain.createdAt)
+        do {
+            let store = try LocalLibraryStore(url: url)
+            try await store.save(feed: feed)
+            try await store.save(episode: noted)
+        }
+        let reopened = try LocalLibraryStore(url: url)
+        let loaded = try await reopened.podcastEpisode(for: noted.itemID)
+        XCTAssertEqual(loaded?.notes, notes)
+        let listed = try await reopened.podcastEpisodes(for: feed.itemID)
+        XCTAssertEqual(listed.first?.notes, notes)
+        try await reopened.save(episode: plain)
+        let cleared = try await reopened.podcastEpisode(for: noted.itemID)
+        XCTAssertNil(cleared?.notes)
     }
 
     /// A prepared revision replaces the one it was cut from, and the store
@@ -660,7 +688,7 @@ final class LocalLibraryStoreTests: XCTestCase {
                                                        playback: try playback(for: item, revision: rev, position: 23))
         let migrated = try LocalLibraryStore(url: url)
         let inspection = try await migrated.inspect()
-        XCTAssertEqual(inspection.schemaVersion, .v8)
+        XCTAssertEqual(inspection.schemaVersion, .v9)
         XCTAssertEqual(inspection.articleCount, 1)
         XCTAssertEqual(inspection.revisionCount, 1)
         XCTAssertEqual(inspection.transcriptCount, 1)

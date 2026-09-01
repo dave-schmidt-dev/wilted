@@ -380,6 +380,40 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(relaunched.libraryOrder, .newest, "a fixture launch leaves nothing behind for the next one")
     }
 
+    // MARK: Show notes
+
+    /// The row leads with what the episode is about when the feed says so,
+    /// and the fixture carries notes so the pane has something to show.
+    func testEpisodeRowSummaryComesFromTheNotesOpeningParagraph() throws {
+        XCTAssertEqual(
+            WiltedMacModel.episodeSummary(notes: "\n\n  Hosts discuss M6.  \n\nGuest: Ada", fallback: "Leo"),
+            "Hosts discuss M6."
+        )
+        XCTAssertEqual(WiltedMacModel.episodeSummary(notes: nil, fallback: "Leo"), "Leo")
+        XCTAssertEqual(WiltedMacModel.episodeSummary(notes: "   \n ", fallback: "Leo"), "Leo")
+        XCTAssertEqual(
+            WiltedMacModel.episodeSummary(notes: String(repeating: "x", count: 500), fallback: "Leo").count, 180
+        )
+
+        let directory = temporaryDirectory("fixture-notes")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"], stateDirectoryOverride: directory,
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        let episode = try XCTUnwrap(fixture.episodes.first)
+        XCTAssertEqual(episode.notes, WiltedMacModel.fixtureEpisodeNotes)
+        XCTAssertEqual(episode.summary, "A walk through the machines that keep the field office quiet.")
+    }
+
+    func testNotesLinksAreClickable() {
+        let notes = "Guest: Ada (https://example.com/ada) and code WILTED at example.com/quiet."
+        let linked = WiltedMacCompactPlayer.linkedNotes(notes)
+        let links = linked.runs.compactMap(\.link)
+        XCTAssertEqual(links.map(\.absoluteString), ["https://example.com/ada", "http://example.com/quiet"])
+        XCTAssertEqual(String(linked.characters), notes, "linking must not alter the words")
+    }
+
     // MARK: Prep page
 
     /// After a relaunch the row must still answer "were the advertisements
@@ -518,6 +552,9 @@ final class WiltedMacModelTests: XCTestCase {
         let cases: [(String, String)] = [
             ("transcript.published.fetch", "Fetching the published transcript…"),
             ("transcript.stt.start", "Transcribing the audio…"),
+            ("transcript.stt.readable.start", "Transcribing again for reading…"),
+            ("transcript.stt.readable.rejected", "Keeping the plain transcript."),
+            ("transcript.glossary.complete", "Correcting names from the show notes…"),
             ("ads.detect.start", "Finding advertisements…"),
             ("ads.cut.refused", "Advertisements left in place."),
             ("audio.publish", "Storing the prepared audio…"),

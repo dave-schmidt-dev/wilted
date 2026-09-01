@@ -52,7 +52,10 @@ public final class AVAudioPlayerBackend: NSObject, PlaybackBackend, AVAudioPlaye
         next.enableRate = true
         next.rate = rate
         next.volume = volume
-        next.prepareToPlay()
+        // No `prepareToPlay()` here: the app restores the last episode at
+        // launch, and priming the player wakes the output hardware, which on
+        // external speakers and DACs is an audible click before anyone has
+        // asked for sound. `play()` primes on demand.
         forgetCurrentPlayer()
         loadedGeneration &+= 1
         playerGenerations[ObjectIdentifier(next)] = loadedGeneration

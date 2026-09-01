@@ -25,9 +25,11 @@ Run it with the previous project's virtualenv and source tree on the path:
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -214,6 +216,320 @@ def cues_to_text(cues: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Show-notes glossary
+# ---------------------------------------------------------------------------
+#
+# Speech-to-text writes every name the way it sounds, in lower case, and the
+# feed's notes spell the same hosts, guests, products, and sponsors correctly.
+# There is no way to hand parakeet a vocabulary, and an LLM rewrite of a
+# three-hour transcript measured at seven tokens a second, so the notes are
+# applied afterwards, deterministically: exact lower-case hits take the notes'
+# casing, and near-misses ("the rot" for "Thurrott") take the spelling when
+# the letters are close enough and the target is not an ordinary word.
+
+SYSTEM_DICTIONARY = Path("/usr/share/dict/words")
+GLOSSARY_STOPWORDS = frozenset("""
+a an and are as at be but by for from he her his how i if in is it its of on or our she so
+that the their them they this to us was we what when where which who why will with you your
+new big go join today download subscribe support host hosts guest guests sponsor sponsors
+podcast podcasts episode episodes show shows club ad free audio video feed feeds discord
+content members exclusive
+""".split())
+GLOSSARY_MINIMUM_SIMILARITY = 0.8
+GLOSSARY_MINIMUM_FUZZY_LETTERS = 6
+GLOSSARY_MAXIMUM_TERMS = 200
+_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'&.-]*")
+_LABEL = re.compile(r"\s*(?:[-*\u2022]\s*)?[A-Za-z][A-Za-z ]{0,24}:\s+")
+_MARKS = ".,;:?!\"'()[]\u201c\u201d\u2018\u2019"
+_EDGE_MARKS = re.compile(r"^[\"'(\[\u201c\u2018]*")
+_TRAILING_MARKS = re.compile(r"[.,;:?!\"')\]\u201d\u2019]*$")
+_URL = re.compile(r"(?:https?://)?(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,})(?:/[^\s)]*)?", re.IGNORECASE)
+
+
+# The system word list predates the web; these are the ordinary words that
+# tech headlines capitalize and it does not know.
+DICTIONARY_SUPPLEMENT = frozenset("""
+online offline tech email internet website websites smartphone smartphones startup startups
+chatbot chatbots crypto blockchain cloud streaming laptop laptops wifi bluetooth software hardware
+gaming gamer gamers robotaxi robotaxis rideshare tablet tablets browser browsers spyware malware
+ransomware hacker hackers hack hacks login logins password passwords upload uploads download downloads
+subscription subscriptions app apps ebook ebooks podcast podcasts livestream vlog blog blogs meme memes
+selfie selfies emoji emojis texting tweet tweets
+""".split())
+
+
+def _load_dictionary() -> frozenset[str]:
+    try:
+        words = SYSTEM_DICTIONARY.read_text().splitlines()
+    except OSError:
+        words = []
+    return frozenset(w.strip().lower() for w in words if w.strip()) | DICTIONARY_SUPPLEMENT
+
+
+def _is_capitalized(token: str) -> bool:
+    return token[:1].isupper() and any(c.islower() for c in token[1:]) or (token.isupper() and len(token) >= 2)
+
+
+def _in_dictionary(word: str, dictionary: frozenset[str]) -> bool:
+    """Whether `word` or its plain inflection is an ordinary word.
+
+    The system word list carries base forms only, so "platforms", "seems",
+    and "conceding" all miss it without this.
+    """
+    word = word.lower()
+    if word in dictionary:
+        return True
+    stems = []
+    for suffix in ("'s", "s", "es", "ed", "ing"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            stems.append(word[: -len(suffix)])
+            if suffix in ("ed", "ing"):
+                stems.append(word[: -len(suffix)] + "e")
+    return any(stem in dictionary for stem in stems)
+
+
+def _clean_token(token: str) -> str:
+    """A notes token as a name: no possessive, no acronym dots, no edge marks."""
+    token = token.strip("'&.-")
+    if token.lower().endswith("'s"):
+        token = token[:-2]
+    if re.fullmatch(r"(?:[A-Za-z]\.)+[A-Za-z]?", token):
+        token = token.replace(".", "")
+    return token.strip("'&.-")
+
+
+def build_glossary(notes: str, title: str = "", dictionary: frozenset[str] | None = None) -> list[str]:
+    """Names, products, and sites the notes spell out, longest first.
+
+    A phrase is a run of capitalized tokens inside a sentence. Headline lines
+    (most tokens capitalized) contribute only tokens outside the dictionary,
+    because "Will Force Online Platforms" is not anyone's name. A single token
+    qualifies when it is never written in lower case anywhere in the notes and
+    is not a stopword; a dictionary word ("apple", "flock") also has to appear
+    capitalized more than once so a sentence-initial "Police" does not count.
+    """
+    dictionary = _load_dictionary() if dictionary is None else dictionary
+    text = f"{title}\n{notes or ''}"
+    lowercase_seen = {t.lower() for t in _WORD.findall(text) if t[:1].islower()}
+    capitalized_count: dict[str, int] = {}
+    phrases: dict[str, str] = {}
+    singles: dict[str, str] = {}
+    domains: dict[str, str] = {}
+
+    for match in _URL.finditer(text):
+        host = match.group(1).lower()
+        if "." in host:
+            domains[host] = host
+
+    for line in text.splitlines():
+        # "Host: Leo Laporte" and "Guests: A, B and C" are lists of names,
+        # however capitalized; the label itself is not one.
+        labelled = _LABEL.match(line)
+        if labelled:
+            line = line[labelled.end():]
+        tokens = [_clean_token(t) for t in _WORD.findall(_URL.sub(" ", line))]
+        tokens = [t for t in tokens if t]
+        if not tokens:
+            continue
+        capitalized = [_is_capitalized(t) for t in tokens]
+        headline = not labelled and len(tokens) >= 4 and sum(capitalized) / len(tokens) > 0.6
+        for token, is_cap in zip(tokens, capitalized):
+            if is_cap:
+                capitalized_count[token] = capitalized_count.get(token, 0) + 1
+        if headline:
+            # "Will Force Online Platforms" is a headline, not a name; only
+            # what no dictionary knows ("Waymo", "NVIDIA", "DMA") survives.
+            for token, is_cap in zip(tokens, capitalized):
+                if not is_cap or _in_dictionary(token, dictionary) or token.lower() in GLOSSARY_STOPWORDS:
+                    continue
+                if len(token) >= 4 or (token.isupper() and len(token) >= 3):
+                    singles.setdefault(token.lower(), token)
+            continue
+        run: list[str] = []
+        # Sentence-initial tokens are capitalized for grammar, not identity.
+        for index, (token, is_cap) in enumerate(zip(tokens, capitalized)):
+            starts_sentence = index == 0
+            if is_cap and not (starts_sentence and token.lower() in GLOSSARY_STOPWORDS):
+                run.append(token)
+            else:
+                _close_run(run, phrases, singles, starts_sentence=index - len(run) == 0)
+                run = []
+        _close_run(run, phrases, singles, starts_sentence=len(run) == len(tokens))
+
+    # "Meta" and "Apple" are ordinary words that open sentences and headlines;
+    # written capitalized three times and never otherwise, they are names.
+    for token, count in capitalized_count.items():
+        if count >= 3:
+            singles.setdefault(token.lower(), token)
+
+    terms: dict[str, str] = {}
+    for key, value in phrases.items():
+        if not all(t.lower() in GLOSSARY_STOPWORDS for t in value.split()):
+            terms[key] = value
+    for key, value in singles.items():
+        if key in GLOSSARY_STOPWORDS or key in lowercase_seen or len(key) < 3:
+            continue
+        if _in_dictionary(key, dictionary):
+            # A dictionary word earns its casing by repetition, and "US" or
+            # "AI" would silence every "us" and "ai" spoken as a word.
+            if capitalized_count.get(value, 0) < 3 or (value.isupper() and len(value) < 3):
+                continue
+        terms.setdefault(key, value)
+    for key, value in domains.items():
+        terms.setdefault(key, value)
+    ordered = sorted(terms.values(), key=lambda t: (-len(t.split()), -len(t), t.lower()))
+    return ordered[:GLOSSARY_MAXIMUM_TERMS]
+
+
+def _close_run(run: list[str], phrases: dict[str, str], singles: dict[str, str], *, starts_sentence: bool) -> None:
+    if not run:
+        return
+    while run and run[0].lower() in GLOSSARY_STOPWORDS:
+        run = run[1:]
+    while run and run[-1].lower() in GLOSSARY_STOPWORDS:
+        run = run[:-1]
+    if len(run) >= 2:
+        phrases.setdefault(" ".join(run).lower(), " ".join(run))
+        for token in run:
+            singles.setdefault(token.lower(), token)
+    elif len(run) == 1 and not starts_sentence:
+        singles.setdefault(run[0].lower(), run[0])
+
+
+def _spoken(term: str) -> list[str]:
+    """The words speech-to-text would write for a term: a site is said "dot"."""
+    return [w for w in re.split(r"[\s]+", term.lower().replace(".", " dot ")) if w]
+
+
+def _squash(words: list[str]) -> str:
+    return re.sub(r"[^a-z0-9]", "", "".join(words).lower())
+
+
+def apply_glossary(cues: list[dict], glossary: list[str], dictionary: frozenset[str] | None = None) -> tuple[list[dict], int]:
+    """Rewrite cue text with the glossary; returns the cues and the edit count.
+
+    Exact lower-case hits take the notes' casing. A near-miss is replaced only
+    when the squashed letters are at least 80% similar, the window is not
+    itself made of dictionary words spelled correctly, and the term is not a
+    plain dictionary word -- misreading "flock" into every "block" would be
+    worse than the lower case it fixes.
+    """
+    if not cues or not glossary:
+        return cues, 0
+    dictionary = _load_dictionary() if dictionary is None else dictionary
+    entries = []
+    for term in glossary:
+        spoken = _spoken(term)
+        squashed = _squash(spoken)
+        fuzzy = (
+            len(squashed) >= GLOSSARY_MINIMUM_FUZZY_LETTERS
+            and not (len(spoken) == 1 and _in_dictionary(spoken[0], dictionary))
+        )
+        entries.append((spoken, term, fuzzy, squashed))
+    edits = 0
+    rewritten: list[dict] = []
+    for cue in cues:
+        words = cue["text"].split()
+        # A replaced span is final: "Leo Laporte" must not be re-read as a
+        # near-miss of "Laporte" by the next, shorter term.
+        locked = [False] * len(words)
+        changed = False
+        for spoken, term, fuzzy, squashed in entries:
+            index = 0
+            while index < len(words):
+                if locked[index]:
+                    index += 1
+                    continue
+                hit = _glossary_window(words, index, spoken, term, fuzzy, squashed, dictionary)
+                if hit and not any(locked[index:index + hit[0]]):
+                    size, replacement = hit
+                    words[index:index + size] = [replacement]
+                    locked[index:index + size] = [True]
+                    changed = True
+                    edits += 1
+                index += 1
+        if changed:
+            cue = dict(cue, text=" ".join(words))
+        rewritten.append(cue)
+    return rewritten, edits
+
+
+def _glossary_window(
+    words: list[str], index: int, spoken: list[str], term: str, fuzzy: bool, squashed: str,
+    dictionary: frozenset[str],
+) -> tuple[int, str] | None:
+    """The words at `index` that say `term`, as (count, replacement), or None.
+
+    The spoken form may split differently from the written one ("air tag",
+    "adaptive security dot com"), so every window up to one word longer than
+    the term is tried and the closest wins. A trailing possessive survives.
+    """
+    best: tuple[float, int, str] | None = None
+    for size in range(1, len(spoken) + 2):
+        raw = words[index:index + size]
+        if len(raw) < size:
+            break
+        # A punctuating transcript writes "Abuelsamid." and "(Waymo)"; the
+        # marks around the name go back around the corrected one.
+        lead = _EDGE_MARKS.match(raw[0]).group(0)
+        trail = _TRAILING_MARKS.search(raw[-1]).group(0)
+        window = [w.strip(_MARKS) for w in raw]
+        if not all(window):
+            continue
+        possessive = window[-1].lower().endswith("'s") and len(window[-1]) > 2
+        if possessive:
+            window[-1] = window[-1][:-2]
+        replacement = lead + term + ("'s" if possessive else "") + trail
+        if [w.lower() for w in window] == spoken:
+            if " ".join(raw) == replacement:
+                return None
+            return size, replacement
+        if not fuzzy:
+            continue
+        if window[0].lower() in GLOSSARY_STOPWORDS or window[-1].lower() in GLOSSARY_STOPWORDS:
+            continue
+        candidate = _squash(window)
+        if not candidate or abs(len(candidate) - len(squashed)) > 3 or candidate[0] != squashed[0]:
+            continue
+        if candidate == squashed:
+            return size, replacement
+        # One spoken word is never a whole multi-word name: "laporte" is
+        # close to "Leo Laporte", and putting "Leo" in the mouth is a lie.
+        if size == 1 and len(spoken) > 1:
+            continue
+        # Real words that happen to sound like a name are still those words:
+        # "using" is not "Usain", and "plate for" is not "Platforms".
+        if all(_in_dictionary(w, dictionary) for w in window):
+            continue
+        matcher = difflib.SequenceMatcher(None, candidate, squashed)
+        if matcher.quick_ratio() < GLOSSARY_MINIMUM_SIMILARITY:
+            continue
+        ratio = matcher.ratio()
+        if ratio >= GLOSSARY_MINIMUM_SIMILARITY and (best is None or ratio > best[0]):
+            best = (ratio, size, replacement)
+    return (best[1], best[2]) if best else None
+
+
+def polish_with_notes(request: dict, cues: list[dict]) -> list[dict]:
+    """The glossary stage: never fatal, always reported."""
+    notes = request.get("episodeNotes") or ""
+    title = request.get("episodeTitle") or ""
+    if not cues or not (notes or title):
+        return cues
+    try:
+        glossary = build_glossary(notes, title)
+        progress("transcript.glossary.terms", f"{len(glossary)} terms from the show notes")
+        if not glossary:
+            return cues
+        cues, edits = apply_glossary(cues, glossary)
+        progress("transcript.glossary.complete", f"{edits} corrections")
+        return cues
+    except Exception as error:  # noqa: BLE001 - a polish failure must not cost the transcript
+        progress("transcript.glossary.failed", f"{type(error).__name__}: {error}")
+        return cues
+
+
+# ---------------------------------------------------------------------------
 # Transcript sourcing
 # ---------------------------------------------------------------------------
 
@@ -273,6 +589,40 @@ def transcribe_with_daemon(audio_path: Path):
     segments = transcribe.transcribe_audio(audio_path)
     progress("transcript.stt.complete", f"{len(segments)} segments")
     return segments
+
+
+# The detector was tuned on parakeet-tdt-1.1b, which writes no punctuation
+# and no capitals; a run on the 0.6b-v3 output moved and split the cuts on the
+# same episode. So the 1.1b transcript stays the detector's input and v3, at
+# about four minutes for a two-and-a-half-hour episode, is transcribed again
+# for the listener. An LLM rewrite of the 1.1b text was the alternative, and
+# measured at seven tokens a second it would take longer than the episode.
+READABLE_STT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
+# The readable pass replaces the display transcript only when it heard about
+# as much as the detector's pass did; a truncated or empty result keeps the
+# plain one rather than losing lines.
+READABLE_MINIMUM_WORD_RATIO = 0.8
+
+
+def transcribe_readable(request: dict, audio_path: Path, plain_cues: list[dict]) -> list[dict]:
+    """A second pass with a punctuating model, for reading rather than cutting."""
+    from wilted import transcribe
+
+    model = request.get("readableTranscriptModel") or READABLE_STT_MODEL
+    progress("transcript.stt.readable.start", model.rsplit("/", 1)[-1])
+    try:
+        segments = transcribe.transcribe_audio(audio_path, model_name=model)
+    except Exception as error:  # noqa: BLE001 - the plain transcript is still a transcript
+        progress("transcript.stt.readable.failed", f"{type(error).__name__}: {error}")
+        return plain_cues
+    cues = segments_to_cues(segments)
+    plain_words = len(cues_to_text(plain_cues).split())
+    readable_words = len(cues_to_text(cues).split())
+    if not cues or readable_words < plain_words * READABLE_MINIMUM_WORD_RATIO:
+        progress("transcript.stt.readable.rejected", f"{readable_words} words against {plain_words}")
+        return plain_cues
+    progress("transcript.stt.readable.complete", f"{len(cues)} cues")
+    return cues
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +819,8 @@ def run(request: dict) -> dict:
         except Exception as error:  # noqa: BLE001 - a failed tier falls through
             segments = None
             progress("transcript.stt.failed", f"{type(error).__name__}: {error}")
+        if cues and request.get("readableTranscript", True):
+            cues = transcribe_readable(request, audio_path, cues)
 
     if not cues:
         page = request.get("episodePage")
@@ -490,6 +842,7 @@ def run(request: dict) -> dict:
             progress("transcript.remap", f"{before} cues to {len(cues)} on the cut timeline")
 
     if cues:
+        cues = polish_with_notes(request, cues)
         text = cues_to_text(cues)
 
     # Measure the delivered file rather than subtracting what was removed: the

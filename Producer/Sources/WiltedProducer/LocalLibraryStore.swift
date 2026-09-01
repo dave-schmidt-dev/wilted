@@ -14,8 +14,9 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     case v6 = 6
     case v7 = 7
     case v8 = 8
+    case v9 = 9
 
-    public static let current: LocalLibrarySchemaVersion = .v8
+    public static let current: LocalLibrarySchemaVersion = .v9
 }
 
 /// The local ownership state used by generation-based remote reconciliation.
@@ -1032,11 +1033,65 @@ private enum LocalLibrarySchemaV8: VersionedSchema {
     }
 }
 
+private enum LocalLibrarySchemaV9Models {
+    /// The episode entity as of store version 9: version seven's columns plus
+    /// the show notes the feed publishes. A separate class, as version seven
+    /// was over six, because two versions may not describe one entity shape.
+    @Model final class PodcastEpisodeRecord {
+        @Attribute(.unique) var id: String
+        var feedID: String
+        var feedURL: String
+        var rssGUID: String?
+        var title: String
+        var author: String?
+        var publishedTime: Date?
+        var enclosureURL: String
+        var enclosureMediaType: String
+        var enclosureByteCount: Int64?
+        var durationSeconds: Double?
+        var artworkURL: String?
+        var transcriptSources: Data?
+        /// Nullable: a version-eight row migrates to "no notes", which is what
+        /// was true of it, and the next feed refresh fills it in.
+        var notes: String?
+        var createdAt: Date
+
+        init(_ value: PodcastEpisode) throws {
+            id = value.itemID.rawValue; feedID = value.feedID.rawValue; feedURL = value.feedURL.absoluteString
+            rssGUID = value.rssGUID; title = value.title; author = value.author
+            publishedTime = value.publishedTime?.date; enclosureURL = value.enclosureURL.absoluteString
+            enclosureMediaType = value.enclosureMediaType; enclosureByteCount = value.enclosureByteCount
+            durationSeconds = value.durationSeconds; artworkURL = value.artworkURL?.absoluteString
+            transcriptSources = try Self.encode(value.transcriptSources)
+            notes = value.notes
+            createdAt = value.createdAt.date
+        }
+
+        static func encode(_ sources: [PodcastTranscriptSource]) throws -> Data? {
+            try LocalLibrarySchemaV7Models.PodcastEpisodeRecord.encode(sources)
+        }
+
+        static func decode(_ payload: Data?) throws -> [PodcastTranscriptSource] {
+            try LocalLibrarySchemaV7Models.PodcastEpisodeRecord.decode(payload)
+        }
+    }
+}
+
+/// Version 9 replaces the episode entity with one that carries the feed's show
+/// notes. Lightweight: one nullable column, no existing column changes.
+private enum LocalLibrarySchemaV9: VersionedSchema {
+    static let versionIdentifier = Schema.Version(9, 0, 0)
+    static var models: [any PersistentModel.Type] {
+        LocalLibrarySchemaV8.models.filter { $0 != LocalLibrarySchemaV7Models.PodcastEpisodeRecord.self }
+            + [LocalLibrarySchemaV9Models.PodcastEpisodeRecord.self]
+    }
+}
+
 private enum LocalLibraryMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
         [LocalLibrarySchemaV1.self, LocalLibrarySchemaV2.self, LocalLibrarySchemaV3.self,
          LocalLibrarySchemaV4.self, LocalLibrarySchemaV5.self, LocalLibrarySchemaV6.self,
-         LocalLibrarySchemaV7.self, LocalLibrarySchemaV8.self]
+         LocalLibrarySchemaV7.self, LocalLibrarySchemaV8.self, LocalLibrarySchemaV9.self]
     }
     static var stages: [MigrationStage] {
         [.lightweight(fromVersion: LocalLibrarySchemaV1.self, toVersion: LocalLibrarySchemaV2.self),
@@ -1045,7 +1100,8 @@ private enum LocalLibraryMigrationPlan: SchemaMigrationPlan {
          .lightweight(fromVersion: LocalLibrarySchemaV4.self, toVersion: LocalLibrarySchemaV5.self),
          .lightweight(fromVersion: LocalLibrarySchemaV5.self, toVersion: LocalLibrarySchemaV6.self),
          .lightweight(fromVersion: LocalLibrarySchemaV6.self, toVersion: LocalLibrarySchemaV7.self),
-         .lightweight(fromVersion: LocalLibrarySchemaV7.self, toVersion: LocalLibrarySchemaV8.self)]
+         .lightweight(fromVersion: LocalLibrarySchemaV7.self, toVersion: LocalLibrarySchemaV8.self),
+         .lightweight(fromVersion: LocalLibrarySchemaV8.self, toVersion: LocalLibrarySchemaV9.self)]
     }
 }
 
@@ -1094,7 +1150,7 @@ public actor LocalLibraryStore {
             try migrationFailure?()
         }
         migrationBackupURL = retainedURL
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV8.self)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV9.self)
         let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         if migrate {
             container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
@@ -1116,7 +1172,7 @@ public actor LocalLibraryStore {
             retainedURL = try Self.migrationPreflight(at: url).retainedURL
         }
         migrationBackupURL = retainedURL
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV8.self)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV9.self)
         let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         if migrate {
             container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
@@ -1901,10 +1957,10 @@ public actor LocalLibraryStore {
 
     public func save(episode: PodcastEpisode) throws {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.PodcastEpisodeRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>())
         if let existing = records.first(where: { $0.id == episode.itemID.rawValue }) {
             try Self.apply(episode, to: existing)
-        } else { context.insert(try LocalLibrarySchemaV7Models.PodcastEpisodeRecord(episode)) }
+        } else { context.insert(try LocalLibrarySchemaV9Models.PodcastEpisodeRecord(episode)) }
         try context.save()
     }
 
@@ -1912,7 +1968,7 @@ public actor LocalLibraryStore {
 
     public func podcastEpisode(for episodeID: ItemID) throws -> PodcastEpisode? {
         let context = ModelContext(container)
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.PodcastEpisodeRecord>()).first(where: { $0.id == episodeID.rawValue }),
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>()).first(where: { $0.id == episodeID.rawValue }),
               let feedID = try? ItemID(rawValue: record.feedID), let feedURL = URL(string: record.feedURL),
               let enclosureURL = URL(string: record.enclosureURL) else { return nil }
         return try PodcastEpisode(itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: record.rssGUID,
@@ -1920,20 +1976,20 @@ public actor LocalLibraryStore {
                                   enclosureURL: enclosureURL, enclosureMediaType: record.enclosureMediaType,
                                   enclosureByteCount: record.enclosureByteCount, durationSeconds: record.durationSeconds,
                                   artworkURL: record.artworkURL.flatMap(URL.init),
-                                  transcriptSources: try LocalLibrarySchemaV7Models.PodcastEpisodeRecord.decode(record.transcriptSources),
-                                  createdAt: Timestamp(record.createdAt))
+                                  transcriptSources: try LocalLibrarySchemaV9Models.PodcastEpisodeRecord.decode(record.transcriptSources),
+                                  notes: record.notes, createdAt: Timestamp(record.createdAt))
     }
 
     public func podcastEpisodes(for feedID: ItemID? = nil) throws -> [PodcastEpisode] {
         let context = ModelContext(container)
-        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.PodcastEpisodeRecord>()).filter { feedID == nil || $0.feedID == feedID!.rawValue }.sorted { ($0.publishedTime ?? $0.createdAt) > ($1.publishedTime ?? $1.createdAt) }.compactMap { record in
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>()).filter { feedID == nil || $0.feedID == feedID!.rawValue }.sorted { ($0.publishedTime ?? $0.createdAt) > ($1.publishedTime ?? $1.createdAt) }.compactMap { record in
             guard let id = try? ItemID(rawValue: record.id), let fid = try? ItemID(rawValue: record.feedID), let feedURL = URL(string: record.feedURL), let enclosureURL = URL(string: record.enclosureURL) else { return nil }
             return try? PodcastEpisode(itemID: id, feedID: fid, feedURL: feedURL, rssGUID: record.rssGUID, title: record.title,
                                        author: record.author, publishedTime: record.publishedTime.map(Timestamp.init), enclosureURL: enclosureURL,
                                        enclosureMediaType: record.enclosureMediaType, enclosureByteCount: record.enclosureByteCount,
                                        durationSeconds: record.durationSeconds, artworkURL: record.artworkURL.flatMap(URL.init),
-                                       transcriptSources: (try? LocalLibrarySchemaV7Models.PodcastEpisodeRecord.decode(record.transcriptSources)) ?? [],
-                                       createdAt: Timestamp(record.createdAt))
+                                       transcriptSources: (try? LocalLibrarySchemaV9Models.PodcastEpisodeRecord.decode(record.transcriptSources)) ?? [],
+                                       notes: record.notes, createdAt: Timestamp(record.createdAt))
         }
     }
 
@@ -2027,7 +2083,7 @@ public actor LocalLibraryStore {
             uniquingKeysWith: { first, _ in first }
         )
         let existing = Set(
-            try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.PodcastEpisodeRecord>()).map(\.id)
+            try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>()).map(\.id)
         )
 
         var admitted: [PodcastEpisode] = []
@@ -2050,13 +2106,13 @@ public actor LocalLibraryStore {
             admitted.append(contentsOf: kept)
         }
 
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.PodcastEpisodeRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>())
         var byID = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for episode in admitted {
             if let record = byID[episode.itemID.rawValue] {
                 try Self.apply(episode, to: record)
             } else {
-                let record = try LocalLibrarySchemaV7Models.PodcastEpisodeRecord(episode)
+                let record = try LocalLibrarySchemaV9Models.PodcastEpisodeRecord(episode)
                 context.insert(record)
                 byID[episode.itemID.rawValue] = record
             }
@@ -2124,7 +2180,7 @@ public actor LocalLibraryStore {
     public func dismissPodcastEpisode(_ episodeID: ItemID, at dismissedAt: Timestamp = Timestamp(Date())) throws -> Bool {
         let context = ModelContext(container)
         let identifier = episodeID.rawValue
-        let episode = try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.PodcastEpisodeRecord>())
+        let episode = try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>())
             .first { $0.id == identifier }
         let dismissals = try context.fetch(FetchDescriptor<LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord>())
         if let existing = dismissals.first(where: { $0.id == identifier }) {
@@ -2203,7 +2259,7 @@ public actor LocalLibraryStore {
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastFeedRecord>())
         where record.id == feed { context.delete(record) }
 
-        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.PodcastEpisodeRecord>())
+        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>())
             .filter { $0.feedID == feed }
         let episodeIDs = Set(episodes.map(\.id))
         for record in episodes { context.delete(record) }
@@ -2227,7 +2283,7 @@ public actor LocalLibraryStore {
 
     private static func apply(
         _ episode: PodcastEpisode,
-        to record: LocalLibrarySchemaV7Models.PodcastEpisodeRecord
+        to record: LocalLibrarySchemaV9Models.PodcastEpisodeRecord
     ) throws {
         record.feedID = episode.feedID.rawValue
         record.feedURL = episode.feedURL.absoluteString
@@ -2240,7 +2296,8 @@ public actor LocalLibraryStore {
         record.enclosureByteCount = episode.enclosureByteCount
         record.durationSeconds = episode.durationSeconds
         record.artworkURL = episode.artworkURL?.absoluteString
-        record.transcriptSources = try LocalLibrarySchemaV7Models.PodcastEpisodeRecord.encode(episode.transcriptSources)
+        record.transcriptSources = try LocalLibrarySchemaV9Models.PodcastEpisodeRecord.encode(episode.transcriptSources)
+        record.notes = episode.notes
         record.createdAt = episode.createdAt.date
     }
 

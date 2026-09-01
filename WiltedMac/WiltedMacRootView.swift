@@ -1048,6 +1048,7 @@ private struct WiltedMacProcessorView: View {
 struct WiltedMacCompactPlayer: View {
     private enum Expansion: Hashable {
         case transcript
+        case notes
         case upNext
     }
 
@@ -1160,6 +1161,10 @@ struct WiltedMacCompactPlayer: View {
                     .font(WiltedTheme.font(.utility))
 
                 expansionButton("Transcript", expansion: .transcript, id: "wilted-player-transcript")
+                // Show notes belong to episodes; an article has its own text.
+                if model.currentEpisode != nil {
+                    expansionButton("Notes", expansion: .notes, id: "wilted-player-notes")
+                }
                 expansionButton("Up Next", expansion: .upNext, id: "wilted-player-up-next")
 
                 Button("Recover audio") { model.recoverAudioRoute() }
@@ -1284,6 +1289,9 @@ struct WiltedMacCompactPlayer: View {
         case .transcript:
             transcriptContent
                 .accessibilityIdentifier("wilted-player-transcript-expanded")
+        case .notes:
+            notesContent
+                .accessibilityIdentifier("wilted-player-notes-expanded")
         case .upNext:
             upNextContent
                 .accessibilityIdentifier("wilted-player-up-next-expanded")
@@ -1351,6 +1359,46 @@ struct WiltedMacCompactPlayer: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var notesContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                Text("Show Notes")
+                    .font(WiltedTheme.font(.title))
+                if let notes = model.currentEpisode?.notes {
+                    Text(Self.linkedNotes(notes))
+                        .font(WiltedTheme.font(.body))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wilted-player-notes-text")
+                } else {
+                    Text("This episode's feed did not include show notes.")
+                        .font(WiltedTheme.font(.body))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-player-notes-unavailable")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-player-notes-list")
+    }
+
+    /// Feed notes arrive as plain text with the URLs written out; make each
+    /// one a link so a sponsor code or guest site is a click, not a copy.
+    static func linkedNotes(_ notes: String) -> AttributedString {
+        var text = AttributedString(notes)
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
+            return text
+        }
+        let whole = NSRange(notes.startIndex..., in: notes)
+        for match in detector.matches(in: notes, range: whole) {
+            guard let url = match.url, let range = Range(match.range, in: notes),
+                  let attributedRange = Range(range, in: text) else { continue }
+            text[attributedRange].link = url
+        }
+        return text
     }
 
     private var upNextContent: some View {

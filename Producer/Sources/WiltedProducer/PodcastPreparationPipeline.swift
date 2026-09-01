@@ -490,6 +490,13 @@ public actor PodcastPreparationPipeline {
             if let published = await fetchPublishedTranscript(for: episode, onStatus: report) {
                 request["publishedTranscript"] = published
             }
+            // The feed's show notes name the hosts, guests, stories, products,
+            // and sponsors: the worker's glossary for the words speech-to-text
+            // got wrong.
+            if let notes = episode.notes {
+                request["episodeNotes"] = notes
+            }
+            request["episodeTitle"] = episode.title
             let response = try await runner.run(request: try JSONSerialization.data(withJSONObject: request),
                                                 onProgress: report)
             let payload = try Self.decode(response)

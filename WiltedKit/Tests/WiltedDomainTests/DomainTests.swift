@@ -51,6 +51,26 @@ final class DomainTests: XCTestCase {
         XCTAssertThrowsError(try make(Array(repeating: vtt, count: PodcastEpisode.maximumTranscriptSources + 1)))
     }
 
+    /// Notes are optional prose: they round-trip, blank ones read as absent,
+    /// and they do not take part in identity.
+    func testEpisodeNotesRoundTripAndBlankNotesAreAbsent() throws {
+        let feedURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/feed.xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/one.mp3"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let itemID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "one", enclosureURL: enclosureURL)
+        func make(_ notes: String?) throws -> PodcastEpisode {
+            try PodcastEpisode(itemID: itemID, feedID: feedID, feedURL: feedURL, rssGUID: "one", title: "One",
+                               enclosureURL: enclosureURL, enclosureMediaType: "audio/mpeg",
+                               notes: notes, createdAt: Timestamp(Date(timeIntervalSince1970: 1)))
+        }
+        let noted = try make("  Host: Leo Laporte\nGuests: Molly White  ")
+        XCTAssertEqual(noted.notes, "Host: Leo Laporte\nGuests: Molly White")
+        XCTAssertEqual(try make(nil).itemID, noted.itemID)
+        XCTAssertNil(try make("   \n ").notes)
+        XCTAssertEqual(try JSONDecoder().decode(PodcastEpisode.self, from: JSONEncoder().encode(noted)), noted)
+        XCTAssertThrowsError(try make(String(repeating: "n", count: PodcastEpisode.maximumNotesLength + 1)))
+    }
+
     /// An episode encoded before transcript sources existed has no such key.
     func testEpisodesEncodedBeforeTranscriptSourcesExistedStillDecode() throws {
         let json = """

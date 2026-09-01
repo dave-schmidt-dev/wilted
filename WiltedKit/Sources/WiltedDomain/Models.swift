@@ -147,6 +147,15 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
     /// transcript URL must not re-identify an episode already in the Larder,
     /// with its download and playback position attached.
     public let transcriptSources: [PodcastTranscriptSource]
+    /// The show notes the feed publishes for this episode, as plain text with
+    /// paragraph breaks; nil when the feed publishes none.
+    ///
+    /// Notes name the hosts, guests, stories, products, and sponsors an
+    /// episode talks about, which is exactly the vocabulary speech-to-text
+    /// gets wrong. They are kept for the listener to read and handed to
+    /// preparation as the glossary for correcting the transcript. Outside
+    /// `itemID` derivation for the same reason transcript sources are.
+    public let notes: String?
     public let createdAt: Timestamp
 
     /// The most useful published transcript for synchronising with audio, or
@@ -158,6 +167,9 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
     }
 
     public static let maximumTranscriptSources = 8
+    /// Generous for show notes (TWiT's run about 3,000 characters) and small
+    /// enough that a feed cannot turn the episode table into a blob store.
+    public static let maximumNotesLength = 32_768
 
     public init(
         itemID: ItemID,
@@ -173,6 +185,7 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
         durationSeconds: Double? = nil,
         artworkURL: URL? = nil,
         transcriptSources: [PodcastTranscriptSource] = [],
+        notes: String? = nil,
         createdAt: Timestamp
     ) throws {
         let normalizedFeedURL = try validatePodcastURL(feedURL, field: "feedURL")
@@ -205,6 +218,17 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
         guard transcriptSources.count <= Self.maximumTranscriptSources else {
             throw DomainError.invalidValue(field: "transcriptSources", reason: "must not exceed 8 published transcripts")
         }
+        // Empty notes are no notes: a feed that publishes "<p></p>" has not
+        // said anything, and every reader would otherwise have to check twice.
+        let trimmedNotes = notes?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedNotes, !trimmedNotes.isEmpty {
+            guard trimmedNotes.count <= Self.maximumNotesLength else {
+                throw DomainError.invalidValue(field: "notes", reason: "must not exceed \(Self.maximumNotesLength) characters")
+            }
+            self.notes = trimmedNotes
+        } else {
+            self.notes = nil
+        }
 
         self.itemID = itemID
         self.feedID = feedID
@@ -225,7 +249,7 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
 
     private enum CodingKeys: CodingKey {
         case itemID, feedID, feedURL, rssGUID, title, author, publishedTime, enclosureURL
-        case enclosureMediaType, enclosureByteCount, durationSeconds, artworkURL, transcriptSources, createdAt
+        case enclosureMediaType, enclosureByteCount, durationSeconds, artworkURL, transcriptSources, notes, createdAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -244,6 +268,7 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
             durationSeconds: container.decodeIfPresent(Double.self, forKey: .durationSeconds),
             artworkURL: container.decodeIfPresent(URL.self, forKey: .artworkURL),
             transcriptSources: container.decodeIfPresent([PodcastTranscriptSource].self, forKey: .transcriptSources) ?? [],
+            notes: container.decodeIfPresent(String.self, forKey: .notes),
             createdAt: container.decode(Timestamp.self, forKey: .createdAt)
         )
     }
