@@ -293,4 +293,89 @@ final class WiltedMacModelTests: XCTestCase {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("wilted-mac-model-\(suffix)-\(UUID().uuidString)", isDirectory: true)
     }
+
+    // MARK: Preparation presentation
+
+    func testPreparationLabelsSpeakToTheListenerNotTheWorker() {
+        let cases: [(String, String)] = [
+            ("transcript.published.fetch", "Fetching the published transcript…"),
+            ("transcript.stt.start", "Transcribing the audio…"),
+            ("ads.detect.start", "Finding advertisements…"),
+            ("ads.cut.refused", "Advertisements left in place."),
+            ("audio.publish", "Storing the prepared audio…"),
+            ("pipeline.complete", "Prepared."),
+        ]
+        for (stage, expected) in cases {
+            XCTAssertEqual(
+                WiltedMacModel.preparationLabel(for: PodcastPreparationProgress(stage: stage)),
+                expected, "stage \(stage)"
+            )
+        }
+        // An unrecognised stage still says something rather than going blank.
+        XCTAssertEqual(
+            WiltedMacModel.preparationLabel(for: PodcastPreparationProgress(stage: "something.new")),
+            "Preparing…"
+        )
+    }
+
+    func testPreparedSummaryReportsWhatWasActuallyDone() {
+        XCTAssertEqual(
+            WiltedMacModel.preparedSummary(advertisements: 3, secondsRemoved: 185, timing: .aligned),
+            "3 ads removed (3:05) · synced transcript"
+        )
+        XCTAssertEqual(
+            WiltedMacModel.preparedSummary(advertisements: 1, secondsRemoved: 42, timing: .published),
+            "1 ad removed (0:42) · synced transcript from the feed"
+        )
+        XCTAssertEqual(
+            WiltedMacModel.preparedSummary(advertisements: 0, secondsRemoved: 0, timing: .none),
+            "No advertisements found · no synced transcript"
+        )
+    }
+
+    /// The stored transcript is what survives a relaunch, so it decides
+    /// whether an episode reads as prepared.
+    func testPreparationStateComesFromWhatTheLibraryCanProve() throws {
+        let itemID = try ItemID(rawValue: "item-" + String(repeating: "7", count: 64))
+        let revisionID = try RevisionID(rawValue: "rev-" + String(repeating: "7", count: 64))
+        let when = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        func transcript(_ timing: TranscriptTiming, _ availability: TranscriptAvailability = .available) throws -> Transcript {
+            try Transcript(
+                itemID: itemID, revisionID: revisionID, availability: availability,
+                text: availability == .available ? "Words." : nil, timing: timing,
+                cues: timing == .none ? nil : [try TranscriptCue(startSeconds: 0, endSeconds: 1, text: "Words.")],
+                updatedAt: when
+            )
+        }
+
+        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: nil), .notPrepared)
+        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: try transcript(.published)),
+                       .prepared(summary: "Synced transcript from the feed"))
+        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: try transcript(.aligned)),
+                       .prepared(summary: "Synced transcript"))
+        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: try transcript(.none)),
+                       .prepared(summary: "Transcript, not synced"))
+        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: try transcript(.none, .absent)),
+                       .notPrepared)
+
+        let failed = PreparationRunSummary(
+            requestID: "podcast-prepare|" + itemID.rawValue, itemID: itemID, startedAt: when, updatedAt: when,
+            stage: .failed, detail: "Wilted could not start the preparation pipeline.",
+            fraction: nil, isTerminal: true, outcome: .failed, failure: nil
+        )
+        XCTAssertEqual(WiltedMacModel.preparationState(run: failed, transcript: nil),
+                       .failed("Wilted could not start the preparation pipeline."))
+        // A transcript outranks an old failure: the words are there.
+        XCTAssertEqual(WiltedMacModel.preparationState(run: failed, transcript: try transcript(.aligned)),
+                       .prepared(summary: "Synced transcript"))
+
+        let running = PreparationRunSummary(
+            requestID: failed.requestID, itemID: itemID, startedAt: when, updatedAt: when,
+            stage: .extracting, detail: "Transcribing", fraction: nil, isTerminal: false,
+            outcome: nil, failure: nil
+        )
+        XCTAssertEqual(WiltedMacModel.preparationState(run: running, transcript: try transcript(.aligned)),
+                       .preparing(stage: "Preparing…"))
+    }
+
 }

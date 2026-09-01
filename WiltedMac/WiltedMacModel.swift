@@ -66,6 +66,32 @@ enum WiltedMacEpisodeDownloadState: Equatable, Sendable {
     case cancelled
 }
 
+/// What preparation has done to a downloaded episode, and what it is doing now.
+///
+/// Preparation is the difference between Wilted and a plain podcast client:
+/// the advertisements come out and the transcript is synchronised with what is
+/// left. It takes minutes, so the row says which stage it is in rather than
+/// going quiet.
+enum WiltedMacEpisodePreparationState: Equatable, Sendable {
+    case notPrepared
+    case preparing(stage: String)
+    case prepared(summary: String)
+    case failed(String)
+
+    var isRunning: Bool { if case .preparing = self { true } else { false } }
+
+    /// The line the row shows under the title, or nil when there is nothing
+    /// worth saying.
+    var label: String? {
+        switch self {
+        case .notPrepared: nil
+        case .preparing(let stage): stage
+        case .prepared(let summary): summary
+        case .failed(let message): message
+        }
+    }
+}
+
 /// One row of the Feeds card: a podcast Wilted follows, and what following it
 /// currently yields.
 struct WiltedMacSubscription: Identifiable, Hashable, Sendable {
@@ -88,12 +114,13 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     let durationSeconds: TimeInterval?
     let playbackSeconds: TimeInterval
     var downloadState: WiltedMacEpisodeDownloadState
+    var preparationState: WiltedMacEpisodePreparationState = .notPrepared
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.id == rhs.id && lhs.title == rhs.title && lhs.feedTitle == rhs.feedTitle &&
             lhs.summary == rhs.summary && lhs.artworkURL == rhs.artworkURL && lhs.releasedAt == rhs.releasedAt &&
             lhs.durationSeconds == rhs.durationSeconds && lhs.playbackSeconds == rhs.playbackSeconds &&
-            lhs.downloadState == rhs.downloadState
+            lhs.downloadState == rhs.downloadState && lhs.preparationState == rhs.preparationState
     }
 
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
@@ -368,6 +395,11 @@ final class WiltedMacModel {
     private var podcastRefreshTask: Task<Void, Never>?
     private var podcastDownloadTasks: [String: Task<Void, Never>] = [:]
     private var podcastDownloadCoordinator: PodcastDownloadCoordinator?
+    private var podcastPreparationPipeline: PodcastPreparationPipeline?
+    private var podcastPreparationTasks: [String: Task<Void, Never>] = [:]
+    /// Removing advertisements is why preparation exists, but it is the part
+    /// that rewrites the file, so it stays switchable.
+    var removesAdvertisements = true
     private var hiddenEpisodeIDs: Set<String> = []
     private var fixtureDownloadFailuresRemaining = 0
     private let podcastFeedClient: PodcastFeedClient
@@ -681,6 +713,9 @@ final class WiltedMacModel {
                 self.episodes = values.episodes
                 self.subscriptions = values.subscriptions
                 self.podcastOperationMessage = "\(episode.title) is available offline."
+                self.podcastDownloadTasks[episode.id] = nil
+                self.prepareEpisode(episode)
+                return
             } catch PodcastDownloadCoordinatorError.cancelled {
                 self.updateEpisode(episode.id) { $0.downloadState = .cancelled }
                 self.podcastOperationMessage = "Download cancelled."
@@ -692,6 +727,107 @@ final class WiltedMacModel {
         }
 #endif
     }
+
+    /// Removes the advertisements and synchronises the transcript.
+    ///
+    /// Runs automatically once a download lands, and manually from the row for
+    /// an episode that was downloaded before preparation existed or whose last
+    /// attempt failed. Every stage is reported as it happens: the speech and
+    /// classification passes take minutes, and a silent window is
+    /// indistinguishable from a hung one.
+    func prepareEpisode(_ episode: WiltedMacEpisode) {
+#if canImport(WiltedProducer)
+        guard podcastPreparationTasks[episode.id] == nil,
+              let pipeline = podcastPreparationPipeline,
+              let itemID = try? ItemID(rawValue: episode.id) else { return }
+        updateEpisode(episode.id) { $0.preparationState = .preparing(stage: "Preparing…") }
+        podcastOperationMessage = "Preparing \(episode.title)…"
+        // Built here rather than inside the task so it captures the model
+        // directly: the worker calls it from its own queue for minutes.
+        let report: @Sendable (PodcastPreparationProgress) -> Void = { [weak self] progress in
+            let label = Self.preparationLabel(for: progress)
+            Task { @MainActor in
+                self?.updateEpisode(episode.id) { $0.preparationState = .preparing(stage: label) }
+            }
+        }
+        podcastPreparationTasks[episode.id] = Task { [weak self] in
+            defer { self?.podcastPreparationTasks[episode.id] = nil }
+            do {
+                let result = try await pipeline.prepare(episodeID: itemID, onStatus: report)
+                guard let self else { return }
+                let summary = Self.preparedSummary(
+                    advertisements: result.adSegments.count, secondsRemoved: result.removedSeconds,
+                    timing: result.transcript.timing
+                )
+                self.updateEpisode(episode.id) { $0.preparationState = .prepared(summary: summary) }
+                self.podcastOperationMessage = "\(episode.title): \(summary)"
+                if let store = self.store {
+                    let values = try await self.loadLibrary(from: store)
+                    self.articles = values.articles
+                    self.episodes = values.episodes
+                    self.subscriptions = values.subscriptions
+                }
+                self.refreshProcessorRuns()
+            } catch is CancellationError {
+                self?.updateEpisode(episode.id) { $0.preparationState = .notPrepared }
+                self?.podcastOperationMessage = "Preparation cancelled."
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription ?? "Preparation failed."
+                self?.updateEpisode(episode.id) { $0.preparationState = .failed(message) }
+                self?.podcastOperationMessage = message
+            }
+        }
+#endif
+    }
+
+    func cancelEpisodePreparation(_ episode: WiltedMacEpisode) {
+        podcastPreparationTasks[episode.id]?.cancel()
+    }
+
+#if canImport(WiltedProducer)
+    /// Turns the worker's own stage vocabulary into something a listener reads.
+    nonisolated static func preparationLabel(for progress: PodcastPreparationProgress) -> String {
+        switch progress.stage {
+        case "pipeline.start": "Preparing…"
+        case "transcript.published.fetch": "Fetching the published transcript…"
+        case "transcript.published.parse", "transcript.published.accepted": "Reading the published transcript…"
+        case "transcript.published.unreadable", "transcript.published.unreachable",
+             "transcript.published.unparseable": "No usable published transcript. Transcribing…"
+        case "transcript.stt.start": "Transcribing the audio…"
+        case "transcript.stt.complete": "Transcribed."
+        case "transcript.stt.failed": "Transcription unavailable."
+        case "transcript.prose.extract", "transcript.prose.accepted": "Reading the episode page…"
+        case "transcript.absent": "No transcript available."
+        case "transcript.remap": "Resynchronising the transcript…"
+        case "ads.model.load": "Loading the advertisement classifier…"
+        case "ads.detect.start", "ads.detect.complete": "Finding advertisements…"
+        case "ads.cut.start", "ads.cut.complete": "Removing advertisements…"
+        case "ads.cut.refused", "ads.cut.empty": "Advertisements left in place."
+        case "audio.publish": "Storing the prepared audio…"
+        case "pipeline.complete": "Prepared."
+        default: "Preparing…"
+        }
+    }
+
+    nonisolated static func preparedSummary(
+        advertisements: Int, secondsRemoved: Double, timing: TranscriptTiming
+    ) -> String {
+        var parts: [String] = []
+        if advertisements > 0, secondsRemoved > 0 {
+            let removed = WiltedDuration.clock(secondsRemoved)
+            parts.append(advertisements == 1 ? "1 ad removed (\(removed))"
+                                             : "\(advertisements) ads removed (\(removed))")
+        } else {
+            parts.append("No advertisements found")
+        }
+        switch timing {
+        case .published: parts.append("synced transcript from the feed")
+        case .aligned: parts.append("synced transcript")
+        case .none: parts.append("no synced transcript")
+        }
+        return parts.joined(separator: " · ")
+    }
+#endif
 
     func cancelEpisodeDownload(_ episode: WiltedMacEpisode) {
         podcastDownloadTasks[episode.id]?.cancel()
@@ -1498,10 +1634,18 @@ final class WiltedMacModel {
         Task { [weak self] in
             guard let self else { return }
             guard let runs = try? await store.preparationRuns() else { return }
-            let titles = Dictionary(
+            // Episodes prepare through the same journal as articles, so the
+            // history has to be able to name both kinds of item.
+            var titles = Dictionary(
                 uniqueKeysWithValues: ((try? await store.articles()) ?? [])
                     .map { ($0.itemID.rawValue, ($0.title, $0.source)) }
             )
+            let feedTitles = Dictionary(
+                uniqueKeysWithValues: ((try? await store.podcastFeeds()) ?? []).map { ($0.itemID, $0.title) }
+            )
+            for episode in (try? await store.podcastEpisodes()) ?? [] {
+                titles[episode.itemID.rawValue] = (episode.title, feedTitles[episode.feedID] ?? "Podcast")
+            }
             self.processorRuns = runs.map { run in
                 let known = titles[run.itemID.rawValue]
                 let outcome: WiltedMacProcessorRun.Outcome = if !run.isTerminal {
@@ -1517,7 +1661,7 @@ final class WiltedMacModel {
                     id: run.requestID,
                     // A run that failed before extraction never learned a
                     // title, so the item identity is all there is to name it.
-                    title: known?.0 ?? "Unknown article",
+                    title: known?.0 ?? "Unknown item",
                     source: known?.1 ?? run.itemID.rawValue,
                     stage: run.stage.rawValue,
                     detail: run.failure?.message ?? run.detail,
@@ -1579,6 +1723,13 @@ final class WiltedMacModel {
         }
         podcastDownloadCoordinator = configuredStore.map {
             PodcastDownloadCoordinator(store: $0, libraryDirectory: mediaDirectory)
+        }
+        podcastPreparationPipeline = fixtureMode ? nil : configuredStore.map {
+            PodcastPreparationPipeline(
+                store: $0,
+                workDirectory: mediaDirectory.appendingPathComponent("preparation", isDirectory: true),
+                removeAds: removesAdvertisements
+            )
         }
         var selectedSyncFactory = syncTransportFactory
 #if WILTED_CLOUDKIT_LIVE
@@ -1672,6 +1823,11 @@ final class WiltedMacModel {
         }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         let downloads = Dictionary(uniqueKeysWithValues: try await store.downloads().map { ($0.episodeID, $0) })
         var episodeValues: [WiltedMacEpisode] = []
+        let runs = Dictionary(
+            uniqueKeysWithValues: ((try? await store.preparationRuns()) ?? [])
+                .filter { $0.requestID.hasPrefix("podcast-prepare|") }
+                .map { ($0.itemID, $0) }
+        )
         for episode in try await store.podcastEpisodes() where subscribed.contains(episode.feedID) {
             let revision = try await store.readyRevision(for: episode.itemID)
             let playbackState: PlaybackState?
@@ -1681,6 +1837,13 @@ final class WiltedMacModel {
                 )
             } else {
                 playbackState = nil
+            }
+            let transcript: Transcript?
+            if let revision {
+                transcript = try? await store.transcript(for: episode.itemID,
+                                                         revisionID: revision.revision.revisionID)
+            } else {
+                transcript = nil
             }
             let downloadState: WiltedMacEpisodeDownloadState
             switch downloads[episode.itemID]?.status {
@@ -1700,10 +1863,32 @@ final class WiltedMacModel {
                 summary: summary, artworkURL: episode.artworkURL ?? feeds[episode.feedID]?.artworkURL,
                 releasedAt: (episode.publishedTime ?? episode.createdAt).date,
                 durationSeconds: revision?.revision.durationSeconds ?? episode.durationSeconds,
-                playbackSeconds: playbackState?.positionSeconds ?? 0, downloadState: downloadState
+                playbackSeconds: playbackState?.positionSeconds ?? 0, downloadState: downloadState,
+                preparationState: Self.preparationState(run: runs[episode.itemID], transcript: transcript)
             ))
         }
         return (articleValues, episodeValues, subscriptionValues)
+    }
+
+    /// What the library already knows about an episode's preparation.
+    ///
+    /// The stored transcript is the evidence that survives a relaunch: it says
+    /// whether the words are synchronised with the audio. The journal supplies
+    /// the rest -- a failure worth showing, or a run this process did not start.
+    nonisolated static func preparationState(
+        run: PreparationRunSummary?, transcript: Transcript?
+    ) -> WiltedMacEpisodePreparationState {
+        if let run, !run.isTerminal { return .preparing(stage: "Preparing…") }
+        switch transcript?.timing {
+        case .published: return .prepared(summary: "Synced transcript from the feed")
+        case .aligned: return .prepared(summary: "Synced transcript")
+        case .none, .some(.none):
+            if let run, run.isTerminal, run.outcome == .failed {
+                return .failed(run.detail)
+            }
+            if transcript?.availability == .available { return .prepared(summary: "Transcript, not synced") }
+            return .notPrepared
+        }
     }
 
     private nonisolated static func startupFailure(libraryURL: URL, canRetry: Bool) -> WiltedMacStartupFailure {

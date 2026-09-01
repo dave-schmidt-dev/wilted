@@ -620,6 +620,12 @@ private struct WiltedMacEpisodeRow: View {
                 Text(progressLabel)
                     .font(WiltedTheme.font(.utility))
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                if let preparation = episode.preparationState.label {
+                    Text(preparation)
+                        .font(WiltedTheme.font(.utility))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-episode-preparation-\(episode.id)")
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             downloadControl
@@ -681,6 +687,7 @@ private struct WiltedMacEpisodeRow: View {
                     .accessibilityIdentifier("wilted-episode-play-\(episode.id)")
                 Button("Up Next") { model.addEpisodeToUpNext(episode) }
                     .accessibilityIdentifier("wilted-episode-up-next-\(episode.id)")
+                preparationControl
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Available offline")
@@ -688,6 +695,23 @@ private struct WiltedMacEpisodeRow: View {
         case .failed, .cancelled:
             Button("Retry") { model.retryEpisodeDownload(episode) }
                 .accessibilityIdentifier("wilted-episode-retry-\(episode.id)")
+        }
+    }
+
+    /// Preparation runs itself after a download. This is for the episode that
+    /// arrived before it existed, and for retrying one that failed.
+    @ViewBuilder private var preparationControl: some View {
+        switch episode.preparationState {
+        case .preparing:
+            Button("Stop") { model.cancelEpisodePreparation(episode) }
+                .accessibilityLabel("Stop preparing \(episode.title)")
+                .accessibilityIdentifier("wilted-episode-preparation-cancel-\(episode.id)")
+        case .prepared:
+            EmptyView()
+        case .notPrepared, .failed:
+            Button("Prepare") { model.prepareEpisode(episode) }
+                .accessibilityLabel("Remove advertisements and sync the transcript for \(episode.title)")
+                .accessibilityIdentifier("wilted-episode-prepare-\(episode.id)")
         }
     }
 
