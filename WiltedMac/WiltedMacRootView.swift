@@ -249,7 +249,7 @@ private struct WiltedMacLibraryView: View {
         WiltedMacDestination(title: WiltedScreenCopy.library, identifier: "wilted-mac-library-detail") {
             composer
 
-            libraryControls
+            WiltedMacPodcastOperationMessage(model: model)
 
             if let preparation = model.preparation {
                 WiltedMacPreparationView(model: model, preparation: preparation)
@@ -266,9 +266,21 @@ private struct WiltedMacLibraryView: View {
                 .accessibilityIdentifier("wilted-mac-empty-state")
             } else {
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-                    Text("Saved articles and episodes")
-                        .font(WiltedTheme.font(.title))
-                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    // The order control belongs to the list it orders. On its
+                    // own card it was a near-empty band of chrome between the
+                    // add box and the items.
+                    HStack(spacing: WiltedTheme.Spacing.medium) {
+                        Text("Saved articles and episodes")
+                            .font(WiltedTheme.font(.title))
+                            .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Picker("Order", selection: $model.libraryOrder) {
+                            ForEach(WiltedMacLibraryOrder.allCases) { order in Text(order.rawValue).tag(order) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 110)
+                        .accessibilityIdentifier("wilted-library-order")
+                    }
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(model.libraryItems.enumerated()), id: \.element.id) { index, item in
                             if index > 0 { Divider() }
@@ -298,27 +310,6 @@ private struct WiltedMacLibraryView: View {
                 Text(filter.rawValue).tag(filter)
             }
         }
-    }
-
-    /// What Larder itself needs: the order of the list, and the running report
-    /// for whatever the reader last asked of an item. Refresh and the feed list
-    /// moved to Feeds, so this page stays about the saved items.
-    private var libraryControls: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-            HStack {
-                Picker("Order", selection: $model.libraryOrder) {
-                    ForEach(WiltedMacLibraryOrder.allCases) { order in Text(order.rawValue).tag(order) }
-                }
-                .labelsHidden()
-                .frame(width: 110)
-                .accessibilityIdentifier("wilted-library-order")
-                Spacer(minLength: 0)
-            }
-            WiltedMacPodcastOperationMessage(model: model)
-        }
-        .wiltedCard(colorScheme)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-podcast-controls")
     }
 
     /// One box for both kinds of address.
@@ -420,7 +411,7 @@ private struct WiltedMacFeedsView: View {
         }
         .wiltedCard(colorScheme)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-podcast-controls")
+        .accessibilityIdentifier("wilted-feeds-controls")
     }
 
     /// The subscription list itself, a per-feed switch, and unsubscribe. The
