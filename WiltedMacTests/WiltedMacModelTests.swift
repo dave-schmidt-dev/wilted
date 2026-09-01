@@ -274,6 +274,36 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(model.podcastOperationMessage, "Unsubscribed from Alpha and removed 1 episode.")
     }
 
+    /// The reported bug: episodes removed from the Larder came back. Removal
+    /// was an in-memory set, so it lasted exactly as long as the process, and
+    /// the store kept re-admitting the identity on every refresh.
+    func testRemovingAnEpisodeOutlivesTheProcess() async throws {
+        let directory = temporaryDirectory("episode-remove")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (model, _) = try await modelWithFeeds(["Alpha", "Beta"], directory: directory)
+        let unwanted = try XCTUnwrap(model.episodes.first { $0.feedTitle == "Alpha" })
+
+        model.removeEpisode(unwanted)
+        try await settle(model)
+        XCTAssertEqual(model.episodes.map(\.feedTitle), ["Beta"])
+        XCTAssertEqual(model.podcastOperationMessage,
+                       "Removed \(unwanted.title). Refreshing will not bring it back.")
+
+        let relaunched = WiltedMacModel(
+            arguments: [],
+            stateDirectoryOverride: directory,
+            podcastFeedClient: PodcastFeedClient(
+                loader: FixedBodyLoader(body: Data()),
+                now: { Date(timeIntervalSince1970: 1_700_000_000) }
+            )
+        )
+        relaunched.startStoreBootstrap()
+        await relaunched.waitForStoreBootstrap()
+        try await settle(relaunched)
+        XCTAssertEqual(relaunched.episodes.map(\.feedTitle), ["Beta"],
+                       "a removal that only lives in memory reappears here")
+    }
+
     /// The manage actions run detached tasks, so a test has to let the
     /// MainActor drain before reading the result.
     private func settle(_ model: WiltedMacModel, iterations: Int = 40) async throws {

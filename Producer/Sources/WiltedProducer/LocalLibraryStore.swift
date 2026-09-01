@@ -13,8 +13,9 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     case v5 = 5
     case v6 = 6
     case v7 = 7
+    case v8 = 8
 
-    public static let current: LocalLibrarySchemaVersion = .v7
+    public static let current: LocalLibrarySchemaVersion = .v8
 }
 
 /// The local ownership state used by generation-based remote reconciliation.
@@ -986,11 +987,51 @@ private enum LocalLibrarySchemaV7: VersionedSchema {
     }
 }
 
+private enum LocalLibrarySchemaV8Models {
+    /// One episode the listener removed from the Larder on purpose.
+    ///
+    /// Removal has to outlive both the launch and the next refresh, and neither
+    /// is achievable by deleting the episode row alone: the feed still lists the
+    /// episode, so the next refresh parses it and `savePodcastEpisodes` inserts
+    /// it again. The record is the memory that says not to. It is deliberately a
+    /// standalone entity rather than a column on the episode, so the episode row
+    /// can be deleted outright -- every read path is then clean without a
+    /// dismissed-filter threaded through queue joins and playback lookups.
+    ///
+    /// `feedID` and `title` are nil only when the episode row was already gone
+    /// when the dismissal was written -- a second removal of something removed.
+    /// They exist so the log is legible and so unsubscribing can forget a feed's
+    /// dismissals along with the rest of its records.
+    @Model final class PodcastEpisodeDismissalRecord {
+        @Attribute(.unique) var id: String
+        var feedID: String?
+        var title: String?
+        var dismissedAt: Date
+
+        init(episodeID: String, feedID: String?, title: String?, dismissedAt: Date) {
+            self.id = episodeID
+            self.feedID = feedID
+            self.title = title
+            self.dismissedAt = dismissedAt
+        }
+    }
+}
+
+/// Version 8 adds the episode-dismissal entity. Lightweight: a new standalone
+/// table, exactly as version six added the podcast tables, and no existing
+/// entity changes shape.
+private enum LocalLibrarySchemaV8: VersionedSchema {
+    static let versionIdentifier = Schema.Version(8, 0, 0)
+    static var models: [any PersistentModel.Type] {
+        LocalLibrarySchemaV7.models + [LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord.self]
+    }
+}
+
 private enum LocalLibraryMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
         [LocalLibrarySchemaV1.self, LocalLibrarySchemaV2.self, LocalLibrarySchemaV3.self,
          LocalLibrarySchemaV4.self, LocalLibrarySchemaV5.self, LocalLibrarySchemaV6.self,
-         LocalLibrarySchemaV7.self]
+         LocalLibrarySchemaV7.self, LocalLibrarySchemaV8.self]
     }
     static var stages: [MigrationStage] {
         [.lightweight(fromVersion: LocalLibrarySchemaV1.self, toVersion: LocalLibrarySchemaV2.self),
@@ -998,7 +1039,8 @@ private enum LocalLibraryMigrationPlan: SchemaMigrationPlan {
          .lightweight(fromVersion: LocalLibrarySchemaV3.self, toVersion: LocalLibrarySchemaV4.self),
          .lightweight(fromVersion: LocalLibrarySchemaV4.self, toVersion: LocalLibrarySchemaV5.self),
          .lightweight(fromVersion: LocalLibrarySchemaV5.self, toVersion: LocalLibrarySchemaV6.self),
-         .lightweight(fromVersion: LocalLibrarySchemaV6.self, toVersion: LocalLibrarySchemaV7.self)]
+         .lightweight(fromVersion: LocalLibrarySchemaV6.self, toVersion: LocalLibrarySchemaV7.self),
+         .lightweight(fromVersion: LocalLibrarySchemaV7.self, toVersion: LocalLibrarySchemaV8.self)]
     }
 }
 
@@ -1047,7 +1089,7 @@ public actor LocalLibraryStore {
             try migrationFailure?()
         }
         migrationBackupURL = retainedURL
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV7.self)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV8.self)
         let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         if migrate {
             container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
@@ -1069,7 +1111,7 @@ public actor LocalLibraryStore {
             retainedURL = try Self.migrationPreflight(at: url).retainedURL
         }
         migrationBackupURL = retainedURL
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV7.self)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV8.self)
         let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         if migrate {
             container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
@@ -1948,6 +1990,16 @@ public actor LocalLibraryStore {
     ) throws -> PodcastEpisodeAdmissionResult {
         guard !episodes.isEmpty else { return PodcastEpisodeAdmissionResult(saved: [], skipped: 0) }
         let context = ModelContext(container)
+        // Dismissed first, ahead of the `existing` re-admit below. That rule
+        // says an episode Wilted already knows can never be evicted by the
+        // horizon, which is right for the horizon and wrong here: a removal is
+        // the listener evicting it on purpose, so it outranks both tests.
+        let dismissed = Set(
+            try context.fetch(FetchDescriptor<LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord>()).map(\.id)
+        )
+        let offered = episodes.count
+        let episodes = episodes.filter { !dismissed.contains($0.itemID.rawValue) }
+        guard !episodes.isEmpty else { return PodcastEpisodeAdmissionResult(saved: [], skipped: offered) }
         let subscriptions = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastSubscriptionRecord>())
         let horizons = Dictionary(
             subscriptions.map { ($0.feedID, Self.admissionHorizon(subscribedAt: $0.subscribedAt, admission: admission)) },
@@ -1991,7 +2043,7 @@ public actor LocalLibraryStore {
         try context.save()
         return PodcastEpisodeAdmissionResult(
             saved: admitted.map(\.itemID),
-            skipped: episodes.count - admitted.count
+            skipped: offered - admitted.count
         )
     }
 
@@ -2024,6 +2076,96 @@ public actor LocalLibraryStore {
         }
     }
 
+    /// One episode the listener removed, and when.
+    public struct PodcastEpisodeDismissal: Equatable, Sendable {
+        public let episodeID: ItemID
+        public let feedID: ItemID?
+        public let title: String?
+        public let dismissedAt: Timestamp
+    }
+
+    /// Removes one episode from the Larder and remembers that it was removed.
+    ///
+    /// Both halves are needed. Deleting the row alone lasts until the next
+    /// refresh, which parses the same episode out of the same feed and inserts
+    /// it again; recording the dismissal alone leaves the row on screen. So the
+    /// record is written, the row and everything hanging off it goes, and
+    /// `savePodcastEpisodes` declines to re-admit the identity afterwards.
+    ///
+    /// Downloaded media stays on disk for the reason `unsubscribeFromPodcast`
+    /// gives: a `RevisionID` is derived from content, so two episodes with
+    /// identical bytes share one audio revision and deleting the file here
+    /// could break an episode that survives this call.
+    ///
+    /// Idempotent. Removing something already removed keeps the first
+    /// dismissal's timestamp and returns false.
+    @discardableResult
+    public func dismissPodcastEpisode(_ episodeID: ItemID, at dismissedAt: Timestamp = Timestamp(Date())) throws -> Bool {
+        let context = ModelContext(container)
+        let identifier = episodeID.rawValue
+        let episode = try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.PodcastEpisodeRecord>())
+            .first { $0.id == identifier }
+        let dismissals = try context.fetch(FetchDescriptor<LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord>())
+        if let existing = dismissals.first(where: { $0.id == identifier }) {
+            // A dismissal written when the row was already gone carries no feed
+            // or title. Fill them in if this call can see them.
+            existing.feedID = existing.feedID ?? episode?.feedID
+            existing.title = existing.title ?? episode?.title
+        } else {
+            context.insert(LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord(
+                episodeID: identifier, feedID: episode?.feedID, title: episode?.title,
+                dismissedAt: dismissedAt.date
+            ))
+        }
+        guard let episode else { try context.save(); return false }
+        context.delete(episode)
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
+        where record.episodeID == identifier { context.delete(record) }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
+        where record.episodeID == identifier { context.delete(record) }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastPlaybackSpeedRecord>())
+        where record.itemID == identifier { context.delete(record) }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>())
+        where record.ownerID == identifier { context.delete(record) }
+        try context.save()
+        return true
+    }
+
+    /// Every episode removed from the Larder, newest removal first.
+    public func dismissedPodcastEpisodes() throws -> [PodcastEpisodeDismissal] {
+        let context = ModelContext(container)
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord>())
+            .sorted { $0.dismissedAt > $1.dismissedAt }
+            .compactMap { record in
+                guard let episodeID = try? ItemID(rawValue: record.id) else { return nil }
+                return PodcastEpisodeDismissal(
+                    episodeID: episodeID,
+                    feedID: record.feedID.flatMap { try? ItemID(rawValue: $0) },
+                    title: record.title,
+                    dismissedAt: Timestamp(record.dismissedAt)
+                )
+            }
+    }
+
+    /// Forgets a dismissal, so the next refresh may admit the episode again.
+    ///
+    /// The episode row is not recreated here. Wilted has no copy of the feed
+    /// entry to recreate it from, and inventing one would fabricate an identity
+    /// the feed no longer has to agree with.
+    @discardableResult
+    public func restorePodcastEpisode(_ episodeID: ItemID) throws -> Bool {
+        let context = ModelContext(container)
+        let identifier = episodeID.rawValue
+        var removed = false
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord>())
+        where record.id == identifier {
+            context.delete(record)
+            removed = true
+        }
+        if removed { try context.save() }
+        return removed
+    }
+
     /// Removes a subscription and every record Wilted stored on its behalf.
     ///
     /// Records only. Downloaded media files stay on disk because `RevisionID` is
@@ -2053,6 +2195,11 @@ public actor LocalLibraryStore {
         // Artwork is owned by the feed as well as by its episodes.
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>())
         where episodeIDs.contains(record.ownerID) || record.ownerID == feed { context.delete(record) }
+        // Dismissals are records Wilted stored on the feed's behalf too, so
+        // resubscribing starts clean rather than inheriting a blocklist the
+        // listener can no longer see anywhere.
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord>())
+        where record.feedID == feed || episodeIDs.contains(record.id) { context.delete(record) }
         try context.save()
         return episodeIDs.count
     }

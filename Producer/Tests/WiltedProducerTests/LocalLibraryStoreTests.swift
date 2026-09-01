@@ -143,7 +143,7 @@ final class LocalLibraryStoreTests: XCTestCase {
         let migratedTranscript = try await migrated.transcript(for: item.itemID, revisionID: rev.revisionID)
         let migratedInspection = try await migrated.inspect()
         XCTAssertNil(migratedTranscript)
-        XCTAssertEqual(migratedInspection.schemaVersion, .v7)
+        XCTAssertEqual(migratedInspection.schemaVersion, .v8)
     }
 
     /// The V4 -> V5 stage renames the deletion column. A read-back inside one
@@ -660,7 +660,7 @@ final class LocalLibraryStoreTests: XCTestCase {
                                                        playback: try playback(for: item, revision: rev, position: 23))
         let migrated = try LocalLibraryStore(url: url)
         let inspection = try await migrated.inspect()
-        XCTAssertEqual(inspection.schemaVersion, .v7)
+        XCTAssertEqual(inspection.schemaVersion, .v8)
         XCTAssertEqual(inspection.articleCount, 1)
         XCTAssertEqual(inspection.revisionCount, 1)
         XCTAssertEqual(inspection.transcriptCount, 1)
@@ -930,5 +930,144 @@ final class LocalLibraryStoreTests: XCTestCase {
             at: failedURL.deletingLastPathComponent(), includingPropertiesForKeys: nil
         ).filter { $0.lastPathComponent == failedURL.lastPathComponent || $0.lastPathComponent.hasPrefix("\(failedURL.lastPathComponent)-") }
         XCTAssertFalse(retainedFiles.isEmpty)
+    }
+
+    // MARK: - Episode removal
+
+    /// The bug this covers: removing an episode used to hide it in memory only,
+    /// so the next refresh -- which re-reads the same feed -- put it straight
+    /// back, and so did the next launch.
+    func testDismissedEpisodeIsDeletedAndNeverReadmittedByRefresh() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/dismiss/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 2, 3])
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+        try await store.savePodcastEpisodes(all, admission: .backfill)
+        let unwanted = all.first { $0.rssGUID == "day-2" }!
+
+        let deleted = try await store.dismissPodcastEpisode(unwanted.itemID, at: Timestamp(origin))
+        XCTAssertTrue(deleted)
+        var stored = try await store.podcastEpisodes(for: feed.itemID).compactMap(\.rssGUID).sorted()
+        XCTAssertEqual(stored, ["day-1", "day-3"], "the row is gone, not merely filtered")
+
+        // The feed still lists it, which is the whole problem: a refresh offers
+        // the same three episodes again.
+        let refreshed = try await store.savePodcastEpisodes(all, admission: .incremental)
+        XCTAssertFalse(refreshed.saved.contains(unwanted.itemID))
+        XCTAssertEqual(refreshed.skipped, 1)
+        stored = try await store.podcastEpisodes(for: feed.itemID).compactMap(\.rssGUID).sorted()
+        XCTAssertEqual(stored, ["day-1", "day-3"])
+
+        // And it survives the process, because it is a row rather than a set.
+        let reopened = try LocalLibraryStore(url: url)
+        try await reopened.savePodcastEpisodes(all, admission: .incremental)
+        stored = try await reopened.podcastEpisodes(for: feed.itemID).compactMap(\.rssGUID).sorted()
+        XCTAssertEqual(stored, ["day-1", "day-3"])
+        let log = try await reopened.dismissedPodcastEpisodes()
+        XCTAssertEqual(log.count, 1)
+        XCTAssertEqual(log.first?.episodeID, unwanted.itemID)
+        XCTAssertEqual(log.first?.feedID, feed.itemID)
+        XCTAssertEqual(log.first?.title, "day-2")
+        XCTAssertEqual(log.first?.dismissedAt, Timestamp(origin))
+    }
+
+    /// Removing twice must not throw, must not duplicate the log, and must not
+    /// move the timestamp: the second call is a listener clicking again.
+    func testDismissingAnEpisodeTwiceIsIdempotent() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/idempotent/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1])
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+        try await store.savePodcastEpisodes(all, admission: .backfill)
+
+        let first = try await store.dismissPodcastEpisode(all[0].itemID, at: Timestamp(origin))
+        let second = try await store.dismissPodcastEpisode(all[0].itemID, at: Timestamp(origin.addingTimeInterval(60)))
+        XCTAssertTrue(first)
+        XCTAssertFalse(second, "the row was already gone, so there is nothing left to delete")
+        let log = try await store.dismissedPodcastEpisodes()
+        XCTAssertEqual(log.count, 1)
+        XCTAssertEqual(log.first?.dismissedAt, Timestamp(origin), "the first removal is when it happened")
+    }
+
+    /// Removal takes the queue entry, the download record, the saved speed, and
+    /// the artwork with it -- otherwise Up Next keeps an episode the Larder no
+    /// longer has.
+    func testDismissingAnEpisodeClearsTheRecordsHangingOffIt() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/cascade/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 2])
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+        try await store.savePodcastEpisodes(all, admission: .backfill)
+        let doomed = all[0], kept = all[1]
+        try await store.addPodcastQueueEpisode(doomed.itemID)
+        try await store.addPodcastQueueEpisode(kept.itemID)
+
+        try await store.dismissPodcastEpisode(doomed.itemID, at: Timestamp(origin))
+        let queue = try await store.podcastQueueState()
+        XCTAssertEqual(queue.episodeIDs.map(\.rawValue), [kept.itemID.rawValue],
+                       "Up Next must not hold an episode the Larder removed")
+    }
+
+    /// Unsubscribing forgets the feed's dismissals too, so resubscribing does
+    /// not inherit an invisible blocklist.
+    func testUnsubscribingForgetsTheFeedsDismissals() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/forget/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 2])
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+        try await store.savePodcastEpisodes(all, admission: .backfill)
+        try await store.dismissPodcastEpisode(all[0].itemID, at: Timestamp(origin))
+
+        try await store.unsubscribeFromPodcast(feedID: feed.itemID)
+        let remaining = try await store.dismissedPodcastEpisodes()
+        XCTAssertTrue(remaining.isEmpty)
+
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+        try await store.savePodcastEpisodes(all, admission: .backfill)
+        let stored = try await store.podcastEpisodes(for: feed.itemID).compactMap(\.rssGUID).sorted()
+        XCTAssertEqual(stored, ["day-1", "day-2"], "resubscribing starts from the feed, not from the old blocklist")
+    }
+
+    /// Restoring clears the record so a later refresh may admit the episode
+    /// again. It does not resurrect the row: only the feed can supply that.
+    func testRestoringAnEpisodeLetsTheNextRefreshAdmitItAgain() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/restore/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1])
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        // Subscribed before the episode published, so the refresh below is
+        // refused by the dismissal alone and not by the admission horizon.
+        try await store.save(subscription: PodcastSubscription(
+            feedID: feed.itemID, subscribedAt: Timestamp(origin.addingTimeInterval(-10 * 86_400))
+        ))
+        try await store.savePodcastEpisodes(all, admission: .backfill)
+        try await store.dismissPodcastEpisode(all[0].itemID, at: Timestamp(origin))
+        let blocked = try await store.savePodcastEpisodes(all, admission: .incremental)
+        XCTAssertEqual(blocked.skipped, 1)
+
+        let restored = try await store.restorePodcastEpisode(all[0].itemID)
+        let restoredAgain = try await store.restorePodcastEpisode(all[0].itemID)
+        let emptied = try await store.podcastEpisodes(for: feed.itemID)
+        XCTAssertTrue(restored)
+        XCTAssertFalse(restoredAgain, "nothing left to forget")
+        XCTAssertTrue(emptied.isEmpty, "restoring is not resurrection; the row comes back from the feed")
+        try await store.savePodcastEpisodes(all, admission: .incremental)
+        let stored = try await store.podcastEpisodes(for: feed.itemID).compactMap(\.rssGUID)
+        XCTAssertEqual(stored, ["day-1"])
     }
 }

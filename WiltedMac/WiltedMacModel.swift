@@ -979,11 +979,40 @@ final class WiltedMacModel {
 #endif
     }
 
+    /// Removes an episode for good, not just from this view.
+    ///
+    /// The in-memory hide is the optimistic half: it takes the row off screen
+    /// on the next render, before the store round-trip returns. The durable
+    /// half is the store's dismissal, which is what stops the next refresh
+    /// parsing the same episode out of the same feed and inserting it again.
+    /// Without it a removal lasted until the next launch, because this set is
+    /// all there was.
     func removeEpisode(_ episode: WiltedMacEpisode) {
         podcastDownloadTasks[episode.id]?.cancel()
+        podcastPreparationTasks[episode.id]?.cancel()
         hiddenEpisodeIDs.insert(episode.id)
         if selectedLibraryItemID == episode.id { selectedLibraryItemID = nil }
-        podcastOperationMessage = "Removed \(episode.title) from this Larder view."
+        podcastOperationMessage = "Removed \(episode.title). Refreshing will not bring it back."
+#if canImport(WiltedProducer)
+        guard let store, let id = try? ItemID(rawValue: episode.id) else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await store.dismissPodcastEpisode(id)
+                if let playback = self.playback {
+                    try? await playback.removePodcastQueueEpisode(id)
+                    await self.refreshPodcastQueueState()
+                }
+                let values = try await self.loadLibrary(from: store)
+                self.articles = values.articles
+                self.episodes = values.episodes
+                self.subscriptions = values.subscriptions
+            } catch {
+                self.hiddenEpisodeIDs.remove(episode.id)
+                self.podcastOperationMessage = "\(episode.title) could not be removed."
+            }
+        }
+#endif
     }
 
 #if canImport(WiltedProducer)
