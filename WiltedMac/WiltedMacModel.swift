@@ -380,7 +380,13 @@ final class WiltedMacModel {
     var withheldPodcastEpisodeCount = 0
     var librarySearchQuery = ""
     var libraryFilter: WiltedMacLibraryFilter = .all
-    var libraryOrder: WiltedMacLibraryOrder = .newest
+    /// Survives relaunch: a listener who reads the Larder oldest-first should
+    /// not have to say so again every time the app opens.
+    var libraryOrder: WiltedMacLibraryOrder = .newest {
+        didSet { preferences.set(libraryOrder.rawValue, forKey: Self.libraryOrderPreferenceKey) }
+    }
+    static let libraryOrderPreferenceKey = "wilted.library.order"
+    private let preferences: UserDefaults
     var selectedNavigation: WiltedMacNavigation = .library
     private(set) var articles: [WiltedMacArticle] = []
     private(set) var episodes: [WiltedMacEpisode] = []
@@ -468,7 +474,8 @@ final class WiltedMacModel {
          storeBootstrap: WiltedMacStoreBootstrap? = nil,
          retainedArtifactPresenter: ((URL) -> Void)? = nil,
          podcastFeedClient: PodcastFeedClient = PodcastFeedClient(),
-         pastedLinkClassifier: PastedLinkClassifier = PastedLinkClassifier()) {
+         pastedLinkClassifier: PastedLinkClassifier = PastedLinkClassifier(),
+         preferences: UserDefaults? = nil) {
         let usesFixtureMode = arguments.contains("--wilted-ui-fixture-article-flow")
             || arguments.contains("--wilted-ui-fixture-quarantined")
             || arguments.contains("--wilted-ui-smoke")
@@ -478,6 +485,7 @@ final class WiltedMacModel {
             || arguments.contains("--wilted-ui-fixture-podcasts")
             || arguments.contains("--wilted-ui-fixture-download-failure")
         fixtureMode = usesFixtureMode
+        self.preferences = preferences ?? Self.preferences(fixtureMode: usesFixtureMode)
 
 #if canImport(WiltedProducer)
         let stateDirectory = stateDirectoryOverride ?? Self.stateDirectory(fixtureMode: usesFixtureMode)
@@ -520,6 +528,21 @@ final class WiltedMacModel {
 #else
         _ = arguments
 #endif
+        if let stored = self.preferences.string(forKey: Self.libraryOrderPreferenceKey),
+           let order = WiltedMacLibraryOrder(rawValue: stored) {
+            libraryOrder = order
+        }
+    }
+
+    /// Fixture launches share the daily driver's bundle identifier, so they
+    /// get their own defaults domain, emptied on every launch: a UI test must
+    /// neither inherit the owner's choices nor leave its own behind.
+    private static func preferences(fixtureMode: Bool) -> UserDefaults {
+        guard fixtureMode else { return .standard }
+        let suite = "com.zerodelta.wilted.mac.ui-fixture"
+        let defaults = UserDefaults(suiteName: suite) ?? .standard
+        defaults.removePersistentDomain(forName: suite)
+        return defaults
     }
 
     var libraryItems: [WiltedMacLibraryItem] {

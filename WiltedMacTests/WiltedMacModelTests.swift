@@ -324,6 +324,42 @@ final class WiltedMacModelTests: XCTestCase {
             .appendingPathComponent("wilted-mac-model-\(suffix)-\(UUID().uuidString)", isDirectory: true)
     }
 
+    // MARK: Library preferences
+
+    func testLibraryOrderSurvivesRelaunch() throws {
+        // A fixed suite: `removePersistentDomain` empties the file but leaves
+        // it, so a per-run name would litter ~/Library/Preferences.
+        let suite = "com.zerodelta.wilted.mac.model-tests"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        preferences.removePersistentDomain(forName: suite)
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let directory = temporaryDirectory("order")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let first = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        XCTAssertEqual(first.libraryOrder, .newest, "a fresh install lists newest first")
+        first.libraryOrder = .oldest
+
+        let second = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        XCTAssertEqual(second.libraryOrder, .oldest, "the choice must outlive the model that made it")
+
+        preferences.set("Sideways", forKey: WiltedMacModel.libraryOrderPreferenceKey)
+        let third = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        XCTAssertEqual(third.libraryOrder, .newest, "an unreadable stored value falls back rather than crashing")
+    }
+
+    func testFixtureLaunchesStartFromTheDefaultOrderAndLeaveNothingBehind() {
+        let directory = temporaryDirectory("fixture-order")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let fixture = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: directory)
+        XCTAssertEqual(fixture.libraryOrder, .newest)
+        fixture.libraryOrder = .oldest
+
+        let relaunched = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: directory)
+        XCTAssertEqual(relaunched.libraryOrder, .newest, "a fixture launch leaves nothing behind for the next one")
+    }
+
     // MARK: Preparation presentation
 
     func testPreparationLabelsSpeakToTheListenerNotTheWorker() {
