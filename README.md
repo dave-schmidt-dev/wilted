@@ -2,7 +2,7 @@
 
 Local-first native Mac/iOS personal audio system: the Mac is the daily-use producer and player, while the deferred iOS listener receives and plays qualified media.
 
-**Status:** Native Mac daily-driver parity is the active milestone. Podcast feed import, local episode download, a mixed Larder, Up Next, continuous playback, direct seeking, and persistent playback speed must reach Phase 3 Mac owner acceptance before any fresh iPhone/CloudKit qualification. Physical-device, Production CloudKit, App Store Connect, and TestFlight qualification remain pending.
+**Status:** Native Mac daily-driver parity is the active milestone. Podcast feed import, local episode download, transcript-synchronised advertisement removal, a mixed Larder, Up Next, continuous playback, direct seeking, and persistent playback speed must reach Phase 3 Mac owner acceptance before any fresh iPhone/CloudKit qualification. Physical-device, Production CloudKit, App Store Connect, and TestFlight qualification remain pending.
 
 On 2026-08-17, attended screenshots verified the Wilted iCloud container and both App IDs with iCloud/CloudKit and Push Notifications enabled. This is Apple Developer portal configuration evidence only. The attended Development producer-to-listener round trip it was waiting on completed on 2026-08-18.
 
@@ -33,7 +33,7 @@ Removing an episode from the Larder is permanent and survives a refresh. It has 
 
 The former `wilted-old` directory is reference-only and non-runnable. Its absolute paths, legacy runtime bindings, SQLite data, alias, virtual environment, and retired launchd jobs are intentionally archived. On 2026-08-17, the owner approved transferring the existing GitHub repository to this fresh project; the old Git history was not migrated, and the local archive remains the recovery copy. Retired nightly/hourly scheduling is disabled. The current `wilted` shell alias is stale and must not be treated as an installation.
 
-Explicitly excluded from the active Mac milestone: automatic classification, ad stripping, weather, radio mode, dynamic playlists, email, social drafting, background scheduling, and TUI/CLI parity.
+Explicitly excluded from the active Mac milestone: automatic classification, weather, radio mode, dynamic playlists, email, social drafting, background scheduling, and TUI/CLI parity.
 
 ## Layout
 

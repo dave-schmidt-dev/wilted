@@ -46,6 +46,31 @@ struct PodcastDownloadCoordinatorTests {
         #expect(try stagingFiles(in: streamed.libraryDirectory).isEmpty)
     }
 
+    @Test func treatsResponseLengthAsAuthoritativeForCompletionAndProgress() async throws {
+        let fixture = try await Fixture(declaredBytes: 12)
+        defer { fixture.remove() }
+        let coordinator = fixture.coordinator(events: [
+            .response(.init(url: fixture.enclosureURL, statusCode: 200,
+                            mediaType: fixture.mediaType + "; charset=binary", expectedByteCount: 6)),
+            .data(Data(fixture.body.prefix(3))), .data(Data(fixture.body.suffix(3)))
+        ])
+        let result = try await coordinator.download(episodeID: fixture.episodeID)
+        #expect(result.download.bytesReceived == Int64(fixture.body.count))
+        #expect(result.download.expectedByteCount == 6)
+    }
+
+    @Test func rejectsDownloadsWhenResponseLengthMismatchDetected() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        await expect(
+            .declaredSizeMismatch(expected: 7, actual: 6), fixture: fixture, events: [
+                .response(.init(url: fixture.enclosureURL, statusCode: 200,
+                                mediaType: "audio/mpeg", expectedByteCount: 7)),
+                .data(Data(fixture.body))
+            ]
+        )
+    }
+
     @Test func rejectsUnsupportedAndMismatchedMIMEAfterParameterNormalization() async throws {
         let fixture = try await Fixture()
         defer { fixture.remove() }

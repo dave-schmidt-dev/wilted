@@ -261,9 +261,6 @@ public actor PodcastDownloadCoordinator {
                         guard responseExpected <= maximumBytes else {
                             throw PodcastDownloadCoordinatorError.declaredSizeTooLarge(responseExpected)
                         }
-                        if let declared = episode.enclosureByteCount, declared != responseExpected {
-                            throw PodcastDownloadCoordinatorError.declaredSizeMismatch(expected: declared, actual: responseExpected)
-                        }
                         expected = responseExpected
                     }
                     try await store.save(download: PodcastDownload(
