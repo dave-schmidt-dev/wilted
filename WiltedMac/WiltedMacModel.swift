@@ -360,7 +360,13 @@ final class WiltedMacModel {
 
     private(set) var startupState: WiltedMacStartupState = .loading(attempt: 0)
     var urlDraft = ""
-    var podcastFeedURLDraft = ""
+    /// What the single add box is doing right now. Telling a feed from an
+    /// article needs the document, so the button can sit on a network round
+    /// trip; an unannounced pause there reads as a control that did nothing.
+    private(set) var linkDraftStatus: String?
+    /// A feed the page just added advertises. Offered, never taken: following a
+    /// site's whole feed is a different request from saving one article of it.
+    private(set) var advertisedFeed: URL?
     /// Episodes the last refresh loaded but did not keep, either because the
     /// feed exceeded the client's episode ceiling or because they published
     /// before the subscription. Reported so a partial view of a feed is never
@@ -438,6 +444,8 @@ final class WiltedMacModel {
     private var hiddenEpisodeIDs: Set<String> = []
     private var fixtureDownloadFailuresRemaining = 0
     private let podcastFeedClient: PodcastFeedClient
+    private let pastedLinkClassifier: PastedLinkClassifier
+    private var linkClassificationTask: Task<Void, Never>?
     private var fixtureRevision: StoredAudioRevision?
     private var fixturePodcastInstallTask: Task<Void, Never>?
     private var playbackOperationTask: Task<Void, Never>?
@@ -450,7 +458,8 @@ final class WiltedMacModel {
          stateDirectoryOverride: URL? = nil,
          storeBootstrap: WiltedMacStoreBootstrap? = nil,
          retainedArtifactPresenter: ((URL) -> Void)? = nil,
-         podcastFeedClient: PodcastFeedClient = PodcastFeedClient()) {
+         podcastFeedClient: PodcastFeedClient = PodcastFeedClient(),
+         pastedLinkClassifier: PastedLinkClassifier = PastedLinkClassifier()) {
         let usesFixtureMode = arguments.contains("--wilted-ui-fixture-article-flow")
             || arguments.contains("--wilted-ui-fixture-quarantined")
             || arguments.contains("--wilted-ui-smoke")
@@ -476,6 +485,7 @@ final class WiltedMacModel {
             NSWorkspace.shared.activateFileViewerSelecting([url])
         }
         self.podcastFeedClient = podcastFeedClient
+        self.pastedLinkClassifier = pastedLinkClassifier
         fixtureDownloadFailuresRemaining = arguments.contains("--wilted-ui-fixture-download-failure") ? 1 : 0
 
         if usesFixtureMode {
@@ -640,15 +650,25 @@ final class WiltedMacModel {
 #endif
     }
 
-    func subscribeToPodcastFeed() {
+    func subscribeToPodcastFeed(_ url: URL) {
 #if canImport(WiltedProducer)
-        guard let url = URL(string: podcastFeedURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)),
-              url.scheme?.lowercased() == "https", url.host != nil else {
+        guard url.scheme?.lowercased() == "https", url.host != nil else {
             podcastOperationMessage = "Enter a complete HTTPS podcast feed URL."
             return
         }
         startPodcastRefresh(urls: [url], subscribing: true)
 #endif
+    }
+
+    /// Follows the feed the last added page advertised.
+    func subscribeToAdvertisedFeed() {
+        guard let advertisedFeed else { return }
+        self.advertisedFeed = nil
+        subscribeToPodcastFeed(advertisedFeed)
+    }
+
+    func dismissAdvertisedFeed() {
+        advertisedFeed = nil
     }
 
     func refreshPodcastFeeds() {
@@ -897,6 +917,7 @@ final class WiltedMacModel {
     func retryEpisodeDownload(_ episode: WiltedMacEpisode) { downloadEpisode(episode) }
 
     func waitForPodcastOperations() async {
+        await linkClassificationTask?.value
         let refresh = podcastRefreshTask
         let downloads = Array(podcastDownloadTasks.values)
         await refresh?.value
@@ -968,7 +989,7 @@ final class WiltedMacModel {
             guard let self else { return }
             do {
                 try await self.refreshPodcastURLs(urls, subscribing: subscribing)
-                self.podcastFeedURLDraft = ""
+                if subscribing { self.urlDraft = "" }
                 self.podcastOperationMessage = "Podcast episodes are up to date."
             } catch is CancellationError {
                 self.podcastOperationMessage = "Podcast refresh cancelled."
@@ -1099,6 +1120,52 @@ final class WiltedMacModel {
     /// The spoken form of the same readout.
     var playbackProgressSpokenLabel: String {
         WiltedDuration.spokenProgress(position: playbackPositionSeconds, duration: playbackDurationSeconds)
+    }
+
+    /// Adds whatever was pasted, working out for itself which kind it is.
+    ///
+    /// Two boxes made the reader classify an address before pasting it, and a
+    /// podcast address dropped in the article box produced a parse error rather
+    /// than a subscription. The document decides instead: an unmistakable feed
+    /// extension short-circuits, anything else is fetched once and sniffed.
+    func addPastedLink() {
+        let trimmed = urlDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), url.scheme?.lowercased() == "https", url.host != nil else {
+            linkDraftStatus = "Enter a complete HTTPS address."
+            return
+        }
+        advertisedFeed = nil
+        linkDraftStatus = nil
+        guard !fixtureMode else { addArticle(); return }
+
+#if canImport(WiltedProducer)
+        guard linkClassificationTask == nil else { return }
+        linkDraftStatus = "Checking that address\u{2026}"
+        linkClassificationTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.linkClassificationTask = nil }
+            do {
+                let kind = try await self.pastedLinkClassifier.classify(url)
+                guard !Task.isCancelled else { self.linkDraftStatus = nil; return }
+                self.linkDraftStatus = nil
+                switch kind {
+                case .podcastFeed:
+                    self.subscribeToPodcastFeed(url)
+                case .article:
+                    self.addArticle()
+                case .articleAdvertisingFeed(let feedURL):
+                    self.advertisedFeed = feedURL
+                    self.addArticle()
+                }
+            } catch is CancellationError {
+                self.linkDraftStatus = nil
+            } catch {
+                self.linkDraftStatus = "Wilted could not reach that address. Check it, or retry when online."
+            }
+        }
+#else
+        addArticle()
+#endif
     }
 
     func addArticle() {

@@ -211,7 +211,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
             )
             assertSnapshot(
                 render(
-                    WiltedMacArticleURLField(
+                    WiltedMacLinkField(
                         text: .constant("https://example.com/article"),
                         focusedOverride: true
                     ),

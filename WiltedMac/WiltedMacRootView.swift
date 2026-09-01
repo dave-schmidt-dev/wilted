@@ -303,11 +303,6 @@ private struct WiltedMacLibraryView: View {
     private var podcastControls: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
             HStack {
-                TextField("https://example.com/podcast.xml", text: $model.podcastFeedURLDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("wilted-podcast-feed-url")
-                Button("Subscribe") { model.subscribeToPodcastFeed() }
-                    .accessibilityIdentifier("wilted-podcast-subscribe")
                 if model.isRefreshingPodcasts {
                     Button("Cancel Refresh") { model.cancelPodcastRefresh() }
                         .accessibilityIdentifier("wilted-podcast-refresh-cancel")
@@ -428,35 +423,67 @@ private struct WiltedMacLibraryView: View {
         .accessibilityIdentifier("wilted-podcast-feed-row-\(subscription.id)")
     }
 
-    /// The composer is a card inside Library, not the page itself. As the
-    /// page's own heading it read as an unrelated form sitting where the
-    /// library was supposed to be.
+    /// One box for both kinds of address.
+    ///
+    /// It is a card inside Library, not the page itself: as the page's own
+    /// heading it read as an unrelated form sitting where the library was
+    /// supposed to be. The status line below the field is not decoration --
+    /// classifying an address can take a network round trip, and a button that
+    /// pauses without saying so reads as a broken one.
     private var composer: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            Text(WiltedScreenCopy.addArticleTitle)
+            Text(WiltedScreenCopy.addLinkTitle)
                 .font(WiltedTheme.font(.title))
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-            Text(WiltedScreenCopy.addArticleDetail)
+            Text(WiltedScreenCopy.addLinkDetail)
                 .font(WiltedTheme.font(.body))
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: WiltedTheme.Spacing.medium) {
-                WiltedMacArticleURLField(text: $model.urlDraft)
-                Button(WiltedScreenCopy.addArticle) {
-                    model.addArticle()
+                WiltedMacLinkField(text: $model.urlDraft)
+                Button(WiltedScreenCopy.addLink) {
+                    model.addPastedLink()
                 }
                 .keyboardShortcut(.return)
-                .accessibilityIdentifier("wilted-add-article-url")
+                .accessibilityIdentifier("wilted-add-link")
+            }
+            if let status = model.linkDraftStatus {
+                Text(status)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-link-status")
+            }
+            if let advertised = model.advertisedFeed {
+                advertisedFeedOffer(advertised)
             }
         }
         .wiltedCard(colorScheme)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-mac-composer")
     }
+
+    /// The page that was just saved publishes a feed. Following it is a
+    /// separate decision, so it is offered as an action rather than taken.
+    private func advertisedFeedOffer(_ feedURL: URL) -> some View {
+        HStack(spacing: WiltedTheme.Spacing.medium) {
+            Text("That page publishes a feed at \(feedURL.host ?? feedURL.absoluteString).")
+                .font(WiltedTheme.font(.utility))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Subscribe") { model.subscribeToAdvertisedFeed() }
+                .accessibilityIdentifier("wilted-advertised-feed-subscribe")
+            Button("Not Now") { model.dismissAdvertisedFeed() }
+                .accessibilityIdentifier("wilted-advertised-feed-dismiss")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-advertised-feed")
+    }
 }
 
 /// A tokenized field border replaces macOS's system-blue focus treatment.
-struct WiltedMacArticleURLField: View {
+struct WiltedMacLinkField: View {
     @Binding var text: String
     let focusedOverride: Bool?
     @FocusState private var isFocused: Bool
@@ -468,7 +495,7 @@ struct WiltedMacArticleURLField: View {
     }
 
     var body: some View {
-        TextField("https://example.com/article", text: $text)
+        TextField("https://example.com/article-or-feed", text: $text)
             .textFieldStyle(.plain)
             .font(WiltedTheme.font(.body))
             .padding(.horizontal, WiltedTheme.Spacing.medium)
@@ -487,7 +514,7 @@ struct WiltedMacArticleURLField: View {
                     )
             )
             .focused($isFocused)
-            .accessibilityIdentifier("wilted-article-url")
+            .accessibilityIdentifier("wilted-link-url")
     }
 }
 

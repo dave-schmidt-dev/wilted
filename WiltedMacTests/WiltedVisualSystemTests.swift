@@ -500,8 +500,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertEqual(model.podcastOperationMessage, "Podcast refresh cancelled.")
         XCTAssertFalse(model.isRefreshingPodcasts)
 
-        model.podcastFeedURLDraft = "https://podcasts.example.test/new.xml"
-        model.subscribeToPodcastFeed()
+        model.subscribeToPodcastFeed(URL(string: "https://podcasts.example.test/new.xml")!)
         await model.waitForPodcastOperations()
         XCTAssertEqual(model.podcastOperationMessage, "Podcast refresh cancelled.")
         XCTAssertFalse(model.isRefreshingPodcasts)
@@ -532,8 +531,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
 
-        model.podcastFeedURLDraft = feedURL.absoluteString
-        model.subscribeToPodcastFeed()
+        model.subscribeToPodcastFeed(feedURL)
         await model.waitForPodcastOperations()
         XCTAssertEqual(model.podcastOperationMessage, "Podcast episodes are up to date.")
         XCTAssertEqual(model.episodes.map(\.title), ["Stored first episode"])

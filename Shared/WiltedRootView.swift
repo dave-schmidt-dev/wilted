@@ -57,13 +57,17 @@ public enum WiltedScreenCopy {
     public static let libraryEmptyDetailListener = "Articles you prepare on your Mac appear here."
     public static let noArticles = "No articles yet"
     public static let addArticle = "Add Article"
-    public static let addArticleTitle = "Add an article"
-    public static let addArticleDetail = "Paste an HTTPS article URL. Wilted keeps the saved article and audio on this Mac."
+    /// One box, both kinds. Two boxes asked the reader to classify the address
+    /// before pasting it, which is work Wilted can do from the document itself.
+    public static let addLink = "Add"
+    public static let addLinkTitle = "Add an article or podcast"
+    public static let addLinkDetail = "Paste an HTTPS address. Wilted works out whether it is an article or a podcast feed. "
+        + "Saved articles, episodes, and audio stay on this Mac."
     public static let savedArticles = "Saved articles"
     public static let feeds = "Podcast feeds"
     public static let feedsIdentifier = "wilted-podcast-feeds"
     public static let feedsEmpty = "No podcast feeds yet"
-    public static let feedsEmptyDetail = "Subscribe above and the feed appears here with its own controls."
+    public static let feedsEmptyDetail = "Paste a podcast address into Larder's add box and the feed appears here with its own controls."
     /// Wilted refreshes only when asked and downloads only what the listener
     /// picks, so the Feeds card says so rather than letting an absent schedule
     /// read as a hidden one.

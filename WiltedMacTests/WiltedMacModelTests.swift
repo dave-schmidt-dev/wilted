@@ -498,4 +498,155 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(transcript.cueIndex(at: 0.6), 1)
     }
 
+    // MARK: - One add box
+
+    /// Builds a store-backed model whose add box classifies against `document`
+    /// and whose feed client is fed `feedXML` when a subscription follows.
+    private func modelForPastedLink(
+        directory: URL, document: String, feedXML: String = ""
+    ) -> WiltedMacModel {
+        WiltedMacModel(
+            arguments: [],
+            stateDirectoryOverride: directory,
+            podcastFeedClient: PodcastFeedClient(
+                loader: FixedBodyLoader(body: Data(feedXML.utf8)),
+                now: { Date(timeIntervalSince1970: 1_700_000_000) }
+            ),
+            pastedLinkClassifier: PastedLinkClassifier(loader: FixedBodyLoader(body: Data(document.utf8)))
+        )
+    }
+
+    /// The reported complaint: a podcast address pasted into the one box has to
+    /// subscribe, not be handed to the article pipeline.
+    func testPastingAFeedAddressSubscribesToIt() async throws {
+        let directory = temporaryDirectory("pasted-feed")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = modelForPastedLink(
+            directory: directory,
+            document: "<?xml version=\"1.0\"?><rss><channel><title>Pasted show</title></channel></rss>",
+            feedXML: "<rss><channel><title>Pasted show</title></channel></rss>"
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        model.urlDraft = "https://podcasts.example.test/show"
+        model.addPastedLink()
+        await model.waitForPodcastOperations()
+
+        XCTAssertEqual(model.subscriptions.map(\.title), ["Pasted show"])
+        XCTAssertNil(model.preparation, "a feed must never reach the article pipeline")
+        XCTAssertEqual(model.urlDraft, "", "a completed subscription clears the box")
+        XCTAssertNil(model.linkDraftStatus)
+    }
+
+    /// An address ending in .xml is unmistakable, so the box must not spend a
+    /// round trip to learn what it already knows.
+    func testAnUnmistakableFeedAddressSubscribesWithoutSniffing() async throws {
+        let directory = temporaryDirectory("pasted-feed-extension")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: [],
+            stateDirectoryOverride: directory,
+            podcastFeedClient: PodcastFeedClient(
+                loader: FixedBodyLoader(body: Data("<rss><channel><title>Direct show</title></channel></rss>".utf8)),
+                now: { Date(timeIntervalSince1970: 1_700_000_000) }
+            ),
+            pastedLinkClassifier: PastedLinkClassifier(loader: FailingLoader())
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        model.urlDraft = "https://podcasts.example.test/show.xml"
+        model.addPastedLink()
+        await model.waitForPodcastOperations()
+
+        XCTAssertEqual(model.subscriptions.map(\.title), ["Direct show"])
+    }
+
+    /// A page that publishes a feed is still the article that was pasted. The
+    /// feed is offered, and only subscribes when the offer is accepted.
+    func testAPageThatPublishesAFeedOffersItRatherThanSubscribing() async throws {
+        let directory = temporaryDirectory("pasted-advertised")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = modelForPastedLink(
+            directory: directory,
+            document: """
+            <!doctype html><html><head>
+            <link rel="alternate" type="application/rss+xml" href="https://blog.example.test/Feed.xml">
+            </head><body>Words</body></html>
+            """,
+            feedXML: "<rss><channel><title>Blog cast</title></channel></rss>"
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        model.urlDraft = "https://blog.example.test/posts/one"
+        model.addPastedLink()
+        await model.waitForPodcastOperations()
+
+        XCTAssertEqual(model.advertisedFeed?.absoluteString, "https://blog.example.test/Feed.xml")
+        XCTAssertTrue(model.subscriptions.isEmpty, "an advertised feed is an offer, not a subscription")
+
+        model.subscribeToAdvertisedFeed()
+        await model.waitForPodcastOperations()
+        XCTAssertNil(model.advertisedFeed)
+        XCTAssertEqual(model.subscriptions.map(\.title), ["Blog cast"])
+    }
+
+    /// A pasted address that cannot be reached is reported in the box. Guessing
+    /// would send it to a pipeline that fails for a reason the reader did not
+    /// cause.
+    func testAnUnreachableAddressIsReportedInTheBox() async throws {
+        let directory = temporaryDirectory("pasted-unreachable")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: [],
+            stateDirectoryOverride: directory,
+            pastedLinkClassifier: PastedLinkClassifier(loader: FailingLoader())
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        model.urlDraft = "https://unreachable.example.test/thing"
+        model.addPastedLink()
+        await model.waitForPodcastOperations()
+
+        XCTAssertEqual(
+            model.linkDraftStatus,
+            "Wilted could not reach that address. Check it, or retry when online."
+        )
+        XCTAssertTrue(model.subscriptions.isEmpty)
+        XCTAssertNil(model.preparation)
+    }
+
+    func testAnIncompleteAddressIsRefusedWithoutAnyFetch() async throws {
+        let directory = temporaryDirectory("pasted-invalid")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: [],
+            stateDirectoryOverride: directory,
+            pastedLinkClassifier: PastedLinkClassifier(loader: FailingLoader())
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        for draft in ["", "example.com/thing", "http://example.com/thing"] {
+            model.urlDraft = draft
+            model.addPastedLink()
+            XCTAssertEqual(model.linkDraftStatus, "Enter a complete HTTPS address.", "draft: \(draft)")
+        }
+    }
+}
+
+private struct FixedBodyLoader: PodcastFeedLoading {
+    let body: Data
+    func load(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
+        PodcastFeedHTTPResponse(url: url, statusCode: 200, data: body)
+    }
+}
+
+private struct FailingLoader: PodcastFeedLoading {
+    func load(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
+        throw URLError(.cannotConnectToHost)
+    }
 }

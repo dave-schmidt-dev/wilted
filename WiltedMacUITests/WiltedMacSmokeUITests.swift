@@ -28,7 +28,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["wilted-player-keyboard-transports"].exists)
 
         let emptyState = app.descendants(matching: .any)["wilted-mac-empty-state"]
-        let urlField = app.descendants(matching: .any)["wilted-article-url"]
+        let urlField = app.descendants(matching: .any)["wilted-link-url"]
         let syncControls = app.descendants(matching: .any)["wilted-sync-controls"]
         XCTAssertTrue(emptyState.waitForExistence(timeout: 5))
         XCTAssertTrue(urlField.exists)
@@ -414,12 +414,12 @@ final class WiltedMacSmokeUITests: XCTestCase {
     func testArticleFlowAddsThenCancelsPreparation() {
         let app = launch(arguments: ["--wilted-ui-fixture-article-flow"])
 
-        let url = app.descendants(matching: .any)["wilted-article-url"]
+        let url = app.descendants(matching: .any)["wilted-link-url"]
         XCTAssertTrue(url.waitForExistence(timeout: 5))
         url.click()
         url.typeText("https://example.test/article")
 
-        let add = app.descendants(matching: .any)["wilted-add-article-url"]
+        let add = app.descendants(matching: .any)["wilted-add-link"]
         XCTAssertTrue(add.waitForExistence(timeout: 5))
         add.click()
 
