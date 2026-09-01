@@ -38,6 +38,33 @@ public struct PodcastAdSegment: Equatable, Sendable {
     public var durationSeconds: Double { max(0, endSeconds - startSeconds) }
 }
 
+/// One span of the original audio that survived the cut, and where it landed.
+///
+/// Carried back from the worker so a listener's saved position can move onto
+/// the prepared file rather than being discarded with the revision it belonged
+/// to. Estimating from total removed time would be wrong: what matters is how
+/// much was removed *before* the position, not in total.
+public struct PodcastKeepInterval: Equatable, Sendable {
+    public let startSeconds: Double
+    public let endSeconds: Double
+    public let outputStartSeconds: Double
+
+    /// Where `seconds` on the original clock lands on the cut clock, or nil if
+    /// it fell inside a removed span.
+    static func map(_ seconds: Double, through intervals: [PodcastKeepInterval]) -> Double? {
+        guard !intervals.isEmpty else { return nil }
+        for interval in intervals where seconds >= interval.startSeconds && seconds < interval.endSeconds {
+            return interval.outputStartSeconds + (seconds - interval.startSeconds)
+        }
+        // Past the end of the last surviving span: the listener had finished
+        // everything that remains, so the end of the file is the honest answer.
+        if let last = intervals.last, seconds >= last.endSeconds {
+            return last.outputStartSeconds + (last.endSeconds - last.startSeconds)
+        }
+        return nil
+    }
+}
+
 public struct PodcastPreparationProgress: Equatable, Sendable {
     public let stage: String
     public let detail: String
@@ -138,6 +165,10 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         process.environment = environment
 
         let input = Pipe(), output = Pipe(), errors = Pipe()
+        // A worker that dies before reading its request leaves the write end
+        // broken, and the default disposition for SIGPIPE would take this
+        // process down with it. The write must fail as an error instead.
+        _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
         process.standardInput = input
         process.standardOutput = output
         process.standardError = errors
@@ -152,8 +183,17 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         do { try process.run() } catch {
             throw PodcastPreparationError.workerUnavailable(String(describing: error))
         }
-        input.fileHandleForWriting.write(request)
-        try? input.fileHandleForWriting.close()
+        // Off the calling task on purpose. A request carrying a published
+        // transcript is larger than a pipe buffer, so a synchronous write
+        // blocks until the worker drains it -- and a worker that dies first
+        // would deadlock the caller before the timeout loop below ever starts.
+        // A broken pipe is not reported here; the missing result is.
+        let writer = Task.detached {
+            let handle = input.fileHandleForWriting
+            try? handle.write(contentsOf: request)
+            try? handle.close()
+        }
+        defer { writer.cancel() }
 
         let deadline = Date().addingTimeInterval(configuration.timeout)
         defer {
@@ -362,6 +402,7 @@ public actor PodcastPreparationPipeline {
         var durationSeconds: Double?
         var adSegments: [PodcastAdSegment]
         var removedSeconds: Double
+        var keepIntervals: [PodcastKeepInterval]
     }
 
     static func decode(_ data: Data) throws -> WorkerPayload {
@@ -402,7 +443,12 @@ public actor PodcastPreparationPipeline {
             audioChanged: object["audioChanged"] as? Bool ?? false,
             durationSeconds: (object["durationSeconds"] as? Double).flatMap { $0 > 0 ? $0 : nil },
             adSegments: ads,
-            removedSeconds: object["removedSeconds"] as? Double ?? 0
+            removedSeconds: object["removedSeconds"] as? Double ?? 0,
+            keepIntervals: (object["keepIntervals"] as? [[String: Any]] ?? []).compactMap { raw in
+                guard let start = raw["startSeconds"] as? Double, let end = raw["endSeconds"] as? Double,
+                      let output = raw["outputStartSeconds"] as? Double, end > start else { return nil }
+                return PodcastKeepInterval(startSeconds: start, endSeconds: end, outputStartSeconds: output)
+            }
         )
     }
 
@@ -416,55 +462,91 @@ public actor PodcastPreparationPipeline {
         audioURL: URL,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> PodcastPreparationResult {
-        var revision = downloadedRevision
-        var mediaURL = audioURL
-        var savedDownload = download
+        guard payload.audioChanged else {
+            let transcript = try Self.transcript(from: payload, itemID: episode.itemID,
+                                                 revisionID: downloadedRevision.revisionID,
+                                                 updatedAt: Timestamp(now()))
+            try await store.saveReadyRevision(downloadedRevision, mediaURL: audioURL, transcript: transcript)
+            return finish(payload, revision: downloadedRevision, mediaURL: audioURL,
+                          transcript: transcript, onStatus: onStatus)
+        }
 
-        if payload.audioChanged {
-            onStatus(PodcastPreparationProgress(stage: "audio.publish", detail: "storing prepared audio"))
-            let preparedURL = URL(fileURLWithPath: payload.audioPath)
-            guard FileManager.default.fileExists(atPath: preparedURL.path),
-                  let attributes = try? FileManager.default.attributesOfItem(atPath: preparedURL.path),
-                  let byteCount = attributes[.size] as? Int64, byteCount > 0 else {
-                throw PodcastPreparationError.preparedAudioUnreadable
-            }
-            let hash = try Self.contentHash(of: preparedURL)
-            let revisionID = try RevisionID.derive(downloadedAudioContentHash: hash)
-            // Prefer what the worker measured on the cut file; fall back to
-            // subtraction only when the probe could not run.
-            let duration = payload.durationSeconds
-                ?? max(0.001, downloadedRevision.durationSeconds - payload.removedSeconds)
-            let finalURL = audioURL.deletingLastPathComponent()
-                .appendingPathComponent(revisionID.rawValue + "." + audioURL.pathExtension)
-            if finalURL != preparedURL {
-                try? FileManager.default.removeItem(at: finalURL)
-                try FileManager.default.moveItem(at: preparedURL, to: finalURL)
-            }
-            revision = try AudioRevision(itemID: episode.itemID, revisionID: revisionID,
+        onStatus(PodcastPreparationProgress(stage: "audio.publish", detail: "storing prepared audio"))
+        let preparedURL = URL(fileURLWithPath: payload.audioPath)
+        guard FileManager.default.fileExists(atPath: preparedURL.path),
+              let attributes = try? FileManager.default.attributesOfItem(atPath: preparedURL.path),
+              let byteCount = attributes[.size] as? Int64, byteCount > 0 else {
+            throw PodcastPreparationError.preparedAudioUnreadable
+        }
+        let hash = try Self.contentHash(of: preparedURL)
+        let revisionID = try RevisionID.derive(downloadedAudioContentHash: hash)
+        // Prefer what the worker measured on the cut file; fall back to
+        // subtraction only when the probe could not run.
+        let duration = payload.durationSeconds
+            ?? max(0.001, downloadedRevision.durationSeconds - payload.removedSeconds)
+        let finalURL = audioURL.deletingLastPathComponent()
+            .appendingPathComponent(revisionID.rawValue + "." + audioURL.pathExtension)
+        if finalURL != preparedURL {
+            try? FileManager.default.removeItem(at: finalURL)
+            try FileManager.default.moveItem(at: preparedURL, to: finalURL)
+        }
+        let revision = try AudioRevision(itemID: episode.itemID, revisionID: revisionID,
                                          durationSeconds: duration, byteCount: byteCount,
                                          contentHash: hash, mediaType: downloadedRevision.mediaType,
                                          createdAt: Timestamp(now()), schemaVersion: 3)
-            savedDownload = try PodcastDownload(episodeID: episode.itemID, status: .completed,
-                                                bytesReceived: byteCount, expectedByteCount: byteCount,
-                                                localURL: finalURL, contentHash: hash,
-                                                updatedAt: Timestamp(now()))
-            mediaURL = finalURL
-            // The uncut download is superseded, not history. Keeping it would
-            // double the disk cost of every prepared episode for a file nothing
-            // can reach: playback follows the ready revision, and that is now
-            // the cut one.
-            if audioURL != finalURL { try? FileManager.default.removeItem(at: audioURL) }
-        }
-
-        let transcript = try Self.transcript(from: payload, itemID: episode.itemID, revisionID: revision.revisionID,
+        let prepared = try PodcastDownload(episodeID: episode.itemID, status: .completed,
+                                           bytesReceived: byteCount, expectedByteCount: byteCount,
+                                           localURL: finalURL, contentHash: hash,
+                                           updatedAt: Timestamp(now()))
+        let transcript = try Self.transcript(from: payload, itemID: episode.itemID, revisionID: revisionID,
                                              updatedAt: Timestamp(now()))
-        if payload.audioChanged {
-            try await store.finalizePodcastDownload(revision: revision, mediaURL: mediaURL, download: savedDownload)
-        }
-        try await store.saveReadyRevision(revision, mediaURL: mediaURL, transcript: transcript)
-        onStatus(PodcastPreparationProgress(stage: "pipeline.complete",
-                                            detail: "\(payload.adSegments.count) advertisements, \(payload.cues.count) cues",
-                                            fraction: 1))
+        let carried = try await carriedPlayback(from: downloadedRevision, to: revision,
+                                                keeps: payload.keepIntervals, duration: duration)
+
+        try await store.replaceReadyRevision(revision, mediaURL: finalURL, transcript: transcript,
+                                             download: prepared, superseding: downloadedRevision.revisionID,
+                                             carrying: carried)
+        // Only now is the original safe to remove. The store no longer refers
+        // to it, and until that save committed a failure here would have left
+        // an episode whose audio was deleted and unrecoverable without
+        // downloading it again.
+        if audioURL != finalURL { try? FileManager.default.removeItem(at: audioURL) }
+        return finish(payload, revision: revision, mediaURL: finalURL, transcript: transcript, onStatus: onStatus)
+    }
+
+    /// Moves a saved listening position onto the prepared audio.
+    ///
+    /// A position inside a removed advertisement has nowhere to land, so it is
+    /// dropped rather than guessed at; anything else keeps its place in the
+    /// content the listener was actually hearing.
+    private func carriedPlayback(
+        from previous: AudioRevision,
+        to revision: AudioRevision,
+        keeps: [PodcastKeepInterval],
+        duration: Double
+    ) async throws -> PlaybackState? {
+        guard let existing = try await store.playbackState(for: previous.itemID, revisionID: previous.revisionID),
+              let mapped = PodcastKeepInterval.map(existing.positionSeconds, through: keeps) else { return nil }
+        return try PlaybackState(
+            itemID: revision.itemID, revisionID: revision.revisionID, sessionID: existing.sessionID,
+            sequence: existing.sequence + 1, positionSeconds: min(mapped, duration),
+            durationSeconds: duration, completed: existing.completed, intent: existing.intent,
+            deviceID: existing.deviceID, updatedAt: Timestamp(now())
+        )
+    }
+
+    private func finish(
+        _ payload: WorkerPayload,
+        revision: AudioRevision,
+        mediaURL: URL,
+        transcript: Transcript,
+        onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
+    ) -> PodcastPreparationResult {
+        onStatus(PodcastPreparationProgress(
+            stage: "pipeline.complete",
+            detail: "\(payload.adSegments.count) advertisements, \(payload.cues.count) cues",
+            fraction: 1
+        ))
         return PodcastPreparationResult(revision: revision, mediaURL: mediaURL, transcript: transcript,
                                         adSegments: payload.adSegments, removedSeconds: payload.removedSeconds)
     }

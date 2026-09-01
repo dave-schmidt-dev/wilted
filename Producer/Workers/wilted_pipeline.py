@@ -378,6 +378,14 @@ def run(request: dict) -> dict:
         "audioPath": str(output_path),
         "audioChanged": str(output_path) != str(audio_path),
         "adSegments": ad_spans,
+        # The exact original-to-output time map, so the caller can move a
+        # listener's saved position onto the cut audio instead of losing it.
+        # Empty means nothing was cut and every timestamp still matches.
+        "keepIntervals": [
+            {"startSeconds": round(k.start_s, 3), "endSeconds": round(k.end_s, 3),
+             "outputStartSeconds": round(k.output_start_s, 3)}
+            for k in keeps
+        ],
         "removedSeconds": round(sum(a["endSeconds"] - a["startSeconds"] for a in ad_spans), 3) if keeps else 0.0,
     }
 

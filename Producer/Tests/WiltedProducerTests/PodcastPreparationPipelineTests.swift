@@ -79,6 +79,8 @@ struct PodcastPreparationPipelineTests {
             "text": "Kept words.", "cues": [["startSeconds": 0.0, "endSeconds": 3.0, "text": "Kept words."]],
             "removedSeconds": 4.5,
             "adSegments": [["startSeconds": 3.0, "endSeconds": 7.5, "label": "host read", "confidence": 0.91]],
+            "keepIntervals": [["startSeconds": 0.0, "endSeconds": 3.0, "outputStartSeconds": 0.0],
+                              ["startSeconds": 7.5, "endSeconds": 12.0, "outputStartSeconds": 3.0]],
         ], writesCutAudio: cutBody)
 
         let result = try await fixture.pipeline(stub).prepare(episodeID: fixture.episodeID)
@@ -99,6 +101,82 @@ struct PodcastPreparationPipelineTests {
         #expect(download.contentHash == result.revision.contentHash)
         let ready = try #require(try await fixture.store.readyRevision(for: fixture.episodeID, revisionID: expectedID))
         #expect(ready.mediaURL == result.mediaURL)
+
+        // The superseded revision described audio that no longer exists, so it
+        // must not survive as a record any lookup can return.
+        let all = try await fixture.store.revisions(for: fixture.episodeID)
+        #expect(all.map(\.revision.revisionID) == [expectedID])
+        let newest = try #require(try await fixture.store.readyRevision(for: fixture.episodeID))
+        #expect(newest.revision.revisionID == expectedID)
+        #expect(try await fixture.store.transcript(for: fixture.episodeID, revisionID: fixture.revisionID) == nil)
+    }
+
+    /// A listener halfway through an episode keeps their place: the position
+    /// moves onto the cut audio rather than being lost with the revision.
+    @Test func carriesTheListeningPositionOntoThePreparedAudio() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        try await fixture.store.save(playback: try PlaybackState(
+            itemID: fixture.episodeID, revisionID: fixture.revisionID, sessionID: "session-1", sequence: 4,
+            positionSeconds: 9.0, durationSeconds: 12, completed: false, intent: .progress, deviceID: "mac-1",
+            updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_150))
+        ))
+        let result = try await fixture.pipeline(Fixture.cuttingStub()).prepare(episodeID: fixture.episodeID)
+
+        // 0-3 survives as 0-3 and 7.5-12 survives as 3-7.5, so 9.0 lands at 4.5.
+        let carried = try #require(try await fixture.store.playbackState(for: fixture.episodeID,
+                                                                        revisionID: result.revision.revisionID))
+        #expect(carried.positionSeconds == 4.5)
+        #expect(carried.durationSeconds == 7.5)
+        #expect(carried.sessionID == "session-1")
+        #expect(carried.sequence == 5)
+        #expect(try await fixture.store.playbackState(for: fixture.episodeID, revisionID: fixture.revisionID) == nil)
+    }
+
+    /// A position inside a removed advertisement has nowhere honest to land.
+    @Test func dropsAPositionThatFellInsideARemovedAdvertisement() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        try await fixture.store.save(playback: try PlaybackState(
+            itemID: fixture.episodeID, revisionID: fixture.revisionID, sessionID: "session-1", sequence: 4,
+            positionSeconds: 5.0, durationSeconds: 12, completed: false, intent: .progress, deviceID: "mac-1",
+            updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_150))
+        ))
+        let result = try await fixture.pipeline(Fixture.cuttingStub()).prepare(episodeID: fixture.episodeID)
+        #expect(try await fixture.store.playbackState(for: fixture.episodeID,
+                                                      revisionID: result.revision.revisionID) == nil)
+    }
+
+    /// The original audio is the only copy until the store commits. A store
+    /// that rejects the replacement must leave a playable episode behind.
+    @Test func keepsTheOriginalAudioWhenTheStoreRefusesTheReplacement() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        // A worker that returns byte-identical audio derives the revision it is
+        // meant to be replacing, which the store refuses.
+        let stub = WorkerStub(response: [
+            "ok": true, "timing": "none", "audioChanged": true,
+            "keepIntervals": [["startSeconds": 0.0, "endSeconds": 12.0, "outputStartSeconds": 0.0]],
+        ], writesCutAudio: Data("original-audio-bytes".utf8))
+
+        await #expect(throws: LocalLibraryStoreError.self) {
+            _ = try await fixture.pipeline(stub).prepare(episodeID: fixture.episodeID)
+        }
+        #expect(FileManager.default.fileExists(atPath: fixture.audioURL.path))
+        let stored = try #require(try await fixture.store.readyRevision(for: fixture.episodeID))
+        #expect(stored.mediaURL == fixture.audioURL)
+        #expect(try Data(contentsOf: fixture.audioURL) == Data("original-audio-bytes".utf8))
+    }
+
+    @Test func mapsPositionsThroughTheKeepIntervals() {
+        let keeps = [PodcastKeepInterval(startSeconds: 0, endSeconds: 3, outputStartSeconds: 0),
+                     PodcastKeepInterval(startSeconds: 7.5, endSeconds: 12, outputStartSeconds: 3)]
+        #expect(PodcastKeepInterval.map(0, through: keeps) == 0)
+        #expect(PodcastKeepInterval.map(2.5, through: keeps) == 2.5)
+        #expect(PodcastKeepInterval.map(5, through: keeps) == nil)
+        #expect(PodcastKeepInterval.map(7.5, through: keeps) == 3)
+        #expect(PodcastKeepInterval.map(99, through: keeps) == 7.5)
+        #expect(PodcastKeepInterval.map(1, through: []) == nil)
     }
 
     @Test func reportsWorkerFailuresAndUnreadableResults() async throws {
@@ -252,7 +330,7 @@ struct PodcastPreparationPipelineTests {
         PodcastPreparationPipeline.WorkerPayload(
             timing: .none, cues: [], text: text, languageCode: "en",
             audioPath: "/tmp/a.mp3", audioChanged: false, durationSeconds: nil,
-            adSegments: [], removedSeconds: 0
+            adSegments: [], removedSeconds: 0, keepIntervals: []
         )
     }
 }
@@ -380,6 +458,18 @@ private struct Fixture {
                 updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_100))
             )
         )
+    }
+
+    /// A worker that removes 3.0-7.5 from a twelve second episode.
+    static func cuttingStub() -> some PodcastPipelineRunning {
+        WorkerStub(response: [
+            "ok": true, "timing": "aligned", "audioChanged": true, "durationSeconds": 7.5,
+            "text": "Kept words.", "cues": [["startSeconds": 0.0, "endSeconds": 3.0, "text": "Kept words."]],
+            "removedSeconds": 4.5,
+            "adSegments": [["startSeconds": 3.0, "endSeconds": 7.5, "label": "host read", "confidence": 0.91]],
+            "keepIntervals": [["startSeconds": 0.0, "endSeconds": 3.0, "outputStartSeconds": 0.0],
+                              ["startSeconds": 7.5, "endSeconds": 12.0, "outputStartSeconds": 3.0]],
+        ], writesCutAudio: Data("shorter-audio-bytes".utf8))
     }
 
     func pipeline(_ runner: some PodcastPipelineRunning) -> PodcastPreparationPipeline {

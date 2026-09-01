@@ -241,6 +241,82 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertNil(cleared?.timedTranscriptSource)
     }
 
+    /// A prepared revision replaces the one it was cut from, and the store
+    /// refuses any replacement that would leave the library incoherent.
+    func testPreparedRevisionSupersedesTheOneItWasCutFrom() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/superseded.xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://cdn.example.test/superseded.mp3"))
+        let episodeID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "s1", enclosureURL: enclosureURL)
+        let originalID = try RevisionID(rawValue: "rev-" + String(repeating: "a", count: 64))
+        let preparedID = try RevisionID(rawValue: "rev-" + String(repeating: "b", count: 64))
+        let originalURL = URL(fileURLWithPath: "/tmp/superseded/original.mp3")
+        let preparedURL = URL(fileURLWithPath: "/tmp/superseded/prepared.mp3")
+        let originalHash = "sha256:" + String(repeating: "a", count: 64)
+        let preparedHash = "sha256:" + String(repeating: "b", count: 64)
+        let when = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+
+        func revision(_ id: RevisionID, _ hash: String, bytes: Int64, seconds: Double) throws -> AudioRevision {
+            try AudioRevision(itemID: episodeID, revisionID: id, durationSeconds: seconds, byteCount: bytes,
+                              contentHash: hash, mediaType: "audio/mpeg", createdAt: when, schemaVersion: 3)
+        }
+        func download(_ hash: String, _ location: URL, bytes: Int64) throws -> PodcastDownload {
+            try PodcastDownload(episodeID: episodeID, status: .completed, bytesReceived: bytes,
+                                expectedByteCount: bytes, localURL: location, contentHash: hash, updatedAt: when)
+        }
+
+        try await store.finalizePodcastDownload(revision: try revision(originalID, originalHash, bytes: 100, seconds: 60),
+                                                mediaURL: originalURL,
+                                                download: try download(originalHash, originalURL, bytes: 100))
+        try await store.save(transcript: try Transcript(itemID: episodeID, revisionID: originalID,
+                                                        availability: .available, text: "Before the cut.", updatedAt: when))
+        try await store.save(playback: try PlaybackState(itemID: episodeID, revisionID: originalID, sessionID: "s",
+                                                         sequence: 1, positionSeconds: 30, durationSeconds: 60,
+                                                         completed: false, intent: .progress, deviceID: "mac", updatedAt: when))
+
+        let prepared = try revision(preparedID, preparedHash, bytes: 80, seconds: 48)
+        let preparedTranscript = try Transcript(itemID: episodeID, revisionID: preparedID, availability: .available,
+                                                text: "After the cut.", timing: .aligned,
+                                                cues: [try TranscriptCue(startSeconds: 0, endSeconds: 2, text: "After the cut.")],
+                                                updatedAt: when)
+
+        // A replacement whose download disagrees with the revision is refused
+        // before anything is written.
+        do {
+            try await store.replaceReadyRevision(prepared, mediaURL: preparedURL, transcript: preparedTranscript,
+                                                 download: try download(originalHash, preparedURL, bytes: 80),
+                                                 superseding: originalID)
+            XCTFail("expected the store to refuse a mismatched download")
+        } catch LocalLibraryStoreError.invalidPodcastState { }
+        let untouched = try await store.revisions(for: episodeID)
+        XCTAssertEqual(untouched.map(\.revision.revisionID), [originalID])
+
+        try await store.replaceReadyRevision(prepared, mediaURL: preparedURL, transcript: preparedTranscript,
+                                             download: try download(preparedHash, preparedURL, bytes: 80),
+                                             superseding: originalID,
+                                             carrying: try PlaybackState(itemID: episodeID, revisionID: preparedID,
+                                                                         sessionID: "s", sequence: 2, positionSeconds: 24,
+                                                                         durationSeconds: 48, completed: false,
+                                                                         intent: .progress, deviceID: "mac", updatedAt: when))
+
+        let reopened = try LocalLibraryStore(url: url)
+        let survivors = try await reopened.revisions(for: episodeID)
+        XCTAssertEqual(survivors.map(\.revision.revisionID), [preparedID])
+        let newestMedia = try await reopened.readyRevision(for: episodeID)?.mediaURL
+        XCTAssertEqual(newestMedia, preparedURL)
+        let oldTranscript = try await reopened.transcript(for: episodeID, revisionID: originalID)
+        let newTranscript = try await reopened.transcript(for: episodeID, revisionID: preparedID)
+        let oldPlayback = try await reopened.playbackState(for: episodeID, revisionID: originalID)
+        let newPlayback = try await reopened.playbackState(for: episodeID, revisionID: preparedID)
+        let finalDownload = try await reopened.download(for: episodeID)
+        XCTAssertNil(oldTranscript)
+        XCTAssertEqual(newTranscript?.cues?.count, 1)
+        XCTAssertNil(oldPlayback)
+        XCTAssertEqual(newPlayback?.positionSeconds, 24)
+        XCTAssertEqual(finalDownload?.localURL, preparedURL)
+    }
+
     func testTimedTranscriptPersistsCuesAndProvenanceAcrossRelaunch() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let item = try article()

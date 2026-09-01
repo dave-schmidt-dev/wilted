@@ -2122,6 +2122,82 @@ public actor LocalLibraryStore {
         try context.save()
     }
 
+    /// Replaces one episode's audio revision with a prepared successor.
+    ///
+    /// Preparation rewrites the audio, so the superseded revision is not
+    /// history: its bytes stop existing. Leaving its record behind would leave
+    /// the store describing a file nothing can open, and `readyRevision` would
+    /// hand it out the moment a newer record was missing. Revision records are
+    /// immutable, so the old one is removed rather than edited, along with the
+    /// transcript that described audio that is gone.
+    ///
+    /// Everything lands in one save. A partial commit here is the case that
+    /// loses an episode: the caller deletes the original file once this
+    /// returns, and it must never delete a file the store still points at.
+    public func replaceReadyRevision(
+        _ revision: AudioRevision,
+        mediaURL: URL,
+        transcript: Transcript,
+        download: PodcastDownload,
+        superseding superseded: RevisionID,
+        carrying playback: PlaybackState? = nil
+    ) throws {
+        guard transcript.itemID == revision.itemID, transcript.revisionID == revision.revisionID else {
+            throw LocalLibraryStoreError.revisionBelongsToDifferentItem
+        }
+        guard revision.itemID == download.episodeID, download.status == .completed,
+              download.localURL == mediaURL, download.contentHash == revision.contentHash,
+              download.bytesReceived == revision.byteCount else {
+            throw LocalLibraryStoreError.invalidPodcastState("prepared download revision")
+        }
+        guard playback == nil || (playback?.itemID == revision.itemID && playback?.revisionID == revision.revisionID) else {
+            throw LocalLibraryStoreError.revisionBelongsToDifferentItem
+        }
+        guard superseded != revision.revisionID else {
+            throw LocalLibraryStoreError.immutableRevision(revision.revisionID)
+        }
+        let context = ModelContext(container)
+        let revisions = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
+        if let existing = revisions.first(where: { $0.id == revision.revisionID.rawValue }) {
+            guard existing.itemID == revision.itemID.rawValue,
+                  existing.contentHash == revision.contentHash,
+                  existing.mediaURL == mediaURL.absoluteString else {
+                throw LocalLibraryStoreError.immutableRevision(revision.revisionID)
+            }
+        } else {
+            context.insert(LocalLibrarySchemaV3Models.RevisionRecord(revision, mediaURL: mediaURL))
+        }
+        try upsert(transcript, in: context)
+
+        for record in revisions where record.id == superseded.rawValue && record.itemID == revision.itemID.rawValue {
+            context.delete(record)
+        }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
+        where record.itemID == revision.itemID.rawValue && record.revisionID == superseded.rawValue {
+            context.delete(record)
+        }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
+        where record.itemID == revision.itemID.rawValue && record.revisionID == superseded.rawValue {
+            context.delete(record)
+        }
+        if let playback {
+            context.insert(LocalLibrarySchemaV3Models.PlaybackRecord(playback))
+        }
+
+        let downloads = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
+        if let existing = downloads.first(where: { $0.episodeID == download.episodeID.rawValue }) {
+            existing.status = download.status.rawValue
+            existing.bytesReceived = download.bytesReceived
+            existing.expectedByteCount = download.expectedByteCount
+            existing.localURL = download.localURL?.absoluteString
+            existing.contentHash = download.contentHash
+            existing.updatedAt = download.updatedAt.date
+        } else {
+            context.insert(LocalLibrarySchemaV6Models.PodcastDownloadRecord(download))
+        }
+        try context.save()
+    }
+
     public func download(for episodeID: ItemID) throws -> PodcastDownload? {
         let context = ModelContext(container)
         guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>()).first(where: { $0.episodeID == episodeID.rawValue }),
