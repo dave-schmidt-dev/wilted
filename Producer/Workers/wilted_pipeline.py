@@ -26,13 +26,25 @@ Run it with the previous project's virtualenv and source tree on the path:
 from __future__ import annotations
 
 import json
+import logging
 import os
+import shutil
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 PROTOCOL_VERSION = 1
+
+# Tools the audio cut shells out to. Checked before any work starts: a GUI app
+# launched from Finder inherits a PATH without Homebrew, and finding that out
+# after twelve minutes of speech-to-text is the wrong time.
+CUT_TOOLS = ("ffmpeg", "ffprobe")
+
+# How many of the previous project's warnings are relayed verbatim before the
+# rest are counted. The ad detector logs one warning per failed batch and
+# halves down to singletons, so a dead backend produces thousands.
+FORWARDED_WARNING_LIMIT = 20
 
 # Media types whose timing the publisher states. Mirrors
 # WiltedDomain.PodcastTranscriptSource.timedMediaTypes; the two must agree,
@@ -76,6 +88,38 @@ def progress(stage: str, detail: str = "", fraction: float | None = None) -> Non
         record["fraction"] = round(max(0.0, min(1.0, fraction)), 4)
     sys.stderr.write(json.dumps(record, separators=(",", ":")) + "\n")
     sys.stderr.flush()
+
+
+class ForwardedWarnings(logging.Handler):
+    """Relay WARNING+ log records from every library in this process as progress.
+
+    The previous project reports trouble through `logging`. With no handler
+    installed, Python's last-resort handler printed those lines to raw stderr,
+    where the Swift collector discards anything that is not a JSON record --
+    so the thousands of "Model not loaded" warnings that explained the TWiT
+    1098 false negative were thrown away. Each relayed record gets its own
+    numbered stage because the journal keeps one row per stage.
+    """
+
+    def __init__(self, limit: int = FORWARDED_WARNING_LIMIT):
+        super().__init__(level=logging.WARNING)
+        self.limit = limit
+        self.forwarded = 0
+        self.suppressed = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if self.forwarded >= self.limit:
+            self.suppressed += 1
+            return
+        self.forwarded += 1
+        try:
+            progress(f"log.{record.levelname.lower()}.{self.forwarded}", f"{record.name}: {record.getMessage()}")
+        except Exception:  # noqa: BLE001 - a handler must never unwind its caller
+            self.handleError(record)
+
+    def summarize(self) -> None:
+        if self.suppressed:
+            progress("log.suppressed", f"{self.suppressed} further warnings not relayed")
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +280,67 @@ def transcribe_with_daemon(audio_path: Path):
 # ---------------------------------------------------------------------------
 
 
+class CountingBackend:
+    """Wrap the classifier's backend so a run that never reached the model is
+    distinguishable from one that ran and found nothing.
+
+    The detector treats every backend exception as a malformed response: it
+    retries, halves the batch, and finally labels each segment as content. That
+    is the right call for one bad completion and the wrong one for a backend
+    that cannot answer at all, which it cannot tell apart. This can.
+    """
+
+    def __init__(self, backend):
+        self._backend = backend
+        self.calls = 0
+        self.failures = 0
+        self.last_error: Exception | None = None
+
+    def generate(self, system_prompt: str, user_content: str, *, response_format=None):
+        self.calls += 1
+        try:
+            return self._backend.generate(system_prompt, user_content, response_format=response_format)
+        except Exception as error:
+            self.failures += 1
+            self.last_error = error
+            raise
+
+    @property
+    def mostly_failed(self) -> bool:
+        """True when the backend, not the completions, is what is broken.
+
+        A healthy backend raises essentially never: the accepted four-podcast
+        trial made 207 calls with no malformed responses, and a malformed
+        response is the detector's parse error rather than a backend exception
+        anyway. A majority of raised calls is an environment fault, and one
+        lucky singleton must not disarm the check.
+        """
+        return self.calls > 0 and self.failures * 2 > self.calls
+
+
+def preflight_ad_removal(request: dict) -> None:
+    """Fail before any work if the cut cannot possibly succeed.
+
+    Both checks are cheap, and both failures were silent before: the model
+    reached the detector unloaded and every batch was quietly classified as
+    content, and the missing `ffprobe` surfaced only as a skipped duration
+    probe on the way out. A run that skips ad removal skips this too.
+    """
+    from wilted import llm as llm_module
+
+    missing = [tool for tool in CUT_TOOLS if shutil.which(tool) is None]
+    if missing:
+        raise WorkerError(
+            "cut-tools-missing",
+            f"{', '.join(missing)} not on PATH ({os.environ.get('PATH', '')}); install ffmpeg",
+        )
+    model = request.get("llmModel") or str(llm_module.DEFAULT_GGUF_MODEL)
+    # An `hf:<repo>/<file>` spec is resolved by the previous project's cache
+    # at load time; only a literal path can be checked here.
+    if not model.startswith("hf:") and not Path(model).is_file():
+        raise WorkerError("ads-model-missing", f"no ad-detection model at {model}")
+
+
 def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments):
     """Detect ads and rewrite the audio without them.
 
@@ -251,9 +356,37 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments):
 
     model = request.get("llmModel") or str(llm_module.DEFAULT_GGUF_MODEL)
     progress("ads.model.load", Path(model).name)
-    backend = llm_module.create_backend("gguf", model=model)
-    progress("ads.detect.start", f"{len(segments)} segments")
-    detections = ads_module.detect_ads(segments, backend)
+    # The previous project loads lazily and explicitly, under a coordinator
+    # that keeps one model resident at a time. Without `load()` every
+    # inference raises, and the detector's tolerance for bad completions turns
+    # that into a clean, instant, wrong "no advertisements".
+    backend = None
+    try:
+        backend = llm_module.create_backend("gguf", model=model)
+        backend.load()
+    except Exception as error:  # noqa: BLE001 - reported, not raised through
+        if backend is not None:
+            try:
+                backend.close()
+            except Exception:  # noqa: BLE001 - the load failure is the report
+                pass
+        raise WorkerError("ads-model-unavailable", f"{type(error).__name__}: {error}") from error
+    counting = CountingBackend(backend)
+    try:
+        progress("ads.detect.start", f"{len(segments)} segments")
+        detections = ads_module.detect_ads(segments, counting)
+    finally:
+        try:
+            backend.close()
+        except Exception:  # noqa: BLE001 - a close failure cannot undo a detection
+            pass
+    if counting.mostly_failed:
+        raise WorkerError(
+            "ads-backend-failed",
+            f"the model failed {counting.failures} of {counting.calls} requests; last error: "
+            f"{type(counting.last_error).__name__}: {counting.last_error}",
+        )
+    progress("ads.detect.calls", f"{counting.calls} requests, {counting.failures} failed")
     ad_spans = [
         {
             "startSeconds": round(float(ad.start_s), 3),
@@ -307,6 +440,8 @@ def run(request: dict) -> dict:
     audio_path = Path(request["audioPath"])
     if not audio_path.exists():
         raise WorkerError("audio-missing", f"no audio at {audio_path}")
+    if request.get("removeAds", True):
+        preflight_ad_removal(request)
 
     cues: list[dict] = []
     segments = None
@@ -402,6 +537,10 @@ def main() -> int:
 
     data_dir = Path(request.get("workDir") or tempfile.gettempdir()) / "wilted-pipeline"
     data_dir.mkdir(parents=True, exist_ok=True)
+    warnings = ForwardedWarnings()
+    # The root logger, not `wilted`: the speech daemon client and the
+    # transcript parsers log under their own names.
+    logging.getLogger().addHandler(warnings)
     try:
         # The previous project gates model construction behind an explicit
         # capability so nothing loads a multi-gigabyte model by accident. This
@@ -412,12 +551,15 @@ def main() -> int:
         with execution_capability_scope(owner_id="wilted-native-pipeline", data_dir=data_dir):
             result = run(request)
     except WorkerError as error:
+        warnings.summarize()
         json.dump({"ok": False, "code": error.code, "message": str(error)}, sys.stdout)
         return 1
     except Exception as error:  # noqa: BLE001 - the caller needs a result, not a traceback
+        warnings.summarize()
         json.dump({"ok": False, "code": "worker-failed",
                    "message": f"{type(error).__name__}: {error}"}, sys.stdout)
         return 1
+    warnings.summarize()
     json.dump(result, sys.stdout)
     return 0
 

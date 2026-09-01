@@ -12,14 +12,18 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import logging
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import types
 import unittest
 from contextlib import redirect_stderr
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKER_PATH = REPO_ROOT / "Producer" / "Workers" / "wilted_pipeline.py"
@@ -64,7 +68,84 @@ def install_fake_wilted(parse_results=None, parse_error=None):
     package.transcribe = transcribe
     sys.modules["wilted"] = package
     sys.modules["wilted.transcribe"] = transcribe
+    # `from wilted import ads` falls back to sys.modules["wilted.ads"], so a
+    # double left behind by another test would be silently reused here.
+    sys.modules.pop("wilted.ads", None)
+    sys.modules.pop("wilted.llm", None)
     return transcribe
+
+
+@dataclass
+class FakeLLM:
+    """The previous project's GGUF backend, as far as the worker can see it.
+
+    It loads lazily and refuses to answer until it has: that asymmetry is the
+    whole TWiT 1098 regression, so the double reproduces it exactly.
+    """
+
+    answer: str = "[]"
+    loaded: bool = False
+    closed: bool = False
+    fail_load: Exception | None = None
+    fail_generate: Exception | None = None
+    requests: list = field(default_factory=list)
+
+    def load(self):
+        if self.fail_load is not None:
+            raise self.fail_load
+        self.loaded = True
+
+    def generate(self, system_prompt, user_content, *, response_format=None):
+        self.requests.append(response_format)
+        if not self.loaded:
+            raise RuntimeError("Model not loaded. Call load() first.")
+        if self.fail_generate is not None:
+            raise self.fail_generate
+        return self.answer, 1
+
+    def close(self):
+        self.closed = True
+
+
+@dataclass
+class FakeAd:
+    start_s: float
+    end_s: float
+    label: str = "sponsor"
+    confidence: float = 0.9
+
+
+def install_fake_ads(llm: FakeLLM, detections=()):
+    """Stand in for `wilted.ads` and `wilted.llm` with the real detector's manners.
+
+    The real detector asks the backend once per batch and treats any exception
+    as a malformed completion: it swallows it and classifies the batch as
+    content. This double asks once per segment and does the same.
+    """
+    ads = types.ModuleType("wilted.ads")
+
+    def detect_ads(segments, backend):
+        answered = False
+        for segment in segments:
+            try:
+                backend.generate("classify", segment.text, response_format={"type": "json_object"})
+            except Exception:  # noqa: BLE001 - the real detector is this forgiving
+                continue
+            answered = True
+        return list(detections) if answered else []
+
+    ads.detect_ads = detect_ads
+    ads._compute_keep_segments = lambda total, ads_found, pad: []  # noqa: SLF001
+    llm_module = types.ModuleType("wilted.llm")
+    llm_module.DEFAULT_GGUF_MODEL = "/models/default.gguf"
+    llm_module.create_backend = lambda kind, model: llm
+    package = sys.modules.get("wilted") or types.ModuleType("wilted")
+    package.ads = ads
+    package.llm = llm_module
+    sys.modules["wilted"] = package
+    sys.modules["wilted.ads"] = ads
+    sys.modules["wilted.llm"] = llm_module
+    return ads
 
 
 class KeepMapTests(unittest.TestCase):
@@ -200,6 +281,183 @@ class ProgressTests(unittest.TestCase):
         lines = [json.loads(line) for line in stream.getvalue().splitlines()]
         self.assertEqual(lines[0], {"stage": "stage.one", "detail": "detail", "fraction": 1.0})
         self.assertNotIn("fraction", lines[1])
+
+    def test_previous_project_warnings_are_relayed_then_counted(self):
+        handler = wp.ForwardedWarnings(limit=2)
+        logger = logging.getLogger("wilted.test-relay")
+        logger.addHandler(handler)
+        logger.propagate = False
+        stream = io.StringIO()
+        try:
+            with redirect_stderr(stream):
+                logger.info("not relayed: below the threshold")
+                for index in range(5):
+                    logger.warning("batch %d failed", index)
+                handler.summarize()
+        finally:
+            logger.removeHandler(handler)
+        lines = [json.loads(line) for line in stream.getvalue().splitlines()]
+        # Numbered stages: the journal keeps one row per stage, so a shared
+        # name would collapse twenty relayed warnings into one surviving row.
+        self.assertEqual([line["stage"] for line in lines], ["log.warning.1", "log.warning.2", "log.suppressed"])
+        self.assertEqual(lines[0]["detail"], "wilted.test-relay: batch 0 failed")
+        self.assertIn("3 further warnings", lines[2]["detail"])
+
+    def test_a_relay_failure_never_unwinds_the_logging_caller(self):
+        handler = wp.ForwardedWarnings(limit=5)
+        logger = logging.getLogger("wilted.test-relay-fault")
+        logger.addHandler(handler)
+        logger.propagate = False
+        try:
+            with mock.patch.object(wp, "progress", side_effect=OSError("stderr closed")), \
+                    mock.patch.object(handler, "handleError") as handled, redirect_stderr(io.StringIO()):
+                logger.warning("the detector is inside an except block right now")
+            handled.assert_called_once()
+        finally:
+            logger.removeHandler(handler)
+
+
+class AdDetectionTests(unittest.TestCase):
+    """The TWiT 1098 regression: a backend that was never loaded classified
+    1,345 segments as content in 174 ms and the episode shipped as prepared."""
+
+    def setUp(self):
+        self.audio = Path(REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py")
+        self.segments = [FakeSegment(0, 2, "buy this"), FakeSegment(2, 4, "content")]
+        self.request = {"audioPath": str(self.audio), "outputPath": "/tmp/never-written.mp3"}
+
+    def test_the_model_is_loaded_before_detection_and_closed_after(self):
+        llm = FakeLLM()
+        install_fake_ads(llm)
+        with redirect_stderr(io.StringIO()):
+            _path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
+        self.assertTrue(llm.loaded)
+        self.assertTrue(llm.closed)
+        self.assertEqual((spans, keeps), ([], []))
+        # Constrained JSON is how the tuned prompts were accepted; the proxy
+        # must not strip the keyword on its way through.
+        self.assertEqual(llm.requests, [{"type": "json_object"}] * 2)
+
+    def test_a_backend_that_never_answers_is_a_failure_not_zero_ads(self):
+        llm = FakeLLM(fail_generate=RuntimeError("llama_decode returned -1"))
+        install_fake_ads(llm)
+        with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised:
+            wp.detect_and_cut(self.request, self.audio, [], self.segments)
+        self.assertEqual(raised.exception.code, "ads-backend-failed")
+        self.assertIn("llama_decode returned -1", str(raised.exception))
+        self.assertTrue(llm.closed)
+
+    def test_a_model_that_cannot_load_is_reported_by_name(self):
+        llm = FakeLLM(fail_load=FileNotFoundError("GGUF model file not found: /models/default.gguf"))
+        install_fake_ads(llm)
+        with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised:
+            wp.detect_and_cut(self.request, self.audio, [], self.segments)
+        self.assertEqual(raised.exception.code, "ads-model-unavailable")
+        self.assertIn("/models/default.gguf", str(raised.exception))
+        # A half-constructed backend still holds whatever it allocated.
+        self.assertTrue(llm.closed)
+
+    def test_detections_are_reported_and_the_call_count_is_journaled(self):
+        llm = FakeLLM()
+        install_fake_ads(llm, detections=[FakeAd(0.0, 2.0)])
+        stream = io.StringIO()
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=4.0):
+            _path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
+        self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 2.0, "label": "sponsor", "confidence": 0.9}])
+        self.assertEqual(keeps, [])
+        stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
+        self.assertIn("ads.detect.calls", stages)
+        self.assertIn("ads.cut.refused", stages)
+
+    def test_counting_backend_trips_on_a_majority_of_failures_not_all_of_them(self):
+        llm = FakeLLM(loaded=True)
+        counting = wp.CountingBackend(llm)
+        counting.generate("s", "u")
+        llm.fail_generate = ValueError("bad completion")
+        with self.assertRaises(ValueError):
+            counting.generate("s", "u")
+        self.assertEqual((counting.calls, counting.failures), (2, 1))
+        self.assertFalse(counting.mostly_failed, "an even split is not a broken backend")
+        with self.assertRaises(ValueError):
+            counting.generate("s", "u")
+        self.assertTrue(counting.mostly_failed, "one lucky singleton must not disarm the check")
+        self.assertFalse(wp.CountingBackend(llm).mostly_failed, "no calls is not a failure")
+
+    def test_one_answered_singleton_does_not_turn_a_dead_backend_into_zero_ads(self):
+        llm = FakeLLM(fail_generate=RuntimeError("Metal command buffer failed"))
+        install_fake_ads(llm)
+        original = llm.generate
+
+        def flaky(system_prompt, user_content, *, response_format=None):
+            if user_content == "content":
+                llm.fail_generate = None
+            return original(system_prompt, user_content, response_format=response_format)
+
+        llm.generate = flaky
+        segments = [FakeSegment(0, 2, "buy this"), FakeSegment(2, 4, "and this"), FakeSegment(4, 6, "content")]
+        with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised:
+            wp.detect_and_cut(self.request, self.audio, [], segments)
+        self.assertEqual(raised.exception.code, "ads-backend-failed")
+        self.assertIn("2 of 3", str(raised.exception))
+
+
+class PreflightTests(unittest.TestCase):
+    """What the cut needs is checked before speech-to-text starts, not after."""
+
+    def setUp(self):
+        self.audio = Path(REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py")
+        self.tools = tempfile.mkdtemp(prefix="wilted-tools.")
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", self.tools], check=False))
+        for tool in wp.CUT_TOOLS:
+            path = Path(self.tools) / tool
+            path.write_text("#!/bin/sh\nexit 0\n")
+            path.chmod(0o755)
+        self.default_model = Path(self.tools) / "default.gguf"
+        self.default_model.write_bytes(b"GGUF")
+        install_fake_wilted()
+        install_fake_ads(FakeLLM())
+        sys.modules["wilted.llm"].DEFAULT_GGUF_MODEL = str(self.default_model)
+        # `run()` swallows a failed speech-to-text tier, so a `self.fail` in
+        # the stub would be caught; record the call and assert on it instead.
+        self.stt_calls: list = []
+        sys.modules["wilted.transcribe"].transcribe_audio = lambda path: self.stt_calls.append(path) or []
+
+    def test_missing_cut_tools_fail_before_any_work(self):
+        with mock.patch.dict(os.environ, {"PATH": "/nonexistent-bin"}), redirect_stderr(io.StringIO()):
+            with self.assertRaises(wp.WorkerError) as raised:
+                wp.run({"audioPath": str(self.audio), "removeAds": True})
+        self.assertEqual(raised.exception.code, "cut-tools-missing")
+        self.assertIn("ffmpeg", str(raised.exception))
+        self.assertEqual(self.stt_calls, [], "speech-to-text ran without ffmpeg present")
+
+    def test_a_named_model_that_is_not_on_disk_fails_first(self):
+        with mock.patch.dict(os.environ, {"PATH": self.tools}):
+            with self.assertRaises(wp.WorkerError) as raised:
+                wp.preflight_ad_removal({"llmModel": "/models/absent.gguf"})
+        self.assertEqual(raised.exception.code, "ads-model-missing")
+
+    def test_the_default_model_is_checked_when_none_is_named(self):
+        self.default_model.unlink()
+        with mock.patch.dict(os.environ, {"PATH": self.tools}), redirect_stderr(io.StringIO()):
+            with self.assertRaises(wp.WorkerError) as raised:
+                wp.run({"audioPath": str(self.audio), "removeAds": True})
+        self.assertEqual(raised.exception.code, "ads-model-missing")
+        self.assertIn(str(self.default_model), str(raised.exception))
+        self.assertEqual(self.stt_calls, [], "speech-to-text ran without a model to detect with")
+
+    def test_present_tools_and_a_present_default_model_pass(self):
+        with mock.patch.dict(os.environ, {"PATH": self.tools}):
+            wp.preflight_ad_removal({})
+
+    def test_a_hub_spec_is_left_for_the_loader_to_resolve(self):
+        with mock.patch.dict(os.environ, {"PATH": self.tools}):
+            wp.preflight_ad_removal({"llmModel": "hf:some/repo/model.gguf"})
+
+    def test_skipping_ad_removal_skips_the_preflight(self):
+        install_fake_wilted()
+        with mock.patch.dict(os.environ, {"PATH": "/nonexistent-bin"}), redirect_stderr(io.StringIO()):
+            result = wp.run({"audioPath": str(self.audio), "removeAds": False, "allowSpeechToText": False})
+        self.assertTrue(result["ok"])
 
 
 class RunTests(unittest.TestCase):

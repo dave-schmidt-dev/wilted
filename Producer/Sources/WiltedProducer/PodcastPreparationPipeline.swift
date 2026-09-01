@@ -129,12 +129,40 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         public var workerURL: URL
         public var pythonPath: URL?
         public var timeout: TimeInterval
+        /// Directories appended to the worker's PATH when absent. The cut
+        /// shells out to ffmpeg, and an app launched from Finder inherits a
+        /// PATH that has never heard of Homebrew.
+        public var toolSearchPaths: [String]
 
-        public init(interpreterURL: URL, workerURL: URL, pythonPath: URL? = nil, timeout: TimeInterval = 7_200) {
+        public static let defaultToolSearchPaths = ["/opt/homebrew/bin", "/usr/local/bin"]
+
+        public init(
+            interpreterURL: URL,
+            workerURL: URL,
+            pythonPath: URL? = nil,
+            timeout: TimeInterval = 7_200,
+            toolSearchPaths: [String] = Configuration.defaultToolSearchPaths
+        ) {
             self.interpreterURL = interpreterURL
             self.workerURL = workerURL
             self.pythonPath = pythonPath
             self.timeout = timeout
+            self.toolSearchPaths = toolSearchPaths
+        }
+
+        /// The PATH the worker runs with: the inherited one, then any search
+        /// path it does not already contain, in order. Every named entry is
+        /// kept; empty entries, which POSIX reads as the current directory,
+        /// are dropped on purpose for a process that shells out to ffmpeg.
+        /// Nothing at all falls back to the system default rather than an
+        /// empty string, which Python's `shutil.which` treats as no PATH.
+        public func workerPATH(inherited: String?) -> String {
+            var entries = (inherited ?? "").split(separator: ":", omittingEmptySubsequences: true).map(String.init)
+            for path in toolSearchPaths where !path.isEmpty && !entries.contains(path) {
+                entries.append(path)
+            }
+            if entries.isEmpty { return "/usr/bin:/bin:/usr/sbin:/sbin" }
+            return entries.joined(separator: ":")
         }
 
         /// Where the pieces live on this machine, overridable per environment.
@@ -152,8 +180,11 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
             let sources = environment["WILTED_PIPELINE_PYTHONPATH"].map { URL(fileURLWithPath: $0) }
                 ?? previousProject.appending(path: "src")
             let timeout = environment["WILTED_PIPELINE_TIMEOUT_S"].flatMap(TimeInterval.init) ?? 7_200
+            let toolSearchPaths = environment["WILTED_PIPELINE_TOOL_PATH"]
+                .map { $0.split(separator: ":", omittingEmptySubsequences: true).map(String.init) }
+                ?? defaultToolSearchPaths
             return Configuration(interpreterURL: interpreter, workerURL: worker,
-                                 pythonPath: sources, timeout: timeout)
+                                 pythonPath: sources, timeout: timeout, toolSearchPaths: toolSearchPaths)
         }
     }
 
@@ -180,6 +211,7 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         var environment = ProcessInfo.processInfo.environment
         if let pythonPath = configuration.pythonPath { environment["PYTHONPATH"] = pythonPath.path }
         environment["PYTHONUNBUFFERED"] = "1"
+        environment["PATH"] = configuration.workerPATH(inherited: environment["PATH"])
         process.environment = environment
 
         let input = Pipe(), output = Pipe(), errors = Pipe()

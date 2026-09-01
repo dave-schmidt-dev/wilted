@@ -340,15 +340,61 @@ struct PodcastPreparationPipelineTests {
         let overridden = SubprocessPodcastPipelineRunner.Configuration.resolved(environment: [
             "WILTED_PIPELINE_PYTHON": "/opt/py", "WILTED_PIPELINE_WORKER": "/opt/w.py",
             "WILTED_PIPELINE_PYTHONPATH": "/opt/src", "WILTED_PIPELINE_TIMEOUT_S": "60",
+            "WILTED_PIPELINE_TOOL_PATH": "/opt/tools/bin:/opt/more",
         ])
         #expect(overridden.interpreterURL.path == "/opt/py")
         #expect(overridden.workerURL.path == "/opt/w.py")
         #expect(overridden.pythonPath?.path == "/opt/src")
         #expect(overridden.timeout == 60)
+        #expect(overridden.toolSearchPaths == ["/opt/tools/bin", "/opt/more"])
 
         let defaults = SubprocessPodcastPipelineRunner.Configuration.resolved(environment: [:])
         #expect(defaults.workerURL.lastPathComponent == "wilted_pipeline.py")
         #expect(defaults.timeout > 0)
+        #expect(defaults.toolSearchPaths.contains("/opt/homebrew/bin"))
+    }
+
+    /// The app is launched from Finder with a PATH that cannot find ffmpeg;
+    /// the worker's PATH must, without losing anything the app inherited.
+    @Test func workerPATHAppendsToolDirectoriesItDoesNotAlreadyHave() {
+        let configuration = SubprocessPodcastPipelineRunner.Configuration(
+            interpreterURL: URL(fileURLWithPath: "/bin/sh"), workerURL: URL(fileURLWithPath: "/w.sh"),
+            toolSearchPaths: ["/opt/homebrew/bin", "/usr/local/bin"]
+        )
+        #expect(configuration.workerPATH(inherited: "/usr/bin:/bin") == "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin")
+        #expect(configuration.workerPATH(inherited: "/opt/homebrew/bin:/usr/bin") == "/opt/homebrew/bin:/usr/bin:/usr/local/bin")
+        #expect(configuration.workerPATH(inherited: nil) == "/opt/homebrew/bin:/usr/local/bin")
+        #expect(configuration.workerPATH(inherited: "::/usr/bin:") == "/usr/bin:/opt/homebrew/bin:/usr/local/bin")
+
+        // Nothing inherited and nothing configured is still a usable PATH.
+        let bare = SubprocessPodcastPipelineRunner.Configuration(
+            interpreterURL: URL(fileURLWithPath: "/bin/sh"), workerURL: URL(fileURLWithPath: "/w.sh"),
+            toolSearchPaths: [""]
+        )
+        #expect(bare.workerPATH(inherited: "") == "/usr/bin:/bin:/usr/sbin:/sbin")
+    }
+
+    @Test func subprocessRunnerHandsTheWorkerTheExtendedPATH() async throws {
+        let directory = try Fixture.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let worker = directory.appendingPathComponent("path.sh")
+        try """
+        #!/bin/sh
+        cat >/dev/null
+        printf '{"ok":true,"path":"%s"}' "$PATH"
+        """.write(to: worker, atomically: true, encoding: .utf8)
+        let runner = SubprocessPodcastPipelineRunner(configuration: .init(
+            interpreterURL: URL(fileURLWithPath: "/bin/sh"), workerURL: worker, timeout: 30,
+            toolSearchPaths: [directory.path]
+        ))
+        let output = try await runner.run(request: Data("{}".utf8)) { _ in }
+        let decoded = try #require(try JSONSerialization.jsonObject(with: output) as? [String: Any])
+        let path = try #require(decoded["path"] as? String)
+        #expect(path.split(separator: ":").map(String.init).contains(directory.path))
+        // Everything the app inherited is still there, ahead of the additions.
+        if let inherited = ProcessInfo.processInfo.environment["PATH"] {
+            #expect(path.hasPrefix(inherited.split(separator: ":", omittingEmptySubsequences: true).joined(separator: ":")))
+        }
     }
 
     // MARK: Fixtures
