@@ -225,18 +225,20 @@ struct PodcastPreparationPipelineTests {
         #expect(entries.allSatisfy { $0.itemID == fixture.episodeID })
         // The terminal row says what was done, not just that it finished:
         // it is what a relaunched app shows under the episode.
-        #expect(terminal.status.detail == "1 ad removed (0:05) · synced transcript")
+        #expect(terminal.status.detail == "Ready · 1 ad removed (0:05) · transcript synced")
     }
 
     @Test func summaryStatesWhatWasActuallyDone() {
         #expect(PodcastPreparationResult.summary(advertisements: 3, secondsRemoved: 185, timing: .aligned)
-                == "3 ads removed (3:05) · synced transcript")
+                == "Ready · 3 ads removed (3:05) · transcript synced")
         #expect(PodcastPreparationResult.summary(advertisements: 1, secondsRemoved: 42, timing: .published)
-                == "1 ad removed (0:42) · synced transcript from the feed")
+                == "Ready · 1 ad removed (0:42) · transcript synced from the feed")
         #expect(PodcastPreparationResult.summary(advertisements: 5, secondsRemoved: 3_722, timing: .aligned)
-                == "5 ads removed (1:02:02) · synced transcript")
+                == "Ready · 5 ads removed (1:02:02) · transcript synced")
+        // A gap is named rather than omitted, so a listener whose transcript
+        // will not follow the audio learns it from the row.
         #expect(PodcastPreparationResult.summary(advertisements: 0, secondsRemoved: 0, timing: .none)
-                == "No advertisements found · no synced transcript")
+                == "Ready · no ads found · transcript not synced")
     }
 
     /// The journal is keyed by item, not attempt. Before it was cleared at the

@@ -389,9 +389,9 @@ final class WiltedMacModelTests: XCTestCase {
 
         // A current build journals the summary itself as the terminal row.
         XCTAssertEqual(
-            WiltedMacModel.preparationState(run: try run(terminal: "5 ads removed (7:22) · synced transcript",
+            WiltedMacModel.preparationState(run: try run(terminal: "Ready · 5 ads removed (7:22) · transcript synced",
                                                          completion: "5 advertisements, 1307 cues"), transcript: transcript),
-            .prepared(summary: "5 ads removed (7:22) · synced transcript")
+            .prepared(summary: "Ready · 5 ads removed (7:22) · transcript synced")
         )
         // Older builds wrote "Prepared." and counted advertisements one row
         // earlier; zero there is the honest state of an episode the broken
@@ -399,19 +399,19 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(
             WiltedMacModel.preparationState(run: try run(terminal: "Prepared.", completion: "0 advertisements, 1345 cues"),
                                             transcript: transcript),
-            .prepared(summary: "No advertisements found · synced transcript")
+            .prepared(summary: "Ready · no ads found · transcript synced")
         )
         XCTAssertEqual(
             WiltedMacModel.preparationState(run: try run(terminal: "Prepared.", completion: "3 advertisements, 900 cues"),
                                             transcript: transcript),
-            .prepared(summary: "3 ads removed · synced transcript")
+            .prepared(summary: "Ready · 3 ads removed · transcript synced")
         )
         // No journal at all: the transcript is the only evidence.
         XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: transcript),
-                       .prepared(summary: "Synced transcript"))
+                       .prepared(summary: "Ready · transcript synced"))
         XCTAssertEqual(
             WiltedMacModel.preparationState(run: try run(terminal: "Prepared.", completion: nil), transcript: transcript),
-            .prepared(summary: "Synced transcript")
+            .prepared(summary: "Ready · transcript synced")
         )
     }
 
@@ -533,11 +533,11 @@ final class WiltedMacModelTests: XCTestCase {
 
         XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: nil), .notPrepared)
         XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: try transcript(.published)),
-                       .prepared(summary: "Synced transcript from the feed"))
+                       .prepared(summary: "Ready · transcript synced from the feed"))
         XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: try transcript(.aligned)),
-                       .prepared(summary: "Synced transcript"))
+                       .prepared(summary: "Ready · transcript synced"))
         XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: try transcript(.none)),
-                       .prepared(summary: "Transcript, not synced"))
+                       .prepared(summary: "Ready · transcript not synced"))
         XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: try transcript(.none, .absent)),
                        .notPrepared)
 
@@ -551,7 +551,7 @@ final class WiltedMacModelTests: XCTestCase {
                        .failed(WiltedMacModel.preparationFailedLabel))
         // A transcript outranks an old failure: the words are there.
         XCTAssertEqual(WiltedMacModel.preparationState(run: failed, transcript: try transcript(.aligned)),
-                       .prepared(summary: "Synced transcript"))
+                       .prepared(summary: "Ready · transcript synced"))
 
         let running = PreparationRunSummary(
             requestID: failed.requestID, itemID: itemID, startedAt: when, updatedAt: when,

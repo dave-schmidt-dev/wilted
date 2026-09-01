@@ -103,27 +103,36 @@ public struct PodcastPreparationResult: Sendable {
     public let removedSeconds: Double
     public var audioWasCut: Bool { removedSeconds > 0 }
 
-    /// What the run did, for the row: "5 ads removed (7:22) · synced
-    /// transcript". Journalled as the run's terminal detail so the answer
-    /// to "was this fully processed?" outlives the process that knew it.
+    /// What the run did, for the row: "Ready · 5 ads removed (7:22) ·
+    /// transcript synced". Leads with the completion state and then names
+    /// each step's result, so a reader can see the run finished and where
+    /// it fell short ("transcript not synced") without knowing the
+    /// pipeline. Journalled as the run's terminal detail so the answer
+    /// outlives the process that knew it.
     public var summary: String {
         Self.summary(advertisements: adSegments.count, secondsRemoved: removedSeconds, timing: transcript.timing)
     }
 
+    public static let readyLabel = "Ready"
+
     public static func summary(advertisements: Int, secondsRemoved: Double, timing: TranscriptTiming) -> String {
-        var parts: [String] = []
+        var parts: [String] = [readyLabel]
         if advertisements > 0, secondsRemoved > 0 {
             let removed = clock(secondsRemoved)
             parts.append(advertisements == 1 ? "1 ad removed (\(removed))" : "\(advertisements) ads removed (\(removed))")
         } else {
-            parts.append("No advertisements found")
+            parts.append("no ads found")
         }
-        switch timing {
-        case .published: parts.append("synced transcript from the feed")
-        case .aligned: parts.append("synced transcript")
-        case .none: parts.append("no synced transcript")
-        }
+        parts.append(transcriptStep(timing))
         return parts.joined(separator: " · ")
+    }
+
+    public static func transcriptStep(_ timing: TranscriptTiming) -> String {
+        switch timing {
+        case .published: "transcript synced from the feed"
+        case .aligned: "transcript synced"
+        case .none: "transcript not synced"
+        }
     }
 
     /// `h:mm:ss` at an hour or more, `m:ss` below it.

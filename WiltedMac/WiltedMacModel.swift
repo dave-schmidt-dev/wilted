@@ -1964,11 +1964,12 @@ final class WiltedMacModel {
         let completion = run.entries.last { $0.id.hasSuffix("|pipeline.complete") }?.status.detail ?? ""
         guard let match = completion.firstMatch(of: #/^(\d+) advertisements?/#),
               let count = Int(match.1) else { return nil }
-        switch count {
-        case 0: return "No advertisements found · synced transcript"
-        case 1: return "1 ad removed · synced transcript"
-        default: return "\(count) ads removed · synced transcript"
+        let ads = switch count {
+        case 0: "no ads found"
+        case 1: "1 ad removed"
+        default: "\(count) ads removed"
         }
+        return "\(PodcastPreparationResult.readyLabel) · \(ads) · \(PodcastPreparationResult.transcriptStep(.aligned))"
     }
 
 #if canImport(WiltedProducer)
@@ -2212,14 +2213,23 @@ final class WiltedMacModel {
         run: PreparationRunSummary?, transcript: Transcript?
     ) -> WiltedMacEpisodePreparationState {
         if let run, !run.isTerminal { return .preparing(stage: "Preparing…") }
+        // Without a journal the transcript is the only evidence, and it says
+        // nothing about advertisements, so that step is not claimed.
+        let ready = PodcastPreparationResult.readyLabel
         switch transcript?.timing {
-        case .published: return .prepared(summary: recordedSummary(of: run) ?? "Synced transcript from the feed")
-        case .aligned: return .prepared(summary: recordedSummary(of: run) ?? "Synced transcript")
+        case .published:
+            return .prepared(summary: recordedSummary(of: run)
+                             ?? "\(ready) · \(PodcastPreparationResult.transcriptStep(.published))")
+        case .aligned:
+            return .prepared(summary: recordedSummary(of: run)
+                             ?? "\(ready) · \(PodcastPreparationResult.transcriptStep(.aligned))")
         case .none, .some(.none):
             if let run, run.isTerminal, run.outcome == .failed {
                 return .failed(preparationFailedLabel)
             }
-            if transcript?.availability == .available { return .prepared(summary: "Transcript, not synced") }
+            if transcript?.availability == .available {
+                return .prepared(summary: "\(ready) · \(PodcastPreparationResult.transcriptStep(.none))")
+            }
             return .notPrepared
         }
     }
@@ -2319,7 +2329,7 @@ final class WiltedMacModel {
 
     /// The fixture's prepared episode reads the way a real one does after a
     /// relaunch: the journal's terminal summary, not just "synced".
-    static let fixturePreparedSummary = "5 ads removed (7:22) · synced transcript"
+    static let fixturePreparedSummary = "Ready · 5 ads removed (7:22) · transcript synced"
 
     private func installPodcastFixture(in store: LocalLibraryStore) {
         let feedURL = URL(string: "https://fixtures.example.test/field-notes.xml")!

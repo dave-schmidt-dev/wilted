@@ -236,7 +236,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-row-'")
         ).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["5 ads removed (7:22) · synced transcript"].exists,
+        XCTAssertTrue(app.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].exists,
                       "A prepared row states what was done, not only that a transcript exists.")
         XCTAssertEqual(
             app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-prepare'")).count, 0,
@@ -249,10 +249,14 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(actions.waitForExistence(timeout: 5))
         actions.click()
         let again = app.menuItems["Prepare again"]
+        // A freshly launched app occasionally swallows the first click on a
+        // menu button (seen once on 2026-09-01: passed alone, failed in a
+        // pair). One more click is the same gesture the reader would make.
+        if !again.waitForExistence(timeout: 3) { actions.click() }
         XCTAssertTrue(again.waitForExistence(timeout: 5), "A prepared episode's menu must offer Prepare again.")
         again.click()
         XCTAssertTrue(
-            app.staticTexts["5 ads removed (7:22) · synced transcript"].waitForNonExistence(timeout: 10),
+            app.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].waitForNonExistence(timeout: 10),
             "Prepare again must start a run; the row kept the summary it began with."
         )
     }
@@ -274,7 +278,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(run.waitForExistence(timeout: 5), "The fixture's prepared episode has a journalled run.")
         XCTAssertTrue(run.staticTexts["Quiet Machines"].exists)
         XCTAssertTrue(run.staticTexts["Succeeded"].exists)
-        XCTAssertTrue(run.staticTexts["5 ads removed (7:22) · synced transcript"].exists,
+        XCTAssertTrue(run.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].exists,
                       "A finished run is narrated from what it recorded.")
 
         XCTAssertFalse(app.staticTexts["ads.detect.calls · 50 requests, 0 failed"].exists, "The log is opt-in, per run.")
