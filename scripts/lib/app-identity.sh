@@ -67,6 +67,45 @@ wilted_registered_bundle_paths() {
     return 0
 }
 
+# Deletes every *.app claiming <identifier> under the repo's own build roots
+# (<repo>/build and <repo>/.build), except <keep>, and prints each path removed.
+#
+# The registration sweep is not enough on its own. On 2026-09-01, an hour
+# after a clean install, the owner reopened the app and got an eleven-hour-old
+# gate build from build/quickcheck: the sweep had dropped its record, but the
+# bundle still existed under ~/Documents, which Spotlight indexes and the Dock
+# remembers, and launching it by path registered it again. A bundle that no
+# longer exists cannot come back. These roots are gitignored build output the
+# repo owns, so removing them destroys nothing that cannot be rebuilt; bundles
+# anywhere else are still only unregistered, never deleted.
+wilted_prune_build_products() {
+    local repo_root="$1" identifier="$2" keep="${3:-}" root app
+    for root in "$repo_root/build" "$repo_root/.build"; do
+        [[ -d "$root" ]] || continue
+        while IFS= read -r app; do
+            [[ -n "$app" && "$app" != "$keep" ]] || continue
+            [[ "$(wilted_bundle_identifier "$app")" == "$identifier" ]] || continue
+            rm -rf "$app"
+            printf '%s\n' "$app"
+        done < <(find "$root" -type d -name '*.app' -prune -print 2>/dev/null | sort)
+    done
+    return 0
+}
+
+# Prints the pid of every running process whose executable lives inside a
+# bundle claiming <identifier>, whatever path that bundle has. The installer
+# used to look only at the install path, which is how a stale build kept
+# running through an install that was meant to replace it.
+wilted_running_bundle_pids() {
+    local identifier="$1" pid path app
+    while read -r pid path; do
+        [[ -n "$pid" && "$path" == *.app/Contents/MacOS/* ]] || continue
+        app="${path%%.app/Contents/MacOS/*}.app"
+        [[ "$(wilted_bundle_identifier "$app")" == "$identifier" ]] && printf '%s\n' "$pid"
+    done < <(ps -axo pid=,comm= 2>/dev/null || true)
+    return 0
+}
+
 # Unregisters every bundle claiming <identifier> except <keep>, then registers
 # <keep>. Stale records for paths that no longer exist are dropped the same way.
 wilted_sweep_registrations() {

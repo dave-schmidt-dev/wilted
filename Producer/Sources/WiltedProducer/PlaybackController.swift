@@ -112,6 +112,15 @@ public final class PlaybackController {
     public private(set) var itemID: ItemID?
     public private(set) var revisionID: RevisionID?
     public private(set) var mediaURL: URL?
+    /// The rate every load starts at unless the episode has its own saved
+    /// speed. The owner's last chosen speed, not 1: a listener who always
+    /// plays at 1.25× should not have to re-select it for each article and
+    /// each first play of an episode.
+    public var defaultRate: Float {
+        get { clampedDefaultRate }
+        set { clampedDefaultRate = Self.clampRate(newValue) }
+    }
+    private var clampedDefaultRate: Float = 1
     public private(set) var positionSeconds: TimeInterval = 0
     public private(set) var durationSeconds: TimeInterval = 0
     public private(set) var isPlaying = false
@@ -172,7 +181,7 @@ public final class PlaybackController {
         try backend.load(url: mediaURL)
         checkpointTask?.cancel()
         loadedBackendGeneration = backend.loadedGeneration
-        setRate(1)
+        setRate(defaultRate)
 
         currentRevision = revision
         itemID = revision.itemID
@@ -253,7 +262,11 @@ public final class PlaybackController {
     }
 
     public func setRate(_ value: Float) {
-        backend.rate = min(max(value.isFinite ? value : 1, 0.5), 2)
+        backend.rate = Self.clampRate(value)
+    }
+
+    private static func clampRate(_ value: Float) -> Float {
+        min(max(value.isFinite ? value : 1, 0.5), 2)
     }
 
     public func setVolume(_ value: Float) {
@@ -414,8 +427,8 @@ public final class PlaybackController {
             recoverableFault = .podcastMediaUnreadable(episodeID)
             throw PlaybackControllerError.podcastMediaUnreadable(episodeID)
         }
-        let savedRate = try await store.playbackSpeed(for: episodeID)?.speed ?? 1
-        setRate(Float(savedRate))
+        let savedRate = try await store.playbackSpeed(for: episodeID).map { Float($0.speed) } ?? defaultRate
+        setRate(savedRate)
         if playAfterLoad { isPlaying = backend.play() }
     }
 

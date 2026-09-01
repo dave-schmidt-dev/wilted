@@ -1075,6 +1075,8 @@ struct WiltedMacCompactPlayer: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
+                // Label hidden and width unconstrained: with both, an 82pt
+                // picker showed "Speed" and clipped the value to a sliver.
                 Picker("Speed", selection: Binding(
                     get: { model.playbackRate }, set: { model.setPlaybackRate($0) }
                 )) {
@@ -1082,8 +1084,10 @@ struct WiltedMacCompactPlayer: View {
                         Text("\($0, specifier: "%g")×").tag($0)
                     }
                 }
-                .frame(width: 82)
+                .labelsHidden()
+                .fixedSize()
                 .disabled(!model.hasCurrentPlayback)
+                .accessibilityLabel("Speed")
                 .accessibilityIdentifier("wilted-player-speed")
 
                 Menu {
@@ -1252,7 +1256,10 @@ struct WiltedMacCompactPlayer: View {
         expansion target: Expansion,
         id: String
     ) -> some View {
-        Button(label) {
+        // The same button closes what it opened, and says so: the pane pushes
+        // the list up rather than covering it, and nothing else on screen
+        // explained how to get the room back.
+        Button(expansion == target ? "Hide \(label)" : label) {
             toggle(target)
         }
         .focusable()

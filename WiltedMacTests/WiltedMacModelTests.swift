@@ -348,6 +348,26 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(third.libraryOrder, .newest, "an unreadable stored value falls back rather than crashing")
     }
 
+    func testPlaybackSpeedSurvivesRelaunch() throws {
+        let suite = "com.zerodelta.wilted.mac.model-tests"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        preferences.removePersistentDomain(forName: suite)
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let directory = temporaryDirectory("speed")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let first = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        XCTAssertEqual(first.playbackRate, 1.25, "a fresh install listens at 1.25×, the owner's default")
+        first.setPlaybackRate(1.5)
+
+        let second = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        XCTAssertEqual(second.playbackRate, 1.5, "the chosen speed must outlive the model that chose it")
+
+        preferences.set(9.0, forKey: WiltedMacModel.playbackRatePreferenceKey)
+        let third = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        XCTAssertEqual(third.playbackRate, 2, "a stored value outside the picker's range is clamped, not trusted")
+    }
+
     func testFixtureLaunchesStartFromTheDefaultOrderAndLeaveNothingBehind() {
         let directory = temporaryDirectory("fixture-order")
         defer { try? FileManager.default.removeItem(at: directory) }

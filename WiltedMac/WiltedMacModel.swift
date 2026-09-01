@@ -428,6 +428,10 @@ final class WiltedMacModel {
         didSet { preferences.set(libraryOrder.rawValue, forKey: Self.libraryOrderPreferenceKey) }
     }
     static let libraryOrderPreferenceKey = "wilted.library.order"
+    /// The last speed the owner chose. It seeds every load that has no
+    /// per-episode speed of its own, so 1.25× chosen once stays 1.25×.
+    static let playbackRatePreferenceKey = "wilted.playback.rate"
+    static let initialPlaybackRate = 1.25
     private let preferences: UserDefaults
     var selectedNavigation: WiltedMacNavigation = .library
     private(set) var articles: [WiltedMacArticle] = []
@@ -454,7 +458,7 @@ final class WiltedMacModel {
     private(set) var currentTranscript: WiltedMacTranscript?
     private(set) var podcastQueueIDs: [String] = []
     private(set) var currentPodcastEpisodeID: String?
-    private(set) var playbackRate: Double = 1
+    private(set) var playbackRate: Double = WiltedMacModel.initialPlaybackRate
     private(set) var playbackVolume: Double = 1
     private(set) var playbackOperationStatus: String?
     private(set) var articlePublicationCount = 0
@@ -577,6 +581,19 @@ final class WiltedMacModel {
            let order = WiltedMacLibraryOrder(rawValue: stored) {
             libraryOrder = order
         }
+        if self.preferences.object(forKey: Self.playbackRatePreferenceKey) != nil {
+            playbackRate = Self.clampPlaybackRate(self.preferences.double(forKey: Self.playbackRatePreferenceKey))
+        }
+#if canImport(WiltedProducer)
+        // Fixture launches build their controller above, before the stored
+        // rate is known; production builds it later, in
+        // `configureStoreDependencies`, which reads the rate itself.
+        playback?.defaultRate = Float(playbackRate)
+#endif
+    }
+
+    private static func clampPlaybackRate(_ value: Double) -> Double {
+        min(max(value.isFinite ? value : initialPlaybackRate, 0.5), 2)
     }
 
     /// Fixture launches share the daily driver's bundle identifier, so they
@@ -1463,8 +1480,10 @@ final class WiltedMacModel {
     }
 
     func setPlaybackRate(_ value: Double) {
-        playbackRate = min(max(value, 0.5), 2)
+        playbackRate = Self.clampPlaybackRate(value)
+        preferences.set(playbackRate, forKey: Self.playbackRatePreferenceKey)
 #if canImport(WiltedProducer)
+        playback?.defaultRate = Float(playbackRate)
         playback?.setRate(Float(playbackRate))
         guard isPodcastPlayback, let store, let id = playback?.itemID else { return }
         let selectedRate = playbackRate
@@ -2043,6 +2062,7 @@ final class WiltedMacModel {
                 deviceID: "mac"
             )
         }
+        playback?.defaultRate = Float(playbackRate)
         playback?.podcastStateHandler = { [weak self] itemID, fault in
             self?.applyPodcastPlaybackObservation(itemID: itemID, fault: fault)
         }
@@ -2223,7 +2243,7 @@ final class WiltedMacModel {
         case .aligned:
             return .prepared(summary: recordedSummary(of: run)
                              ?? "\(ready) · \(PodcastPreparationResult.transcriptStep(.aligned))")
-        case .none, .some(.none):
+        case nil, .some(.none):
             if let run, run.isTerminal, run.outcome == .failed {
                 return .failed(preparationFailedLabel)
             }

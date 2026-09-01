@@ -359,6 +359,33 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(controller.playbackRate, 0.5)
     }
 
+    func testDefaultRateAppliesWhereNoEpisodeSpeedIsSaved() async throws {
+        let path = storeURL(); let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let remembered = try await queueRevision(index: 1, root: root, store: store)
+        let fresh = try await queueRevision(index: 2, root: root, store: store)
+        try await store.save(playbackSpeed: PodcastPlaybackSpeed(
+            itemID: remembered.revision.itemID, speed: 1.75, updatedAt: Timestamp(Date())
+        ))
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        controller.defaultRate = 1.25
+
+        try await controller.selectPodcastQueueEpisode(fresh.revision.itemID)
+        XCTAssertEqual(controller.playbackRate, 1.25, "a first play starts at the owner's default, not 1×")
+        try await controller.selectPodcastQueueEpisode(remembered.revision.itemID)
+        XCTAssertEqual(controller.playbackRate, 1.75, "an episode's own saved speed still wins")
+
+        let (_, article) = try fixture()
+        try await controller.load(revision: article, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
+        XCTAssertEqual(controller.playbackRate, 1.25, "articles start at the default too")
+
+        controller.defaultRate = 9
+        XCTAssertEqual(controller.defaultRate, 2, "the default is clamped like any other rate")
+    }
+
     func testDirectSeekClampsUsesLivePositionAndFencesOldRunCompletion() async throws {
         let path = storeURL(); let root = path.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: root) }

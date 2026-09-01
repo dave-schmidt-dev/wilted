@@ -82,18 +82,41 @@ if (( ${#conflicts[@]} > 0 )); then
   exit 1
 fi
 
-if pgrep -f "$target/Contents/MacOS/" >/dev/null 2>&1; then
-  status 'install.quit running copy'
+# Every running copy, not just the one at the install path: on 2026-09-01 the
+# owner was running a stale gate build from build/quickcheck, which an install
+# keyed on $target would have left running and believing itself current.
+running=()
+while IFS= read -r pid; do
+  [[ -n "$pid" ]] && running+=("$pid")
+done < <(wilted_running_bundle_pids "$bundle_id")
+if (( ${#running[@]} > 0 )); then
+  for pid in "${running[@]}"; do
+    status "install.quit pid=$pid path=$(ps -o comm= -p "$pid" 2>/dev/null || echo unknown)"
+  done
   osascript -e "tell application id \"$bundle_id\" to quit" >/dev/null 2>&1 || true
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    pgrep -f "$target/Contents/MacOS/" >/dev/null 2>&1 || break
+    [[ -n "$(wilted_running_bundle_pids "$bundle_id")" ]] || break
     sleep 0.5
   done
+  # A copy the Apple Event did not reach (a second bundle under the same
+  # identifier only sometimes answers) gets a plain terminate.
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null || true
+  done < <(wilted_running_bundle_pids "$bundle_id")
 fi
 
 rm -rf "$target"
 ditto "$app" "$target"
 codesign --verify --strict "$target" || { status 'install.error installed app failed signature verification'; exit 1; }
+
+# Stale products under the repo's own build roots are deleted, not merely
+# unregistered: Spotlight indexes ~/Documents and the Dock remembers paths, so
+# a bundle that still exists can be launched by path and re-register itself.
+# That is how an eleven-hour-old build/quickcheck app came back an hour after
+# a clean install. Bundles outside the repo are never deleted.
+while IFS= read -r pruned; do
+  [[ -n "$pruned" ]] && status "install.prune removed=$pruned"
+done < <(wilted_prune_build_products "$repo_root" "$bundle_id" "$app")
 
 # Gate and capture runs build into temp roots they then delete, and every one of
 # those bundles registered under this identifier on the way past. The records

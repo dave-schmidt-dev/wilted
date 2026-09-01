@@ -113,6 +113,59 @@ else
     pass 'unregistered identifier is handled'
 fi
 
+# 9. Stale products under the repo's build roots are deleted, the kept product
+#    and other identifiers are not, and nothing outside those roots is touched.
+#    This is the 2026-09-01 relaunch failure: an old build/quickcheck app
+#    outlived the registration sweep and won the next click.
+fake_repo="$tmp_root/repo"
+kept="$fake_repo/.build/mac-install/Build/Products/Debug/WiltedMac.app"
+stale="$fake_repo/build/quickcheck/Build/Products/Debug/WiltedMac.app"
+runner="$fake_repo/build/quickcheck/Build/Products/Debug/WiltedMacUITests-Runner.app"
+outside="$tmp_root/elsewhere/WiltedMac.app"
+plant_bundle "$kept" "$bundle_id"
+plant_bundle "$stale" "$bundle_id"
+plant_bundle "$runner" 'com.zerodelta.wilted.mac.uitests.xctrunner'
+plant_bundle "$outside" "$bundle_id"
+pruned="$(wilted_prune_build_products "$fake_repo" "$bundle_id" "$kept")"
+if [[ "$pruned" != "$stale" ]]; then
+    fail "prune reported the wrong set; got: ${pruned:-<none>}"
+elif [[ -d "$stale" ]]; then
+    fail 'prune reported the stale product but left it in place'
+elif [[ ! -d "$kept" || ! -d "$runner" || ! -d "$outside" ]]; then
+    fail 'prune removed the kept product, another identifier, or a bundle outside the repo'
+else
+    pass 'stale build products are pruned; kept, foreign, and outside bundles survive'
+fi
+if ! wilted_prune_build_products "$tmp_root/absent" "$bundle_id" "$kept" >/dev/null; then
+    fail 'pruning a repo without build roots returned non-zero'
+else
+    pass 'missing build roots are handled'
+fi
+
+# 10. A running copy is found by the identifier of the bundle it runs from,
+#     wherever that bundle is. A symlink to a system binary stands in for the
+#     app: a copied one is killed by the platform-binary check and raises a
+#     crash dialog, and a script's `comm` is its interpreter.
+running_app="$tmp_root/Running.app"
+mkdir -p "$running_app/Contents/MacOS"
+ln -s /bin/sleep "$running_app/Contents/MacOS/Running"
+/usr/libexec/PlistBuddy -c 'Add :CFBundleIdentifier string com.example.wilted-install-test' \
+    "$running_app/Contents/Info.plist" >/dev/null
+"$running_app/Contents/MacOS/Running" 30 &
+running_pid=$!
+sleep 0.3
+found="$(wilted_running_bundle_pids 'com.example.wilted-install-test')"
+unrelated="$(wilted_running_bundle_pids 'com.example.wilted-install-test.nobody')"
+kill "$running_pid" 2>/dev/null || true
+wait "$running_pid" 2>/dev/null || true
+if [[ "$found" != "$running_pid" ]]; then
+    fail "running bundle pid not found; expected $running_pid, got: ${found:-<none>}"
+elif [[ -n "$unrelated" ]]; then
+    fail "an unrelated identifier matched running pids: $unrelated"
+else
+    pass 'running copies are found by bundle identifier, not install path'
+fi
+
 # Wiring: the installer must call each step. A helper nothing calls is not a guard.
 assert_installer_contains() {
     local needle="$1" why="$2"
@@ -130,6 +183,15 @@ assert_installer_contains 'wilted_sweep_registrations "$bundle_id" "$target"' \
     'sweeps stale LaunchServices registrations'
 assert_installer_contains 'wilted_registered_bundle_paths "$bundle_id"' \
     'asks LaunchServices what the identifier resolves to'
+assert_installer_contains 'wilted_prune_build_products "$repo_root" "$bundle_id" "$app"' \
+    'prunes stale products from the repo build roots'
+assert_installer_contains 'wilted_running_bundle_pids "$bundle_id"' \
+    'quits every running copy by identifier'
+if grep -Fq 'pgrep -f "$target/Contents/MacOS/"' "$installer"; then
+    fail 'installer still looks for a running copy at the install path only'
+else
+    pass 'installer no longer keys the running-copy check on the install path'
+fi
 assert_installer_contains 'describe --always --dirty' \
     'stamps a revision that admits a dirty tree'
 
