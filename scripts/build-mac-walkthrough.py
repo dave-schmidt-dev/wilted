@@ -117,9 +117,10 @@ def build(captures, commit, date_iso, date_human, previous):
             "fig-feeds-page", "5.1-feeds-page",
             "The Podcast feeds destination listing subscribed feeds with per-feed controls",
             "<strong>5.1 Podcast feeds.</strong> The destination reached by <code>wilted-navigation-feeds</code>; "
-            "its detail pane is <code>wilted-mac-feeds-detail</code>. <code>wilted-feeds-controls</code> holds "
-            "Refresh (<code>wilted-podcast-refresh</code>), which becomes "
-            "<code>wilted-podcast-refresh-cancel</code> while a refresh is running. "
+            "its detail pane is <code>wilted-mac-feeds-detail</code>. Refresh "
+            "(<code>wilted-podcast-refresh</code>) sits in the Subscriptions header, on the list it "
+            "refreshes, and becomes <code>wilted-podcast-refresh-cancel</code> beside a progress "
+            "indicator while a refresh is running. "
             "<code>wilted-podcast-feeds</code> states the refresh and download policy in "
             "<code>wilted-podcast-feeds-policy</code> and lists one "
             "<code>wilted-podcast-feed-row-&lt;id&gt;</code> per subscription, each with a count line, a "

@@ -387,31 +387,29 @@ private struct WiltedMacFeedsView: View {
 
     var body: some View {
         WiltedMacDestination(title: WiltedScreenCopy.feeds, identifier: "wilted-mac-feeds-detail") {
-            refreshControls
             feedManagement
         }
     }
 
-    private var refreshControls: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-            HStack {
-                if model.isRefreshingPodcasts {
-                    Button("Cancel Refresh") { model.cancelPodcastRefresh() }
-                        .accessibilityIdentifier("wilted-podcast-refresh-cancel")
-                } else {
-                    Button("Refresh") { model.refreshPodcastFeeds() }
-                        .accessibilityIdentifier("wilted-podcast-refresh")
-                }
-                Spacer(minLength: 0)
-            }
+    /// Refresh belongs to the list it refreshes. On its own card it was one
+    /// button in a wide empty band, the same defect the Larder order control
+    /// had before it moved into the list header.
+    private var refreshHeader: some View {
+        HStack(spacing: WiltedTheme.Spacing.medium) {
+            // Not "Podcast feeds" again: that is the page's own heading now.
+            Text("Subscriptions")
+                .font(WiltedTheme.font(.title))
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                .frame(maxWidth: .infinity, alignment: .leading)
             if model.isRefreshingPodcasts {
                 ProgressView().controlSize(.small).accessibilityIdentifier("wilted-podcast-refresh-progress")
+                Button("Cancel Refresh") { model.cancelPodcastRefresh() }
+                    .accessibilityIdentifier("wilted-podcast-refresh-cancel")
+            } else {
+                Button("Refresh") { model.refreshPodcastFeeds() }
+                    .accessibilityIdentifier("wilted-podcast-refresh")
             }
-            WiltedMacPodcastOperationMessage(model: model)
         }
-        .wiltedCard(colorScheme)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-feeds-controls")
     }
 
     /// The subscription list itself, a per-feed switch, and unsubscribe. The
@@ -420,10 +418,7 @@ private struct WiltedMacFeedsView: View {
     /// setting the reader cannot find.
     private var feedManagement: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            // Not "Podcast feeds" again: that is the page's own heading now.
-            Text("Subscriptions")
-                .font(WiltedTheme.font(.title))
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+            refreshHeader
             Text(WiltedScreenCopy.feedsPolicy)
                 .font(WiltedTheme.font(.body))
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
@@ -450,6 +445,7 @@ private struct WiltedMacFeedsView: View {
                     }
                 }
             }
+            WiltedMacPodcastOperationMessage(model: model)
         }
         .wiltedCard(colorScheme)
         .accessibilityElement(children: .contain)

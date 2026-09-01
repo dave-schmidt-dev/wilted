@@ -1,4 +1,4 @@
-.PHONY: validate native-meta native native-ui app-icon
+.PHONY: validate native-meta native native-ui install app-icon
 
 validate:
 	@bash tests/test-phase0-aggregate.sh
@@ -24,3 +24,10 @@ native-ui:
 # the in-app mark cannot drift. Rerun after any change to the brand geometry.
 app-icon:
 	@bash scripts/generate-app-icon.sh
+
+# Builds the Mac app and replaces the locally installed copy in /Applications,
+# so the app being daily-driven is the app in the working tree. Debug, because
+# Release needs a Developer ID identity and profile this machine is not
+# required to hold; see the script for why that also protects the TCC grant.
+install:
+	@bash scripts/install-mac-app.sh

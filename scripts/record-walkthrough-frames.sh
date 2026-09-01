@@ -60,6 +60,9 @@ for key, value in (("WILTED_WALKTHROUGH_CAPTURE", "1"),
 tree.write(path, encoding="UTF-8", xml_declaration=True)
 PY
 
+start_marker="$tmp_root/start"
+: >"$start_marker"
+
 status 'capture.start suite=WiltedMacUITests/WiltedMacWalkthroughCapture'
 xcodebuild test \
   -project "$root/Wilted.xcodeproj" \
@@ -93,6 +96,12 @@ for frame in "${frames[@]}"; do
   [[ -s "$frame" ]] || { status "capture.empty $(basename "$frame")"; exit 1; }
   sidecar="${frame%.png}.json"
   [[ -s "$sidecar" ]] || { status "capture.missing-sidecar $(basename "$frame")"; exit 1; }
+  # The runner's fallback directory survives between runs. The capture suite
+  # empties it before recording; this is the check that says so out loud,
+  # because a frame left by an earlier run is stale evidence that looks exactly
+  # like fresh evidence.
+  [[ "$frame" -nt "$start_marker" && "$sidecar" -nt "$start_marker" ]] ||
+    { status "capture.stale $(basename "$frame") predates this run"; exit 1; }
   cp "$frame" "$sidecar" "$out_dir/"
 done
 

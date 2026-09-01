@@ -48,6 +48,7 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
                 let probe = candidate.appendingPathComponent(".probe")
                 try Data("ok".utf8).write(to: probe)
                 try FileManager.default.removeItem(at: probe)
+                try purge(candidate)
                 return candidate
             } catch { continue }
         }
@@ -173,6 +174,21 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         "insetPixelsPerEdge":\(inset)}
         """
         try Data(sidecar.utf8).write(to: root.appendingPathComponent("\(name).json"))
+    }
+
+    /// Empties the capture directory before recording.
+    ///
+    /// The runner's fallback directory lives in its container and survives
+    /// between runs, so a frame this run does not write would otherwise be
+    /// served by whatever an earlier run left under the same name -- and a
+    /// renamed frame would leave its predecessor behind for the generator's
+    /// geometry pass to read. Stale evidence is the one thing this report
+    /// cannot contain.
+    private static func purge(_ directory: URL) throws {
+        for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        where ["png", "json"].contains(file.pathExtension.lowercased()) {
+            try FileManager.default.removeItem(at: file)
+        }
     }
 
     private func crop(_ source: NSBitmapImageRep, by inset: Int) -> NSBitmapImageRep? {
