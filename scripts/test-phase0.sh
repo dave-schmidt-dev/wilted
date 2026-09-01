@@ -194,6 +194,7 @@ run_leg_async "test-speech-ipc-probe" "$repo_root/tests/test-speech-ipc-probe.sh
 run_leg_async "test-persistence-probe" "$repo_root/tests/test-persistence-probe.sh"
 run_leg_async "test-audio-contract-probe" "$repo_root/tests/test-audio-contract-probe.sh"
 run_leg_async "test-audit-walkthrough" "$repo_root/tests/test-audit-walkthrough.sh"
+run_leg_async "test-pipeline-worker" "$repo_root/tests/test-pipeline-worker.sh"
 if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
   run_leg_async "test-audio-contract-ios-build" "$repo_root/tests/test-audio-contract-ios-build.sh"
 fi
