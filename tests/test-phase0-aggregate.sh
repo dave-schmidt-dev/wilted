@@ -15,6 +15,7 @@ expected_legs=(
   "test-audio-contract-probe"
   "test-audit-walkthrough"
   "test-pipeline-worker"
+  "test-install-mac-app"
 )
 if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
   expected_legs+=("test-audio-contract-ios-build")

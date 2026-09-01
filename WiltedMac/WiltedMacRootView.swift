@@ -42,14 +42,21 @@ struct WiltedMacRootView: View {
 
     private var readyRoot: some View {
         NavigationSplitView {
-            List(selection: $model.selectedNavigation) {
+            // No `selection:` binding on purpose. The rows are buttons that set
+            // the destination themselves, and a List that also tracks selection
+            // draws AppKit's blue capsule underneath the leaf-tinted row
+            // background -- two highlights on the same row. The selected state
+            // is carried by the row background and text colour, and announced
+            // to accessibility by the isSelected trait below.
+            List {
                 ForEach(WiltedMacNavigation.allCases) { destination in
+                    let isSelected = model.selectedNavigation == destination
                     Button {
                         model.selectedNavigation = destination
                     } label: {
                         Label(destination.title, systemImage: destination.symbolName)
                             .foregroundStyle(
-                                model.selectedNavigation == destination
+                                isSelected
                                     ? WiltedTheme.color(.primaryText, scheme: colorScheme)
                                     : WiltedTheme.color(.secondaryText, scheme: colorScheme)
                             )
@@ -58,11 +65,12 @@ struct WiltedMacRootView: View {
                     .buttonStyle(.plain)
                     .contentShape(Rectangle())
                     .listRowBackground(
-                        model.selectedNavigation == destination
+                        isSelected
                             ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.24)
                             : Color.clear
                     )
                     .accessibilityIdentifier("wilted-navigation-\(destination.rawValue)")
+                    .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                 }
             }
             // The sidebar carries a page-token background rather than the

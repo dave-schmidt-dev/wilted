@@ -538,15 +538,25 @@ private func optionalText(_ value: String?, maximum: Int, field: String) throws 
     return bounded
 }
 
-/// Artwork that is not safe to fetch is dropped instead of rejecting the feed.
+/// Artwork advertised over plain HTTP is upgraded to HTTPS, not dropped.
 ///
-/// Cover art is decoration. Real feeds still advertise it over plain HTTP --
-/// Mac Power Users did in the 2026-08-31 import survey -- and refusing the whole
-/// podcast over its logo loses every episode to fix nothing. Wilted still never
-/// loads the insecure URL; it just forgets it.
+/// Cover art is decoration, and real feeds still advertise it over plain HTTP:
+/// Mac Power Users did in the 2026-08-31 import survey, which is why its row
+/// showed the placeholder microphone while every other feed had art. Refusing
+/// the whole podcast over its logo would lose every episode to fix nothing, and
+/// dropping the URL loses the art for a host that almost always serves the same
+/// bytes over TLS -- files.relay.fm does. So the scheme is rewritten and
+/// nothing else is: same host, same path, same query. Wilted still never loads
+/// the insecure URL. If the host has no HTTPS listener the fetch fails and the
+/// row falls back to the placeholder, exactly as it did before.
 private func safeArtworkURL(_ value: URL?) -> URL? {
-    guard let value, PodcastFeedClient.isHTTPS(value) else { return nil }
-    return value
+    guard let value, value.host != nil, value.user == nil, value.password == nil else { return nil }
+    if PodcastFeedClient.isHTTPS(value) { return value }
+    guard value.scheme?.lowercased() == "http",
+          var components = URLComponents(url: value, resolvingAgainstBaseURL: false) else { return nil }
+    components.scheme = "https"
+    guard let upgraded = components.url, PodcastFeedClient.isHTTPS(upgraded) else { return nil }
+    return upgraded
 }
 
 private func parseDate(_ value: String) -> Date? {

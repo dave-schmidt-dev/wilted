@@ -181,18 +181,31 @@ struct PodcastFeedClientTests {
         }
     }
 
-    /// Cover art advertised over plain HTTP is dropped, not fatal. Real feeds do
-    /// this -- Mac Power Users did in the 2026-08-31 import survey -- and losing
-    /// every episode of a podcast over its logo is the wrong trade. The insecure
-    /// URL is still never kept, so nothing can later fetch it.
-    @Test func dropsNonHTTPSArtworkAndKeepsTheFeed() async throws {
-        let channel = try await client(xml: "<rss xmlns:itunes=\"http://www.itunes.com/dtds/podcast-1.0.dtd\"><channel><title>Show</title><itunes:image href=\"http://images.example.test/show.jpg\" /><item><title>Episode</title><enclosure url=\"https://cdn.example.test/one.mp3\" type=\"audio/mpeg\" /></item></channel></rss>").load(sourceURL)
-        #expect(channel.feed.artworkURL == nil)
+    /// Cover art advertised over plain HTTP is upgraded to HTTPS rather than
+    /// dropped. Real feeds do this -- Mac Power Users did in the 2026-08-31
+    /// import survey, and its row was the only one showing the placeholder
+    /// microphone -- and the same host serves the same bytes over TLS. Only the
+    /// scheme changes; the insecure URL is never what gets kept or fetched.
+    @Test func upgradesPlainHTTPArtworkToHTTPS() async throws {
+        let channel = try await client(xml: "<rss xmlns:itunes=\"http://www.itunes.com/dtds/podcast-1.0.dtd\"><channel><title>Show</title><itunes:image href=\"http://images.example.test/show.jpg?v=2\" /><item><title>Episode</title><enclosure url=\"https://cdn.example.test/one.mp3\" type=\"audio/mpeg\" /></item></channel></rss>").load(sourceURL)
+        #expect(channel.feed.artworkURL?.absoluteString == "https://images.example.test/show.jpg?v=2")
         #expect(channel.episodes.count == 1)
 
         let episode = try await client(xml: feed(item: "<itunes:image href=\"http://images.example.test/episode.jpg\" /><enclosure url=\"https://cdn.example.test/one.mp3\" type=\"audio/mpeg\" />")).load(sourceURL)
         #expect(episode.episodes.count == 1)
-        #expect(episode.episodes[0].artworkURL == nil)
+        #expect(episode.episodes[0].artworkURL?.absoluteString == "https://images.example.test/episode.jpg")
+    }
+
+    /// A scheme that is neither HTTP nor HTTPS is still dropped, and so is one
+    /// carrying credentials. Upgrading the scheme is a narrow allowance for
+    /// plain-HTTP cover art, not a general "fetch whatever the feed says".
+    @Test func dropsArtworkThatIsNotUpgradeableHTTP() async throws {
+        let ftp = try await client(xml: "<rss xmlns:itunes=\"http://www.itunes.com/dtds/podcast-1.0.dtd\"><channel><title>Show</title><itunes:image href=\"ftp://images.example.test/show.jpg\" /><item><title>Episode</title><enclosure url=\"https://cdn.example.test/one.mp3\" type=\"audio/mpeg\" /></item></channel></rss>").load(sourceURL)
+        #expect(ftp.feed.artworkURL == nil)
+        #expect(ftp.episodes.count == 1)
+
+        let credentialed = try await client(xml: "<rss xmlns:itunes=\"http://www.itunes.com/dtds/podcast-1.0.dtd\"><channel><title>Show</title><itunes:image href=\"http://user:pass@images.example.test/show.jpg\" /><item><title>Episode</title><enclosure url=\"https://cdn.example.test/one.mp3\" type=\"audio/mpeg\" /></item></channel></rss>").load(sourceURL)
+        #expect(credentialed.feed.artworkURL == nil)
     }
 
     /// A feed longer than the episode ceiling is truncated to its newest

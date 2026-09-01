@@ -17,6 +17,8 @@ set -Eeuo pipefail
 # Usage: scripts/install-mac-app.sh [destination-dir]   (default: /Applications)
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/app-identity.sh
+source "$repo_root/scripts/lib/app-identity.sh"
 destination_dir="${1:-/Applications}"
 bundle_id='com.zerodelta.wilted.mac'
 derived="$repo_root/.build/mac-install"
@@ -59,9 +61,25 @@ codesign --verify --strict "$app" || { status 'install.error built app failed si
 
 target="$destination_dir/$(basename "$app")"
 if [[ -e "$target" ]]; then
-  existing_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$target/Contents/Info.plist" 2>/dev/null || true)"
+  existing_id="$(wilted_bundle_identifier "$target")"
   [[ "$existing_id" == "$bundle_id" ]] ||
     { status "install.error $target exists and is not $bundle_id; refusing to replace it"; exit 1; }
+fi
+
+# The check above covers one path. LaunchServices does not: it resolves the
+# identifier across every registered bundle, so a second app in the destination
+# claiming $bundle_id makes the click a coin flip regardless of what is written
+# here. Refuse and name it rather than deleting someone else's app.
+conflicts=()
+while IFS= read -r conflict; do
+  [[ -n "$conflict" ]] && conflicts+=("$conflict")
+done < <(wilted_conflicting_bundles "$destination_dir" "$bundle_id" "$target")
+if (( ${#conflicts[@]} > 0 )); then
+  status "install.error another bundle in $destination_dir already claims $bundle_id:"
+  for conflict in "${conflicts[@]}"; do status "install.error   $conflict"; done
+  status 'install.error move it to the Trash and run this again; two bundles for one identifier'
+  status 'install.error make which binary launches unpredictable'
+  exit 1
 fi
 
 if pgrep -f "$target/Contents/MacOS/" >/dev/null 2>&1; then
@@ -77,5 +95,31 @@ rm -rf "$target"
 ditto "$app" "$target"
 codesign --verify --strict "$target" || { status 'install.error installed app failed signature verification'; exit 1; }
 
+# Gate and capture runs build into temp roots they then delete, and every one of
+# those bundles registered under this identifier on the way past. The records
+# survive the deletion, so they are swept here where exactly one path is known
+# to be the right answer.
+status 'install.register sweep'
+wilted_sweep_registrations "$bundle_id" "$target"
+
+# The check that would have caught the 2026-09-01 failure. Writing the bundle
+# proves nothing about what a click resolves to; only asking LaunchServices does.
+registered=()
+while IFS= read -r path; do
+  [[ -n "$path" ]] && registered+=("$path")
+done < <(wilted_registered_bundle_paths "$bundle_id")
+if (( ${#registered[@]} != 1 )) || [[ "${registered[0]}" != "$target" ]]; then
+  status "install.error $bundle_id does not resolve to $target after the sweep; registered paths:"
+  if (( ${#registered[@]} == 0 )); then
+    status 'install.error   (none)'
+  else
+    for path in "${registered[@]}"; do status "install.error   $path"; done
+  fi
+  exit 1
+fi
+status "install.register resolves=$target"
+
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$target/Contents/Info.plist" 2>/dev/null || echo unknown)"
-status "install.complete path=$target version=$version commit=$(git -C "$repo_root" rev-parse --short HEAD)"
+# describe --always --dirty, not rev-parse: a plain revision stamped from a dirty
+# tree names a commit the installed binary was not built from.
+status "install.complete path=$target version=$version commit=$(git -C "$repo_root" describe --always --dirty)"

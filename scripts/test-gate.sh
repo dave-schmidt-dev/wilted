@@ -160,6 +160,16 @@ validate_pixel_snapshot_baselines() {
     fail 'Mac compact player does not own keyboard focus restoration'
   grep -Fq '@AccessibilityFocusState private var accessibilityFocus' "$root/WiltedMac/WiltedMacRootView.swift" ||
     fail 'Mac compact player does not own accessibility focus restoration'
+  # The sidebar draws its own selected row. A List that also tracks selection
+  # stacks AppKit's blue capsule under the leaf-tinted background, and no pixel
+  # baseline can catch it: the offscreen renderer does not draw List selection,
+  # which is why re-recording every baseline after the fix changed nothing.
+  if grep -Eq 'List\(selection:' "$root/WiltedMac/WiltedMacRootView.swift"; then
+    fail 'Mac sidebar List tracks selection, which double-draws the selected row'
+  fi
+  grep -Fq '.accessibilityAddTraits(isSelected ? [.isSelected] : [])' \
+    "$root/WiltedMac/WiltedMacRootView.swift" ||
+    fail 'Mac sidebar does not announce its selected destination to accessibility'
   grep -Fq 'testPodcastPlaybackStaysOutOfArticleSyncWhileArticleQueuesOneCheckpoint' \
     "$root/WiltedMacTests/WiltedVisualSystemTests.swift" ||
     fail 'Mac podcast/article sync-isolation model selector is missing'
