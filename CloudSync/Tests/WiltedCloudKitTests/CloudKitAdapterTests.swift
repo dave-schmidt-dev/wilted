@@ -38,6 +38,31 @@ func transcriptCloudKitMappingRoundTrip() throws {
     #expect(decoded.envelope.sidecar?.encodedSystemFields != nil)
 }
 
+/// The transport must not hold a second opinion about which schema versions
+/// exist. Pinning its check to one global constant rejected every transcript
+/// the moment transcripts reached version two, and no test saw it because the
+/// only transcript case linked against a stale object.
+@Test("record schema versions are accepted per family, not against one global constant")
+func schemaVersionIsValidatedPerRecordFamily() throws {
+    let (item, revisionID) = try article("schema-version")
+    let mapped = try mapper().encode(try WiltedRecordCodec().encode(
+        transcript: try Transcript(itemID: item.itemID, revisionID: revisionID,
+                                   availability: .available, text: "Timed.",
+                                   timing: .published,
+                                   cues: [try TranscriptCue(startSeconds: 0, endSeconds: 1, text: "Timed.")],
+                                   updatedAt: item.createdAt)))
+    #expect(mapped["schemaVersion"] as? Int == Transcript.currentSchemaVersion)
+    #expect(try mapper().decodeMetadataOnly(mapped).envelope.schemaVersion == Transcript.currentSchemaVersion)
+
+    // A version this build does not know is still refused, on either family.
+    mapped["schemaVersion"] = Transcript.currentSchemaVersion + 1
+    #expect(throws: CloudKitSyncError.invalidField("schemaVersion")) { try mapper().decodeMetadataOnly(mapped) }
+
+    let articleRecord = try mapper().encode(try validEnvelope("schema-version-article"))
+    articleRecord["schemaVersion"] = 2
+    #expect(throws: CloudKitSyncError.invalidField("schemaVersion")) { try mapper().decodeMetadataOnly(articleRecord) }
+}
+
 private actor SaveGate {
     private(set) var calls = 0
     var released = false

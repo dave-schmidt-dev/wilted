@@ -223,7 +223,7 @@ public final class CloudKitRecordMapper: @unchecked Sendable {
             }
             let envelope = try WiltedRecordEnvelope(
                 id: id,
-                schemaVersion: try schemaVersion(from: fields),
+                schemaVersion: try schemaVersion(from: fields, recordType: id.recordType),
                 fields: fields,
                 sidecar: WiltedOpaqueSidecar(changeTag: record.recordChangeTag, encodedSystemFields: try encodeSystemFields(record))
             )
@@ -298,12 +298,18 @@ public final class CloudKitRecordMapper: @unchecked Sendable {
         }
     }
 
-    private func schemaVersion(from fields: [String: WiltedFieldValue]) throws -> Int {
+    /// Record families do not move together, so the accepted version depends on
+    /// which family the record belongs to. Pinning this to one global constant
+    /// rejected every transcript the moment transcripts reached version two,
+    /// and the transport is not the right place to hold a second opinion about
+    /// what the schema supports.
+    private func schemaVersion(from fields: [String: WiltedFieldValue], recordType: WiltedRecordType) throws -> Int {
         guard case let .int64(value)? = fields["schemaVersion"] else { throw CloudKitSyncError.missingField("schemaVersion") }
-        guard value == Int64(WiltedRecordCodec.currentSchemaVersion) else {
+        guard let version = Int(exactly: value),
+              WiltedRecordEnvelope.supportedSchemaVersions(for: recordType).contains(version) else {
             throw CloudKitSyncError.invalidField("schemaVersion")
         }
-        return Int(value)
+        return version
     }
 
     private func encode(_ value: WiltedFieldValue, field: String, assetURLs: [String: URL]) throws -> __CKRecordObjCValue {
