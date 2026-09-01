@@ -1,6 +1,7 @@
 {
   "contractVersion": 1,
   "supportedSchemaVersions": [1],
+  "transcriptSchemaVersions": [1, 2],
   "database": {
     "scope": "private",
     "zoneType": "custom",
@@ -62,11 +63,13 @@
         "availability": {"cloudKitType": "String", "enum": ["absent", "available", "stale", "oversized", "malformed"]},
         "format": {"cloudKitType": "String", "enum": ["text/plain"]},
         "updatedAt": {"cloudKitType": "Date", "logicalType": "utcISO8601"},
-        "schemaVersion": {"cloudKitType": "Int64", "logicalType": "supportedSchemaVersion"}
+        "schemaVersion": {"cloudKitType": "Int64", "logicalType": "transcriptSchemaVersion"}
       },
       "optionalFields": {
         "text": {"cloudKitType": "String", "logicalType": "boundedTranscriptText"},
-        "languageCode": {"cloudKitType": "String", "logicalType": "bcp47"}
+        "languageCode": {"cloudKitType": "String", "logicalType": "bcp47"},
+        "timing": {"cloudKitType": "String", "enum": ["none", "published", "aligned"]},
+        "cues": {"cloudKitType": "Bytes", "logicalType": "boundedTranscriptCues"}
       },
       "references": ["itemReference", "revisionReference"]
     },
@@ -99,6 +102,8 @@
   "schemaVersionBehavior": {
     "field": "schemaVersion",
     "acceptedVersions": [1],
+    "transcriptAcceptedVersions": [1, 2],
+    "transcriptVersionRationale": "Timing was added additively at version two: a version-one transcript record carries no timing or cues field and still decodes as untimed. Every other record family stays frozen at version one.",
     "unknownVersion": "reject-without-mutation",
     "missingVersion": "reject-without-mutation",
     "invalidVersion": "reject-without-mutation"

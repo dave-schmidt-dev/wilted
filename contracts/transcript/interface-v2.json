@@ -1,0 +1,64 @@
+{
+  "interfaceVersion": 2,
+  "supersedes": "interface-v1.json",
+  "domainType": "WiltedDomain.Transcript",
+  "changeSummary": "Adds cue timing and its provenance. Additive: a version-one record carries neither field and still decodes as untimed, so no stored data is rewritten.",
+  "identity": {
+    "itemID": "existing ItemID",
+    "revisionID": "existing immutable AudioRevision RevisionID",
+    "recordName": "transcript:<itemID>:<revisionID>"
+  },
+  "fields": {
+    "availability": ["absent", "available", "stale", "oversized", "malformed"],
+    "text": {"nullable": true, "maximumUTF8Bytes": 500000},
+    "format": ["text/plain"],
+    "languageCode": {"nullable": true, "format": "BCP 47"},
+    "timing": {
+      "values": ["none", "published", "aligned"],
+      "default": "none",
+      "meaning": {
+        "none": "plain text only; no cues, and no reading position may be derived",
+        "published": "the feed's own timed transcript (WebVTT, SRT, or podcast JSON)",
+        "aligned": "produced by Wilted's speech-to-text against this exact audio revision"
+      },
+      "rationale": "Timing is provenance, not formatting. A paragraph split by a words-per-minute guess is not evidence of when anything was said and must never drive a reading position or an audio cut, so it is never recorded as timed at all."
+    },
+    "cues": {
+      "nullable": true,
+      "element": {"startSeconds": "double >= 0", "endSeconds": "double >= startSeconds", "text": "non-empty, <= 8192 UTF-8 bytes"},
+      "maximumCount": 20000,
+      "maximumEncodedBytes": 1000000,
+      "ordering": "non-decreasing startSeconds; overlap permitted because published captions routinely overlap",
+      "readingPosition": "the last cue whose startSeconds has passed; nil before the first cue"
+    },
+    "updatedAt": "UTC timestamp",
+    "schemaVersion": [1, 2]
+  },
+  "invariants": [
+    "timing == none if and only if cues are absent",
+    "cues are permitted only for available or stale content",
+    "a schema-version-1 record carries neither timing nor cues",
+    "cues are bound to the RevisionID they were measured against; cutting audio produces a new revision with remapped cues rather than editing these in place"
+  ],
+  "persistence": {
+    "storeSchema": 7,
+    "migration": "lightweight-v6-to-v7-additive-transcript-timing",
+    "rollback": "v6 stores contain no timing columns; migration adds nullable timing and cue columns and does not rewrite existing transcript text",
+    "readAPI": "LocalLibraryStore.transcript(for:revisionID:)"
+  },
+  "cloudKit": {
+    "recordType": "WiltedTranscript",
+    "zone": "WiltedZone",
+    "references": ["WiltedItem", "WiltedRevision"],
+    "writer": "mac",
+    "iphoneMutation": "forbidden",
+    "cueTransport": "zlib-compressed cue JSON in a Bytes field, because a three-hour episode's timing is the largest thing the record carries and the plain text is already spending the byte budget",
+    "livePromotionPerformed": false
+  },
+  "fixtures": [
+    {"availability": "available", "timing": "none", "cues": null, "schemaVersion": 1},
+    {"availability": "available", "timing": "published", "cues": 3, "schemaVersion": 2},
+    {"availability": "available", "timing": "aligned", "cues": 3, "schemaVersion": 2},
+    {"availability": "absent", "timing": "none", "cues": null, "schemaVersion": 2}
+  ]
+}

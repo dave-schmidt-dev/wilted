@@ -1,0 +1,30 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "valid-timed-transcript-publish-decode",
+  "operation": "publishDecode",
+  "expectedValid": true,
+  "records": [
+    {
+      "recordType": "WiltedTranscript",
+      "zoneName": "WiltedZone",
+      "recordName": "transcript:item-timed:rev-timed-v1",
+      "fields": {
+        "itemID": {"type": "String", "value": "item-timed"},
+        "revisionID": {"type": "String", "value": "rev-timed-v1"},
+        "itemReference": {"type": "Reference", "value": {"recordType": "WiltedItem", "recordName": "item:item-timed", "zoneName": "WiltedZone", "action": "none"}},
+        "revisionReference": {"type": "Reference", "value": {"recordType": "WiltedRevision", "recordName": "revision:item-timed:rev-timed-v1", "zoneName": "WiltedZone", "action": "none"}},
+        "availability": {"type": "String", "value": "available"},
+        "text": {"type": "String", "value": "Welcome back to the show. Today we are talking about durable contracts. And why timing has to be evidence, not a guess."},
+        "format": {"type": "String", "value": "text/plain"},
+        "languageCode": {"type": "String", "value": "en-US"},
+        "timing": {"type": "String", "value": "published"},
+        "cues": {"type": "Bytes", "value": "eJxtzsEKwjAQBNBfWXIOoVak0JvfoOBBPGySpSltE0i21iL+u0alFPE6MG/mfBeJMfKBTPA2ibpQhRTk7RJsVSkF041FLU7UmzAQaDQdcAB2BMmFSYmH/IXevTVUqWq3SMdgcYaJACMBY9+1vgHUYWSwY0TdE7xqHNFw+qd/sDW/KfPzL7/3FiY3A7dDhh2mfFcT0LW15A1J8IEBoRkp5YHLE/86WME="},
+        "updatedAt": {"type": "Date", "value": "2026-08-31T20:00:00Z"},
+        "schemaVersion": {"type": "Int64", "value": 2}
+      }
+    }
+  ],
+  "sidecars": {
+    "transcript:item-timed:rev-timed-v1": {"encodedSystemFieldsBase64": "AQI=", "changeTag": "tag-timed-1"}
+  }
+}

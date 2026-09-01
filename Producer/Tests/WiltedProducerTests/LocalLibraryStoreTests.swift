@@ -143,7 +143,7 @@ final class LocalLibraryStoreTests: XCTestCase {
         let migratedTranscript = try await migrated.transcript(for: item.itemID, revisionID: rev.revisionID)
         let migratedInspection = try await migrated.inspect()
         XCTAssertNil(migratedTranscript)
-        XCTAssertEqual(migratedInspection.schemaVersion, .v6)
+        XCTAssertEqual(migratedInspection.schemaVersion, .v7)
     }
 
     /// The V4 -> V5 stage renames the deletion column. A read-back inside one
@@ -202,6 +202,50 @@ final class LocalLibraryStoreTests: XCTestCase {
         let reopened = try LocalLibraryStore(url: url)
         let reopenedTranscript = try await reopened.transcript(for: item.itemID, revisionID: rev.revisionID)
         XCTAssertEqual(reopenedTranscript, transcript)
+    }
+
+    func testTimedTranscriptPersistsCuesAndProvenanceAcrossRelaunch() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article()
+        let rev = try revision(for: item, id: "rev-timed")
+        let cues = [try TranscriptCue(startSeconds: 0, endSeconds: 4.5, text: "First spoken line."),
+                    try TranscriptCue(startSeconds: 4.5, endSeconds: 9.25, text: "Second spoken line.")]
+        let transcript = try Transcript(itemID: item.itemID, revisionID: rev.revisionID,
+                                        availability: .available, text: "First spoken line. Second spoken line.",
+                                        languageCode: "en", timing: .aligned, cues: cues, updatedAt: rev.createdAt)
+        do {
+            let store = try LocalLibraryStore(url: url)
+            try await store.saveReadyRevision(rev, mediaURL: URL(fileURLWithPath: "/tmp/timed.m4a"),
+                                              transcript: transcript)
+        }
+        let reopened = try LocalLibraryStore(url: url)
+        let loaded = try await reopened.transcript(for: item.itemID, revisionID: rev.revisionID)
+        XCTAssertEqual(loaded, transcript)
+        XCTAssertEqual(loaded?.timing, .aligned)
+        XCTAssertEqual(loaded?.cue(at: 5)?.text, "Second spoken line.")
+    }
+
+    /// Re-preparing an episode replaces its transcript. Timing has to be part of
+    /// that replacement: leaving stale cues behind would point the reading
+    /// position at audio that no longer exists.
+    func testUpsertReplacesTimingAndCuesRatherThanLeavingThemBehind() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article()
+        let rev = try revision(for: item, id: "rev-replace")
+        let store = try LocalLibraryStore(url: url)
+        let timed = try Transcript(itemID: item.itemID, revisionID: rev.revisionID, availability: .available,
+                                   text: "Timed body",
+                                   timing: .published,
+                                   cues: [try TranscriptCue(startSeconds: 0, endSeconds: 3, text: "Timed body")],
+                                   updatedAt: rev.createdAt)
+        try await store.saveReadyRevision(rev, mediaURL: URL(fileURLWithPath: "/tmp/replace.m4a"), transcript: timed)
+        let untimed = try Transcript(itemID: item.itemID, revisionID: rev.revisionID, availability: .available,
+                                     text: "Untimed body", updatedAt: rev.createdAt)
+        try await store.save(transcript: untimed)
+        let loaded = try await store.transcript(for: item.itemID, revisionID: rev.revisionID)
+        XCTAssertEqual(loaded, untimed)
+        XCTAssertNil(loaded?.cues, "the replacement carries no timing, so no cues may survive it")
+        XCTAssertEqual(loaded?.timing, TranscriptTiming.none)
     }
 
     func testTranscriptAndRevisionIdentityMustMatchBeforeAtomicSave() async throws {
@@ -503,7 +547,7 @@ final class LocalLibraryStoreTests: XCTestCase {
                                                        playback: try playback(for: item, revision: rev, position: 23))
         let migrated = try LocalLibraryStore(url: url)
         let inspection = try await migrated.inspect()
-        XCTAssertEqual(inspection.schemaVersion, .v6)
+        XCTAssertEqual(inspection.schemaVersion, .v7)
         XCTAssertEqual(inspection.articleCount, 1)
         XCTAssertEqual(inspection.revisionCount, 1)
         XCTAssertEqual(inspection.transcriptCount, 1)
@@ -520,8 +564,11 @@ final class LocalLibraryStoreTests: XCTestCase {
                                                   byteCount: 1, contentHash: "sha256:" + String(repeating: "5", count: 64),
                                                   mediaType: "audio/mp4", createdAt: expectedUpdatedAt, schemaVersion: 3)
         let expectedPlayback = try playback(for: item, revision: rev, position: 23)
+        // Still schema version one and still untimed after the version-seven
+        // migration: adding columns must not restate what an older row claimed.
         let expectedTranscript = try Transcript(itemID: item.itemID, revisionID: rev.revisionID,
-                                                 availability: .available, text: "V5 transcript", updatedAt: expectedUpdatedAt)
+                                                 availability: .available, text: "V5 transcript",
+                                                 updatedAt: expectedUpdatedAt, schemaVersion: 1)
         let expectedStatus = try PreparationStatus(stage: .completed, detail: "V5 ready", fraction: 1,
                                                     cancellable: false,
                                                     terminalResult: try PreparationTerminalResult(outcome: .succeeded, revisionID: rev.revisionID),

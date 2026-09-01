@@ -29,7 +29,8 @@ for expected in \
   "PASS 07-valid-publication-budget.json" \
   "PASS 08-invalid-revision-budget.json" \
   "PASS 09-invalid-aggregate-budget.json" \
-  "PASS 10-valid-transcript.json"; do
+  "PASS 10-valid-transcript.json" \
+  "PASS 11-valid-timed-transcript.json"; do
   if ! printf '%s\n' "$output" | grep -Fqx "$expected"; then
     echo "error: missing fixture result: $expected" >&2
     exit 1
@@ -66,5 +67,31 @@ sed -e 's/"expectedValid": true/"expectedValid": false, "expectedError": "missin
 expect_transcript_rejection unstable-name
 expect_transcript_rejection invalid-language
 expect_transcript_rejection missing-text
+
+# Timing and cues are one fact stated twice, so each half alone must be
+# refused. A record with timing and no cues would scroll against nothing; a
+# record with cues and no timing would present them as evidence it never
+# claimed; and version one predates timing entirely.
+timed_fixture="$fixture_dir/11-valid-timed-transcript.json"
+mkdir "$tmp_dir/timing-without-cues" "$tmp_dir/cues-without-timing" "$tmp_dir/unknown-timing" \
+  "$tmp_dir/version-one-with-timing" "$tmp_dir/cues-not-compressed"
+sed -e 's/"expectedValid": true/"expectedValid": false, "expectedError": "missing-transcript-cues"/' \
+  -e '/"cues":/d' "$timed_fixture" >"$tmp_dir/timing-without-cues/case.json"
+sed -e 's/"expectedValid": true/"expectedValid": false, "expectedError": "unexpected-transcript-cues"/' \
+  -e '/"timing":/d' "$timed_fixture" >"$tmp_dir/cues-without-timing/case.json"
+sed -e 's/"expectedValid": true/"expectedValid": false, "expectedError": "invalid-enum"/' \
+  -e 's/"value": "published"/"value": "guessed"/' "$timed_fixture" >"$tmp_dir/unknown-timing/case.json"
+sed -e 's/"expectedValid": true/"expectedValid": false, "expectedError": "unsupported-schema-version"/' \
+  -e 's/"schemaVersion": {"type": "Int64", "value": 2}/"schemaVersion": {"type": "Int64", "value": 1}/' \
+  "$timed_fixture" >"$tmp_dir/version-one-with-timing/case.json"
+sed -e 's/"expectedValid": true/"expectedValid": false, "expectedError": "invalid-transcript-cues"/' \
+  -e 's/"cues": {"type": "Bytes", "value": "[^"]*"}/"cues": {"type": "Bytes", "value": "bm90LXpsaWI="}/' \
+  "$timed_fixture" >"$tmp_dir/cues-not-compressed/case.json"
+
+expect_transcript_rejection timing-without-cues
+expect_transcript_rejection cues-without-timing
+expect_transcript_rejection unknown-timing
+expect_transcript_rejection version-one-with-timing
+expect_transcript_rejection cues-not-compressed
 
 echo "CloudKit contract gate passed"

@@ -61,6 +61,13 @@ guard try string(database["scope"], "schema.database.scope") == "private",
 }
 let supportedVersions = Set(try (schema["supportedSchemaVersions"] as? [Any] ?? []).map { try integer($0, "schema.supportedSchemaVersions") })
 guard supportedVersions == Set([Int64(1)]) else { throw ContractError("invalid-contract", "only schema version 1 is frozen") }
+// Transcripts are the one family whose own record version moved, because
+// timing was added additively at version two. Version-one transcript records
+// carry no timing or cues field and still decode; every other family stays at
+// version one, and the two sets are validated separately so a stray version
+// bump elsewhere still fails.
+let transcriptVersions = Set(try (schema["transcriptSchemaVersions"] as? [Any] ?? []).map { try integer($0, "schema.transcriptSchemaVersions") })
+guard transcriptVersions == Set([Int64(1), Int64(2)]) else { throw ContractError("invalid-contract", "transcript records accept schema versions 1 and 2") }
 let queryIndexAllowlist = schema["queryIndexAllowlist"] as? [Any] ?? []
 guard queryIndexAllowlist.isEmpty else { throw ContractError("invalid-contract", "Phase 0 must not freeze custom query indexes") }
 let delayOfflineQuota = try object(schema["delayOfflineQuota"], "schema.delayOfflineQuota")
@@ -155,6 +162,7 @@ func validateType(_ field: JSONObject, _ spec: FieldSpec, _ path: String) throws
         if spec.logicalType == "boolean01", n != 0 && n != 1 { try fail("invalid-boolean01", "\(path).value must be 0 or 1") }
         if spec.logicalType == "positive", n <= 0 { try fail("invalid-positive", "\(path).value must be positive") }
         if spec.logicalType == "supportedSchemaVersion", !supportedVersions.contains(n) { try fail("unsupported-schema-version", "\(path).value is not supported") }
+        if spec.logicalType == "transcriptSchemaVersion", !transcriptVersions.contains(n) { try fail("unsupported-schema-version", "\(path).value is not supported") }
     case "Double":
         let n = try number(value, "\(path).value").doubleValue
         if spec.logicalType == "positive", n <= 0 { try fail("invalid-positive", "\(path).value must be positive") }
@@ -173,7 +181,16 @@ func validateType(_ field: JSONObject, _ spec: FieldSpec, _ path: String) throws
         guard try string(reference["action"], "\(path).value.action") == "none" else { try fail("invalid-reference-action", "\(path) must not cascade") }
     case "Bytes":
         let text = try string(value, "\(path).value")
-        guard Data(base64Encoded: text) != nil else { try fail("wrong-field-type", "\(path).value must be base64 bytes") }
+        guard let bytes = Data(base64Encoded: text) else { try fail("wrong-field-type", "\(path).value must be base64 bytes") }
+        if spec.logicalType == "boundedTranscriptCues" {
+            // Cues travel compressed, so the transport check is on the wire
+            // bytes. The uncompressed ceiling belongs to the domain contract,
+            // which is the only thing that can actually parse them.
+            guard bytes.count <= 1_000_000 else { try fail("transcript-cues-too-large", "\(path).value exceeds the 1000000-byte cue limit") }
+            guard bytes.count >= 2, bytes[bytes.startIndex] == 0x78 else {
+                try fail("invalid-transcript-cues", "\(path).value must be zlib-compressed cue JSON")
+            }
+        }
     default:
         try fail("invalid-contract", "unsupported CloudKit type \(spec.type)")
     }
@@ -212,6 +229,26 @@ func validateRecord(_ raw: JSONObject) throws -> (type: String, name: String) {
         }
         if ["absent", "oversized", "malformed"].contains(availability), hasText {
             try fail("unexpected-transcript-text", "WiltedTranscript.text must be absent for unavailable content")
+        }
+        // Timing and cues state one fact twice, so a record carrying half of it
+        // is malformed: a reader would either scroll against nothing or treat
+        // cues as evidence the record never claimed.
+        let timing = try (fields["timing"] as? JSONObject).map { try string($0["value"], "WiltedTranscript.timing.value") } ?? "none"
+        let hasCues = fields["cues"] != nil
+        if timing == "none", hasCues {
+            try fail("unexpected-transcript-cues", "WiltedTranscript.cues must be absent when timing is none")
+        }
+        if timing != "none", !hasCues {
+            try fail("missing-transcript-cues", "WiltedTranscript.cues is required for timed content")
+        }
+        if hasCues, !["available", "stale"].contains(availability) {
+            try fail("unexpected-transcript-cues", "WiltedTranscript.cues must be absent for unavailable content")
+        }
+        // Version one predates timing entirely. A record that declares version
+        // one and still carries timing is claiming a shape that never existed.
+        let version = try integer((fields["schemaVersion"] as? JSONObject)?["value"], "WiltedTranscript.schemaVersion.value")
+        if version == 1, fields["timing"] != nil || hasCues {
+            try fail("unsupported-schema-version", "WiltedTranscript version 1 predates timing")
         }
     }
     guard name == (try recordName(recordType, fields)) else { try fail("unstable-record-name", "\(recordType) record name does not follow the stable rule") }

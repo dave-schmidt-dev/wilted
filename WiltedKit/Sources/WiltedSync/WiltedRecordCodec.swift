@@ -162,8 +162,14 @@ public struct WiltedRecordCodec: Sendable {
         ]
         if let text = transcript.text { fields["text"] = .string(text) }
         if let languageCode = transcript.languageCode { fields["languageCode"] = .string(languageCode) }
+        fields["timing"] = .string(transcript.timing.rawValue)
+        if let cues = transcript.cues { fields["cues"] = .bytes(try TranscriptCueCodec.encode(cues)) }
         fields.merge(opaqueFields) { existing, _ in existing }
+        // The envelope's version and the record's `schemaVersion` field are the
+        // same number on the wire, so they must be set from the same source or
+        // a JSON round trip changes the envelope out from under its own record.
         return try WiltedRecordEnvelope(id: .transcript(transcript.itemID, transcript.revisionID),
+                                        schemaVersion: transcript.schemaVersion,
                                         fields: fields, sidecar: sidecar)
     }
 
@@ -178,6 +184,27 @@ public struct WiltedRecordCodec: Sendable {
               let format = TranscriptFormat(rawValue: try string(envelope, "format")) else {
             throw WiltedSyncError.invalidRecordIdentity
         }
+        // A version-one record has no `timing` field at all, so its absence is
+        // the untimed default rather than a decode failure. A present-but-
+        // unrecognised value is a real mismatch and must not silently downgrade
+        // to "untimed", which would drop cues a newer writer meant to keep.
+        let timing: TranscriptTiming
+        if let raw = try optionalString(envelope, "timing") {
+            guard let parsed = TranscriptTiming(rawValue: raw) else {
+                throw WiltedSyncError.invalidValue(field: "transcript.timing")
+            }
+            timing = parsed
+        } else {
+            timing = .none
+        }
+        var cues: [TranscriptCue]?
+        if case let .bytes(payload)? = envelope.fields["cues"] {
+            do {
+                cues = try TranscriptCueCodec.decode(payload)
+            } catch {
+                throw WiltedSyncError.invalidValue(field: "transcript.cues")
+            }
+        }
         let transcript: Transcript
         do {
             transcript = try Transcript(
@@ -187,13 +214,15 @@ public struct WiltedRecordCodec: Sendable {
                 text: try optionalString(envelope, "text"),
                 format: format,
                 languageCode: try optionalString(envelope, "languageCode"),
+                timing: timing,
+                cues: cues,
                 updatedAt: date(envelope, "updatedAt"),
                 schemaVersion: Int(int64(envelope, "schemaVersion"))
             )
         } catch {
             throw WiltedSyncError.invalidValue(field: "transcript")
         }
-        let known = Set(["itemID", "revisionID", "itemReference", "revisionReference", "availability", "text", "format", "languageCode", "updatedAt", "schemaVersion"])
+        let known = Set(["itemID", "revisionID", "itemReference", "revisionReference", "availability", "text", "format", "languageCode", "timing", "cues", "updatedAt", "schemaVersion"])
         return WiltedDecodedRecord(value: transcript, envelope: envelope,
                                    opaqueFields: envelope.fields.filter { !known.contains($0.key) })
     }
@@ -289,10 +318,14 @@ public struct WiltedRecordCodec: Sendable {
 
     private func validate(_ envelope: WiltedRecordEnvelope, expected: WiltedRecordType) throws {
         guard envelope.id.recordType == expected else { throw WiltedSyncError.invalidRecordIdentity }
-        guard envelope.schemaVersion == Self.currentSchemaVersion else { throw WiltedSyncError.unsupportedSchemaVersion(envelope.schemaVersion) }
+        guard WiltedRecordEnvelope.supportedSchemaVersions(for: expected).contains(envelope.schemaVersion) else {
+            throw WiltedSyncError.unsupportedSchemaVersion(envelope.schemaVersion)
+        }
         guard let version = envelope.fields["schemaVersion"] else { throw WiltedSyncError.missingRequiredField("schemaVersion") }
         guard case let .int64(value) = version else { throw WiltedSyncError.invalidFieldType("schemaVersion") }
-        guard value == 1 else { throw WiltedSyncError.unsupportedSchemaVersion(Int(value)) }
+        guard WiltedRecordEnvelope.supportedSchemaVersions(for: expected).contains(Int(value)) else {
+            throw WiltedSyncError.unsupportedSchemaVersion(Int(value))
+        }
         for name in requiredFields(for: expected) where envelope.fields[name] == nil { throw WiltedSyncError.missingRequiredField(name) }
     }
 

@@ -12,8 +12,9 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     case v4 = 4
     case v5 = 5
     case v6 = 6
+    case v7 = 7
 
-    public static let current: LocalLibrarySchemaVersion = .v6
+    public static let current: LocalLibrarySchemaVersion = .v7
 }
 
 /// The local ownership state used by generation-based remote reconciliation.
@@ -878,17 +879,74 @@ private enum LocalLibrarySchemaV6: VersionedSchema {
     }
 }
 
+private enum LocalLibrarySchemaV7Models {
+    /// The transcript entity as of store version 7: version four's columns plus
+    /// cue timing.
+    ///
+    /// This is a separate class from `LocalLibrarySchemaV4Models.TranscriptRecord`
+    /// rather than two more properties on it. Adding attributes to the shared
+    /// class would silently change what versions four, five, and six mean, and
+    /// SwiftData refuses the result -- two schema versions describing the same
+    /// entity shape are duplicate version checksums, and the container fails to
+    /// open at all. Keeping the old class frozen is what makes the stage a real
+    /// migration instead of a rename of history.
+    @Model final class TranscriptRecord {
+        @Attribute(.unique) var id: String
+        var itemID: String
+        var revisionID: String
+        var availability: String
+        var text: String?
+        var format: String
+        var languageCode: String?
+        var updatedAt: Date
+        var schemaVersion: Int
+        /// Both nullable, so a version-six store migrates by gaining two empty
+        /// columns rather than rewriting a row of transcript text. A nil
+        /// `timing` reads back as `TranscriptTiming.none`, which is precisely
+        /// what a record written before timing existed was claiming.
+        var timing: String?
+        var cues: Data?
+
+        init(_ transcript: Transcript) throws {
+            id = "\(transcript.itemID.rawValue)|\(transcript.revisionID.rawValue)"
+            itemID = transcript.itemID.rawValue
+            revisionID = transcript.revisionID.rawValue
+            availability = transcript.availability.rawValue
+            text = transcript.text
+            format = transcript.format.rawValue
+            languageCode = transcript.languageCode
+            updatedAt = transcript.updatedAt.date
+            schemaVersion = transcript.schemaVersion
+            timing = transcript.timing.rawValue
+            cues = try transcript.cues.map(TranscriptCueCodec.encode)
+        }
+    }
+}
+
+/// Version 7 replaces the transcript entity with one that carries cue timing
+/// and its provenance. Lightweight: the new columns are nullable and no
+/// existing column changes, so no row is rewritten.
+private enum LocalLibrarySchemaV7: VersionedSchema {
+    static let versionIdentifier = Schema.Version(7, 0, 0)
+    static var models: [any PersistentModel.Type] {
+        LocalLibrarySchemaV6.models.filter { $0 != LocalLibrarySchemaV4Models.TranscriptRecord.self }
+            + [LocalLibrarySchemaV7Models.TranscriptRecord.self]
+    }
+}
+
 private enum LocalLibraryMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
         [LocalLibrarySchemaV1.self, LocalLibrarySchemaV2.self, LocalLibrarySchemaV3.self,
-         LocalLibrarySchemaV4.self, LocalLibrarySchemaV5.self, LocalLibrarySchemaV6.self]
+         LocalLibrarySchemaV4.self, LocalLibrarySchemaV5.self, LocalLibrarySchemaV6.self,
+         LocalLibrarySchemaV7.self]
     }
     static var stages: [MigrationStage] {
         [.lightweight(fromVersion: LocalLibrarySchemaV1.self, toVersion: LocalLibrarySchemaV2.self),
          .lightweight(fromVersion: LocalLibrarySchemaV2.self, toVersion: LocalLibrarySchemaV3.self),
          .lightweight(fromVersion: LocalLibrarySchemaV3.self, toVersion: LocalLibrarySchemaV4.self),
          .lightweight(fromVersion: LocalLibrarySchemaV4.self, toVersion: LocalLibrarySchemaV5.self),
-         .lightweight(fromVersion: LocalLibrarySchemaV5.self, toVersion: LocalLibrarySchemaV6.self)]
+         .lightweight(fromVersion: LocalLibrarySchemaV5.self, toVersion: LocalLibrarySchemaV6.self),
+         .lightweight(fromVersion: LocalLibrarySchemaV6.self, toVersion: LocalLibrarySchemaV7.self)]
     }
 }
 
@@ -937,7 +995,7 @@ public actor LocalLibraryStore {
             try migrationFailure?()
         }
         migrationBackupURL = retainedURL
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV6.self)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV7.self)
         let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         if migrate {
             container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
@@ -959,7 +1017,7 @@ public actor LocalLibraryStore {
             retainedURL = try Self.migrationPreflight(at: url).retainedURL
         }
         migrationBackupURL = retainedURL
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV6.self)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV7.self)
         let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         if migrate {
             container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
@@ -1119,8 +1177,13 @@ public actor LocalLibraryStore {
         context.insert(LocalLibrarySchemaV5Models.ArticleRecord(article))
         context.insert(LocalLibrarySchemaV3Models.RevisionRecord(playbackRevision(playback), mediaURL: URL(fileURLWithPath: "/tmp/v5.m4a")))
         context.insert(LocalLibrarySchemaV3Models.PlaybackRecord(playback))
+        // Written through version four's untimed entity on purpose: a fixture
+        // that already carried timing columns would skip the very migration
+        // these tests exist to exercise. It also has to declare schema version
+        // one, because version two is the shape that introduced timing.
         let transcript = try Transcript(itemID: playback.itemID, revisionID: playback.revisionID,
-                                        availability: .available, text: "V5 transcript", updatedAt: playback.updatedAt)
+                                        availability: .available, text: "V5 transcript",
+                                        updatedAt: playback.updatedAt, schemaVersion: 1)
         context.insert(LocalLibrarySchemaV4Models.TranscriptRecord(transcript))
         let status = try PreparationStatus(stage: .completed, detail: "V5 ready", fraction: 1, cancellable: false,
                                             terminalResult: try PreparationTerminalResult(outcome: .succeeded, revisionID: playback.revisionID),
@@ -1241,14 +1304,14 @@ public actor LocalLibraryStore {
     public func transcript(for itemID: ItemID, revisionID: RevisionID) throws -> Transcript? {
         let context = ModelContext(container)
         let id = "\(itemID.rawValue)|\(revisionID.rawValue)"
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV4Models.TranscriptRecord>())
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
             .first(where: { $0.id == id }) else { return nil }
         return try decodeTranscript(record)
     }
 
     private func upsert(_ transcript: Transcript, in context: ModelContext) throws {
         let id = "\(transcript.itemID.rawValue)|\(transcript.revisionID.rawValue)"
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV4Models.TranscriptRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
         if let existing = records.first(where: { $0.id == id }) {
             existing.availability = transcript.availability.rawValue
             existing.text = transcript.text
@@ -1256,20 +1319,37 @@ public actor LocalLibraryStore {
             existing.languageCode = transcript.languageCode
             existing.updatedAt = transcript.updatedAt.date
             existing.schemaVersion = transcript.schemaVersion
+            existing.timing = transcript.timing.rawValue
+            existing.cues = try transcript.cues.map(TranscriptCueCodec.encode)
         } else {
-            context.insert(LocalLibrarySchemaV4Models.TranscriptRecord(transcript))
+            context.insert(try LocalLibrarySchemaV7Models.TranscriptRecord(transcript))
         }
     }
 
-    private func decodeTranscript(_ record: LocalLibrarySchemaV4Models.TranscriptRecord) throws -> Transcript {
+    private func decodeTranscript(_ record: LocalLibrarySchemaV7Models.TranscriptRecord) throws -> Transcript {
         guard let availability = TranscriptAvailability(rawValue: record.availability),
               let format = TranscriptFormat(rawValue: record.format) else {
             throw LocalLibraryStoreError.invalidPreparationStatus("transcript")
         }
+        // A row written before store version 7 has a null `timing`, which is
+        // exactly "untimed". A row with a value the running build does not
+        // recognise is a different matter: reading it as untimed would drop
+        // cues a newer build meant to keep, so it fails instead.
+        let timing: TranscriptTiming
+        if let raw = record.timing {
+            guard let parsed = TranscriptTiming(rawValue: raw) else {
+                throw LocalLibraryStoreError.invalidPreparationStatus("transcript.timing")
+            }
+            timing = parsed
+        } else {
+            timing = .none
+        }
+        let cues = try record.cues.map(TranscriptCueCodec.decode)
         return try Transcript(itemID: ItemID(rawValue: record.itemID),
                               revisionID: RevisionID(rawValue: record.revisionID),
                               availability: availability, text: record.text, format: format,
-                              languageCode: record.languageCode, updatedAt: Timestamp(record.updatedAt),
+                              languageCode: record.languageCode, timing: timing, cues: cues,
+                              updatedAt: Timestamp(record.updatedAt),
                               schemaVersion: record.schemaVersion)
     }
 
@@ -1511,7 +1591,7 @@ public actor LocalLibraryStore {
             }
             for itemID in deleted {
                 for revision in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>()).filter({ $0.itemID == itemID.rawValue }) { context.delete(revision) }
-                for transcript in try context.fetch(FetchDescriptor<LocalLibrarySchemaV4Models.TranscriptRecord>()).filter({ $0.itemID == itemID.rawValue }) { context.delete(transcript) }
+                for transcript in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>()).filter({ $0.itemID == itemID.rawValue }) { context.delete(transcript) }
                 for playback in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>()).filter({ $0.itemID == itemID.rawValue }) { context.delete(playback) }
                 if let article = records.first(where: { $0.id == itemID.rawValue }) { context.delete(article) }
             }
@@ -1528,7 +1608,7 @@ public actor LocalLibraryStore {
         let context = ModelContext(container)
         let articles = try context.fetch(FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>())
         let revisions = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
-        let transcripts = try context.fetch(FetchDescriptor<LocalLibrarySchemaV4Models.TranscriptRecord>())
+        let transcripts = try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
         let playbacks = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
 
         for deletion in commit.deletions {
@@ -2151,6 +2231,6 @@ public actor LocalLibraryStore {
                                       revisionCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>()),
                                       preparationCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>()),
                                       playbackCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>()),
-                                      transcriptCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV4Models.TranscriptRecord>()))
+                                      transcriptCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>()))
     }
 }

@@ -195,8 +195,24 @@ public struct WiltedRecordEnvelope: Codable, Equatable, Sendable {
     public let fields: [String: WiltedFieldValue]
     public let sidecar: WiltedOpaqueSidecar?
 
+    /// The record versions this transport accepts, per family.
+    ///
+    /// The envelope carries no version of its own on the wire -- `encode(to:)`
+    /// writes the fixture shape, and decoding falls back to the record's own
+    /// `schemaVersion` field. So the envelope's version *is* the record's, and
+    /// transcripts moved to two when timing was added. Every other family is
+    /// still frozen at one, and a stray bump there must still be refused.
+    public static func supportedSchemaVersions(for type: WiltedRecordType) -> ClosedRange<Int> {
+        switch type {
+        case .transcript: Transcript.supportedSchemaVersions
+        default: 1...1
+        }
+    }
+
     public init(id: WiltedRecordID, schemaVersion: Int = 1, fields: [String: WiltedFieldValue], sidecar: WiltedOpaqueSidecar? = nil) throws {
-        guard schemaVersion == 1 else { throw WiltedSyncError.unsupportedSchemaVersion(schemaVersion) }
+        guard Self.supportedSchemaVersions(for: id.recordType).contains(schemaVersion) else {
+            throw WiltedSyncError.unsupportedSchemaVersion(schemaVersion)
+        }
         self.id = id
         self.schemaVersion = schemaVersion
         self.fields = fields
