@@ -449,6 +449,9 @@ final class WiltedMacModel {
     private let removesAdvertisements = true
     private var hiddenEpisodeIDs: Set<String> = []
     private var fixtureDownloadFailuresRemaining = 0
+    /// The podcast fixture episode starts out prepared, so the UI test can
+    /// prove a prepared row still offers a way to prepare again.
+    private var fixtureEpisodeIsPrepared = false
     private let podcastFeedClient: PodcastFeedClient
     private let pastedLinkClassifier: PastedLinkClassifier
     private var linkClassificationTask: Task<Void, Never>?
@@ -493,6 +496,7 @@ final class WiltedMacModel {
         self.podcastFeedClient = podcastFeedClient
         self.pastedLinkClassifier = pastedLinkClassifier
         fixtureDownloadFailuresRemaining = arguments.contains("--wilted-ui-fixture-download-failure") ? 1 : 0
+        fixtureEpisodeIsPrepared = arguments.contains("--wilted-ui-fixture-prepared")
 
         if usesFixtureMode {
             let configuredStore = try? LocalLibraryStore(url: self.libraryURL)
@@ -798,8 +802,19 @@ final class WiltedMacModel {
     /// indistinguishable from a hung one.
     func prepareEpisode(_ episode: WiltedMacEpisode) {
 #if canImport(WiltedProducer)
-        guard podcastPreparationTasks[episode.id] == nil,
-              let pipeline = podcastPreparationPipeline,
+        guard podcastPreparationTasks[episode.id] == nil else { return }
+        if fixtureMode {
+            // No worker in fixture mode; the row still has to leave the state
+            // it was in, so a UI test can tell a live control from a drawn one.
+            updateEpisode(episode.id) { $0.preparationState = .preparing(stage: "Preparing…") }
+            podcastPreparationTasks[episode.id] = Task { [weak self] in
+                await Task.yield()
+                self?.updateEpisode(episode.id) { $0.preparationState = .failed("No preparation worker in fixture mode") }
+                self?.podcastPreparationTasks[episode.id] = nil
+            }
+            return
+        }
+        guard let pipeline = podcastPreparationPipeline,
               let itemID = try? ItemID(rawValue: episode.id) else { return }
         updateEpisode(episode.id) { $0.preparationState = .preparing(stage: "Preparing…") }
         podcastOperationMessage = "Preparing \(episode.title)…"
@@ -2206,7 +2221,8 @@ final class WiltedMacModel {
             id: episodeID.rawValue, title: episode.title, feedTitle: feed.title,
             summary: "Field Notes desk", artworkURL: nil, releasedAt: episode.createdAt.date,
             durationSeconds: episode.durationSeconds, playbackSeconds: 0,
-            downloadState: fixtureDownloadFailuresRemaining > 0 ? .notDownloaded : .completed
+            downloadState: fixtureDownloadFailuresRemaining > 0 ? .notDownloaded : .completed,
+            preparationState: fixtureEpisodeIsPrepared ? .prepared(summary: "Synced transcript") : .notPrepared
         )]
         // The Feeds card reads `subscriptions`, which only the store-backed load
         // path populates. Fixture mode assigns the library directly, so it has

@@ -266,7 +266,7 @@ assert_macos_ui_leg_is_executed() {
   assert_contains 'leg_macos_ui_tests()' "$gate"
   assert_contains 'run_leg "${leg_names[7]}" "${leg_reports[7]}" leg_macos_ui_tests' "$gate"
   assert_contains '  macos-ui-tests' "$gate"
-  assert_contains "macos-ui-tests) printf '14" "$gate"
+  assert_contains "macos-ui-tests) printf '15" "$gate"
   assert_contains '-only-testing:WiltedMacUITests' "$gate"
   for method in \
     testEachDestinationExclusivelyOccupiesTheDetailRegion \
@@ -313,7 +313,7 @@ assert_snapshot_contract() {
   assert_contains 'expected_test_count_floor' "$gate"
   assert_contains 'macos-unit-tests) printf' "$gate"
   assert_contains 'ios-pixel-snapshot-tests) printf' "$gate"
-  assert_contains "printf '%s\\n' '{\"totalTestCount\":14}'" "$gate"
+  assert_contains "printf '%s\\n' '{\"totalTestCount\":15}'" "$gate"
   for method in \
     testEveryPreviewStateHasLightAndDarkPixelBaselines \
     testPixelSnapshotSelectorsAreUniqueAndComplete \

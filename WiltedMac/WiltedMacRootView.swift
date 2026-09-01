@@ -774,7 +774,10 @@ private struct WiltedMacEpisodeRow: View {
     }
 
     /// Preparation runs itself after a download. This is for the episode that
-    /// arrived before it existed, and for retrying one that failed.
+    /// arrived before it existed, for retrying one that failed, and for
+    /// redoing one whose result was wrong: a build that never loaded the ad
+    /// detector marked every episode prepared with nothing cut, and removal
+    /// is permanent, so a prepared row with no way back is a dead end.
     @ViewBuilder private var preparationControl: some View {
         switch episode.preparationState {
         case .preparing:
@@ -782,7 +785,9 @@ private struct WiltedMacEpisodeRow: View {
                 .accessibilityLabel("Stop preparing \(episode.title)")
                 .accessibilityIdentifier("wilted-episode-preparation-cancel-\(episode.id)")
         case .prepared:
-            EmptyView()
+            Button("Prepare again") { model.prepareEpisode(episode) }
+                .accessibilityLabel("Prepare \(episode.title) again")
+                .accessibilityIdentifier("wilted-episode-prepare-again-\(episode.id)")
         case .notPrepared, .failed:
             Button("Prepare") { model.prepareEpisode(episode) }
                 .accessibilityLabel("Remove advertisements and sync the transcript for \(episode.title)")

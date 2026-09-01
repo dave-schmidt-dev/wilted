@@ -223,6 +223,32 @@ final class WiltedMacSmokeUITests: XCTestCase {
         )
     }
 
+    /// A build that never loaded the ad detector marked every episode prepared
+    /// with nothing cut, and removal is permanent, so a prepared row had no
+    /// way back. Pressing the control must actually start a run: the fixture
+    /// points at no media, so the row leaves the prepared state rather than
+    /// staying on the summary it started with.
+    func testPreparedEpisodeOffersToPrepareAgain() {
+        let app = launch(arguments: [
+            "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"
+        ])
+        let row = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-row-'")
+        ).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Synced transcript"].exists)
+
+        let again = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-prepare-again-'")
+        ).firstMatch
+        XCTAssertTrue(again.waitForExistence(timeout: 3), "A prepared episode must offer Prepare again.")
+        again.click()
+        XCTAssertTrue(
+            app.staticTexts["Synced transcript"].waitForNonExistence(timeout: 10),
+            "Prepare again must start a run; the row kept the summary it began with."
+        )
+    }
+
     /// The sidebar lists destinations only. It used to repeat every article the
     /// Library detail already showed.
     func testSidebarListsDestinationsOnlyAndNotTheArticleList() {
