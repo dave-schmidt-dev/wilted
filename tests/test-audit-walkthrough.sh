@@ -10,7 +10,7 @@ set -Eeuo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 audit="$root/scripts/audit-walkthrough.sh"
-report="$root/docs/2026-08-31-mac-daily-driver-walkthrough.html"
+report="$root/docs/2026-09-01-mac-daily-driver-walkthrough.html"
 tmp="$(mktemp -d -t wilted-walkthrough-tests.XXXXXX)"
 trap 'rm -rf "$tmp"' EXIT
 
