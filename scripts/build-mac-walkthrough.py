@@ -76,17 +76,31 @@ def geometry(captures):
         ))
     if len(shapes) != 1:
         return ("Frames were not captured at one geometry: "
-                + "; ".join(str(shape) for shape in sorted(shapes))), len(sidecars), None
+                + "; ".join(str(shape) for shape in sorted(shapes))), len(sidecars), None, None
     w, h, cw, ch, ew, eh, inset = shapes.pop()
     line = (f"<code>window={w:g}x{h:g}</code>, <code>captured-pixels={cw}x{ch}</code>, "
             f"<code>embedded-pixels={ew}x{eh}</code>, <code>inset={inset}px per edge</code> "
             f"&mdash; identical across all {len(sidecars)} frames")
-    return line, len(sidecars), (ew, eh)
+    # Backing scale is observed, not assumed: the capture lands on whichever
+    # display the window was restored to, and stating 1x on a Retina run (or
+    # the reverse) would be a false claim inside audited evidence.
+    scale = round(cw / w, 3) if w else None
+    return line, len(sidecars), (ew, eh), scale
 
 
 def build(captures, commit, date_iso, date_human, previous):
-    geometry_line, frame_count, embedded = geometry(captures)
+    geometry_line, frame_count, embedded, scale = geometry(captures)
     embedded_text = f"{embedded[0]}x{embedded[1]}" if embedded else "the size recorded in each sidecar"
+    if scale is None:
+        scale_text = ("Backing scale is not stated here because the frames were not captured at one "
+                      "geometry; each sidecar records its own window frame and pixel size.")
+    elif scale >= 2:
+        scale_text = (f"Captured pixels are {scale:g}x the window's point size, so the window was restored on a "
+                      f"Retina display and these frames are backing-store native.")
+    else:
+        scale_text = (f"Captured pixels are {scale:g}x the window's point size, so the window was restored on a "
+                      f"1x display and these frames are not Retina-native. Text legibility, not layout, is what "
+                      f"that costs.")
     figures = {
         "larder": figure(
             "fig-larder-idle", "4.1-larder-idle",
@@ -100,7 +114,7 @@ def build(captures, commit, date_iso, date_human, previous):
             "&ldquo;Nothing is playing&rdquo;.",
             captures),
         "feeds": figure(
-            "fig-feeds-page", "4.2-feeds-page",
+            "fig-feeds-page", "5.1-feeds-page",
             "The Podcast feeds destination listing subscribed feeds with per-feed controls",
             "<strong>5.1 Podcast feeds.</strong> The destination reached by <code>wilted-navigation-feeds</code>; "
             "its detail pane is <code>wilted-mac-feeds-detail</code>. <code>wilted-feeds-controls</code> holds "
@@ -112,7 +126,7 @@ def build(captures, commit, date_iso, date_human, previous):
             "show-in-Larder switch, and an unsubscribe control.",
             captures),
         "feed-hidden": figure(
-            "fig-feeds-feed-hidden", "4.3-feeds-feed-hidden",
+            "fig-feeds-feed-hidden", "5.2-feeds-feed-hidden",
             "The Podcast feeds destination after one show was hidden from Larder",
             "<strong>5.2 Podcast feeds, one show hidden.</strong> The switch on the first row was activated "
             "during the capture. The row's count line changes from &ldquo;1 episode in Larder&rdquo; to "
@@ -120,7 +134,7 @@ def build(captures, commit, date_iso, date_human, previous):
             "delete anything: the episodes stay in the library and return when the switch goes back on.",
             captures),
         "rail": figure(
-            "fig-playback-rail", "5.1-playback-rail",
+            "fig-playback-rail", "6.1-playback-rail",
             "The bottom rail in its playing state with the full transport row",
             "<strong>6.1 Playback, bottom rail.</strong> The rail has switched from idle to the transport row. "
             "Controls present: <code>wilted-player-status</code>, <code>wilted-player-speed</code>, "
@@ -129,7 +143,7 @@ def build(captures, commit, date_iso, date_human, previous):
             "<code>wilted-player-next</code>, and <code>wilted-player-scrubber</code>.",
             captures),
         "transcript": figure(
-            "fig-playback-transcript", "5.2-transcript-expanded",
+            "fig-playback-transcript", "6.2-transcript-expanded",
             "The transcript panel expanded inline above the bottom rail",
             "<strong>6.2 Transcript, expanded inline.</strong> Activating <code>wilted-player-transcript</code> "
             "expands <code>wilted-player-transcript-expanded</code> in place above the rail rather than opening "
@@ -138,14 +152,14 @@ def build(captures, commit, date_iso, date_human, previous):
             "and follows the audio, and the fixture article here carries no transcript at all.",
             captures),
         "upnext": figure(
-            "fig-playback-upnext", "5.3-up-next-expanded",
+            "fig-playback-upnext", "6.3-up-next-expanded",
             "The Up Next panel expanded inline above the bottom rail",
             "<strong>6.3 Up Next, expanded inline.</strong> Activating <code>wilted-player-up-next</code> expands "
             "<code>wilted-player-up-next-expanded</code> in the same inline position, with the rail's transport "
             "row still reachable. The queue reads &ldquo;Nothing queued&rdquo; because the fixture queues nothing.",
             captures),
         "prep": figure(
-            "fig-prep-frame", "6.1-prep-with-playback",
+            "fig-prep-frame", "7.1-prep-with-playback",
             "The Prep destination with the bottom rail still carrying its playing state",
             "<strong>7.1 Prep, with playback retained.</strong> Switching destination did not remove the rail or "
             "its current-item state, which is the behaviour the always-visible bottom rail is meant to produce. "
@@ -153,7 +167,7 @@ def build(captures, commit, date_iso, date_human, previous):
             "run, so this is the empty Prep route, not an idle one.",
             captures),
         "settings": figure(
-            "fig-settings-frame", "7.1-settings-with-playback",
+            "fig-settings-frame", "8.1-settings-with-playback",
             "The Settings destination with the bottom rail still carrying its playing state",
             "<strong>8.1 Settings, with playback retained.</strong> As on Prep, the rail survives the route "
             "change with its current-item state intact. Sync reads Disabled with the detail &ldquo;Sync is not "
@@ -161,7 +175,7 @@ def build(captures, commit, date_iso, date_human, previous):
             "Upload are rendered disabled in this state.",
             captures),
         "download": figure(
-            "fig-download-recovery", "8.1-download-failure-retry",
+            "fig-download-recovery", "9.1-download-failure-retry",
             "An episode row reporting a failed download and offering retry",
             "<strong>9.1 Download failure and retry.</strong> The download-failure fixture drives "
             "<code>wilted-episode-download-item-&lt;hash&gt;</code> to fail. The status line reads "
@@ -169,7 +183,7 @@ def build(captures, commit, date_iso, date_human, previous):
             "<code>wilted-episode-retry-item-&lt;hash&gt;</code>.",
             captures),
         "quarantine": figure(
-            "fig-settings-recovery", "8.2-sync-quarantine",
+            "fig-settings-recovery", "9.2-sync-quarantine",
             "Settings showing sync quarantined with an account-review recovery control",
             "<strong>9.2 Sync quarantine and account recovery.</strong> The quarantined fixture puts sync into "
             "its blocked state: status reads Quarantined in amber and the detail explains that sync is held "
@@ -202,7 +216,7 @@ def build(captures, commit, date_iso, date_human, previous):
 <table><thead><tr><th>Property</th><th>Observed value</th></tr></thead><tbody>
 <tr><td>Bundle identifier</td><td><code>com.zerodelta.wilted.mac</code></td></tr>
 <tr><td>Signature</td><td><code>CODE_SIGN_IDENTITY=Apple Development</code>, <code>DEVELOPMENT_TEAM=4CJ49V6QHW</code>; the gate verifies the runner with <code>codesign --verify --deep --strict</code> and refuses quarantine or FinderInfo metadata on either bundle</td></tr>
-<tr><td>Captured processes</td><td>Five launches, one per capture scenario. Each frame is scoped to that launch's own window.</td></tr>
+<tr><td>Captured processes</td><td>Six launches across five capture scenarios &mdash; the recovery scenario launches twice, once for the download failure and once for the quarantine notice. Each frame is scoped to its own launch's window.</td></tr>
 <tr><td>Window geometry</td><td>{geometry_line}</td></tr>
 <tr><td>Reproducing this report</td><td><code>WILTED_WALKTHROUGH_CAPTURE=1</code> with <code>-only-testing:WiltedMacUITests/WiltedMacWalkthroughCapture</code> writes the frames and a geometry sidecar beside each one; <code>scripts/build-mac-walkthrough.py</code> assembles this document from that directory</td></tr>
 </tbody></table>
@@ -218,7 +232,7 @@ def build(captures, commit, date_iso, date_human, previous):
 <tr><td>Source inventory</td><td>Shipping-view controls and system handoff descriptions.</td><td>Not runtime or visual evidence.</td></tr>
 </tbody></table>
 <h3>Resolution and crop</h3>
-<p>Every embedded PNG is {embedded_text} because a uniform 8pt inset per edge is removed from the capture: the window's rounded corners are partly transparent, and an uncropped frame can contain readable fragments of whatever sits behind it. The window was restored on a 1x display, so <code>backing-scale</code> is 1.0 and these frames are not Retina-native. Text legibility, not layout, is what that costs.</p>
+<p>Every embedded PNG is {embedded_text} because a uniform 8pt inset per edge is removed from the capture: the window's rounded corners are partly transparent, and an uncropped frame can contain readable fragments of whatever sits behind it. {scale_text}</p>
 </section>
 
 <section id="onboarding"><h2>3. Onboarding and first run</h2>

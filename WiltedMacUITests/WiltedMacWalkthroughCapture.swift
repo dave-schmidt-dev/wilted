@@ -71,7 +71,7 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         navigate.click()
         let card = element(app, "wilted-podcast-feeds")
         XCTAssertTrue(card.waitForExistence(timeout: 15))
-        try write(app, "4.2-feeds-page", into: root)
+        try write(app, "5.1-feeds-page", into: root)
         // The page frame above shows the feeds as found. This one records what
         // the switch actually does, so the report is not left asserting an
         // effect it never captured.
@@ -84,20 +84,20 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-count-'")
         ).firstMatch
         XCTAssertTrue(count.waitForExistence(timeout: 10))
-        try write(app, "4.3-feeds-feed-hidden", into: root)
+        try write(app, "5.2-feeds-feed-hidden", into: root)
         app.terminate()
     }
 
     private func capturePlayback(into root: URL) throws {
         let app = launch(["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts"])
         XCTAssertTrue(element(app, "wilted-player-play-pause").waitForExistence(timeout: 15))
-        try write(app, "5.1-playback-rail", into: root)
+        try write(app, "6.1-playback-rail", into: root)
 
         let transcript = element(app, "wilted-player-transcript")
         if transcript.exists {
             transcript.click()
             XCTAssertTrue(element(app, "wilted-player-transcript-expanded").waitForExistence(timeout: 10))
-            try write(app, "5.2-transcript-expanded", into: root)
+            try write(app, "6.2-transcript-expanded", into: root)
             transcript.click()
         }
 
@@ -105,7 +105,7 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         if upNext.exists {
             upNext.click()
             XCTAssertTrue(element(app, "wilted-player-up-next-expanded").waitForExistence(timeout: 10))
-            try write(app, "5.3-up-next-expanded", into: root)
+            try write(app, "6.3-up-next-expanded", into: root)
             upNext.click()
         }
         app.terminate()
@@ -117,11 +117,11 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
 
         element(app, "wilted-navigation-processor").click()
         XCTAssertTrue(element(app, "wilted-mac-processor-detail").waitForExistence(timeout: 10))
-        try write(app, "6.1-prep-with-playback", into: root)
+        try write(app, "7.1-prep-with-playback", into: root)
 
         element(app, "wilted-navigation-settings").click()
         XCTAssertTrue(element(app, "wilted-sync-controls").waitForExistence(timeout: 10))
-        try write(app, "7.1-settings-with-playback", into: root)
+        try write(app, "8.1-settings-with-playback", into: root)
         app.terminate()
     }
 
@@ -138,7 +138,7 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
             ).firstMatch
             _ = retry.waitForExistence(timeout: 20)
         }
-        try write(failure, "8.1-download-failure-retry", into: root)
+        try write(failure, "9.1-download-failure-retry", into: root)
         failure.terminate()
 
         let quarantined = launch(["--wilted-ui-fixture-ready", "--wilted-ui-fixture-quarantined"])
@@ -146,7 +146,7 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         XCTAssertTrue(settings.waitForExistence(timeout: 15))
         settings.click()
         XCTAssertTrue(element(quarantined, "wilted-sync-controls").waitForExistence(timeout: 10))
-        try write(quarantined, "8.2-sync-quarantine", into: root)
+        try write(quarantined, "9.2-sync-quarantine", into: root)
         quarantined.terminate()
     }
 
