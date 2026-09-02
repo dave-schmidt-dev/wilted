@@ -24,6 +24,7 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         try captureFeeds(into: root)
         try capturePlayback(into: root)
         try captureRoutes(into: root)
+        try capturePrep(into: root)
         try captureRecovery(into: root)
     }
 
@@ -138,6 +139,32 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         element(app, "wilted-navigation-settings").click()
         XCTAssertTrue(element(app, "wilted-sync-controls").waitForExistence(timeout: 10))
         try write(app, "8.1-settings-with-playback", into: root)
+        app.terminate()
+    }
+
+    /// The prepared fixture journals a finished run, so this is the Larder row
+    /// and the Prep page as they read after preparation, and the run's log
+    /// once asked for.
+    private func capturePrep(into root: URL) throws {
+        let app = launch(["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"])
+        XCTAssertTrue(element(app, "wilted-library-order").waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].waitForExistence(timeout: 10))
+        try write(app, "4.2-larder-prepared-episode", into: root)
+
+        element(app, "wilted-navigation-processor").click()
+        let run = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-processor-run-podcast-prepare|'")
+        ).firstMatch
+        XCTAssertTrue(run.waitForExistence(timeout: 10))
+        try write(app, "7.2-prep-recorded-run", into: root)
+
+        let showLog = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-processor-log-toggle-'")
+        ).firstMatch
+        XCTAssertTrue(showLog.waitForExistence(timeout: 5))
+        showLog.click()
+        XCTAssertTrue(app.staticTexts["ads.detect.calls · 50 requests, 0 failed"].waitForExistence(timeout: 5))
+        try write(app, "7.3-prep-run-log", into: root)
         app.terminate()
     }
 

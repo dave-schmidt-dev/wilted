@@ -54,7 +54,7 @@ struct WiltedMacRootView: View {
                     Button {
                         model.selectedNavigation = destination
                     } label: {
-                        Label(destination.title, systemImage: destination.symbolName)
+                        Label(destination.title, symbol: destination.symbolName)
                             .foregroundStyle(
                                 isSelected
                                     ? WiltedTheme.color(.primaryText, scheme: colorScheme)
@@ -264,13 +264,16 @@ private struct WiltedMacLibraryView: View {
             }
 
             if model.libraryItems.isEmpty {
-                ContentUnavailableView(
-                    model.librarySearchQuery.isEmpty ? WiltedScreenCopy.libraryEmpty : "No matching Larder items",
-                    systemImage: model.librarySearchQuery.isEmpty ? "tray" : "magnifyingglass",
-                    description: Text(model.librarySearchQuery.isEmpty
+                ContentUnavailableView {
+                    Label(
+                        model.librarySearchQuery.isEmpty ? WiltedScreenCopy.libraryEmpty : "No matching Larder items",
+                        symbol: model.librarySearchQuery.isEmpty ? WiltedSymbol.larder.rawValue : "magnifyingglass"
+                    )
+                } description: {
+                    Text(model.librarySearchQuery.isEmpty
                         ? WiltedScreenCopy.libraryEmptyDetailProducer
                         : "Try another search or filter.")
-                )
+                }
                 .accessibilityIdentifier("wilted-mac-empty-state")
             } else {
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
@@ -611,6 +614,8 @@ private struct WiltedMacArticleRow: View {
 
     var body: some View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
+            WiltedProduceTile(symbol: .lettuce, size: 56)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(article.title)
                     .font(WiltedTheme.font(.body))
@@ -739,10 +744,7 @@ private struct WiltedMacEpisodeRow: View {
     }
 
     private var fallbackArtwork: some View {
-        RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
-            .fill(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.2))
-            .frame(width: 56, height: 56)
-            .overlay(Image(systemName: "mic.fill").accessibilityHidden(true))
+        WiltedProduceTile(symbol: .cabbage, size: 56)
             .accessibilityLabel("Podcast artwork unavailable for \(episode.title)")
     }
 
@@ -909,6 +911,10 @@ private struct WiltedMacProcessorView: View {
     private func activeRunCard(_ run: WiltedMacProcessorRun) -> some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             HStack {
+                Image(WiltedSymbol.processor)
+                    .font(WiltedTheme.font(.title))
+                    .foregroundStyle(WiltedStatusTone.active.color(colorScheme))
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(run.title)
                         .font(WiltedTheme.font(.title))
@@ -1466,10 +1472,7 @@ struct WiltedMacCompactPlayer: View {
     }
 
     private var fallbackArtwork: some View {
-        RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
-            .fill(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.2))
-            .frame(width: 44, height: 44)
-            .overlay(Image(systemName: model.currentEpisode == nil ? "doc.text.fill" : "mic.fill"))
+        WiltedProduceTile(symbol: model.currentEpisode == nil ? .lettuce : .cabbage, size: 44)
             .accessibilityLabel("Playback artwork unavailable")
     }
 

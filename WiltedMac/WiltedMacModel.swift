@@ -380,9 +380,9 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
 
     var symbolName: String {
         switch self {
-        case .library: "books.vertical"
-        case .feeds: "dot.radiowaves.left.and.right"
-        case .processor: "gearshape.2"
+        case .library: WiltedSymbol.larder.rawValue
+        case .feeds: WiltedSymbol.broccoli.rawValue
+        case .processor: WiltedSymbol.prep.rawValue
         case .settings: "gearshape"
         }
     }

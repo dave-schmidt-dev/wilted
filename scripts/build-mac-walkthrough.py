@@ -113,6 +113,18 @@ def build(captures, commit, date_iso, date_human, previous):
             "on this route; both moved to Podcast feeds. The idle rail (<code>wilted-player-idle</code>) reads "
             "&ldquo;Nothing is playing&rdquo;.",
             captures),
+        "larder-prepared": figure(
+            "fig-larder-prepared", "4.2-larder-prepared-episode",
+            "Wilted Larder showing a prepared episode's row with its outcome summary and no Prepare button",
+            "<strong>4.2 Larder, a prepared episode.</strong> The prepared fixture's row reads "
+            "&ldquo;Ready &middot; 5 ads removed (7:22) &middot; transcript synced&rdquo;: the completion state "
+            "first, then each step's result, journalled by the pipeline when it finished rather than "
+            "reconstructed from the transcript. A prepared row offers Play and Up Next but no Prepare; "
+            "redoing a good run is Prepare again in the row's &hellip; menu "
+            "(<code>wilted-episode-actions-item-&lt;hash&gt;</code>), beside Remove, which is permanent. "
+            "Every row leads with a produce tile where there is no artwork: lettuce for an article, cabbage "
+            "for an episode.",
+            captures),
         "feeds": figure(
             "fig-feeds-page", "5.1-feeds-page",
             "The Podcast feeds destination listing subscribed feeds with per-feed controls",
@@ -141,7 +153,7 @@ def build(captures, commit, date_iso, date_human, previous):
             "Controls present: <code>wilted-player-status</code>, <code>wilted-player-speed</code>, "
             "<code>wilted-player-previous</code>, <code>wilted-player-rewind</code>, "
             "<code>wilted-player-play-pause</code>, <code>wilted-player-forward</code>, "
-            "<code>wilted-player-next</code>, and <code>wilted-player-scrubber</code>.",
+            "<code>wilted-player-next</code>, and <code>wilted-player-scrubber</code>. The speed control opens at the last chosen rate, 1.25x on a fresh install, and keeps whatever is chosen across relaunch. Where the item has no artwork the rail shows the produce tile its row does.",
             captures),
         "transcript": figure(
             "fig-playback-transcript", "6.2-transcript-expanded",
@@ -175,6 +187,25 @@ def build(captures, commit, date_iso, date_human, previous):
             "its current-item state, which is the behaviour the always-visible bottom rail is meant to produce. "
             "Prep reports &ldquo;Nothing is preparing&rdquo; and &ldquo;0 recorded&rdquo;: no fixture starts a "
             "run, so this is the empty Prep route, not an idle one.",
+            captures),
+        "prep-run": figure(
+            "fig-prep-recorded-run", "7.2-prep-recorded-run",
+            "The Prep destination listing one recorded preparation run with its outcome and Show log control",
+            "<strong>7.2 Prep, a recorded run.</strong> The prepared fixture's run appears under Recent runs as "
+            "<code>wilted-processor-run-podcast-prepare|&lt;id&gt;</code> with the episode title, Succeeded, "
+            "the same &ldquo;Ready &middot; 5 ads removed (7:22) &middot; transcript synced&rdquo; sentence "
+            "the Larder row carries, and Show log (<code>wilted-processor-log-toggle-&lt;id&gt;</code>). A "
+            "failed run shows its reason here with Retry beside it; the Larder row for a failure says only "
+            "&ldquo;Preparation failed. See Prep.&rdquo; A running podcast preparation appears under Active "
+            "with the latest worker stage as a sentence, a progress bar, Stop, and the food-processor symbol.",
+            captures),
+        "prep-log": figure(
+            "fig-prep-run-log", "7.3-prep-run-log",
+            "The same recorded run with its log expanded, listing every journalled worker status",
+            "<strong>7.3 Prep, the run's log.</strong> Show log lists every journalled status of that run in "
+            "the worker's own words (<code>ads.detect.calls &middot; 50 requests, 0 failed</code>, "
+            "<code>transcript.stt.start</code>), one line per stage with its time. The log is per run and "
+            "opt-in; Hide log collapses it.",
             captures),
         "settings": figure(
             "fig-settings-frame", "8.1-settings-with-playback",
@@ -226,11 +257,11 @@ def build(captures, commit, date_iso, date_human, previous):
 <table><thead><tr><th>Property</th><th>Observed value</th></tr></thead><tbody>
 <tr><td>Bundle identifier</td><td><code>com.zerodelta.wilted.mac</code></td></tr>
 <tr><td>Signature</td><td><code>CODE_SIGN_IDENTITY=Apple Development</code>, <code>DEVELOPMENT_TEAM=4CJ49V6QHW</code>; the gate verifies the runner with <code>codesign --verify --deep --strict</code> and refuses quarantine or FinderInfo metadata on either bundle</td></tr>
-<tr><td>Captured processes</td><td>Six launches across five capture scenarios &mdash; the recovery scenario launches twice, once for the download failure and once for the quarantine notice. Each frame is scoped to its own launch's window.</td></tr>
+<tr><td>Captured processes</td><td>Seven launches across six capture scenarios &mdash; the recovery scenario launches twice, once for the download failure and once for the quarantine notice. Each frame is scoped to its own launch's window.</td></tr>
 <tr><td>Window geometry</td><td>{geometry_line}</td></tr>
 <tr><td>Reproducing this report</td><td><code>scripts/record-walkthrough-frames.sh</code> writes the frames and a geometry sidecar beside each one, by setting <code>WILTED_WALKTHROUGH_CAPTURE=1</code> inside the generated scheme's TestAction and running <code>-only-testing:WiltedMacUITests/WiltedMacWalkthroughCapture</code>; <code>scripts/build-mac-walkthrough.py</code> assembles this document from that directory</td></tr>
 </tbody></table>
-<div class="warning"><strong>What changed since the {previous} report.</strong> Larder had two address boxes, one for articles and one for feeds, and carried the whole Podcast feeds card besides. It now has one box that reads the pasted document and decides for itself which kind it is, and feed upkeep has moved to its own destination. Frames 4.1, 5.1, and 5.2 are the evidence for both changes. The remaining frames were retaken at this commit rather than reused, because the sidebar gained a fourth destination and appears in all of them.</div>
+<div class="warning"><strong>What changed since the {previous} report.</strong> Fourteen commits, all on the same routes. The sidebar, the rows, the rail, and the empty Larder now use Wilted&rsquo;s own symbols (a larder, a cutting board for Prep, broccoli for Podcast feeds, lettuce for an article, cabbage for an episode, a food processor for a run in progress); they appear in every frame. Now Playing gained a Notes pane for episodes (6.4), and an episode row leads with its notes&rsquo; opening sentence. Preparation detail left the Larder row for Prep: a prepared row carries the outcome sentence (4.2), Prep lists each run with Show log and, for a failure, Retry (7.2, 7.3), and Prepare again and Remove live in the row&rsquo;s &hellip; menu; Remove is now permanent. The Larder order and the playback speed survive relaunch, and the speed defaults to 1.25x. Under the surface the pipeline reads the episode twice (a plain pass for advertisement detection and a punctuated pass for reading), corrects names and addresses from the show notes, and no longer primes the audio output at launch, which was the click on opening. Every frame was retaken at this commit.</div>
 </section>
 
 <section id="method"><h2>2. Method and evidence labels</h2>
@@ -252,9 +283,10 @@ def build(captures, commit, date_iso, date_human, previous):
 </section>
 
 <section id="library"><h2>4. Larder</h2>
-<p>Larder is the primary library destination and the default route at launch. The sidebar (<code>wilted-mac-sidebar</code>) holds the wordmark and four destinations: <code>wilted-navigation-library</code>, <code>wilted-navigation-feeds</code>, <code>wilted-navigation-processor</code>, and <code>wilted-navigation-settings</code>. The detail pane is <code>wilted-mac-library-detail</code>.</p>
+<p>Larder is the primary library destination and the default route at launch. The sidebar (<code>wilted-mac-sidebar</code>) holds the wordmark and four destinations: <code>wilted-navigation-library</code>, <code>wilted-navigation-feeds</code>, <code>wilted-navigation-processor</code>, and <code>wilted-navigation-settings</code>, drawn with the larder, broccoli, cutting-board, and gear symbols; the first three are Wilted&rsquo;s own, compiled from <code>Shared/WiltedSymbols.xcassets</code>. The detail pane is <code>wilted-mac-library-detail</code>.</p>
 <p>Larder is for the things worth reading and listening to. Adding something is one field and one button; there is no second box, and nothing asks the reader to say in advance whether an address is an article or a podcast. An address ending <code>.xml</code>, <code>.rss</code>, or <code>.atom</code> is taken as a feed without a fetch. Anything else is fetched once, bounded, and read: a document whose root element is <code>&lt;rss&gt;</code>, <code>&lt;feed&gt;</code>, or <code>&lt;rdf:RDF&gt;</code> is a feed, and a page is an article. A page that publishes a feed of its own is still saved as the article that was pasted, with the feed offered as an explicit Subscribe action rather than followed silently. While the fetch is in flight the box says so in <code>wilted-link-status</code>, and an address that cannot be reached is reported there rather than guessed at.</p>
 {figures["larder"]}
+{figures["larder-prepared"]}
 <p>Per-item controls carry a stable content hash in their identifier: <code>wilted-article-row-item-&lt;hash&gt;</code> and <code>wilted-episode-row-item-&lt;hash&gt;</code> for the rows, with <code>wilted-article-actions-item-&lt;hash&gt;</code> and <code>wilted-episode-actions-item-&lt;hash&gt;</code> for their action menus. These identifiers are present in the Accessibility tree for every captured route.</p>
 </section>
 
@@ -278,6 +310,8 @@ def build(captures, commit, date_iso, date_human, previous):
 <section id="prep"><h2>7. Prep</h2>
 <p>Prep is where preparation runs are reported: what is running now, and what has been recorded. Preparation is the step that removes advertisements from a downloaded episode and produces the audio the player uses.</p>
 {figures["prep"]}
+{figures["prep-run"]}
+{figures["prep-log"]}
 </section>
 
 <section id="settings"><h2>8. Settings</h2>

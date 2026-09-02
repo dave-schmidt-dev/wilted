@@ -21,7 +21,7 @@ public struct WiltedStateCard: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             HStack(alignment: .top, spacing: WiltedTheme.Spacing.medium) {
-                Image(systemName: fixture.state.symbolName)
+                Image(symbol: fixture.state.symbolName)
                     .font(WiltedTheme.font(.title))
                     .foregroundStyle(tint)
                     .frame(width: WiltedTheme.Spacing.minimumTouchTarget, height: WiltedTheme.Spacing.minimumTouchTarget)

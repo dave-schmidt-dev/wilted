@@ -125,7 +125,7 @@ public enum WiltedNavigation: String, CaseIterable, Hashable, Identifiable, Send
 
     public var symbolName: String {
         switch self {
-        case .library: "books.vertical"
+        case .library: WiltedSymbol.larder.rawValue
         case .nowPlaying: "waveform"
         case .downloads: "arrow.down.circle"
         case .settings: "gearshape"
@@ -178,7 +178,7 @@ public struct WiltedRootView: View {
                         Button {
                             selection = item
                         } label: {
-                            Label(item.title, systemImage: item.symbolName)
+                            Label(item.title, symbol: item.symbolName)
                                 .foregroundStyle(
                                     item == selection
                                         ? WiltedTheme.color(.primaryText, scheme: colorScheme)
@@ -207,7 +207,7 @@ public struct WiltedRootView: View {
                 NavigationStack {
                     destination(for: .library)
                 }
-                    .tabItem { Label(WiltedScreenCopy.library, systemImage: WiltedNavigation.library.symbolName) }
+                    .tabItem { Label(WiltedScreenCopy.library, symbol: WiltedNavigation.library.symbolName) }
                     .tag(WiltedNavigation.library)
 
                 NavigationStack {

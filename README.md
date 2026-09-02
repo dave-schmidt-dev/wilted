@@ -73,5 +73,7 @@ Phase 0 contract freeze and the earlier Tasks 3–6 implementation work are comp
 - Secrets belong in BWS and never in committed files.
 - UI code does not write producer state directly; shared domain contracts own identity, transfer, and playback reconciliation.
 - Native UI follows the canonical Zero Delta structure with Wilted's restrained lettuce identity; use literal navigation labels and reserve semantic colors for state.
+- Wilted's own symbols live in `Shared/WiltedSymbols.xcassets` as SF Symbols variable templates (exported from the SF Symbols app; both targets compile the catalog) and are named through `WiltedSymbol` in `Shared/WiltedSymbols.swift`: the larder for the Larder, the cutting board for Prep, the food processor for a preparation in progress, lettuce for an article, cabbage for an episode, broccoli for a feed. `Image(symbol:)` and `Label(_:symbol:)` take either a `wilted.` name or a system name, so a `symbolName` string can be either. A symbol added to the catalog must be added to the enum; `testCustomSymbolsResolveFromTheCatalog` in both unit targets fails on a name the bundle cannot resolve.
+- Pixel baselines are re-recorded with `scripts/record-mac-snapshots.sh [method ...]` and `scripts/record-ios-snapshots.sh [method ...]`; both build from a copy under `$TMPDIR`, as the gate does, and copy the PNGs back so `git status` shows exactly what moved.
 - Update `HISTORY.md` alongside meaningful changes and keep pending work in `TASKS.md`.
 - `HISTORY.md` and `TASKS.md` are local operational documents and are ignored by Git.

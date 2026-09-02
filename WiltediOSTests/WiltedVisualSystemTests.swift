@@ -12,6 +12,14 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(WiltedPreviewState.allCases.contains(.deletedRemotely))
     }
 
+    func testCustomSymbolsResolveFromTheCatalog() {
+        for symbol in WiltedSymbol.allCases {
+            XCTAssertNotNil(UIImage(named: symbol.rawValue), symbol.rawValue)
+        }
+        XCTAssertEqual(WiltedNavigation.library.symbolName, WiltedSymbol.larder.rawValue)
+        XCTAssertEqual(WiltedPreviewState.emptyLibrary.symbolName, WiltedSymbol.larder.rawValue)
+    }
+
     func testStatesHaveStableAccessibilityMetadata() {
         for state in WiltedPreviewState.allCases {
             XCTAssertFalse(state.id.isEmpty)
@@ -79,7 +87,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         )
         XCTAssertEqual(
             WiltedPreviewState.emptyLibrary.renderSignature(variant: variant),
-            "d31aaa7abef44caa"
+            "2ba6962858bc3fb7"
         )
         let signatures = Set(
             WiltedPreviewState.allCases.flatMap { state in

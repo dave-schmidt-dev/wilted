@@ -99,11 +99,11 @@ public struct WiltedListenerLibraryView: View {
                 }
 
                 if model.items.isEmpty {
-                    ContentUnavailableView(
-                        WiltedScreenCopy.libraryEmpty,
-                        systemImage: "tray",
-                        description: Text(WiltedScreenCopy.libraryEmptyDetailListener)
-                    )
+                    ContentUnavailableView {
+                        Label(WiltedScreenCopy.libraryEmpty, symbol: .larder)
+                    } description: {
+                        Text(WiltedScreenCopy.libraryEmptyDetailListener)
+                    }
                     .accessibilityIdentifier("wilted-listener-empty-state")
                 } else if visibleItems.isEmpty {
                     ContentUnavailableView(
@@ -149,6 +149,8 @@ public struct WiltedListenerLibraryView: View {
     /// still lives in Now Playing, which is where it is read.
     private func itemRow(_ item: ListenerLibraryItem) -> some View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
+            WiltedProduceTile(symbol: .lettuce, size: 44)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
                     .font(WiltedTheme.font(.body))

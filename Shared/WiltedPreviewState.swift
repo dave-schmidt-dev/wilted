@@ -96,8 +96,8 @@ public enum WiltedPreviewState: CaseIterable, Hashable, Identifiable, Sendable {
 
     public var symbolName: String {
         switch self {
-        case .emptyLibrary: "tray"
-        case .preparing: "waveform"
+        case .emptyLibrary: WiltedSymbol.larder.rawValue
+        case .preparing: WiltedSymbol.processor.rawValue
         case .cancelling: "xmark.circle"
         case .extractionFailure, .downloadFailure: "exclamationmark.triangle"
         case .speechUnavailable: "speaker.slash"

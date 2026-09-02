@@ -582,6 +582,20 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(WiltedPreviewState.allCases.contains(.incompatibleRevision))
     }
 
+    /// The custom symbols are only symbols if the catalog compiled them under
+    /// the names the code uses; a typo would draw nothing, silently.
+    func testCustomSymbolsResolveFromTheCatalog() {
+        for symbol in WiltedSymbol.allCases {
+            XCTAssertNotNil(NSImage(named: symbol.rawValue), symbol.rawValue)
+        }
+        XCTAssertEqual(WiltedMacNavigation.library.symbolName, WiltedSymbol.larder.rawValue)
+        XCTAssertEqual(WiltedMacNavigation.processor.symbolName, WiltedSymbol.prep.rawValue)
+        XCTAssertEqual(WiltedMacNavigation.feeds.symbolName, WiltedSymbol.broccoli.rawValue)
+        XCTAssertEqual(WiltedPreviewState.preparing(.synthesizing).symbolName, WiltedSymbol.processor.rawValue)
+        XCTAssertEqual(WiltedPreviewState.emptyLibrary.symbolName, WiltedSymbol.larder.rawValue)
+        XCTAssertFalse(WiltedSymbol.isCustom(WiltedMacNavigation.settings.symbolName))
+    }
+
     func testStatesHaveStableUserFacingMetadata() {
         for state in WiltedPreviewState.allCases {
             XCTAssertFalse(state.id.isEmpty)
@@ -719,7 +733,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         )
         XCTAssertEqual(
             WiltedPreviewState.emptyLibrary.renderSignature(variant: variant),
-            "d31aaa7abef44caa"
+            "2ba6962858bc3fb7"
         )
         let signatures = Set(
             WiltedPreviewState.allCases.flatMap { state in

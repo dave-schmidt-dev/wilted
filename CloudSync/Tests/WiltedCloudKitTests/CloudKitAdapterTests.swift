@@ -74,10 +74,12 @@ private actor SaveGate {
 
     func release() { released = true }
 
-    func waitForCalls(_ expected: Int, maxYields: Int = 2_000) async -> Bool {
-        for _ in 0..<maxYields {
+    func waitForCalls(_ expected: Int) async -> Bool {
+        let clock = ContinuousClock()
+        let end = clock.now + .seconds(5)
+        while clock.now < end {
             if calls >= expected { return true }
-            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(2))
         }
         return calls >= expected
     }
@@ -172,54 +174,31 @@ private actor FakeEngineDriver: CloudKitEngineDriver {
     func releaseZoneBootstrap() { zoneRelease.yield(()) }
     func releasePendingAdd() { pendingRelease.yield(()) }
     func releaseRecordFetch() { recordFetchRelease.yield(()) }
-    func waitForEnsureCall(maxYields: Int = 2_000) async -> Bool {
-        for _ in 0..<maxYields {
-            if ensureCalls > 0 { return true }
+    func waitForEnsureCall() async -> Bool { await until { ensureCalls > 0 } }
+    func waitForFetchCall() async -> Bool { await until { fetchCalls > 0 } }
+    func waitForSendCall() async -> Bool { await until { sendCalls > 0 } }
+    func waitForSendCalls(_ expected: Int) async -> Bool { await until { sendCalls >= expected } }
+    func waitForFetchCalls(_ expected: Int) async -> Bool { await until { fetchCalls >= expected } }
+    func waitForPendingAdd(_ expected: Int) async -> Bool { await until { pendingAddCalls >= expected } }
+    func waitForRecordFetch() async -> Bool { await until { recordFetchCalls > 0 } }
+
+    /// Waits for the transport's task to reach the driver. A bare yield loop
+    /// is not enough: when the gate runs its legs side by side, two thousand
+    /// yields can pass in a few milliseconds without the other task ever being
+    /// scheduled, and the test then reports a call that "did not start". So
+    /// this yields first and then sleeps between checks, bounded by wall time.
+    private func until(_ satisfied: () -> Bool, deadline: Duration = .seconds(5)) async -> Bool {
+        let clock = ContinuousClock()
+        let end = clock.now + deadline
+        for _ in 0..<50 {
+            if satisfied() { return true }
             await Task.yield()
         }
-        return ensureCalls > 0
-    }
-    func waitForFetchCall(maxYields: Int = 2_000) async -> Bool {
-        for _ in 0..<maxYields {
-            if fetchCalls > 0 { return true }
-            await Task.yield()
+        while clock.now < end {
+            if satisfied() { return true }
+            try? await Task.sleep(for: .milliseconds(2))
         }
-        return fetchCalls > 0
-    }
-    func waitForSendCall(maxYields: Int = 2_000) async -> Bool {
-        for _ in 0..<maxYields {
-            if sendCalls > 0 { return true }
-            await Task.yield()
-        }
-        return sendCalls > 0
-    }
-    func waitForSendCalls(_ expected: Int, maxYields: Int = 2_000) async -> Bool {
-        for _ in 0..<maxYields {
-            if sendCalls >= expected { return true }
-            await Task.yield()
-        }
-        return sendCalls >= expected
-    }
-    func waitForFetchCalls(_ expected: Int, maxYields: Int = 2_000) async -> Bool {
-        for _ in 0..<maxYields {
-            if fetchCalls >= expected { return true }
-            await Task.yield()
-        }
-        return fetchCalls >= expected
-    }
-    func waitForPendingAdd(_ expected: Int, maxYields: Int = 2_000) async -> Bool {
-        for _ in 0..<maxYields {
-            if pendingAddCalls >= expected { return true }
-            await Task.yield()
-        }
-        return pendingAddCalls >= expected
-    }
-    func waitForRecordFetch(maxYields: Int = 2_000) async -> Bool {
-        for _ in 0..<maxYields {
-            if recordFetchCalls > 0 { return true }
-            await Task.yield()
-        }
-        return recordFetchCalls > 0
+        return satisfied()
     }
 }
 
