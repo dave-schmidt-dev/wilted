@@ -998,7 +998,8 @@ final class WiltedMacModel {
         case "transcript.stt.readable.start": "Transcribing again for reading…"
         case "transcript.stt.readable.complete": "Readable transcript ready."
         case "transcript.stt.readable.failed", "transcript.stt.readable.rejected": "Keeping the plain transcript."
-        case "transcript.glossary.terms", "transcript.glossary.complete": "Correcting names from the show notes…"
+        case "transcript.glossary.terms", "transcript.glossary.progress", "transcript.glossary.complete":
+            "Correcting names from the show notes…"
         case "transcript.prose.extract", "transcript.prose.accepted": "Reading the episode page…"
         case "transcript.absent": "No transcript available."
         case "transcript.remap": "Resynchronising the transcript…"

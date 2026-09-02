@@ -50,7 +50,7 @@ Explicitly excluded from the active Mac milestone: automatic classification, wea
 | `LICENSE` | MIT license. |
 | `contracts/` | Domain, CloudKit, and audio contracts with checked-in fixtures and evidence. |
 | `Probes/` | Credential-free speech, extraction, persistence, audio, and signed-runtime probes. |
-| `scripts/` | Contract validators and phase gates. |
+| `scripts/` | Contract validators, phase gates, snapshot and walkthrough tooling. |
 | `tests/` | Probe and aggregate gate runners. |
 | `docs/` | Capability inventory and phase/task verification records. |
 | `WiltedKit/` | CloudKit-free shared Swift domain package and tests. |
@@ -74,6 +74,6 @@ Phase 0 contract freeze and the earlier Tasks 3–6 implementation work are comp
 - UI code does not write producer state directly; shared domain contracts own identity, transfer, and playback reconciliation.
 - Native UI follows the canonical Zero Delta structure with Wilted's restrained lettuce identity; use literal navigation labels and reserve semantic colors for state.
 - Wilted's own symbols live in `Shared/WiltedSymbols.xcassets` as SF Symbols variable templates (exported from the SF Symbols app; both targets compile the catalog) and are named through `WiltedSymbol` in `Shared/WiltedSymbols.swift`: the larder for the Larder, the cutting board for Prep, the food processor for a preparation in progress, lettuce for an article, cabbage for an episode, broccoli for a feed. `Image(symbol:)` and `Label(_:symbol:)` take either a `wilted.` name or a system name, so a `symbolName` string can be either. A symbol added to the catalog must be added to the enum; `testCustomSymbolsResolveFromTheCatalog` in both unit targets fails on a name the bundle cannot resolve.
-- Pixel baselines are re-recorded with `scripts/record-mac-snapshots.sh [method ...]` and `scripts/record-ios-snapshots.sh [method ...]`; both build from a copy under `$TMPDIR`, as the gate does, and copy the PNGs back so `git status` shows exactly what moved.
+- Pixel baselines are re-recorded with `scripts/record-mac-snapshots.sh [method ...]` and `scripts/record-ios-snapshots.sh [method ...]`; both build from a copy under `$TMPDIR`, as the gate does, and copy the PNGs back so `git status` shows exactly what moved. The Mac daily-driver walkthrough is captured with `scripts/record-walkthrough-frames.sh`, built into an HTML report by `scripts/build-mac-walkthrough.py`, and audited by `scripts/audit-walkthrough.sh`.
 - Update `HISTORY.md` alongside meaningful changes and keep pending work in `TASKS.md`.
 - `HISTORY.md` and `TASKS.md` are local operational documents and are ignored by Git.

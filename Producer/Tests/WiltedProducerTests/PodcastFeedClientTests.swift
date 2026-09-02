@@ -86,6 +86,27 @@ struct PodcastFeedClientTests {
         #expect(!notes.contains("Channel blurb"))
     }
 
+    /// A list inside a list item, a single-quoted `href`, and a hex numeric
+    /// entity: three paths the readable-text decoder does not exercise
+    /// elsewhere in this suite.
+    @Test func rendersNestedListsSingleQuotedLinksAndHexEntities() async throws {
+        let result = try await client(xml: feed(item: """
+        <description><![CDATA[<p>Topics&#x2019; rundown:</p>
+        <ul><li>Top stories<ul><li>First story</li><li>Second story</li></ul></li>
+        <li>Sponsor: <a href='https://sponsor.example.test/deal'>sponsor.example.test/deal</a></li></ul>]]></description>
+        <enclosure url="https://cdn.example.test/one.mp3" type="audio/mpeg" />
+        """)).load(sourceURL)
+        let notes = try #require(result.episodes[0].notes)
+        #expect(notes == """
+        Topics’ rundown:
+
+        - Top stories
+        - First story
+        - Second story
+        - Sponsor: sponsor.example.test/deal
+        """)
+    }
+
     @Test func showNotesAreOptionalAndOverLongNotesAreCutNotRefused() async throws {
         let bare = try await client(xml: feed(item: #"<enclosure url="https://cdn.example.test/one.mp3" type="audio/mpeg" />"#)).load(sourceURL)
         #expect(bare.episodes[0].notes == nil)

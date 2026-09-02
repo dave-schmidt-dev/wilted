@@ -553,6 +553,69 @@ class GlossaryTests(unittest.TestCase):
                 self.assertEqual(wp.polish_with_notes({"episodeNotes": "x"}, cues), cues)
         self.assertIn("transcript.glossary.failed", err.getvalue())
 
+    def test_a_term_at_the_very_start_and_end_of_a_cue_is_matched(self):
+        cues = [{"startSeconds": 0, "endSeconds": 1, "text": "leo laporte opened the show for nvidia"}]
+        out, edits = wp.apply_glossary(cues, self.glossary(), self.DICTIONARY)
+        self.assertEqual(out[0]["text"], "Leo Laporte opened the show for NVIDIA")
+        self.assertEqual(edits, 2)
+
+    def test_a_cue_of_only_punctuation_is_left_alone(self):
+        cues = [{"startSeconds": 0, "endSeconds": 1, "text": "... -- !!!"}]
+        out, edits = wp.apply_glossary(cues, self.glossary(), self.DICTIONARY)
+        self.assertEqual(out[0]["text"], "... -- !!!")
+        self.assertEqual(edits, 0)
+        self.assertIs(out[0], cues[0], "an untouched cue is the same object, not a copy")
+
+    def test_an_empty_glossary_returns_the_cues_untouched(self):
+        cues = [{"startSeconds": 0, "endSeconds": 1, "text": "leo laporte said hello"}]
+        out, edits = wp.apply_glossary(cues, [], self.DICTIONARY)
+        self.assertEqual(edits, 0)
+        self.assertIs(out, cues, "no glossary is a no-op, not a copy")
+
+    def test_an_unchanged_cue_is_the_identical_object_a_changed_one_is_not(self):
+        untouched = {"startSeconds": 0, "endSeconds": 1, "text": "nothing here matches anything"}
+        changed = {"startSeconds": 1, "endSeconds": 2, "text": "leo laporte spoke"}
+        out, edits = wp.apply_glossary([untouched, changed], self.glossary(), self.DICTIONARY)
+        self.assertEqual(edits, 1)
+        self.assertIs(out[0], untouched, "apply_glossary must not copy cues it does not edit")
+        self.assertIsNot(out[1], changed, "an edited cue is a new dict, so the input is never mutated")
+        self.assertEqual(changed["text"], "leo laporte spoke", "input is not mutated")
+
+    def test_a_locked_span_is_not_re_matched_by_a_shorter_term(self):
+        cues = [{"startSeconds": 0, "endSeconds": 1, "text": "leo laporte was there"}]
+        # "Laporte" alone is a near-miss of nothing inside "Leo Laporte" once
+        # the longer term has claimed those words; a second, shorter term must
+        # not carve a piece back out of an already-corrected name.
+        out, edits = wp.apply_glossary(cues, ["Leo Laporte", "Laporte"], self.DICTIONARY)
+        self.assertEqual(out[0]["text"], "Leo Laporte was there")
+        self.assertEqual(edits, 1)
+
+    def test_url_hosts_with_hyphens_and_digits_are_captured(self):
+        notes = "Sponsors:\n- join-bilt.com\n- web3.com\n- gpt4.dev\n"
+        terms = wp.build_glossary(notes, "", self.DICTIONARY)
+        for expected in ["join-bilt.com", "web3.com", "gpt4.dev"]:
+            self.assertIn(expected, terms)
+
+    def test_names_with_unicode_letters_are_recognised(self):
+        # A regression check: `_WORD` is `[A-Za-z0-9][A-Za-z0-9'&.-]*`, which
+        # does not match a letter like "ö". Before this is fixed, "Söderberg"
+        # splits into "S" and "derberg" and the guest's name never becomes a
+        # glossary term at all -- the exact failure this feature exists to fix.
+        notes = "Guest: Erik Söderberg joins us this week."
+        terms = wp.build_glossary(notes, "", self.DICTIONARY)
+        self.assertIn("Erik Söderberg", terms)
+
+    def test_notes_beyond_the_32kib_cap_still_produce_a_bounded_glossary(self):
+        # The 32 KiB cap on stored notes is enforced upstream (Swift); this
+        # worker takes whatever `episodeNotes` it is handed, so it must not
+        # choke on, or unboundedly grow terms for, a large payload.
+        lines = [f"- Guest: Speaker Number{i} joins to discuss Product{i} Corp\n" for i in range(600)]
+        notes = "".join(lines)
+        self.assertGreater(len(notes.encode("utf-8")), 32 * 1024)
+        terms = wp.build_glossary(notes, "", self.DICTIONARY)
+        self.assertEqual(len(terms), wp.GLOSSARY_MAXIMUM_TERMS, "the term list is capped, not left to grow with the notes")
+        self.assertTrue(all(t.startswith("Speaker Number") or t.startswith("Product") for t in terms))
+
 
 class RunTests(unittest.TestCase):
     def setUp(self):

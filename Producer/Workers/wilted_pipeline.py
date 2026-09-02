@@ -33,6 +33,7 @@ import re
 import shutil
 import sys
 import tempfile
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -238,7 +239,9 @@ content members exclusive
 GLOSSARY_MINIMUM_SIMILARITY = 0.8
 GLOSSARY_MINIMUM_FUZZY_LETTERS = 6
 GLOSSARY_MAXIMUM_TERMS = 200
-_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'&.-]*")
+# Letters in any script, not [A-Za-z]: "Söderberg" is one word, not "S" and
+# "derberg". [^\W_] is Unicode-aware alphanumerics without the underscore.
+_WORD = re.compile(r"[^\W_][^\W_'&.-]*(?:['&.-][^\W_]+)*")
 _LABEL = re.compile(r"\s*(?:[-*\u2022]\s*)?[A-Za-z][A-Za-z ]{0,24}:\s+")
 _MARKS = ".,;:?!\"'()[]\u201c\u201d\u2018\u2019"
 _EDGE_MARKS = re.compile(r"^[\"'(\[\u201c\u2018]*")
@@ -401,11 +404,21 @@ def _spoken(term: str) -> list[str]:
     return [w for w in re.split(r"[\s]+", term.lower().replace(".", " dot ")) if w]
 
 
+def _fold(text: str) -> str:
+    """Lower case with diacritics removed: "Söderberg" and "soderberg" agree,
+    which is how speech-to-text tends to write a name it has not seen."""
+    decomposed = unicodedata.normalize("NFKD", text.lower())
+    return "".join(c for c in decomposed if not unicodedata.combining(c))
+
+
 def _squash(words: list[str]) -> str:
-    return re.sub(r"[^a-z0-9]", "", "".join(words).lower())
+    return re.sub(r"[^a-z0-9]", "", _fold("".join(words)))
 
 
-def apply_glossary(cues: list[dict], glossary: list[str], dictionary: frozenset[str] | None = None) -> tuple[list[dict], int]:
+def apply_glossary(
+    cues: list[dict], glossary: list[str], dictionary: frozenset[str] | None = None,
+    on_progress=None,
+) -> tuple[list[dict], int]:
     """Rewrite cue text with the glossary; returns the cues and the edit count.
 
     Exact lower-case hits take the notes' casing. A near-miss is replaced only
@@ -413,6 +426,11 @@ def apply_glossary(cues: list[dict], glossary: list[str], dictionary: frozenset[
     itself made of dictionary words spelled correctly, and the term is not a
     plain dictionary word -- misreading "flock" into every "block" would be
     worse than the lower case it fixes.
+
+    Cost is cues x terms, and a notes-dense episode reaches 200 terms over
+    1,300 cues, so each cue's word forms are computed once and a term is
+    tried at a word only when that word could begin it. `on_progress(done,
+    total)` is called every few hundred cues; the caller owns the surface.
     """
     if not cues or not glossary:
         return cues, 0
@@ -425,25 +443,37 @@ def apply_glossary(cues: list[dict], glossary: list[str], dictionary: frozenset[
             len(squashed) >= GLOSSARY_MINIMUM_FUZZY_LETTERS
             and not (len(spoken) == 1 and _in_dictionary(spoken[0], dictionary))
         )
-        entries.append((spoken, term, fuzzy, squashed))
+        entries.append((spoken, term, fuzzy, squashed, squashed[:1]))
     edits = 0
     rewritten: list[dict] = []
-    for cue in cues:
+    total = len(cues)
+    for done, cue in enumerate(cues):
+        if on_progress and done and done % 250 == 0:
+            on_progress(done, total)
         words = cue["text"].split()
+        forms = [_WordForm.of(w) for w in words]
         # A replaced span is final: "Leo Laporte" must not be re-read as a
         # near-miss of "Laporte" by the next, shorter term.
         locked = [False] * len(words)
         changed = False
-        for spoken, term, fuzzy, squashed in entries:
+        for spoken, term, fuzzy, squashed, initial in entries:
+            first = spoken[0]
             index = 0
             while index < len(words):
                 if locked[index]:
                     index += 1
                     continue
-                hit = _glossary_window(words, index, spoken, term, fuzzy, squashed, dictionary)
+                form = forms[index]
+                # An exact hit starts with the term's first word; a near-miss
+                # starts with its first letter. Anything else cannot match.
+                if form.stem != first and not (fuzzy and form.squashed[:1] == initial):
+                    index += 1
+                    continue
+                hit = _glossary_window(words, forms, index, spoken, term, fuzzy, squashed, dictionary)
                 if hit and not any(locked[index:index + hit[0]]):
                     size, replacement = hit
                     words[index:index + size] = [replacement]
+                    forms[index:index + size] = [_WordForm.of(replacement)]
                     locked[index:index + size] = [True]
                     changed = True
                     edits += 1
@@ -454,9 +484,38 @@ def apply_glossary(cues: list[dict], glossary: list[str], dictionary: frozenset[
     return rewritten, edits
 
 
+@dataclass(frozen=True)
+class _WordForm:
+    """One transcript word, with the marks around it and its comparable forms
+    worked out once rather than per glossary term."""
+
+    raw: str
+    lead: str
+    trail: str
+    bare: str
+    lower: str
+    stem: str  # lower without a trailing possessive: "meta's" begins "Meta"
+    squashed: str
+
+    @classmethod
+    def of(cls, raw: str) -> "_WordForm":
+        bare = raw.strip(_MARKS)
+        lower = bare.lower()
+        stem = lower[:-2] if lower.endswith("'s") and len(lower) > 2 else lower
+        return cls(
+            raw=raw,
+            lead=_EDGE_MARKS.match(raw).group(0),
+            trail=_TRAILING_MARKS.search(raw).group(0),
+            bare=bare,
+            lower=lower,
+            stem=stem,
+            squashed=_squash([bare]),
+        )
+
+
 def _glossary_window(
-    words: list[str], index: int, spoken: list[str], term: str, fuzzy: bool, squashed: str,
-    dictionary: frozenset[str],
+    words: list[str], forms: list[_WordForm], index: int, spoken: list[str], term: str,
+    fuzzy: bool, squashed: str, dictionary: frozenset[str],
 ) -> tuple[int, str] | None:
     """The words at `index` that say `term`, as (count, replacement), or None.
 
@@ -469,26 +528,30 @@ def _glossary_window(
         raw = words[index:index + size]
         if len(raw) < size:
             break
+        window = forms[index:index + size]
         # A punctuating transcript writes "Abuelsamid." and "(Waymo)"; the
         # marks around the name go back around the corrected one.
-        lead = _EDGE_MARKS.match(raw[0]).group(0)
-        trail = _TRAILING_MARKS.search(raw[-1]).group(0)
-        window = [w.strip(_MARKS) for w in raw]
-        if not all(window):
+        lead = window[0].lead
+        trail = window[-1].trail
+        if not all(form.bare for form in window):
             continue
-        possessive = window[-1].lower().endswith("'s") and len(window[-1]) > 2
+        last = window[-1].bare
+        possessive = last.lower().endswith("'s") and len(last) > 2
+        lowered = [form.lower for form in window]
+        bare = [form.bare for form in window]
         if possessive:
-            window[-1] = window[-1][:-2]
+            lowered[-1] = lowered[-1][:-2]
+            bare[-1] = last[:-2]
         replacement = lead + term + ("'s" if possessive else "") + trail
-        if [w.lower() for w in window] == spoken:
+        if lowered == spoken:
             if " ".join(raw) == replacement:
                 return None
             return size, replacement
         if not fuzzy:
             continue
-        if window[0].lower() in GLOSSARY_STOPWORDS or window[-1].lower() in GLOSSARY_STOPWORDS:
+        if lowered[0] in GLOSSARY_STOPWORDS or lowered[-1] in GLOSSARY_STOPWORDS:
             continue
-        candidate = _squash(window)
+        candidate = _squash(bare) if possessive else "".join(form.squashed for form in window)
         if not candidate or abs(len(candidate) - len(squashed)) > 3 or candidate[0] != squashed[0]:
             continue
         if candidate == squashed:
@@ -499,7 +562,7 @@ def _glossary_window(
             continue
         # Real words that happen to sound like a name are still those words:
         # "using" is not "Usain", and "plate for" is not "Platforms".
-        if all(_in_dictionary(w, dictionary) for w in window):
+        if all(_in_dictionary(w, dictionary) for w in bare):
             continue
         matcher = difflib.SequenceMatcher(None, candidate, squashed)
         if matcher.quick_ratio() < GLOSSARY_MINIMUM_SIMILARITY:
@@ -521,7 +584,10 @@ def polish_with_notes(request: dict, cues: list[dict]) -> list[dict]:
         progress("transcript.glossary.terms", f"{len(glossary)} terms from the show notes")
         if not glossary:
             return cues
-        cues, edits = apply_glossary(cues, glossary)
+        cues, edits = apply_glossary(
+            cues, glossary,
+            on_progress=lambda done, total: progress("transcript.glossary.progress", f"{done} of {total} cues"),
+        )
         progress("transcript.glossary.complete", f"{edits} corrections")
         return cues
     except Exception as error:  # noqa: BLE001 - a polish failure must not cost the transcript

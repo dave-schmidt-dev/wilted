@@ -106,6 +106,21 @@ wilted_running_bundle_pids() {
     return 0
 }
 
+# Waits up to <seconds> (default 5) for no process of <identifier> to remain,
+# polling twice a second. Returns 0 when none is left, 1 on timeout. A signal
+# is a request; only an empty process list says the request was honoured.
+wilted_wait_for_bundle_exit() {
+    local identifier="$1" seconds="${2:-5}" polls
+    polls=$(( seconds * 2 ))
+    (( polls > 0 )) || polls=1
+    while (( polls > 0 )); do
+        [[ -n "$(wilted_running_bundle_pids "$identifier")" ]] || return 0
+        sleep 0.5
+        polls=$(( polls - 1 ))
+    done
+    [[ -z "$(wilted_running_bundle_pids "$identifier")" ]]
+}
+
 # Unregisters every bundle claiming <identifier> except <keep>, then registers
 # <keep>. Stale records for paths that no longer exist are dropped the same way.
 wilted_sweep_registrations() {

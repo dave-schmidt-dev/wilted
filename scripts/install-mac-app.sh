@@ -94,15 +94,25 @@ if (( ${#running[@]} > 0 )); then
     status "install.quit pid=$pid path=$(ps -o comm= -p "$pid" 2>/dev/null || echo unknown)"
   done
   osascript -e "tell application id \"$bundle_id\" to quit" >/dev/null 2>&1 || true
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    [[ -n "$(wilted_running_bundle_pids "$bundle_id")" ]] || break
-    sleep 0.5
-  done
   # A copy the Apple Event did not reach (a second bundle under the same
-  # identifier only sometimes answers) gets a plain terminate.
-  while IFS= read -r pid; do
-    [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null || true
-  done < <(wilted_running_bundle_pids "$bundle_id")
+  # identifier only sometimes answers) gets a plain terminate, then a kill.
+  # Each is a request; the install proceeds only once the process list is
+  # empty, otherwise the old binary outlives the bundle it was loaded from and
+  # keeps running while believing itself current.
+  if ! wilted_wait_for_bundle_exit "$bundle_id" 5; then
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null || true
+    done < <(wilted_running_bundle_pids "$bundle_id")
+    if ! wilted_wait_for_bundle_exit "$bundle_id" 5; then
+      while IFS= read -r pid; do
+        [[ -n "$pid" ]] && kill -KILL "$pid" 2>/dev/null || true
+      done < <(wilted_running_bundle_pids "$bundle_id")
+      wilted_wait_for_bundle_exit "$bundle_id" 3 || {
+        status "install.error a running copy would not exit: $(wilted_running_bundle_pids "$bundle_id" | tr '\n' ' ')"
+        exit 1
+      }
+    fi
+  fi
 fi
 
 rm -rf "$target"

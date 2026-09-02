@@ -554,6 +554,7 @@ final class WiltedMacModelTests: XCTestCase {
             ("transcript.stt.start", "Transcribing the audio…"),
             ("transcript.stt.readable.start", "Transcribing again for reading…"),
             ("transcript.stt.readable.rejected", "Keeping the plain transcript."),
+            ("transcript.glossary.progress", "Correcting names from the show notes…"),
             ("transcript.glossary.complete", "Correcting names from the show notes…"),
             ("ads.detect.start", "Finding advertisements…"),
             ("ads.cut.refused", "Advertisements left in place."),

@@ -166,6 +166,26 @@ else
     pass 'running copies are found by bundle identifier, not install path'
 fi
 
+# 11. The installer waits for the process list to empty rather than trusting
+#     that a quit or a signal was honoured. A copy that ignores the request
+#     times the wait out; one that exits ends it early.
+"$running_app/Contents/MacOS/Running" 30 &
+running_pid=$!
+sleep 0.3
+if wilted_wait_for_bundle_exit 'com.example.wilted-install-test' 1; then
+    fail 'wait reported exit while the copy was still running'
+else
+    pass 'wait times out while a copy is still running'
+fi
+disown "$running_pid" 2>/dev/null || true
+( sleep 0.7; kill "$running_pid" 2>/dev/null ) &
+if wilted_wait_for_bundle_exit 'com.example.wilted-install-test' 5; then
+    pass 'wait returns as soon as the last copy exits'
+else
+    fail 'wait did not notice the copy exiting'
+fi
+wait "$running_pid" 2>/dev/null || true
+
 # Wiring: the installer must call each step. A helper nothing calls is not a guard.
 assert_installer_contains() {
     local needle="$1" why="$2"
@@ -187,6 +207,8 @@ assert_installer_contains 'wilted_prune_build_products "$repo_root" "$bundle_id"
     'prunes stale products from the repo build roots'
 assert_installer_contains 'wilted_running_bundle_pids "$bundle_id"' \
     'quits every running copy by identifier'
+assert_installer_contains 'wilted_wait_for_bundle_exit "$bundle_id"' \
+    'waits for running copies to exit before replacing the bundle'
 if grep -Fq 'pgrep -f "$target/Contents/MacOS/"' "$installer"; then
     fail 'installer still looks for a running copy at the install path only'
 else
