@@ -310,6 +310,36 @@ public struct PreparationJournalEntry: Codable, Equatable, Sendable {
     }
 }
 
+/// Orders journal events without relying on SwiftData's undefined ordering for
+/// rows emitted at the same instant. Event IDs carry a numeric ordinal when
+/// they were written by the pipeline; legacy or externally-created IDs fall
+/// back to their complete ID so their order is still stable.
+private func preparationEntryPrecedes(_ lhs: PreparationJournalEntry, _ rhs: PreparationJournalEntry) -> Bool {
+    if lhs.status.emittedAt.date != rhs.status.emittedAt.date {
+        return lhs.status.emittedAt.date < rhs.status.emittedAt.date
+    }
+
+    let lhsOrdinal = preparationOrdinal(in: lhs.id)
+    let rhsOrdinal = preparationOrdinal(in: rhs.id)
+    switch (lhsOrdinal, rhsOrdinal) {
+    case let (left?, right?) where left != right:
+        return left < right
+    case (_?, nil):
+        return true
+    case (nil, _?):
+        return false
+    default:
+        return lhs.id < rhs.id
+    }
+}
+
+private func preparationOrdinal(in id: String) -> Int? {
+    guard let marker = id.lastIndex(of: "#") else { return nil }
+    let suffix = id[id.index(after: marker)...]
+    guard !suffix.isEmpty, let ordinal = Int(suffix), ordinal >= 1 else { return nil }
+    return ordinal
+}
+
 /// One preparation attempt, summarised from its journal entries.
 ///
 /// The journal records every status a run emitted, which is the right shape
@@ -1556,10 +1586,11 @@ public actor LocalLibraryStore {
 
     public func preparationJournal(for requestID: String) throws -> [PreparationJournalEntry] {
         let context = ModelContext(container)
-        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>()).filter { $0.requestID == requestID }.sorted { $0.emittedAt < $1.emittedAt }.compactMap { record in
+        let entries: [PreparationJournalEntry] = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>()).filter { $0.requestID == requestID }.compactMap { record in
             guard let status = try? JSONDecoder().decode(PreparationStatus.self, from: record.statusData), let itemID = try? ItemID(rawValue: record.itemID) else { return nil }
             return PreparationJournalEntry(id: record.id, itemID: itemID, requestID: record.requestID, status: status)
         }
+        return entries.sorted(by: preparationEntryPrecedes)
     }
 
     /// Every recorded preparation attempt, newest first.
@@ -1579,7 +1610,7 @@ public actor LocalLibraryStore {
             )
         }
         return byRequest.compactMap { requestID, entries -> PreparationRunSummary? in
-            let ordered = entries.sorted { $0.status.emittedAt.date < $1.status.emittedAt.date }
+            let ordered = entries.sorted(by: preparationEntryPrecedes)
             guard let first = ordered.first, let last = ordered.last else { return nil }
             let terminal = ordered.last(where: { $0.status.terminal })?.status
             let representative = terminal ?? last.status

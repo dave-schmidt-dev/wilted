@@ -513,9 +513,9 @@ final class WiltedMacModelTests: XCTestCase {
             stage: .assembling, detail: "50 requests, 0 failed", fraction: nil, isTerminal: false,
             outcome: nil, failure: nil,
             entries: [
-                try entry(requestID + "|transcript.stt.start", .extracting, "transcript.stt.start", at: 0),
-                try entry(requestID + "|ads.detect.calls", .assembling, "50 requests, 0 failed", at: 60),
-                try entry(requestID + "|log.warning.1", .assembling, "wilted.ads: FA is not enabled", at: 61),
+                try entry(requestID + "|transcript.stt.start#1", .extracting, "transcript.stt.start", at: 0),
+                try entry(requestID + "|ads.detect.calls#2", .assembling, "50 requests, 0 failed", at: 60),
+                try entry(requestID + "|log.warning.1#3", .assembling, "wilted.ads: FA is not enabled", at: 61),
                 try entry("legacy-key-without-prefix", .saving, "Storing", at: 62),
             ]
         )

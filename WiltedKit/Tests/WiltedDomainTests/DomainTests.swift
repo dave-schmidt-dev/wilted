@@ -339,6 +339,18 @@ final class DomainTests: XCTestCase {
         XCTAssertNoThrow(try PreparationStatus(stage: .completed, detail: "Done", fraction: 1, cancellable: false, terminalResult: result, emittedAt: time))
     }
 
+    func testPreparationStatusDecodesHistoricJournalsAndRoundTripsBoundedEvidence() throws {
+        let historic = """
+        {"stage":"fetching","detail":"Fetching","cancellable":true,"terminal":false,"emittedAt":"2026-08-17T12:00:00.000Z"}
+        """.data(using: .utf8)!
+        XCTAssertNil(try JSONDecoder().decode(PreparationStatus.self, from: historic).evidence)
+
+        let time = try Timestamp(iso8601: "2026-08-17T12:00:00Z")
+        let evidence = try PreparationEvidence(kind: "advertisement", fields: ["label": "host read", "confidence": "0.9100"])
+        let status = try PreparationStatus(stage: .assembling, detail: "0:00:03–0:00:08 · host read · 91%", cancellable: true, emittedAt: time, evidence: evidence)
+        XCTAssertEqual(try JSONDecoder().decode(PreparationStatus.self, from: JSONEncoder().encode(status)).evidence, evidence)
+    }
+
     private func makeRevision(duration: Double = 10, hash: String = "sha256:" + String(repeating: "a", count: 64), bytes: Int64 = 100) throws -> AudioRevision {
         try AudioRevision(
             itemID: ItemID(rawValue: "item-test"), revisionID: RevisionID(rawValue: "rev-test"),

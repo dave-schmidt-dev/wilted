@@ -2001,13 +2001,14 @@ final class WiltedMacModel {
     }
 
 #if canImport(WiltedProducer)
-    /// The journal keys each status as `requestID|stage`, and the stage it
+    /// The journal keys each status as `requestID|stage#ordinal`, and the stage it
     /// stores is the coarse one every pipeline shares, so the worker's own
     /// stage name survives only in the key.
     nonisolated static func processorEvents(for run: PreparationRunSummary) -> [WiltedMacProcessorEvent] {
         run.entries.map { entry in
             let prefix = run.requestID + "|"
-            let stage = entry.id.hasPrefix(prefix) ? String(entry.id.dropFirst(prefix.count)) : entry.status.stage.rawValue
+            let storedStage = entry.id.hasPrefix(prefix) ? String(entry.id.dropFirst(prefix.count)) : entry.status.stage.rawValue
+            let stage = storedStage.split(separator: "#").first.map(String.init) ?? storedStage
             return WiltedMacProcessorEvent(
                 id: entry.id, at: entry.status.emittedAt.date, stage: stage,
                 detail: entry.status.detail, fraction: entry.status.fraction
@@ -2458,6 +2459,7 @@ final class WiltedMacModel {
                     ("pipeline.start", .preparing, episode.title, nil),
                     ("transcript.stt.start", .extracting, "transcript.stt.start", nil),
                     ("ads.detect.calls", .assembling, "50 requests, 0 failed", nil),
+                    ("ads.detect.span.1", .assembling, "0:01:20–0:02:10 · host read · 91%", nil),
                     ("ads.cut.complete", .assembling, "442.12 s removed", 0.9),
                 ]
                 for (offset, (stage, coarse, detail, fraction)) in journalled.enumerated() {

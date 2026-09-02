@@ -216,12 +216,29 @@ struct PodcastPreparationPipelineTests {
     @Test func journalsTheRunSoItsOutcomeOutlivesTheWindow() async throws {
         let fixture = try await Fixture()
         defer { fixture.remove() }
-        _ = try await fixture.pipeline(Fixture.cuttingStub()).prepare(episodeID: fixture.episodeID)
+        let worker = WorkerStub(
+            response: Fixture.cuttingStubResponse(), writesCutAudio: Fixture.cuttingAudio,
+            progress: [
+                PodcastPreparationProgress(stage: "ads.detect.calls", detail: "1 request, 0 failed"),
+                PodcastPreparationProgress(stage: "ads.detect.calls", detail: "2 requests, 0 failed"),
+            ]
+        )
+        _ = try await fixture.pipeline(worker).prepare(episodeID: fixture.episodeID)
 
         let requestID = PodcastPreparationPipeline.requestID(for: fixture.episodeID)
         let entries = try await fixture.store.preparationJournal(for: requestID)
         #expect(entries.contains { $0.status.stage == .preparing })
         #expect(entries.contains { $0.status.stage == .saving })
+        let result = try #require(entries.first { $0.id.contains("|pipeline.result#") })
+        #expect(result.status.evidence?.kind == "worker-result")
+        #expect(result.status.evidence?.fields["advertisements"] == "1")
+        let ad = try #require(entries.first { $0.id.contains("|ads.detect.span.1#") })
+        #expect(ad.status.evidence?.kind == "advertisement")
+        #expect(ad.status.evidence?.fields["startSeconds"] == "3.000")
+        #expect(ad.status.evidence?.fields["label"] == "host read")
+        #expect(entries.filter { $0.id.contains("|ads.detect.calls#") }.count == 2,
+                "Repeated worker stages must retain both observations.")
+        #expect(Set(entries.map(\.id)).count == entries.count)
         let terminal = try #require(entries.last { $0.status.terminal })
         #expect(terminal.status.terminalResult?.outcome == .succeeded)
         #expect(terminal.status.terminalResult?.revisionID != nil)
@@ -289,6 +306,45 @@ struct PodcastPreparationPipelineTests {
         let terminal = try #require(entries.last { $0.status.terminal })
         #expect(terminal.status.stage == .failed)
         #expect(terminal.status.terminalResult?.error?.code == .invalidRequest)
+    }
+
+    @Test func journalOrdersEqualTimestampEventsByNumericOrdinalThroughBothAPIs() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let requestID = "same-timestamp"
+        let timestamp = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        for id in ["event#10", "legacy", "event#2", "event#1"] {
+            try await fixture.store.record(preparation: PreparationJournalEntry(
+                id: id, itemID: fixture.episodeID, requestID: requestID,
+                status: try PreparationStatus(stage: .preparing, detail: id, cancellable: true, emittedAt: timestamp)
+            ))
+        }
+
+        let expected = ["event#1", "event#2", "event#10", "legacy"]
+        #expect(try await fixture.store.preparationJournal(for: requestID).map(\.id) == expected)
+        #expect(try await fixture.store.preparationRuns().first(where: { $0.requestID == requestID })?.entries.map(\.id) == expected)
+    }
+
+    @Test func adProgressUsesBoundedFallbackForNonFiniteConfidence() {
+        let progress = PodcastPreparationPipeline.adProgress(
+            PodcastAdSegment(startSeconds: 12, endSeconds: 24, label: "host read", confidence: .infinity),
+            ordinal: 1
+        )
+        #expect(progress.detail == "0:00:12–0:00:24 · host read · unknown confidence")
+        #expect(progress.evidence?.fields["confidence"]?.contains("inf") == true)
+    }
+
+    @Test func adProgressBoundsAnOversizedWorkerLabelWithoutDroppingEvidence() {
+        let progress = PodcastPreparationPipeline.adProgress(
+            PodcastAdSegment(startSeconds: 12, endSeconds: 24,
+                             label: String(repeating: "L", count: 512), confidence: 0.5),
+            ordinal: 1
+        )
+        let label = progress.evidence?.fields["label"]
+        #expect(label?.count == 256)
+        #expect(label?.hasSuffix("...") == true)
+        #expect(progress.detail.count <= 1_024)
+        #expect(progress.detail.contains("... · 50%"))
     }
 
     // MARK: Transcript construction
@@ -480,11 +536,14 @@ private final class StatusLog: @unchecked Sendable {
 private actor WorkerStub: PodcastPipelineRunning {
     private let response: [String: Any]
     private let writesCutAudio: Data?
+    private let progress: [PodcastPreparationProgress]
     private var request: Data?
 
-    init(response: [String: Any], writesCutAudio: Data? = nil) {
+    init(response: [String: Any], writesCutAudio: Data? = nil,
+         progress: [PodcastPreparationProgress] = [PodcastPreparationProgress(stage: "worker.start")]) {
         self.response = response
         self.writesCutAudio = writesCutAudio
+        self.progress = progress
     }
 
     /// Returned as bytes: a decoded `[String: Any]` cannot cross the actor
@@ -497,7 +556,7 @@ private actor WorkerStub: PodcastPipelineRunning {
     ) async throws -> Data {
         let decoded = try JSONSerialization.jsonObject(with: payload) as? [String: Any] ?? [:]
         request = payload
-        onProgress(PodcastPreparationProgress(stage: "worker.start"))
+        progress.forEach(onProgress)
         var answer = response
         if let body = writesCutAudio, let outputPath = decoded["outputPath"] as? String {
             try body.write(to: URL(fileURLWithPath: outputPath))
@@ -608,14 +667,20 @@ private struct Fixture {
 
     /// A worker that removes 3.0-7.5 from a twelve second episode.
     static func cuttingStub() -> some PodcastPipelineRunning {
-        WorkerStub(response: [
+        WorkerStub(response: cuttingStubResponse(), writesCutAudio: cuttingAudio)
+    }
+
+    static let cuttingAudio = Data("shorter-audio-bytes".utf8)
+
+    static func cuttingStubResponse() -> [String: Any] {
+        [
             "ok": true, "timing": "aligned", "audioChanged": true, "durationSeconds": 7.5,
             "text": "Kept words.", "cues": [["startSeconds": 0.0, "endSeconds": 3.0, "text": "Kept words."]],
             "removedSeconds": 4.5,
             "adSegments": [["startSeconds": 3.0, "endSeconds": 7.5, "label": "host read", "confidence": 0.91]],
             "keepIntervals": [["startSeconds": 0.0, "endSeconds": 3.0, "outputStartSeconds": 0.0],
                               ["startSeconds": 7.5, "endSeconds": 12.0, "outputStartSeconds": 3.0]],
-        ], writesCutAudio: Data("shorter-audio-bytes".utf8))
+        ]
     }
 
     func pipeline(_ runner: some PodcastPipelineRunning) -> PodcastPreparationPipeline {

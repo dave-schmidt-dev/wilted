@@ -20,7 +20,7 @@ import sys
 import tempfile
 import types
 import unittest
-from contextlib import redirect_stderr
+from contextlib import contextmanager, redirect_stderr
 from dataclasses import dataclass, field
 from pathlib import Path
 from unittest import mock
@@ -38,6 +38,22 @@ def load_worker():
 
 
 wp = load_worker()
+
+
+@contextmanager
+def temporarily_missing_attribute(obj, name):
+    """Remove one optional compatibility hook and restore it on exit."""
+    sentinel = object()
+    previous = getattr(obj, name, sentinel)
+    if previous is not sentinel:
+        delattr(obj, name)
+    try:
+        yield
+    finally:
+        if previous is sentinel:
+            obj.__dict__.pop(name, None)
+        else:
+            setattr(obj, name, previous)
 
 
 @dataclass
@@ -137,6 +153,21 @@ def install_fake_ads(llm: FakeLLM, detections=()):
     content. This double asks once per segment and does the same.
     """
     ads = types.ModuleType("wilted.ads")
+    ads._SPONSOR_OPENING_RE = re.compile(  # noqa: SLF001 - matches the legacy module seam
+        r"\b(?:this|the)\s+episode\s+is\s+(?:brought\s+to\s+you\s+by|sponsored\s+by)\b"
+        r"|\bthis\s+message\s+is\s+brought\s+to\s+you\s+by\b"
+        r"|\bpaid\s+for\s+by\b|\bpaid\s+ad\b",
+        re.IGNORECASE,
+    )
+    ads._EXPLICIT_HOST_READ_OPENING_RE = re.compile(  # noqa: SLF001 - legacy module seam
+        r"\b(?:"
+        r"(?:this|the)\s+(?:episode|show)(?:\s+of\s+[^.!?]{1,80}?)?\s+(?:is\s+)?brought\s+to\s+you"
+        r"(?:\s+today)?\s+by|"
+        r"today(?:'s|’s|\s+is\s+our)\s+sponsor(?:\s+is)?|"
+        r"our\s+sponsor\s+for\s+this\s+(?:section|segment|episode|show)"
+        r")\b",
+        re.IGNORECASE,
+    )
 
     def detect_ads(segments, backend):
         answered = False
@@ -352,6 +383,25 @@ class AdDetectionTests(unittest.TestCase):
         # must not strip the keyword on its way through.
         self.assertEqual(llm.requests, [{"type": "json_object"}] * 2)
 
+    def test_sponsor_opening_compatibility_is_installed_before_detection(self):
+        llm = FakeLLM()
+        ads = install_fake_ads(llm)
+        observed = []
+
+        def detect(segments, backend):
+            observed.append((
+                ads._SPONSOR_OPENING_RE.search("our show this week brought to you by superhuman") is not None,
+                ads._EXPLICIT_HOST_READ_OPENING_RE.search(
+                    "this week in tech brought to you this week by claud"
+                ) is not None,
+            ))
+            return []
+
+        ads.detect_ads = detect
+        with redirect_stderr(io.StringIO()):
+            wp.detect_and_cut(self.request, self.audio, [], self.segments)
+        self.assertEqual(observed, [(True, True)])
+
     def test_a_backend_that_never_answers_is_a_failure_not_zero_ads(self):
         llm = FakeLLM(fail_generate=RuntimeError("llama_decode returned -1"))
         install_fake_ads(llm)
@@ -415,6 +465,116 @@ class AdDetectionTests(unittest.TestCase):
         self.assertIn("2 of 3", str(raised.exception))
 
 
+class LegacySponsorOpeningCompatibilityTests(unittest.TestCase):
+    def test_observed_openings_match_both_legacy_anchor_patterns(self):
+        ads = install_fake_ads(FakeLLM())
+        wp.install_legacy_sponsor_opening_compatibility(ads)
+        openings = (
+            "our show this week brought to you by superhuman",
+            "this week in tech brought to you this week by claud",
+            "i show today brought to you by doppel",
+        )
+        for opening in openings:
+            with self.subTest(opening=opening):
+                self.assertIsNotNone(ads._SPONSOR_OPENING_RE.search(opening))
+                self.assertIsNotNone(ads._EXPLICIT_HOST_READ_OPENING_RE.search(opening))
+
+    def test_repeated_install_keeps_both_legacy_patterns_unchanged(self):
+        ads = install_fake_ads(FakeLLM())
+        wp.install_legacy_sponsor_opening_compatibility(ads)
+        once = (ads._SPONSOR_OPENING_RE.pattern, ads._EXPLICIT_HOST_READ_OPENING_RE.pattern)
+        wp.install_legacy_sponsor_opening_compatibility(ads)
+        self.assertEqual(
+            (ads._SPONSOR_OPENING_RE.pattern, ads._EXPLICIT_HOST_READ_OPENING_RE.pattern),
+            once,
+        )
+
+    def test_editorial_sentence_is_not_an_opening(self):
+        ads = install_fake_ads(FakeLLM())
+        wp.install_legacy_sponsor_opening_compatibility(ads)
+        editorial = "this week in tech brought a guest to your attention before the interview"
+        self.assertIsNone(ads._SPONSOR_OPENING_RE.search(editorial))
+        self.assertIsNone(ads._EXPLICIT_HOST_READ_OPENING_RE.search(editorial))
+
+    def test_missing_legacy_anchor_is_a_contract_failure(self):
+        ads = install_fake_ads(FakeLLM())
+        del ads._SPONSOR_OPENING_RE
+        with self.assertRaises(AttributeError):
+            wp.install_legacy_sponsor_opening_compatibility(ads)
+
+
+def install_legacy_recovery_fixture(llm: FakeLLM):
+    """Exercise the detector seam, seed gate, and resume gate without a model.
+
+    This is deliberately a small double of the legacy recovery path, not a
+    second implementation of detection: the production bridge supplies the
+    two anchors, while the fixture only models the legacy path's three
+    observable gates (positive model seed, sponsor opening, and content
+    resumption) and returns its recovered source boundaries.
+    """
+    ads = install_fake_ads(llm)
+
+    def recover(segments, backend):
+        seed_body, _ = backend.generate(
+            "classify", "positive sponsor candidate", response_format={"type": "json_object"}
+        )
+        seed = json.loads(seed_body)
+        if not seed.get("ads"):
+            return []
+        for index, segment in enumerate(segments[:-1]):
+            if not ads._SPONSOR_OPENING_RE.search(segment.text):  # noqa: SLF001
+                continue
+            if not ads._EXPLICIT_HOST_READ_OPENING_RE.search(segment.text):  # noqa: SLF001
+                continue
+            resume = next(
+                (
+                    candidate
+                    for candidate in segments[index + 1 :]
+                    if re.search(r"\bback\s+to\s+(?:the\s+)?(?:show|content)\b", candidate.text, re.I)
+                ),
+                None,
+            )
+            if resume is not None:
+                return [FakeAd(segment.start_s, resume.start_s, confidence=seed["ads"][0]["confidence"])]
+        return []
+
+    ads.detect_ads = recover
+    return ads
+
+
+class LegacySponsorRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
+        self.request = {"audioPath": str(self.audio), "outputPath": "/tmp/never-written.mp3"}
+
+    def test_positive_seed_and_verified_resumption_return_exact_superhuman_boundary(self):
+        llm = FakeLLM(answer=json.dumps({"ads": [{"confidence": 0.97}]}))
+        install_legacy_recovery_fixture(llm)
+        segments = [
+            FakeSegment(212.25, 216.0, "our show this week brought to you by superhuman"),
+            FakeSegment(216.0, 248.75, "this is the sponsor message"),
+            FakeSegment(248.75, 252.0, "and now back to the show"),
+        ]
+        with redirect_stderr(io.StringIO()), mock.patch.object(wp, "probe_duration", return_value=300.0):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
+        self.assertEqual(
+            spans,
+            [{"startSeconds": 212.25, "endSeconds": 248.75, "label": "sponsor", "confidence": 0.97}],
+        )
+        self.assertEqual(llm.requests, [{"type": "json_object"}])
+
+    def test_positive_seed_without_sponsor_opening_is_editorial_content(self):
+        llm = FakeLLM(answer=json.dumps({"ads": [{"confidence": 0.97}]}))
+        install_legacy_recovery_fixture(llm)
+        segments = [
+            FakeSegment(212.25, 216.0, "this week brought a guest to your attention"),
+            FakeSegment(216.0, 248.75, "and now back to the show"),
+        ]
+        with redirect_stderr(io.StringIO()), mock.patch.object(wp, "probe_duration", return_value=300.0):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
+        self.assertEqual(spans, [])
+
+
 class PreflightTests(unittest.TestCase):
     """What the cut needs is checked before speech-to-text starts, not after."""
 
@@ -472,6 +632,95 @@ class PreflightTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PATH": "/nonexistent-bin"}), redirect_stderr(io.StringIO()):
             result = wp.run({"audioPath": str(self.audio), "removeAds": False, "allowSpeechToText": False})
         self.assertTrue(result["ok"])
+
+    def test_all_stt_passes_finish_before_eviction_and_ad_model_load(self):
+        events = []
+        transcribe = sys.modules["wilted.transcribe"]
+
+        def transcribe_audio(path, model_name="mlx-community/parakeet-tdt-1.1b", **_):
+            event = "aligned" if model_name == "mlx-community/parakeet-tdt-1.1b" else "readable"
+            return events.append(event) or [FakeSegment(0, 1, "content")]
+
+        llm = FakeLLM()
+        original_load = llm.load
+
+        def load():
+            events.append("ads.load")
+            original_load()
+
+        llm.load = load
+        install_fake_ads(llm)
+        with mock.patch.object(transcribe, "transcribe_audio", transcribe_audio), \
+                mock.patch.object(transcribe, "evict_stt_model", lambda: events.append("stt.evict"), create=True), \
+                mock.patch.dict(os.environ, {"PATH": self.tools}), \
+                mock.patch.object(wp, "probe_duration", return_value=1.0), redirect_stderr(io.StringIO()):
+            wp.run({
+                "audioPath": str(self.audio),
+                "removeAds": True,
+                "readableTranscript": True,
+                "llmModel": str(self.default_model),
+            })
+        self.assertEqual(events, ["aligned", "readable", "stt.evict", "ads.load"])
+
+    def _run_aligned_ad_detection(self):
+        transcribe = sys.modules["wilted.transcribe"]
+        llm = FakeLLM()
+        install_fake_ads(llm)
+        with mock.patch.object(
+                transcribe, "transcribe_audio", lambda path, **_: [FakeSegment(0, 1, "content")]
+        ), mock.patch.dict(os.environ, {"PATH": self.tools}), \
+                mock.patch.object(wp, "probe_duration", return_value=1.0), \
+                redirect_stderr(io.StringIO()):
+            result = wp.run({
+                "audioPath": str(self.audio),
+                "removeAds": True,
+                "llmModel": str(self.default_model),
+            })
+        return result, llm
+
+    def test_missing_stt_eviction_hint_does_not_stop_ad_detection(self):
+        transcribe = sys.modules["wilted.transcribe"]
+        with temporarily_missing_attribute(transcribe, "evict_stt_model"):
+            _result, llm = self._run_aligned_ad_detection()
+        self.assertTrue(llm.loaded)
+        self.assertTrue(llm.closed)
+
+    def test_stt_eviction_failure_does_not_stop_ad_detection(self):
+        transcribe = sys.modules["wilted.transcribe"]
+
+        def fail_eviction():
+            raise RuntimeError("legacy daemon has no eviction hook")
+
+        with mock.patch.object(transcribe, "evict_stt_model", fail_eviction, create=True):
+            _result, llm = self._run_aligned_ad_detection()
+        self.assertTrue(llm.loaded)
+        self.assertTrue(llm.closed)
+
+    def test_published_transcript_never_invokes_stt_eviction(self):
+        transcribe = sys.modules["wilted.transcribe"]
+        llm = FakeLLM()
+        install_fake_ads(llm)
+        with mock.patch.object(
+                transcribe,
+                "evict_stt_model",
+                mock.Mock(side_effect=AssertionError("published timing must not evict STT")),
+                create=True,
+        ) as eviction, mock.patch.dict(os.environ, {"PATH": self.tools}), \
+                mock.patch.object(wp, "probe_duration", return_value=1.0), \
+                redirect_stderr(io.StringIO()):
+            result = wp.run({
+                "audioPath": str(self.audio),
+                "removeAds": True,
+                "allowSpeechToText": False,
+                "llmModel": str(self.default_model),
+                "publishedTranscript": {
+                    "body": "WEBVTT",
+                    "mediaType": "text/vtt",
+                    "url": "https://x.test/a.vtt",
+                },
+            })
+        self.assertTrue(result["ok"])
+        eviction.assert_not_called()
 
 
 class GlossaryTests(unittest.TestCase):

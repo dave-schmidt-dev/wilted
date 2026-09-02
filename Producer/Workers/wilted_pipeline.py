@@ -44,6 +44,12 @@ PROTOCOL_VERSION = 1
 # after twelve minutes of speech-to-text is the wrong time.
 CUT_TOOLS = ("ffmpeg", "ffprobe")
 
+# The archived detector's existing positive-seed and content-resumption gates
+# protect this generic explicit "brought to you ... by" fallback phrase.
+LEGACY_SPONSOR_OPENING_COMPATIBILITY_PATTERN = (
+    r"\bbrought\s+to\s+you(?:\s+(?:today|this\s+week))?\s+by\b"
+)
+
 # How many of the previous project's warnings are relayed verbatim before the
 # rest are counted. The ad detector logs one warning per failed batch and
 # halves down to singletons, so a dead backend produces thousands.
@@ -757,6 +763,32 @@ def preflight_ad_removal(request: dict) -> None:
         raise WorkerError("ads-model-missing", f"no ad-detection model at {model}")
 
 
+def install_legacy_sponsor_opening_compatibility(ads_module) -> None:
+    """Add the bounded host-read wording to the legacy detector's anchors."""
+    for attribute in ("_SPONSOR_OPENING_RE", "_EXPLICIT_HOST_READ_OPENING_RE"):
+        existing = getattr(ads_module, attribute)
+        if LEGACY_SPONSOR_OPENING_COMPATIBILITY_PATTERN in existing.pattern:
+            continue
+        setattr(
+            ads_module,
+            attribute,
+            re.compile(
+                f"(?:{existing.pattern})|{LEGACY_SPONSOR_OPENING_COMPATIBILITY_PATTERN}",
+                existing.flags,
+            ),
+        )
+
+
+def evict_legacy_stt_model() -> None:
+    """Release aligned-STT memory before the ad model is allocated, if supported."""
+    try:
+        from wilted import transcribe
+
+        transcribe.evict_stt_model()
+    except Exception:  # noqa: BLE001 - old transcribers do not all expose this hint
+        pass
+
+
 def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments):
     """Detect ads and rewrite the audio without them.
 
@@ -790,6 +822,7 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments):
     counting = CountingBackend(backend)
     try:
         progress("ads.detect.start", f"{len(segments)} segments")
+        install_legacy_sponsor_opening_compatibility(ads_module)
         detections = ads_module.detect_ads(segments, counting)
     finally:
         try:
@@ -901,6 +934,8 @@ def run(request: dict) -> dict:
 
     output_path, ad_spans, keeps = audio_path, [], []
     if request.get("removeAds", True) and segments:
+        if timing == "aligned":
+            evict_legacy_stt_model()
         output_path, ad_spans, keeps = detect_and_cut(request, audio_path, cues, segments)
         if keeps:
             before = len(cues)

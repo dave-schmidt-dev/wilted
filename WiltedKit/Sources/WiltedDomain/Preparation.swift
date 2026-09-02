@@ -6,6 +6,29 @@ public enum PreparationStage: String, Codable, Sendable {
 
 public enum PreparationOutcome: String, Codable, Sendable { case succeeded, failed, cancelled }
 
+/// Bounded structured evidence attached to one durable preparation-log event.
+/// Older journals omit this field and continue to decode normally.
+public struct PreparationEvidence: Codable, Equatable, Sendable {
+    public let kind: String
+    public let fields: [String: String]
+
+    public init(kind: String, fields: [String: String]) throws {
+        guard !kind.isEmpty, kind.count <= 64, fields.count <= 16,
+              fields.allSatisfy({ !$0.key.isEmpty && $0.key.count <= 64 && $0.value.count <= 256 }) else {
+            throw DomainError.invalidValue(field: "preparation evidence", reason: "must be bounded")
+        }
+        self.kind = kind
+        self.fields = fields
+    }
+
+    private enum CodingKeys: CodingKey { case kind, fields }
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(kind: container.decode(String.self, forKey: .kind),
+                      fields: container.decode([String: String].self, forKey: .fields))
+    }
+}
+
 public enum ProducerErrorCode: String, Codable, Sendable {
     case invalidRequest, unsupported, extractionFailed, speechUnavailable, protocolMismatch
     case outputInvalid, timedOut, cancelled, failed
@@ -80,6 +103,7 @@ public struct PreparationStatus: Codable, Equatable, Sendable {
     public let terminal: Bool
     public let terminalResult: PreparationTerminalResult?
     public let emittedAt: Timestamp
+    public let evidence: PreparationEvidence?
 
     public init(
         stage: PreparationStage,
@@ -87,7 +111,8 @@ public struct PreparationStatus: Codable, Equatable, Sendable {
         fraction: Double? = nil,
         cancellable: Bool,
         terminalResult: PreparationTerminalResult? = nil,
-        emittedAt: Timestamp
+        emittedAt: Timestamp,
+        evidence: PreparationEvidence? = nil
     ) throws {
         guard !detail.isEmpty, detail.count <= 1_024 else {
             throw DomainError.invalidValue(field: "preparation detail", reason: "must contain 1...1024 characters")
@@ -106,9 +131,10 @@ public struct PreparationStatus: Codable, Equatable, Sendable {
         terminal = terminalResult != nil
         self.terminalResult = terminalResult
         self.emittedAt = emittedAt
+        self.evidence = evidence
     }
 
-    private enum CodingKeys: CodingKey { case stage, detail, fraction, cancellable, terminal, terminalResult, emittedAt }
+    private enum CodingKeys: CodingKey { case stage, detail, fraction, cancellable, terminal, terminalResult, emittedAt, evidence }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -123,7 +149,8 @@ public struct PreparationStatus: Codable, Equatable, Sendable {
             fraction: container.decodeIfPresent(Double.self, forKey: .fraction),
             cancellable: container.decode(Bool.self, forKey: .cancellable),
             terminalResult: result,
-            emittedAt: container.decode(Timestamp.self, forKey: .emittedAt)
+            emittedAt: container.decode(Timestamp.self, forKey: .emittedAt),
+            evidence: try container.decodeIfPresent(PreparationEvidence.self, forKey: .evidence)
         )
     }
 }

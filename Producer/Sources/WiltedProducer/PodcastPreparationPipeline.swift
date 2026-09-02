@@ -69,11 +69,13 @@ public struct PodcastPreparationProgress: Equatable, Sendable {
     public let stage: String
     public let detail: String
     public let fraction: Double?
+    public let evidence: PreparationEvidence?
 
-    public init(stage: String, detail: String = "", fraction: Double? = nil) {
+    public init(stage: String, detail: String = "", fraction: Double? = nil, evidence: PreparationEvidence? = nil) {
         self.stage = stage
         self.detail = detail
         self.fraction = fraction
+        self.evidence = evidence
     }
 }
 
@@ -326,6 +328,13 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
 private final class JournalWrites: @unchecked Sendable {
     private let lock = NSLock()
     private var pending: [Task<Void, Never>] = []
+    private var nextOrdinal = 0
+
+    func eventID(for stage: String) -> String {
+        lock.lock(); defer { lock.unlock() }
+        nextOrdinal += 1
+        return "\(stage)#\(nextOrdinal)"
+    }
 
     func track(_ write: Task<Void, Never>) {
         lock.lock(); pending.append(write); lock.unlock()
@@ -464,7 +473,8 @@ public actor PodcastPreparationPipeline {
             // over, and an entry timestamped then would sort after the
             // terminal record it preceded.
             let emittedAt = Timestamp(clock())
-            writes.track(Task { await self.journal(progress, at: emittedAt, for: episodeID, requestID: requestID) })
+            let eventID = writes.eventID(for: progress.stage)
+            writes.track(Task { await self.journal(progress, eventID: eventID, at: emittedAt, for: episodeID, requestID: requestID) })
         }
 
         guard let episode = try await store.podcastEpisode(for: episodeID),
@@ -500,6 +510,8 @@ public actor PodcastPreparationPipeline {
             let response = try await runner.run(request: try JSONSerialization.data(withJSONObject: request),
                                                 onProgress: report)
             let payload = try Self.decode(response)
+            report(Self.resultProgress(payload))
+            for (index, ad) in payload.adSegments.enumerated() { report(Self.adProgress(ad, ordinal: index + 1)) }
             let result = try await commit(payload, episode: episode, download: download,
                                           downloadedRevision: stored.revision, audioURL: audioURL, onStatus: report)
             await writes.drain()
@@ -516,16 +528,16 @@ public actor PodcastPreparationPipeline {
     // MARK: Journal
 
     private func journal(
-        _ progress: PodcastPreparationProgress, at emittedAt: Timestamp,
+        _ progress: PodcastPreparationProgress, eventID: String, at emittedAt: Timestamp,
         for episodeID: ItemID, requestID: String
     ) async {
         let detail = progress.detail.isEmpty ? progress.stage : progress.detail
         guard let status = try? PreparationStatus(
             stage: progress.journalStage, detail: String(detail.prefix(1_024)),
-            fraction: progress.fraction, cancellable: true, emittedAt: emittedAt
+            fraction: progress.fraction, cancellable: true, emittedAt: emittedAt, evidence: progress.evidence
         ) else { return }
         try? await store.record(preparation: PreparationJournalEntry(
-            id: requestID + "|" + progress.stage, itemID: episodeID, requestID: requestID, status: status
+            id: requestID + "|" + eventID, itemID: episodeID, requestID: requestID, status: status
         ))
     }
 
@@ -766,6 +778,52 @@ public actor PodcastPreparationPipeline {
         ))
         return PodcastPreparationResult(revision: revision, mediaURL: mediaURL, transcript: transcript,
                                         adSegments: payload.adSegments, removedSeconds: payload.removedSeconds)
+    }
+
+    private static func resultProgress(_ payload: WorkerPayload) -> PodcastPreparationProgress {
+        let evidence = try? PreparationEvidence(kind: "worker-result", fields: [
+            "audioChanged": payload.audioChanged ? "true" : "false",
+            "advertisements": String(payload.adSegments.count),
+            "removedSeconds": String(format: "%.3f", payload.removedSeconds),
+            "cues": String(payload.cues.count), "timing": payload.timing.rawValue
+        ])
+        return PodcastPreparationProgress(stage: "pipeline.result",
+                                          detail: "audio \(payload.audioChanged ? "changed" : "unchanged") · \(payload.adSegments.count) ads · \(payload.cues.count) cues",
+                                          evidence: evidence)
+    }
+
+    static func adProgress(_ ad: PodcastAdSegment, ordinal: Int) -> PodcastPreparationProgress {
+        func clock(_ seconds: Double) -> String {
+            // The worker result is external input. Do not trap while trying to
+            // narrate a malformed timestamp in its durable audit record.
+            guard seconds.isFinite, seconds >= 0, seconds <= 7 * 24 * 60 * 60 else { return "unknown" }
+            let total = Int(seconds.rounded())
+            return String(format: "%d:%02d:%02d", total / 3600, (total / 60) % 60, total % 60)
+        }
+        // Worker labels are external input. Keep the evidence valid and the
+        // user-facing detail useful when a malformed label is unexpectedly long.
+        let label: String
+        if ad.label.isEmpty {
+            label = "unknown label"
+        } else if ad.label.count > 256 {
+            label = String(ad.label.prefix(253)) + "..."
+        } else {
+            label = ad.label
+        }
+        let evidence = try? PreparationEvidence(kind: "advertisement", fields: [
+            "ordinal": String(ordinal), "startSeconds": String(format: "%.3f", ad.startSeconds),
+            "endSeconds": String(format: "%.3f", ad.endSeconds), "label": label,
+            "confidence": String(format: "%.4f", ad.confidence)
+        ])
+        let confidence: String
+        if ad.confidence.isFinite, (0...1).contains(ad.confidence) {
+            confidence = "\(Int((ad.confidence * 100).rounded()))%"
+        } else {
+            confidence = "unknown confidence"
+        }
+        return PodcastPreparationProgress(stage: "ads.detect.span.\(ordinal)",
+                                          detail: "\(clock(ad.startSeconds))–\(clock(ad.endSeconds)) · \(label) · \(confidence)",
+                                          evidence: evidence)
     }
 
     /// Builds the durable transcript, degrading rather than failing.

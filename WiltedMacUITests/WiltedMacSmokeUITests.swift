@@ -292,6 +292,10 @@ final class WiltedMacSmokeUITests: XCTestCase {
             app.staticTexts["ads.detect.calls · 50 requests, 0 failed"].waitForExistence(timeout: 5),
             "The run's log must list every journalled status in the worker's words."
         )
+        XCTAssertTrue(
+            app.staticTexts["ads.detect.span.1 · 0:01:20–0:02:10 · host read · 91%"].exists,
+            "The log keeps each exact detected advertisement span for inspection."
+        )
         XCTAssertTrue(app.staticTexts["transcript.stt.start"].exists)
 
         showLog.click()
