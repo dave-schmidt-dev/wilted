@@ -135,6 +135,13 @@ struct WiltedMacRootView: View {
             Text(failure.message)
                 .font(WiltedTheme.font(.body))
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            if let detail = failure.detail {
+                Text(detail)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("wilted-mac-startup-error-detail")
+            }
             if let retainedURL = failure.retainedV5StoreURL {
                 Text("A retained V5 recovery copy is available at:")
                     .font(WiltedTheme.font(.body))

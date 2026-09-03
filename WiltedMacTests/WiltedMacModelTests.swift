@@ -113,6 +113,7 @@ final class WiltedMacModelTests: XCTestCase {
             return XCTFail("A failed store bootstrap must not look like a ready empty larder")
         }
         let retainedURL = try XCTUnwrap(failure.retainedV5StoreURL)
+        XCTAssertTrue(failure.detail?.contains("expectedFailure") == true)
         XCTAssertEqual(retainedURL.lastPathComponent, "library.sqlite")
         XCTAssertTrue(retainedURL.path.contains("library.sqlite.v5-test"))
         XCTAssertTrue(failure.canRetry)
@@ -141,6 +142,8 @@ final class WiltedMacModelTests: XCTestCase {
             return XCTFail("The second failure must remain a recovery state")
         }
         XCTAssertFalse(failure.canRetry)
+        XCTAssertNil(failure.retainedV5StoreURL, "a retained copy from an earlier attempt is not this attempt's recovery artifact")
+        XCTAssertTrue(failure.detail?.contains("expectedFailure") == true)
         model.retryStoreBootstrap()
         let attempts = await bootstrap.attempts
         XCTAssertEqual(attempts, 2)

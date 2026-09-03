@@ -394,6 +394,7 @@ typealias WiltedMacStoreBootstrap = @Sendable (URL) async throws -> LocalLibrary
 
 struct WiltedMacStartupFailure: Equatable, Sendable {
     let message: String
+    let detail: String?
     let retainedV5StoreURL: URL?
     let canRetry: Bool
 }
@@ -563,7 +564,7 @@ final class WiltedMacModel {
             let configuredStore = try? LocalLibraryStore(url: self.libraryURL)
             configureStoreDependencies(configuredStore)
             startupState = configuredStore == nil
-                ? .failed(Self.startupFailure(libraryURL: self.libraryURL, canRetry: false))
+                ? .failed(Self.startupFailure(canRetry: false))
                 : .ready
             installFixture(
                 ready: arguments.contains("--wilted-ui-fixture-ready") || arguments.contains("--wilted-ui-fixture-playing"),
@@ -2030,6 +2031,9 @@ final class WiltedMacModel {
 
 #if canImport(WiltedProducer)
     private func performStoreBootstrap() async {
+        let retainedPathsBeforeAttempt = await Task.detached { [libraryURL] in
+            Set(Self.retainedV5StoreURLs(for: libraryURL).map(\.path))
+        }.value
         do {
             let configuredStore = try await storeBootstrap(libraryURL)
             configureStoreDependencies(configuredStore)
@@ -2048,11 +2052,14 @@ final class WiltedMacModel {
             }
         } catch {
             configureStoreDependencies(nil)
-            let retainedURL = await Task.detached { [libraryURL] in
-                Self.retainedV5StoreURL(for: libraryURL)
+            let retainedURL = await Task.detached { [libraryURL, retainedPathsBeforeAttempt] in
+                Self.retainedV5StoreURLs(for: libraryURL).first {
+                    !retainedPathsBeforeAttempt.contains($0.path)
+                }
             }.value
             startupState = .failed(WiltedMacStartupFailure(
                 message: "Wilted could not open your larder. The existing library was left in place.",
+                detail: String(describing: error),
                 retainedV5StoreURL: retainedURL,
                 canRetry: startupAttemptCount < Self.maximumStartupAttempts
             ))
@@ -2281,15 +2288,16 @@ final class WiltedMacModel {
         }
     }
 
-    private nonisolated static func startupFailure(libraryURL: URL, canRetry: Bool) -> WiltedMacStartupFailure {
+    private nonisolated static func startupFailure(canRetry: Bool) -> WiltedMacStartupFailure {
         WiltedMacStartupFailure(
             message: "Wilted could not open your larder. The existing library was left in place.",
-            retainedV5StoreURL: retainedV5StoreURL(for: libraryURL),
+            detail: nil,
+            retainedV5StoreURL: nil,
             canRetry: canRetry
         )
     }
 
-    private nonisolated static func retainedV5StoreURL(for libraryURL: URL) -> URL? {
+    private nonisolated static func retainedV5StoreURLs(for libraryURL: URL) -> [URL] {
         let manager = FileManager.default
         let directory = libraryURL.deletingLastPathComponent()
         let prefix = "\(libraryURL.lastPathComponent).v5-"
@@ -2311,7 +2319,7 @@ final class WiltedMacModel {
                 if $0.1 != $1.1 { return $0.1 > $1.1 }
                 return $0.0.path < $1.0.path
             }
-            .first?.0
+            .map(\.0)
     }
 #endif
 
