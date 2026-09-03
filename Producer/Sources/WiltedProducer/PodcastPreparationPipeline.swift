@@ -421,6 +421,10 @@ private final class WorkerOutputCollector: @unchecked Sendable {
 public actor PodcastPreparationPipeline {
     /// A published transcript larger than this is not a transcript.
     public static let maximumTranscriptDocumentBytes = 8 * 1_024 * 1_024
+    /// The detector was tuned against this exact aligned STT output. This is
+    /// sent explicitly with the verified download hash so the worker cache
+    /// cannot be reused by a different model or source revision.
+    public static let alignedTranscriptModel = "mlx-community/parakeet-tdt-1.1b"
 
     private let store: LocalLibraryStore
     private let runner: any PodcastPipelineRunning
@@ -496,6 +500,8 @@ public actor PodcastPreparationPipeline {
                 "workDir": workDirectory.path,
                 "removeAds": removeAds,
                 "allowSpeechToText": allowSpeechToText,
+                "sourceHash": stored.revision.contentHash,
+                "alignedTranscriptModel": Self.alignedTranscriptModel,
             ]
             if let published = await fetchPublishedTranscript(for: episode, onStatus: report) {
                 request["publishedTranscript"] = published

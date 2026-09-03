@@ -35,6 +35,8 @@ struct PodcastPreparationPipelineTests {
         #expect(published["mediaType"] as? String == "text/vtt")
         #expect((published["body"] as? String)?.contains("WEBVTT") == true)
         #expect(request["audioPath"] as? String == fixture.audioURL.path)
+        #expect(request["sourceHash"] as? String == fixture.contentHash)
+        #expect(request["alignedTranscriptModel"] as? String == PodcastPreparationPipeline.alignedTranscriptModel)
         // The show notes ride along as the worker's glossary.
         #expect(request["episodeNotes"] as? String == "Host: Leo Laporte (https://twit.tv/people/leo-laporte)")
         #expect(request["episodeTitle"] as? String == "Episode")
@@ -602,6 +604,7 @@ private struct Fixture {
     let store: LocalLibraryStore
     let episodeID: ItemID
     let revisionID: RevisionID
+    let contentHash: String
     let audioURL: URL
     let transcriptStatusCode: Int
 
@@ -645,8 +648,8 @@ private struct Fixture {
         ))
 
         let body = Data("original-audio-bytes".utf8)
-        let hash = Fixture.contentHash(body)
-        revisionID = try RevisionID.derive(downloadedAudioContentHash: hash)
+        contentHash = Fixture.contentHash(body)
+        revisionID = try RevisionID.derive(downloadedAudioContentHash: contentHash)
         let audioDirectory = libraryDirectory.appendingPathComponent("PodcastAudio", isDirectory: true)
             .appendingPathComponent(episodeID.rawValue, isDirectory: true)
         try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
@@ -656,13 +659,13 @@ private struct Fixture {
         try await store.finalizePodcastDownload(
             revision: try AudioRevision(
                 itemID: episodeID, revisionID: revisionID, durationSeconds: 12,
-                byteCount: Int64(body.count), contentHash: hash, mediaType: "audio/mpeg",
+                byteCount: Int64(body.count), contentHash: contentHash, mediaType: "audio/mpeg",
                 createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_100)), schemaVersion: 3
             ),
             mediaURL: audioURL,
             download: try PodcastDownload(
                 episodeID: episodeID, status: .completed, bytesReceived: Int64(body.count),
-                expectedByteCount: Int64(body.count), localURL: audioURL, contentHash: hash,
+                expectedByteCount: Int64(body.count), localURL: audioURL, contentHash: contentHash,
                 updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_100))
             )
         )
