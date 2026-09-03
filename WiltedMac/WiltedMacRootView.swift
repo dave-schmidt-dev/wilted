@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WiltedDomain
 
 enum WiltedMacStartupAccessibility {
     static let loading = "wilted-mac-startup-loading"

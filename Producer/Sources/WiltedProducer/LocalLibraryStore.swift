@@ -2341,11 +2341,9 @@ public actor LocalLibraryStore {
 
     /// Removes a subscription and every record Wilted stored on its behalf.
     ///
-    /// Records only. Downloaded media files stay on disk because `RevisionID` is
-    /// derived from content alone: two episodes with identical bytes share one
-    /// audio revision, so deleting a file here could break an episode that
-    /// survives this call. Reclaiming that storage is a separate, revision-aware
-    /// job.
+    /// Records only. Downloaded media files stay on disk because revision-aware
+    /// reclamation is a separate job; unsubscribe does not guess whether a
+    /// namespaced or same-item legacy revision is still referenced.
     @discardableResult
     public func unsubscribeFromPodcast(feedID: ItemID) throws -> Int {
         let context = ModelContext(container)

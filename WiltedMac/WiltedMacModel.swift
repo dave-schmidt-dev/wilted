@@ -1213,7 +1213,6 @@ final class WiltedMacModel {
                 podcastOperationMessage = "\(dismissal.title) was already restored."
                 return
             }
-            withheldPodcastEpisodeCount = loadedMatch.droppedEpisodeCount + result.skipped
             let values = try await loadLibrary(from: store)
             articles = values.articles
             episodes = values.episodes

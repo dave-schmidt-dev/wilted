@@ -328,6 +328,14 @@ class KeepMapTests(unittest.TestCase):
     def test_no_keeps_means_no_cues(self):
         self.assertEqual(wp.remap_cues([{"startSeconds": 0, "endSeconds": 1, "text": "a"}], []), [])
 
+    def test_serialized_offsets_remain_contiguous_after_millisecond_rounding(self):
+        keeps = wp.build_keep_map([(0.0004, 0.3336), (0.6674, 1.0006), (1.3344, 1.6676)])
+        serialized = wp.serialize_keep_map(keeps)
+        expected = 0.0
+        for interval in serialized:
+            self.assertAlmostEqual(interval["outputStartSeconds"], expected, places=6)
+            expected += interval["endSeconds"] - interval["startSeconds"]
+
 
 class RemapTests(unittest.TestCase):
     def setUp(self):
@@ -1495,6 +1503,24 @@ class AlignedSTTCacheTests(unittest.TestCase):
         changed_hash = {**self.request, "sourceHash": "sha256:source-two"}
         self.run_pipeline(changed_hash)
         self.assertEqual(calls, ["detector-v1", "detector-v2", "detector-v1"])
+
+    def test_cache_preserves_ordered_overlapping_and_empty_detector_results(self):
+        overlapping = [FakeSegment(0, 2, "speaker one"), FakeSegment(1.5, 3, "speaker two")]
+        wp._store_cached_aligned_segments(  # noqa: SLF001 - validates detector cache fidelity
+            self.request, self.request["sourceHash"], self.request["alignedTranscriptModel"], overlapping
+        )
+        loaded = wp._load_cached_aligned_segments(  # noqa: SLF001
+            self.request, self.request["sourceHash"], self.request["alignedTranscriptModel"]
+        )
+        self.assertEqual([(item.start_s, item.end_s) for item in loaded], [(0.0, 2.0), (1.5, 3.0)])
+
+        empty_request = {**self.request, "sourceHash": "sha256:empty"}
+        wp._store_cached_aligned_segments(  # noqa: SLF001
+            empty_request, empty_request["sourceHash"], empty_request["alignedTranscriptModel"], []
+        )
+        self.assertEqual(wp._load_cached_aligned_segments(  # noqa: SLF001
+            empty_request, empty_request["sourceHash"], empty_request["alignedTranscriptModel"]
+        ), [])
 
     def test_malformed_mismatched_and_invalid_entries_are_deleted_before_fresh_stt(self):
         cases = {

@@ -957,12 +957,14 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(removed.title, "Old episode")
         XCTAssertEqual(removed.feedTitle, "Restore Show")
         XCTAssertTrue(removed.hasPreparationHistory, "Removed metadata must retain the link to its Prep run")
+        model.withheldPodcastEpisodeCount = 7
         model.restoreEpisode(removed)
         await model.waitForPodcastOperations()
 
         XCTAssertTrue(model.dismissedEpisodes.isEmpty)
         XCTAssertEqual(Set(model.episodes.map(\.title)), ["Old episode", "New episode"])
         XCTAssertEqual(model.podcastOperationMessage, "Restored Old episode to Larder.")
+        XCTAssertEqual(model.withheldPodcastEpisodeCount, 7, "restore must not replace the last full-refresh summary")
         let reopened = try LocalLibraryStore(url: libraryURL)
         let persistedDismissals = try await reopened.dismissedPodcastEpisodes()
         XCTAssertTrue(persistedDismissals.isEmpty)

@@ -201,6 +201,21 @@ def build_keep_map(keep_segments: list[tuple[float, float]]) -> list[KeepInterva
     return intervals
 
 
+def serialize_keep_map(keeps: list[KeepInterval]) -> list[dict]:
+    """Round one self-consistent original-to-output map for the Swift contract."""
+    serialized: list[dict] = []
+    output = 0.0
+    for keep in keeps:
+        start, end = round(keep.start_s, 3), round(keep.end_s, 3)
+        serialized.append({
+            "startSeconds": start,
+            "endSeconds": end,
+            "outputStartSeconds": round(output, 3),
+        })
+        output += end - start
+    return serialized
+
+
 def remap_cues(cues: list[dict], keeps: list[KeepInterval]) -> list[dict]:
     """Move cue timing onto the cut audio's clock.
 
@@ -736,7 +751,7 @@ def _decode_cached_aligned_segments(payload: object, *, source_hash: str | None 
     if not isinstance(raw_segments, list):
         raise ValueError("missing segments")
     segments: list[CachedAlignedSegment] = []
-    previous_end = -1.0
+    previous_start = -1.0
     for raw in raw_segments:
         if not isinstance(raw, dict) or not isinstance(raw.get("text"), str) or not raw["text"].strip():
             raise ValueError("invalid cached segment text")
@@ -746,10 +761,10 @@ def _decode_cached_aligned_segments(payload: object, *, source_hash: str | None 
         start, end = float(start), float(end)
         if not start >= 0 or not start < end or not start < float("inf") or not end < float("inf"):
             raise ValueError("invalid cached segment timing")
-        if start < previous_end:
+        if start < previous_start:
             raise ValueError("out-of-order cached segments")
         segments.append(CachedAlignedSegment(text=raw["text"], start_s=start, end_s=end))
-        previous_end = end
+        previous_start = start
     return segments
 
 
@@ -764,7 +779,7 @@ def _cache_record(segments, source_hash: str, model: str) -> dict:
         start, end = float(start), float(end)
         if not start >= 0 or not start < end or not start < float("inf") or not end < float("inf"):
             raise ValueError("invalid aligned STT segment")
-        if record_segments and start < record_segments[-1]["end_s"]:
+        if record_segments and start < record_segments[-1]["start_s"]:
             raise ValueError("out-of-order aligned STT segments")
         record_segments.append({"text": text, "start_s": start, "end_s": end})
     return {
@@ -1451,11 +1466,7 @@ def run(request: dict) -> dict:
         # The exact original-to-output time map, so the caller can move a
         # listener's saved position onto the cut audio instead of losing it.
         # Empty means nothing was cut and every timestamp still matches.
-        "keepIntervals": [
-            {"startSeconds": round(k.start_s, 3), "endSeconds": round(k.end_s, 3),
-             "outputStartSeconds": round(k.output_start_s, 3)}
-            for k in keeps
-        ],
+        "keepIntervals": serialize_keep_map(keeps),
         "removedSeconds": round(sum(a["endSeconds"] - a["startSeconds"] for a in ad_spans), 3) if keeps else 0.0,
     }
 
