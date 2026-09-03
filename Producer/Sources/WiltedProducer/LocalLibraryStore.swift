@@ -2092,6 +2092,8 @@ public actor LocalLibraryStore {
 
     public struct PodcastEpisodeAdmissionResult: Equatable, Sendable {
         public let saved: [ItemID]
+        /// IDs inserted by this exact admission, excluding rows refreshed in place.
+        public let newlyAdmitted: [ItemID]
         public let skipped: Int
     }
 
@@ -2134,15 +2136,35 @@ public actor LocalLibraryStore {
         _ episodes: [PodcastEpisode],
         admission: PodcastEpisodeAdmission
     ) throws -> PodcastEpisodeAdmissionResult {
-        guard !episodes.isEmpty else { return PodcastEpisodeAdmissionResult(saved: [], skipped: 0) }
+        guard !episodes.isEmpty else {
+            return PodcastEpisodeAdmissionResult(saved: [], newlyAdmitted: [], skipped: 0)
+        }
         let context = ModelContext(container)
+        let existing = Set(
+            try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>()).map(\.id)
+        )
         let admitted = try admittedPodcastEpisodes(episodes, admission: admission, in: context)
         try upsertPodcastEpisodes(admitted, in: context)
         try context.save()
         return PodcastEpisodeAdmissionResult(
             saved: admitted.map(\.itemID),
+            newlyAdmitted: admitted.filter { !existing.contains($0.itemID.rawValue) }.map(\.itemID),
             skipped: episodes.count - admitted.count
         )
+    }
+
+    /// Creates a subscription once without moving its original admission horizon.
+    ///
+    /// Equivalent canonical feed URLs derive the same feed ID, so repeated manual
+    /// or automatic admission returns `false` and leaves the existing row intact.
+    @discardableResult
+    public func subscribeIfNeeded(_ subscription: PodcastSubscription) throws -> Bool {
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastSubscriptionRecord>())
+        guard !records.contains(where: { $0.feedID == subscription.feedID.rawValue }) else { return false }
+        context.insert(LocalLibrarySchemaV6Models.PodcastSubscriptionRecord(subscription))
+        try context.save()
+        return true
     }
 
     /// Re-admits one exact feed entry and forgets its dismissal in the same save.

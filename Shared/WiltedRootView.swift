@@ -59,15 +59,17 @@ public enum WiltedScreenCopy {
     public static let addArticle = "Add Article"
     /// One box, both kinds. Two boxes asked the reader to classify the address
     /// before pasting it, which is work Wilted can do from the document itself.
-    public static let addLink = "Add"
-    public static let addLinkTitle = "Add an article or podcast"
-    public static let addLinkDetail = "Paste an HTTPS address. Wilted works out whether it is an article or a podcast feed. "
+    public static let addLink = "Add article"
+    public static let addLinkTitle = "Add an article"
+    public static let addLinkDetail = "Paste an HTTPS article address. If Wilted detects a podcast feed, it hands it to Podcast feeds instead. "
         + "Saved articles, episodes, and audio stay on this Mac."
     public static let savedArticles = "Saved articles"
     public static let feeds = "Podcast feeds"
     public static let feedsIdentifier = "wilted-podcast-feeds"
     public static let feedsEmpty = "No podcast feeds yet"
-    public static let feedsEmptyDetail = "Paste a podcast address into Larder's add box and the feed appears here with its own controls."
+    public static let feedsEmptyDetail = "Subscribe with a direct RSS or Atom address, or a show page that advertises one feed."
+    public static let subscribeToPodcast = "Subscribe to a podcast"
+    public static let subscribeToPodcastDetail = "Paste a complete HTTPS RSS or Atom feed address, or a show page that advertises one feed."
     /// Wilted refreshes only when asked and downloads only what the listener
     /// picks, so the Feeds card says so rather than letting an absent schedule
     /// read as a hidden one.

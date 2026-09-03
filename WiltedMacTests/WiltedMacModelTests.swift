@@ -914,9 +914,11 @@ final class WiltedMacModelTests: XCTestCase {
         )
     }
 
-    /// The reported complaint: a podcast address pasted into the one box has to
-    /// subscribe, not be handed to the article pipeline.
-    func testPastingAFeedAddressSubscribesToIt() async throws {
+    /// The reported complaint: a podcast address pasted into the article box has
+    /// to reach the subscription flow, not the article pipeline. Larder no longer
+    /// subscribes on its own -- it moves the address to the page that owns feeds
+    /// and shows it there, so the listener sees what they are about to follow.
+    func testPastingAFeedAddressHandsItToTheSubscriptionComposer() async throws {
         let directory = temporaryDirectory("pasted-feed")
         defer { try? FileManager.default.removeItem(at: directory) }
         let model = modelForPastedLink(
@@ -931,15 +933,24 @@ final class WiltedMacModelTests: XCTestCase {
         model.addPastedLink()
         await model.waitForPodcastOperations()
 
-        XCTAssertEqual(model.subscriptions.map(\.title), ["Pasted show"])
+        XCTAssertTrue(model.subscriptions.isEmpty, "the handoff subscribes to nothing on its own")
         XCTAssertNil(model.preparation, "a feed must never reach the article pipeline")
-        XCTAssertEqual(model.urlDraft, "", "a completed subscription clears the box")
+        XCTAssertEqual(model.selectedNavigation, .feeds, "the listener is taken to the page that owns feeds")
+        XCTAssertEqual(model.podcastFeedDraft, "https://podcasts.example.test/show")
+        XCTAssertEqual(model.urlDraft, "", "the address moved rather than being left in both boxes")
         XCTAssertNil(model.linkDraftStatus)
+
+        // Confirming in the composer it landed in is what subscribes.
+        model.addPodcastFeedDraft()
+        await model.waitForPodcastOperations()
+        XCTAssertEqual(model.subscriptions.map(\.title), ["Pasted show"])
+        XCTAssertEqual(model.podcastFeedDraft, "", "a completed subscription clears the box")
     }
 
-    /// An address ending in .xml is unmistakable, so the box must not spend a
-    /// round trip to learn what it already knows.
-    func testAnUnmistakableFeedAddressSubscribesWithoutSniffing() async throws {
+    /// An address ending in .xml is unmistakable, so neither box may spend a
+    /// round trip to learn what it already knows. The classifier here cannot
+    /// fetch anything, so a subscription proves the shortcut ran in both.
+    func testAnUnmistakableFeedAddressReachesTheComposerWithoutSniffing() async throws {
         let directory = temporaryDirectory("pasted-feed-extension")
         defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
@@ -958,6 +969,12 @@ final class WiltedMacModelTests: XCTestCase {
         model.addPastedLink()
         await model.waitForPodcastOperations()
 
+        XCTAssertEqual(model.selectedNavigation, .feeds)
+        XCTAssertEqual(model.podcastFeedDraft, "https://podcasts.example.test/show.xml")
+        XCTAssertTrue(model.subscriptions.isEmpty)
+
+        model.addPodcastFeedDraft()
+        await model.waitForPodcastOperations()
         XCTAssertEqual(model.subscriptions.map(\.title), ["Direct show"])
     }
 
@@ -989,6 +1006,143 @@ final class WiltedMacModelTests: XCTestCase {
         await model.waitForPodcastOperations()
         XCTAssertNil(model.advertisedFeed)
         XCTAssertEqual(model.subscriptions.map(\.title), ["Blog cast"])
+    }
+
+    /// The Feeds composer refuses an incomplete address before it starts any
+    /// work, so a typo never reads as a network problem.
+    func testTheSubscriptionComposerRefusesAnIncompleteAddressWithoutChecking() async throws {
+        let directory = temporaryDirectory("composer-invalid")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = modelForPastedLink(
+            directory: directory,
+            document: "<rss><channel><title>Unused</title></channel></rss>",
+            feedXML: "<rss><channel><title>Unused</title></channel></rss>"
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        model.podcastFeedDraft = "podcasts.example.test/show"
+        model.addPodcastFeedDraft()
+
+        XCTAssertFalse(model.isCheckingPodcastSubscription)
+        XCTAssertEqual(
+            model.podcastFeedDraftStatus,
+            "Enter a complete HTTPS podcast feed or show-page address."
+        )
+        XCTAssertTrue(model.subscriptions.isEmpty)
+    }
+
+    /// A show page is not a feed. The composer says which feed it found and
+    /// waits, because following a site's whole feed is a separate decision from
+    /// the address that was pasted.
+    func testTheSubscriptionComposerOffersAShowPagesFeedBeforeFollowingIt() async throws {
+        let directory = temporaryDirectory("composer-advertised")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = modelForPastedLink(
+            directory: directory,
+            document: """
+            <!doctype html><html><head>
+            <link rel="alternate" type="application/rss+xml" href="https://blog.example.test/Feed.xml">
+            </head><body>Words</body></html>
+            """,
+            feedXML: "<rss><channel><title>Blog cast</title></channel></rss>"
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        model.podcastFeedDraft = "https://blog.example.test/posts/one"
+        model.addPodcastFeedDraft()
+        await model.waitForPodcastOperations()
+
+        XCTAssertEqual(model.advertisedFeed?.absoluteString, "https://blog.example.test/Feed.xml")
+        XCTAssertTrue(model.subscriptions.isEmpty, "an advertised feed is an offer, not a subscription")
+        XCTAssertEqual(
+            model.podcastFeedDraftStatus,
+            "This page advertises one podcast feed. Confirm before subscribing."
+        )
+
+        model.subscribeToAdvertisedFeed()
+        await model.waitForPodcastOperations()
+        XCTAssertNil(model.advertisedFeed)
+        XCTAssertEqual(model.subscriptions.map(\.title), ["Blog cast"])
+    }
+
+    /// Subscribing to a feed already followed adds nothing, so the answer is the
+    /// row that already exists rather than a second subscription or an error the
+    /// listener cannot act on.
+    func testSubscribingTwiceKeepsOneFeedAndPointsAtTheOneAlreadyFollowed() async throws {
+        let directory = temporaryDirectory("composer-duplicate")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = modelForPastedLink(
+            directory: directory,
+            document: "<rss><channel><title>Repeat show</title></channel></rss>",
+            feedXML: "<rss><channel><title>Repeat show</title></channel></rss>"
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        model.podcastFeedDraft = "https://podcasts.example.test/repeat"
+        model.addPodcastFeedDraft()
+        await model.waitForPodcastOperations()
+        XCTAssertEqual(model.subscriptions.map(\.title), ["Repeat show"])
+        XCTAssertNil(model.selectedPodcastFeedID, "a first subscription points at nothing")
+
+        // The same feed through an equivalent spelling of its address.
+        model.podcastFeedDraft = "https://Podcasts.Example.test/repeat#latest"
+        model.addPodcastFeedDraft()
+        await model.waitForPodcastOperations()
+
+        XCTAssertEqual(model.subscriptions.count, 1, "one feed, however many times it is offered")
+        XCTAssertEqual(model.selectedPodcastFeedID, model.subscriptions.first?.id)
+        XCTAssertEqual(model.podcastOperationMessage, "Already following this podcast.")
+    }
+
+    /// A cancelled check still resumes; by then the listener may have started
+    /// another. The cancelled one must write nothing, or it clears the live
+    /// check's progress and replaces its answer with a stale one.
+    func testACancelledSubscriptionCheckCannotWriteOverTheNextOne() async throws {
+        let directory = temporaryDirectory("composer-cancel-race")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pageURL = URL(string: "https://pages.example.test/plain")!
+        let feedURL = URL(string: "https://podcasts.example.test/gated")!
+        let gate = GatedRoutingLoader(documents: [
+            pageURL: Data("<!doctype html><html><body>Just words</body></html>".utf8),
+            feedURL: Data("<rss><channel><title>Gated show</title></channel></rss>".utf8),
+        ])
+        let model = WiltedMacModel(
+            arguments: [],
+            stateDirectoryOverride: directory,
+            podcastFeedClient: PodcastFeedClient(
+                loader: FixedBodyLoader(body: Data("<rss><channel><title>Gated show</title></channel></rss>".utf8)),
+                now: { Date(timeIntervalSince1970: 1_700_000_000) }
+            ),
+            pastedLinkClassifier: PastedLinkClassifier(loader: gate),
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        model.podcastFeedDraft = pageURL.absoluteString
+        model.addPodcastFeedDraft()
+        XCTAssertTrue(model.isCheckingPodcastSubscription)
+        XCTAssertEqual(model.podcastFeedDraftStatus, WiltedMacModel.podcastCheckInProgressStatus)
+
+        model.cancelPodcastSubscriptionCheck()
+        XCTAssertFalse(model.isCheckingPodcastSubscription)
+        XCTAssertEqual(model.podcastFeedDraftStatus, WiltedMacModel.podcastCheckCancelledStatus)
+
+        model.podcastFeedDraft = feedURL.absoluteString
+        model.addPodcastFeedDraft()
+        XCTAssertTrue(model.isCheckingPodcastSubscription, "the next check starts on its own terms")
+
+        // Both classifications complete now, the cancelled one first.
+        await gate.release()
+        await model.waitForPodcastOperations()
+
+        XCTAssertEqual(model.subscriptions.map(\.title), ["Gated show"])
+        XCTAssertNil(model.podcastFeedDraftStatus,
+                     "the cancelled check must not report on the address that replaced it")
+        XCTAssertFalse(model.isCheckingPodcastSubscription)
     }
 
     /// A pasted address that cannot be reached is reported in the box. Guessing
@@ -1240,6 +1394,33 @@ private struct FixedBodyLoader: PodcastFeedLoading {
     let body: Data
     func load(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
         PodcastFeedHTTPResponse(url: url, statusCode: 200, data: body)
+    }
+}
+
+/// Serves a document per URL, but only once released.
+///
+/// Holding every request open is what lets a test place two classifications in
+/// flight at a chosen moment instead of racing them.
+private actor GatedRoutingLoader: PodcastFeedLoading {
+    private let documents: [URL: Data]
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var released = false
+
+    init(documents: [URL: Data]) { self.documents = documents }
+
+    func release() {
+        released = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.resume() }
+    }
+
+    func load(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
+        if !released {
+            await withCheckedContinuation { waiters.append($0) }
+        }
+        guard let body = documents[url] else { throw URLError(.fileDoesNotExist) }
+        return PodcastFeedHTTPResponse(url: url, statusCode: 200, data: body)
     }
 }
 

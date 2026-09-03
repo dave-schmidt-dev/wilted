@@ -533,7 +533,7 @@ final class WiltedVisualSystemTests: XCTestCase {
 
         model.subscribeToPodcastFeed(feedURL)
         await model.waitForPodcastOperations()
-        XCTAssertEqual(model.podcastOperationMessage, "Podcast episodes are up to date.")
+        XCTAssertEqual(model.podcastOperationMessage, "Podcast subscription added with 1 episode.")
         XCTAssertEqual(model.episodes.map(\.title), ["Stored first episode"])
         XCTAssertEqual(model.episodes.first?.feedTitle, "Stored show")
 
@@ -547,7 +547,10 @@ final class WiltedVisualSystemTests: XCTestCase {
 
         model.refreshPodcastFeeds()
         await model.waitForPodcastOperations()
-        XCTAssertEqual(model.podcastOperationMessage, "Podcast episodes are up to date.")
+        // The count is the point: automation may only act on what this exact
+        // refresh admitted, so the message reports that number and not the feed.
+        XCTAssertEqual(model.podcastOperationMessage, "Added 1 new episode.")
+        XCTAssertEqual(model.lastPodcastRefreshNewEpisodeIDs.count, 1)
         XCTAssertEqual(Set(model.episodes.map(\.title)), ["Stored first episode", "Stored refreshed episode"])
         let refreshedEpisodes = try await store.podcastEpisodes()
         let refreshedSubscriptions = try await store.subscriptions()
@@ -651,13 +654,17 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertEqual(WiltedScreenCopy.noArticles, "No articles yet")
         XCTAssertEqual(WiltedScreenCopy.addArticle, "Add Article")
         XCTAssertEqual(WiltedScreenCopy.addArticleIdentifier, "wilted-add-article")
-        // Larder's one box takes both kinds, so its label names neither.
-        XCTAssertEqual(WiltedScreenCopy.addLink, "Add")
-        XCTAssertEqual(WiltedScreenCopy.addLinkTitle, "Add an article or podcast")
-        // Feeds is a destination now, so the empty card must not tell the
-        // reader to subscribe "above" on a page with no add box.
+        // Larder's box is for articles, and says so: a feed pasted there is
+        // handed to Podcast feeds rather than saved as an episode.
+        XCTAssertEqual(WiltedScreenCopy.addLink, "Add article")
+        XCTAssertEqual(WiltedScreenCopy.addLinkTitle, "Add an article")
+        XCTAssertTrue(WiltedScreenCopy.addLinkDetail.contains(WiltedScreenCopy.feeds))
+        // Podcast feeds owns subscribing now, so the empty card explains what
+        // its own composer accepts instead of sending the reader elsewhere.
+        XCTAssertEqual(WiltedScreenCopy.subscribeToPodcast, "Subscribe to a podcast")
         XCTAssertFalse(WiltedScreenCopy.feedsEmptyDetail.contains("above"))
-        XCTAssertTrue(WiltedScreenCopy.feedsEmptyDetail.contains(WiltedScreenCopy.library))
+        XCTAssertFalse(WiltedScreenCopy.feedsEmptyDetail.contains(WiltedScreenCopy.library))
+        XCTAssertTrue(WiltedScreenCopy.subscribeToPodcastDetail.contains("RSS"))
         XCTAssertEqual(WiltedScreenCopy.stateActionIdentifier, "wilted-state-action")
         XCTAssertEqual(WiltedScreenCopy.libraryIdentifier, "wilted-library")
         XCTAssertEqual(

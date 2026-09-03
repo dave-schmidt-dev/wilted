@@ -166,6 +166,50 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertLessThan(rowsAfter, rowsBefore, "unsubscribing must remove the feed's row")
     }
 
+    /// Subscribing is a decision the Feeds page owns now.
+    ///
+    /// The complaint this closes is the one add box: a listener pasting a feed
+    /// into a control labelled for articles had no way to tell what would
+    /// happen. Larder now says Add article, and the feed composer -- with its
+    /// own field, its own button, and its own rejection message -- lives on the
+    /// page that keeps subscriptions.
+    func testFeedsPageOwnsSubscribingAndLarderAsksForAnArticle() {
+        let app = launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
+
+        let add = app.descendants(matching: .any)["wilted-add-link"]
+        XCTAssertTrue(add.waitForExistence(timeout: 8))
+        XCTAssertEqual(add.label, "Add article", "Larder's button must name what it takes")
+
+        let navFeeds = app.descendants(matching: .any)["wilted-navigation-feeds"]
+        XCTAssertTrue(navFeeds.waitForExistence(timeout: 8))
+        navFeeds.click()
+
+        let composer = app.descendants(matching: .any)["wilted-podcast-subscribe-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        let field = app.descendants(matching: .any)["wilted-podcast-feed-url"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        let subscribe = app.descendants(matching: .any)["wilted-podcast-subscribe"]
+        XCTAssertTrue(subscribe.waitForExistence(timeout: 5))
+
+        // An address that is not a complete HTTPS one is refused before any
+        // network work, so the rejection is deterministic evidence that the
+        // button is wired to the composer rather than merely drawn.
+        field.click()
+        field.typeText("not-an-address")
+        subscribe.click()
+
+        let status = app.descendants(matching: .any)["wilted-podcast-subscribe-status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 8))
+        let refused = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value CONTAINS[c] %@", "HTTPS"), object: status
+        )
+        XCTAssertEqual(XCTWaiter().wait(for: [refused], timeout: 5), .completed)
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-podcast-feeds"].exists,
+            "the subscription list stays on the page the composer subscribes into"
+        )
+    }
+
     func testMixedLarderSearchFiltersDownloadRetryAndSelection() {
         let app = launch(arguments: [
             "--wilted-ui-fixture-article-flow", "--wilted-ui-fixture-ready",

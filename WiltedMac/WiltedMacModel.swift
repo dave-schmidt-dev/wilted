@@ -654,6 +654,7 @@ final class WiltedMacModel {
 
     private(set) var startupState: WiltedMacStartupState = .loading(attempt: 0)
     var urlDraft = ""
+    var podcastFeedDraft = ""
     /// What the single add box is doing right now. Telling a feed from an
     /// article needs the document, so the button can sit on a network round
     /// trip; an unannounced pause there reads as a control that did nothing.
@@ -661,6 +662,16 @@ final class WiltedMacModel {
     /// A feed the page just added advertises. Offered, never taken: following a
     /// site's whole feed is a different request from saving one article of it.
     private(set) var advertisedFeed: URL?
+    private(set) var podcastFeedDraftStatus: String?
+    private(set) var isCheckingPodcastSubscription = false
+    /// Identifies the in-flight subscription check, so a cancelled one cannot
+    /// write over its successor's state when it finally resumes.
+    private var podcastSubscriptionCheckGeneration = 0
+    static let podcastCheckInProgressStatus = "Checking that address\u{2026}"
+    static let podcastCheckCancelledStatus = "Podcast check cancelled."
+    /// The feed a duplicate subscription attempt pointed back at.
+    private(set) var selectedPodcastFeedID: String?
+    private(set) var lastPodcastRefreshNewEpisodeIDs: [String] = []
     /// Episodes the last refresh loaded but did not keep, either because the
     /// feed exceeded the client's episode ceiling or because they published
     /// before the subscription. Reported so a partial view of a feed is never
@@ -760,6 +771,7 @@ final class WiltedMacModel {
     private let podcastFeedClient: PodcastFeedClient
     private let pastedLinkClassifier: PastedLinkClassifier
     private var linkClassificationTask: Task<Void, Never>?
+    private var podcastSubscriptionClassificationTask: Task<Void, Never>?
     private var fixtureRevision: StoredAudioRevision?
     private var fixturePodcastInstallTask: Task<Void, Never>?
     private var playbackOperationTask: Task<Void, Never>?
@@ -1024,11 +1036,107 @@ final class WiltedMacModel {
 #endif
     }
 
+    /// Classifies the Feeds-owned composer input, subscribing direct feeds and
+    /// requiring confirmation before following a feed advertised by a page.
+    func addPodcastFeedDraft() {
+#if canImport(WiltedProducer)
+        let trimmed = podcastFeedDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), url.scheme?.lowercased() == "https", url.host != nil else {
+            podcastFeedDraftStatus = "Enter a complete HTTPS podcast feed or show-page address."
+            return
+        }
+        guard podcastSubscriptionClassificationTask == nil else { return }
+        advertisedFeed = nil
+        selectedPodcastFeedID = nil
+        isCheckingPodcastSubscription = true
+        podcastFeedDraftStatus = Self.podcastCheckInProgressStatus
+        podcastSubscriptionCheckGeneration &+= 1
+        let generation = podcastSubscriptionCheckGeneration
+        podcastSubscriptionClassificationTask = Task { [weak self] in
+            guard let self else { return }
+            let outcome: PodcastSubscriptionCheckOutcome
+            do {
+                let kind = try await self.pastedLinkClassifier.classify(url)
+                try Task.checkCancellation()
+                switch kind {
+                case .podcastFeed: outcome = .subscribe(url)
+                case .articleAdvertisingFeed(let feedURL): outcome = .confirm(feedURL)
+                case .article: outcome = .notAFeed
+                }
+            } catch is CancellationError {
+                outcome = .cancelled
+            } catch {
+                outcome = .unreachable
+            }
+            // A cancelled check still resumes, and by then the listener may have
+            // started the next one. Only the current generation may write the
+            // shared status, or a stale answer clears a live check's progress.
+            guard generation == self.podcastSubscriptionCheckGeneration else { return }
+            self.isCheckingPodcastSubscription = false
+            self.podcastSubscriptionClassificationTask = nil
+            self.apply(outcome)
+        }
+#endif
+    }
+
+    /// What one classification of the Feeds composer input concluded.
+    private enum PodcastSubscriptionCheckOutcome {
+        case subscribe(URL)
+        case confirm(URL)
+        case notAFeed
+        case cancelled
+        case unreachable
+    }
+
+    private func apply(_ outcome: PodcastSubscriptionCheckOutcome) {
+#if canImport(WiltedProducer)
+        switch outcome {
+        case let .subscribe(url):
+            podcastFeedDraftStatus = nil
+            subscribeToPodcastFeed(url)
+        case let .confirm(feedURL):
+            advertisedFeed = feedURL
+            podcastFeedDraftStatus = "This page advertises one podcast feed. Confirm before subscribing."
+        case .notAFeed:
+            podcastFeedDraftStatus = "That page does not advertise a podcast feed."
+        case .cancelled:
+            podcastFeedDraftStatus = Self.podcastCheckCancelledStatus
+        case .unreachable:
+            podcastFeedDraftStatus = "Wilted could not reach that address. Check it, or retry when online."
+        }
+#endif
+    }
+
+    func cancelPodcastSubscriptionCheck() {
+        guard let task = podcastSubscriptionClassificationTask else { return }
+        // The generation moves with the cancellation, so the task being
+        // cancelled here cannot write anything after this point.
+        podcastSubscriptionCheckGeneration &+= 1
+        task.cancel()
+        podcastSubscriptionClassificationTask = nil
+        isCheckingPodcastSubscription = false
+        podcastFeedDraftStatus = Self.podcastCheckCancelledStatus
+    }
+
     /// Follows the feed the last added page advertised.
     func subscribeToAdvertisedFeed() {
         guard let advertisedFeed else { return }
         self.advertisedFeed = nil
+        podcastFeedDraft = advertisedFeed.absoluteString
+        podcastFeedDraftStatus = nil
         subscribeToPodcastFeed(advertisedFeed)
+    }
+
+    /// Moves a feed found by Larder's article classifier to its owning screen.
+    ///
+    /// The address moves rather than being copied: leaving it in the article box
+    /// as well would offer the same paste two homes.
+    func handPodcastFeedToSubscriptions(_ url: URL) {
+        advertisedFeed = nil
+        urlDraft = ""
+        podcastFeedDraft = url.absoluteString
+        podcastFeedDraftStatus = "Podcast feed detected. Review the address, then subscribe."
+        selectedNavigation = .feeds
     }
 
     func dismissAdvertisedFeed() {
@@ -1050,8 +1158,11 @@ final class WiltedMacModel {
                         urls.append(url)
                     }
                 }
-                try await self.refreshPodcastURLs(urls, subscribing: false)
-                self.podcastOperationMessage = "Podcast episodes are up to date."
+                let result = try await self.refreshPodcastURLs(urls, subscribing: false)
+                self.lastPodcastRefreshNewEpisodeIDs = result.newEpisodeIDs.map(\.rawValue)
+                self.podcastOperationMessage = result.newEpisodeIDs.isEmpty
+                    ? "Podcast episodes are up to date."
+                    : "Added \(result.newEpisodeIDs.count) new episode\(result.newEpisodeIDs.count == 1 ? "" : "s")."
             } catch is CancellationError {
                 self.podcastOperationMessage = "Podcast refresh cancelled."
             } catch PodcastFeedClientError.cancelled {
@@ -1296,6 +1407,7 @@ final class WiltedMacModel {
 
     func waitForPodcastOperations() async {
         await linkClassificationTask?.value
+        await podcastSubscriptionClassificationTask?.value
         let refresh = podcastRefreshTask
         let downloads = Array(podcastDownloadTasks.values)
         let restores = Array(podcastRestoreTasks.values)
@@ -1479,9 +1591,26 @@ final class WiltedMacModel {
         podcastRefreshTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.refreshPodcastURLs(urls, subscribing: subscribing)
-                if subscribing { self.urlDraft = "" }
-                self.podcastOperationMessage = "Podcast episodes are up to date."
+                let result = try await self.refreshPodcastURLs(urls, subscribing: subscribing)
+                self.lastPodcastRefreshNewEpisodeIDs = result.newEpisodeIDs.map(\.rawValue)
+                if subscribing {
+                    self.podcastFeedDraft = ""
+                    if let duplicate = result.duplicateSubscription {
+                        // Nothing was added, so the answer is the feed already
+                        // followed: point at it rather than report a failure.
+                        self.selectedPodcastFeedID = duplicate.rawValue
+                        self.podcastOperationMessage = "Already following this podcast."
+                    } else {
+                        self.selectedPodcastFeedID = nil
+                        self.podcastOperationMessage = result.newEpisodeIDs.isEmpty
+                            ? "Podcast subscription added."
+                            : "Podcast subscription added with \(result.newEpisodeIDs.count) episode\(result.newEpisodeIDs.count == 1 ? "" : "s")."
+                    }
+                } else {
+                    self.podcastOperationMessage = result.newEpisodeIDs.isEmpty
+                        ? "Podcast episodes are up to date."
+                        : "Added \(result.newEpisodeIDs.count) new episode\(result.newEpisodeIDs.count == 1 ? "" : "s")."
+                }
             } catch is CancellationError {
                 self.podcastOperationMessage = "Podcast refresh cancelled."
             } catch PodcastFeedClientError.cancelled {
@@ -1501,22 +1630,30 @@ final class WiltedMacModel {
     /// nothing. Anything the feed published but Wilted did not keep is counted
     /// and reported -- a truncated back catalogue must never read as the whole
     /// feed.
-    private func refreshPodcastURLs(_ urls: [URL], subscribing: Bool) async throws {
+    private struct PodcastRefreshResult {
+        var newEpisodeIDs: [ItemID] = []
+        var duplicateSubscription: ItemID?
+    }
+
+    private func refreshPodcastURLs(_ urls: [URL], subscribing: Bool) async throws -> PodcastRefreshResult {
         guard let store else { throw CancellationError() }
         var withheld = 0
+        var result = PodcastRefreshResult()
         for url in urls {
             try Task.checkCancellation()
             let loaded = try await podcastFeedClient.load(url)
             try await store.save(feed: loaded.feed)
             if subscribing {
-                try await store.save(subscription: PodcastSubscription(
+                let inserted = try await store.subscribeIfNeeded(PodcastSubscription(
                     feedID: loaded.feed.itemID, subscribedAt: Timestamp(Date())
                 ))
+                if !inserted { result.duplicateSubscription = loaded.feed.itemID }
             }
             let admission = try await store.savePodcastEpisodes(
                 loaded.episodes, admission: subscribing ? .backfill : .incremental
             )
             withheld += loaded.droppedEpisodeCount + admission.skipped
+            result.newEpisodeIDs.append(contentsOf: admission.newlyAdmitted)
         }
         withheldPodcastEpisodeCount = withheld
         let values = try await loadLibrary(from: store)
@@ -1524,6 +1661,7 @@ final class WiltedMacModel {
         episodes = values.episodes
         subscriptions = values.subscriptions
         dismissedEpisodes = try await loadDismissedEpisodes(from: store)
+        return result
     }
 
 #endif
@@ -1642,7 +1780,7 @@ final class WiltedMacModel {
                 self.linkDraftStatus = nil
                 switch kind {
                 case .podcastFeed:
-                    self.subscribeToPodcastFeed(url)
+                    self.handPodcastFeedToSubscriptions(url)
                 case .article:
                     self.addArticle()
                 case .articleAdvertisingFeed(let feedURL):

@@ -374,6 +374,22 @@ private struct WiltedMacLibraryView: View {
     /// The page that was just saved publishes a feed. Following it is a
     /// separate decision, so it is offered as an action rather than taken.
     private func advertisedFeedOffer(_ feedURL: URL) -> some View {
+        WiltedMacAdvertisedFeedOffer(model: model, feedURL: feedURL, identifier: "wilted-advertised-feed")
+    }
+}
+
+/// One page, one feed, one decision. Both composers show this: Larder when a
+/// saved article advertises a feed, and Podcast feeds when the pasted address
+/// turns out to be a show page rather than the feed itself. Following a site's
+/// whole feed is a different request from saving one article of it, so it is
+/// never taken silently.
+private struct WiltedMacAdvertisedFeedOffer: View {
+    let model: WiltedMacModel
+    let feedURL: URL
+    let identifier: String
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
             Text("That page publishes a feed at \(feedURL.host ?? feedURL.absoluteString).")
                 .font(WiltedTheme.font(.utility))
@@ -381,21 +397,23 @@ private struct WiltedMacLibraryView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button("Subscribe") { model.subscribeToAdvertisedFeed() }
-                .accessibilityIdentifier("wilted-advertised-feed-subscribe")
+                .accessibilityIdentifier("\(identifier)-subscribe")
             Button("Not Now") { model.dismissAdvertisedFeed() }
-                .accessibilityIdentifier("wilted-advertised-feed-dismiss")
+                .accessibilityIdentifier("\(identifier)-dismiss")
         }
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-advertised-feed")
+        .accessibilityIdentifier(identifier)
     }
 }
 
 // MARK: - Feeds
 
-/// Feed upkeep, on its own page.
+/// Subscribing, and feed upkeep, on one page.
 ///
-/// Subscribing happens in Larder's one add box; this page is what the app does
-/// with a feed once it is followed -- refresh it, hide it, or drop it.
+/// Subscribing used to happen in Larder's single add box, which asked the
+/// listener to paste a feed into a control labelled for articles. This page now
+/// owns the decision: its composer takes the feed, and the list below is what
+/// the app does with it once followed -- refresh it, hide it, or drop it.
 private struct WiltedMacFeedsView: View {
     @Bindable private var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
@@ -406,8 +424,58 @@ private struct WiltedMacFeedsView: View {
 
     var body: some View {
         WiltedMacDestination(title: WiltedScreenCopy.feeds, identifier: "wilted-mac-feeds-detail") {
+            subscribeComposer
             feedManagement
         }
+    }
+
+    /// The subscription composer.
+    ///
+    /// Classifying an address needs the document, so Subscribe can sit on a
+    /// network round trip. The progress control and its Cancel are the reason
+    /// that pause reads as work rather than as a button that did nothing.
+    private var subscribeComposer: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+            Text(WiltedScreenCopy.subscribeToPodcast)
+                .font(WiltedTheme.font(.title))
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+            Text(WiltedScreenCopy.subscribeToPodcastDetail)
+                .font(WiltedTheme.font(.body))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: WiltedTheme.Spacing.medium) {
+                WiltedMacLinkField(
+                    text: $model.podcastFeedDraft,
+                    placeholder: "https://example.com/podcast/feed.xml",
+                    identifier: "wilted-podcast-feed-url"
+                )
+                if model.isCheckingPodcastSubscription {
+                    ProgressView().controlSize(.small)
+                        .accessibilityIdentifier("wilted-podcast-subscribe-progress")
+                    Button("Cancel") { model.cancelPodcastSubscriptionCheck() }
+                        .accessibilityIdentifier("wilted-podcast-subscribe-cancel")
+                } else {
+                    Button("Subscribe") { model.addPodcastFeedDraft() }
+                        .keyboardShortcut(.return)
+                        .accessibilityIdentifier("wilted-podcast-subscribe")
+                }
+            }
+            if let status = model.podcastFeedDraftStatus {
+                Text(status)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-podcast-subscribe-status")
+            }
+            if let advertised = model.advertisedFeed {
+                WiltedMacAdvertisedFeedOffer(
+                    model: model, feedURL: advertised, identifier: "wilted-podcast-advertised-feed"
+                )
+            }
+        }
+        .wiltedCard(colorScheme)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-podcast-subscribe-composer")
     }
 
     /// Refresh belongs to the list it refreshes. On its own card it was one
@@ -530,7 +598,16 @@ private struct WiltedMacFeedsView: View {
                 .accessibilityIdentifier("wilted-podcast-feed-unsubscribe-\(subscription.id)")
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
+        // Subscribing to a feed already followed adds nothing, so the answer is
+        // the existing row rather than an error the listener cannot act on.
+        .background(
+            model.selectedPodcastFeedID == subscription.id
+                ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.12)
+                : Color.clear,
+            in: RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
+        )
         .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(model.selectedPodcastFeedID == subscription.id ? [.isSelected] : [])
         .accessibilityIdentifier("wilted-podcast-feed-row-\(subscription.id)")
     }
 
@@ -583,17 +660,28 @@ private struct WiltedMacPodcastOperationMessage: View {
 /// A tokenized field border replaces macOS's system-blue focus treatment.
 struct WiltedMacLinkField: View {
     @Binding var text: String
+    let placeholder: String
+    /// Each composer names its own field: two fields sharing one identifier is
+    /// an ambiguous query the moment both are reachable.
+    let identifier: String
     let focusedOverride: Bool?
     @FocusState private var isFocused: Bool
     @Environment(\.colorScheme) private var colorScheme
 
-    init(text: Binding<String>, focusedOverride: Bool? = nil) {
+    init(
+        text: Binding<String>,
+        placeholder: String = "https://example.com/article",
+        identifier: String = "wilted-link-url",
+        focusedOverride: Bool? = nil
+    ) {
         _text = text
+        self.placeholder = placeholder
+        self.identifier = identifier
         self.focusedOverride = focusedOverride
     }
 
     var body: some View {
-        TextField("https://example.com/article-or-feed", text: $text)
+        TextField(placeholder, text: $text)
             .textFieldStyle(.plain)
             .font(WiltedTheme.font(.body))
             .padding(.horizontal, WiltedTheme.Spacing.medium)
@@ -612,7 +700,7 @@ struct WiltedMacLinkField: View {
                     )
             )
             .focused($isFocused)
-            .accessibilityIdentifier("wilted-link-url")
+            .accessibilityIdentifier(identifier)
     }
 }
 
