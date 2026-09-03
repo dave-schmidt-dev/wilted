@@ -418,6 +418,38 @@ private final class WorkerOutputCollector: @unchecked Sendable {
 /// before anything is stored. The revision identity follows the bytes: cut
 /// audio is different audio, so it earns a new `RevisionID` and the transcript
 /// binds to that one.
+public enum PodcastTranscriptPolicy: String, Codable, Equatable, Sendable {
+    case bestAvailable
+    case alwaysTranscribe
+    case noLocalSTT
+}
+
+/// The processing choices captured when one preparation job is admitted.
+///
+/// Passing this value into `prepare` keeps a queued job independent of later
+/// preference changes. The default is the pipeline's legacy behavior.
+public struct PodcastPreparationPolicySnapshot: Codable, Equatable, Sendable {
+    public let transcriptPolicy: PodcastTranscriptPolicy
+    public let removeAds: Bool
+    public let readableTranscriptPass: Bool
+
+    public static let defaultValue = PodcastPreparationPolicySnapshot(
+        transcriptPolicy: .bestAvailable,
+        removeAds: true,
+        readableTranscriptPass: true
+    )
+
+    public init(
+        transcriptPolicy: PodcastTranscriptPolicy,
+        removeAds: Bool,
+        readableTranscriptPass: Bool
+    ) {
+        self.transcriptPolicy = transcriptPolicy
+        self.removeAds = removeAds
+        self.readableTranscriptPass = readableTranscriptPass
+    }
+}
+
 public actor PodcastPreparationPipeline {
     /// A published transcript larger than this is not a transcript.
     public static let maximumTranscriptDocumentBytes = 8 * 1_024 * 1_024
@@ -430,8 +462,7 @@ public actor PodcastPreparationPipeline {
     private let runner: any PodcastPipelineRunning
     private let documentLoader: any PodcastFeedLoading
     private let workDirectory: URL
-    private let removeAds: Bool
-    private let allowSpeechToText: Bool
+    private let defaultPolicy: PodcastPreparationPolicySnapshot
     private let now: @Sendable () -> Date
 
     public init(
@@ -447,8 +478,11 @@ public actor PodcastPreparationPipeline {
         self.runner = runner
         self.documentLoader = documentLoader
         self.workDirectory = workDirectory
-        self.removeAds = removeAds
-        self.allowSpeechToText = allowSpeechToText
+        self.defaultPolicy = PodcastPreparationPolicySnapshot(
+            transcriptPolicy: allowSpeechToText ? .bestAvailable : .noLocalSTT,
+            removeAds: removeAds,
+            readableTranscriptPass: true
+        )
         self.now = now
     }
 
@@ -457,8 +491,10 @@ public actor PodcastPreparationPipeline {
 
     public func prepare(
         episodeID: ItemID,
+        policy: PodcastPreparationPolicySnapshot? = nil,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void = { _ in }
     ) async throws -> PodcastPreparationResult {
+        let policy = policy ?? defaultPolicy
         let requestID = Self.requestID(for: episodeID)
         // The journal is one attempt deep. Left in place, the previous
         // attempt's terminal row would report this one as finished before it
@@ -498,12 +534,15 @@ public actor PodcastPreparationPipeline {
                 "audioPath": audioURL.path,
                 "outputPath": preparedAudioURL(for: audioURL).path,
                 "workDir": workDirectory.path,
-                "removeAds": removeAds,
-                "allowSpeechToText": allowSpeechToText,
+                "transcriptPolicy": policy.transcriptPolicy.rawValue,
+                "removeAds": policy.removeAds,
+                "readableTranscript": policy.readableTranscriptPass,
+                "allowSpeechToText": policy.transcriptPolicy != .noLocalSTT,
                 "sourceHash": stored.revision.contentHash,
                 "alignedTranscriptModel": Self.alignedTranscriptModel,
             ]
-            if let published = await fetchPublishedTranscript(for: episode, onStatus: report) {
+            if policy.transcriptPolicy != .alwaysTranscribe,
+               let published = await fetchPublishedTranscript(for: episode, onStatus: report) {
                 request["publishedTranscript"] = published
             }
             // The feed's show notes name the hosts, guests, stories, products,

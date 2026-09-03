@@ -37,6 +37,10 @@ struct PodcastPreparationPipelineTests {
         #expect(request["audioPath"] as? String == fixture.audioURL.path)
         #expect(request["sourceHash"] as? String == fixture.contentHash)
         #expect(request["alignedTranscriptModel"] as? String == PodcastPreparationPipeline.alignedTranscriptModel)
+        #expect(request["transcriptPolicy"] as? String == "bestAvailable")
+        #expect(request["removeAds"] as? Bool == true)
+        #expect(request["readableTranscript"] as? Bool == true)
+        #expect(request["allowSpeechToText"] as? Bool == true)
         // The show notes ride along as the worker's glossary.
         #expect(request["episodeNotes"] as? String == "Host: Leo Laporte (https://twit.tv/people/leo-laporte)")
         #expect(request["episodeTitle"] as? String == "Episode")
@@ -48,6 +52,38 @@ struct PodcastPreparationPipelineTests {
         let stored = try #require(try await fixture.store.transcript(for: fixture.episodeID, revisionID: fixture.revisionID))
         #expect(stored.cues?.last?.text == "Today we talk about latency.")
         #expect(stored.schemaVersion == 2)
+    }
+
+    @Test(arguments: [
+        (PodcastPreparationPolicySnapshot(
+            transcriptPolicy: .bestAvailable, removeAds: true, readableTranscriptPass: true
+        ), "bestAvailable", true, true, true),
+        (PodcastPreparationPolicySnapshot(
+            transcriptPolicy: .alwaysTranscribe, removeAds: false, readableTranscriptPass: false
+        ), "alwaysTranscribe", false, false, true),
+        (PodcastPreparationPolicySnapshot(
+            transcriptPolicy: .noLocalSTT, removeAds: true, readableTranscriptPass: false
+        ), "noLocalSTT", true, false, false),
+    ])
+    func mapsEachAdmissionPolicyIntoAnImmutableWorkerRequest(
+        argument: (PodcastPreparationPolicySnapshot, String, Bool, Bool, Bool)
+    ) async throws {
+        let (policy, expectedName, expectedRemoveAds, expectedReadable, expectedSTT) = argument
+        let fixture = try await Fixture(publishesTranscript: true)
+        defer { fixture.remove() }
+        let stub = WorkerStub(response: [
+            "ok": true, "timing": "none", "audioPath": fixture.audioURL.path, "audioChanged": false,
+        ])
+
+        _ = try await fixture.pipeline(stub).prepare(episodeID: fixture.episodeID, policy: policy)
+
+        let data = try #require(await stub.lastRequest())
+        let request = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(request["transcriptPolicy"] as? String == expectedName)
+        #expect(request["removeAds"] as? Bool == expectedRemoveAds)
+        #expect(request["readableTranscript"] as? Bool == expectedReadable)
+        #expect(request["allowSpeechToText"] as? Bool == expectedSTT)
+        #expect((request["publishedTranscript"] != nil) == (policy.transcriptPolicy != .alwaysTranscribe))
     }
 
     /// An unreachable transcript document is a downgrade, not a failure: the

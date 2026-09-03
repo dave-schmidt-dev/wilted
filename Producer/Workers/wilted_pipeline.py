@@ -1374,6 +1374,25 @@ def run(request: dict) -> dict:
     audio_path = Path(request["audioPath"])
     if not audio_path.exists():
         raise WorkerError("audio-missing", f"no audio at {audio_path}")
+
+    transcript_policy = request.get("transcriptPolicy")
+    if transcript_policy is None:
+        # Protocol-v1 callers predate explicit snapshots. Preserve their
+        # published-first ordering and their existing STT switch exactly.
+        allow_published_transcript = True
+        allow_speech_to_text = request.get("allowSpeechToText", True)
+    elif transcript_policy == "bestAvailable":
+        allow_published_transcript = True
+        allow_speech_to_text = True
+    elif transcript_policy == "alwaysTranscribe":
+        allow_published_transcript = False
+        allow_speech_to_text = True
+    elif transcript_policy == "noLocalSTT":
+        allow_published_transcript = True
+        allow_speech_to_text = False
+    else:
+        raise WorkerError("invalid-request", f"unknown transcriptPolicy: {transcript_policy}")
+
     if request.get("removeAds", True):
         preflight_ad_removal(request)
 
@@ -1383,7 +1402,7 @@ def run(request: dict) -> dict:
     text: str | None = None
     language = request.get("language")
 
-    published = request.get("publishedTranscript")
+    published = request.get("publishedTranscript") if allow_published_transcript else None
     if published:
         progress("transcript.published.parse", published.get("mediaType", ""))
         segments = parse_published_transcript(
@@ -1395,7 +1414,7 @@ def run(request: dict) -> dict:
             language = published.get("languageCode") or language
             progress("transcript.published.accepted", f"{len(cues)} cues")
 
-    if not cues and request.get("allowSpeechToText", True):
+    if not cues and allow_speech_to_text:
         aligned_model = request.get("alignedTranscriptModel") or ALIGNED_STT_MODEL
         source_hash = request.get("sourceHash")
         try:

@@ -161,6 +161,25 @@ def install_fake_wilted(parse_results=None, parse_error=None, transcriptions=Non
     return transcribe
 
 
+def install_fake_trafilatura(text):
+    """Stand in for the prose extractor.
+
+    `extract_prose` imports `trafilatura` at call time, so whatever double was
+    installed last stays in `sys.modules` for every later test. A test that
+    reaches the prose tier must therefore install its own, or it inherits an
+    unrelated case's answer.
+    """
+    module = types.ModuleType("trafilatura")
+    module.extract = lambda html: text
+    sys.modules["trafilatura"] = module
+    return module
+
+
+def prose_transcript(phrase):
+    """Prose long enough to clear the word floor, carrying a locating phrase."""
+    return " ".join([phrase] * (wp.MINIMUM_PROSE_WORDS // len(phrase.split()) + 1))
+
+
 @dataclass
 class FakeLLM:
     """The previous project's GGUF backend, as far as the worker can see it.
@@ -427,9 +446,7 @@ class PublishedTranscriptTests(unittest.TestCase):
 
 class ProseTests(unittest.TestCase):
     def _install_trafilatura(self, text):
-        module = types.ModuleType("trafilatura")
-        module.extract = lambda html: text
-        sys.modules["trafilatura"] = module
+        install_fake_trafilatura(text)
 
     def test_show_notes_are_rejected_by_the_word_floor(self):
         self._install_trafilatura("too short")
@@ -1376,6 +1393,82 @@ class RunTests(unittest.TestCase):
         self.assertFalse(result["audioChanged"])
         self.assertEqual(result["removedSeconds"], 0.0)
         self.assertEqual(result["audioPath"], str(self.audio))
+
+    def test_best_available_uses_published_then_stt_then_prose(self):
+        published = {"body": "WEBVTT", "mediaType": "text/vtt", "url": "https://x.test/a.vtt"}
+        install_fake_wilted({"vtt": [FakeSegment(0, 1, "published words")]})
+        with redirect_stderr(io.StringIO()):
+            result = wp.run({
+                "audioPath": str(self.audio), "removeAds": False,
+                "transcriptPolicy": "bestAvailable", "publishedTranscript": published,
+                "episodePage": "<article>" + "prose words " * 80 + "</article>",
+            })
+        self.assertEqual(result["timing"], "published")
+        self.assertEqual(result["text"], "published words")
+
+        install_fake_wilted({"vtt": []}, transcriptions={
+            wp.ALIGNED_STT_MODEL: [FakeSegment(0, 1, "aligned words")]
+        })
+        with redirect_stderr(io.StringIO()):
+            result = wp.run({
+                "audioPath": str(self.audio), "removeAds": False, "readableTranscript": False,
+                "transcriptPolicy": "bestAvailable", "publishedTranscript": published,
+                "episodePage": "<article>" + "prose words " * 80 + "</article>",
+            })
+        self.assertEqual(result["timing"], "aligned")
+        self.assertEqual(result["text"], "aligned words")
+
+    def test_always_transcribe_ignores_published_and_falls_back_to_prose(self):
+        stt_calls = []
+        install_fake_wilted({"vtt": [FakeSegment(0, 1, "published words")]})
+        install_fake_trafilatura(prose_transcript("fallback prose words"))
+        sys.modules["wilted.transcribe"].transcribe_audio = (
+            lambda path, **kwargs: stt_calls.append((path, kwargs)) or (_ for _ in ()).throw(RuntimeError("stt failed"))
+        )
+        with redirect_stderr(io.StringIO()) as stream:
+            result = wp.run({
+                "audioPath": str(self.audio), "removeAds": False,
+                "transcriptPolicy": "alwaysTranscribe",
+                "publishedTranscript": {"body": "WEBVTT", "mediaType": "text/vtt", "url": "https://x.test/a.vtt"},
+                "episodePage": "<article>fallback prose words</article>",
+            })
+        stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
+        self.assertEqual(len(stt_calls), 1)
+        self.assertNotIn("transcript.published.parse", stages)
+        self.assertEqual(result["timing"], "none")
+        self.assertIn("fallback prose words", result["text"])
+
+    def test_no_local_stt_never_transcribes_and_uses_published_then_prose(self):
+        install_fake_wilted({"vtt": []})
+        install_fake_trafilatura(prose_transcript("page prose words"))
+        transcribe = mock.Mock(side_effect=AssertionError("noLocalSTT started transcription"))
+        sys.modules["wilted.transcribe"].transcribe_audio = transcribe
+        with redirect_stderr(io.StringIO()):
+            result = wp.run({
+                "audioPath": str(self.audio), "removeAds": False,
+                "transcriptPolicy": "noLocalSTT", "allowSpeechToText": True,
+                "publishedTranscript": {"body": "WEBVTT", "mediaType": "text/vtt", "url": "https://x.test/a.vtt"},
+                "episodePage": "<article>page prose words</article>",
+            })
+        transcribe.assert_not_called()
+        self.assertEqual(result["timing"], "none")
+        self.assertIn("page prose words", result["text"])
+
+    def test_untimed_prose_never_drives_ad_removal(self):
+        install_fake_wilted()
+        install_fake_trafilatura(prose_transcript("untimed prose words"))
+        detect = mock.patch.object(wp, "detect_and_cut", side_effect=AssertionError("prose drove ad removal"))
+        with detect as detector, redirect_stderr(io.StringIO()), mock.patch.object(
+            wp, "preflight_ad_removal"
+        ):
+            result = wp.run({
+                "audioPath": str(self.audio), "removeAds": True,
+                "transcriptPolicy": "noLocalSTT",
+                "episodePage": "<article>untimed prose words</article>",
+            })
+        detector.assert_not_called()
+        self.assertFalse(result["audioChanged"])
+        self.assertEqual(result["timing"], "none")
 
     def test_show_notes_correct_the_transcript_before_it_is_returned(self):
         install_fake_wilted({"vtt": [FakeSegment(0, 2, "leo laporte"), FakeSegment(2, 4, "on twit dot t v")]})
