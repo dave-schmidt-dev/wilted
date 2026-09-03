@@ -36,6 +36,15 @@ mkdir -p "$derived"
 status 'install.generate project'
 xcodegen generate --spec "$repo_root/project.yml" --project "$repo_root" --project-root "$repo_root" >/dev/null
 
+# Xcode's code-signing pass rejects Finder metadata left on a prior product.
+# Remove only the installer-owned app product; the rest of DerivedData remains
+# available for incremental builds.
+previous_app="$derived/Build/Products/Debug/WiltedMac.app"
+if [[ -d "$previous_app" || -L "$previous_app" ]]; then
+  status "install.clean previous-product=$previous_app"
+  rm -rf -- "$previous_app"
+fi
+
 status 'install.build configuration=Debug'
 xcodebuild build \
   -project "$repo_root/Wilted.xcodeproj" \

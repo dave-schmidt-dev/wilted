@@ -209,6 +209,17 @@ assert_installer_contains 'wilted_running_bundle_pids "$bundle_id"' \
     'quits every running copy by identifier'
 assert_installer_contains 'wilted_wait_for_bundle_exit "$bundle_id"' \
     'waits for running copies to exit before replacing the bundle'
+assert_installer_contains 'previous_app="$derived/Build/Products/Debug/WiltedMac.app"' \
+    'targets only the installer-owned Debug app product for pre-build cleanup'
+assert_installer_contains 'rm -rf -- "$previous_app"' \
+    'removes the stale app product while preserving intermediate build data'
+cleanup_line="$(awk '/rm -rf -- \"\$previous_app\"/ { print NR; exit }' "$installer")"
+xcodebuild_line="$(awk '/^[[:space:]]*xcodebuild build/ { print NR; exit }' "$installer")"
+if [[ -z "$cleanup_line" || -z "$xcodebuild_line" || "$cleanup_line" -ge "$xcodebuild_line" ]]; then
+    fail 'stale app cleanup is not ordered before xcodebuild'
+else
+    pass 'stale app cleanup is ordered before xcodebuild'
+fi
 if grep -Fq 'pgrep -f "$target/Contents/MacOS/"' "$installer"; then
     fail 'installer still looks for a running copy at the install path only'
 else
