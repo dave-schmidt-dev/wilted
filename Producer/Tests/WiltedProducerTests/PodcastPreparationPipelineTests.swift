@@ -247,6 +247,12 @@ struct PodcastPreparationPipelineTests {
         let terminal = try #require(entries.last { $0.status.terminal })
         #expect(terminal.status.terminalResult?.outcome == .succeeded)
         #expect(terminal.status.terminalResult?.revisionID != nil)
+        #expect(terminal.status.timeline?.removed == [
+            try PreparationStatus.PreparationTimeline.RemovedInterval(
+                originalStartSeconds: 3, originalEndSeconds: 7.5, label: "host read", confidence: 0.91
+            )
+        ])
+        #expect(terminal.status.timeline?.kept.count == 2)
         #expect(entries.allSatisfy { $0.itemID == fixture.episodeID })
         // The terminal row says what was done, not just that it finished:
         // it is what a relaunched app shows under the episode.
@@ -311,6 +317,23 @@ struct PodcastPreparationPipelineTests {
         let terminal = try #require(entries.last { $0.status.terminal })
         #expect(terminal.status.stage == .failed)
         #expect(terminal.status.terminalResult?.error?.code == .invalidRequest)
+    }
+
+    @Test func rejectsMalformedTimelineBeforeSuccessIsJournalled() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let malformed = WorkerStub(response: [
+            "ok": true, "timing": "none", "audioPath": fixture.audioURL.path, "audioChanged": false,
+            "adSegments": [["startSeconds": 3.0, "endSeconds": 7.0, "label": "sponsor", "confidence": 1.2]],
+        ])
+        await #expect(throws: PodcastPreparationError.malformedWorkerResponse("invalid preparation timeline")) {
+            _ = try await fixture.pipeline(malformed).prepare(episodeID: fixture.episodeID)
+        }
+        let entries = try await fixture.store.preparationJournal(for: PodcastPreparationPipeline.requestID(for: fixture.episodeID))
+        let terminal = try #require(entries.last { $0.status.terminal })
+        #expect(terminal.status.terminalResult?.outcome == .failed)
+        #expect(terminal.status.terminalResult?.error?.code == .protocolMismatch)
+        #expect(terminal.status.timeline == nil)
     }
 
     @Test func journalOrdersEqualTimestampEventsByNumericOrdinalThroughBothAPIs() async throws {
@@ -520,7 +543,8 @@ struct PodcastPreparationPipelineTests {
         PodcastPreparationPipeline.WorkerPayload(
             timing: .none, cues: [], text: text, languageCode: "en",
             audioPath: "/tmp/a.mp3", audioChanged: false, durationSeconds: nil,
-            adSegments: [], removedSeconds: 0, keepIntervals: []
+            adSegments: [], removedSeconds: 0, keepIntervals: [],
+            timeline: try! PreparationStatus.PreparationTimeline(removed: [], kept: [])
         )
     }
 }

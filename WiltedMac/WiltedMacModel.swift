@@ -193,10 +193,14 @@ struct WiltedMacProcessorRun: Identifiable, Equatable, Sendable {
     /// Everything the run journalled, oldest first. Shown when the reader has
     /// asked for the detailed log.
     let events: [WiltedMacProcessorEvent]
+    /// The original-to-prepared mapping from a successful podcast terminal.
+    /// It is intentionally sourced from the journal, not reconstructed from
+    /// summary prose after a relaunch.
+    let timeline: PreparationStatus.PreparationTimeline?
 
     init(id: String, itemID: String, isPodcast: Bool, title: String, source: String, stage: String,
          detail: String, narrative: String? = nil, fraction: Double?, outcome: Outcome, updatedAt: Date,
-         events: [WiltedMacProcessorEvent] = []) {
+         events: [WiltedMacProcessorEvent] = [], timeline: PreparationStatus.PreparationTimeline? = nil) {
         self.id = id
         self.itemID = itemID
         self.isPodcast = isPodcast
@@ -209,6 +213,7 @@ struct WiltedMacProcessorRun: Identifiable, Equatable, Sendable {
         self.outcome = outcome
         self.updatedAt = updatedAt
         self.events = events
+        self.timeline = timeline
     }
 
     /// Colour is emphasis only; `outcomeLabel` always states the outcome.
@@ -2066,6 +2071,7 @@ final class WiltedMacModel {
                 let isPodcast = run.requestID.hasPrefix(Self.podcastRequestPrefix)
                 let events = Self.processorEvents(for: run)
                 let detail = run.failure?.message ?? run.detail
+                let timeline = run.entries.last(where: { $0.status.terminal })?.status.timeline
                 return WiltedMacProcessorRun(
                     id: run.requestID,
                     itemID: run.itemID.rawValue,
@@ -2081,7 +2087,8 @@ final class WiltedMacModel {
                     fraction: run.fraction,
                     outcome: outcome,
                     updatedAt: run.updatedAt.date,
-                    events: events
+                    events: events,
+                    timeline: timeline
                 )
             }
         }
@@ -2113,6 +2120,17 @@ final class WiltedMacModel {
         default: "\(count) ads removed"
         }
         return "\(PodcastPreparationResult.readyLabel) · \(ads) · \(PodcastPreparationResult.transcriptStep(.aligned))"
+    }
+
+    /// A Prep row's concise evidence of one cut: the prepared-file seam, the
+    /// original span, its duration, and the worker's normalized label.
+    nonisolated static func removedSpanLine(
+        _ removed: PreparationStatus.PreparationTimeline.RemovedInterval,
+        in timeline: PreparationStatus.PreparationTimeline
+    ) -> String {
+        let seam = timeline.kept.last(where: { $0.originalEndSeconds <= removed.originalStartSeconds })
+            .map { $0.outputStartSeconds + ($0.originalEndSeconds - $0.originalStartSeconds) } ?? 0
+        return "\(WiltedDuration.clock(seam)) in prepared · original \(WiltedDuration.clock(removed.originalStartSeconds))–\(WiltedDuration.clock(removed.originalEndSeconds)) · \(WiltedDuration.clock(removed.originalEndSeconds - removed.originalStartSeconds)) \(removed.label)"
     }
 
 #if canImport(WiltedProducer)

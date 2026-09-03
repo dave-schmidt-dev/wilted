@@ -549,6 +549,28 @@ final class WiltedMacModelTests: XCTestCase {
         )
     }
 
+    func testProcessorRunExposesTimelineSeamsUsingThePrepDisplayContract() throws {
+        let timeline = try PreparationStatus.PreparationTimeline(
+            removed: [try .init(originalStartSeconds: 2_195, originalEndSeconds: 2_361,
+                                label: "self-promo", confidence: 0.91)],
+            kept: [try .init(originalStartSeconds: 0, originalEndSeconds: 2_195, outputStartSeconds: 0),
+                   try .init(originalStartSeconds: 2_361, originalEndSeconds: 2_500, outputStartSeconds: 2_195)]
+        )
+        let run = WiltedMacProcessorRun(
+            id: "run", itemID: "episode", isPodcast: true, title: "Episode", source: "Show", stage: "completed",
+            detail: "Ready", fraction: 1, outcome: .succeeded, updatedAt: Date(), timeline: timeline
+        )
+        XCTAssertEqual(run.timeline, timeline)
+        XCTAssertEqual(WiltedMacModel.removedSpanLine(try XCTUnwrap(timeline.removed.first), in: timeline),
+                       "36:35 in prepared · original 36:35–39:21 · 2:46 self-promo")
+
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
+        let source = try String(contentsOf: root)
+        XCTAssertTrue(source.contains("if let timeline = run.timeline"))
+        XCTAssertTrue(source.contains("wilted-processor-removed-\\(run.id)-\\(index)"))
+    }
+
     // MARK: Preparation presentation
 
     func testPreparationLabelsSpeakToTheListenerNotTheWorker() {

@@ -522,7 +522,8 @@ public actor PodcastPreparationPipeline {
                                           downloadedRevision: stored.revision, audioURL: audioURL, onStatus: report)
             await writes.drain()
             await journalTerminal(episodeID: episodeID, requestID: requestID, error: nil,
-                                  revisionID: result.revision.revisionID, summary: result.summary)
+                                  revisionID: result.revision.revisionID, summary: result.summary,
+                                  timeline: payload.timeline)
             return result
         } catch {
             await writes.drain()
@@ -549,7 +550,7 @@ public actor PodcastPreparationPipeline {
 
     private func journalTerminal(
         episodeID: ItemID, requestID: String, error: (any Error)?, revisionID: RevisionID?,
-        summary: String? = nil
+        summary: String? = nil, timeline: PreparationStatus.PreparationTimeline? = nil
     ) async {
         let outcome: PreparationOutcome
         let producerError: ProducerError?
@@ -572,7 +573,8 @@ public actor PodcastPreparationPipeline {
               let status = try? PreparationStatus(
                 stage: outcome == .succeeded ? .completed : (outcome == .cancelled ? .cancelled : .failed),
                 detail: producerError?.message ?? (outcome == .succeeded ? (summary ?? "Prepared.") : "Cancelled."),
-                cancellable: false, terminalResult: terminal, emittedAt: Timestamp(now())
+                cancellable: false, terminalResult: terminal, emittedAt: Timestamp(now()),
+                timeline: outcome == .succeeded ? timeline : nil
               ) else { return }
         try? await store.record(preparation: PreparationJournalEntry(
             id: requestID + "|terminal", itemID: episodeID, requestID: requestID, status: status
@@ -638,6 +640,7 @@ public actor PodcastPreparationPipeline {
         var adSegments: [PodcastAdSegment]
         var removedSeconds: Double
         var keepIntervals: [PodcastKeepInterval]
+        var timeline: PreparationStatus.PreparationTimeline
     }
 
     static func decode(_ data: Data) throws -> WorkerPayload {
@@ -663,11 +666,52 @@ public actor PodcastPreparationPipeline {
             guard let cue = try? TranscriptCue(startSeconds: start, endSeconds: end, text: text) else { continue }
             cues.append(cue)
         }
-        let ads = (object["adSegments"] as? [[String: Any]] ?? []).compactMap { raw -> PodcastAdSegment? in
+        let rawAds = try intervalObjects(named: "adSegments", in: object)
+        let removed = try rawAds.map { raw -> PreparationStatus.PreparationTimeline.RemovedInterval in
             guard let start = raw["startSeconds"] as? Double, let end = raw["endSeconds"] as? Double,
-                  let label = raw["label"] as? String else { return nil }
-            return PodcastAdSegment(startSeconds: start, endSeconds: end, label: label,
-                                    confidence: raw["confidence"] as? Double ?? 0)
+                  let label = raw["label"] as? String, let confidence = raw["confidence"] as? Double else {
+                throw PodcastPreparationError.malformedWorkerResponse("malformed advertisement interval")
+            }
+            do {
+                return try PreparationStatus.PreparationTimeline.RemovedInterval(
+                    originalStartSeconds: start, originalEndSeconds: end, label: label, confidence: confidence
+                )
+            } catch {
+                throw PodcastPreparationError.malformedWorkerResponse("invalid preparation timeline")
+            }
+        }
+        let rawKeeps = try intervalObjects(named: "keepIntervals", in: object)
+        let kept = try rawKeeps.map { raw -> PreparationStatus.PreparationTimeline.KeptInterval in
+            guard let start = raw["startSeconds"] as? Double, let end = raw["endSeconds"] as? Double,
+                  let output = raw["outputStartSeconds"] as? Double else {
+                throw PodcastPreparationError.malformedWorkerResponse("malformed kept interval")
+            }
+            do {
+                return try PreparationStatus.PreparationTimeline.KeptInterval(
+                    originalStartSeconds: start, originalEndSeconds: end, outputStartSeconds: output
+                )
+            } catch {
+                throw PodcastPreparationError.malformedWorkerResponse("invalid preparation timeline")
+            }
+        }
+        let timeline: PreparationStatus.PreparationTimeline
+        do {
+            timeline = try PreparationStatus.PreparationTimeline(removed: removed, kept: kept)
+        } catch {
+            throw PodcastPreparationError.malformedWorkerResponse("invalid preparation timeline")
+        }
+        let removedSeconds = object["removedSeconds"] as? Double ?? 0
+        guard removedSeconds.isFinite, removedSeconds >= 0 else {
+            throw PodcastPreparationError.malformedWorkerResponse("invalid removedSeconds")
+        }
+        let durationSeconds: Double?
+        if let rawDuration = object["durationSeconds"] {
+            guard let duration = rawDuration as? Double, duration.isFinite, duration >= 0 else {
+                throw PodcastPreparationError.malformedWorkerResponse("invalid durationSeconds")
+            }
+            durationSeconds = duration > 0 ? duration : nil
+        } else {
+            durationSeconds = nil
         }
         return WorkerPayload(
             timing: cues.isEmpty ? .none : timing,
@@ -676,15 +720,22 @@ public actor PodcastPreparationPipeline {
             languageCode: object["languageCode"] as? String,
             audioPath: audioPath,
             audioChanged: object["audioChanged"] as? Bool ?? false,
-            durationSeconds: (object["durationSeconds"] as? Double).flatMap { $0 > 0 ? $0 : nil },
-            adSegments: ads,
-            removedSeconds: object["removedSeconds"] as? Double ?? 0,
-            keepIntervals: (object["keepIntervals"] as? [[String: Any]] ?? []).compactMap { raw in
-                guard let start = raw["startSeconds"] as? Double, let end = raw["endSeconds"] as? Double,
-                      let output = raw["outputStartSeconds"] as? Double, end > start else { return nil }
-                return PodcastKeepInterval(startSeconds: start, endSeconds: end, outputStartSeconds: output)
-            }
+            durationSeconds: durationSeconds,
+            adSegments: removed.map { PodcastAdSegment(startSeconds: $0.originalStartSeconds, endSeconds: $0.originalEndSeconds,
+                                                       label: $0.label, confidence: $0.confidence) },
+            removedSeconds: removedSeconds,
+            keepIntervals: kept.map { PodcastKeepInterval(startSeconds: $0.originalStartSeconds, endSeconds: $0.originalEndSeconds,
+                                                          outputStartSeconds: $0.outputStartSeconds) },
+            timeline: timeline
         )
+    }
+
+    private static func intervalObjects(named name: String, in object: [String: Any]) throws -> [[String: Any]] {
+        guard let value = object[name] else { return [] }
+        guard let intervals = value as? [[String: Any]] else {
+            throw PodcastPreparationError.malformedWorkerResponse("malformed \(name)")
+        }
+        return intervals
     }
 
     // MARK: Commit

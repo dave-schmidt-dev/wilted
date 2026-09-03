@@ -1044,6 +1044,22 @@ private struct WiltedMacProcessorView: View {
             // reachable one by one, which is how they are tested.
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("wilted-processor-run-\(run.id)")
+            if let timeline = run.timeline, !timeline.removed.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Removed spans")
+                        .font(WiltedTheme.font(.utility))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    ForEach(Array(timeline.removed.enumerated()), id: \.offset) { index, removed in
+                        Text(WiltedMacModel.removedSpanLine(removed, in: timeline))
+                            .font(WiltedTheme.font(.utility).monospacedDigit())
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            .textSelection(.enabled)
+                            .accessibilityIdentifier("wilted-processor-removed-\(run.id)-\(index)")
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("wilted-processor-removed-\(run.id)")
+            }
             if openLogs.contains(run.id) {
                 eventLog(run)
             }

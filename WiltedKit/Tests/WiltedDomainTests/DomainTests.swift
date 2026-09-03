@@ -373,6 +373,51 @@ final class DomainTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(PreparationStatus.self, from: JSONEncoder().encode(status)).evidence, evidence)
     }
 
+    func testPreparationTimelineRoundTripsAndHistoricStatusesOmitIt() throws {
+        let timeline = try PreparationStatus.PreparationTimeline(
+            removed: [try .init(originalStartSeconds: 2_195, originalEndSeconds: 2_361,
+                                label: "  self-promo  ", confidence: 0.91)],
+            kept: [try .init(originalStartSeconds: 0, originalEndSeconds: 2_195, outputStartSeconds: 0),
+                   try .init(originalStartSeconds: 2_361, originalEndSeconds: 2_500, outputStartSeconds: 2_195)]
+        )
+        XCTAssertEqual(timeline.removed.first?.label, "self-promo")
+        XCTAssertEqual(try JSONDecoder().decode(PreparationStatus.PreparationTimeline.self,
+                                                 from: JSONEncoder().encode(timeline)), timeline)
+
+        let historic = """
+        {"stage":"completed","detail":"Prepared.","cancellable":false,"terminal":true,
+         "terminalResult":{"outcome":"succeeded","revisionID":"rev-test"},"emittedAt":"2026-08-17T12:00:00.000Z"}
+        """.data(using: .utf8)!
+        XCTAssertNil(try JSONDecoder().decode(PreparationStatus.self, from: historic).timeline)
+    }
+
+    func testPreparationTimelineRejectsUnboundedAndInconsistentIntervals() throws {
+        let removed = try PreparationStatus.PreparationTimeline.RemovedInterval(
+            originalStartSeconds: 10, originalEndSeconds: 20, label: "sponsor", confidence: 0.9
+        )
+        let firstKept = try PreparationStatus.PreparationTimeline.KeptInterval(
+            originalStartSeconds: 0, originalEndSeconds: 10, outputStartSeconds: 0
+        )
+        XCTAssertThrowsError(try PreparationStatus.PreparationTimeline(
+            removed: [removed],
+            kept: [firstKept, try .init(originalStartSeconds: 21, originalEndSeconds: 30, outputStartSeconds: 11)]
+        ))
+        XCTAssertThrowsError(try PreparationStatus.PreparationTimeline(
+            removed: [removed, try .init(originalStartSeconds: 19, originalEndSeconds: 24, label: "overlap", confidence: 0.8)],
+            kept: [firstKept]
+        ))
+        XCTAssertThrowsError(try PreparationStatus.PreparationTimeline.RemovedInterval(
+            originalStartSeconds: 0, originalEndSeconds: 1, label: " ", confidence: 0.5
+        ))
+        XCTAssertThrowsError(try PreparationStatus.PreparationTimeline.KeptInterval(
+            originalStartSeconds: 0, originalEndSeconds: .infinity, outputStartSeconds: 0
+        ))
+        XCTAssertThrowsError(try PreparationStatus.PreparationTimeline(
+            removed: Array(repeating: removed, count: PreparationStatus.PreparationTimeline.maximumRemovedIntervals + 1),
+            kept: []
+        ))
+    }
+
     private func makeRevision(duration: Double = 10, hash: String = "sha256:" + String(repeating: "a", count: 64), bytes: Int64 = 100) throws -> AudioRevision {
         try AudioRevision(
             itemID: ItemID(rawValue: "item-test"), revisionID: RevisionID(rawValue: "rev-test"),

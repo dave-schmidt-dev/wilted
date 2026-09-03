@@ -96,6 +96,126 @@ public struct PreparationTerminalResult: Codable, Equatable, Sendable {
 }
 
 public struct PreparationStatus: Codable, Equatable, Sendable {
+    /// The normalized bridge between an episode's original clock and the
+    /// prepared file's clock. It belongs to the terminal status because it is
+    /// evidence of what a completed preparation actually removed.
+    public struct PreparationTimeline: Codable, Equatable, Sendable {
+        public static let maximumRemovedIntervals = 512
+        public static let maximumKeptIntervals = 512
+        public static let maximumLabelLength = 256
+
+        public struct RemovedInterval: Codable, Equatable, Sendable {
+            public let originalStartSeconds: Double
+            public let originalEndSeconds: Double
+            public let label: String
+            public let confidence: Double
+
+            public init(originalStartSeconds: Double, originalEndSeconds: Double, label: String, confidence: Double) throws {
+                guard PreparationTimeline.validRange(start: originalStartSeconds, end: originalEndSeconds),
+                      confidence.isFinite, (0...1).contains(confidence) else {
+                    throw DomainError.invalidValue(field: "preparation timeline removed interval", reason: "must use finite, ordered values")
+                }
+                let normalizedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalizedLabel.isEmpty, normalizedLabel.count <= PreparationTimeline.maximumLabelLength else {
+                    throw DomainError.invalidValue(field: "preparation timeline label", reason: "must contain 1...256 characters")
+                }
+                self.originalStartSeconds = originalStartSeconds
+                self.originalEndSeconds = originalEndSeconds
+                self.label = normalizedLabel
+                self.confidence = confidence
+            }
+
+            private enum CodingKeys: CodingKey { case originalStartSeconds, originalEndSeconds, label, confidence }
+
+            public init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                try self.init(
+                    originalStartSeconds: container.decode(Double.self, forKey: .originalStartSeconds),
+                    originalEndSeconds: container.decode(Double.self, forKey: .originalEndSeconds),
+                    label: container.decode(String.self, forKey: .label),
+                    confidence: container.decode(Double.self, forKey: .confidence)
+                )
+            }
+        }
+
+        public struct KeptInterval: Codable, Equatable, Sendable {
+            public let originalStartSeconds: Double
+            public let originalEndSeconds: Double
+            public let outputStartSeconds: Double
+
+            public init(originalStartSeconds: Double, originalEndSeconds: Double, outputStartSeconds: Double) throws {
+                guard PreparationTimeline.validRange(start: originalStartSeconds, end: originalEndSeconds),
+                      outputStartSeconds.isFinite, outputStartSeconds >= 0 else {
+                    throw DomainError.invalidValue(field: "preparation timeline kept interval", reason: "must use finite, ordered values")
+                }
+                self.originalStartSeconds = originalStartSeconds
+                self.originalEndSeconds = originalEndSeconds
+                self.outputStartSeconds = outputStartSeconds
+            }
+
+            private enum CodingKeys: CodingKey { case originalStartSeconds, originalEndSeconds, outputStartSeconds }
+
+            public init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                try self.init(
+                    originalStartSeconds: container.decode(Double.self, forKey: .originalStartSeconds),
+                    originalEndSeconds: container.decode(Double.self, forKey: .originalEndSeconds),
+                    outputStartSeconds: container.decode(Double.self, forKey: .outputStartSeconds)
+                )
+            }
+        }
+
+        public let removed: [RemovedInterval]
+        public let kept: [KeptInterval]
+
+        public init(removed: [RemovedInterval], kept: [KeptInterval]) throws {
+            guard removed.count <= Self.maximumRemovedIntervals, kept.count <= Self.maximumKeptIntervals else {
+                throw DomainError.invalidValue(field: "preparation timeline", reason: "contains too many intervals")
+            }
+            guard Self.areOrderedAndNonoverlapping(removed.map { ($0.originalStartSeconds, $0.originalEndSeconds) }),
+                  Self.areOrderedAndNonoverlapping(kept.map { ($0.originalStartSeconds, $0.originalEndSeconds) }) else {
+                throw DomainError.invalidValue(field: "preparation timeline", reason: "intervals must be ordered and nonoverlapping")
+            }
+            let allIntervals = removed.map { ($0.originalStartSeconds, $0.originalEndSeconds) }
+                + kept.map { ($0.originalStartSeconds, $0.originalEndSeconds) }
+            guard Self.areNonoverlappingWhenSorted(allIntervals) else {
+                throw DomainError.invalidValue(field: "preparation timeline", reason: "removed and kept intervals must not overlap")
+            }
+            var expectedOutputStart = 0.0
+            for interval in kept {
+                guard abs(interval.outputStartSeconds - expectedOutputStart) <= 0.000_001 else {
+                    throw DomainError.invalidValue(field: "preparation timeline output", reason: "must be contiguous from zero")
+                }
+                expectedOutputStart += interval.originalEndSeconds - interval.originalStartSeconds
+            }
+            self.removed = removed
+            self.kept = kept
+        }
+
+        private enum CodingKeys: CodingKey { case removed, kept }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            try self.init(
+                removed: container.decode([RemovedInterval].self, forKey: .removed),
+                kept: container.decode([KeptInterval].self, forKey: .kept)
+            )
+        }
+
+        private static func validRange(start: Double, end: Double) -> Bool {
+            start.isFinite && end.isFinite && start >= 0 && end >= 0 && end > start
+        }
+
+        private static func areOrderedAndNonoverlapping(_ intervals: [(Double, Double)]) -> Bool {
+            zip(intervals, intervals.dropFirst()).allSatisfy { $0.1.0 >= $0.0.1 }
+        }
+
+        private static func areNonoverlappingWhenSorted(_ intervals: [(Double, Double)]) -> Bool {
+            let sorted = intervals.sorted { $0.0 == $1.0 ? $0.1 < $1.1 : $0.0 < $1.0 }
+            return zip(sorted, sorted.dropFirst()).allSatisfy { $0.1.0 >= $0.0.1 }
+        }
+    }
+
     public let stage: PreparationStage
     public let detail: String
     public let fraction: Double?
@@ -104,6 +224,8 @@ public struct PreparationStatus: Codable, Equatable, Sendable {
     public let terminalResult: PreparationTerminalResult?
     public let emittedAt: Timestamp
     public let evidence: PreparationEvidence?
+    /// Absent on journals created before preparation timelines existed.
+    public let timeline: PreparationTimeline?
 
     public init(
         stage: PreparationStage,
@@ -112,7 +234,8 @@ public struct PreparationStatus: Codable, Equatable, Sendable {
         cancellable: Bool,
         terminalResult: PreparationTerminalResult? = nil,
         emittedAt: Timestamp,
-        evidence: PreparationEvidence? = nil
+        evidence: PreparationEvidence? = nil,
+        timeline: PreparationTimeline? = nil
     ) throws {
         guard !detail.isEmpty, detail.count <= 1_024 else {
             throw DomainError.invalidValue(field: "preparation detail", reason: "must contain 1...1024 characters")
@@ -124,6 +247,9 @@ public struct PreparationStatus: Codable, Equatable, Sendable {
         guard (terminalResult != nil) == terminalStages.contains(stage) else {
             throw DomainError.invalidValue(field: "terminalResult", reason: "must match terminal stage")
         }
+        guard timeline == nil || terminalResult?.outcome == .succeeded else {
+            throw DomainError.invalidValue(field: "preparation timeline", reason: "belongs only to a successful terminal status")
+        }
         self.stage = stage
         self.detail = detail
         self.fraction = fraction
@@ -132,9 +258,10 @@ public struct PreparationStatus: Codable, Equatable, Sendable {
         self.terminalResult = terminalResult
         self.emittedAt = emittedAt
         self.evidence = evidence
+        self.timeline = timeline
     }
 
-    private enum CodingKeys: CodingKey { case stage, detail, fraction, cancellable, terminal, terminalResult, emittedAt, evidence }
+    private enum CodingKeys: CodingKey { case stage, detail, fraction, cancellable, terminal, terminalResult, emittedAt, evidence, timeline }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -150,7 +277,8 @@ public struct PreparationStatus: Codable, Equatable, Sendable {
             cancellable: container.decode(Bool.self, forKey: .cancellable),
             terminalResult: result,
             emittedAt: container.decode(Timestamp.self, forKey: .emittedAt),
-            evidence: try container.decodeIfPresent(PreparationEvidence.self, forKey: .evidence)
+            evidence: try container.decodeIfPresent(PreparationEvidence.self, forKey: .evidence),
+            timeline: try container.decodeIfPresent(PreparationTimeline.self, forKey: .timeline)
         )
     }
 }
