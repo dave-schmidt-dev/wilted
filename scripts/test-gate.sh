@@ -28,6 +28,10 @@ ios_ui_device_name='iPhone 17 Pro'
 ios_ui_baseline_geometry='402x874 normalized to 390x844'
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-native-gate.XXXXXX")"
 derived_data="$tmp_root/DerivedData"
+# A failed real Mac UI run is the one disposable artifact worth retaining for
+# diagnosis. The default lives under the repository's ignored .logs directory;
+# the override keeps the meta-test hermetic.
+macos_ui_failure_diagnostics_dir="${WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR:-$repo_root/.logs/native-gate-diagnostics}"
 mkdir -p "$derived_data"
 
 cleanup_mac_test_hosts() {
@@ -416,6 +420,7 @@ parse_xctest_output_count() {
 
 leg_cloudsync_tests() {
   local package="$repo_root/CloudSync"
+  local scratch_path="$tmp_root/swiftpm/cloudsync-tests"
   [[ -d "$package" ]] || fail "missing CloudSync package: $package"
   assert_test_sources cloudsync-tests "$package/Tests"
   require_tool swift
@@ -424,7 +429,7 @@ leg_cloudsync_tests() {
   # named-case checks below prevent a package that merely builds or reports an
   # empty test plan from satisfying this leg.
   set +e
-  swift test --package-path "$package" 2>&1 | tee "$tmp_root/cloudsync-tests.xctest.log" >&2
+  swift test --package-path "$package" --scratch-path "$scratch_path" 2>&1 | tee "$tmp_root/cloudsync-tests.xctest.log" >&2
   local test_status="${PIPESTATUS[0]}"
   set -e
   if [[ "$test_status" -eq 0 ]]; then
@@ -442,6 +447,7 @@ leg_cloudsync_tests() {
 
 leg_listener_tests() {
   local package="$repo_root/Listener"
+  local scratch_path="$tmp_root/swiftpm/listener-tests"
   [[ -d "$package" ]] || fail "missing Listener package: $package"
   assert_test_sources listener-tests "$package/Tests"
   require_tool swift
@@ -450,7 +456,7 @@ leg_listener_tests() {
   # keep their names in the runner evidence so an empty or unrelated suite
   # cannot satisfy the leg.
   set +e
-  swift test --package-path "$package" 2>&1 | tee "$tmp_root/listener-tests.xctest.log" >&2
+  swift test --package-path "$package" --scratch-path "$scratch_path" 2>&1 | tee "$tmp_root/listener-tests.xctest.log" >&2
   local test_status="${PIPESTATUS[0]}"
   set -e
   if [[ "$test_status" -eq 0 ]]; then
@@ -492,6 +498,28 @@ assert_xctest_output() {
   printf 'native.tests label=%s reported=%s evidence=xctest\n' "$label" "$reported"
 }
 
+retain_macos_ui_failure_bundle() {
+  local result_bundle="$1"
+  local retained_bundle="$macos_ui_failure_diagnostics_dir/macos-ui-tests.xcresult"
+  local staging_bundle="$macos_ui_failure_diagnostics_dir/.macos-ui-tests.xcresult.$$"
+
+  [[ -d "$result_bundle" ]] || return 0
+  mkdir -p "$macos_ui_failure_diagnostics_dir"
+  rm -rf "$staging_bundle"
+  cp -R "$result_bundle" "$staging_bundle"
+  rm -rf "$retained_bundle"
+  mv "$staging_bundle" "$retained_bundle"
+  status "native.macos-ui.failure-bundle path=$retained_bundle"
+}
+
+clear_macos_ui_failure_bundle() {
+  local retained_bundle="$macos_ui_failure_diagnostics_dir/macos-ui-tests.xcresult"
+
+  [[ -e "$retained_bundle" || -L "$retained_bundle" ]] || return 0
+  rm -rf "$retained_bundle"
+  status "native.macos-ui.failure-bundle-cleared path=$retained_bundle"
+}
+
 run_leg() {
   local name="$1"
   local report_mode="$2"
@@ -510,9 +538,17 @@ run_leg() {
   status "native.leg.start name=$name"
   if is_forced_failure "$name"; then
     printf '%s\n' 'forced_self_test_failure' >"$output_file"
+    if [[ "$native_self_test" == "1" && "$name" == "macos-ui-tests" ]]; then
+      mkdir -p "$result_bundle"
+      printf '%s\n' 'self_test_macos_ui_failure_evidence' >"$result_bundle/self-test-evidence"
+    fi
     command_status=1
   elif is_forced_zero "$name"; then
     printf '%s\n' 'forced_self_test_zero_result_bundle' >"$output_file"
+    if [[ "$native_self_test" == "1" && "$name" == "macos-ui-tests" ]]; then
+      mkdir -p "$result_bundle"
+      printf '%s\n' 'self_test_macos_ui_zero_test_evidence' >"$result_bundle/self-test-evidence"
+    fi
     command_status=0
   elif [[ "$native_self_test" == "1" ]]; then
     printf '%s\n' 'self_test_command_success' >"$output_file"
@@ -539,6 +575,14 @@ run_leg() {
     set -e
     if [[ "$xctest_status" -ne 0 ]]; then
       command_status="$xctest_status"
+    fi
+  fi
+
+  if [[ "$name" == "macos-ui-tests" ]]; then
+    if [[ "$command_status" -ne 0 ]]; then
+      retain_macos_ui_failure_bundle "$result_bundle"
+    else
+      clear_macos_ui_failure_bundle
     fi
   fi
 
@@ -599,6 +643,7 @@ leg_xcodegen_reproducible() {
 
 leg_wiltedkit_tests() {
   local package="$repo_root/WiltedKit"
+  local scratch_path="$tmp_root/swiftpm/wiltedkit-tests"
   local authoritative="$repo_root/contracts/fixtures"
   local copied="$package/Tests/WiltedDomainTests/Fixtures"
   local sync_authoritative="$repo_root/contracts/cloudkit/fixtures/01-valid-publish-decode.json"
@@ -624,9 +669,9 @@ leg_wiltedkit_tests() {
   assert_test_sources wiltedsync-tests "$package/Tests/WiltedSyncTests"
   require_tool swift
   require_tool xcrun
-  swift build --package-path "$package" --build-tests
+  swift build --package-path "$package" --scratch-path "$scratch_path" --build-tests
   local test_bundle
-  test_bundle="$(find "$package/.build" -type d -name 'WiltedKitPackageTests.xctest' -print -quit)"
+  test_bundle="$(find "$scratch_path" -type d -name 'WiltedKitPackageTests.xctest' -print -quit)"
   [[ -n "$test_bundle" && -d "$test_bundle" ]] || fail 'WiltedKit XCTest bundle was not produced'
 
   # The installed Swift toolchain accepts the SwiftPM xUnit flag but does not
@@ -650,13 +695,14 @@ leg_wiltedkit_tests() {
 
 leg_wiltedproducer_tests() {
   local package="$repo_root/Producer"
+  local scratch_path="$tmp_root/swiftpm/wiltedproducer-tests"
   [[ -d "$package" ]] || fail "missing WiltedProducer package: $package"
   assert_test_sources wiltedproducer-tests "$package/Tests"
   require_tool swift
   require_tool xcrun
-  swift build --package-path "$package" --build-tests
+  swift build --package-path "$package" --scratch-path "$scratch_path" --build-tests
   local test_bundle
-  test_bundle="$(find "$package/.build" -type d -name 'WiltedProducerPackageTests.xctest' -print -quit)"
+  test_bundle="$(find "$scratch_path" -type d -name 'WiltedProducerPackageTests.xctest' -print -quit)"
   [[ -n "$test_bundle" && -d "$test_bundle" ]] || fail 'WiltedProducer XCTest bundle was not produced'
 
   set +e

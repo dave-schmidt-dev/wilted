@@ -97,13 +97,15 @@ assert_wiltedkit_sync_contract() {
   assert_contains 'fake delay emits visible status before completion' "$gate"
   assert_contains 'remote deletions apply incrementally, cascade items, and preserve protected work' "$gate"
   assert_contains 'leg_cloudsync_tests' "$gate"
-  assert_contains 'swift test --package-path "$package"' "$gate"
+  assert_contains 'local scratch_path="$tmp_root/swiftpm/cloudsync-tests"' "$gate"
+  assert_contains 'swift test --package-path "$package" --scratch-path "$scratch_path"' "$gate"
   assert_contains 'CloudSync named adapter case was not observed' "$gate"
   assert_contains 'CloudSync named send case was not observed' "$gate"
   assert_contains 'cp "$repo_root/CloudSync/Package.swift" "$integration_root/CloudSync/Package.swift"' "$gate"
   assert_contains 'cp -R "$repo_root/CloudSync/Sources" "$repo_root/CloudSync/Tests" "$integration_root/CloudSync/"' "$gate"
   assert_contains 'leg_listener_tests' "$gate"
-  assert_contains 'swift test --package-path "$package"' "$gate"
+  assert_contains 'local scratch_path="$tmp_root/swiftpm/listener-tests"' "$gate"
+  assert_contains 'swift test --package-path "$package" --scratch-path "$scratch_path"' "$gate"
   assert_contains 'Listener repository case was not observed' "$gate"
   assert_contains 'Listener playback case was not observed' "$gate"
   assert_contains 'cp "$repo_root/Listener/Package.swift" "$integration_root/Listener/Package.swift"' "$gate"
@@ -111,6 +113,30 @@ assert_wiltedkit_sync_contract() {
 }
 
 assert_wiltedkit_sync_contract
+
+assert_swiftpm_scratch_contract() {
+  local wiltedkit_scratch cloudsync_scratch listener_scratch producer_scratch
+  local unique_count
+  wiltedkit_scratch='local scratch_path="$tmp_root/swiftpm/wiltedkit-tests"'
+  cloudsync_scratch='local scratch_path="$tmp_root/swiftpm/cloudsync-tests"'
+  listener_scratch='local scratch_path="$tmp_root/swiftpm/listener-tests"'
+  producer_scratch='local scratch_path="$tmp_root/swiftpm/wiltedproducer-tests"'
+  assert_contains "$wiltedkit_scratch" "$gate"
+  assert_contains "$cloudsync_scratch" "$gate"
+  assert_contains "$listener_scratch" "$gate"
+  assert_contains "$producer_scratch" "$gate"
+  unique_count="$(rg -o 'local scratch_path="\$tmp_root/swiftpm/[^"]+"' "$gate" | sort -u | wc -l | tr -d ' ')"
+  [[ "$unique_count" -eq 4 ]] || {
+    printf '%s\n' 'assertion failed: SwiftPM package legs share a scratch path' >&2
+    exit 1
+  }
+  if rg -q 'find "\$package/\.build".*PackageTests\.xctest' "$gate"; then
+    printf '%s\n' 'assertion failed: XCTest discovery still reads checkout-local .build' >&2
+    exit 1
+  fi
+}
+
+assert_swiftpm_scratch_contract
 
 assert_capability_source_contract() {
   local project="$repo_root/project.yml"
@@ -462,6 +488,13 @@ assert_result_bundle_contract() {
   assert_contains 'assert_xctest_output' "$gate"
   assert_contains 'native.xctest-missing' "$gate"
   assert_contains 'parse_xctest_output_count' "$gate"
+  assert_contains 'local scratch_path="$tmp_root/swiftpm/wiltedproducer-tests"' "$gate"
+  assert_contains 'swift build --package-path "$package" --scratch-path "$scratch_path" --build-tests' "$gate"
+  assert_contains 'find "$scratch_path" -type d -name' "$gate"
+  if rg -q 'find "\$package/\.build".*WiltedProducerPackageTests\.xctest' "$gate"; then
+    printf '%s\n' 'assertion failed: Producer XCTest discovery still reads checkout-local .build' >&2
+    exit 1
+  fi
 }
 
 assert_result_bundle_contract
@@ -552,6 +585,10 @@ assert_deferred_mac_ui_contract() {
   assert_contains '[[ "$1" == "macos-ui-tests" && "$wilted_mac_ui" != "1" ]]' "$gate"
   assert_contains 'native.leg.deferred' "$gate"
   assert_contains 'deferred_leg_names' "$gate"
+  assert_contains 'WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR' "$gate"
+  assert_contains '$repo_root/.logs/native-gate-diagnostics' "$gate"
+  assert_contains 'retain_macos_ui_failure_bundle' "$gate"
+  assert_contains 'clear_macos_ui_failure_bundle' "$gate"
   # The Makefile must keep an opt-in route, or the leg becomes unreachable
   # rather than deferred.
   assert_contains 'WILTED_MAC_UI=1 bash scripts/test-gate.sh' "$repo_root/Makefile"
@@ -560,8 +597,9 @@ assert_deferred_mac_ui_contract
 
 # Default: the leg defers, says so by name, and the summary carries the debt.
 mac_ui_deferred_log="$tmp_dir/mac-ui-deferred.log"
+mac_ui_deferred_diagnostics="$tmp_dir/mac-ui-deferred-diagnostics"
 mac_ui_deferred_status="$(run_case mac-ui-deferred "$mac_ui_deferred_log" \
-  env WILTED_MAC_UI=0 bash "$gate")"
+  env WILTED_MAC_UI=0 WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR="$mac_ui_deferred_diagnostics" bash "$gate")"
 [[ "$mac_ui_deferred_status" -eq 0 ]] || { cat "$mac_ui_deferred_log" >&2; exit 1; }
 assert_contains 'native.leg.deferred name=macos-ui-tests' "$mac_ui_deferred_log"
 assert_contains 'native.deferred count=1 legs=macos-ui-tests' "$mac_ui_deferred_log"
@@ -579,10 +617,18 @@ if grep -Fq 'native.leg.complete name=macos-ui-tests' "$mac_ui_deferred_log"; th
   cat "$mac_ui_deferred_log" >&2
   exit 1
 fi
+[[ ! -e "$mac_ui_deferred_diagnostics/macos-ui-tests.xcresult" ]] || {
+  printf '%s\n' 'assertion failed: deferred Mac UI run retained failure evidence' >&2
+  exit 1
+}
 
 # Opted in: the leg actually runs and the summary claims no deferral.
 mac_ui_optin_log="$tmp_dir/mac-ui-optin.log"
-mac_ui_optin_status="$(run_case mac-ui-optin "$mac_ui_optin_log" env WILTED_MAC_UI=1 bash "$gate")"
+mac_ui_optin_diagnostics="$tmp_dir/mac-ui-optin-diagnostics"
+mkdir -p "$mac_ui_optin_diagnostics/macos-ui-tests.xcresult"
+printf '%s\n' stale >"$mac_ui_optin_diagnostics/macos-ui-tests.xcresult/stale"
+mac_ui_optin_status="$(run_case mac-ui-optin "$mac_ui_optin_log" \
+  env WILTED_MAC_UI=1 WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR="$mac_ui_optin_diagnostics" bash "$gate")"
 [[ "$mac_ui_optin_status" -eq 0 ]] || { cat "$mac_ui_optin_log" >&2; exit 1; }
 assert_contains 'native.leg.start name=macos-ui-tests' "$mac_ui_optin_log"
 assert_contains 'native.leg.complete name=macos-ui-tests status=0' "$mac_ui_optin_log"
@@ -592,13 +638,39 @@ if grep -Fq 'native.leg.deferred' "$mac_ui_optin_log"; then
   cat "$mac_ui_optin_log" >&2
   exit 1
 fi
+[[ ! -e "$mac_ui_optin_diagnostics/macos-ui-tests.xcresult" ]] || {
+  printf '%s\n' 'assertion failed: successful Mac UI run retained failure evidence' >&2
+  exit 1
+}
 
 # Deferral must not become a way to hide a real failure: an opted-in forced
 # failure still fails the gate.
 mac_ui_failure_log="$tmp_dir/mac-ui-failure.log"
+mac_ui_failure_diagnostics="$tmp_dir/mac-ui-failure-diagnostics"
 mac_ui_failure_status="$(run_case mac-ui-failure "$mac_ui_failure_log" \
-  env WILTED_MAC_UI=1 NATIVE_FORCE_FAIL_LEG=macos-ui-tests bash "$gate")"
+  env WILTED_MAC_UI=1 NATIVE_FORCE_FAIL_LEG=macos-ui-tests \
+  WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR="$mac_ui_failure_diagnostics" bash "$gate")"
 [[ "$mac_ui_failure_status" -ne 0 ]] || { cat "$mac_ui_failure_log" >&2; exit 1; }
 assert_contains 'native.failed count=1' "$mac_ui_failure_log"
+assert_contains 'native.macos-ui.failure-bundle path=' "$mac_ui_failure_log"
+[[ -f "$mac_ui_failure_diagnostics/macos-ui-tests.xcresult/self-test-evidence" ]] || {
+  printf '%s\n' 'assertion failed: failed Mac UI run did not retain its result bundle' >&2
+  exit 1
+}
+assert_contains 'self_test_macos_ui_failure_evidence' \
+  "$mac_ui_failure_diagnostics/macos-ui-tests.xcresult/self-test-evidence"
+
+# A zero-test result is a failed UI leg even when xcodebuild itself exited 0,
+# and its result bundle is equally necessary for diagnosis.
+mac_ui_zero_log="$tmp_dir/mac-ui-zero.log"
+mac_ui_zero_diagnostics="$tmp_dir/mac-ui-zero-diagnostics"
+mac_ui_zero_status="$(run_case mac-ui-zero "$mac_ui_zero_log" \
+  env WILTED_MAC_UI=1 NATIVE_FORCE_ZERO_TEST_LEG=macos-ui-tests \
+  WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR="$mac_ui_zero_diagnostics" bash "$gate")"
+[[ "$mac_ui_zero_status" -ne 0 ]] || { cat "$mac_ui_zero_log" >&2; exit 1; }
+assert_contains 'native.zero-tests label=macos-ui-tests' "$mac_ui_zero_log"
+assert_contains 'native.macos-ui.failure-bundle path=' "$mac_ui_zero_log"
+assert_contains 'self_test_macos_ui_zero_test_evidence' \
+  "$mac_ui_zero_diagnostics/macos-ui-tests.xcresult/self-test-evidence"
 
 printf '%s\n' 'native gate aggregate meta-test passed (nine native Xcode legs; the macOS UI leg defers unless WILTED_MAC_UI=1 and its deferral is fail-loud; forced and zero-test failures are fail-closed)'
