@@ -686,6 +686,50 @@ final class WiltedVisualSystemTests: XCTestCase {
         )
     }
 
+    /// Prep cards keep their facts and controls in predictable regions. This
+    /// source contract catches a visual regression without changing snapshots.
+    func testPrepRunAndCompactPlayerPresentationContracts() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
+        let source = try String(contentsOf: root)
+
+        func section(_ start: String, before end: String) throws -> Substring {
+            let startIndex = try XCTUnwrap(source.range(of: start)?.lowerBound)
+            let endIndex = try XCTUnwrap(source.range(of: end, range: startIndex..<source.endIndex)?.lowerBound)
+            return source[startIndex..<endIndex]
+        }
+
+        let activeCard = try section("private func activeRunCard", before: "private func runRow")
+        let recentCard = try section("private func runRow", before: "private func runMetadata")
+        XCTAssertTrue(activeCard.contains("runMetadata(run)"))
+        XCTAssertTrue(recentCard.contains("runMetadata(run)"))
+        XCTAssertLessThan(
+            try XCTUnwrap(activeCard.range(of: "Text(run.narrative)")?.lowerBound),
+            try XCTUnwrap(activeCard.range(of: "runActions(run, canStop: true)")?.lowerBound)
+        )
+        XCTAssertLessThan(
+            try XCTUnwrap(recentCard.range(of: "Text(run.narrative)")?.lowerBound),
+            try XCTUnwrap(recentCard.range(of: "runActions(run, canStop: false)")?.lowerBound)
+        )
+        XCTAssertTrue(source.contains("wilted-processor-actions-\\(run.id)"))
+        XCTAssertTrue(source.contains("wilted-processor-stop-\\(run.id)"))
+        XCTAssertTrue(source.contains("wilted-processor-retry-\\(run.id)"))
+
+        let log = try section("private func eventLog", before: "// MARK: - Persistent Player")
+        XCTAssertTrue(log.contains("ScrollView(.vertical)"))
+        XCTAssertTrue(log.contains("maxHeight: 176"))
+        XCTAssertTrue(log.contains(".monospaced()"))
+        XCTAssertTrue(log.contains(".textSelection(.enabled)"))
+        XCTAssertTrue(log.contains("wilted-processor-log-\\(run.id)"))
+        XCTAssertTrue(log.contains("wilted-processor-event-\\(event.id)"))
+
+        XCTAssertTrue(source.contains("Text(model.playbackStatusMessage)"))
+        XCTAssertFalse(source.contains("if let error = model.playbackError"))
+        XCTAssertTrue(source.contains("wilted-player-recoverable-error"))
+        XCTAssertTrue(source.contains("Button(\"Recover audio\") { model.recoverAudioRoute() }"))
+        XCTAssertTrue(source.contains("wilted-player-route-recovery"))
+    }
+
     /// Removed rows carry enough presentation metadata to name the episode,
     /// its feed, and its retained Prep history without reconstructing a deleted
     /// episode record.

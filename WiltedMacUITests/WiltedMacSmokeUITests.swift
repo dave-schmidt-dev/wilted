@@ -301,7 +301,21 @@ final class WiltedMacSmokeUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-processor-log-toggle-'")
         ).firstMatch
         XCTAssertTrue(showLog.waitForExistence(timeout: 3))
+        let actions = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-processor-actions-'")
+        ).firstMatch
+        XCTAssertTrue(actions.exists, "Prep controls share one action row below the narrative.")
+        XCTAssertTrue(
+            actions.buttons.matching(
+                NSPredicate(format: "identifier BEGINSWITH 'wilted-processor-log-toggle-'")
+            ).firstMatch.exists,
+            "Show log remains in the run's action row."
+        )
         showLog.click()
+        let log = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-processor-log-'")
+        ).firstMatch
+        XCTAssertTrue(log.waitForExistence(timeout: 5), "The expanded journal is contained in its own log region.")
         XCTAssertTrue(
             app.staticTexts["ads.detect.calls · 50 requests, 0 failed"].waitForExistence(timeout: 5),
             "The run's log must list every journalled status in the worker's words."

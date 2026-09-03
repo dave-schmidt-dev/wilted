@@ -963,27 +963,20 @@ private struct WiltedMacProcessorView: View {
     /// and the log if asked for.
     private func activeRunCard(_ run: WiltedMacProcessorRun) -> some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            HStack {
+            HStack(alignment: .top, spacing: WiltedTheme.Spacing.medium) {
                 Image(WiltedSymbol.processor)
                     .font(WiltedTheme.font(.title))
                     .foregroundStyle(WiltedStatusTone.active.color(colorScheme))
                     .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                     Text(run.title)
                         .font(WiltedTheme.font(.title))
                         .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                        .lineLimit(1)
+                        .lineLimit(2)
                         .truncationMode(.tail)
-                    Text(run.source)
-                        .font(WiltedTheme.font(.utility))
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .lineLimit(1)
+                    runMetadata(run)
                 }
-                Spacer()
-                logButton(run)
-                Button("Stop") { model.cancelProcessorRun(run) }
-                    .accessibilityLabel("Stop preparing \(run.title)")
-                    .accessibilityIdentifier("wilted-processor-stop-\(run.id)")
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             if let fraction = run.fraction {
                 ProgressView(value: fraction)
@@ -997,6 +990,7 @@ private struct WiltedMacProcessorView: View {
                 .font(WiltedTheme.font(.utility))
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .accessibilityIdentifier("wilted-processor-narrative-\(run.id)")
+            runActions(run, canStop: true)
             if openLogs.contains(run.id) {
                 eventLog(run)
             }
@@ -1008,63 +1002,94 @@ private struct WiltedMacProcessorView: View {
 
     private func runRow(_ run: WiltedMacProcessorRun) -> some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-            HStack(alignment: .top, spacing: WiltedTheme.Spacing.medium) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(run.title)
-                        .font(WiltedTheme.font(.body))
-                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Text(run.narrative)
-                        .font(WiltedTheme.font(.utility))
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .lineLimit(openLogs.contains(run.id) ? nil : 2)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                VStack(alignment: .trailing, spacing: 2) {
-                    // The word always carries the outcome; the tone only
-                    // emphasises it (W-INV-010).
-                    Text(run.outcomeLabel)
-                        .font(WiltedTheme.font(.utility))
-                        .foregroundStyle(run.tone.color(colorScheme))
-                    Text(Self.stamp.string(from: run.updatedAt))
-                        .font(WiltedTheme.font(.utility))
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                }
-                HStack(spacing: WiltedTheme.Spacing.small) {
-                    if run.isPodcast, run.outcome == .failed {
-                        Button("Retry") { model.retryProcessorRun(run) }
-                            .accessibilityLabel("Prepare \(run.title) again")
-                            .accessibilityIdentifier("wilted-processor-retry-\(run.id)")
-                    }
-                    logButton(run)
-                }
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                Text(run.title)
+                    .font(WiltedTheme.font(.body))
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                runMetadata(run)
             }
-            // Contained, not combined, like the Larder rows: the texts stay
-            // reachable one by one, which is how they are tested.
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("wilted-processor-run-\(run.id)")
+            Text(run.narrative)
+                .font(WiltedTheme.font(.utility))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .lineLimit(openLogs.contains(run.id) ? nil : 2)
             if let timeline = run.timeline, !timeline.removed.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Removed spans")
-                        .font(WiltedTheme.font(.utility))
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    ForEach(Array(timeline.removed.enumerated()), id: \.offset) { index, removed in
-                        Text(WiltedMacModel.removedSpanLine(removed, in: timeline))
-                            .font(WiltedTheme.font(.utility).monospacedDigit())
-                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                            .textSelection(.enabled)
-                            .accessibilityIdentifier("wilted-processor-removed-\(run.id)-\(index)")
-                    }
-                }
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("wilted-processor-removed-\(run.id)")
+                removedTimeline(timeline, for: run)
             }
+            runActions(run, canStop: false)
             if openLogs.contains(run.id) {
                 eventLog(run)
             }
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
+        // Contained, not combined, like the Larder rows: the texts stay
+        // reachable one by one, which is how they are tested.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-processor-run-\(run.id)")
+    }
+
+    /// The same compact metadata arrangement keeps the outcome readable when
+    /// a Prep card narrows, instead of asking actions to share that line.
+    private func runMetadata(_ run: WiltedMacProcessorRun) -> some View {
+        HStack(spacing: WiltedTheme.Spacing.small) {
+            Text(run.source)
+                .font(WiltedTheme.font(.utility))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: WiltedTheme.Spacing.small)
+            // The word always carries the outcome; the tone only emphasises it
+            // (W-INV-010).
+            Text(run.outcomeLabel)
+                .font(WiltedTheme.font(.utility))
+                .foregroundStyle(run.tone.color(colorScheme))
+                .lineLimit(1)
+            Text(Self.stamp.string(from: run.updatedAt))
+                .font(WiltedTheme.font(.utility))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .lineLimit(1)
+        }
+    }
+
+    /// Each Prep card has one predictable action row. The log follows it, so
+    /// opening detail cannot split the narrative from the controls that act on
+    /// the same run.
+    private func runActions(_ run: WiltedMacProcessorRun, canStop: Bool) -> some View {
+        HStack(spacing: WiltedTheme.Spacing.small) {
+            if run.isPodcast, run.outcome == .failed {
+                Button("Retry") { model.retryProcessorRun(run) }
+                    .accessibilityLabel("Prepare \(run.title) again")
+                    .accessibilityIdentifier("wilted-processor-retry-\(run.id)")
+            }
+            logButton(run)
+            if canStop {
+                Button("Stop") { model.cancelProcessorRun(run) }
+                    .accessibilityLabel("Stop preparing \(run.title)")
+                    .accessibilityIdentifier("wilted-processor-stop-\(run.id)")
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-processor-actions-\(run.id)")
+    }
+
+    private func removedTimeline(_ timeline: PreparationStatus.PreparationTimeline,
+                                 for run: WiltedMacProcessorRun) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Removed spans")
+                .font(WiltedTheme.font(.utility))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            ForEach(Array(timeline.removed.enumerated()), id: \.offset) { index, removed in
+                Text(WiltedMacModel.removedSpanLine(removed, in: timeline))
+                    .font(WiltedTheme.font(.utility).monospacedDigit())
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("wilted-processor-removed-\(run.id)-\(index)")
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-processor-removed-\(run.id)")
     }
 
     private func logButton(_ run: WiltedMacProcessorRun) -> some View {
@@ -1080,25 +1105,37 @@ private struct WiltedMacProcessorView: View {
     /// vocabulary is the worker's on purpose: this is the view for someone
     /// working out why a run did what it did.
     private func eventLog(_ run: WiltedMacProcessorRun) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            if run.events.isEmpty {
-                Text("Nothing journalled yet.")
-                    .font(WiltedTheme.font(.utility))
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-            }
-            ForEach(run.events) { event in
-                HStack(alignment: .top, spacing: WiltedTheme.Spacing.small) {
-                    Text(Self.clock.string(from: event.at))
-                        .font(WiltedTheme.font(.utility).monospacedDigit())
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 2) {
+                if run.events.isEmpty {
+                    Text("Nothing journalled yet.")
+                        .font(WiltedTheme.font(.utility).monospaced())
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    Text(event.line)
-                        .font(WiltedTheme.font(.utility))
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .textSelection(.enabled)
-                        .accessibilityIdentifier("wilted-processor-event-\(event.id)")
+                }
+                ForEach(run.events) { event in
+                    HStack(alignment: .top, spacing: WiltedTheme.Spacing.small) {
+                        Text(Self.clock.string(from: event.at))
+                            .font(WiltedTheme.font(.utility).monospaced())
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        Text(event.line)
+                            .font(WiltedTheme.font(.utility).monospaced())
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            .textSelection(.enabled)
+                            .accessibilityIdentifier("wilted-processor-event-\(event.id)")
+                    }
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: 176, alignment: .leading)
+        .padding(WiltedTheme.Spacing.small)
+        .background(
+            WiltedTheme.color(.page, scheme: colorScheme),
+            in: RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
+                .stroke(WiltedTheme.color(.steel, scheme: colorScheme), lineWidth: 1)
+        )
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-processor-log-\(run.id)")
     }
@@ -1257,10 +1294,18 @@ struct WiltedMacCompactPlayer: View {
                 .accessibilityIdentifier("wilted-player-volume")
             }
 
-            Text(model.playbackStatusMessage)
-                .font(WiltedTheme.font(.utility))
-                .foregroundStyle(model.playbackStatusTone.color(colorScheme))
-                .accessibilityIdentifier("wilted-player-status")
+            if model.playbackError != nil {
+                // The status is the sole fault sentence. This container keeps
+                // the established recovery identifier without rendering it a
+                // second time.
+                VStack(alignment: .leading, spacing: 0) {
+                    playbackStatus
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("wilted-player-recoverable-error")
+            } else {
+                playbackStatus
+            }
 
             if let expansion {
                 Divider()
@@ -1273,12 +1318,6 @@ struct WiltedMacCompactPlayer: View {
                     .font(WiltedTheme.font(.utility))
                     .accessibilityIdentifier("wilted-player-operation-status")
             }
-                if let error = model.playbackError {
-                    Text(error)
-                        .font(WiltedTheme.font(.utility))
-                        .foregroundStyle(WiltedTheme.color(.error, scheme: colorScheme))
-                        .accessibilityIdentifier("wilted-player-recoverable-error")
-                }
             } else {
                 minimizedIdlePlayer
             }
@@ -1304,6 +1343,13 @@ struct WiltedMacCompactPlayer: View {
                 try? await Task.sleep(for: .seconds(1))
             }
         }
+    }
+
+    private var playbackStatus: some View {
+        Text(model.playbackStatusMessage)
+            .font(WiltedTheme.font(.utility))
+            .foregroundStyle(model.playbackStatusTone.color(colorScheme))
+            .accessibilityIdentifier("wilted-player-status")
     }
 
     private var minimizedIdlePlayer: some View {
