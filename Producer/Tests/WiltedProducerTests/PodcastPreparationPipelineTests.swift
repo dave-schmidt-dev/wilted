@@ -88,7 +88,10 @@ struct PodcastPreparationPipelineTests {
 
         let result = try await fixture.pipeline(stub).prepare(episodeID: fixture.episodeID)
 
-        let expectedID = try RevisionID.derive(downloadedAudioContentHash: Fixture.contentHash(cutBody))
+        let expectedID = try RevisionID.derive(
+            podcastDownloadedAudioItemID: fixture.episodeID,
+            contentHash: Fixture.contentHash(cutBody)
+        )
         #expect(result.revision.revisionID == expectedID)
         #expect(result.revision.revisionID != fixture.revisionID)
         #expect(result.revision.durationSeconds == 7.5)

@@ -162,8 +162,32 @@ public struct RevisionID: Codable, Hashable, Sendable, CustomStringConvertible {
         return try RevisionID(rawValue: "rev-\(lowercaseHex(digest))")
     }
 
-    /// Derives an immutable downloaded-audio revision from its verified content hash.
+    /// Derives the legacy immutable downloaded-audio revision from its verified content hash.
+    ///
+    /// This content-only form remains available to read existing stores. New
+    /// podcast downloads use `derive(podcastDownloadedAudioItemID:contentHash:)`
+    /// so identical audio from different episodes cannot share a revision.
     public static func derive(downloadedAudioContentHash contentHash: String) throws -> RevisionID {
+        try validateDownloadedAudioContentHash(contentHash)
+        let digest = namespacedSHA256("downloaded.audio", value: contentHash)
+        return try RevisionID(rawValue: "rev-\(digest)")
+    }
+
+    /// Derives an immutable podcast revision from its episode identity and
+    /// verified downloaded-audio hash.
+    public static func derive(
+        podcastDownloadedAudioItemID itemID: ItemID,
+        contentHash: String
+    ) throws -> RevisionID {
+        try validateDownloadedAudioContentHash(contentHash)
+        let digest = namespacedSHA256(
+            "podcast.downloaded.audio",
+            value: "\(itemID.rawValue)\n\(contentHash)"
+        )
+        return try RevisionID(rawValue: "rev-\(digest)")
+    }
+
+    private static func validateDownloadedAudioContentHash(_ contentHash: String) throws {
         guard contentHash.range(
             of: #"^sha256:[0-9a-f]{64}$"#,
             options: .regularExpression
@@ -173,8 +197,6 @@ public struct RevisionID: Codable, Hashable, Sendable, CustomStringConvertible {
                 reason: "must be a verified lowercase SHA-256 value"
             )
         }
-        let digest = namespacedSHA256("downloaded.audio", value: contentHash)
-        return try RevisionID(rawValue: "rev-\(digest)")
     }
 
     /// Encodes a JSON object with sorted keys for revision identity input.

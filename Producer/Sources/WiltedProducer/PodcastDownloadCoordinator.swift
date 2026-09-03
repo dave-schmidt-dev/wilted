@@ -320,12 +320,17 @@ public actor PodcastDownloadCoordinator {
             }
             guard duration.isFinite, duration > 0 else { throw PodcastDownloadCoordinatorError.invalidAudio }
 
-            let revisionID = try RevisionID.derive(downloadedAudioContentHash: contentHash)
+            let revisionID = try await store.resolvePodcastRevision(
+                itemID: episodeID,
+                contentHash: contentHash
+            )
             let mediaType = responseMediaType!
             let extensionName = Self.fileExtension(for: mediaType)
+            let existingRevision = try await store.readyRevision(for: episodeID, revisionID: revisionID)
             let finalDirectory = libraryDirectory.appendingPathComponent("PodcastAudio", isDirectory: true)
                 .appendingPathComponent(episodeID.rawValue, isDirectory: true)
-            let finalURL = finalDirectory.appendingPathComponent(revisionID.rawValue + "." + extensionName)
+            let finalURL = existingRevision?.mediaURL
+                ?? finalDirectory.appendingPathComponent(revisionID.rawValue + "." + extensionName)
             try FileManager.default.createDirectory(at: finalDirectory, withIntermediateDirectories: true)
             onStatus(.init(stage: .publishing, bytesReceived: received, expectedByteCount: expected))
             if FileManager.default.fileExists(atPath: finalURL.path) {
@@ -375,8 +380,9 @@ public actor PodcastDownloadCoordinator {
     ) async throws -> PodcastDownloadResult? {
         guard let download = try await store.download(for: episodeID), download.status == .completed,
               let hash = download.contentHash, expectedContentHash == nil || expectedContentHash == hash,
-              let url = download.localURL, FileManager.default.fileExists(atPath: url.path),
-              let stored = try await store.readyRevision(for: episodeID), stored.revision.contentHash == hash,
+              let url = download.localURL, FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let revisionID = try await store.resolvePodcastRevision(itemID: episodeID, contentHash: hash)
+        guard let stored = try await store.readyRevision(for: episodeID, revisionID: revisionID),
               stored.mediaURL == url else { return nil }
         guard try await verificationHash(of: url, onStatus: onStatus) == hash else { return nil }
         return PodcastDownloadResult(revision: stored.revision, mediaURL: url, download: download)

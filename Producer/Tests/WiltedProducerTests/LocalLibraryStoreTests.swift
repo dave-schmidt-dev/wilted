@@ -617,6 +617,83 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertEqual(loadedSpeed, updatedSpeed)
     }
 
+    func testPodcastRevisionResolutionPrefersNamespacedRowsPreservesLegacyAndAvoidsDuplicates() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let (feed, firstEpisode) = try podcastValues()
+        let secondEnclosureURL = URL(string: "https://podcasts.example.test/audio/episode-2.mp3")!
+        let secondID = try ItemID.derivePodcastEpisode(
+            feedURL: feed.canonicalURL,
+            rssGUID: "episode-2",
+            enclosureURL: secondEnclosureURL
+        )
+        let secondEpisode = try PodcastEpisode(
+            itemID: secondID, feedID: feed.itemID, feedURL: feed.canonicalURL, rssGUID: "episode-2",
+            title: "Episode Two", enclosureURL: secondEnclosureURL, enclosureMediaType: "audio/mpeg",
+            createdAt: firstEpisode.createdAt
+        )
+        try await store.save(feed: feed)
+        try await store.save(episode: firstEpisode)
+        try await store.save(episode: secondEpisode)
+
+        let hash = "sha256:" + String(repeating: "c", count: 64)
+        let legacyID = try RevisionID.derive(downloadedAudioContentHash: hash)
+        let firstNamespacedID = try RevisionID.derive(
+            podcastDownloadedAudioItemID: firstEpisode.itemID,
+            contentHash: hash
+        )
+        let secondNamespacedID = try RevisionID.derive(
+            podcastDownloadedAudioItemID: secondEpisode.itemID,
+            contentHash: hash
+        )
+        XCTAssertNotEqual(firstNamespacedID, secondNamespacedID)
+
+        func revision(_ itemID: ItemID, _ revisionID: RevisionID) throws -> AudioRevision {
+            try AudioRevision(
+                itemID: itemID, revisionID: revisionID, durationSeconds: 60, byteCount: 100,
+                contentHash: hash, mediaType: "audio/mpeg", createdAt: firstEpisode.createdAt, schemaVersion: 3
+            )
+        }
+
+        try await store.saveReadyRevision(
+            revision(firstEpisode.itemID, legacyID),
+            mediaURL: URL(fileURLWithPath: "/tmp/legacy-podcast.mp3")
+        )
+        let resolvedLegacy = try await store.resolvePodcastRevision(
+            itemID: firstEpisode.itemID,
+            contentHash: hash
+        )
+        XCTAssertEqual(resolvedLegacy, legacyID)
+
+        try await store.saveReadyRevision(
+            revision(firstEpisode.itemID, firstNamespacedID),
+            mediaURL: URL(fileURLWithPath: "/tmp/namespaced-podcast.mp3")
+        )
+        let resolvedNamespaced = try await store.resolvePodcastRevision(
+            itemID: firstEpisode.itemID,
+            contentHash: hash
+        )
+        XCTAssertEqual(resolvedNamespaced, firstNamespacedID)
+
+        let secondRevision = try revision(secondEpisode.itemID, secondNamespacedID)
+        let secondURL = URL(fileURLWithPath: "/tmp/second-podcast.mp3")
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<8 {
+                group.addTask { try await store.saveReadyRevision(secondRevision, mediaURL: secondURL) }
+            }
+            try await group.waitForAll()
+        }
+        let resolvedSecond = try await store.resolvePodcastRevision(
+            itemID: secondEpisode.itemID,
+            contentHash: hash
+        )
+        let secondRevisions = try await store.revisions(for: secondEpisode.itemID)
+        let inspection = try await store.inspect()
+        XCTAssertEqual(resolvedSecond, secondNamespacedID)
+        XCTAssertEqual(secondRevisions.count, 1)
+        XCTAssertEqual(inspection.revisionCount, 3)
+    }
+
     func testPodcastDownloadValidationRequiresCompleteLocalMediaOnlyForCompleted() throws {
         let item = try ItemID(rawValue: "item-download-validation")
         let timestamp = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))

@@ -238,6 +238,47 @@ struct PodcastDownloadCoordinatorTests {
         #expect(try stagingFiles(in: fixture.libraryDirectory).isEmpty)
     }
 
+    @Test func identicalPodcastBytesRemainBoundToTheirOwnEpisodes() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let secondURL = URL(string: "https://cdn.example.test/episode-two")!
+        let secondID = try ItemID.derivePodcastEpisode(
+            feedURL: URL(string: "https://podcasts.example.test/feed.xml")!,
+            rssGUID: "episode-2",
+            enclosureURL: secondURL
+        )
+        try await fixture.store.save(episode: PodcastEpisode(
+            itemID: secondID,
+            feedID: try ItemID.derivePodcastFeed(from: URL(string: "https://podcasts.example.test/feed.xml")!),
+            feedURL: URL(string: "https://podcasts.example.test/feed.xml")!,
+            rssGUID: "episode-2",
+            title: "Episode Two",
+            enclosureURL: secondURL,
+            enclosureMediaType: fixture.mediaType,
+            enclosureByteCount: Int64(fixture.body.count),
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        ))
+
+        let first = try await fixture.coordinator(events: fixture.successEvents).download(episodeID: fixture.episodeID)
+        let second = try await fixture.coordinator(events: fixture.successEvents).download(episodeID: secondID)
+
+        #expect(first.revision.revisionID != second.revision.revisionID)
+        #expect(first.mediaURL != second.mediaURL)
+        #expect(try await fixture.store.revisions(for: fixture.episodeID).map(\.revision.revisionID) == [first.revision.revisionID])
+        #expect(try await fixture.store.revisions(for: secondID).map(\.revision.revisionID) == [second.revision.revisionID])
+    }
+
+    @Test func reusesSameItemLegacyRevisionBeforeDerivingANewPodcastIdentity() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let legacy = try await fixture.installCompleted(body: fixture.body)
+        let result = try await fixture.coordinator(events: []).download(episodeID: fixture.episodeID)
+
+        #expect(result.revision.revisionID == legacy.revision.revisionID)
+        #expect(result.mediaURL == legacy.mediaURL)
+        #expect(try await fixture.store.revisions(for: fixture.episodeID).count == 1)
+    }
+
     @Test func idempotencyRehashIsCancellableBeforeQueuedState() async throws {
         let fixture = try await Fixture()
         defer { fixture.remove() }

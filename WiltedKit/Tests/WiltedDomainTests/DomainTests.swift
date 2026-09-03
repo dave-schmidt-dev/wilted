@@ -251,6 +251,20 @@ final class DomainTests: XCTestCase {
         let firstDownload = try RevisionID.derive(downloadedAudioContentHash: unchangedHash)
         let redownload = try RevisionID.derive(downloadedAudioContentHash: unchangedHash)
         let changedBytes = try RevisionID.derive(downloadedAudioContentHash: changedHash)
+        let firstEpisode = try ItemID(rawValue: "item-" + String(repeating: "1", count: 64))
+        let secondEpisode = try ItemID(rawValue: "item-" + String(repeating: "2", count: 64))
+        let firstPodcast = try RevisionID.derive(
+            podcastDownloadedAudioItemID: firstEpisode,
+            contentHash: unchangedHash
+        )
+        let repeatedPodcast = try RevisionID.derive(
+            podcastDownloadedAudioItemID: firstEpisode,
+            contentHash: unchangedHash
+        )
+        let secondPodcast = try RevisionID.derive(
+            podcastDownloadedAudioItemID: secondEpisode,
+            contentHash: unchangedHash
+        )
         let tts = try RevisionID.derive(
             extractedTextSHA256: String(repeating: "a", count: 64),
             voiceID: "af_heart",
@@ -260,10 +274,18 @@ final class DomainTests: XCTestCase {
 
         XCTAssertEqual(firstDownload, redownload)
         XCTAssertNotEqual(firstDownload, changedBytes)
+        XCTAssertEqual(firstPodcast, repeatedPodcast)
+        XCTAssertNotEqual(firstPodcast, secondPodcast)
+        XCTAssertNotEqual(firstPodcast, firstDownload)
         XCTAssertNotEqual(firstDownload, tts)
+        XCTAssertNotEqual(firstPodcast, tts)
         XCTAssertTrue(firstDownload.rawValue.range(of: #"^rev-[0-9a-f]{64}$"#, options: .regularExpression) != nil)
         XCTAssertThrowsError(try RevisionID.derive(downloadedAudioContentHash: String(repeating: "a", count: 64)))
         XCTAssertThrowsError(try RevisionID.derive(downloadedAudioContentHash: "sha256:" + String(repeating: "A", count: 64)))
+        XCTAssertThrowsError(try RevisionID.derive(
+            podcastDownloadedAudioItemID: firstEpisode,
+            contentHash: String(repeating: "a", count: 64)
+        ))
     }
 
     func testExistingArticleAndTTSIdentifierShapesRemainByteStable() throws {

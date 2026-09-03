@@ -708,16 +708,26 @@ public actor PodcastPreparationPipeline {
             throw PodcastPreparationError.preparedAudioUnreadable
         }
         let hash = try Self.contentHash(of: preparedURL)
-        let revisionID = try RevisionID.derive(downloadedAudioContentHash: hash)
+        let revisionID = try await store.resolvePodcastRevision(
+            itemID: episode.itemID,
+            contentHash: hash
+        )
         // Prefer what the worker measured on the cut file; fall back to
         // subtraction only when the probe could not run.
         let duration = payload.durationSeconds
             ?? max(0.001, downloadedRevision.durationSeconds - payload.removedSeconds)
-        let finalURL = audioURL.deletingLastPathComponent()
-            .appendingPathComponent(revisionID.rawValue + "." + audioURL.pathExtension)
+        let finalURL = try await store.readyRevision(for: episode.itemID, revisionID: revisionID)?.mediaURL
+            ?? audioURL.deletingLastPathComponent()
+                .appendingPathComponent(revisionID.rawValue + "." + audioURL.pathExtension)
         if finalURL != preparedURL {
-            try? FileManager.default.removeItem(at: finalURL)
-            try FileManager.default.moveItem(at: preparedURL, to: finalURL)
+            if FileManager.default.fileExists(atPath: finalURL.path) {
+                guard try Self.contentHash(of: finalURL) == hash else {
+                    throw PodcastPreparationError.preparedAudioUnreadable
+                }
+                try FileManager.default.removeItem(at: preparedURL)
+            } else {
+                try FileManager.default.moveItem(at: preparedURL, to: finalURL)
+            }
         }
         let revision = try AudioRevision(itemID: episode.itemID, revisionID: revisionID,
                                          durationSeconds: duration, byteCount: byteCount,

@@ -1550,6 +1550,38 @@ public actor LocalLibraryStore {
         return StoredAudioRevision(revision: revision, mediaURL: mediaURL)
     }
 
+    /// Resolves one podcast revision without migrating any existing identity.
+    ///
+    /// New podcast rows include their episode identity, while older rows only
+    /// include their content hash. Looking up the new form first keeps new
+    /// downloads item-safe; accepting a same-item legacy row keeps existing
+    /// media, transcripts, and playback bindings intact.
+    public func resolvePodcastRevision(itemID: ItemID, contentHash: String) throws -> RevisionID {
+        let namespaced = try RevisionID.derive(
+            podcastDownloadedAudioItemID: itemID,
+            contentHash: contentHash
+        )
+        let legacy = try RevisionID.derive(downloadedAudioContentHash: contentHash)
+        let records = try ModelContext(container)
+            .fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
+
+        if records.contains(where: {
+            $0.id == namespaced.rawValue &&
+                $0.itemID == itemID.rawValue &&
+                $0.contentHash == contentHash
+        }) {
+            return namespaced
+        }
+        if records.contains(where: {
+            $0.id == legacy.rawValue &&
+                $0.itemID == itemID.rawValue &&
+                $0.contentHash == contentHash
+        }) {
+            return legacy
+        }
+        return namespaced
+    }
+
     public func revisions(for itemID: ItemID) throws -> [StoredAudioRevision] {
         let context = ModelContext(container)
         return try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>()).filter { $0.itemID == itemID.rawValue }.compactMap { record in
