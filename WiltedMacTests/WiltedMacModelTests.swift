@@ -383,6 +383,137 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(relaunched.libraryOrder, .newest, "a fixture launch leaves nothing behind for the next one")
     }
 
+    // MARK: Automation settings
+
+    private func automationSettingsPreferences() throws -> UserDefaults {
+        let suite = "com.zerodelta.wilted.mac.automation-settings-tests"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        preferences.removePersistentDomain(forName: suite)
+        return preferences
+    }
+
+    private func offPeakWindow() throws -> WiltedAutomationOffPeakWindow {
+        let start = try XCTUnwrap(WiltedAutomationLocalTime(hour: 22, minute: 30))
+        let end = try XCTUnwrap(WiltedAutomationLocalTime(hour: 6, minute: 15))
+        return try XCTUnwrap(WiltedAutomationOffPeakWindow(start: start, end: end))
+    }
+
+    func testAutomationSettingsRoundTripThroughInjectedPreferences() throws {
+        let preferences = try automationSettingsPreferences()
+        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
+        let directory = temporaryDirectory("automation-round-trip")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settings = WiltedAutomationSettings(
+            refreshPolicy: .whileOpen(everyHours: 12),
+            downloadPolicy: .newestThreePerEnabledFeed,
+            processingPolicy: .offPeak(try offPeakWindow()),
+            transcriptPolicy: .alwaysTranscribe,
+            removeAds: false,
+            readableTranscriptPass: false
+        )
+
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        model.setAutomationSettings(settings)
+
+        XCTAssertEqual(model.automationSettings, settings)
+        XCTAssertNotNil(preferences.data(forKey: WiltedMacModel.automationSettingsPreferenceKey))
+        XCTAssertEqual(WiltedAutomationDownloadPolicy.allNewlyAdmittedUpToTwenty.maximumEpisodesPerRefresh, 20)
+    }
+
+    func testAutomationSettingsSurviveRelaunch() throws {
+        let preferences = try automationSettingsPreferences()
+        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
+        let directory = temporaryDirectory("automation-relaunch")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settings = WiltedAutomationSettings(
+            refreshPolicy: .onLaunch,
+            downloadPolicy: .allNewlyAdmittedUpToTwenty,
+            processingPolicy: .manual,
+            transcriptPolicy: .noLocalSTT,
+            removeAds: false,
+            readableTranscriptPass: true
+        )
+
+        let first = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        first.setAutomationSettings(settings)
+        let second = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+
+        XCTAssertEqual(second.automationSettings, settings)
+    }
+
+    func testCorruptAutomationSettingsFallClosedToDefaults() throws {
+        let preferences = try automationSettingsPreferences()
+        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
+        let directory = temporaryDirectory("automation-corrupt")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        preferences.set(Data("not settings data".utf8), forKey: WiltedMacModel.automationSettingsPreferenceKey)
+
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+
+        XCTAssertEqual(model.automationSettings, .defaults)
+    }
+
+    func testInvalidAutomationSettingsValuesFallClosedToDefaults() throws {
+        let preferences = try automationSettingsPreferences()
+        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
+        let directory = temporaryDirectory("automation-invalid")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        preferences.set(WiltedMacLibraryOrder.oldest.rawValue, forKey: WiltedMacModel.libraryOrderPreferenceKey)
+        preferences.set(1.5, forKey: WiltedMacModel.playbackRatePreferenceKey)
+        let invalidPayloads = [
+            #"{"version":1,"refreshPolicy":{"kind":"whileOpen","everyHours":7},"downloadPolicy":"manual","processingPolicy":{"kind":"immediate"},"transcriptPolicy":"bestAvailable","removeAds":true,"readableTranscriptPass":true}"#,
+            #"{"version":1,"refreshPolicy":{"kind":"manual"},"downloadPolicy":"manual","processingPolicy":{"kind":"offPeak","window":{"start":{"hour":24,"minute":0},"end":{"hour":6,"minute":0}}},"transcriptPolicy":"bestAvailable","removeAds":true,"readableTranscriptPass":true}"#,
+            #"{"version":2,"refreshPolicy":{"kind":"manual"},"downloadPolicy":"manual","processingPolicy":{"kind":"immediate"},"transcriptPolicy":"bestAvailable","removeAds":true,"readableTranscriptPass":true}"#
+        ]
+
+        XCTAssertNil(WiltedAutomationLocalTime(hour: 24, minute: 0))
+        let time = try XCTUnwrap(WiltedAutomationLocalTime(hour: 6, minute: 0))
+        XCTAssertNil(WiltedAutomationOffPeakWindow(start: time, end: time))
+        for payload in invalidPayloads {
+            preferences.set(Data(payload.utf8), forKey: WiltedMacModel.automationSettingsPreferenceKey)
+            let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+            XCTAssertEqual(model.automationSettings, .defaults, "invalid persisted settings must fail closed")
+            XCTAssertEqual(model.libraryOrder, .oldest)
+            XCTAssertEqual(model.playbackRate, 1.5)
+        }
+    }
+
+    func testAbsentAutomationSettingsUseCurrentDefaults() throws {
+        let preferences = try automationSettingsPreferences()
+        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
+        let directory = temporaryDirectory("automation-absent")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+
+        XCTAssertEqual(model.automationSettings, .defaults)
+        XCTAssertNil(preferences.data(forKey: WiltedMacModel.automationSettingsPreferenceKey))
+    }
+
+    func testAutomationSettingsDoNotDisturbLegacyPreferenceKeys() throws {
+        let preferences = try automationSettingsPreferences()
+        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
+        let directory = temporaryDirectory("automation-legacy")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        preferences.set(WiltedMacLibraryOrder.oldest.rawValue, forKey: WiltedMacModel.libraryOrderPreferenceKey)
+        preferences.set(1.5, forKey: WiltedMacModel.playbackRatePreferenceKey)
+
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .whileOpen(everyHours: 6),
+            downloadPolicy: .newestOnePerEnabledFeed,
+            processingPolicy: .immediate,
+            transcriptPolicy: .bestAvailable,
+            removeAds: true,
+            readableTranscriptPass: true
+        ))
+        let relaunched = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+
+        XCTAssertEqual(relaunched.libraryOrder, .oldest)
+        XCTAssertEqual(relaunched.playbackRate, 1.5)
+        XCTAssertEqual(relaunched.automationSettings.refreshPolicy, .whileOpen(everyHours: 6))
+    }
+
     // MARK: Show notes
 
     /// The row leads with what the episode is about when the feed says so,

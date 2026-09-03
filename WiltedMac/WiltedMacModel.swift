@@ -57,6 +57,232 @@ enum WiltedMacLibraryOrder: String, CaseIterable, Identifiable, Sendable {
     var id: Self { self }
 }
 
+/// The bounded refresh cadence used while the Mac app remains open.
+enum WiltedAutomationRefreshPolicy: Equatable, Sendable, Codable {
+    case manual
+    case onLaunch
+    case whileOpen(everyHours: Int)
+
+    private enum CodingKeys: String, CodingKey { case kind, everyHours }
+    private enum Kind: String, Codable { case manual, onLaunch, whileOpen }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .manual: self = .manual
+        case .onLaunch: self = .onLaunch
+        case .whileOpen:
+            let hours = try container.decode(Int.self, forKey: .everyHours)
+            guard Self.allowedIntervals.contains(hours) else {
+                throw DecodingError.dataCorruptedError(forKey: .everyHours, in: container,
+                                                       debugDescription: "Refresh intervals must be 6, 12, or 24 hours.")
+            }
+            self = .whileOpen(everyHours: hours)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .manual:
+            try container.encode(Kind.manual, forKey: .kind)
+        case .onLaunch:
+            try container.encode(Kind.onLaunch, forKey: .kind)
+        case let .whileOpen(everyHours: hours):
+            guard Self.allowedIntervals.contains(hours) else {
+                throw EncodingError.invalidValue(hours, .init(codingPath: encoder.codingPath,
+                                                               debugDescription: "Refresh intervals must be 6, 12, or 24 hours."))
+            }
+            try container.encode(Kind.whileOpen, forKey: .kind)
+            try container.encode(hours, forKey: .everyHours)
+        }
+    }
+
+    var isValid: Bool {
+        if case let .whileOpen(everyHours: hours) = self { return Self.allowedIntervals.contains(hours) }
+        return true
+    }
+
+    private static let allowedIntervals: Set<Int> = [6, 12, 24]
+}
+
+/// The bounded automatic-download choices; manual download remains available in every case.
+enum WiltedAutomationDownloadPolicy: String, Equatable, Sendable, Codable {
+    case manual
+    case newestOnePerEnabledFeed
+    case newestThreePerEnabledFeed
+    case allNewlyAdmittedUpToTwenty
+
+    var maximumEpisodesPerRefresh: Int? {
+        if case .allNewlyAdmittedUpToTwenty = self { return 20 }
+        return nil
+    }
+}
+
+/// A local wall-clock time suitable for an off-peak processing window.
+struct WiltedAutomationLocalTime: Equatable, Sendable, Codable {
+    let hour: Int
+    let minute: Int
+
+    private enum CodingKeys: String, CodingKey { case hour, minute }
+
+    init?(hour: Int, minute: Int) {
+        guard (0 ... 23).contains(hour), (0 ... 59).contains(minute) else { return nil }
+        self.hour = hour
+        self.minute = minute
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let hour = try container.decode(Int.self, forKey: .hour)
+        let minute = try container.decode(Int.self, forKey: .minute)
+        guard let time = Self(hour: hour, minute: minute) else {
+            throw DecodingError.dataCorruptedError(forKey: .hour, in: container,
+                                                   debugDescription: "Local times must use a 24-hour clock.")
+        }
+        self = time
+    }
+}
+
+/// A non-empty local processing window. Windows may cross midnight.
+struct WiltedAutomationOffPeakWindow: Equatable, Sendable, Codable {
+    let start: WiltedAutomationLocalTime
+    let end: WiltedAutomationLocalTime
+
+    private enum CodingKeys: String, CodingKey { case start, end }
+
+    init?(start: WiltedAutomationLocalTime, end: WiltedAutomationLocalTime) {
+        guard start != end else { return nil }
+        self.start = start
+        self.end = end
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let start = try container.decode(WiltedAutomationLocalTime.self, forKey: .start)
+        let end = try container.decode(WiltedAutomationLocalTime.self, forKey: .end)
+        guard let window = Self(start: start, end: end) else {
+            throw DecodingError.dataCorruptedError(forKey: .end, in: container,
+                                                   debugDescription: "Off-peak start and end times must differ.")
+        }
+        self = window
+    }
+}
+
+/// When downloaded audio is allowed to enter local preparation.
+enum WiltedAutomationProcessingPolicy: Equatable, Sendable, Codable {
+    case immediate
+    case manual
+    case offPeak(WiltedAutomationOffPeakWindow)
+
+    private enum CodingKeys: String, CodingKey { case kind, window }
+    private enum Kind: String, Codable { case immediate, manual, offPeak }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .immediate: self = .immediate
+        case .manual: self = .manual
+        case .offPeak: self = .offPeak(try container.decode(WiltedAutomationOffPeakWindow.self, forKey: .window))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .immediate:
+            try container.encode(Kind.immediate, forKey: .kind)
+        case .manual:
+            try container.encode(Kind.manual, forKey: .kind)
+        case let .offPeak(window):
+            try container.encode(Kind.offPeak, forKey: .kind)
+            try container.encode(window, forKey: .window)
+        }
+    }
+}
+
+/// The transcript source order selected for future podcast preparation.
+enum WiltedAutomationTranscriptPolicy: String, Equatable, Sendable, Codable {
+    case bestAvailable
+    case alwaysTranscribe
+    case noLocalSTT
+}
+
+/// Versioned, Mac-local automation preferences. Invalid or newer stored values fall back to `defaults`.
+struct WiltedAutomationSettings: Equatable, Sendable, Codable {
+    static let currentVersion = 1
+    static let defaults = Self(
+        refreshPolicy: .manual,
+        downloadPolicy: .manual,
+        processingPolicy: .immediate,
+        transcriptPolicy: .bestAvailable,
+        removeAds: true,
+        readableTranscriptPass: true
+    )
+
+    let version: Int
+    let refreshPolicy: WiltedAutomationRefreshPolicy
+    let downloadPolicy: WiltedAutomationDownloadPolicy
+    let processingPolicy: WiltedAutomationProcessingPolicy
+    let transcriptPolicy: WiltedAutomationTranscriptPolicy
+    let removeAds: Bool
+    let readableTranscriptPass: Bool
+
+    init(refreshPolicy: WiltedAutomationRefreshPolicy, downloadPolicy: WiltedAutomationDownloadPolicy,
+         processingPolicy: WiltedAutomationProcessingPolicy, transcriptPolicy: WiltedAutomationTranscriptPolicy,
+         removeAds: Bool, readableTranscriptPass: Bool) {
+        version = Self.currentVersion
+        self.refreshPolicy = refreshPolicy
+        self.downloadPolicy = downloadPolicy
+        self.processingPolicy = processingPolicy
+        self.transcriptPolicy = transcriptPolicy
+        self.removeAds = removeAds
+        self.readableTranscriptPass = readableTranscriptPass
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, refreshPolicy, downloadPolicy, processingPolicy, transcriptPolicy, removeAds, readableTranscriptPass
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try container.decode(Int.self, forKey: .version)
+        guard version == Self.currentVersion else {
+            throw DecodingError.dataCorruptedError(forKey: .version, in: container,
+                                                   debugDescription: "Unsupported automation settings version.")
+        }
+        let refreshPolicy = try container.decode(WiltedAutomationRefreshPolicy.self, forKey: .refreshPolicy)
+        guard refreshPolicy.isValid else {
+            throw DecodingError.dataCorruptedError(forKey: .refreshPolicy, in: container,
+                                                   debugDescription: "Invalid refresh policy.")
+        }
+        self.version = version
+        self.refreshPolicy = refreshPolicy
+        downloadPolicy = try container.decode(WiltedAutomationDownloadPolicy.self, forKey: .downloadPolicy)
+        processingPolicy = try container.decode(WiltedAutomationProcessingPolicy.self, forKey: .processingPolicy)
+        transcriptPolicy = try container.decode(WiltedAutomationTranscriptPolicy.self, forKey: .transcriptPolicy)
+        removeAds = try container.decode(Bool.self, forKey: .removeAds)
+        readableTranscriptPass = try container.decode(Bool.self, forKey: .readableTranscriptPass)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        guard version == Self.currentVersion, refreshPolicy.isValid else {
+            throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath,
+                                                          debugDescription: "Automation settings must be current and valid."))
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(refreshPolicy, forKey: .refreshPolicy)
+        try container.encode(downloadPolicy, forKey: .downloadPolicy)
+        try container.encode(processingPolicy, forKey: .processingPolicy)
+        try container.encode(transcriptPolicy, forKey: .transcriptPolicy)
+        try container.encode(removeAds, forKey: .removeAds)
+        try container.encode(readableTranscriptPass, forKey: .readableTranscriptPass)
+    }
+
+    var isValid: Bool { version == Self.currentVersion && refreshPolicy.isValid }
+}
+
 enum WiltedMacEpisodeDownloadState: Equatable, Sendable {
     case notDownloaded
     case queued
@@ -452,7 +678,10 @@ final class WiltedMacModel {
     /// per-episode speed of its own, so 1.25× chosen once stays 1.25×.
     static let playbackRatePreferenceKey = "wilted.playback.rate"
     static let initialPlaybackRate = 1.25
+    static let automationSettingsPreferenceKey = "wilted.automation.settings"
     private let preferences: UserDefaults
+    /// Future automation reads this one validated value, never individual preference keys.
+    private(set) var automationSettings = WiltedAutomationSettings.defaults
     var selectedNavigation: WiltedMacNavigation = .library
     private(set) var articles: [WiltedMacArticle] = []
     private(set) var episodes: [WiltedMacEpisode] = []
@@ -608,6 +837,7 @@ final class WiltedMacModel {
         if self.preferences.object(forKey: Self.playbackRatePreferenceKey) != nil {
             playbackRate = Self.clampPlaybackRate(self.preferences.double(forKey: Self.playbackRatePreferenceKey))
         }
+        automationSettings = Self.loadAutomationSettings(from: self.preferences)
 #if canImport(WiltedProducer)
         // Fixture launches build their controller above, before the stored
         // rate is known; production builds it later, in
@@ -618,6 +848,22 @@ final class WiltedMacModel {
 
     private static func clampPlaybackRate(_ value: Double) -> Double {
         min(max(value.isFinite ? value : initialPlaybackRate, 0.5), 2)
+    }
+
+    /// Stores only a complete, current settings envelope for a later automation coordinator.
+    func setAutomationSettings(_ settings: WiltedAutomationSettings) {
+        guard settings.isValid, let data = try? JSONEncoder().encode(settings) else { return }
+        automationSettings = settings
+        preferences.set(data, forKey: Self.automationSettingsPreferenceKey)
+    }
+
+    private static func loadAutomationSettings(from preferences: UserDefaults) -> WiltedAutomationSettings {
+        guard let data = preferences.data(forKey: automationSettingsPreferenceKey),
+              let settings = try? JSONDecoder().decode(WiltedAutomationSettings.self, from: data),
+              settings.isValid else {
+            return .defaults
+        }
+        return settings
     }
 
     /// Fixture launches share the daily driver's bundle identifier, so they
