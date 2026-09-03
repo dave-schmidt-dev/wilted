@@ -104,6 +104,16 @@ struct WiltedMacSubscription: Identifiable, Hashable, Sendable {
     var enabled: Bool
 }
 
+/// One durable removal shown on Podcast feeds until fresh feed evidence restores it.
+struct WiltedMacDismissedEpisode: Identifiable, Hashable, Sendable {
+    let id: String
+    let feedID: String?
+    let title: String
+    let feedTitle: String?
+    let dismissedAt: Date
+    let hasPreparationHistory: Bool
+}
+
 struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     let id: String
     let title: String
@@ -456,6 +466,7 @@ final class WiltedMacModel {
     private(set) var playbackDurationSeconds: TimeInterval = 0
     /// Every recorded preparation attempt, newest first.
     private(set) var processorRuns: [WiltedMacProcessorRun] = []
+    private(set) var processorOperationMessage: String?
     /// Progress for an in-flight transcript backfill (W-INV-001: a network
     /// fetch never runs without the surface saying so).
     private(set) var transcriptBackfillStatus: String?
@@ -482,6 +493,8 @@ final class WiltedMacModel {
     private var syncLifecycle: WiltedMacSyncLifecycle?
     /// Podcast feeds Wilted follows, newest subscription first.
     var subscriptions: [WiltedMacSubscription] = []
+    /// Durable removals remain visible even when no feed is subscribed.
+    private(set) var dismissedEpisodes: [WiltedMacDismissedEpisode] = []
 
     private let libraryURL: URL
     private let mediaDirectory: URL
@@ -500,6 +513,7 @@ final class WiltedMacModel {
     private var podcastDownloadCoordinator: PodcastDownloadCoordinator?
     private var podcastPreparationPipeline: PodcastPreparationPipeline?
     private var podcastPreparationTasks: [String: Task<Void, Never>] = [:]
+    private var podcastRestoreTasks: [String: Task<Void, Never>] = [:]
     /// Removing advertisements is why preparation exists. Read once, when the
     /// pipeline is built, so this is not a switch: a Settings control would
     /// have to rebuild the pipeline to mean anything, and none exists yet.
@@ -866,6 +880,7 @@ final class WiltedMacModel {
                 self.articles = values.articles
                 self.episodes = values.episodes
                 self.subscriptions = values.subscriptions
+                self.dismissedEpisodes = try await self.loadDismissedEpisodes(from: store)
                 self.podcastOperationMessage = "\(episode.title) is available offline."
                 self.podcastDownloadTasks[episode.id] = nil
                 self.prepareEpisode(episode)
@@ -955,7 +970,14 @@ final class WiltedMacModel {
     /// retry lives next to the failure rather than in the Larder, where the
     /// row only says to look here.
     func retryProcessorRun(_ run: WiltedMacProcessorRun) {
-        guard run.isPodcast, let episode = episodes.first(where: { $0.id == run.itemID }) else { return }
+        guard run.isPodcast else { return }
+        guard let episode = episodes.first(where: { $0.id == run.itemID }) else {
+            processorOperationMessage = dismissedEpisodes.contains(where: { $0.id == run.itemID })
+                ? "Restore \(run.title) from Podcast feeds before retrying preparation."
+                : "\(run.title) is no longer in Larder. Add it again before retrying preparation."
+            return
+        }
+        processorOperationMessage = nil
         prepareEpisode(episode)
     }
 
@@ -1025,8 +1047,10 @@ final class WiltedMacModel {
         await linkClassificationTask?.value
         let refresh = podcastRefreshTask
         let downloads = Array(podcastDownloadTasks.values)
+        let restores = Array(podcastRestoreTasks.values)
         await refresh?.value
         for task in downloads { await task.value }
+        for task in restores { await task.value }
     }
 
     /// Turns a feed's episodes on or off in the Larder without unsubscribing.
@@ -1069,6 +1093,7 @@ final class WiltedMacModel {
                 self.articles = values.articles
                 self.episodes = values.episodes
                 self.subscriptions = values.subscriptions
+                self.dismissedEpisodes = try await self.loadDismissedEpisodes(from: store)
                 self.podcastOperationMessage =
                     "Unsubscribed from \(subscription.title) and removed \(removed) episode\(removed == 1 ? "" : "s")."
             } catch {
@@ -1106,6 +1131,7 @@ final class WiltedMacModel {
                 self.articles = values.articles
                 self.episodes = values.episodes
                 self.subscriptions = values.subscriptions
+                self.dismissedEpisodes = try await self.loadDismissedEpisodes(from: store)
             } catch {
                 self.hiddenEpisodeIDs.remove(episode.id)
                 self.podcastOperationMessage = "\(episode.title) could not be removed."
@@ -1113,6 +1139,87 @@ final class WiltedMacModel {
         }
 #endif
     }
+
+    /// Restores a removed episode only after a current feed proves the exact identity still exists.
+    func restoreEpisode(_ dismissal: WiltedMacDismissedEpisode) {
+#if canImport(WiltedProducer)
+        guard podcastRestoreTasks[dismissal.id] == nil,
+              let store, let episodeID = try? ItemID(rawValue: dismissal.id) else { return }
+        podcastOperationMessage = "Checking feeds for \(dismissal.title)…"
+        podcastRestoreTasks[dismissal.id] = Task { [weak self] in
+            guard let self else { return }
+            defer { self.podcastRestoreTasks[dismissal.id] = nil }
+            await self.restoreEpisode(dismissal, episodeID: episodeID, store: store)
+        }
+#endif
+    }
+
+#if canImport(WiltedProducer)
+    private func restoreEpisode(
+        _ dismissal: WiltedMacDismissedEpisode, episodeID: ItemID, store: LocalLibraryStore
+    ) async {
+        var checkedFeedCount = 0
+        var loadedMatch: LoadedPodcastFeed?
+        if let rawFeedID = dismissal.feedID, let feedID = try? ItemID(rawValue: rawFeedID) {
+            guard let feed = try? await store.podcastFeed(for: feedID) else {
+                podcastOperationMessage = "\(dismissal.title) has no known feed to check. It remains in Removed."
+                return
+            }
+            do {
+                let loaded = try await podcastFeedClient.load(feed.canonicalURL)
+                checkedFeedCount = 1
+                if loaded.episodes.contains(where: { $0.itemID == episodeID }) { loadedMatch = loaded }
+            } catch {
+                podcastOperationMessage = "Could not check \(feed.title). Retry Restore when you are online."
+                return
+            }
+        } else {
+            let subscriptions = (try? await store.subscriptions()) ?? []
+            guard !subscriptions.isEmpty else {
+                podcastOperationMessage = "No subscribed feed can resolve \(dismissal.title). It remains in Removed."
+                return
+            }
+            for subscription in subscriptions {
+                guard let feed = try? await store.podcastFeed(for: subscription.feedID) else { continue }
+                do {
+                    let loaded = try await podcastFeedClient.load(feed.canonicalURL)
+                    checkedFeedCount += 1
+                    if loaded.episodes.contains(where: { $0.itemID == episodeID }) {
+                        loadedMatch = loaded
+                        break
+                    }
+                } catch {
+                    continue
+                }
+            }
+        }
+
+        guard let loadedMatch,
+              let target = loadedMatch.episodes.first(where: { $0.itemID == episodeID }) else {
+            podcastOperationMessage = checkedFeedCount == 0
+                ? "No podcast feed could be checked. Retry Restore when you are online."
+                : "\(dismissal.title) is no longer published by the feeds checked. It remains in Removed."
+            return
+        }
+        do {
+            let result = try await store.restorePodcastEpisode(target, from: loadedMatch.episodes)
+            guard result.restored else {
+                dismissedEpisodes = try await loadDismissedEpisodes(from: store)
+                podcastOperationMessage = "\(dismissal.title) was already restored."
+                return
+            }
+            withheldPodcastEpisodeCount = loadedMatch.droppedEpisodeCount + result.skipped
+            let values = try await loadLibrary(from: store)
+            articles = values.articles
+            episodes = values.episodes
+            subscriptions = values.subscriptions
+            dismissedEpisodes = try await loadDismissedEpisodes(from: store)
+            podcastOperationMessage = "Restored \(dismissal.title) to Larder."
+        } catch {
+            podcastOperationMessage = "\(dismissal.title) could not be restored. Retry Restore."
+        }
+    }
+#endif
 
 #if canImport(WiltedProducer)
     private func startPodcastRefresh(urls: [URL], subscribing: Bool) {
@@ -1166,6 +1273,7 @@ final class WiltedMacModel {
         articles = values.articles
         episodes = values.episodes
         subscriptions = values.subscriptions
+        dismissedEpisodes = try await loadDismissedEpisodes(from: store)
     }
 
 #endif
@@ -1938,6 +2046,12 @@ final class WiltedMacModel {
             for episode in (try? await store.podcastEpisodes()) ?? [] {
                 titles[episode.itemID.rawValue] = (episode.title, feedTitles[episode.feedID] ?? "Podcast")
             }
+            for dismissal in (try? await store.dismissedPodcastEpisodes()) ?? [] {
+                titles[dismissal.episodeID.rawValue] = (
+                    dismissal.title ?? "Removed podcast episode",
+                    dismissal.feedID.flatMap { feedTitles[$0] } ?? "Removed podcast"
+                )
+            }
             self.processorRuns = runs.map { run in
                 let known = titles[run.itemID.rawValue]
                 let outcome: WiltedMacProcessorRun.Outcome = if !run.isTerminal {
@@ -2044,6 +2158,7 @@ final class WiltedMacModel {
             articles = library.articles
             episodes = library.episodes
             subscriptions = library.subscriptions
+            dismissedEpisodes = try await loadDismissedEpisodes(from: configuredStore)
             await restorePodcastPlayback()
             startupState = .ready
             if pendingSyncReconciliation {
@@ -2241,6 +2356,21 @@ final class WiltedMacModel {
         return (articleValues, episodeValues, subscriptionValues)
     }
 
+    private func loadDismissedEpisodes(from store: LocalLibraryStore) async throws -> [WiltedMacDismissedEpisode] {
+        let feeds = Dictionary(uniqueKeysWithValues: try await store.podcastFeeds().map { ($0.itemID, $0.title) })
+        let preparedItemIDs = Set(try await store.preparationRuns().map(\.itemID))
+        return try await store.dismissedPodcastEpisodes().map { dismissal in
+            WiltedMacDismissedEpisode(
+                id: dismissal.episodeID.rawValue,
+                feedID: dismissal.feedID?.rawValue,
+                title: dismissal.title ?? "Removed podcast episode",
+                feedTitle: dismissal.feedID.flatMap { feeds[$0] },
+                dismissedAt: dismissal.dismissedAt.date,
+                hasPreparationHistory: preparedItemIDs.contains(dismissal.episodeID)
+            )
+        }
+    }
+
     static let fixtureEpisodeNotes = """
     A walk through the machines that keep the field office quiet.
 
@@ -2331,6 +2461,7 @@ final class WiltedMacModel {
             self.articles = values.articles
             self.episodes = values.episodes
             self.subscriptions = values.subscriptions
+            self.dismissedEpisodes = (try? await self.loadDismissedEpisodes(from: store)) ?? self.dismissedEpisodes
         }
     }
 

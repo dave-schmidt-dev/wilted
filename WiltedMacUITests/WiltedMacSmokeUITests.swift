@@ -221,6 +221,20 @@ final class WiltedMacSmokeUITests: XCTestCase {
             app.staticTexts["Fixture article"].waitForExistence(timeout: 3),
             "Article behavior remains available after episode removal"
         )
+
+        app.descendants(matching: .any)["wilted-navigation-feeds"].click()
+        XCTAssertTrue(
+            app.descendants(matching: .any).matching(
+                NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-removed-row-'")
+            ).firstMatch.waitForExistence(timeout: 5),
+            "every durable dismissal must remain visible on Podcast feeds"
+        )
+        XCTAssertTrue(
+            app.buttons.matching(
+                NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-restore-'")
+            ).firstMatch.exists,
+            "a removed episode must expose one stable Restore action"
+        )
     }
 
     /// A build that never loaded the ad detector marked every episode prepared

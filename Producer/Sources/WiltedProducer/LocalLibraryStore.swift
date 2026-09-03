@@ -2095,6 +2095,12 @@ public actor LocalLibraryStore {
         public let skipped: Int
     }
 
+    public struct PodcastEpisodeRestoreResult: Equatable, Sendable {
+        public let restored: Bool
+        public let saved: [ItemID]
+        public let skipped: Int
+    }
+
     /// Persists only the episodes a subscribed feed should surface.
     ///
     /// Subscribing to a podcast must not empty its whole back catalogue into the
@@ -2130,16 +2136,63 @@ public actor LocalLibraryStore {
     ) throws -> PodcastEpisodeAdmissionResult {
         guard !episodes.isEmpty else { return PodcastEpisodeAdmissionResult(saved: [], skipped: 0) }
         let context = ModelContext(container)
-        // Dismissed first, ahead of the `existing` re-admit below. That rule
-        // says an episode Wilted already knows can never be evicted by the
-        // horizon, which is right for the horizon and wrong here: a removal is
-        // the listener evicting it on purpose, so it outranks both tests.
+        let admitted = try admittedPodcastEpisodes(episodes, admission: admission, in: context)
+        try upsertPodcastEpisodes(admitted, in: context)
+        try context.save()
+        return PodcastEpisodeAdmissionResult(
+            saved: admitted.map(\.itemID),
+            skipped: episodes.count - admitted.count
+        )
+    }
+
+    /// Re-admits one exact feed entry and forgets its dismissal in the same save.
+    ///
+    /// `offeredEpisodes` must be fresh feed evidence. Only `target` bypasses the
+    /// incremental horizon; every other entry is admitted exactly as a normal
+    /// refresh would admit it. The dismissal is deleted last and the context is
+    /// saved once, so a decode or store failure cannot turn a retryable restore
+    /// into a permanent loss of the Removed row.
+    @discardableResult
+    public func restorePodcastEpisode(
+        _ target: PodcastEpisode,
+        from offeredEpisodes: [PodcastEpisode]
+    ) throws -> PodcastEpisodeRestoreResult {
+        let context = ModelContext(container)
+        let identifier = target.itemID.rawValue
+        let dismissals = try context.fetch(
+            FetchDescriptor<LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord>()
+        )
+        guard let dismissal = dismissals.first(where: { $0.id == identifier }) else {
+            return PodcastEpisodeRestoreResult(restored: false, saved: [], skipped: offeredEpisodes.count)
+        }
+        guard let offeredTarget = offeredEpisodes.first(where: { $0.itemID == target.itemID }) else {
+            return PodcastEpisodeRestoreResult(restored: false, saved: [], skipped: offeredEpisodes.count)
+        }
+
+        var admitted = try admittedPodcastEpisodes(
+            offeredEpisodes.filter { $0.itemID != target.itemID }, admission: .incremental, in: context
+        )
+        admitted.append(offeredTarget)
+        try upsertPodcastEpisodes(admitted, in: context)
+        context.delete(dismissal)
+        try context.save()
+        return PodcastEpisodeRestoreResult(
+            restored: true,
+            saved: admitted.map(\.itemID),
+            skipped: offeredEpisodes.count - admitted.count
+        )
+    }
+
+    private func admittedPodcastEpisodes(
+        _ episodes: [PodcastEpisode],
+        admission: PodcastEpisodeAdmission,
+        in context: ModelContext
+    ) throws -> [PodcastEpisode] {
         let dismissed = Set(
             try context.fetch(FetchDescriptor<LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord>()).map(\.id)
         )
-        let offered = episodes.count
-        let episodes = episodes.filter { !dismissed.contains($0.itemID.rawValue) }
-        guard !episodes.isEmpty else { return PodcastEpisodeAdmissionResult(saved: [], skipped: offered) }
+        let candidates = episodes.filter { !dismissed.contains($0.itemID.rawValue) }
+        guard !candidates.isEmpty else { return [] }
         let subscriptions = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastSubscriptionRecord>())
         let horizons = Dictionary(
             subscriptions.map { ($0.feedID, Self.admissionHorizon(subscribedAt: $0.subscribedAt, admission: admission)) },
@@ -2148,9 +2201,8 @@ public actor LocalLibraryStore {
         let existing = Set(
             try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>()).map(\.id)
         )
-
         var admitted: [PodcastEpisode] = []
-        for (feedID, group) in Dictionary(grouping: episodes, by: \.feedID.rawValue) {
+        for (feedID, group) in Dictionary(grouping: candidates, by: \.feedID.rawValue) {
             guard let horizon = horizons[feedID] else {
                 admitted.append(contentsOf: group)
                 continue
@@ -2168,10 +2220,15 @@ public actor LocalLibraryStore {
             }
             admitted.append(contentsOf: kept)
         }
+        return admitted
+    }
 
+    private func upsertPodcastEpisodes(
+        _ episodes: [PodcastEpisode], in context: ModelContext
+    ) throws {
         let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>())
         var byID = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        for episode in admitted {
+        for episode in episodes {
             if let record = byID[episode.itemID.rawValue] {
                 try Self.apply(episode, to: record)
             } else {
@@ -2180,11 +2237,6 @@ public actor LocalLibraryStore {
                 byID[episode.itemID.rawValue] = record
             }
         }
-        try context.save()
-        return PodcastEpisodeAdmissionResult(
-            saved: admitted.map(\.itemID),
-            skipped: offered - admitted.count
-        )
     }
 
     /// How far back the load that creates a subscription reaches.
@@ -2285,25 +2337,6 @@ public actor LocalLibraryStore {
                     dismissedAt: Timestamp(record.dismissedAt)
                 )
             }
-    }
-
-    /// Forgets a dismissal, so the next refresh may admit the episode again.
-    ///
-    /// The episode row is not recreated here. Wilted has no copy of the feed
-    /// entry to recreate it from, and inventing one would fabricate an identity
-    /// the feed no longer has to agree with.
-    @discardableResult
-    public func restorePodcastEpisode(_ episodeID: ItemID) throws -> Bool {
-        let context = ModelContext(container)
-        let identifier = episodeID.rawValue
-        var removed = false
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord>())
-        where record.id == identifier {
-            context.delete(record)
-            removed = true
-        }
-        if removed { try context.save() }
-        return removed
     }
 
     /// Removes a subscription and every record Wilted stored on its behalf.

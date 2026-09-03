@@ -1146,33 +1146,61 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertEqual(stored, ["day-1", "day-2"], "resubscribing starts from the feed, not from the old blocklist")
     }
 
-    /// Restoring clears the record so a later refresh may admit the episode
-    /// again. It does not resurrect the row: only the feed can supply that.
-    func testRestoringAnEpisodeLetsTheNextRefreshAdmitItAgain() async throws {
+    /// Restore is one transaction backed by fresh feed evidence. The exact old
+    /// target bypasses the subscription horizon while another genuinely new
+    /// entry from the same response still follows incremental admission.
+    func testRestoreReadmitsTheExactOldTargetAndIncrementallyAdmitsOtherEntries() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let origin = Date(timeIntervalSince1970: 1_700_000_000)
         let feedURL = URL(string: "https://podcasts.example.test/restore/feed.xml")!
-        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1])
+        let (feed, oldEntries) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [500])
+        let target = try XCTUnwrap(oldEntries.first)
+        let newEnclosure = URL(string: "https://podcasts.example.test/restore/new.mp3")!
+        let newEpisode = try PodcastEpisode(
+            itemID: ItemID.derivePodcastEpisode(
+                feedURL: feedURL, rssGUID: "new-entry", enclosureURL: newEnclosure
+            ),
+            feedID: feed.itemID, feedURL: feedURL, rssGUID: "new-entry", title: "New entry",
+            publishedTime: Timestamp(origin.addingTimeInterval(60)), enclosureURL: newEnclosure,
+            enclosureMediaType: "audio/mpeg", createdAt: Timestamp(origin.addingTimeInterval(60))
+        )
         let store = try LocalLibraryStore(url: url)
         try await store.save(feed: feed)
-        // Subscribed before the episode published, so the refresh below is
-        // refused by the dismissal alone and not by the admission horizon.
         try await store.save(subscription: PodcastSubscription(
-            feedID: feed.itemID, subscribedAt: Timestamp(origin.addingTimeInterval(-10 * 86_400))
+            feedID: feed.itemID, subscribedAt: Timestamp(origin)
         ))
-        try await store.savePodcastEpisodes(all, admission: .backfill)
-        try await store.dismissPodcastEpisode(all[0].itemID, at: Timestamp(origin))
-        let blocked = try await store.savePodcastEpisodes(all, admission: .incremental)
-        XCTAssertEqual(blocked.skipped, 1)
+        try await store.save(episode: target)
+        try await store.dismissPodcastEpisode(target.itemID, at: Timestamp(origin))
 
-        let restored = try await store.restorePodcastEpisode(all[0].itemID)
-        let restoredAgain = try await store.restorePodcastEpisode(all[0].itemID)
-        let emptied = try await store.podcastEpisodes(for: feed.itemID)
-        XCTAssertTrue(restored)
-        XCTAssertFalse(restoredAgain, "nothing left to forget")
-        XCTAssertTrue(emptied.isEmpty, "restoring is not resurrection; the row comes back from the feed")
-        try await store.savePodcastEpisodes(all, admission: .incremental)
-        let stored = try await store.podcastEpisodes(for: feed.itemID).compactMap(\.rssGUID)
-        XCTAssertEqual(stored, ["day-1"])
+        let result = try await store.restorePodcastEpisode(target, from: [target, newEpisode])
+        XCTAssertTrue(result.restored)
+        XCTAssertEqual(Set(result.saved), [target.itemID, newEpisode.itemID])
+        XCTAssertEqual(result.skipped, 0)
+        let stored = try await store.podcastEpisodes(for: feed.itemID)
+        XCTAssertEqual(Set(stored.compactMap(\.rssGUID)), ["day-500", "new-entry"])
+        let dismissals = try await store.dismissedPodcastEpisodes()
+        XCTAssertTrue(dismissals.isEmpty)
+    }
+
+    /// Evidence for the wrong identity must not clear the durable dismissal.
+    func testRestoreWithoutMatchingFeedEvidencePreservesDismissalAcrossRelaunch() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/restore-miss/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 2])
+        let target = all[0]
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+        try await store.save(episode: target)
+        try await store.dismissPodcastEpisode(target.itemID, at: Timestamp(origin))
+
+        let result = try await store.restorePodcastEpisode(target, from: [all[1]])
+        XCTAssertFalse(result.restored)
+        let reopened = try LocalLibraryStore(url: url)
+        let dismissals = try await reopened.dismissedPodcastEpisodes()
+        let restoredEpisodes = try await reopened.podcastEpisodes(for: feed.itemID)
+        XCTAssertEqual(dismissals.map(\.episodeID), [target.itemID])
+        XCTAssertTrue(restoredEpisodes.isEmpty)
     }
 }

@@ -463,6 +463,20 @@ private struct WiltedMacFeedsView: View {
                     }
                 }
             }
+            if !model.dismissedEpisodes.isEmpty {
+                Divider()
+                Text("Removed")
+                    .font(WiltedTheme.font(.title))
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-podcast-removed-title")
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(model.dismissedEpisodes.enumerated()), id: \.element.id) { index, dismissal in
+                        if index > 0 { Divider() }
+                        dismissedRow(dismissal)
+                    }
+                }
+                .accessibilityIdentifier("wilted-podcast-removed")
+            }
             WiltedMacPodcastOperationMessage(model: model)
         }
         .wiltedCard(colorScheme)
@@ -517,6 +531,31 @@ private struct WiltedMacFeedsView: View {
         .padding(.vertical, WiltedTheme.Spacing.small)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-podcast-feed-row-\(subscription.id)")
+    }
+
+    private func dismissedRow(_ dismissal: WiltedMacDismissedEpisode) -> some View {
+        HStack(spacing: WiltedTheme.Spacing.medium) {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                Text(dismissal.title)
+                    .font(WiltedTheme.font(.body))
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                Text(dismissal.feedTitle ?? "Feed unavailable")
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                if dismissal.hasPreparationHistory {
+                    Text("Prep history available")
+                        .font(WiltedTheme.font(.utility))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Restore") { model.restoreEpisode(dismissal) }
+                .accessibilityLabel("Restore \(dismissal.title)")
+                .accessibilityIdentifier("wilted-podcast-restore-\(dismissal.id)")
+        }
+        .padding(.vertical, WiltedTheme.Spacing.small)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-podcast-removed-row-\(dismissal.id)")
     }
 }
 
@@ -894,6 +933,13 @@ private struct WiltedMacProcessorView: View {
                         }
                     }
                     .wiltedCard(colorScheme)
+                }
+                if let message = model.processorOperationMessage {
+                    Text(message)
+                        .font(WiltedTheme.font(.utility))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wilted-processor-operation-message")
                 }
             }
         }

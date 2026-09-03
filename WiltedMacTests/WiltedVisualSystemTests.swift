@@ -686,6 +686,21 @@ final class WiltedVisualSystemTests: XCTestCase {
         )
     }
 
+    /// Removed rows carry enough presentation metadata to name the episode,
+    /// its feed, and its retained Prep history without reconstructing a deleted
+    /// episode record.
+    func testRemovedEpisodePresentationMetadataNamesPrepHistory() {
+        let removed = WiltedMacDismissedEpisode(
+            id: "episode-id", feedID: "feed-id", title: "Recovered episode",
+            feedTitle: "Field Notes", dismissedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            hasPreparationHistory: true
+        )
+        XCTAssertEqual(removed.title, "Recovered episode")
+        XCTAssertEqual(removed.feedTitle, "Field Notes")
+        XCTAssertTrue(removed.hasPreparationHistory)
+        XCTAssertEqual(removed.id, "episode-id", "Restore identity must remain stable across renders")
+    }
+
     /// The producer window has no Downloads destination, so its copy must not
     /// send the reader to one. This was shipped: the Mac empty player told the
     /// reader to visit Downloads, and no pixel baseline could catch it because
