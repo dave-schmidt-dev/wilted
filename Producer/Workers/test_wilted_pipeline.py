@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from contextlib import contextmanager, redirect_stderr
@@ -40,27 +41,81 @@ def load_worker():
 wp = load_worker()
 
 
-@contextmanager
-def temporarily_missing_attribute(obj, name):
-    """Remove one optional compatibility hook and restore it on exit."""
-    sentinel = object()
-    previous = getattr(obj, name, sentinel)
-    if previous is not sentinel:
-        delattr(obj, name)
-    try:
-        yield
-    finally:
-        if previous is sentinel:
-            obj.__dict__.pop(name, None)
-        else:
-            setattr(obj, name, previous)
-
-
 @dataclass
 class FakeSegment:
     start_s: float
     end_s: float
     text: str
+
+
+def install_fake_speech_stack(
+    *, events=None, evict_error=None, barrier_error=None, statuses=(), rpc_timeouts=None
+):
+    """Install the daemon FIFO and shared lock with deterministic behavior."""
+    events = events if events is not None else []
+    remaining_statuses = iter(statuses or ({"resident_models": 0, "in_flight": 1},))
+    last_status = {"resident_models": 0, "in_flight": 1}
+    rpc_timeouts = rpc_timeouts if rpc_timeouts is not None else []
+
+    class DaemonUnavailable(RuntimeError):
+        pass
+
+    client = types.ModuleType("speech_stack.client")
+    client.DaemonUnavailable = DaemonUnavailable
+
+    def evict(task, **params):
+        events.append(f"evict:{task}")
+        rpc_timeouts.append((f"evict:{task}", params.get("timeout")))
+        if evict_error is not None:
+            raise evict_error
+        return {"evicted": True, "task": task}
+
+    def selftest(action, **params):
+        events.append(f"barrier:{action}:{params.get('barrier', '')}")
+        rpc_timeouts.append(("selftest", params.get("timeout")))
+        if barrier_error is not None:
+            raise barrier_error
+        return params
+
+    def status(**params):
+        nonlocal last_status
+        events.append("status")
+        rpc_timeouts.append(("status", params.get("timeout")))
+        try:
+            last_status = next(remaining_statuses)
+        except StopIteration:
+            pass
+        last_status = {"in_flight": 1, **last_status}
+        return last_status
+
+    client.evict = evict
+    client.selftest = selftest
+    client.status = status
+    host = types.ModuleType("speech_stack.daemon.host")
+    lock_dir = Path(tempfile.gettempdir()) / f"wilted-pipeline-lock-{os.getpid()}"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    host.state_dir = lambda: lock_dir
+
+    daemon = types.ModuleType("speech_stack.daemon")
+    daemon.host = host
+    package = types.ModuleType("speech_stack")
+    package.client = client
+    package.daemon = daemon
+    sys.modules["speech_stack"] = package
+    sys.modules["speech_stack.client"] = client
+    sys.modules["speech_stack.daemon"] = daemon
+    sys.modules["speech_stack.daemon.host"] = host
+    return client, events
+
+
+@contextmanager
+def recording_model_lock(events):
+    """A lock double whose exit proves every model path releases it."""
+    events.append("lock.enter")
+    try:
+        yield
+    finally:
+        events.append("lock.exit")
 
 
 def install_fake_wilted(parse_results=None, parse_error=None, transcriptions=None):
@@ -102,6 +157,7 @@ def install_fake_wilted(parse_results=None, parse_error=None, transcriptions=Non
     # double left behind by another test would be silently reused here.
     sys.modules.pop("wilted.ads", None)
     sys.modules.pop("wilted.llm", None)
+    install_fake_speech_stack()
     return transcribe
 
 
@@ -118,6 +174,7 @@ class FakeLLM:
     closed: bool = False
     fail_load: Exception | None = None
     fail_generate: Exception | None = None
+    boundary_content_start_id: int | None = None
     requests: list = field(default_factory=list)
 
     def load(self):
@@ -131,6 +188,10 @@ class FakeLLM:
             raise RuntimeError("Model not loaded. Call load() first.")
         if self.fail_generate is not None:
             raise self.fail_generate
+        if response_format and response_format.get("field") == "include":
+            candidate_id = int(user_content.partition("candidate=")[2])
+            content_start_id = self.boundary_content_start_id
+            return json.dumps({"include": content_start_id is not None and candidate_id < content_start_id}), 1
         return self.answer, 1
 
     def close(self):
@@ -152,6 +213,8 @@ def install_fake_ads(llm: FakeLLM, detections=()):
     as a malformed completion: it swallows it and classifies the batch as
     content. This double asks once per segment and does the same.
     """
+    if "speech_stack.client" not in sys.modules:
+        install_fake_speech_stack()
     ads = types.ModuleType("wilted.ads")
     ads._SPONSOR_OPENING_RE = re.compile(  # noqa: SLF001 - matches the legacy module seam
         r"\b(?:this|the)\s+episode\s+is\s+(?:brought\s+to\s+you\s+by|sponsored\s+by)\b"
@@ -168,6 +231,68 @@ def install_fake_ads(llm: FakeLLM, detections=()):
         r")\b",
         re.IGNORECASE,
     )
+    ads.AdSegment = lambda start_s, end_s, confidence, label: FakeAd(  # noqa: E731
+        start_s, end_s, label, confidence
+    )
+    ads._refine_ad_start_from_tokens = lambda segment, _pattern: segment.start_s  # noqa: SLF001
+
+    def merge_adjacent(items):
+        merged = []
+        for item in sorted(items, key=lambda ad: ad.start_s):
+            if merged and item.start_s <= merged[-1].end_s + 2.0:
+                previous = merged[-1]
+                merged[-1] = FakeAd(
+                    previous.start_s,
+                    max(previous.end_s, item.end_s),
+                    previous.label,
+                    max(previous.confidence, item.confidence),
+                )
+            else:
+                merged.append(item)
+        return merged
+
+    ads._merge_adjacent = merge_adjacent  # noqa: SLF001
+    ads._SPONSOR_ANCHOR_VERIFY_SYSTEM_PROMPT = "find verified content resumption"
+
+    def render_segments_bounded(context_ids, segments, headers=()):
+        return "\n".join([*headers, *(f"[{index}] {segments[index].text}" for index in context_ids)])
+
+    ads._render_segments_bounded = render_segments_bounded  # noqa: SLF001
+    ads._id_response_format = lambda field, ids: {"field": field, "ids": list(ids)}  # noqa: SLF001
+    ads._generate_constrained_response = (  # noqa: SLF001
+        lambda backend, system, transcript, response_format: backend.generate(
+            system, transcript, response_format=response_format
+        )
+    )
+
+    def parse_content_response(response, minimum_id, window_max):
+        parsed = json.loads(response)
+        if set(parsed) != {"content_start_id"}:
+            raise ValueError("invalid content response")
+        content_id = parsed["content_start_id"]
+        if isinstance(content_id, bool) or not isinstance(content_id, int):
+            raise ValueError("invalid content id")
+        if not minimum_id <= content_id <= window_max:
+            raise ValueError("content id outside context")
+        return content_id
+
+    ads._parse_preroll_content_response = parse_content_response  # noqa: SLF001
+    ads._last_meaningful_ad_end = (  # noqa: SLF001
+        lambda content_id, _minimum_id, segments: segments[content_id - 1].end_s
+    )
+
+    def probe_boundary(candidate_id, _adjacent_id, _edge, _segments, backend):
+        response, _tokens = backend.generate(
+            "verify immediate boundary",
+            f"candidate={candidate_id}",
+            response_format={"field": "include", "candidate": candidate_id},
+        )
+        parsed = json.loads(response)
+        if set(parsed) != {"include"} or not isinstance(parsed["include"], bool):
+            raise ValueError("invalid boundary response")
+        return parsed["include"]
+
+    ads._probe_boundary_candidate = probe_boundary  # noqa: SLF001
 
     def detect_ads(segments, backend):
         answered = False
@@ -503,6 +628,155 @@ class LegacySponsorOpeningCompatibilityTests(unittest.TestCase):
             wp.install_legacy_sponsor_opening_compatibility(ads)
 
 
+class ExplicitSponsorFallbackTests(unittest.TestCase):
+    def setUp(self):
+        self.audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
+        self.request = {"audioPath": str(self.audio), "outputPath": "/tmp/never-written.mp3"}
+
+    def detect(self, segments, detections, content_start_id=None):
+        if content_start_id is None:
+            content_start_id = max(1, len(segments) - 1)
+        llm = FakeLLM(boundary_content_start_id=content_start_id)
+        self.last_llm = llm
+        ads = install_fake_ads(llm)
+        ads.detect_ads = lambda _segments, _backend: list(detections)
+        stream = io.StringIO()
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=5000.0):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
+        events = [json.loads(line) for line in stream.getvalue().splitlines()]
+        return spans, events
+
+    def test_unclaimed_claude_anchor_adds_and_sorts_the_fifth_span(self):
+        segments = [
+            FakeSegment(
+                3813.36,
+                3830.0,
+                "sponsor i'm really excited this week in tech brought to you this week by claud",
+            ),
+            FakeSegment(3830.0, 3850.0, "claude dot ai has the full product details"),
+            FakeSegment(4119.56, 4139.88, "learn more about claude today"),
+            FakeSegment(4139.88, 4150.0, "back to our discussion of artificial intelligence"),
+        ]
+        existing = [
+            FakeAd(900.0, 920.0),
+            FakeAd(120.0, 140.0),
+            FakeAd(450.0, 470.0),
+            FakeAd(700.0, 720.0),
+        ]
+        spans, events = self.detect(segments, existing)
+        self.assertEqual([span["startSeconds"] for span in spans], [120.0, 450.0, 700.0, 900.0, 3813.36])
+        self.assertEqual(
+            spans[-1],
+            {"startSeconds": 3813.36, "endSeconds": 4139.88, "label": "sponsor_read", "confidence": 1.0},
+        )
+        recovered = next(event for event in events if event["stage"] == "ads.detect.recovered")
+        self.assertIn("1 spans", recovered["detail"])
+        self.assertIn("3813.360-4139.880", recovered["detail"])
+        self.assertEqual(self.last_llm.requests[-1]["field"], "include")
+
+    def test_generic_brought_to_you_without_cta_and_domain_does_not_cut(self):
+        spans, events = self.detect(
+            [
+                FakeSegment(10.0, 20.0, "brought to you by our continuing editorial discussion"),
+                FakeSegment(20.0, 30.0, "the interview continues without promotional copy"),
+            ],
+            [],
+        )
+        self.assertEqual(spans, [])
+        self.assertIn("ads.detect.recovery.skipped", [event["stage"] for event in events])
+
+    def test_cta_and_domain_without_explicit_anchor_does_not_cut(self):
+        spans, events = self.detect(
+            [FakeSegment(10.0, 20.0, "visit example dot com to learn more about this story")],
+            [],
+        )
+        self.assertEqual(spans, [])
+        self.assertNotIn("ads.detect.recovered", [event["stage"] for event in events])
+
+    def test_distant_domain_and_cta_still_require_verified_content_resumption(self):
+        segments = [
+            FakeSegment(10.0, 20.0, "this week in tech brought to you this week by claud"),
+            FakeSegment(20.0, 30.0, "claude dot ai is the product address"),
+            FakeSegment(30.0, 40.0, "the host changes topics"),
+            FakeSegment(40.0, 50.0, "more editorial discussion follows"),
+            FakeSegment(50.0, 60.0, "learn more about the unrelated story"),
+        ]
+        spans, events = self.detect(segments, [], content_start_id=99)
+        self.assertEqual(spans, [])
+        self.assertIn("ads.detect.recovery.skipped", [event["stage"] for event in events])
+
+    def test_recovery_scan_stops_before_the_sixty_fifth_segment(self):
+        segments = [
+            FakeSegment(0.0, 1.0, "this week in tech brought to you this week by claud"),
+            FakeSegment(1.0, 2.0, "claude dot ai has product details"),
+        ]
+        segments.extend(FakeSegment(float(index), float(index + 1), "filler") for index in range(2, 64))
+        segments.append(FakeSegment(64.0, 65.0, "learn more today"))
+        spans, _events = self.detect(segments, [])
+        self.assertEqual(spans, [])
+
+    def test_recovery_scan_stops_after_ten_minutes(self):
+        segments = [
+            FakeSegment(0.0, 1.0, "this week in tech brought to you this week by claud"),
+            FakeSegment(1.0, 2.0, "claude dot ai has product details"),
+            FakeSegment(600.01, 601.0, "learn more today"),
+        ]
+        spans, _events = self.detect(segments, [])
+        self.assertEqual(spans, [])
+
+    def test_numeric_and_editorial_slashes_are_not_domain_evidence(self):
+        segments = [
+            FakeSegment(0.0, 1.0, "this week in tech brought to you this week by claud"),
+            FakeSegment(1.0, 2.0, "we are available 24/7 and/or whenever you need us"),
+            FakeSegment(2.0, 3.0, "get started with the discussion"),
+        ]
+        spans, _events = self.detect(segments, [])
+        self.assertEqual(spans, [])
+
+    def test_already_covered_explicit_anchor_does_not_add_a_cut(self):
+        segments = [
+            FakeSegment(100.0, 110.0, "this week in tech brought to you this week by claud"),
+            FakeSegment(110.0, 120.0, "visit claude dot ai"),
+            FakeSegment(120.0, 130.0, "learn more today"),
+        ]
+        spans, events = self.detect(segments, [FakeAd(99.0, 131.0)])
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0]["startSeconds"], 99.0)
+        self.assertNotIn("ads.detect.recovered", [event["stage"] for event in events])
+
+    def test_abutting_detection_does_not_claim_anchor_and_recovery_extends_it(self):
+        segments = [
+            FakeSegment(100.0, 110.0, "this week in tech brought to you this week by claud"),
+            FakeSegment(110.0, 120.0, "visit claude.ai for the details"),
+            FakeSegment(120.0, 130.0, "learn more and get started"),
+            FakeSegment(130.0, 140.0, "back to the show"),
+        ]
+        spans, events = self.detect(segments, [FakeAd(90.0, 100.0)], content_start_id=3)
+        self.assertEqual((spans[0]["startSeconds"], spans[0]["endSeconds"]), (90.0, 130.0))
+        self.assertIn("ads.detect.recovered", [event["stage"] for event in events])
+
+    def test_truncated_overlapping_detection_is_extended_to_verified_content(self):
+        segments = [
+            FakeSegment(100.0, 110.0, "this week in tech brought to you this week by claud"),
+            FakeSegment(110.0, 120.0, "visit claude dot ai"),
+            FakeSegment(120.0, 130.0, "learn more about the product"),
+            FakeSegment(130.0, 140.0, "back to the show"),
+        ]
+        spans, _events = self.detect(segments, [FakeAd(99.0, 115.0)], content_start_id=3)
+        self.assertEqual((spans[0]["startSeconds"], spans[0]["endSeconds"]), (99.0, 130.0))
+
+    def test_literal_domain_and_cta_survive_realistic_cue_density(self):
+        segments = [FakeSegment(0.0, 2.0, "this week in tech brought to you this week by claud")]
+        segments.extend(FakeSegment(index * 2.0, index * 2.0 + 2.0, "product details") for index in range(1, 10))
+        segments.append(FakeSegment(20.0, 22.0, "visit claude.ai"))
+        segments.extend(FakeSegment(index * 2.0, index * 2.0 + 2.0, "more product details") for index in range(11, 20))
+        segments.append(FakeSegment(40.0, 42.0, "get started today"))
+        segments.extend(FakeSegment(index * 2.0, index * 2.0 + 2.0, "offer terms") for index in range(21, 40))
+        segments.append(FakeSegment(80.0, 82.0, "back to the show"))
+        spans, _events = self.detect(segments, [], content_start_id=40)
+        self.assertEqual((spans[0]["startSeconds"], spans[0]["endSeconds"]), (0.0, 80.0))
+
+
 def install_legacy_recovery_fixture(llm: FakeLLM):
     """Exercise the detector seam, seed gate, and resume gate without a model.
 
@@ -636,6 +910,7 @@ class PreflightTests(unittest.TestCase):
     def test_all_stt_passes_finish_before_eviction_and_ad_model_load(self):
         events = []
         transcribe = sys.modules["wilted.transcribe"]
+        install_fake_speech_stack(events=events)
 
         def transcribe_audio(path, model_name="mlx-community/parakeet-tdt-1.1b", **_):
             event = "aligned" if model_name == "mlx-community/parakeet-tdt-1.1b" else "readable"
@@ -649,9 +924,22 @@ class PreflightTests(unittest.TestCase):
             original_load()
 
         llm.load = load
-        install_fake_ads(llm)
+        original_close = llm.close
+
+        def close():
+            events.append("ads.close")
+            original_close()
+
+        llm.close = close
+        ads = install_fake_ads(llm)
+        original_detect = ads.detect_ads
+
+        def detect(segments, backend):
+            events.append("ads.detect")
+            return original_detect(segments, backend)
+
+        ads.detect_ads = detect
         with mock.patch.object(transcribe, "transcribe_audio", transcribe_audio), \
-                mock.patch.object(transcribe, "evict_stt_model", lambda: events.append("stt.evict"), create=True), \
                 mock.patch.dict(os.environ, {"PATH": self.tools}), \
                 mock.patch.object(wp, "probe_duration", return_value=1.0), redirect_stderr(io.StringIO()):
             wp.run({
@@ -660,54 +948,105 @@ class PreflightTests(unittest.TestCase):
                 "readableTranscript": True,
                 "llmModel": str(self.default_model),
             })
-        self.assertEqual(events, ["aligned", "readable", "stt.evict", "ads.load"])
+        self.assertEqual(
+            events,
+            [
+                "aligned",
+                "readable",
+                "status",
+                "ads.load",
+                "ads.detect",
+                "ads.close",
+            ],
+        )
 
-    def _run_aligned_ad_detection(self):
+    def test_eviction_barrier_reports_before_and_after_fifo_completion(self):
+        events = []
+        install_fake_speech_stack(events=events, statuses=({"resident_models": 1}, {"resident_models": 0}))
+        stream = io.StringIO()
+        with mock.patch.object(wp.time, "sleep"), redirect_stderr(stream):
+            lock = wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True)
+            with lock:
+                events.append("ads.work")
+        stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
+        self.assertEqual(
+            events,
+            [
+                "status",
+                "evict:stt",
+                "evict:tts",
+                "barrier:echo:wilted-gpu-drained",
+                "status",
+                "ads.work",
+            ],
+        )
+        self.assertIn("ads.model.release", stages)
+        self.assertIn("ads.model.drain", stages)
+        self.assertIn("ads.model.retry", stages)
+
+    def test_daemon_unavailable_allows_the_locked_ad_model_lifecycle(self):
+        events = []
+        client, _ = install_fake_speech_stack(events=events)
+        client.status = mock.Mock(side_effect=client.DaemonUnavailable("socket absent"))
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            lock = wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True)
+            with lock:
+                events.append("ads.work")
+        self.assertEqual(events, ["ads.work"])
+        details = [json.loads(line)["detail"] for line in stream.getvalue().splitlines()]
+        self.assertIn("speech daemon unavailable; canonical GPU lock is exclusive", details)
+
+    def test_permanent_residency_times_out_and_prevents_ad_model_load(self):
+        events = []
+        install_fake_speech_stack(events=events, statuses=({"resident_models": 1},))
         transcribe = sys.modules["wilted.transcribe"]
+        transcribe.transcribe_audio = lambda path, **_: [FakeSegment(0, 1, "content")]
         llm = FakeLLM()
+        llm.load = mock.Mock(wraps=llm.load)
         install_fake_ads(llm)
-        with mock.patch.object(
-                transcribe, "transcribe_audio", lambda path, **_: [FakeSegment(0, 1, "content")]
-        ), mock.patch.dict(os.environ, {"PATH": self.tools}), \
+        def clock():
+            return 11.0 if "evict:stt" in events else 0.0
+
+        with mock.patch.dict(os.environ, {"PATH": self.tools}), \
                 mock.patch.object(wp, "probe_duration", return_value=1.0), \
-                redirect_stderr(io.StringIO()):
-            result = wp.run({
+                mock.patch.object(wp.time, "monotonic", side_effect=clock), \
+                mock.patch.object(wp.time, "sleep"), redirect_stderr(io.StringIO()), \
+                self.assertRaises(wp.WorkerError) as raised:
+            wp.run({
                 "audioPath": str(self.audio),
                 "removeAds": True,
+                "readableTranscript": False,
                 "llmModel": str(self.default_model),
             })
-        return result, llm
+        self.assertEqual(raised.exception.code, "ads-model-wait-failed")
+        self.assertIn("timed out waiting for exclusive GPU model admission", str(raised.exception))
+        self.assertEqual(events, ["status", "evict:stt"])
+        llm.load.assert_not_called()
 
-    def test_missing_stt_eviction_hint_does_not_stop_ad_detection(self):
-        transcribe = sys.modules["wilted.transcribe"]
-        with temporarily_missing_attribute(transcribe, "evict_stt_model"):
-            _result, llm = self._run_aligned_ad_detection()
-        self.assertTrue(llm.loaded)
-        self.assertTrue(llm.closed)
+    def test_malformed_residency_status_fails_closed_before_model_load(self):
+        events = []
+        install_fake_speech_stack(events=events, statuses=({"resident_models": "unknown"},))
+        with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised:
+            with wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True):
+                self.fail("unsafe admission must not yield")
+        self.assertEqual(raised.exception.code, "ads-model-wait-failed")
+        self.assertIn("invalid speech daemon status", str(raised.exception))
+        self.assertEqual(events, ["status"])
 
-    def test_stt_eviction_failure_does_not_stop_ad_detection(self):
-        transcribe = sys.modules["wilted.transcribe"]
-
-        def fail_eviction():
-            raise RuntimeError("legacy daemon has no eviction hook")
-
-        with mock.patch.object(transcribe, "evict_stt_model", fail_eviction, create=True):
-            _result, llm = self._run_aligned_ad_detection()
-        self.assertTrue(llm.loaded)
-        self.assertTrue(llm.closed)
-
-    def test_published_transcript_never_invokes_stt_eviction(self):
-        transcribe = sys.modules["wilted.transcribe"]
+    def test_published_transcript_locks_before_load_without_stt_eviction(self):
+        events = []
+        install_fake_wilted({"vtt": [FakeSegment(0, 1, "content")]})
+        install_fake_speech_stack(events=events)
         llm = FakeLLM()
+        original_load, original_close = llm.load, llm.close
+        llm.load = lambda: events.append("ads.load") or original_load()
+        llm.close = lambda: events.append("ads.close") or original_close()
         install_fake_ads(llm)
-        with mock.patch.object(
-                transcribe,
-                "evict_stt_model",
-                mock.Mock(side_effect=AssertionError("published timing must not evict STT")),
-                create=True,
-        ) as eviction, mock.patch.dict(os.environ, {"PATH": self.tools}), \
+        stream = io.StringIO()
+        with mock.patch.dict(os.environ, {"PATH": self.tools}), \
                 mock.patch.object(wp, "probe_duration", return_value=1.0), \
-                redirect_stderr(io.StringIO()):
+                redirect_stderr(stream):
             result = wp.run({
                 "audioPath": str(self.audio),
                 "removeAds": True,
@@ -720,7 +1059,151 @@ class PreflightTests(unittest.TestCase):
                 },
             })
         self.assertTrue(result["ok"])
-        eviction.assert_not_called()
+        self.assertEqual(events, ["status", "ads.load", "ads.close"])
+        stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
+        self.assertLess(stages.index("ads.model.wait"), stages.index("ads.model.locked"))
+        self.assertLess(stages.index("ads.model.locked"), stages.index("ads.model.load"))
+
+    def test_another_admitted_request_releases_drains_and_retries(self):
+        events = []
+        install_fake_speech_stack(
+            events=events,
+            statuses=({"resident_models": 0, "in_flight": 2}, {"resident_models": 0, "in_flight": 1}),
+        )
+        stream = io.StringIO()
+        with redirect_stderr(stream), wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=False):
+            events.append("ads.work")
+        self.assertEqual(events, ["status", "barrier:echo:wilted-gpu-drained", "status", "ads.work"])
+        stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
+        self.assertIn("ads.model.release", stages)
+        self.assertIn("ads.model.retry", stages)
+
+    def test_rpc_calls_share_one_decreasing_deadline(self):
+        rpc_timeouts = []
+        install_fake_speech_stack(
+            statuses=({"resident_models": 1, "in_flight": 1}, {"resident_models": 0, "in_flight": 1}),
+            rpc_timeouts=rpc_timeouts,
+        )
+        clock_value = [0.0]
+
+        def clock():
+            current = clock_value[0]
+            clock_value[0] += 0.1
+            return current
+
+        with mock.patch.object(wp.time, "monotonic", side_effect=clock), \
+                redirect_stderr(io.StringIO()), \
+                wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True):
+            pass
+        budgets = [timeout for _name, timeout in rpc_timeouts]
+        self.assertGreater(len(budgets), 3)
+        self.assertEqual(budgets, sorted(budgets, reverse=True))
+        self.assertEqual(len(budgets), len(set(budgets)))
+
+    def test_canonical_lock_contention_reports_progress_and_times_out(self):
+        install_fake_speech_stack()
+        tick = [0.0]
+
+        def clock():
+            current = tick[0]
+            tick[0] += 1.0
+            return current
+
+        stream = io.StringIO()
+        blocked = BlockingIOError()
+        blocked.errno = wp.errno.EAGAIN
+        with mock.patch.object(wp.fcntl, "flock", side_effect=blocked), \
+                mock.patch.object(wp.time, "monotonic", side_effect=clock), \
+                mock.patch.object(wp.time, "sleep"), redirect_stderr(stream), \
+                self.assertRaises(wp.WorkerError) as raised:
+            with wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=False):
+                self.fail("contended lock must not yield")
+        self.assertEqual(raised.exception.code, "ads-model-wait-failed")
+        self.assertIn("timed out waiting for exclusive GPU model admission", str(raised.exception))
+        waits = [json.loads(line) for line in stream.getvalue().splitlines()]
+        self.assertGreaterEqual(sum("shared GPU inference lock" in event["detail"] for event in waits), 2)
+
+    def test_speech_rpc_wait_reports_live_progress(self):
+        stream = io.StringIO()
+
+        def delayed(_timeout):
+            time.sleep(0.02)
+            return "done"
+
+        with mock.patch.object(wp, "GPU_LOCK_PROGRESS_INTERVAL_S", 0.005), \
+                mock.patch.object(wp, "STT_EVICTION_BARRIER_POLL_INTERVAL_S", 0.001), \
+                redirect_stderr(stream):
+            result = wp._speech_rpc_with_progress(  # noqa: SLF001 - direct invariant regression
+                delayed,
+                time.monotonic() + 0.2,
+                "waiting for test RPC",
+            )
+        self.assertEqual(result, "done")
+        details = [json.loads(line)["detail"] for line in stream.getvalue().splitlines()]
+        self.assertTrue(any("waiting for test RPC" in detail for detail in details))
+
+    def test_canonical_lock_is_held_through_gguf_close(self):
+        install_fake_speech_stack()
+        state = {"held": False, "close_saw_lock": False}
+
+        def fake_flock(_fd, operation):
+            if operation == wp.fcntl.LOCK_UN:
+                state["held"] = False
+            elif operation & wp.fcntl.LOCK_NB:
+                if state["held"]:
+                    raise BlockingIOError(wp.errno.EAGAIN, "held")
+                state["held"] = True
+
+        llm = FakeLLM()
+        original_close = llm.close
+
+        def close():
+            state["close_saw_lock"] = state["held"]
+            original_close()
+
+        llm.close = close
+        install_fake_ads(llm)
+        with mock.patch.object(wp.fcntl, "flock", side_effect=fake_flock), redirect_stderr(io.StringIO()):
+            wp.detect_and_cut(
+                {"audioPath": str(self.audio)},
+                self.audio,
+                [],
+                [FakeSegment(0, 1, "content")],
+            )
+        self.assertTrue(state["close_saw_lock"])
+        self.assertFalse(state["held"])
+
+    def test_model_lock_releases_after_load_inference_and_close_errors(self):
+        cases = (
+            (FakeLLM(fail_load=RuntimeError("load failed")), True),
+            (FakeLLM(fail_generate=RuntimeError("inference failed")), True),
+            (FakeLLM(), False),
+        )
+        for llm, raises in cases:
+            with self.subTest(raises=raises):
+                install_fake_ads(llm)
+                if not raises:
+                    llm.close = mock.Mock(side_effect=RuntimeError("close failed"))
+                events = []
+                if raises:
+                    with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError):
+                        wp.detect_and_cut(
+                            {"audioPath": str(self.audio)},
+                            self.audio,
+                            [],
+                            [FakeSegment(0, 1, "content")],
+                            model_lock=recording_model_lock(events),
+                        )
+                else:
+                    with redirect_stderr(io.StringIO()):
+                        wp.detect_and_cut(
+                            {"audioPath": str(self.audio)},
+                            self.audio,
+                            [],
+                            [FakeSegment(0, 1, "content")],
+                            model_lock=recording_model_lock(events),
+                        )
+                self.assertEqual(events, ["lock.enter", "lock.exit"])
 
 
 class GlossaryTests(unittest.TestCase):

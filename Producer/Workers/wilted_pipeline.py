@@ -25,7 +25,10 @@ Run it with the previous project's virtualenv and source tree on the path:
 
 from __future__ import annotations
 
+import contextlib
 import difflib
+import errno
+import fcntl
 import json
 import logging
 import os
@@ -33,6 +36,8 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
+import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +54,28 @@ CUT_TOOLS = ("ffmpeg", "ffprobe")
 LEGACY_SPONSOR_OPENING_COMPATIBILITY_PATTERN = (
     r"\bbrought\s+to\s+you(?:\s+(?:today|this\s+week))?\s+by\b"
 )
+
+EXPLICIT_SPONSOR_RECOVERY_MAX_SEGMENTS = 64
+EXPLICIT_SPONSOR_RECOVERY_MAX_SECONDS = 10 * 60
+EXPLICIT_SPONSOR_RESUMPTION_TAIL_SEGMENTS = 32
+EXPLICIT_SPONSOR_CTA_RE = re.compile(
+    r"\b(?:learn|find\s+out)\s+more\b|\bget\s+started\b|\bcheck\s+it\s+out\b|"
+    r"\bdownload\b|\bjoin\b|\bvisit\b|\bgo\s+to\b",
+    re.IGNORECASE,
+)
+EXPLICIT_SPONSOR_DOT_DOMAIN_RE = re.compile(r"\bdot\s+(?:com|ai|org|net)\b", re.IGNORECASE)
+EXPLICIT_SPONSOR_URL_RE = re.compile(r"\bhttps?\b|\bwww\b", re.IGNORECASE)
+EXPLICIT_SPONSOR_LITERAL_DOMAIN_RE = re.compile(
+    r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:ai|co|com|io|net|org|tv)\b",
+    re.IGNORECASE,
+)
+STT_EVICTION_BARRIER_POLL_INTERVAL_S = 0.1
+GPU_LOCK_PROGRESS_INTERVAL_S = 1.0
+
+# The broker acknowledges EVICT before its inference thread actually releases
+# a resident model. A following FIFO selftest is the completion barrier; keep
+# it bounded so a wedged daemon produces an actionable worker failure.
+STT_EVICTION_BARRIER_TIMEOUT_S = 10.0
 
 # How many of the previous project's warnings are relayed verbatim before the
 # rest are counted. The ad detector logs one warning per failed batch and
@@ -779,17 +806,268 @@ def install_legacy_sponsor_opening_compatibility(ads_module) -> None:
         )
 
 
-def evict_legacy_stt_model() -> None:
-    """Release aligned-STT memory before the ad model is allocated, if supported."""
+def _remaining_admission_budget(deadline: float) -> float:
+    """Return the remaining shared lock/RPC budget or fail at its one deadline."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("timed out waiting for exclusive GPU model admission")
+    return remaining
+
+
+def _speech_rpc_with_progress(operation, deadline: float, detail: str):
+    """Run one bounded synchronous daemon RPC with periodic progress."""
+    outcome = {}
+    done = threading.Event()
+
+    def invoke():
+        try:
+            outcome["result"] = operation(_remaining_admission_budget(deadline))
+        except BaseException as error:  # noqa: BLE001 - re-raised on the caller thread
+            outcome["error"] = error
+        finally:
+            done.set()
+
+    threading.Thread(target=invoke, daemon=True, name="wilted-speech-rpc").start()
+    next_heartbeat = time.monotonic() + GPU_LOCK_PROGRESS_INTERVAL_S
+    while not done.is_set():
+        remaining = _remaining_admission_budget(deadline)
+        if done.wait(min(STT_EVICTION_BARRIER_POLL_INTERVAL_S, remaining)):
+            break
+        now = time.monotonic()
+        if now >= next_heartbeat:
+            progress("ads.model.wait", f"{detail}; {remaining:.1f}s remain")
+            next_heartbeat = now + GPU_LOCK_PROGRESS_INTERVAL_S
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome.get("result")
+
+
+@contextlib.contextmanager
+def _canonical_gpu_flock(deadline: float):
+    """Acquire speech-stack's canonical flock without a silent blocking wait."""
+    from speech_stack.daemon import host as speech_host
+
+    lock_path = speech_host.state_dir() / "gpu.lock"
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    next_heartbeat = time.monotonic()
     try:
-        from wilted import transcribe
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+            remaining = _remaining_admission_budget(deadline)
+            now = time.monotonic()
+            if now >= next_heartbeat:
+                progress("ads.model.wait", f"waiting for shared GPU inference lock; {remaining:.1f}s remain")
+                next_heartbeat = now + GPU_LOCK_PROGRESS_INTERVAL_S
+            time.sleep(min(STT_EVICTION_BARRIER_POLL_INTERVAL_S, remaining))
+        try:
+            yield
+        finally:
+            with contextlib.suppress(OSError):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
-        transcribe.evict_stt_model()
-    except Exception:  # noqa: BLE001 - old transcribers do not all expose this hint
-        pass
+
+def _validate_daemon_admission_snapshot(snapshot) -> tuple[int, int]:
+    """Validate the broker counters used while the canonical flock is held."""
+    resident_models = snapshot.get("resident_models") if isinstance(snapshot, dict) else None
+    in_flight = snapshot.get("in_flight") if isinstance(snapshot, dict) else None
+    if type(resident_models) is not int or resident_models < 0:
+        raise RuntimeError(f"invalid speech daemon status: {snapshot!r}")
+    if type(in_flight) is not int or in_flight < 1:
+        raise RuntimeError(f"invalid speech daemon status: {snapshot!r}")
+    return resident_models, in_flight
 
 
-def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments):
+@contextlib.contextmanager
+def prepare_ad_model_lock(_model: str, *, aligned_stt: bool):
+    """Hold the canonical GPU flock after broker residency and work drain."""
+    from speech_stack import client as speech_client
+
+    deadline = time.monotonic() + STT_EVICTION_BARRIER_TIMEOUT_S
+    source = "aligned STT" if aligned_stt else "published transcript"
+    progress("ads.model.wait", f"waiting for exclusive GPU admission after {source}")
+    lock_stack = None
+    try:
+        while True:
+            lock_stack = contextlib.ExitStack()
+            try:
+                lock_stack.enter_context(_canonical_gpu_flock(deadline))
+                snapshot = _speech_rpc_with_progress(
+                    lambda timeout: speech_client.status(timeout=timeout),
+                    deadline,
+                    "waiting for speech daemon status",
+                )
+                resident_models, in_flight = _validate_daemon_admission_snapshot(snapshot)
+            except speech_client.DaemonUnavailable:
+                progress("ads.model.wait", "speech daemon unavailable; canonical GPU lock is exclusive")
+                break
+            except Exception:
+                lock_stack.close()
+                raise
+
+            if resident_models == 0 and in_flight == 1:
+                progress("ads.model.wait", "GPU admission is exclusive")
+                break
+
+            progress(
+                "ads.model.release",
+                f"releasing GPU lock to drain {resident_models} resident models and {in_flight - 1} other requests",
+            )
+            lock_stack.close()
+            progress("ads.model.drain", "evicting resident speech models and waiting on FIFO barrier")
+            try:
+                if resident_models:
+                    for task in ("stt", "tts"):
+                        _speech_rpc_with_progress(
+                            lambda timeout, task=task: speech_client.evict(task, timeout=timeout),
+                            deadline,
+                            f"waiting to evict resident {task} model",
+                        )
+                _speech_rpc_with_progress(
+                    lambda timeout: speech_client.selftest(
+                        "echo",
+                        timeout=timeout,
+                        barrier="wilted-gpu-drained",
+                    ),
+                    deadline,
+                    "waiting for speech daemon FIFO drain",
+                )
+            except speech_client.DaemonUnavailable:
+                progress("ads.model.drain", "speech daemon stopped during drain; retrying canonical lock")
+            progress("ads.model.retry", "retrying exclusive GPU admission")
+    except WorkerError:
+        raise
+    except Exception as error:  # noqa: BLE001 - never load GGUF without proving exclusive admission
+        raise WorkerError(
+            "ads-model-wait-failed",
+            f"exclusive GPU admission failed: {type(error).__name__}: {error}",
+        ) from error
+    assert lock_stack is not None
+    with lock_stack:
+        yield
+
+
+def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, detections):
+    """Recover or extend explicit host reads through verified content return."""
+    recovered = []
+    opening_pattern = ads_module._EXPLICIT_HOST_READ_OPENING_RE  # noqa: SLF001
+    for anchor_id, anchor in enumerate(segments):
+        if opening_pattern.search(anchor.text) is None:
+            continue
+        claimed = [*detections, *recovered]
+        overlapping = [
+            ad for ad in claimed if ad.start_s < anchor.end_s and ad.end_s > anchor.start_s
+        ]
+
+        context_ids = [anchor_id]
+        for segment_id in range(anchor_id + 1, len(segments)):
+            if (
+                len(context_ids) >= EXPLICIT_SPONSOR_RECOVERY_MAX_SEGMENTS
+                or segments[segment_id].start_s - anchor.start_s > EXPLICIT_SPONSOR_RECOVERY_MAX_SECONDS
+            ):
+                break
+            context_ids.append(segment_id)
+        if len(context_ids) < 2:
+            progress(
+                "ads.detect.recovery.skipped",
+                f"explicit sponsor anchor at {anchor.start_s:.3f} had no following content boundary",
+            )
+            continue
+
+        domain_seen = False
+        cta_seen = False
+        evidence_id = None
+        for segment_id in context_ids:
+            text = segments[segment_id].text
+            domain_seen = domain_seen or any(
+                pattern.search(text) is not None
+                for pattern in (
+                    EXPLICIT_SPONSOR_DOT_DOMAIN_RE,
+                    EXPLICIT_SPONSOR_URL_RE,
+                    EXPLICIT_SPONSOR_LITERAL_DOMAIN_RE,
+                )
+            )
+            cta_seen = cta_seen or EXPLICIT_SPONSOR_CTA_RE.search(text) is not None
+            if domain_seen and cta_seen:
+                evidence_id = segment_id
+                break
+
+        if evidence_id is None:
+            progress(
+                "ads.detect.recovery.skipped",
+                f"unclaimed explicit sponsor anchor at {anchor.start_s:.3f} had no bounded CTA/domain evidence",
+            )
+            continue
+        evidence_end = segments[evidence_id].end_s
+        verified_end_id = evidence_id
+        content_start_id = None
+        verifier_end = min(
+            context_ids[-1],
+            evidence_id + EXPLICIT_SPONSOR_RESUMPTION_TAIL_SEGMENTS,
+        )
+        try:
+            for candidate_id in range(evidence_id + 1, verifier_end + 1):
+                include = ads_module._probe_boundary_candidate(  # noqa: SLF001
+                    candidate_id,
+                    verified_end_id,
+                    "right",
+                    segments,
+                    backend,
+                )
+                if include is True:
+                    verified_end_id = candidate_id
+                    continue
+                if include is False:
+                    content_start_id = candidate_id
+                break
+        except Exception as error:  # noqa: BLE001 - uncertain fallback boundaries never cut audio
+            progress(
+                "ads.detect.recovery.skipped",
+                f"explicit sponsor verifier failed at {anchor.start_s:.3f}: {type(error).__name__}: {error}",
+            )
+            continue
+        if content_start_id is None:
+            progress(
+                "ads.detect.recovery.skipped",
+                f"explicit sponsor verifier found no content return after {evidence_id}",
+            )
+            continue
+        recovered_end = ads_module._last_meaningful_ad_end(  # noqa: SLF001
+            content_start_id,
+            anchor_id,
+            segments,
+        )
+        if overlapping and recovered_end <= max(ad.end_s for ad in overlapping):
+            continue
+        recovered.append(
+            ads_module.AdSegment(  # noqa: SLF001 - preserve legacy detection result type
+                # The fallback's proof is the full explicit host-read cue. Its
+                # natural sponsor lead-in can precede the regex phrase, so do
+                # not retain it by token-refining this worker-only recovery.
+                anchor.start_s,
+                recovered_end,
+                1.0,
+                "sponsor_read",
+            )
+        )
+
+    if not recovered:
+        return detections
+    merged = ads_module._merge_adjacent(  # noqa: SLF001 - retain legacy overlap semantics
+        sorted([*detections, *recovered], key=lambda ad: ad.start_s)
+    )
+    evidence = ", ".join(f"{ad.start_s:.3f}-{ad.end_s:.3f}" for ad in recovered)
+    progress("ads.detect.recovered", f"{len(recovered)} spans: {evidence}")
+    return merged
+
+
+def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, *, model_lock=None):
     """Detect ads and rewrite the audio without them.
 
     Returns `(output_path, ad_spans, keep_intervals)`. `output_path` is the
@@ -803,32 +1081,41 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments):
         return audio_path, [], []
 
     model = request.get("llmModel") or str(llm_module.DEFAULT_GGUF_MODEL)
-    progress("ads.model.load", Path(model).name)
+    model_lock = model_lock or prepare_ad_model_lock(model, aligned_stt=False)
     # The previous project loads lazily and explicitly, under a coordinator
     # that keeps one model resident at a time. Without `load()` every
     # inference raises, and the detector's tolerance for bad completions turns
     # that into a clean, instant, wrong "no advertisements".
-    backend = None
-    try:
-        backend = llm_module.create_backend("gguf", model=model)
-        backend.load()
-    except Exception as error:  # noqa: BLE001 - reported, not raised through
-        if backend is not None:
+    with model_lock or contextlib.nullcontext():
+        progress("ads.model.locked", "shared GPU inference lock acquired")
+        progress("ads.model.load", Path(model).name)
+        backend = None
+        try:
+            backend = llm_module.create_backend("gguf", model=model)
+            backend.load()
+        except Exception as error:  # noqa: BLE001 - reported, not raised through
+            if backend is not None:
+                try:
+                    backend.close()
+                except Exception:  # noqa: BLE001 - the load failure is the report
+                    pass
+            raise WorkerError("ads-model-unavailable", f"{type(error).__name__}: {error}") from error
+        counting = CountingBackend(backend)
+        try:
+            progress("ads.detect.start", f"{len(segments)} segments")
+            install_legacy_sponsor_opening_compatibility(ads_module)
+            detections = ads_module.detect_ads(segments, counting)
+            detections = recover_unclaimed_explicit_sponsor_reads(
+                ads_module,
+                counting,
+                segments,
+                detections,
+            )
+        finally:
             try:
                 backend.close()
-            except Exception:  # noqa: BLE001 - the load failure is the report
+            except Exception:  # noqa: BLE001 - a close failure cannot undo a detection
                 pass
-        raise WorkerError("ads-model-unavailable", f"{type(error).__name__}: {error}") from error
-    counting = CountingBackend(backend)
-    try:
-        progress("ads.detect.start", f"{len(segments)} segments")
-        install_legacy_sponsor_opening_compatibility(ads_module)
-        detections = ads_module.detect_ads(segments, counting)
-    finally:
-        try:
-            backend.close()
-        except Exception:  # noqa: BLE001 - a close failure cannot undo a detection
-            pass
     if counting.mostly_failed:
         raise WorkerError(
             "ads-backend-failed",
@@ -934,9 +1221,13 @@ def run(request: dict) -> dict:
 
     output_path, ad_spans, keeps = audio_path, [], []
     if request.get("removeAds", True) and segments:
-        if timing == "aligned":
-            evict_legacy_stt_model()
-        output_path, ad_spans, keeps = detect_and_cut(request, audio_path, cues, segments)
+        from wilted import llm as llm_module
+
+        model = request.get("llmModel") or str(llm_module.DEFAULT_GGUF_MODEL)
+        model_lock = prepare_ad_model_lock(model, aligned_stt=timing == "aligned")
+        output_path, ad_spans, keeps = detect_and_cut(
+            request, audio_path, cues, segments, model_lock=model_lock
+        )
         if keeps:
             before = len(cues)
             cues = remap_cues(cues, keeps)
