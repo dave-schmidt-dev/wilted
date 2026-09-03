@@ -25,15 +25,12 @@ struct PreparationCoordinatorTests {
         let prior = fixture.mediaDirectory.appending(path: "prior.m4a")
         try Data("prior".utf8).write(to: prior)
         let (entered, signal) = AsyncStream<Void>.makeStream()
+        let (release, releaseSignal) = AsyncStream<Void>.makeStream()
         let coordinator = fixture.coordinator(assembly: { _, _, destination, _ in
             try Data("candidate".utf8).write(to: destination)
             signal.yield()
-            do {
-                try await Task.sleep(nanoseconds: 10_000_000_000)
-                throw TestPreparationError.timedOut
-            } catch is CancellationError {
-                throw AudioAssemblerError.cancelled
-            }
+            for await _ in release { break }
+            throw AudioAssemblerError.cancelled
         })
 
         let run = await coordinator.start(url: fixture.articleURL)
@@ -41,6 +38,7 @@ struct PreparationCoordinatorTests {
         var enteredIterator = entered.makeAsyncIterator()
         await enteredIterator.next()
         await run.cancel()
+        releaseSignal.yield(())
         let statuses = await statusesTask.value
 
         #expect(statuses.last?.stage == .cancelled)

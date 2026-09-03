@@ -239,6 +239,7 @@ private actor PreparationEmitter {
     private var itemID: ItemID?
     private var sequence = 0
     private var terminalEmitted = false
+    private var streamFinished = false
     private var lastSynthesisMinute = -1
 
     init(requestID: String, continuation: AsyncStream<PreparationStatus>.Continuation, store: LocalLibraryStore) {
@@ -278,11 +279,13 @@ private actor PreparationEmitter {
             )
             try? await store.record(preparation: entry)
         }
-        if terminal != nil { terminalEmitted = true; continuation.finish() }
+        if terminal != nil { terminalEmitted = true }
     }
 
     func finishIfNeeded() {
-        if !terminalEmitted { continuation.finish() }
+        guard !streamFinished else { return }
+        streamFinished = true
+        continuation.finish()
     }
 }
 
