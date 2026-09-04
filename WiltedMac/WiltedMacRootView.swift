@@ -1481,9 +1481,21 @@ struct WiltedMacCompactPlayer: View {
         // The same button closes what it opened, and says so: the pane pushes
         // the list up rather than covering it, and nothing else on screen
         // explained how to get the room back.
-        Button(expansion == target ? "Hide \(label)" : label) {
+        //
+        // Both titles are laid out, with only one visible, so the control keeps
+        // one width across the toggle. Letting it resize left the focus ring
+        // drawn at the wider "Hide ..." size after the title had gone back to
+        // the short one, and a toggle that changes width under the pointer is
+        // the wrong behaviour regardless of the ring.
+        Button {
             toggle(target)
+        } label: {
+            ZStack {
+                Text("Hide \(label)").hidden()
+                Text(expansion == target ? "Hide \(label)" : label)
+            }
         }
+        .accessibilityLabel(expansion == target ? "Hide \(label)" : label)
         .focusable()
         .focused($keyboardFocus, equals: target)
         .onKeyPress(.space) {
