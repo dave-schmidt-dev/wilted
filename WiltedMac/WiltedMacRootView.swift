@@ -1289,7 +1289,7 @@ struct WiltedMacCompactPlayer: View {
                 Picker("Speed", selection: Binding(
                     get: { model.playbackRate }, set: { model.setPlaybackRate($0) }
                 )) {
-                    ForEach([0.5, 0.75, 1, 1.25, 1.5, 2], id: \.self) {
+                    ForEach(WiltedMacModel.playbackRateChoices, id: \.self) {
                         Text("\($0, specifier: "%g")×").tag($0)
                     }
                 }

@@ -305,6 +305,7 @@ def build(captures, commit, date_iso, date_human, previous):
 {figures["upnext"]}
 {figures["notes"]}
 <p>Keyboard handling: the transport row is reachable by Tab, the expanded panels return focus to their toggle on collapse, and Escape collapses an expanded panel rather than leaving it open behind a route change.</p>
+<p>The same transport is reachable without the app in front of you. What is playing is published to the system, so the episode appears in the menu bar's Now Playing widget and on the lock screen, with its show, artwork, elapsed time, and speed. The keyboard's media keys and the widget's own buttons drive the identical model the on-screen rail drives: play and pause, next and previous episode, a 15-second step back and a 30-second step forward, scrubbing, and the six speeds the rate control offers. Next and previous are greyed out at the ends of Up Next rather than drawn as buttons that do nothing.</p>
 </section>
 
 <section id="prep"><h2>7. Prep</h2>
@@ -331,7 +332,8 @@ def build(captures, commit, date_iso, date_human, previous):
 </section>
 
 <section id="system-boundaries"><h2>11. System-owned boundaries</h2>
-<p>Three system-owned surfaces can appear over the app, none of which Wilted draws or controls: the open panel used when choosing a file, the Finder reveal that a retained-artifact action performs, and the system share and permission prompts. Each is an OS surface; the app's own state at the moment of handoff is what this report can evidence, and it does not capture the system sheets themselves.</p>
+<p>Four system-owned surfaces can appear over or outside the app, none of which Wilted draws or controls: the open panel used when choosing a file, the Finder reveal that a retained-artifact action performs, the system share and permission prompts, and the menu bar's Now Playing widget. Each is an OS surface; the app's own state at the moment of handoff is what this report can evidence, and it does not capture the system sheets themselves.</p>
+<p>The Now Playing widget differs from the other three in that Wilted feeds it rather than merely hands off to it. The app publishes the current episode to the system and installs handlers for the media keys, and the system decides how to draw that and when to deliver a key press. Because it is process-global, a fixture run is given neither: a capture session would otherwise leave its fixture episode sitting in the menu bar after the run, pointing the machine's media keys at a process that has exited.</p>
 </section>
 
 <section id="limits"><h2>12. Coverage limits</h2>
@@ -343,6 +345,7 @@ def build(captures, commit, date_iso, date_human, previous):
 <li>Transcript synchronisation against real audio is not captured. The panel is shown expanded; a timed transcript following the playback clock is covered by tests, not by a frame.</li>
 <li>The sidebar in these frames is the real one, but pixel snapshot baselines cannot see it: a <code>NavigationSplitView</code> navigation column is hosted in a separate AppKit hierarchy that offscreen rendering does not draw. Sidebar behaviour is owned by the XCUITest suite instead.</li>
 <li>No system-owned sheet is captured, as section 11 states.</li>
+<li>The menu bar's Now Playing widget and the media keys are not captured and cannot be. They are outside the content viewport this report photographs, and the capture session deliberately does not own them. That the app publishes the right thing and that each remote command reaches the model are covered by tests; that the widget draws and the keys arrive is an owner observation, listed in section 14.</li>
 </ul>
 </section>
 
@@ -357,6 +360,10 @@ def build(captures, commit, date_iso, date_human, previous):
 <li>Unsubscribe from a feed and confirm the row goes.</li>
 <li>Switch destinations while playing and confirm the rail keeps its state.</li>
 <li>Quit and relaunch mid-episode and confirm playback resumes where it stopped.</li>
+<li>Start an episode, switch to another app, and confirm Wilted appears in the menu bar's Now Playing widget with the right show and artwork, and that the elapsed time advances.</li>
+<li>Press the keyboard's play/pause key with Wilted in the background and confirm the audio stops and starts, and that the widget agrees.</li>
+<li>Use the widget's skip controls and confirm they move by the same 15 and 30 seconds the on-screen rail does, and that next and previous are unavailable at the ends of Up Next.</li>
+<li>Let an episode reach its end with the window closed and confirm the widget stops claiming to be playing.</li>
 </ol></section>
 
 </main></body></html>

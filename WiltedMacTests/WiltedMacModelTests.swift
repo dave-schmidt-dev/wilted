@@ -447,6 +447,38 @@ final class WiltedMacModelTests: XCTestCase {
         model.stopAutomationTicker()
     }
 
+    /// Hiding the app checkpoints and stops the ticker. The scene has to start
+    /// it again on the way back, or a window left open past the first focus dip
+    /// never ticks again for the rest of the process, which is the only case the
+    /// ticker exists for.
+    func testTheOpenWindowTickerRestartsAfterBeingStopped() async throws {
+        let preferences = try automationSettingsPreferences()
+        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
+        let directory = temporaryDirectory("automation-ticker-restart")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        XCTAssertFalse(model.automationTickerIsRunning, "nothing ticks before a store is loaded")
+        model.startAutomationTicker()
+        XCTAssertFalse(model.automationTickerIsRunning,
+                       "and asking early is a no-op rather than a ticker with nothing to read")
+
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        await model.waitForAutomation()
+        XCTAssertTrue(model.automationTickerIsRunning, "the ready transition starts it")
+
+        model.startAutomationTicker()
+        XCTAssertTrue(model.automationTickerIsRunning, "a repeated scene callback is harmless")
+
+        model.checkpointForQuit()
+        XCTAssertFalse(model.automationTickerIsRunning, "hiding the app stops it")
+
+        model.startAutomationTicker()
+        XCTAssertTrue(model.automationTickerIsRunning, "and coming back starts it again")
+        model.stopAutomationTicker()
+    }
+
     /// The scheduling timestamp is the only thing standing between an interval
     /// policy and repeating its work on every tick, so it has to outlive the
     /// process. It lives in preferences rather than the store because losing it

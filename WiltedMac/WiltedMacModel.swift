@@ -689,6 +689,16 @@ final class WiltedMacModel {
     /// per-episode speed of its own, so 1.25× chosen once stays 1.25×.
     static let playbackRatePreferenceKey = "wilted.playback.rate"
     static let initialPlaybackRate = 1.25
+    /// The speeds the rate control offers, and the same list the system widget
+    /// is told about. One array, because two would drift and the widget would
+    /// offer a speed the app refuses.
+    static let playbackRateChoices: [Double] = [0.5, 0.75, 1, 1.25, 1.5, 2]
+    /// Transport step sizes. Asymmetric on purpose: a listener rewinds to hear
+    /// something again and skips forward past an advertisement, and those are
+    /// not the same distance. Published to the system so a media key's skip
+    /// matches the button's.
+    static let backwardSkipSeconds: Double = 15
+    static let forwardSkipSeconds: Double = 30
     static let automationSettingsPreferenceKey = "wilted.automation.settings"
     /// When automation last completed a refresh.
     ///
@@ -762,6 +772,15 @@ final class WiltedMacModel {
     private var preparationTask: Task<Void, Never>?
     private var syncReconciliationTask: Task<Void, Never>?
     private var podcastRefreshTask: Task<Void, Never>?
+    /// The system's media widget, and the media keys that drive it. Both are
+    /// injected and both are optional: they are process-global system state, so
+    /// a unit test or a UI fixture that built them for real would repoint the
+    /// machine's Now Playing widget at a fixture and capture its media keys.
+    private let nowPlayingSink: (any WiltedNowPlayingSink)?
+    private let remoteCommandSource: (any WiltedRemoteCommandSource)?
+    /// The last thing published, so an unchanged readout is not republished
+    /// once a second for the life of an episode.
+    private var lastPublishedNowPlaying: WiltedNowPlayingInfo?
 #if canImport(WiltedProducer)
     private var automation: WiltedAutomationCoordinator?
     private var automationTask: Task<Void, Never>?
@@ -799,16 +818,13 @@ final class WiltedMacModel {
          retainedArtifactPresenter: ((URL) -> Void)? = nil,
          podcastFeedClient: PodcastFeedClient = PodcastFeedClient(),
          pastedLinkClassifier: PastedLinkClassifier = PastedLinkClassifier(),
+         nowPlayingSink: (any WiltedNowPlayingSink)? = nil,
+         remoteCommandSource: (any WiltedRemoteCommandSource)? = nil,
          preferences: UserDefaults) {
-        let usesFixtureMode = arguments.contains("--wilted-ui-fixture-article-flow")
-            || arguments.contains("--wilted-ui-fixture-quarantined")
-            || arguments.contains("--wilted-ui-smoke")
-            || arguments.contains("--wilted-ui-fixture-ready")
-            || arguments.contains("--wilted-ui-fixture-playing")
-            || arguments.contains("--wilted-ui-fixture-preparing")
-            || arguments.contains("--wilted-ui-fixture-podcasts")
-            || arguments.contains("--wilted-ui-fixture-download-failure")
+        let usesFixtureMode = Self.isFixtureLaunch(arguments: arguments)
         fixtureMode = usesFixtureMode
+        self.nowPlayingSink = nowPlayingSink
+        self.remoteCommandSource = remoteCommandSource
         // Required rather than defaulted to `.standard`: the unit-test host is
         // the app bundle itself, so a defaulted `.standard` let tests write
         // into the daily driver's own preferences.
@@ -869,6 +885,23 @@ final class WiltedMacModel {
         // `configureStoreDependencies`, which reads the rate itself.
         playback?.defaultRate = Float(playbackRate)
 #endif
+        installRemoteCommands()
+    }
+
+    /// Whether these launch arguments drive the app from a fixture.
+    ///
+    /// Static because the decision is needed before a model exists: the app
+    /// consults it to decide whether to hand over the machine's Now Playing
+    /// widget and media keys, and a fixture run must not get them.
+    static func isFixtureLaunch(arguments: [String]) -> Bool {
+        arguments.contains("--wilted-ui-fixture-article-flow")
+            || arguments.contains("--wilted-ui-fixture-quarantined")
+            || arguments.contains("--wilted-ui-smoke")
+            || arguments.contains("--wilted-ui-fixture-ready")
+            || arguments.contains("--wilted-ui-fixture-playing")
+            || arguments.contains("--wilted-ui-fixture-preparing")
+            || arguments.contains("--wilted-ui-fixture-podcasts")
+            || arguments.contains("--wilted-ui-fixture-download-failure")
     }
 
     private static func clampPlaybackRate(_ value: Double) -> Double {
@@ -950,6 +983,17 @@ final class WiltedMacModel {
 #if canImport(WiltedProducer)
         automationTicker?.cancel()
         automationTicker = nil
+#endif
+    }
+
+    /// Whether the open-window tick is live. Read by tests, because the scene
+    /// stops the ticker when the app is hidden and has to start it again on the
+    /// way back, and nothing else makes that visible.
+    var automationTickerIsRunning: Bool {
+#if canImport(WiltedProducer)
+        automationTicker != nil
+#else
+        false
 #endif
     }
 
@@ -2245,6 +2289,9 @@ final class WiltedMacModel {
             do {
                 try await playback.seek(to: value)
                 self.refreshPlaybackReadout()
+                // A scrub is exactly the jump the system cannot extrapolate,
+                // and a short one is inside the drift tolerance.
+                self.publishNowPlaying(force: true)
                 await self.queueCurrentPlaybackCheckpoint()
             } catch { self.reportAudioRouteFault("Playback is unavailable.") }
         }
@@ -2270,6 +2317,9 @@ final class WiltedMacModel {
         isPlaying = playback.liveIsPlaying
         playbackRate = Double(playback.playbackRate)
 #endif
+        // The one funnel every transport and the player's timer already goes
+        // through, so the system readout cannot drift from the on-screen one.
+        publishNowPlaying()
     }
 
 #if canImport(WiltedProducer)
@@ -2317,6 +2367,97 @@ final class WiltedMacModel {
     }
 #endif
 
+    // MARK: - System playback integration
+
+    /// What the system widget should show, or nil when nothing is loaded.
+    ///
+    /// Articles and episodes both appear. An article is spoken audio with a
+    /// duration and a position exactly as an episode is, and a listener who
+    /// pressed play on one expects the same media key to pause it.
+    var currentNowPlayingInfo: WiltedNowPlayingInfo? {
+        guard isNowPlaying else { return nil }
+        let identity: (id: String, title: String, show: String, artwork: URL?)
+        if let episode = currentEpisode, isPodcastPlayback {
+            identity = (episode.id, episode.title, episode.feedTitle, episode.artworkURL)
+        } else if let article = currentArticle {
+            identity = (article.id, article.title, article.source, nil)
+        } else {
+            return nil
+        }
+        return WiltedNowPlayingInfo(
+            episodeID: identity.id,
+            title: identity.title,
+            showTitle: identity.show,
+            durationSeconds: max(0, playbackDurationSeconds),
+            positionSeconds: min(max(0, playbackPositionSeconds), max(0, playbackDurationSeconds)),
+            // Zero while paused. The system advances its own clock from this,
+            // so reporting the resume speed of a paused episode would make the
+            // widget's scrubber walk forward through silence.
+            rate: isPlaying ? playbackRate : 0,
+            chosenRate: playbackRate,
+            isPlaying: isPlaying,
+            artworkURL: identity.artwork
+        )
+    }
+
+    /// Pushes the readout to the system, skipping publications that would say
+    /// the same thing. `force` is for the moments the system cannot infer:
+    /// a seek, a new episode, a stop.
+    func publishNowPlaying(force: Bool = false) {
+        guard let nowPlayingSink else { return }
+        guard let info = currentNowPlayingInfo else {
+            guard lastPublishedNowPlaying != nil else { return }
+            lastPublishedNowPlaying = nil
+            nowPlayingSink.clear()
+            remoteCommandSource?.updateQueueAvailability(hasNext: false, hasPrevious: false)
+            return
+        }
+        guard force || info.differsMateriallyFrom(lastPublishedNowPlaying) else { return }
+        lastPublishedNowPlaying = info
+        nowPlayingSink.publish(info)
+        remoteCommandSource?.updateQueueAvailability(hasNext: canSelectNextEpisode,
+                                                     hasPrevious: canSelectPreviousEpisode)
+    }
+
+    private func installRemoteCommands() {
+        remoteCommandSource?.install { [weak self] command in
+            self?.handleRemoteCommand(command)
+        }
+    }
+
+    /// Applies a media key, headset button, or widget press.
+    ///
+    /// Every case routes through the same method the on-screen control calls,
+    /// so a media key cannot end up with behaviour of its own — including the
+    /// durable checkpoint each of those already writes.
+    func handleRemoteCommand(_ command: WiltedRemoteCommand) {
+        guard hasCurrentPlayback else { return }
+        switch command {
+        case .play:
+            guard !isPlaying else { return }
+            togglePlayback()
+        case .pause:
+            guard isPlaying else { return }
+            togglePlayback()
+        case .toggle:
+            togglePlayback()
+        case .skipForward:
+            forward()
+        case .skipBackward:
+            rewind()
+        case .nextTrack:
+            guard canSelectNextEpisode else { return }
+            nextPlayback()
+        case .previousTrack:
+            guard canSelectPreviousEpisode else { return }
+            previousPlayback()
+        case let .seek(position):
+            scrub(to: position)
+        case let .changeRate(rate):
+            setPlaybackRate(rate)
+        }
+    }
+
     func togglePlayback() {
 #if canImport(WiltedProducer)
         guard let playback else { return }
@@ -2343,8 +2484,8 @@ final class WiltedMacModel {
         selectedNavigation = .library
     }
 
-    func rewind() { seek(by: -15) }
-    func forward() { seek(by: 30) }
+    func rewind() { seek(by: -Self.backwardSkipSeconds) }
+    func forward() { seek(by: Self.forwardSkipSeconds) }
 
     func previousPlayback() { navigatePodcastQueue(previous: true) }
     func nextPlayback() { navigatePodcastQueue(previous: false) }
@@ -2422,6 +2563,50 @@ final class WiltedMacModel {
 #if canImport(WiltedProducer)
         await playbackOperationTask?.value
 #endif
+    }
+
+    /// Puts the model in the state a real load leaves behind, so the system
+    /// integration can be asserted on without an audio engine.
+    ///
+    /// The readout properties are `private(set)` because only the engine may
+    /// move them, and that is the right rule; this is the one seam that lets a
+    /// test stand in for the engine rather than relaxing it.
+    func installPlaybackStateForTesting(episode: WiltedMacEpisode? = nil,
+                                        article: WiltedMacArticle? = nil,
+                                        isPlaying: Bool,
+                                        position: TimeInterval,
+                                        duration: TimeInterval,
+                                        queue: [String] = []) {
+        if let episode {
+            installEpisodeForTesting(episode)
+            currentPodcastEpisodeID = episode.id
+            selectedArticleID = nil
+            podcastQueueIDs = queue.isEmpty ? [episode.id] : queue
+#if canImport(WiltedProducer)
+            isPodcastPlayback = true
+#endif
+        }
+        if let article {
+            if !articles.contains(where: { $0.id == article.id }) { articles.append(article) }
+            selectedArticleID = article.id
+            currentPodcastEpisodeID = nil
+#if canImport(WiltedProducer)
+            isPodcastPlayback = false
+#endif
+        }
+        isNowPlaying = episode != nil || article != nil
+        self.isPlaying = isPlaying
+        playbackPositionSeconds = position
+        playbackDurationSeconds = duration
+    }
+
+    func clearPlaybackStateForTesting() {
+        isNowPlaying = false
+        isPlaying = false
+        currentPodcastEpisodeID = nil
+        selectedArticleID = nil
+        playbackPositionSeconds = 0
+        playbackDurationSeconds = 0
     }
 
     func installEpisodeForTesting(_ episode: WiltedMacEpisode) {
@@ -2539,6 +2724,8 @@ final class WiltedMacModel {
             selectedArticleID = nil
             isNowPlaying = false
             currentTranscript = nil
+            // Nothing is loaded any more, so the widget has to stop showing it.
+            publishNowPlaying(force: true)
         }
         Task { [weak self] in
             guard let self else { return }
@@ -2829,6 +3016,13 @@ final class WiltedMacModel {
         playback?.defaultRate = Float(playbackRate)
         playback?.podcastStateHandler = { [weak self] itemID, fault in
             self?.applyPodcastPlaybackObservation(itemID: itemID, fault: fault)
+        }
+        // An episode that ends with nothing behind it stops the audio without
+        // changing which item is loaded. The on-screen readout would catch up
+        // on its next tick, but the system widget has no tick of its own, so
+        // without this it would sit there claiming to be playing.
+        playback?.playbackDidFinishHandler = { [weak self] in
+            self?.refreshPlaybackReadout()
         }
         podcastDownloadCoordinator = configuredStore.map {
             PodcastDownloadCoordinator(store: $0, libraryDirectory: mediaDirectory)

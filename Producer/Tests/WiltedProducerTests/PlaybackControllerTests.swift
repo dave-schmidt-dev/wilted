@@ -226,6 +226,50 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(podcastObservations, [podcast.revision.itemID])
     }
 
+    /// A surface that only watches `podcastStateHandler` never hears about the
+    /// two completions that advance nothing, so anything mirroring playback
+    /// outside the app would keep claiming to be playing after the audio ended.
+    func testCompletionWithNothingBehindItIsAnnouncedSeparately() async throws {
+        let path = storeURL(); let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let (_, articleRevision) = try fixture()
+        let articleBackend = FakeBackend()
+        let articleController = PlaybackController(store: store, backend: articleBackend)
+        var articleFinishes = 0
+        articleController.playbackDidFinishHandler = { articleFinishes += 1 }
+        try await articleController.load(
+            revision: articleRevision, mediaURL: root.appendingPathComponent("article.m4a")
+        )
+
+        articleBackend.finish(successfully: true)
+        await waitUntil { articleFinishes == 1 }
+        articleBackend.finish(successfully: true)
+        try await Task.sleep(for: .milliseconds(20))
+
+        XCTAssertEqual(articleFinishes, 1, "a repeated completion for the same item announces once")
+
+        let podcast = try await queueRevision(index: 11, root: root, store: store)
+        try await store.replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: [podcast.revision.itemID], currentEpisodeID: podcast.revision.itemID
+        ))
+        let podcastBackend = FakeBackend()
+        let podcastController = PlaybackController(store: store, backend: podcastBackend)
+        var podcastFinishes = 0
+        var podcastObservations: [ItemID?] = []
+        podcastController.playbackDidFinishHandler = { podcastFinishes += 1 }
+        podcastController.podcastStateHandler = { itemID, _ in podcastObservations.append(itemID) }
+        await podcastController.restorePodcastQueue()
+
+        podcastBackend.finish(successfully: true)
+        await waitUntil { podcastFinishes == 1 }
+
+        XCTAssertEqual(podcastObservations, [podcast.revision.itemID],
+                       "the end of the queue still reports which episode stopped")
+        XCTAssertFalse(podcastController.isPlaying)
+    }
+
     func testMissingOrCorruptNextMediaPausesAndRetainsDeterministicQueue() async throws {
         let path = storeURL(); let root = path.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -536,14 +580,18 @@ final class PlaybackControllerTests: XCTestCase {
     }
 
     private func queueRevision(index: Int, root: URL, store: LocalLibraryStore) async throws -> StoredAudioRevision {
-        let itemID = try ItemID(rawValue: "item-" + String(repeating: String(index), count: 64))
+        // Truncated, because the digits of a two-digit index repeated 64 times
+        // is a 128-character identifier the store rejects. Single-digit indexes
+        // are unchanged by the truncation.
+        let seed = String(String(repeating: String(index), count: 64).prefix(64))
+        let itemID = try ItemID(rawValue: "item-" + seed)
         let revision = try AudioRevision(
             itemID: itemID, revisionID: RevisionID(rawValue: "podcast-\(index)"), durationSeconds: 42,
-            byteCount: 1, contentHash: "sha256:" + String(repeating: String(index), count: 64),
+            byteCount: 1, contentHash: "sha256:" + seed,
             mediaType: "audio/mpeg", createdAt: Timestamp(Date()), schemaVersion: 1
         )
         let url = root.appendingPathComponent("podcast-\(index).mp3")
-        _ = FileManager.default.createFile(atPath: url.path, contents: Data([UInt8(index)]))
+        _ = FileManager.default.createFile(atPath: url.path, contents: Data([UInt8(index % 256)]))
         try await store.saveReadyRevision(revision, mediaURL: url)
         return StoredAudioRevision(revision: revision, mediaURL: url)
     }

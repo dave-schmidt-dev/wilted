@@ -145,6 +145,11 @@ public final class PlaybackController {
     public private(set) var completed = false
     public private(set) var recoverableFault: PlaybackControllerError?
     @ObservationIgnored public var podcastStateHandler: (@MainActor @Sendable (ItemID?, PlaybackControllerError?) -> Void)?
+    /// Fired whenever the backend finishes an item and nothing advances behind
+    /// it: an article, or the last episode in the queue. `podcastStateHandler`
+    /// covers the advance, so without this the only signal that playback
+    /// stopped is `isPlaying`, which a surface has to be looking at to notice.
+    @ObservationIgnored public var playbackDidFinishHandler: (@MainActor @Sendable () -> Void)?
 
     private var currentRevision: AudioRevision?
     private var checkpointTask: Task<Void, Never>?
@@ -377,12 +382,19 @@ public final class PlaybackController {
         backend.pause()
         isPlaying = false
         do { try await checkpointCompletedRevision() }
-        catch { return }
+        catch {
+            playbackDidFinishHandler?()
+            return
+        }
         guard let state = try? await store.podcastQueueState(), state.currentEpisodeID == itemID else {
+            // An article, or an episode played outside the queue. Nothing
+            // advances, so this is the only notice that the audio stopped.
+            playbackDidFinishHandler?()
             return
         }
         guard let next = state.nextEpisodeID else {
             podcastStateHandler?(itemID, nil)
+            playbackDidFinishHandler?()
             return
         }
         do {
