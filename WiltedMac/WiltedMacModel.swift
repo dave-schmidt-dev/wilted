@@ -1534,7 +1534,7 @@ final class WiltedMacModel {
     /// one automation took a moment ago, is invisible to it, and the download
     /// coordinator writes its queued record unconditionally. Without the claim
     /// the same episode transfers twice.
-    func downloadEpisode(_ episode: WiltedMacEpisode, alreadyClaimed: Bool = false) {
+    func downloadEpisode(_ episode: WiltedMacEpisode, alreadyClaimed: Bool = false, ignoringExisting: Bool = false) {
 #if canImport(WiltedProducer)
         if fixtureMode {
             guard podcastDownloadTasks[episode.id] == nil else { return }
@@ -1587,7 +1587,8 @@ final class WiltedMacModel {
                 }
             }
             do {
-                _ = try await coordinator.download(episodeID: itemID) { progress in
+                _ = try await coordinator.download(episodeID: itemID,
+                                                   ignoringExisting: ignoringExisting) { progress in
                     Task { @MainActor [weak self] in
                         guard self?.updateActiveEpisodeDownload(
                             episode.id,
@@ -1745,9 +1746,16 @@ final class WiltedMacModel {
         switch progress.stage {
         case "pipeline.start": "Preparing…"
         case "transcript.published.fetch": "Fetching the published transcript…"
-        case "transcript.published.parse", "transcript.published.accepted": "Reading the published transcript…"
+        case "transcript.published.parse", "transcript.published.accepted",
+             "transcript.published.aligned", "transcript.published.unverified":
+            "Reading the published transcript…"
         case "transcript.published.unreadable", "transcript.published.unreachable",
              "transcript.published.unparseable": "No usable published transcript. Transcribing…"
+        // Named apart from the unusable cases above because this one is not a
+        // missing transcript: the feed published a good one for a different
+        // rendering of the episode than the download produced.
+        case "transcript.published.misaligned":
+            "The published transcript does not match this audio. Transcribing…"
         case "transcript.stt.start": "Transcribing the audio…"
         case "transcript.stt.complete": "Transcribed."
         case "transcript.stt.failed": "Transcription unavailable."
@@ -1775,6 +1783,17 @@ final class WiltedMacModel {
     }
 
     func retryEpisodeDownload(_ episode: WiltedMacEpisode) { downloadEpisode(episode) }
+
+    /// Fetches the episode again and prepares the fresh copy.
+    ///
+    /// Preparation writes the cut audio over the download, so an episode cut
+    /// from a transcript that did not describe its file cannot be redone: the
+    /// only copy of the source is the damaged result. This asks the publisher
+    /// for the episode again, and the download's own completion starts the
+    /// preparation, exactly as a first download does.
+    func redownloadEpisode(_ episode: WiltedMacEpisode) {
+        downloadEpisode(episode, ignoringExisting: true)
+    }
 
     func waitForPodcastOperations() async {
         await linkClassificationTask?.value

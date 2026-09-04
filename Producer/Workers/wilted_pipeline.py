@@ -56,6 +56,54 @@ LEGACY_SPONSOR_OPENING_COMPATIBILITY_PATTERN = (
     r"\bbrought\s+to\s+you(?:\s+(?:today|this\s+week))?\s+by\b"
 )
 
+# How much longer than its transcript a downloaded file may be before the
+# transcript is treated as describing a different rendering of the episode.
+#
+# Podcast hosts insert advertising when the file is requested, so the same
+# episode is served at different lengths to different listeners, while the
+# published transcript describes whatever rendering the publisher transcribed.
+# Timing taken from the wrong rendering is wrong for every second after the
+# first insertion: the reading position drifts, and the ad cut is aimed at
+# ordinary conversation.
+#
+# The floor is what a long outro of untranscribed music can legitimately add.
+# The fraction keeps that proportionate on a three-hour show. An inserted ad
+# pod is larger than either.
+PUBLISHED_TRANSCRIPT_GAP_FLOOR_S = 45.0
+PUBLISHED_TRANSCRIPT_GAP_FRACTION = 0.005
+
+# A produced pre-roll runs before the programme's own opening: an inserted
+# commercial, a trailer for another show, a network promo. It carries none of
+# the evidence the explicit host-read recovery below looks for -- no "brought
+# to you by", no sponsor domain, no call to action -- because nobody on the
+# show reads it, and the coarse classifier does not reliably call it an ad
+# either. Giant Bombcast 955 opened with fifty-two seconds of game commercial
+# that every stage of the detector called content.
+#
+# The window is bounded on both time and count so the question stays one
+# request, and a show that simply opens with a long cold open cannot be
+# swallowed by a runaway answer.
+PREROLL_RECOVERY_MAX_SECONDS = 300.0
+PREROLL_RECOVERY_MAX_SEGMENTS = 96
+# Below this a positive answer is more likely to be the model splitting a
+# sentence than an advertisement worth cutting.
+PREROLL_RECOVERY_MINIMUM_SECONDS = 10.0
+
+PREROLL_PROGRAM_START_PROMPT = """\
+The excerpt is the beginning of a podcast episode. Advertising is sometimes inserted before the
+program starts: a produced commercial, a trailer for another show, or a promotional spot voiced by
+someone who does not appear on this program. Find the first ID at which the program itself begins.
+The program's own opening, its title, its host introductions, and unstructured banter all count as
+program. Return 0 when the program begins immediately and nothing precedes it. Use only a supplied ID.
+Return only the strict JSON object {"program_start_id": ID}, with no prose or Markdown."""
+
+PREROLL_CONFIRM_PROMPT = """\
+The excerpt is the opening of a podcast episode, believed to be entirely advertising or promotion
+carried before the program starts. Find the first ID that belongs to the program itself rather than
+to advertising or promotion. Host introductions, the show title, and unstructured banter belong to
+the program. Return -1 when no supplied ID belongs to the program. Use only a supplied ID or -1.
+Return only the strict JSON object {"program_id": ID}, with no prose or Markdown."""
+
 EXPLICIT_SPONSOR_RECOVERY_MAX_SEGMENTS = 64
 EXPLICIT_SPONSOR_RECOVERY_MAX_SECONDS = 10 * 60
 EXPLICIT_SPONSOR_RESUMPTION_TAIL_SEGMENTS = 32
@@ -689,6 +737,33 @@ def parse_published_transcript(body: str, media_type: str, url: str):
         return None
 
 
+def published_transcript_matches_audio(segments, audio_path: Path) -> bool:
+    """Return whether a published transcript's timing describes this audio.
+
+    The measurement is emitted either way. A single accepted episode says
+    nothing about where the threshold belongs, so every preparation records
+    what it saw and the journal becomes the evidence a later adjustment needs.
+    """
+    try:
+        audio_seconds = probe_duration(audio_path)
+    except Exception as error:  # noqa: BLE001 - the guard checks the transcript, not the episode
+        # A transcript that cannot be checked is still the best timing there
+        # is. Failing the episode because ffprobe was unavailable would trade
+        # a possible misalignment for a certain loss.
+        progress("transcript.published.unverified", f"{type(error).__name__}: {error}")
+        return True
+    transcript_seconds = max((float(segment.end_s) for segment in segments), default=0.0)
+    gap = audio_seconds - transcript_seconds
+    tolerance = max(PUBLISHED_TRANSCRIPT_GAP_FLOOR_S, PUBLISHED_TRANSCRIPT_GAP_FRACTION * audio_seconds)
+    detail = (f"audio {audio_seconds:.1f}s, transcript ends {transcript_seconds:.1f}s, "
+              f"gap {gap:.1f}s, tolerance {tolerance:.1f}s")
+    if gap > tolerance:
+        progress("transcript.published.misaligned", detail)
+        return False
+    progress("transcript.published.aligned", detail)
+    return True
+
+
 def extract_prose(html: str) -> str | None:
     """Pull readable prose out of an episode page, or None if it is show notes.
 
@@ -1265,6 +1340,83 @@ def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, dete
     return merged
 
 
+def _constrained_id(ads_module, backend, prompt, field, window_ids, permitted, segments):
+    """Ask one bounded ID question and return a validated supplied ID."""
+    response, _tokens = ads_module._generate_constrained_response(  # noqa: SLF001
+        backend,
+        prompt,
+        ads_module._render_segments_bounded(window_ids, segments),  # noqa: SLF001
+        ads_module._id_response_format(field, permitted),  # noqa: SLF001
+    )
+    parsed = json.loads(response)
+    if not isinstance(parsed, dict) or set(parsed) != {field}:
+        raise ValueError(f"{field} response must contain exactly {field}")
+    value = parsed[field]
+    if isinstance(value, bool) or not isinstance(value, int) or value not in permitted:
+        raise ValueError(f"{field} response must be one of the supplied IDs, got {value!r}")
+    return value
+
+
+def recover_transcript_start_preroll(ads_module, backend, segments, detections):
+    """Recover a produced advertisement carried before the program starts.
+
+    Two questions rather than one, and the second is not the first asked
+    again: it is handed only the passage the first answer nominated and asked
+    to find program content inside it. A cold open wrongly nominated has its
+    hosts talking in that passage, so the second question finds them and the
+    cut never happens.
+    """
+    if not segments or any(ad.start_s < segments[0].end_s for ad in detections):
+        return detections
+    window_ids = [0]
+    for segment_id in range(1, len(segments)):
+        if (len(window_ids) >= PREROLL_RECOVERY_MAX_SEGMENTS
+                or segments[segment_id].start_s > PREROLL_RECOVERY_MAX_SECONDS):
+            break
+        window_ids.append(segment_id)
+    if len(window_ids) < 2:
+        return detections
+
+    try:
+        program_start_id = _constrained_id(
+            ads_module, backend, PREROLL_PROGRAM_START_PROMPT, "program_start_id",
+            window_ids, window_ids, segments,
+        )
+    except Exception as error:  # noqa: BLE001 - an unanswered question never cuts audio
+        progress("ads.detect.preroll.skipped", f"opening review failed: {type(error).__name__}: {error}")
+        return detections
+    if program_start_id == 0:
+        progress("ads.detect.preroll.skipped", "the program starts at the first segment")
+        return detections
+
+    # The cut runs to where the program begins rather than to the last
+    # advertising cue, because the insertion gap between them is the spot's
+    # own music bed and leaving it behind is leaving the advertisement in.
+    end_s = float(segments[program_start_id].start_s)
+    if end_s < PREROLL_RECOVERY_MINIMUM_SECONDS:
+        progress("ads.detect.preroll.skipped", f"the opening is only {end_s:.1f}s long")
+        return detections
+
+    opening_ids = list(range(program_start_id))
+    try:
+        program_id = _constrained_id(
+            ads_module, backend, PREROLL_CONFIRM_PROMPT, "program_id",
+            opening_ids, [-1, *opening_ids], segments,
+        )
+    except Exception as error:  # noqa: BLE001 - an unanswered question never cuts audio
+        progress("ads.detect.preroll.skipped", f"opening confirmation failed: {type(error).__name__}: {error}")
+        return detections
+    if program_id != -1:
+        progress("ads.detect.preroll.skipped", f"the opening holds program content at {program_id}")
+        return detections
+
+    preroll = ads_module.AdSegment(0.0, end_s, 1.0, "ad_break")  # noqa: SLF001 - legacy result type
+    progress("ads.detect.preroll", f"0.000-{end_s:.3f} before program ID {program_start_id}")
+    return ads_module._merge_adjacent(  # noqa: SLF001 - retain legacy overlap semantics
+        sorted([preroll, *detections], key=lambda ad: ad.start_s)
+    )
+
+
 def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, *, model_lock=None):
     """Detect ads and rewrite the audio without them.
 
@@ -1304,6 +1456,12 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
             install_legacy_sponsor_opening_compatibility(ads_module)
             detections = ads_module.detect_ads(segments, counting)
             detections = recover_unclaimed_explicit_sponsor_reads(
+                ads_module,
+                counting,
+                segments,
+                detections,
+            )
+            detections = recover_transcript_start_preroll(
                 ads_module,
                 counting,
                 segments,
@@ -1408,6 +1566,12 @@ def run(request: dict) -> dict:
         segments = parse_published_transcript(
             published.get("body", ""), published.get("mediaType", ""), published.get("url", "")
         )
+        if segments and not published_transcript_matches_audio(segments, audio_path):
+            # Dropped rather than kept with a warning: these segments are what
+            # the detector cuts from, so keeping them would aim the cut at the
+            # wrong seconds of a file they do not describe. Speech-to-text
+            # below reads the audio that was actually downloaded.
+            segments = None
         if segments:
             cues = segments_to_cues(segments)
             timing = "published"

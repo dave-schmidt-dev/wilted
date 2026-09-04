@@ -255,7 +255,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
             app.descendants(matching: .any).matching(
                 NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-actions-'")
             ).count, 0,
-            "An unprepared row has nothing to put in a menu, so it draws none."
+            "A row that never finished downloading has nothing to put in a menu, so it draws none."
         )
         // Skipping is a row button, not a menu item: it is the one action a
         // reader repeats down a feed, and reaching it through a menu that held

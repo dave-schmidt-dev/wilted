@@ -194,6 +194,8 @@ class FakeLLM:
     fail_load: Exception | None = None
     fail_generate: Exception | None = None
     boundary_content_start_id: int | None = None
+    preroll_program_start_id: int | None = None
+    preroll_program_id: int | None = None
     requests: list = field(default_factory=list)
 
     def load(self):
@@ -207,6 +209,11 @@ class FakeLLM:
             raise RuntimeError("Model not loaded. Call load() first.")
         if self.fail_generate is not None:
             raise self.fail_generate
+        field_name = (response_format or {}).get("field")
+        for name, answer in (("program_start_id", self.preroll_program_start_id),
+                             ("program_id", self.preroll_program_id)):
+            if field_name == name:
+                return (json.dumps({name: answer}) if answer is not None else self.answer), 1
         if response_format and response_format.get("field") == "include":
             candidate_id = int(user_content.partition("candidate=")[2])
             content_start_id = self.boundary_content_start_id
@@ -530,8 +537,10 @@ class AdDetectionTests(unittest.TestCase):
         self.assertTrue(llm.closed)
         self.assertEqual((spans, keeps), ([], []))
         # Constrained JSON is how the tuned prompts were accepted; the proxy
-        # must not strip the keyword on its way through.
-        self.assertEqual(llm.requests, [{"type": "json_object"}] * 2)
+        # must not strip the keyword on its way through. The third request is
+        # the opening review, which every episode gets once.
+        self.assertEqual(llm.requests, [{"type": "json_object"}, {"type": "json_object"},
+                                        {"field": "program_start_id", "ids": [0, 1]}])
 
     def test_sponsor_opening_compatibility_is_installed_before_detection(self):
         llm = FakeLLM()
@@ -583,6 +592,83 @@ class AdDetectionTests(unittest.TestCase):
         self.assertIn("ads.detect.calls", stages)
         self.assertIn("ads.cut.refused", stages)
 
+    # The opening of Giant Bombcast 955, which every stage of the detector
+    # called content: a produced spot for a game, with no host reading it, no
+    # sponsor phrase, no domain, and no call to action to seed a coarse run.
+    PREROLL = [
+        FakeSegment(0.25, 6.1, "Aliens Fireteam Elite 2 launches on August 25th on PS5, Xbox and Steam."),
+        FakeSegment(6.4, 51.9, "Burn or freeze xenomorphs in their tracks. See ya on LV 558."),
+        FakeSegment(84.5, 90.5, "Hey everybody, it's Tuesday. Welcome to the Giant Bombcast."),
+        FakeSegment(90.5, 96.8, "I'm your host, and joining me, co-captain of the ship."),
+    ]
+
+    def test_a_produced_pre_roll_is_cut_even_though_no_stage_called_it_an_ad(self):
+        llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=-1)
+        install_fake_ads(llm)
+        stream = io.StringIO()
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=200.0):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
+        # The cut runs to where the program begins, not to the last
+        # advertising cue: the thirty-two seconds between them are the spot's
+        # own music bed, and leaving them is leaving the advertisement in.
+        self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 84.5,
+                                  "label": "ad_break", "confidence": 1.0}])
+        stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
+        self.assertIn("ads.detect.preroll", stages)
+
+    def test_an_opening_that_still_holds_program_content_is_left_alone(self):
+        # The second question is the guard against cutting a cold open: it is
+        # handed only the passage the first answer nominated, and finding the
+        # hosts inside it withdraws the whole span.
+        llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=1)
+        install_fake_ads(llm)
+        stream = io.StringIO()
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=200.0):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
+        self.assertEqual(spans, [])
+        skipped = [json.loads(line) for line in stream.getvalue().splitlines()
+                   if json.loads(line)["stage"] == "ads.detect.preroll.skipped"]
+        self.assertIn("program content at 1", skipped[0]["detail"])
+
+    def test_a_show_that_opens_on_itself_is_never_asked_twice(self):
+        llm = FakeLLM(preroll_program_start_id=0)
+        install_fake_ads(llm)
+        with redirect_stderr(io.StringIO()), mock.patch.object(wp, "probe_duration", return_value=200.0):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
+        self.assertEqual(spans, [])
+        self.assertEqual([r for r in llm.requests if r.get("field") == "program_id"], [])
+
+    def test_a_pre_roll_too_short_to_be_an_advertisement_is_left_alone(self):
+        # A positive answer one segment in is more likely the model splitting
+        # a sentence than a spot worth cutting.
+        llm = FakeLLM(preroll_program_start_id=1, preroll_program_id=-1)
+        install_fake_ads(llm)
+        stream = io.StringIO()
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=200.0):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
+        self.assertEqual(spans, [])
+        self.assertIn("only 6.4s long", stream.getvalue())
+
+    def test_an_opening_the_detector_already_claimed_is_not_reviewed_again(self):
+        llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=-1)
+        install_fake_ads(llm, detections=[FakeAd(0.0, 51.9)])
+        with redirect_stderr(io.StringIO()), mock.patch.object(wp, "probe_duration", return_value=200.0):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
+        self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 51.9,
+                                  "label": "sponsor", "confidence": 0.9}])
+        self.assertEqual([r for r in llm.requests if r.get("field") == "program_start_id"], [])
+
+    def test_an_unanswered_opening_review_never_cuts(self):
+        llm = FakeLLM(fail_generate=None)
+        install_fake_ads(llm)
+        stream = io.StringIO()
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=200.0):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
+        # `answer` is the detector's own "[]", which is not an ID object: a
+        # malformed completion leaves the audio alone rather than guessing.
+        self.assertEqual(spans, [])
+        self.assertIn("opening review failed", stream.getvalue())
+
     def test_counting_backend_trips_on_a_majority_of_failures_not_all_of_them(self):
         llm = FakeLLM(loaded=True)
         counting = wp.CountingBackend(llm)
@@ -603,16 +689,23 @@ class AdDetectionTests(unittest.TestCase):
         original = llm.generate
 
         def flaky(system_prompt, user_content, *, response_format=None):
+            # One lucky call, then broken again: a Metal fault does not heal
+            # because one completion got through, and the opening review that
+            # follows detection is asked of the same dead backend.
+            failure = llm.fail_generate
             if user_content == "content":
                 llm.fail_generate = None
-            return original(system_prompt, user_content, response_format=response_format)
+            try:
+                return original(system_prompt, user_content, response_format=response_format)
+            finally:
+                llm.fail_generate = failure
 
         llm.generate = flaky
         segments = [FakeSegment(0, 2, "buy this"), FakeSegment(2, 4, "and this"), FakeSegment(4, 6, "content")]
         with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised:
             wp.detect_and_cut(self.request, self.audio, [], segments)
         self.assertEqual(raised.exception.code, "ads-backend-failed")
-        self.assertIn("2 of 3", str(raised.exception))
+        self.assertIn("3 of 4", str(raised.exception))
 
 
 class LegacySponsorOpeningCompatibilityTests(unittest.TestCase):
@@ -1453,6 +1546,91 @@ class RunTests(unittest.TestCase):
         transcribe.assert_not_called()
         self.assertEqual(result["timing"], "none")
         self.assertIn("page prose words", result["text"])
+
+    PUBLISHED = {"body": "WEBVTT", "mediaType": "text/vtt", "url": "https://x.test/a.vtt"}
+
+    def test_a_published_transcript_that_matches_its_audio_is_kept_and_measured(self):
+        install_fake_wilted({"vtt": [FakeSegment(0, 1, "published"), FakeSegment(3590, 3595, "words")]})
+        with redirect_stderr(io.StringIO()) as stream, mock.patch.object(
+            wp, "probe_duration", return_value=3600.0
+        ):
+            result = wp.run({"audioPath": str(self.audio), "removeAds": False,
+                             "allowSpeechToText": False, "publishedTranscript": self.PUBLISHED})
+        records = [json.loads(line) for line in stream.getvalue().splitlines()]
+        aligned = next(r for r in records if r["stage"] == "transcript.published.aligned")
+        self.assertEqual(result["timing"], "published")
+        # The measurement is recorded on the way past, not only on rejection:
+        # one accepted episode says nothing about where the threshold belongs,
+        # so every preparation leaves behind the evidence to revisit it.
+        self.assertIn("gap 5.0s", aligned["detail"])
+        self.assertIn("tolerance 45.0s", aligned["detail"])
+
+    def test_a_published_transcript_far_shorter_than_its_audio_is_replaced_by_transcription(self):
+        # The failure this exists for: a host that inserts advertising at
+        # request time serves a longer file than the one the publisher
+        # transcribed. Every timestamp after the insertion is then wrong, and
+        # the ad cut aims at conversation instead of at the advertisement.
+        install_fake_wilted({"vtt": [FakeSegment(0, 1, "published"), FakeSegment(3590, 3595, "words")]},
+                            transcriptions={wp.ALIGNED_STT_MODEL: [FakeSegment(0, 1, "aligned words")]})
+        with redirect_stderr(io.StringIO()) as stream, mock.patch.object(
+            wp, "probe_duration", return_value=3700.0
+        ):
+            result = wp.run({"audioPath": str(self.audio), "removeAds": False,
+                             "readableTranscript": False, "publishedTranscript": self.PUBLISHED})
+        records = [json.loads(line) for line in stream.getvalue().splitlines()]
+        stages = [r["stage"] for r in records]
+        self.assertEqual(result["timing"], "aligned")
+        self.assertEqual(result["text"], "aligned words")
+        self.assertNotIn("transcript.published.accepted", stages)
+        misaligned = next(r for r in records if r["stage"] == "transcript.published.misaligned")
+        self.assertIn("audio 3700.0s", misaligned["detail"])
+        self.assertIn("transcript ends 3595.0s", misaligned["detail"])
+
+    def test_the_tolerance_scales_with_the_length_of_the_episode(self):
+        # Three hours at half a percent is 54 seconds, which is more than the
+        # 45-second floor: a long show is allowed a proportionally longer tail
+        # of untranscribed music before its transcript is doubted.
+        for transcript_end, expected in ((10_750.0, "published"), (10_730.0, "aligned")):
+            with self.subTest(transcript_end=transcript_end):
+                install_fake_wilted(
+                    {"vtt": [FakeSegment(transcript_end - 5, transcript_end, "words")]},
+                    transcriptions={wp.ALIGNED_STT_MODEL: [FakeSegment(0, 1, "aligned words")]},
+                )
+                with redirect_stderr(io.StringIO()), mock.patch.object(
+                    wp, "probe_duration", return_value=10_800.0
+                ):
+                    result = wp.run({"audioPath": str(self.audio), "removeAds": False,
+                                     "readableTranscript": False, "publishedTranscript": self.PUBLISHED})
+                self.assertEqual(result["timing"], expected)
+
+    def test_a_transcript_whose_audio_cannot_be_probed_is_still_used(self):
+        # The guard is a check on the transcript, not a gate on the episode.
+        # Losing a good transcript because ffprobe was unavailable trades a
+        # possible misalignment for a certain loss.
+        install_fake_wilted({"vtt": [FakeSegment(0, 1, "published words")]})
+        with redirect_stderr(io.StringIO()) as stream, mock.patch.object(
+            wp, "probe_duration", side_effect=OSError("ffprobe missing")
+        ):
+            result = wp.run({"audioPath": str(self.audio), "removeAds": False,
+                             "allowSpeechToText": False, "publishedTranscript": self.PUBLISHED})
+        stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
+        self.assertEqual(result["timing"], "published")
+        self.assertIn("transcript.published.unverified", stages)
+
+    def test_a_misaligned_transcript_never_reaches_the_ad_detector(self):
+        # Cutting from a transcript that describes a different rendering is
+        # the destructive half of this defect: with no transcription allowed
+        # the episode keeps its audio rather than losing conversation to it.
+        install_fake_wilted({"vtt": [FakeSegment(0, 1, "published"), FakeSegment(3590, 3595, "words")]})
+        detect = mock.patch.object(wp, "detect_and_cut", side_effect=AssertionError("a misaligned transcript drove the cut"))
+        with detect as detector, redirect_stderr(io.StringIO()), mock.patch.object(
+            wp, "preflight_ad_removal"
+        ), mock.patch.object(wp, "probe_duration", return_value=3700.0):
+            result = wp.run({"audioPath": str(self.audio), "removeAds": True,
+                             "transcriptPolicy": "noLocalSTT", "publishedTranscript": self.PUBLISHED})
+        detector.assert_not_called()
+        self.assertFalse(result["audioChanged"])
+        self.assertEqual(result["timing"], "none")
 
     def test_untimed_prose_never_drives_ad_removal(self):
         install_fake_wilted()

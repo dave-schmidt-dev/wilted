@@ -860,11 +860,18 @@ private struct WiltedMacEpisodeRow: View {
                 .accessibilityIdentifier("wilted-episode-skip-\(episode.id)")
             // Redoing a good preparation is rare, so it stays in a menu rather
             // than becoming a third button; a failed one is retried from Prep,
-            // next to the reason it failed. Only prepared rows can offer it,
-            // and a menu with nothing in it is worse than no menu.
-            if case .prepared = episode.preparationState {
+            // next to the reason it failed. The menu is drawn only where it has
+            // something in it, and a menu with nothing in it is worse than none.
+            if case .completed = episode.downloadState {
                 Menu {
-                    Button("Prepare again") { model.prepareEpisode(episode) }
+                    // First because it is the one that can undo a bad run.
+                    // Preparation writes over the download, so an episode cut
+                    // from a transcript that did not describe it has no source
+                    // left to prepare again from.
+                    Button("Download again") { model.redownloadEpisode(episode) }
+                    if case .prepared = episode.preparationState {
+                        Button("Prepare again") { model.prepareEpisode(episode) }
+                    }
                 } label: {
                     Image(systemName: "ellipsis").accessibilityLabel("More actions for \(episode.title)")
                 }

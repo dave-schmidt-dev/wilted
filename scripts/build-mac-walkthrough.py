@@ -120,9 +120,12 @@ def build(captures, commit, date_iso, date_human, previous):
             "&ldquo;Ready &middot; 5 ads removed (7:22) &middot; transcript synced&rdquo;: the completion state "
             "first, then each step's result, journalled by the pipeline when it finished rather than "
             "reconstructed from the transcript. A prepared row offers Play and Up Next but no Prepare; "
-            "redoing a good run is Prepare again in the row's &hellip; menu "
-            "(<code>wilted-episode-actions-item-&lt;hash&gt;</code>), which is the only thing that menu holds "
-            "and the only reason a row draws one &mdash; an unprepared row has no &hellip; at all. Skipping is "
+            "the row's &hellip; menu holds Download again for any downloaded episode and Prepare again for a "
+            "prepared one "
+            "(<code>wilted-episode-actions-item-&lt;hash&gt;</code>). Download again is first because it is the "
+            "one that can undo a bad run: preparation writes the cut audio over the download, so an episode "
+            "cut from a transcript that did not describe it has no source left to prepare again from. A row "
+            "that is not downloaded has no &hellip; at all. Skipping is "
             "a row button beside Download (<code>wilted-episode-skip-item-&lt;hash&gt;</code>): it is the one "
             "action a reader repeats down a feed, and it is permanent in the sense that a refresh will not "
             "bring the episode back, though it is listed under Removed on Podcast feeds with a Restore beside "
@@ -224,7 +227,12 @@ def build(captures, commit, date_iso, date_human, previous):
             "<strong>7.3 Prep, the run's log.</strong> Show log lists every journalled status of that run in "
             "the worker's own words (<code>ads.detect.calls &middot; 50 requests, 0 failed</code>, "
             "<code>transcript.stt.start</code>), one line per stage with its time. The log is per run and "
-            "opt-in; Hide log collapses it.",
+            "opt-in; Hide log collapses it. Two of those stages read on their own: "
+            "<code>transcript.published.aligned</code> records how closely the feed's transcript matched "
+            "the downloaded audio, and <code>transcript.published.misaligned</code> is why a run that had "
+            "a published transcript transcribed the episode anyway &mdash; the file carried advertising the "
+            "transcript does not describe. <code>ads.detect.preroll</code> records an advertisement cut from "
+            "the start of the episode, before the show's own opening.",
             captures),
         "settings": figure(
             "fig-settings-frame", "8.1-settings-with-playback",

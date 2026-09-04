@@ -167,9 +167,17 @@ public actor PodcastDownloadCoordinator {
         self.now = now
     }
 
+    /// Fetches an episode's audio, or returns what is already on disk.
+    ///
+    /// `ignoringExisting` asks for the publisher's file again even though a
+    /// completed download is present and verifies. Preparation replaces the
+    /// downloaded file with the cut one, so a run that cut the wrong seconds
+    /// has consumed the only copy of its own source; without this there is no
+    /// way back to the episode as published.
     public func download(
         episodeID: ItemID,
         expectedContentHash: String? = nil,
+        ignoringExisting: Bool = false,
         onStatus: @escaping @Sendable (PodcastDownloadProgress) -> Void = { _ in }
     ) async throws -> PodcastDownloadResult {
         guard let episode = try await store.podcastEpisode(for: episodeID) else {
@@ -177,7 +185,7 @@ public actor PodcastDownloadCoordinator {
         }
         let existing: PodcastDownloadResult?
         do {
-            existing = try await completedResult(
+            existing = ignoringExisting ? nil : try await completedResult(
                 for: episodeID, expectedContentHash: expectedContentHash, onStatus: onStatus
             )
         } catch is CancellationError {

@@ -238,6 +238,28 @@ struct PodcastDownloadCoordinatorTests {
         #expect(try stagingFiles(in: fixture.libraryDirectory).isEmpty)
     }
 
+    @Test func askingAgainIgnoringExistingFetchesThePublishedFileOnceMore() async throws {
+        // Preparation writes the cut audio over the download, so a run that
+        // cut the wrong seconds has consumed the only copy of its own source.
+        // Without this the episode as published is unreachable.
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let counter = CallCounter()
+        let coordinator = PodcastDownloadCoordinator(
+            store: fixture.store, libraryDirectory: fixture.libraryDirectory,
+            transport: EventTransport(fixture.successEvents, counter: counter),
+            mediaValidator: StubValidator(result: .success(12)), now: { Date(timeIntervalSince1970: 1_700_000_100) }
+        )
+        let first = try await coordinator.download(episodeID: fixture.episodeID)
+        #expect(await counter.value == 1)
+        let again = try await coordinator.download(episodeID: fixture.episodeID, ignoringExisting: true)
+        #expect(await counter.value == 2)
+        #expect(again.revision == first.revision)
+        #expect(try Data(contentsOf: again.mediaURL) == fixture.body)
+        #expect(try await fixture.store.readyRevision(for: fixture.episodeID)?.revision == again.revision)
+        #expect(try stagingFiles(in: fixture.libraryDirectory).isEmpty)
+    }
+
     @Test func identicalPodcastBytesRemainBoundToTheirOwnEpisodes() async throws {
         let fixture = try await Fixture()
         defer { fixture.remove() }
