@@ -2153,6 +2153,146 @@ public actor LocalLibraryStore {
         )
     }
 
+    /// What one admission claimed for automatic download.
+    public struct PodcastAutomationAdmissionResult: Equatable, Sendable {
+        public let admission: PodcastEpisodeAdmissionResult
+        /// Episodes this call moved to `queued`. An episode that already has a
+        /// download record is never claimed, so a manual transfer in flight
+        /// keeps the state it is in.
+        public let claimed: [ItemID]
+    }
+
+    /// Admits a feed's episodes and claims a bounded newest-first subset for
+    /// automatic download in one save.
+    ///
+    /// Admitting and then enqueuing in two saves has a crash window that either
+    /// loses the newly admitted set or replays it: the episode rows land, the
+    /// process dies, and the next launch cannot tell which of them were new,
+    /// because being new is a property of that one admission and nothing else
+    /// records it. Claiming inside the same transaction closes the window --
+    /// the rows and their claims are both durable or neither is.
+    ///
+    /// The claim is the download record itself rather than a parallel table.
+    /// Automation must not restate download truth the store already owns, and a
+    /// separate claim row is one more thing that can disagree with it.
+    ///
+    /// A `limit` of zero admits and claims nothing, which is what a manual
+    /// download policy asks for.
+    public func admitPodcastEpisodes(
+        _ episodes: [PodcastEpisode],
+        admission: PodcastEpisodeAdmission,
+        claimingNewest limit: Int,
+        claimedAt: Timestamp = Timestamp(Date())
+    ) throws -> PodcastAutomationAdmissionResult {
+        guard !episodes.isEmpty else {
+            return PodcastAutomationAdmissionResult(
+                admission: PodcastEpisodeAdmissionResult(saved: [], newlyAdmitted: [], skipped: 0),
+                claimed: []
+            )
+        }
+        let context = ModelContext(container)
+        let existing = Set(
+            try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>()).map(\.id)
+        )
+        let admitted = try admittedPodcastEpisodes(episodes, admission: admission, in: context)
+        try upsertPodcastEpisodes(admitted, in: context)
+        let newlyAdmitted = admitted.filter { !existing.contains($0.itemID.rawValue) }
+        var claimed: [ItemID] = []
+        if limit > 0 {
+            let tracked = Set(
+                try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
+                    .map(\.episodeID)
+            )
+            // Newest first, so a capped policy takes the episodes a listener
+            // would reach for rather than whichever order the feed parsed in.
+            let eligible = Self.newestFirst(newlyAdmitted.filter { !tracked.contains($0.itemID.rawValue) })
+            for episode in eligible.prefix(limit) {
+                let claim = try PodcastDownload(episodeID: episode.itemID, status: .queued, updatedAt: claimedAt)
+                context.insert(LocalLibrarySchemaV6Models.PodcastDownloadRecord(claim))
+                claimed.append(episode.itemID)
+            }
+        }
+        try context.save()
+        return PodcastAutomationAdmissionResult(
+            admission: PodcastEpisodeAdmissionResult(
+                saved: admitted.map(\.itemID),
+                newlyAdmitted: newlyAdmitted.map(\.itemID),
+                skipped: episodes.count - admitted.count
+            ),
+            claimed: claimed
+        )
+    }
+
+    /// Claims one episode for download, or reports that something already holds it.
+    ///
+    /// Manual and automatic entry points race: the listener presses Download on
+    /// the episode an app-open refresh just admitted. Both would otherwise reach
+    /// the download coordinator, which writes its queued record unconditionally,
+    /// and the episode would transfer twice. This is the serialisation point --
+    /// the insert happens only when no download record exists, and the store
+    /// actor makes the check and the insert one step.
+    ///
+    /// How much existing state blocks a new claim.
+    public enum PodcastDownloadClaimScope: Sendable {
+        /// Automation: any download record at all means the episode is spoken
+        /// for. A completed, failed, or cancelled transfer is a decision
+        /// already made, and re-running it is the listener's call.
+        case untouched
+        /// A deliberate request: only a transfer in flight blocks it, so
+        /// retrying a failure from the row still works.
+        case notInFlight
+    }
+
+    /// Claims one episode for download, or reports that something already holds it.
+    ///
+    /// Manual and automatic entry points race: the listener presses Download on
+    /// the episode an app-open refresh just admitted. Both would otherwise reach
+    /// the download coordinator, which writes its queued record unconditionally,
+    /// and the episode would transfer twice. This is the serialisation point --
+    /// the insert happens only when the scope allows, and the store actor makes
+    /// the check and the insert one step.
+    @discardableResult
+    public func claimPodcastDownload(
+        episodeID: ItemID,
+        scope: PodcastDownloadClaimScope = .untouched,
+        at claimedAt: Timestamp = Timestamp(Date())
+    ) throws -> Bool {
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
+        let existing = records.first(where: { $0.episodeID == episodeID.rawValue })
+        switch scope {
+        case .untouched:
+            guard existing == nil else { return false }
+        case .notInFlight:
+            let inFlight = existing.flatMap { PodcastDownloadStatus(rawValue: $0.status) }
+                .map { $0 == .queued || $0 == .downloading } ?? false
+            guard !inFlight else { return false }
+        }
+        let claim = try PodcastDownload(episodeID: episodeID, status: .queued, updatedAt: claimedAt)
+        if let existing {
+            existing.status = claim.status.rawValue
+            existing.bytesReceived = 0
+            existing.expectedByteCount = nil
+            existing.localURL = nil
+            existing.contentHash = nil
+            existing.updatedAt = claimedAt.date
+        } else {
+            context.insert(LocalLibrarySchemaV6Models.PodcastDownloadRecord(claim))
+        }
+        try context.save()
+        return true
+    }
+
+    /// Claims that outlived the process that made them.
+    ///
+    /// A launch reconciles against this rather than against anything automation
+    /// persisted separately: `queued` is claimed and not started, `downloading`
+    /// is a transfer with no process behind it any more. Both are resumable, and
+    /// the store is the only thing that knows which episodes they are.
+    public func unfinishedPodcastDownloads() throws -> [PodcastDownload] {
+        try downloads().filter { $0.status == .queued || $0.status == .downloading }
+    }
+
     /// Creates a subscription once without moving its original admission horizon.
     ///
     /// Equivalent canonical feed URLs derive the same feed ID, so repeated manual

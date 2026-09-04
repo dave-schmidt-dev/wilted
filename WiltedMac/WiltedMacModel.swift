@@ -690,9 +690,17 @@ final class WiltedMacModel {
     static let playbackRatePreferenceKey = "wilted.playback.rate"
     static let initialPlaybackRate = 1.25
     static let automationSettingsPreferenceKey = "wilted.automation.settings"
+    /// When automation last completed a refresh.
+    ///
+    /// Kept in preferences rather than the store because losing it costs one
+    /// extra idempotent refresh and nothing else. Claims, which cannot be
+    /// reconstructed, live in the store instead.
+    static let lastAutomationRefreshPreferenceKey = "wilted.automation.lastRefreshSuccess"
     private let preferences: UserDefaults
-    /// Future automation reads this one validated value, never individual preference keys.
+    /// Automation reads this one validated value, never individual preference keys.
     private(set) var automationSettings = WiltedAutomationSettings.defaults
+    /// What automation is doing, so Settings can show it and a listener can stop it.
+    private(set) var automationStatus: WiltedAutomationStatus = .idle
     var selectedNavigation: WiltedMacNavigation = .library
     private(set) var articles: [WiltedMacArticle] = []
     private(set) var episodes: [WiltedMacEpisode] = []
@@ -754,6 +762,10 @@ final class WiltedMacModel {
     private var preparationTask: Task<Void, Never>?
     private var syncReconciliationTask: Task<Void, Never>?
     private var podcastRefreshTask: Task<Void, Never>?
+#if canImport(WiltedProducer)
+    private var automation: WiltedAutomationCoordinator?
+    private var automationTask: Task<Void, Never>?
+#endif
     private var podcastDownloadTasks: [String: Task<Void, Never>] = [:]
     private var podcastDownloadCoordinator: PodcastDownloadCoordinator?
     private var podcastPreparationPipeline: PodcastPreparationPipeline?
@@ -877,6 +889,124 @@ final class WiltedMacModel {
         }
         return settings
     }
+
+    // MARK: - App-open automation
+
+    var lastAutomationRefreshAt: Date? {
+        preferences.object(forKey: Self.lastAutomationRefreshPreferenceKey) as? Date
+    }
+
+    private func setLastAutomationRefresh(_ date: Date) {
+        preferences.set(date, forKey: Self.lastAutomationRefreshPreferenceKey)
+    }
+
+    private func setAutomationStatus(_ status: WiltedAutomationStatus) {
+        automationStatus = status
+    }
+
+#if canImport(WiltedProducer)
+    /// Evaluates the automation policy and runs one pass if it is due.
+    ///
+    /// Called when the window opens and on the open-window tick. Both go through
+    /// the same coordinator, so the policy is decided in one place rather than
+    /// at each call site.
+    func runAutomation(trigger: WiltedAutomationTrigger) {
+        guard !fixtureMode, let coordinator = automationCoordinator() else { return }
+        automationTask = Task { await coordinator.run(trigger: trigger) }
+    }
+
+    /// Resumes claims that outlived the process that made them.
+    func reconcileAutomation() {
+        guard !fixtureMode, let coordinator = automationCoordinator() else { return }
+        automationTask = Task { await coordinator.reconcile() }
+    }
+
+    /// Stops the pass in flight. Claims stay durable and the next launch
+    /// reconciles them, so stopping loses no eligibility.
+    func cancelAutomation() {
+        let coordinator = automation
+        automationTask?.cancel()
+        automationTask = nil
+        Task { await coordinator?.cancel() }
+        automationStatus = .cancelled
+    }
+
+    private func automationCoordinator() -> WiltedAutomationCoordinator? {
+        if let automation { return automation }
+        guard store != nil else { return nil }
+        let coordinator = WiltedAutomationCoordinator(
+            operations: .init(
+                enabledFeedURLs: { [weak self] in
+                    guard let self else { return [] }
+                    return try await self.automationFeedURLs()
+                },
+                refreshFeed: { [weak self] url, limit in
+                    guard let self else { return [] }
+                    return try await self.automaticRefresh(url, claimingNewest: limit)
+                },
+                startDownload: { [weak self] episodeID in
+                    guard let self else { return }
+                    try await self.startClaimedDownload(episodeID)
+                },
+                unfinishedClaims: { [weak self] in
+                    guard let self else { return [] }
+                    return try await self.unfinishedAutomationClaims()
+                }
+            ),
+            settings: { [weak self] in await self?.automationSettings ?? .defaults },
+            lastRefreshSuccess: { [weak self] in await self?.lastAutomationRefreshAt },
+            recordRefreshSuccess: { [weak self] date in await self?.setLastAutomationRefresh(date) },
+            report: { [weak self] status in await self?.setAutomationStatus(status) }
+        )
+        automation = coordinator
+        return coordinator
+    }
+
+    private func automationFeedURLs() async throws -> [URL] {
+        guard let store else { throw CancellationError() }
+        var urls: [URL] = []
+        for subscription in try await store.subscriptions().filter(\.enabled) {
+            if let url = try await store.podcastFeed(for: subscription.feedID)?.canonicalURL {
+                urls.append(url)
+            }
+        }
+        return urls
+    }
+
+    private func unfinishedAutomationClaims() async throws -> [String] {
+        guard let store else { throw CancellationError() }
+        return try await store.unfinishedPodcastDownloads().map(\.episodeID.rawValue)
+    }
+
+    /// Refreshes one feed and claims a bounded subset of the episodes that exact
+    /// refresh admitted, in one store save.
+    private func automaticRefresh(_ url: URL, claimingNewest limit: Int) async throws -> [String] {
+        guard let store else { throw CancellationError() }
+        let loaded = try await podcastFeedClient.load(url)
+        try await store.save(feed: loaded.feed)
+        let result = try await store.admitPodcastEpisodes(
+            loaded.episodes, admission: .incremental, claimingNewest: limit
+        )
+        let values = try await loadLibrary(from: store)
+        articles = values.articles
+        episodes = values.episodes
+        subscriptions = values.subscriptions
+        dismissedEpisodes = try await loadDismissedEpisodes(from: store)
+        return result.claimed.map(\.rawValue)
+    }
+
+    /// Starts one already-claimed episode and waits for it to settle.
+    ///
+    /// Waiting is what makes the coordinator's queue serial. The claim is
+    /// durable, so nothing is lost by taking them one at a time, and a listener
+    /// on a domestic connection would rather have one episode finish than six
+    /// crawl.
+    private func startClaimedDownload(_ episodeID: String) async throws {
+        guard let episode = episodes.first(where: { $0.id == episodeID }) else { return }
+        downloadEpisode(episode, alreadyClaimed: true)
+        await podcastDownloadTasks[episodeID]?.value
+    }
+#endif
 
     /// Fixture launches share the daily driver's bundle identifier, so they
     /// get their own defaults domain, emptied on every launch: a UI test must
@@ -1183,7 +1313,15 @@ final class WiltedMacModel {
         podcastOperationMessage = "Podcast refresh cancelled."
     }
 
-    func downloadEpisode(_ episode: WiltedMacEpisode) {
+    /// Starts one episode's download.
+    ///
+    /// `alreadyClaimed` is automation saying it holds the store claim already.
+    /// Every other caller takes the claim here, because the in-memory task table
+    /// below only knows about this process: a claim an earlier launch made, or
+    /// one automation took a moment ago, is invisible to it, and the download
+    /// coordinator writes its queued record unconditionally. Without the claim
+    /// the same episode transfers twice.
+    func downloadEpisode(_ episode: WiltedMacEpisode, alreadyClaimed: Bool = false) {
 #if canImport(WiltedProducer)
         if fixtureMode {
             guard podcastDownloadTasks[episode.id] == nil else { return }
@@ -1226,6 +1364,15 @@ final class WiltedMacModel {
         podcastOperationMessage = "Queued \(episode.title) for download."
         podcastDownloadTasks[episode.id] = Task { [weak self] in
             guard let self else { return }
+            if !alreadyClaimed {
+                let won = await self.claimDownload(itemID)
+                guard won else {
+                    self.podcastOperationMessage = "\(episode.title) is already downloading."
+                    self.updateEpisode(episode.id) { $0.downloadState = .notDownloaded }
+                    self.podcastDownloadTasks[episode.id] = nil
+                    return
+                }
+            }
             do {
                 _ = try await coordinator.download(episodeID: itemID) { progress in
                     Task { @MainActor [weak self] in
@@ -1258,6 +1405,17 @@ final class WiltedMacModel {
         }
 #endif
     }
+
+    /// Takes the store claim for a deliberate download, so a transfer already in
+    /// flight -- from automation, or from a launch that ended mid-download --
+    /// is not started a second time. A settled record does not block: retrying
+    /// a failure from the row is exactly what that path is for.
+#if canImport(WiltedProducer)
+    private func claimDownload(_ episodeID: ItemID) async -> Bool {
+        guard let store else { return false }
+        return (try? await store.claimPodcastDownload(episodeID: episodeID, scope: .notInFlight)) ?? false
+    }
+#endif
 
     /// Removes the advertisements and synchronises the transcript.
     ///

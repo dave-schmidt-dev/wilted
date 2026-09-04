@@ -398,6 +398,56 @@ final class WiltedMacModelTests: XCTestCase {
         return try XCTUnwrap(WiltedAutomationOffPeakWindow(start: start, end: end))
     }
 
+    /// Automation is stall-prone by construction: it refreshes feeds and pulls
+    /// audio with nobody watching. Every stage it can sit in has to be readable
+    /// from the model, and stopping it has to say so rather than going quiet.
+    func testAutomationStatusIsObservableAndCancellationIsAnnounced() throws {
+        let preferences = try automationSettingsPreferences()
+        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
+        let directory = temporaryDirectory("automation-status")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        XCTAssertEqual(model.automationStatus, .idle)
+
+        model.cancelAutomation()
+        XCTAssertEqual(model.automationStatus, .cancelled,
+                       "a stop request is a state the surface can show, not silence")
+    }
+
+    /// The scheduling timestamp is the only thing standing between an interval
+    /// policy and repeating its work on every tick, so it has to outlive the
+    /// process. It lives in preferences rather than the store because losing it
+    /// costs one extra idempotent refresh; claims, which cannot be
+    /// reconstructed, live in the store.
+    func testTheLastAutomaticRefreshTimeSurvivesRelaunch() throws {
+        let preferences = try automationSettingsPreferences()
+        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
+        let directory = temporaryDirectory("automation-last-refresh")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        XCTAssertNil(model.lastAutomationRefreshAt, "a first launch has nothing to space itself from")
+
+        let refreshedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        preferences.set(refreshedAt, forKey: WiltedMacModel.lastAutomationRefreshPreferenceKey)
+        let relaunched = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        XCTAssertEqual(relaunched.lastAutomationRefreshAt, refreshedAt)
+
+        // An interval that has not elapsed since that time must not fire again.
+        let settings = WiltedAutomationSettings(
+            refreshPolicy: .whileOpen(everyHours: 12), downloadPolicy: .newestOnePerEnabledFeed,
+            processingPolicy: .immediate, transcriptPolicy: .bestAvailable,
+            removeAds: true, readableTranscriptPass: true
+        )
+        let tooSoon = WiltedAutomationCoordinator.plan(
+            settings: settings, trigger: .openWindowTick,
+            lastRefreshSuccess: relaunched.lastAutomationRefreshAt,
+            now: refreshedAt.addingTimeInterval(11 * 3_600)
+        )
+        XCTAssertFalse(tooSoon.shouldRefresh)
+    }
+
     func testAutomationSettingsRoundTripThroughInjectedPreferences() throws {
         let preferences = try automationSettingsPreferences()
         defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
