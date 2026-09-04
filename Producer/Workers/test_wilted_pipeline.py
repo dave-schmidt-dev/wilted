@@ -613,6 +613,53 @@ class AdDetectionTests(unittest.TestCase):
         self.assertIn("ads.detect.calls", stages)
         self.assertIn("ads.cut.refused", stages)
 
+    def test_a_span_covering_most_of_the_episode_is_dropped_and_said_out_loud(self):
+        # TechCrunch Daily, 9:23 long, came back 1:52 with "1 ad removed
+        # (7:30)". The one span ran 0:07 to 7:37 and held two real host reads
+        # at either end with every news item of the episode between them: the
+        # archived detector brackets an ad that goes out and comes back as one
+        # pod, bounded at ten minutes, which is the whole of a short show.
+        llm = FakeLLM()
+        install_fake_ads(llm, detections=[FakeAd(6.72, 456.88, label="sponsor_read")])
+        stream = io.StringIO()
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=563.17):
+            path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
+        # Nothing cut, and the audio handed back is the audio handed in:
+        # preparation writes over the download, so an over-cut is permanent.
+        self.assertEqual((path, spans, keeps), (self.audio, [], []))
+        events = [json.loads(line) for line in stream.getvalue().splitlines()]
+        rejected = [event for event in events if event["stage"] == "ads.detect.span.rejected"]
+        self.assertEqual(len(rejected), 1)
+        self.assertIn("80% of the episode", rejected[0]["detail"])
+
+    def test_an_ordinary_ad_break_is_left_alone_by_the_size_guard(self):
+        llm = FakeLLM()
+        install_fake_ads(llm, detections=[FakeAd(6.72, 187.0, label="sponsor_read")])
+        stream = io.StringIO()
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=563.17):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
+        self.assertEqual([span["startSeconds"] for span in spans], [6.72])
+        stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
+        self.assertNotIn("ads.detect.span.rejected", stages)
+
+    def test_spans_that_are_individually_plausible_can_still_be_refused_together(self):
+        # Each of these is under the single-span limit and the three together
+        # take two thirds of the episode, which no episode survives being.
+        llm = FakeLLM()
+        install_fake_ads(llm, detections=[
+            FakeAd(0.0, 240.0), FakeAd(250.0, 400.0), FakeAd(410.0, 400.0 + 90.0),
+        ])
+        stream = io.StringIO()
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=600.0):
+            path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
+        self.assertEqual((path, spans, keeps), (self.audio, [], []))
+        details = {
+            json.loads(line)["stage"]: json.loads(line)["detail"]
+            for line in stream.getvalue().splitlines()
+        }
+        self.assertIn("ads.detect.refused", details)
+        self.assertIn("keeping the episode whole", details["ads.detect.refused"])
+
     # The opening of Giant Bombcast 955, which every stage of the detector
     # called content: a produced spot for a game, with no host reading it, no
     # sponsor phrase, no domain, and no call to action to seed a coarse run.

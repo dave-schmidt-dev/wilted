@@ -191,6 +191,18 @@ STT_EVICTION_BARRIER_TIMEOUT_S = 10.0
 # behaviour, and `ads.model.wait` reports it every second while it happens.
 GPU_LOCK_ACQUISITION_TIMEOUT_S = 30 * 60.0
 
+# A detected span that covers most of the episode is not an advertisement, it is
+# a detection failure, and size alone tells the two apart. The archived detector
+# brackets an ad that goes out and comes back as one pod, bounded at ten minutes
+# and 128 segments -- bounds written for a two-hour show. On a nine-minute one
+# they reach across the whole programme: TechCrunch Daily was cut from 9:23 to
+# 1:52 by a single `sponsor_read` running 0:07 to 7:37, which held the two real
+# reads at either end and every news item between them. Uncut audio is
+# recoverable and over-cut audio is not, because preparation writes over the
+# download, so a span this size is dropped and said out loud rather than obeyed.
+MAXIMUM_SINGLE_AD_SHARE = 0.5
+MAXIMUM_TOTAL_AD_SHARE = 0.6
+
 # How many of the previous project's warnings are relayed verbatim before the
 # rest are counted. The ad detector logs one warning per failed batch and
 # halves down to singletons, so a dead backend produces thousands.
@@ -1598,6 +1610,38 @@ def recover_transcript_start_preroll(ads_module, backend, segments, detections):
     )
 
 
+def reject_implausible_ad_spans(detections, total_seconds):
+    """Drop detections too large to be advertising, and say which and why.
+
+    Dropping the span rather than trimming it is deliberate: nothing here knows
+    where the advertisement actually ended, and a guessed boundary would cut
+    programme audio with the same confidence the detector just misplaced.
+    """
+    if total_seconds <= 0 or not detections:
+        return detections
+    kept = []
+    for ad in detections:
+        span_seconds = float(ad.end_s) - float(ad.start_s)
+        share = span_seconds / total_seconds
+        if share > MAXIMUM_SINGLE_AD_SHARE:
+            progress(
+                "ads.detect.span.rejected",
+                f"{float(ad.start_s):.3f}-{float(ad.end_s):.3f} is {share:.0%} of the episode; "
+                "a span that size is a detection failure, not an advertisement",
+            )
+            continue
+        kept.append(ad)
+    removed = sum(float(ad.end_s) - float(ad.start_s) for ad in kept)
+    if removed / total_seconds > MAXIMUM_TOTAL_AD_SHARE:
+        progress(
+            "ads.detect.refused",
+            f"{removed:.1f}s of {total_seconds:.1f}s ({removed / total_seconds:.0%}) was classified "
+            "as advertising; keeping the episode whole",
+        )
+        return []
+    return kept
+
+
 def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, *, model_lock=None):
     """Detect ads and rewrite the audio without them.
 
@@ -1660,6 +1704,14 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
             f"{type(counting.last_error).__name__}: {counting.last_error}",
         )
     progress("ads.detect.calls", f"{counting.calls} requests, {counting.failures} failed")
+    if not detections:
+        progress("ads.detect.complete", "0 spans")
+        return audio_path, [], []
+
+    # Probed before the spans are reported, so the journal and the timeline
+    # describe what was actually cut rather than what the detector proposed.
+    total = probe_duration(audio_path)
+    detections = reject_implausible_ad_spans(detections, total)
     ad_spans = [
         {
             "startSeconds": round(float(ad.start_s), 3),
@@ -1673,7 +1725,6 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
     if not detections:
         return audio_path, [], []
 
-    total = probe_duration(audio_path)
     keep_segments = ads_module._compute_keep_segments(total, detections, 0.5)  # noqa: SLF001
     if not keep_segments:
         # Everything was called an ad. Refusing to cut is the only safe
