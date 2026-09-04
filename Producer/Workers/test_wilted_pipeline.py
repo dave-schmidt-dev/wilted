@@ -196,6 +196,12 @@ class FakeLLM:
     boundary_content_start_id: int | None = None
     preroll_program_start_id: int | None = None
     preroll_program_id: int | None = None
+    boundary_starts_program: bool | None = None
+    postroll_advertising_start_id: int | None = None
+    tail_carries_program: bool | None = None
+    # The closing review asks the same confirmation twice when the first answer
+    # moves the boundary, so the double has to be able to answer it differently.
+    program_id_answers: list = field(default_factory=list)
     requests: list = field(default_factory=list)
 
     def load(self):
@@ -209,8 +215,21 @@ class FakeLLM:
             raise RuntimeError("Model not loaded. Call load() first.")
         if self.fail_generate is not None:
             raise self.fail_generate
+        # The boundary probe asks for free JSON like the coarse pass does, so the
+        # system prompt is what tells them apart here as well as in the log.
+        if "starts_program" in system_prompt:
+            if self.boundary_starts_program is None:
+                return self.answer, 1
+            return json.dumps({"starts_program": self.boundary_starts_program}), 1
+        if "carries_program" in system_prompt:
+            if self.tail_carries_program is None:
+                return self.answer, 1
+            return json.dumps({"carries_program": self.tail_carries_program}), 1
         field_name = (response_format or {}).get("field")
+        if field_name == "program_id" and self.program_id_answers:
+            return json.dumps({"program_id": self.program_id_answers.pop(0)}), 1
         for name, answer in (("program_start_id", self.preroll_program_start_id),
+                             ("advertising_start_id", self.postroll_advertising_start_id),
                              ("program_id", self.preroll_program_id)):
             if field_name == name:
                 return (json.dumps({name: answer}) if answer is not None else self.answer), 1
@@ -552,16 +571,18 @@ class AdDetectionTests(unittest.TestCase):
     def test_the_model_is_loaded_before_detection_and_closed_after(self):
         llm = FakeLLM()
         install_fake_ads(llm)
-        with redirect_stderr(io.StringIO()):
+        with redirect_stderr(io.StringIO()), \
+                mock.patch.object(wp, "probe_duration", return_value=200.0):
             _path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
         self.assertTrue(llm.loaded)
         self.assertTrue(llm.closed)
         self.assertEqual((spans, keeps), ([], []))
         # Constrained JSON is how the tuned prompts were accepted; the proxy
-        # must not strip the keyword on its way through. The third request is
-        # the opening review, which every episode gets once.
+        # must not strip the keyword on its way through. The last two requests
+        # are the opening and closing reviews, which every episode gets once.
         self.assertEqual(llm.requests, [{"type": "json_object"}, {"type": "json_object"},
-                                        {"field": "program_start_id", "ids": [0, 1]}])
+                                        {"field": "program_start_id", "ids": [0, 1]},
+                                        {"field": "advertising_start_id", "ids": [-1, 0, 1]}])
 
     def test_sponsor_opening_compatibility_is_installed_before_detection(self):
         llm = FakeLLM()
@@ -578,14 +599,16 @@ class AdDetectionTests(unittest.TestCase):
             return []
 
         ads.detect_ads = detect
-        with redirect_stderr(io.StringIO()):
+        with redirect_stderr(io.StringIO()), \
+                mock.patch.object(wp, "probe_duration", return_value=200.0):
             wp.detect_and_cut(self.request, self.audio, [], self.segments)
         self.assertEqual(observed, [(True, True)])
 
     def test_a_backend_that_never_answers_is_a_failure_not_zero_ads(self):
         llm = FakeLLM(fail_generate=RuntimeError("llama_decode returned -1"))
         install_fake_ads(llm)
-        with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised:
+        with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised, \
+                mock.patch.object(wp, "probe_duration", return_value=200.0):
             wp.detect_and_cut(self.request, self.audio, [], self.segments)
         self.assertEqual(raised.exception.code, "ads-backend-failed")
         self.assertIn("llama_decode returned -1", str(raised.exception))
@@ -594,7 +617,8 @@ class AdDetectionTests(unittest.TestCase):
     def test_a_model_that_cannot_load_is_reported_by_name(self):
         llm = FakeLLM(fail_load=FileNotFoundError("GGUF model file not found: /models/default.gguf"))
         install_fake_ads(llm)
-        with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised:
+        with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised, \
+                mock.patch.object(wp, "probe_duration", return_value=200.0):
             wp.detect_and_cut(self.request, self.audio, [], self.segments)
         self.assertEqual(raised.exception.code, "ads-model-unavailable")
         self.assertIn("/models/default.gguf", str(raised.exception))
@@ -659,6 +683,208 @@ class AdDetectionTests(unittest.TestCase):
         }
         self.assertIn("ads.detect.refused", details)
         self.assertIn("keeping the episode whole", details["ads.detect.refused"])
+
+    # A short episode's whole programme, bracketed as one advertisement. The
+    # advertising is genuinely at the front; everything from segment 9 on is
+    # the news, and the detector's absolute pod bounds swallowed all of it.
+    OVERSIZED = [FakeSegment(index * 20.0, index * 20.0 + 20.0, f"segment {index}") for index in range(28)]
+
+    def resize(self, llm, ad, total=563.17):
+        ads = install_fake_ads(llm)
+        llm.load()  # `detect_and_cut` does this; a direct call has to say so.
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            resized = wp.resize_oversized_ad_spans(ads, llm, self.OVERSIZED, [ad], total)
+        details = {
+            json.loads(line)["stage"]: json.loads(line)["detail"]
+            for line in stream.getvalue().splitlines()
+        }
+        return resized, details
+
+    def test_an_oversized_span_is_shortened_to_where_the_program_resumes(self):
+        llm = FakeLLM(preroll_program_start_id=9, preroll_program_id=-1, boundary_starts_program=False)
+        resized, details = self.resize(llm, FakeAd(6.72, 456.88, label="sponsor_read"))
+        # The advertising the detector found is kept; the programme it swept up
+        # behind that advertising is handed back.
+        self.assertEqual([(ad.start_s, ad.end_s, ad.label) for ad in resized],
+                         [(6.72, 180.0, "sponsor_read")])
+        self.assertIn("ads.detect.span.resized", details)
+        self.assertIn("before program ID 9", details["ads.detect.span.resized"])
+
+    def test_a_shortened_span_holding_program_content_is_left_alone(self):
+        # The second question is not the first asked again: it is handed only
+        # the shortened span, so a boundary in the wrong place is caught by
+        # finding the programme still inside it.
+        llm = FakeLLM(preroll_program_start_id=9, preroll_program_id=3, boundary_starts_program=False)
+        resized, details = self.resize(llm, FakeAd(6.72, 456.88))
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 456.88)])
+        self.assertIn("holds program content at 3", details["ads.detect.span.resize.skipped"])
+
+    def test_a_span_the_review_calls_advertising_throughout_is_not_shortened(self):
+        llm = FakeLLM(preroll_program_start_id=0)
+        resized, details = self.resize(llm, FakeAd(6.72, 456.88))
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 456.88)])
+        self.assertIn("advertising throughout", details["ads.detect.span.resize.skipped"])
+
+    def test_a_shortening_that_is_still_implausible_is_refused(self):
+        # Recovering four minutes of a nine minute episode is not a recovery.
+        llm = FakeLLM(preroll_program_start_id=20, preroll_program_id=-1, boundary_starts_program=False)
+        resized, details = self.resize(llm, FakeAd(6.72, 456.88))
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 456.88)])
+        self.assertIn("still resumes 70% into the episode", details["ads.detect.span.resize.skipped"])
+
+    def test_an_unanswered_resize_review_never_shortens_a_span(self):
+        llm = FakeLLM(answer="not json")
+        resized, details = self.resize(llm, FakeAd(6.72, 456.88))
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 456.88)])
+        self.assertIn("resize review failed", details["ads.detect.span.resize.skipped"])
+
+    def test_a_boundary_segment_holding_the_program_start_is_left_in(self):
+        # TechCrunch segment 9 is five seconds of Plaud call to action and then
+        # "apple debuts its most powerful chip ever i'm imran shake and your
+        # daily crunch starts right now". Cutting to the segment after it takes
+        # the episode title and the host introduction out of the file, so the
+        # cut stops one segment short and leaves the advertisement's tail in.
+        llm = FakeLLM(preroll_program_start_id=9, preroll_program_id=-1, boundary_starts_program=True)
+        resized, details = self.resize(llm, FakeAd(6.72, 456.88))
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 160.0)])
+        self.assertIn("the program starts inside segment 8", details["ads.detect.boundary.shortened"])
+
+    def test_an_unanswerable_boundary_question_keeps_the_segment(self):
+        # No answer is not permission. The segment might hold the program, so
+        # the cut stops before it exactly as if the answer had been yes.
+        llm = FakeLLM(answer="not json", preroll_program_start_id=9, preroll_program_id=-1)
+        resized, details = self.resize(llm, FakeAd(6.72, 456.88))
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 160.0)])
+        self.assertIn("ads.detect.boundary.unanswered", details)
+
+    # The Daily ends on a Chase Sapphire spot and TechCrunch Daily on a Motley
+    # Fool one, both after the sign-off, both missed. Twenty segments of forty
+    # seconds, with the show finishing somewhere in the last three.
+    POSTROLL = [FakeSegment(index * 40.0, index * 40.0 + 40.0, f"segment {index}") for index in range(20)]
+
+    def postroll(self, llm, detections=(), total=810.0, segments=None):
+        ads = install_fake_ads(llm)
+        llm.load()  # `detect_and_cut` does this; a direct call has to say so.
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            recovered = wp.recover_transcript_end_postroll(
+                ads, llm, segments or self.POSTROLL, list(detections), total
+            )
+        details = {
+            json.loads(line)["stage"]: json.loads(line)["detail"]
+            for line in stream.getvalue().splitlines()
+        }
+        return recovered, details
+
+    def test_a_produced_spot_after_the_sign_off_is_cut_to_the_end_of_the_file(self):
+        llm = FakeLLM(postroll_advertising_start_id=19, tail_carries_program=False,
+                      preroll_program_id=-1)
+        recovered, details = self.postroll(llm)
+        # To the probed duration, not to the last cue: what lies between them is
+        # the spot's own music bed.
+        self.assertEqual([(ad.start_s, ad.end_s, ad.label) for ad in recovered],
+                         [(760.0, 810.0, "ad_break")])
+        self.assertIn("after program ID 19", details["ads.detect.postroll"])
+
+    def test_an_ending_the_detector_already_claimed_is_not_reviewed_again(self):
+        llm = FakeLLM(postroll_advertising_start_id=19, preroll_program_id=-1)
+        recovered, details = self.postroll(llm, detections=[FakeAd(760.0, 800.0)])
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in recovered], [(760.0, 800.0)])
+        self.assertIn("already claimed", details["ads.detect.postroll.skipped"])
+        self.assertEqual(llm.requests, [])
+
+    def test_a_program_that_runs_to_the_end_is_left_whole(self):
+        llm = FakeLLM(postroll_advertising_start_id=-1)
+        recovered, details = self.postroll(llm)
+        self.assertEqual(recovered, [])
+        self.assertIn("runs to the end", details["ads.detect.postroll.skipped"])
+
+    def test_a_confirmation_that_moves_the_boundary_once_still_cuts(self):
+        # The realistic disagreement: the first question overshoots and the
+        # confirmation finds the sign-off inside what it nominated. Narrow the
+        # ending to what is left and ask once more.
+        llm = FakeLLM(postroll_advertising_start_id=17, tail_carries_program=False,
+                      program_id_answers=[18, -1])
+        recovered, details = self.postroll(llm)
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in recovered], [(760.0, 810.0)])
+        self.assertIn("narrowed to 19", details["ads.detect.postroll.shrunk"])
+
+    def test_a_confirmation_contradicting_the_segment_itself_loses(self):
+        # A promotion for another podcast describes its own content the way a
+        # show describes itself, and the confirmation reads the first segment of
+        # it as this program. The question asked about that segment alone, with
+        # nothing else to weigh, said there was no program in it. That answer
+        # wins, and the whole spot comes out instead of a third of it.
+        llm = FakeLLM(postroll_advertising_start_id=19, tail_carries_program=False,
+                      preroll_program_id=19)
+        recovered, details = self.postroll(llm)
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in recovered], [(760.0, 810.0)])
+        self.assertIn("keeping the boundary", details["ads.detect.postroll.contested"])
+
+    def test_an_ending_holding_program_content_is_not_cut(self):
+        # Two disagreements is not a boundary dispute, it is the review being
+        # wrong about the whole ending.
+        llm = FakeLLM(postroll_advertising_start_id=17, tail_carries_program=False,
+                      program_id_answers=[18, 19])
+        recovered, details = self.postroll(llm)
+        self.assertEqual(recovered, [])
+        self.assertIn("still holds program content at 19", details["ads.detect.postroll.skipped"])
+
+    def test_a_boundary_segment_still_carrying_the_program_starts_the_cut_after_it(self):
+        # The sign-off and the spot's first words share a segment. Taking it
+        # would take the show's last sentence with it.
+        llm = FakeLLM(postroll_advertising_start_id=18, tail_carries_program=True,
+                      preroll_program_id=-1)
+        recovered, details = self.postroll(llm)
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in recovered], [(760.0, 810.0)])
+        self.assertIn("still running inside segment 18", details["ads.detect.boundary.shortened"])
+
+    def test_an_ending_too_short_to_be_a_spot_is_left_alone(self):
+        llm = FakeLLM(postroll_advertising_start_id=19, tail_carries_program=False,
+                      preroll_program_id=-1)
+        recovered, details = self.postroll(llm, total=765.0)
+        self.assertEqual(recovered, [])
+        self.assertIn("too short", details["ads.detect.postroll.skipped"])
+
+    def test_an_ending_that_would_be_most_of_the_episode_is_refused(self):
+        # The 300-second window reaches across most of a short episode, so the
+        # share check is what stops the closing review becoming a whole-episode
+        # verdict. The bound cannot be reached on a long show and does the work
+        # here, which is why the fixture is three minutes rather than thirteen.
+        short = [FakeSegment(index * 20.0, index * 20.0 + 20.0, f"segment {index}") for index in range(10)]
+        llm = FakeLLM(postroll_advertising_start_id=2, tail_carries_program=False,
+                      preroll_program_id=-1)
+        recovered, details = self.postroll(llm, total=200.0, segments=short)
+        self.assertEqual(recovered, [])
+        self.assertIn("80% of the episode", details["ads.detect.postroll.skipped"])
+
+    def test_an_unanswered_closing_review_never_cuts(self):
+        llm = FakeLLM(answer="not json")
+        recovered, details = self.postroll(llm)
+        self.assertEqual(recovered, [])
+        self.assertIn("closing review failed", details["ads.detect.postroll.skipped"])
+
+    def test_a_plausible_span_is_never_sent_for_review(self):
+        llm = FakeLLM(preroll_program_start_id=9, preroll_program_id=-1, boundary_starts_program=False)
+        resized, _details = self.resize(llm, FakeAd(6.72, 187.0))
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 187.0)])
+        self.assertEqual(llm.requests, [])
+
+    def test_a_shortened_span_survives_the_size_guard_and_is_cut(self):
+        # End to end: the opening review passes because the detection already
+        # starts at the first second, the resize shortens it, and the guard
+        # that would have dropped it whole now finds it plausible.
+        llm = FakeLLM(preroll_program_start_id=9, preroll_program_id=-1, boundary_starts_program=False)
+        install_fake_ads(llm, detections=[FakeAd(0.0, 456.88, label="sponsor_read")])
+        stream = io.StringIO()
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=563.17):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.OVERSIZED)
+        self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 180.0,
+                                  "label": "sponsor_read", "confidence": 0.9}])
+        stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
+        self.assertIn("ads.detect.span.resized", stages)
+        self.assertNotIn("ads.detect.span.rejected", stages)
 
     # The opening of Giant Bombcast 955, which every stage of the detector
     # called content: a produced spot for a game, with no host reading it, no
@@ -785,10 +1011,11 @@ class AdDetectionTests(unittest.TestCase):
 
         llm.generate = flaky
         segments = [FakeSegment(0, 2, "buy this"), FakeSegment(2, 4, "and this"), FakeSegment(4, 6, "content")]
-        with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised:
+        with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised, \
+                mock.patch.object(wp, "probe_duration", return_value=200.0):
             wp.detect_and_cut(self.request, self.audio, [], segments)
         self.assertEqual(raised.exception.code, "ads-backend-failed")
-        self.assertIn("3 of 4", str(raised.exception))
+        self.assertIn("4 of 5", str(raised.exception))
 
 
 class LegacySponsorOpeningCompatibilityTests(unittest.TestCase):
@@ -1307,7 +1534,8 @@ class PreflightTests(unittest.TestCase):
     def test_malformed_residency_status_fails_closed_before_model_load(self):
         events = []
         install_fake_speech_stack(events=events, statuses=({"resident_models": "unknown"},))
-        with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised:
+        with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised, \
+                mock.patch.object(wp, "probe_duration", return_value=200.0):
             with wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True):
                 self.fail("unsafe admission must not yield")
         self.assertEqual(raised.exception.code, "ads-model-wait-failed")
@@ -1481,7 +1709,8 @@ class PreflightTests(unittest.TestCase):
 
         llm.close = close
         install_fake_ads(llm)
-        with mock.patch.object(wp.fcntl, "flock", side_effect=fake_flock), redirect_stderr(io.StringIO()):
+        with mock.patch.object(wp.fcntl, "flock", side_effect=fake_flock), redirect_stderr(io.StringIO()), \
+                mock.patch.object(wp, "probe_duration", return_value=200.0):
             wp.detect_and_cut(
                 {"audioPath": str(self.audio)},
                 self.audio,
@@ -1504,7 +1733,8 @@ class PreflightTests(unittest.TestCase):
                     llm.close = mock.Mock(side_effect=RuntimeError("close failed"))
                 events = []
                 if raises:
-                    with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError):
+                    with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError), \
+                            mock.patch.object(wp, "probe_duration", return_value=200.0):
                         wp.detect_and_cut(
                             {"audioPath": str(self.audio)},
                             self.audio,
@@ -1513,7 +1743,8 @@ class PreflightTests(unittest.TestCase):
                             model_lock=recording_model_lock(events),
                         )
                 else:
-                    with redirect_stderr(io.StringIO()):
+                    with redirect_stderr(io.StringIO()), \
+                            mock.patch.object(wp, "probe_duration", return_value=200.0):
                         wp.detect_and_cut(
                             {"audioPath": str(self.audio)},
                             self.audio,

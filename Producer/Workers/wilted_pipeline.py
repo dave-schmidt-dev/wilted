@@ -108,6 +108,82 @@ to advertising or promotion. Host introductions, the show title, and unstructure
 the program. Return -1 when no supplied ID belongs to the program. Use only a supplied ID or -1.
 Return only the strict JSON object {"program_id": ID}, with no prose or Markdown."""
 
+# How much of the span a resize review may read. The same bound as the opening
+# review: enough to find the boundary, not enough to become a second detector.
+OVERSIZED_SPAN_RESIZE_MAX_SEGMENTS = 96
+
+# A cut lands on a segment edge, so a segment holding an advertisement's last
+# words and the program's first words cannot be taken without taking the program
+# with it. TechCrunch segment 9 is five seconds of Plaud call to action followed
+# by "apple debuts its most powerful chip ever i'm imran shake and your daily
+# crunch starts right now" and the first story, and the boundary question
+# nominated the segment after it, which would have cut the episode title and the
+# host introduction out of the file. Saying so in the boundary prompt did not
+# change its answer, and saying it in the confirm prompt made that answer worse:
+# the model started calling a pure sponsor read program. So it is asked
+# separately, about one segment, which it answers correctly and repeatably.
+BOUNDARY_SEGMENT_PROMPT = """\
+The excerpt is one passage from a podcast episode, taken from inside a stretch of advertising.
+Answer whether the program itself starts somewhere inside this passage. The program is the show's
+own content: its title, its host introductions, its reporting or discussion. A passage that is
+advertising from beginning to end does not start the program, even if the advertisement ends in it.
+Return only the strict JSON object {"starts_program": true} or {"starts_program": false}, with no
+prose or Markdown."""
+
+OVERSIZED_SPAN_PROGRAM_START_PROMPT = """\
+The excerpt is a passage from a podcast episode that a detector classified entirely as advertising,
+and it is too long for that to be true. Find the first ID at which the program itself resumes. The
+program's own reporting, discussion, interviews, host introductions, and unstructured banter all
+count as program; read advertisements, sponsor messages, promotional spots for other shows, and
+their calls to action do not. Return the first supplied ID when the passage is advertising
+throughout. Use only a supplied ID.
+Return only the strict JSON object {"program_start_id": ID}, with no prose or Markdown."""
+
+OVERSIZED_SPAN_CONFIRM_PROMPT = """\
+The excerpt is a passage from the middle of a podcast episode, believed to be entirely advertising
+or promotion. Find the first ID that belongs to the program itself rather than to advertising or
+promotion. The program's own reporting, discussion, interviews, host introductions, and unstructured
+banter belong to the program. Return -1 when no supplied ID belongs to the program. Use only a
+supplied ID or -1.
+Return only the strict JSON object {"program_id": ID}, with no prose or Markdown."""
+
+# How far back from the end a closing review may read, and the smallest thing it
+# is allowed to cut. The same shape as the opening review's bounds, because it is
+# the same question asked at the other edge of the file.
+POSTROLL_RECOVERY_MAX_SECONDS = 300.0
+POSTROLL_RECOVERY_MAX_SEGMENTS = 96
+POSTROLL_ALREADY_CLAIMED_SECONDS = 1.0
+POSTROLL_RECOVERY_MINIMUM_SECONDS = 10.0
+
+POSTROLL_PROGRAM_END_PROMPT = """\
+The excerpt is the end of a podcast episode. Advertising is sometimes appended after the program
+finishes: a produced commercial, or a promotional spot for a different show, voiced by someone who
+does not appear on this program. Find the first ID at which the program has finished and appended
+advertising runs from there to the end. The program's own sign-off, its credits, its thanks and
+corrections, a teaser for its own next episode, and a request to subscribe to this show all count as
+program. Return -1 when the program runs all the way to the end and nothing is appended. Use only a
+supplied ID or -1.
+Return only the strict JSON object {"advertising_start_id": ID}, with no prose or Markdown."""
+
+POSTROLL_CONFIRM_PROMPT = """\
+The excerpt is the end of a podcast episode, believed to be a commercial, or a promotion for a
+different program, appended after this program finished. Find the first ID that belongs to this
+program itself. Only this program's own voice counts: its reporting or discussion, its sign-off,
+its credits, its thanks and corrections, or a teaser for its own next episode. A passage that
+promotes a different show is advertising even when it asks the listener to subscribe, and a passage
+selling a product is advertising however it ends. Most of the time nothing here belongs to the
+program, and -1 is the expected answer. Use only a supplied ID or -1.
+Return only the strict JSON object {"program_id": ID}, with no prose or Markdown."""
+
+BOUNDARY_SEGMENT_TAIL_PROMPT = """\
+The excerpt is one passage from the end of a podcast episode, taken from inside a stretch of
+advertising. Answer whether the program itself is still running somewhere inside this passage. The
+program is the show's own content: its reporting or discussion, its sign-off, its credits, its
+thanks. A passage that is advertising from beginning to end does not carry the program, even if the
+program ended just before it.
+Return only the strict JSON object {"carries_program": true} or {"carries_program": false}, with no
+prose or Markdown."""
+
 EXPLICIT_SPONSOR_RECOVERY_MAX_SEGMENTS = 64
 EXPLICIT_SPONSOR_RECOVERY_MAX_SECONDS = 10 * 60
 EXPLICIT_SPONSOR_RESUMPTION_TAIL_SEGMENTS = 32
@@ -1610,6 +1686,280 @@ def recover_transcript_start_preroll(ads_module, backend, segments, detections):
     )
 
 
+def _program_starts_inside(ads_module, backend, segments, segment_id):
+    """Answer whether the program begins inside one segment, so a cut can stop short of it.
+
+    Returns True when it does, and True as well when the question cannot be
+    answered: an unreadable answer must not license taking a segment that might
+    hold the program.
+    """
+    try:
+        response, _tokens = ads_module._generate_constrained_response(  # noqa: SLF001
+            backend,
+            BOUNDARY_SEGMENT_PROMPT,
+            ads_module._render_segments_bounded([segment_id], segments),  # noqa: SLF001
+            {"type": "json_object"},
+        )
+        parsed = json.loads(response)
+        if set(parsed) != {"starts_program"} or not isinstance(parsed["starts_program"], bool):
+            raise ValueError("starts_program response must contain exactly one boolean")
+        return parsed["starts_program"]
+    except Exception as error:  # noqa: BLE001 - an unanswered question keeps the segment
+        progress("ads.detect.boundary.unanswered", f"{type(error).__name__}: {error}")
+        return True
+
+
+def _tail_carries_program(ads_module, backend, segments, segment_id):
+    """Answer whether the program is still running inside one segment.
+
+    True when it is, and True when the question cannot be answered: the mirror
+    of the opening probe, and fail-closed for the same reason.
+    """
+    try:
+        response, _tokens = ads_module._generate_constrained_response(  # noqa: SLF001
+            backend,
+            BOUNDARY_SEGMENT_TAIL_PROMPT,
+            ads_module._render_segments_bounded([segment_id], segments),  # noqa: SLF001
+            {"type": "json_object"},
+        )
+        parsed = json.loads(response)
+        if set(parsed) != {"carries_program"} or not isinstance(parsed["carries_program"], bool):
+            raise ValueError("carries_program response must contain exactly one boolean")
+        return parsed["carries_program"]
+    except Exception as error:  # noqa: BLE001 - an unanswered question keeps the segment
+        progress("ads.detect.boundary.unanswered", f"{type(error).__name__}: {error}")
+        return True
+
+
+def recover_transcript_end_postroll(ads_module, backend, segments, detections, total_seconds):
+    """Recover a produced advertisement appended after the program signs off.
+
+    The opening review's mirror, and it exists for the same reason: a produced
+    spot carries none of the evidence the anchor recovery needs. Nobody on the
+    show reads it, it names no domain the sparse-evidence filter would see, and
+    a network cross-promotion for a different podcast asks you to subscribe
+    somewhere else rather than to buy anything. Two episodes reported on the
+    same day ended this way -- The Daily on a Chase Sapphire spot, TechCrunch
+    Daily on a Motley Fool one -- and the detector found neither.
+
+    The cut runs to the end of the file rather than to the last advertising
+    cue, because what is between them is the spot's own music bed.
+    """
+    if not segments or total_seconds <= 0:
+        return detections
+    end_s = float(segments[-1].end_s)
+    if any(float(ad.end_s) >= end_s - POSTROLL_ALREADY_CLAIMED_SECONDS for ad in detections):
+        progress("ads.detect.postroll.skipped", "the ending is already claimed")
+        return detections
+
+    floor_s = end_s - POSTROLL_RECOVERY_MAX_SECONDS
+    window_ids = [
+        segment_id for segment_id, segment in enumerate(segments)
+        if float(segment.end_s) > floor_s
+        and not any(float(ad.end_s) > float(segment.start_s) for ad in detections)
+    ][-POSTROLL_RECOVERY_MAX_SEGMENTS:]
+    if len(window_ids) < 2:
+        return detections
+
+    try:
+        advertising_start_id = _constrained_id(
+            ads_module, backend, POSTROLL_PROGRAM_END_PROMPT, "advertising_start_id",
+            window_ids, [-1, *window_ids], segments,
+        )
+    except Exception as error:  # noqa: BLE001 - an unanswered question never cuts audio
+        progress("ads.detect.postroll.skipped", f"closing review failed: {type(error).__name__}: {error}")
+        return detections
+    if advertising_start_id == -1:
+        progress("ads.detect.postroll.skipped", "the program runs to the end")
+        return detections
+
+    boundary_carries_program = advertising_start_id < window_ids[-1] and _tail_carries_program(
+        ads_module, backend, segments, advertising_start_id
+    )
+    if boundary_carries_program:
+        # The sign-off and the spot's first words share a segment, so the cut
+        # starts after it. One step only, for the same reason as the opening.
+        progress(
+            "ads.detect.boundary.shortened",
+            f"the program is still running inside segment {advertising_start_id}, "
+            "so the cut starts after it",
+        )
+        advertising_start_id += 1
+        boundary_carries_program = False
+
+    start_s = float(segments[advertising_start_id].start_s)
+    if total_seconds - start_s < POSTROLL_RECOVERY_MINIMUM_SECONDS:
+        progress("ads.detect.postroll.skipped", "the ending is too short to be a produced spot")
+        return detections
+    share = (total_seconds - start_s) / total_seconds
+    if share > MAXIMUM_SINGLE_AD_SHARE:
+        progress("ads.detect.postroll.skipped", f"the ending would be {share:.0%} of the episode")
+        return detections
+
+    tail_ids = [segment_id for segment_id in window_ids if segment_id >= advertising_start_id]
+    try:
+        program_id = _constrained_id(
+            ads_module, backend, POSTROLL_CONFIRM_PROMPT, "program_id",
+            tail_ids, [-1, *tail_ids], segments,
+        )
+    except Exception as error:  # noqa: BLE001 - an unanswered question never cuts audio
+        progress("ads.detect.postroll.skipped", f"closing confirmation failed: {type(error).__name__}: {error}")
+        return detections
+    if program_id == advertising_start_id and not boundary_carries_program:
+        # Two questions disagreeing about one segment, and the one asked about
+        # that segment alone wins. TechCrunch Daily ends on a promotion for
+        # another podcast that describes its own content the way a show
+        # describes itself, and the confirmation read the first segment of it as
+        # this program; the single-segment probe, handed nothing else to weigh,
+        # said there was no program in it. Believing the confirmation here costs
+        # two thirds of the spot for no reason anyone could name.
+        progress(
+            "ads.detect.postroll.contested",
+            f"the confirmation puts the program at {program_id} and the segment itself carries none; "
+            "keeping the boundary",
+        )
+        program_id = -1
+
+    if program_id != -1:
+        # One shrink, then the answer stands. The realistic disagreement is the
+        # first question overshooting by a segment or two -- The Daily's closing
+        # promo for another NYT show reads as advertising and its sign-off comes
+        # after it -- so the passage is narrowed to what the confirmation left
+        # and asked once more. A second disagreement is not a boundary dispute,
+        # it is the review being wrong about the whole ending.
+        shrunk_ids = [segment_id for segment_id in tail_ids if segment_id > program_id]
+        start_s = float(segments[shrunk_ids[0]].start_s) if shrunk_ids else 0.0
+        if not shrunk_ids or total_seconds - start_s < POSTROLL_RECOVERY_MINIMUM_SECONDS:
+            progress("ads.detect.postroll.skipped", f"the ending holds program content at {program_id}")
+            return detections
+        progress(
+            "ads.detect.postroll.shrunk",
+            f"program content at {program_id}, so the ending is narrowed to {shrunk_ids[0]}",
+        )
+        advertising_start_id = shrunk_ids[0]
+        try:
+            program_id = _constrained_id(
+                ads_module, backend, POSTROLL_CONFIRM_PROMPT, "program_id",
+                shrunk_ids, [-1, *shrunk_ids], segments,
+            )
+        except Exception as error:  # noqa: BLE001 - an unanswered question never cuts audio
+            progress("ads.detect.postroll.skipped", f"closing confirmation failed: {type(error).__name__}: {error}")
+            return detections
+        if program_id != -1:
+            progress("ads.detect.postroll.skipped", f"the ending still holds program content at {program_id}")
+            return detections
+
+    progress(
+        "ads.detect.postroll",
+        f"{start_s:.3f}-{total_seconds:.3f} after program ID {advertising_start_id}",
+    )
+    return ads_module._merge_adjacent([  # noqa: SLF001
+        *detections,
+        ads_module.AdSegment(start_s, total_seconds, 1.0, "ad_break"),
+    ])
+
+
+def _resize_one_oversized_span(ads_module, backend, segments, ad, total_seconds):
+    """Trim one too-large span back to where the program resumes, or decline.
+
+    Two questions in the shape the opening review established: the first
+    nominates a boundary, the second is handed only the shortened span and
+    asked to find program content inside it. A boundary in the wrong place has
+    the program in that passage, so the second question finds it and the trim
+    never happens.
+    """
+    span_ids = [
+        segment_id for segment_id, segment in enumerate(segments)
+        if float(segment.start_s) < float(ad.end_s) and float(segment.end_s) > float(ad.start_s)
+    ]
+    if len(span_ids) < 2:
+        return None
+    window_ids = span_ids[:OVERSIZED_SPAN_RESIZE_MAX_SEGMENTS]
+
+    try:
+        program_start_id = _constrained_id(
+            ads_module, backend, OVERSIZED_SPAN_PROGRAM_START_PROMPT, "program_start_id",
+            window_ids, window_ids, segments,
+        )
+    except Exception as error:  # noqa: BLE001 - an unanswered question never cuts audio
+        progress("ads.detect.span.resize.skipped", f"resize review failed: {type(error).__name__}: {error}")
+        return None
+    if program_start_id == window_ids[0]:
+        progress("ads.detect.span.resize.skipped", "the span is advertising throughout")
+        return None
+
+    if program_start_id - 1 > window_ids[0] and _program_starts_inside(
+        ads_module, backend, segments, program_start_id - 1
+    ):
+        # One step back only. The mixed segment is the boundary segment by
+        # construction: the advertisement ends in it, so the one before it is
+        # advertising throughout.
+        progress(
+            "ads.detect.boundary.shortened",
+            f"the program starts inside segment {program_start_id - 1}, so the cut stops before it",
+        )
+        program_start_id -= 1
+    end_s = float(segments[program_start_id].start_s)
+    if end_s <= float(ad.start_s):
+        progress("ads.detect.span.resize.skipped", "the program resumes before the span begins")
+        return None
+    share = (end_s - float(ad.start_s)) / total_seconds
+    if share > MAXIMUM_SINGLE_AD_SHARE:
+        progress(
+            "ads.detect.span.resize.skipped",
+            f"the program still resumes {share:.0%} into the episode",
+        )
+        return None
+
+    opening_ids = [segment_id for segment_id in window_ids if segment_id < program_start_id]
+    try:
+        program_id = _constrained_id(
+            ads_module, backend, OVERSIZED_SPAN_CONFIRM_PROMPT, "program_id",
+            opening_ids, [-1, *opening_ids], segments,
+        )
+    except Exception as error:  # noqa: BLE001 - an unanswered question never cuts audio
+        progress("ads.detect.span.resize.skipped", f"resize confirmation failed: {type(error).__name__}: {error}")
+        return None
+    if program_id != -1:
+        progress("ads.detect.span.resize.skipped", f"the shortened span holds program content at {program_id}")
+        return None
+
+    progress(
+        "ads.detect.span.resized",
+        f"{float(ad.start_s):.3f}-{float(ad.end_s):.3f} shortened to "
+        f"{float(ad.start_s):.3f}-{end_s:.3f} before program ID {program_start_id}",
+    )
+    # Only the front of the span is recovered. A true bracket -- advertising at
+    # both ends with program between -- keeps its tail read in the audio, which
+    # is the safe half of the trade and not worth a backwards pass to close.
+    return ads_module.AdSegment(float(ad.start_s), end_s, float(ad.confidence), ad.label)
+
+
+def resize_oversized_ad_spans(ads_module, backend, segments, detections, total_seconds):
+    """Ask where the program resumes inside any span too large to be an ad.
+
+    Runs while the model is loaded, before the arithmetic guard below, so a
+    span the detector overreached on can be recovered as the advertisement it
+    started as rather than dropped whole. Whatever this declines to trim is
+    still handed to `reject_implausible_ad_spans`, which is the net.
+
+    `total_seconds` is the probed audio duration, the same denominator the
+    rejection below uses, so the two bounds cannot disagree about how large a
+    span is.
+    """
+    if total_seconds <= 0 or not detections or not segments:
+        return detections
+    resized = []
+    for ad in detections:
+        share = (float(ad.end_s) - float(ad.start_s)) / total_seconds
+        if share <= MAXIMUM_SINGLE_AD_SHARE:
+            resized.append(ad)
+            continue
+        trimmed = _resize_one_oversized_span(ads_module, backend, segments, ad, total_seconds)
+        resized.append(trimmed if trimmed is not None else ad)
+    return resized
+
+
 def reject_implausible_ad_spans(detections, total_seconds):
     """Drop detections too large to be advertising, and say which and why.
 
@@ -1680,6 +2030,12 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
             progress("ads.detect.start", f"{len(segments)} segments")
             install_legacy_sponsor_opening_compatibility(ads_module)
             detections = ads_module.detect_ads(segments, counting)
+            # Probed before the recovery passes, not after them. The closing
+            # review cuts to the end of the file and sizes itself against the
+            # episode, and the case it exists for is the one where the detector
+            # found nothing at all, so a probe conditional on detections would
+            # never run for it. Both size guards then share this denominator.
+            total = probe_duration(audio_path)
             detections = recover_unclaimed_explicit_sponsor_reads(
                 ads_module,
                 counting,
@@ -1691,6 +2047,20 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
                 counting,
                 segments,
                 detections,
+            )
+            detections = recover_transcript_end_postroll(
+                ads_module,
+                counting,
+                segments,
+                detections,
+                total,
+            )
+            detections = resize_oversized_ad_spans(
+                ads_module,
+                counting,
+                segments,
+                detections,
+                total,
             )
         finally:
             try:
@@ -1708,9 +2078,6 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
         progress("ads.detect.complete", "0 spans")
         return audio_path, [], []
 
-    # Probed before the spans are reported, so the journal and the timeline
-    # describe what was actually cut rather than what the detector proposed.
-    total = probe_duration(audio_path)
     detections = reject_implausible_ad_spans(detections, total)
     ad_spans = [
         {
