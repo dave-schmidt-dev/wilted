@@ -752,6 +752,41 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertEqual(removed.id, "episode-id", "Restore identity must remain stable across renders")
     }
 
+    /// The Removed section wraps rows that carry their own identifiers, so it
+    /// has to be an explicit accessibility container. An identifier on a bare
+    /// container makes it an implicit element instead, and the rows stop
+    /// vending `wilted-podcast-removed-row-*` to a UI query even though they
+    /// still draw. That is exactly how the 2026-09-03 Mixed Larder journey
+    /// failed against a screenshot that showed the row present.
+    func testTheRemovedSectionIsAnExplicitAccessibilityContainer() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
+        let source = try String(contentsOf: root)
+
+        let identifier = try XCTUnwrap(source.range(of: ".accessibilityIdentifier(\"wilted-podcast-removed\")"))
+        let preceding = source[source.startIndex..<identifier.lowerBound]
+        let lastModifier = try XCTUnwrap(
+            preceding.range(of: ".accessibilityElement(children: .contain)", options: .backwards)
+        )
+        let between = preceding[lastModifier.upperBound...]
+        XCTAssertFalse(
+            between.contains("}"),
+            "wilted-podcast-removed must sit directly on a container marked .accessibilityElement(children: .contain)"
+        )
+        XCTAssertTrue(source.contains("wilted-podcast-restore-\\(dismissal.id)"))
+
+        // The row itself only vends a group when it has a shape to vend. The
+        // hierarchy snapshot from the failing 2026-09-03 journey shows the
+        // title and Restore button hoisted into the section instead, because
+        // this content shape was missing.
+        let row = try XCTUnwrap(
+            source.range(of: ".accessibilityIdentifier(\"wilted-podcast-removed-row-\\(dismissal.id)\")")
+        )
+        let rowModifiers = source[source.range(of: "private func dismissedRow")!.lowerBound..<row.lowerBound]
+        XCTAssertTrue(rowModifiers.contains(".contentShape(Rectangle())"))
+        XCTAssertTrue(rowModifiers.contains(".accessibilityElement(children: .contain)"))
+    }
+
     /// The producer window has no Downloads destination, so its copy must not
     /// send the reader to one. This was shipped: the Mac empty player told the
     /// reader to visit Downloads, and no pixel baseline could catch it because
