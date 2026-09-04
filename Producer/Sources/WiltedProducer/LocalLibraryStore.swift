@@ -1625,6 +1625,50 @@ public actor LocalLibraryStore {
         return entries.sorted(by: preparationEntryPrecedes)
     }
 
+    /// What the preparation that produced this revision removed.
+    ///
+    /// `preparationRuns()` decodes every journalled status in the library,
+    /// which is the wrong shape for a lookup the player performs each time it
+    /// loads a transcript. Only the terminal statuses of this item are
+    /// decoded, and only a successful one carries a timeline.
+    ///
+    /// The revision is part of the question rather than a detail of the
+    /// answer. Cutting an episode changes its bytes and therefore its
+    /// identity, so a timeline belongs to exactly one revision; drawing the
+    /// newest success over whatever is ready now would put cut markers on
+    /// uncut audio if a re-download or a prune ever moved the ready revision
+    /// back. Journal entries old enough to carry no revision are skipped, and
+    /// they predate timelines anyway.
+    public func latestPreparationTimeline(
+        for itemID: ItemID,
+        revisionID: RevisionID
+    ) throws -> PreparationStatus.PreparationTimeline? {
+        let raw = itemID.rawValue
+        let context = ModelContext(container)
+        var descriptor = FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
+            predicate: #Predicate { $0.itemID == raw },
+            sortBy: [SortDescriptor(\.emittedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = Self.maximumTimelineLookupRecords
+        let decoder = JSONDecoder()
+        for record in try context.fetch(descriptor) {
+            guard let status = try? decoder.decode(PreparationStatus.self, from: record.statusData),
+                  status.terminal,
+                  let result = status.terminalResult,
+                  result.outcome == .succeeded,
+                  result.revisionID == revisionID,
+                  let timeline = status.timeline else { continue }
+            return timeline
+        }
+        return nil
+    }
+
+    /// A ceiling on the newest-first scan above. An item that has been
+    /// prepared repeatedly still finds its last success within a few rows,
+    /// and a library whose journal was never pruned should not turn one
+    /// transcript load into a full-table decode.
+    private static let maximumTimelineLookupRecords = 64
+
     /// Every recorded preparation attempt, newest first.
     ///
     /// A run that emitted no terminal status is reported as non-terminal at

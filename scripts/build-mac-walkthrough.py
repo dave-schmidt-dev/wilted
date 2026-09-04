@@ -162,7 +162,13 @@ def build(captures, commit, date_iso, date_human, previous):
             "expands <code>wilted-player-transcript-expanded</code> in place above the rail rather than opening "
             "a sheet or a new route; the toggle renders selected while expanded. What the panel shows depends on "
             "the item: an episode whose feed publishes a timed transcript reads &ldquo;synced from the feed&rdquo; "
-            "and follows the audio, and the fixture article here carries no transcript at all.",
+            "and follows the audio, and the fixture article here carries no transcript at all. "
+            "A prepared episode also shows what preparation cut: each removed span appears in place at the "
+            "seam, reading &ldquo;Ad removed &middot; 1:00 &middot; original 34:12&ndash;35:12&rdquo;, "
+            "stamped on the prepared clock the surrounding lines use and naming the original span, which "
+            "is what Prep reports for the same run. It is not selectable, because the audio it describes "
+            "is not in the file. Untimed prose has nowhere to put a marker in place, so the same cuts are "
+            "listed under the text instead.",
             captures),
         "upnext": figure(
             "fig-playback-upnext", "6.3-up-next-expanded",
@@ -341,7 +347,7 @@ def build(captures, commit, date_iso, date_human, previous):
 <ul>
 <li>No frame shows a real feed. Every capture runs against a UI fixture, so titles, counts, and durations are fixture values.</li>
 <li>The single add box is captured idle. Its three outcomes &mdash; feed, article, and article-advertising-a-feed &mdash; are covered by automated tests rather than by pixels here, because each needs a live fetch the capture session does not perform.</li>
-<li>Preparation is captured empty. No frame shows advertisement removal running or a prepared summary.</li>
+<li>Preparation is captured empty. No frame shows advertisement removal running or a prepared summary, and therefore no frame shows a removed-advertisement marker in the transcript either. Placement is covered by tests; that it reads correctly beside real speech is an owner observation, listed in section 14.</li>
 <li>Transcript synchronisation against real audio is not captured. The panel is shown expanded; a timed transcript following the playback clock is covered by tests, not by a frame.</li>
 <li>The sidebar in these frames is the real one, but pixel snapshot baselines cannot see it: a <code>NavigationSplitView</code> navigation column is hosted in a separate AppKit hierarchy that offscreen rendering does not draw. Sidebar behaviour is owned by the XCUITest suite instead.</li>
 <li>No system-owned sheet is captured, as section 11 states.</li>
@@ -356,6 +362,7 @@ def build(captures, commit, date_iso, date_human, previous):
 <li>Paste a podcast address into the same box and confirm it subscribes, and that the feed appears on Podcast feeds.</li>
 <li>Download an episode, prepare it, and confirm the prepared audio plays from the position you were at.</li>
 <li>Expand Transcript on a prepared episode and confirm the text follows the audio.</li>
+<li>On that same episode, confirm each removed advertisement is marked in the transcript where the audio jumps, and that the original times it names match what Prep reports for the run.</li>
 <li>Hide a feed from Larder, confirm its episodes leave the list, and switch it back on.</li>
 <li>Unsubscribe from a feed and confirm the row goes.</li>
 <li>Switch destinations while playing and confirm the rail keeps its state.</li>

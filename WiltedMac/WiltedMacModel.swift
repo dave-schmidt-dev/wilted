@@ -553,6 +553,31 @@ struct WiltedMacTranscript: Equatable, Sendable {
     static let unavailable = WiltedMacTranscript(availability: .absent, text: nil)
 }
 
+/// One advertisement preparation cut out of an episode, placed where the cut
+/// shows up in the audio the listener is actually hearing.
+///
+/// The seam is on the prepared clock because that is what the transcript and
+/// the scrubber are counting in; the span is on the original clock because
+/// that is what the cut removed, and it is what Prep reports for the same run.
+struct WiltedMacRemovedSpan: Identifiable, Equatable, Sendable {
+    let id: Int
+    /// Where the cut lands in the prepared audio.
+    let preparedSeconds: TimeInterval
+    let originalStartSeconds: TimeInterval
+    let originalEndSeconds: TimeInterval
+    /// The worker's normalized name for what it removed.
+    let label: String
+
+    var durationSeconds: TimeInterval { max(0, originalEndSeconds - originalStartSeconds) }
+
+    /// Reads as one line in the transcript, where it stands between two spoken
+    /// lines and has to say what is missing without being mistaken for speech.
+    var summary: String {
+        "Ad removed · \(WiltedDuration.clock(durationSeconds))"
+            + " · original \(WiltedDuration.clock(originalStartSeconds))–\(WiltedDuration.clock(originalEndSeconds))"
+    }
+}
+
 struct WiltedMacPreparation: Equatable, Sendable {
     enum Phase: String, Sendable {
         case preparing
@@ -737,6 +762,10 @@ final class WiltedMacModel {
     private(set) var currentTranscript: WiltedMacTranscript?
     private(set) var podcastQueueIDs: [String] = []
     private(set) var currentPodcastEpisodeID: String?
+    /// Removed spans per episode, filled in as each episode's transcript
+    /// loads. Keyed rather than held as one current value so that changing
+    /// episode cannot leave the previous episode's cuts on screen.
+    private var removedSpansByEpisode: [String: [WiltedMacRemovedSpan]] = [:]
     private(set) var playbackRate: Double = WiltedMacModel.initialPlaybackRate
     private(set) var playbackVolume: Double = 1
     private(set) var playbackOperationStatus: String?
@@ -2421,6 +2450,41 @@ final class WiltedMacModel {
             return
         }
         await loadTranscript(itemID: itemID, revisionID: stored.revision.revisionID)
+        await loadRemovedSpans(itemID: itemID, revisionID: stored.revision.revisionID)
+    }
+
+    /// Reads the cuts from the preparation journal rather than from the
+    /// transcript.
+    ///
+    /// A marker written into the transcript itself would have to be re-based
+    /// every time the audio was cut again, and would drift from the numbers
+    /// Prep reports for the same run. The journal already holds both clocks.
+    private func loadRemovedSpans(itemID: ItemID, revisionID: RevisionID) async {
+        guard let store else { return }
+        guard let timeline = try? await store.latestPreparationTimeline(
+            for: itemID, revisionID: revisionID
+        ) else {
+            removedSpansByEpisode[itemID.rawValue] = []
+            return
+        }
+        removedSpansByEpisode[itemID.rawValue] = Self.removedSpans(in: timeline)
+    }
+
+    /// The removed intervals placed on the prepared clock, in the order a
+    /// listener meets them.
+    nonisolated static func removedSpans(
+        in timeline: PreparationStatus.PreparationTimeline
+    ) -> [WiltedMacRemovedSpan] {
+        timeline.removed.enumerated().map { index, removed in
+            WiltedMacRemovedSpan(
+                id: index,
+                preparedSeconds: preparedSeam(for: removed, in: timeline),
+                originalStartSeconds: removed.originalStartSeconds,
+                originalEndSeconds: removed.originalEndSeconds,
+                label: removed.label
+            )
+        }
+        .sorted { $0.preparedSeconds < $1.preparedSeconds }
     }
 #endif
 
@@ -2976,14 +3040,24 @@ final class WiltedMacModel {
         return "\(PodcastPreparationResult.readyLabel) · \(ads) · \(PodcastPreparationResult.transcriptStep(.aligned))"
     }
 
+    /// Where a cut lands in the prepared audio: the end of the last kept
+    /// interval before it, carried onto the output clock. Zero when the cut
+    /// starts the episode, because nothing was kept ahead of it.
+    nonisolated static func preparedSeam(
+        for removed: PreparationStatus.PreparationTimeline.RemovedInterval,
+        in timeline: PreparationStatus.PreparationTimeline
+    ) -> TimeInterval {
+        timeline.kept.last(where: { $0.originalEndSeconds <= removed.originalStartSeconds })
+            .map { $0.outputStartSeconds + ($0.originalEndSeconds - $0.originalStartSeconds) } ?? 0
+    }
+
     /// A Prep row's concise evidence of one cut: the prepared-file seam, the
     /// original span, its duration, and the worker's normalized label.
     nonisolated static func removedSpanLine(
         _ removed: PreparationStatus.PreparationTimeline.RemovedInterval,
         in timeline: PreparationStatus.PreparationTimeline
     ) -> String {
-        let seam = timeline.kept.last(where: { $0.originalEndSeconds <= removed.originalStartSeconds })
-            .map { $0.outputStartSeconds + ($0.originalEndSeconds - $0.originalStartSeconds) } ?? 0
+        let seam = preparedSeam(for: removed, in: timeline)
         return "\(WiltedDuration.clock(seam)) in prepared · original \(WiltedDuration.clock(removed.originalStartSeconds))–\(WiltedDuration.clock(removed.originalEndSeconds)) · \(WiltedDuration.clock(removed.originalEndSeconds - removed.originalStartSeconds)) \(removed.label)"
     }
 
@@ -3525,6 +3599,15 @@ final class WiltedMacModel {
 
     /// The transcript line the audio is currently in, if the transcript is
     /// synchronised with it.
+    /// What preparation cut out of the episode now playing.
+    ///
+    /// Empty for an article, which is synthesized from text and has nothing to
+    /// cut, and for an episode played from an unprepared revision.
+    var currentRemovedSpans: [WiltedMacRemovedSpan] {
+        guard let currentPodcastEpisodeID else { return [] }
+        return removedSpansByEpisode[currentPodcastEpisodeID] ?? []
+    }
+
     var activeTranscriptCueID: Int? {
         currentTranscript?.cueIndex(at: playbackPositionSeconds)
     }

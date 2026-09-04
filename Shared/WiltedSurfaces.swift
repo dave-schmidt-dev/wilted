@@ -207,6 +207,22 @@ public struct WiltedTranscriptCueLine: Identifiable, Equatable, Sendable {
     public var stamp: String { WiltedDuration.clock(startSeconds) }
 }
 
+/// A gap in the audio where preparation removed something, shown in place.
+public struct WiltedTranscriptMarkerLine: Identifiable, Equatable, Sendable {
+    public let id: Int
+    /// Where the cut lands on the same clock the cues are stamped in.
+    public let atSeconds: TimeInterval
+    public let text: String
+
+    public init(id: Int, atSeconds: TimeInterval, text: String) {
+        self.id = id
+        self.atSeconds = atSeconds
+        self.text = text
+    }
+
+    public var stamp: String { WiltedDuration.clock(atSeconds) }
+}
+
 /// A transcript that follows the audio.
 ///
 /// The active line is highlighted and kept on screen as playback advances, and
@@ -214,29 +230,76 @@ public struct WiltedTranscriptCueLine: Identifiable, Equatable, Sendable {
 /// identity rather than by the clock, so a listener reading ahead is not
 /// yanked back on every tick -- only when the line actually changes.
 public struct WiltedSyncedTranscriptView: View {
+    /// One row of the transcript: a spoken line, or a note about audio that
+    /// is not there. Ordered by the clock, so a marker sits between the lines
+    /// it was cut from rather than in a list of its own.
+    enum Row: Identifiable {
+        case cue(WiltedTranscriptCueLine)
+        case marker(WiltedTranscriptMarkerLine)
+
+        var id: String {
+            switch self {
+            case .cue(let cue): "cue-\(cue.id)"
+            case .marker(let marker): "marker-\(marker.id)"
+            }
+        }
+    }
+
     @Environment(\.colorScheme) private var colorScheme
     private let cues: [WiltedTranscriptCueLine]
+    private let markers: [WiltedTranscriptMarkerLine]
     private let activeCueID: Int?
     private let identifier: String
     private let onSelect: (WiltedTranscriptCueLine) -> Void
 
     public init(
         cues: [WiltedTranscriptCueLine],
+        markers: [WiltedTranscriptMarkerLine] = [],
         activeCueID: Int?,
         identifier: String,
         onSelect: @escaping (WiltedTranscriptCueLine) -> Void
     ) {
         self.cues = cues
+        self.markers = markers
         self.activeCueID = activeCueID
         self.identifier = identifier
         self.onSelect = onSelect
+    }
+
+    /// Cues and markers on one clock. Internal rather than private because
+    /// where a marker lands is the whole point of it, and that is worth a
+    /// test rather than a screenshot.
+    ///
+    /// A marker is placed before the first cue that starts at or after it, so
+    /// it reads as "the next thing you would have heard is gone" rather than
+    /// interrupting the line already in progress. Ties keep the marker first
+    /// for the same reason.
+    var rows: [Row] {
+        guard !markers.isEmpty else { return cues.map(Row.cue) }
+        var merged: [Row] = []
+        merged.reserveCapacity(cues.count + markers.count)
+        var pending = markers.sorted { $0.atSeconds < $1.atSeconds }
+        for cue in cues {
+            while let next = pending.first, next.atSeconds <= cue.startSeconds {
+                merged.append(.marker(next))
+                pending.removeFirst()
+            }
+            merged.append(.cue(cue))
+        }
+        merged.append(contentsOf: pending.map(Row.marker))
+        return merged
     }
 
     public var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-                    ForEach(cues) { cue in line(cue) }
+                    ForEach(rows) { row in
+                        switch row {
+                        case .cue(let cue): line(cue)
+                        case .marker(let marker): removedLine(marker)
+                        }
+                    }
                 }
                 .padding(.vertical, WiltedTheme.Spacing.small)
             }
@@ -277,6 +340,27 @@ public struct WiltedSyncedTranscriptView: View {
         .accessibilityLabel("\(cue.stamp). \(cue.text)")
         .accessibilityAddTraits(isActive ? .isSelected : [])
         .accessibilityIdentifier("\(identifier)-cue-\(cue.id)")
+    }
+
+    /// Deliberately not a button: there is nothing to seek to, because the
+    /// audio it describes is not in the file.
+    @ViewBuilder private func removedLine(_ marker: WiltedTranscriptMarkerLine) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: WiltedTheme.Spacing.small) {
+            Text(marker.stamp)
+                .font(WiltedTheme.font(.utility))
+                .monospacedDigit()
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            Text(marker.text)
+                .font(WiltedTheme.font(.utility))
+                .italic()
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 2)
+        .padding(.horizontal, WiltedTheme.Spacing.small)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(marker.stamp). \(marker.text)")
+        .accessibilityIdentifier("\(identifier)-removed-\(marker.id)")
     }
 }
 

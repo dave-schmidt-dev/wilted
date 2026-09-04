@@ -1029,6 +1029,22 @@ final class WiltedMacModelTests: XCTestCase {
                            try TranscriptCue(startSeconds: 0.5, endSeconds: 1.0, text: "Second line.")],
                     updatedAt: created
                 ))
+                try await store.record(preparation: PreparationJournalEntry(
+                    id: "prep-synced", itemID: episodeID, requestID: "podcast-prepare|synced",
+                    status: try PreparationStatus(
+                        stage: .completed, detail: "ready", fraction: 1, cancellable: false,
+                        terminalResult: try PreparationTerminalResult(
+                            outcome: .succeeded, revisionID: assembled.revision.revisionID
+                        ),
+                        emittedAt: created,
+                        timeline: try PreparationStatus.PreparationTimeline(
+                            removed: [try .init(originalStartSeconds: 30, originalEndSeconds: 90,
+                                                label: "advertisement", confidence: 0.9)],
+                            kept: [try .init(originalStartSeconds: 0, originalEndSeconds: 30, outputStartSeconds: 0),
+                                   try .init(originalStartSeconds: 90, originalEndSeconds: 200, outputStartSeconds: 30)]
+                        )
+                    )
+                ))
                 return store
             }, preferences: WiltedMacTestPreferences.ephemeral()
         )
@@ -1045,6 +1061,74 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(transcript.cues.map(\.text), ["First line.", "Second line."])
         XCTAssertEqual(transcript.disclosureTitle, "Transcript \u{00B7} synced from the feed")
         XCTAssertEqual(transcript.cueIndex(at: 0.6), 1)
+
+        // What preparation cut, placed where the listener meets it: the
+        // seam is on the prepared clock the cues are stamped in, and the
+        // span it names is on the original clock, which is what Prep reports
+        // for the same run.
+        let spans = model.currentRemovedSpans
+        XCTAssertEqual(spans.count, 1, "a prepared episode says what came out of it")
+        XCTAssertEqual(spans.first?.preparedSeconds, 30)
+        XCTAssertEqual(spans.first?.originalStartSeconds, 30)
+        XCTAssertEqual(spans.first?.originalEndSeconds, 90)
+        XCTAssertEqual(spans.first?.summary, "Ad removed \u{00B7} 1:00 \u{00B7} original 0:30–1:30")
+    }
+
+    /// Placement is the whole point: a cut is meaningless unless it sits where
+    /// the audio jumps. The seam is the end of the last kept interval carried
+    /// onto the output clock, so the second cut of an episode has to account
+    /// for everything removed ahead of it rather than reporting its original
+    /// time.
+    func testRemovedSpansArePlacedOnThePreparedClock() throws {
+        let timeline = try PreparationStatus.PreparationTimeline(
+            removed: [try .init(originalStartSeconds: 60, originalEndSeconds: 120, label: "advertisement", confidence: 0.9),
+                      try .init(originalStartSeconds: 600, originalEndSeconds: 690, label: "sponsor", confidence: 0.8)],
+            kept: [try .init(originalStartSeconds: 0, originalEndSeconds: 60, outputStartSeconds: 0),
+                   try .init(originalStartSeconds: 120, originalEndSeconds: 600, outputStartSeconds: 60),
+                   try .init(originalStartSeconds: 690, originalEndSeconds: 1_200, outputStartSeconds: 540)]
+        )
+        let spans = WiltedMacModel.removedSpans(in: timeline)
+        XCTAssertEqual(spans.map(\.preparedSeconds), [60, 540],
+                       "the second cut lands a minute earlier than its original time, because the first was removed")
+        XCTAssertEqual(spans.map(\.originalStartSeconds), [60, 600])
+        XCTAssertEqual(spans.map(\.summary), [
+            "Ad removed \u{00B7} 1:00 \u{00B7} original 1:00–2:00",
+            "Ad removed \u{00B7} 1:30 \u{00B7} original 10:00–11:30",
+        ])
+    }
+
+    /// A cut that opens the episode has nothing kept ahead of it, so it sits
+    /// at the very start rather than being dropped or placed by a fallback
+    /// that happens to also be zero for a different reason.
+    func testACutAtTheStartOfAnEpisodeSitsAtZero() throws {
+        let timeline = try PreparationStatus.PreparationTimeline(
+            removed: [try .init(originalStartSeconds: 0, originalEndSeconds: 30, label: "advertisement", confidence: 0.9)],
+            kept: [try .init(originalStartSeconds: 30, originalEndSeconds: 600, outputStartSeconds: 0)]
+        )
+        XCTAssertEqual(WiltedMacModel.removedSpans(in: timeline).map(\.preparedSeconds), [0])
+    }
+
+    /// The transcript pane merges cues and cuts onto one clock. A marker
+    /// belongs before the first line that starts at or after it: it describes
+    /// audio the listener is about to not hear, so interrupting the line
+    /// already in progress would put it a beat too late.
+    func testRemovedMarkersAreMergedBeforeTheLineTheyPrecede() {
+        let cues = [
+            WiltedTranscriptCueLine(id: 0, startSeconds: 0, text: "Before."),
+            WiltedTranscriptCueLine(id: 1, startSeconds: 60, text: "After."),
+            WiltedTranscriptCueLine(id: 2, startSeconds: 90, text: "Later."),
+        ]
+        let markers = [
+            WiltedTranscriptMarkerLine(id: 1, atSeconds: 95, text: "Ad removed"),
+            WiltedTranscriptMarkerLine(id: 0, atSeconds: 60, text: "Ad removed"),
+        ]
+        let view = WiltedSyncedTranscriptView(cues: cues, markers: markers, activeCueID: nil,
+                                              identifier: "test") { _ in }
+        XCTAssertEqual(view.rows.map(\.id), ["cue-0", "marker-0", "cue-1", "cue-2", "marker-1"],
+                       "markers sort into the cues by time, and one past the last line still shows")
+
+        let withoutMarkers = WiltedSyncedTranscriptView(cues: cues, activeCueID: nil, identifier: "test") { _ in }
+        XCTAssertEqual(withoutMarkers.rows.map(\.id), ["cue-0", "cue-1", "cue-2"])
     }
 
     // MARK: - One add box

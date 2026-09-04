@@ -98,6 +98,81 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertEqual(flags, [true], "read back after reopen")
     }
 
+    /// The player asks what preparation cut out of an episode so the
+    /// transcript can say so in place. It has to be the newest success: a
+    /// later failed attempt removed nothing, and answering with its absent
+    /// timeline would erase markers the listener can still hear the seams of.
+    func testTheLatestSuccessfulPreparationTimelineIsWhatIsReported() async throws {
+        let url = makeURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let article = try article()
+        let revision = try revision(for: article, id: "rev-timeline")
+        try await store.save(article: article)
+
+        let beforeAnyPreparation = try await store.latestPreparationTimeline(
+            for: article.itemID, revisionID: revision.revisionID
+        )
+        XCTAssertNil(beforeAnyPreparation, "an item nothing has prepared has no cuts")
+
+        let firstTimeline = try PreparationStatus.PreparationTimeline(
+            removed: [try .init(originalStartSeconds: 60, originalEndSeconds: 90, label: "advertisement", confidence: 0.9)],
+            kept: [try .init(originalStartSeconds: 0, originalEndSeconds: 60, outputStartSeconds: 0),
+                   try .init(originalStartSeconds: 90, originalEndSeconds: 200, outputStartSeconds: 60)]
+        )
+        try await store.record(preparation: PreparationJournalEntry(
+            id: "prep-old", itemID: article.itemID, requestID: "request-old",
+            status: try PreparationStatus(
+                stage: .completed, detail: "ready", fraction: 1, cancellable: false,
+                terminalResult: try PreparationTerminalResult(outcome: .succeeded, revisionID: revision.revisionID),
+                emittedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000)),
+                timeline: firstTimeline
+            )
+        ))
+
+        let secondTimeline = try PreparationStatus.PreparationTimeline(
+            removed: [try .init(originalStartSeconds: 30, originalEndSeconds: 45, label: "sponsor", confidence: 0.8)],
+            kept: [try .init(originalStartSeconds: 0, originalEndSeconds: 30, outputStartSeconds: 0),
+                   try .init(originalStartSeconds: 45, originalEndSeconds: 200, outputStartSeconds: 30)]
+        )
+        try await store.record(preparation: PreparationJournalEntry(
+            id: "prep-new", itemID: article.itemID, requestID: "request-new",
+            status: try PreparationStatus(
+                stage: .completed, detail: "ready", fraction: 1, cancellable: false,
+                terminalResult: try PreparationTerminalResult(outcome: .succeeded, revisionID: revision.revisionID),
+                emittedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_100)),
+                timeline: secondTimeline
+            )
+        ))
+
+        // A later attempt that failed cut nothing, so it must not answer.
+        try await store.record(preparation: PreparationJournalEntry(
+            id: "prep-failed", itemID: article.itemID, requestID: "request-failed",
+            status: try PreparationStatus(
+                stage: .failed, detail: "worker exited", fraction: nil, cancellable: false,
+                terminalResult: try PreparationTerminalResult(
+                    outcome: .failed,
+                    error: try ProducerError(code: .failed, message: "worker exited", retryable: true)
+                ),
+                emittedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_200))
+            )
+        ))
+
+        let reported = try await store.latestPreparationTimeline(
+            for: article.itemID, revisionID: revision.revisionID
+        )
+        XCTAssertEqual(reported, secondTimeline, "the newest success, not the newest terminal status")
+
+        // Cutting an episode changes its bytes, so a timeline describes one
+        // revision and no other. Answering for a revision this run did not
+        // produce would draw cut markers over uncut audio.
+        let otherRevision = try self.revision(for: article, id: "rev-timeline-other")
+        let forAnotherRevision = try await store.latestPreparationTimeline(
+            for: article.itemID, revisionID: otherRevision.revisionID
+        )
+        XCTAssertNil(forAnotherRevision, "a success recorded for a different revision is not this revision's timeline")
+    }
+
     func testInterruptedStoreReopensWithArticleRevisionPreparationAndPlayback() async throws {
         let url = makeURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

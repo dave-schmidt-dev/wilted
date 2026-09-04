@@ -1542,6 +1542,9 @@ struct WiltedMacCompactPlayer: View {
                     cues: transcript.cues.map {
                         WiltedTranscriptCueLine(id: $0.id, startSeconds: $0.startSeconds, text: $0.text)
                     },
+                    markers: model.currentRemovedSpans.map {
+                        WiltedTranscriptMarkerLine(id: $0.id, atSeconds: $0.preparedSeconds, text: $0.summary)
+                    },
                     activeCueID: model.activeTranscriptCueID,
                     identifier: "wilted-now-playing-synced-transcript"
                 ) { model.seekToTranscriptCue(transcript.cues[$0.id]) }
@@ -1568,6 +1571,21 @@ struct WiltedMacCompactPlayer: View {
                             : "Transcript unavailable. Prepare this episode to add one.",
                         identifier: "wilted-now-playing-transcript"
                     )
+                    // Untimed prose has nowhere to put a marker in place, so
+                    // the cuts are listed instead of dropped silently.
+                    if !model.currentRemovedSpans.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(model.currentRemovedSpans) { span in
+                                Text(span.summary)
+                                    .font(WiltedTheme.font(.utility))
+                                    .italic()
+                                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                                    .accessibilityIdentifier("wilted-now-playing-removed-\(span.id)")
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("wilted-now-playing-removed-spans")
+                    }
                     // Backfill fetches article text from the web; an episode's
                     // transcript comes from preparation instead.
                     if !transcript.isReadable, model.currentEpisode == nil {
