@@ -353,6 +353,13 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     let releasedAt: Date
     let durationSeconds: TimeInterval?
     let playbackSeconds: TimeInterval
+    /// Whether the durable record says this episode is finished.
+    ///
+    /// Separate from `playbackSeconds` reaching the duration, because the two
+    /// answer different questions: audio can stop a few seconds short of the
+    /// end and still be finished, and an episode marked finished by hand never
+    /// reached the end at all.
+    var isPlayed: Bool = false
     var downloadState: WiltedMacEpisodeDownloadState
     var preparationState: WiltedMacEpisodePreparationState = .notPrepared
 
@@ -360,6 +367,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         lhs.id == rhs.id && lhs.title == rhs.title && lhs.feedTitle == rhs.feedTitle &&
             lhs.summary == rhs.summary && lhs.notes == rhs.notes && lhs.artworkURL == rhs.artworkURL && lhs.releasedAt == rhs.releasedAt &&
             lhs.durationSeconds == rhs.durationSeconds && lhs.playbackSeconds == rhs.playbackSeconds &&
+            lhs.isPlayed == rhs.isPlayed &&
             lhs.downloadState == rhs.downloadState && lhs.preparationState == rhs.preparationState
     }
 
@@ -746,6 +754,13 @@ final class WiltedMacModel {
     private(set) var selectedArticleID: String?
     private(set) var isNowPlaying = false
     private(set) var isPlaying = false
+    /// Whether what is loaded in the player is already recorded as finished.
+    ///
+    /// Mirrored from the controller rather than read through it, because the
+    /// controller is not observable: a view reading `playback.completed`
+    /// directly would render the value it saw when it was last redrawn for
+    /// some other reason.
+    private(set) var playbackCompleted = false
     private(set) var playbackError: String?
     /// Readout state the listener already published. The producer's player
     /// showed transports and nothing else, so the Mac could not answer "how
@@ -2401,6 +2416,7 @@ final class WiltedMacModel {
         // readout frozen between transport presses.
         playbackPositionSeconds = min(max(0, playback.livePositionSeconds), max(0, playback.durationSeconds))
         isPlaying = playback.liveIsPlaying
+        playbackCompleted = playback.completed
         playbackRate = Double(playback.playbackRate)
 #endif
         // The one funnel every transport and the player's timer already goes
@@ -2626,6 +2642,32 @@ final class WiltedMacModel {
                 self.refreshPlaybackReadout()
                 await self.queueCurrentPlaybackCheckpoint()
             } catch { self.playbackError = "Playback restart is unavailable." }
+        }
+#endif
+    }
+
+    /// Retires the loaded episode without playing the rest of it.
+    ///
+    /// The listener who is finished at 91% has no other way to close an
+    /// episode out: progress is written from where the audio is, so an
+    /// abandoned episode stays at 91% for good and the Larder goes on offering
+    /// it. Nothing advances — the press says "I am done with this", not "play
+    /// the next thing".
+    ///
+    /// The library is reloaded rather than patched in memory, because the row
+    /// reads its played state from the same durable record the player just
+    /// wrote, and the two disagreeing is worse than the reload costs.
+    func markCurrentPlaybackCompleted() {
+#if canImport(WiltedProducer)
+        guard let playback else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await playback.markCompleted()
+                self.refreshPlaybackReadout()
+                await self.queueCurrentPlaybackCheckpoint()
+                await self.reloadLibraryRows()
+            } catch { self.playbackError = "This episode could not be marked completed." }
         }
 #endif
     }
@@ -3245,6 +3287,18 @@ final class WiltedMacModel {
         }
     }
 
+    /// Re-reads the rows the Library draws from the store.
+    ///
+    /// Failure is silent on purpose: the rows on screen are the ones the last
+    /// successful read produced, and replacing them with nothing because a
+    /// refresh failed would take the library away over a transient error.
+    private func reloadLibraryRows() async {
+        guard let store, let values = try? await loadLibrary(from: store) else { return }
+        articles = values.articles
+        episodes = values.episodes
+        subscriptions = values.subscriptions
+    }
+
     private func loadLibrary(from store: LocalLibraryStore) async throws
         -> (articles: [WiltedMacArticle], episodes: [WiltedMacEpisode], subscriptions: [WiltedMacSubscription]) {
         var articleValues: [WiltedMacArticle] = []
@@ -3311,7 +3365,8 @@ final class WiltedMacModel {
                 notes: episode.notes, artworkURL: episode.artworkURL ?? feeds[episode.feedID]?.artworkURL,
                 releasedAt: (episode.publishedTime ?? episode.createdAt).date,
                 durationSeconds: revision?.revision.durationSeconds ?? episode.durationSeconds,
-                playbackSeconds: playbackState?.positionSeconds ?? 0, downloadState: downloadState,
+                playbackSeconds: playbackState?.positionSeconds ?? 0,
+                isPlayed: playbackState?.completed ?? false, downloadState: downloadState,
                 preparationState: Self.preparationState(run: runs[episode.itemID], transcript: transcript)
             ))
         }

@@ -121,9 +121,14 @@ def build(captures, commit, date_iso, date_human, previous):
             "first, then each step's result, journalled by the pipeline when it finished rather than "
             "reconstructed from the transcript. A prepared row offers Play and Up Next but no Prepare; "
             "redoing a good run is Prepare again in the row's &hellip; menu "
-            "(<code>wilted-episode-actions-item-&lt;hash&gt;</code>), beside Remove, which is permanent. "
-            "Every row leads with a produce tile where there is no artwork: lettuce for an article, cabbage "
-            "for an episode.",
+            "(<code>wilted-episode-actions-item-&lt;hash&gt;</code>), which is the only thing that menu holds "
+            "and the only reason a row draws one &mdash; an unprepared row has no &hellip; at all. Skipping is "
+            "a row button beside Download (<code>wilted-episode-skip-item-&lt;hash&gt;</code>): it is the one "
+            "action a reader repeats down a feed, and it is permanent in the sense that a refresh will not "
+            "bring the episode back, though it is listed under Removed on Podcast feeds with a Restore beside "
+            "it. A row whose durable record says the episode is finished reads &ldquo;Played &middot; "
+            "&lt;length&gt;&rdquo; in place of its progress line. Every row leads with a produce tile where "
+            "there is no artwork: lettuce for an article, cabbage for an episode.",
             captures),
         "feeds": figure(
             "fig-feeds-page", "5.1-feeds-page",
@@ -153,7 +158,15 @@ def build(captures, commit, date_iso, date_human, previous):
             "Controls present: <code>wilted-player-status</code>, <code>wilted-player-speed</code>, "
             "<code>wilted-player-previous</code>, <code>wilted-player-rewind</code>, "
             "<code>wilted-player-play-pause</code>, <code>wilted-player-forward</code>, "
-            "<code>wilted-player-next</code>, and <code>wilted-player-scrubber</code>. The speed control opens at the last chosen rate, 1.25x on a fresh install, and keeps whatever is chosen across relaunch. Where the item has no artwork the rail shows the produce tile its row does.",
+            "<code>wilted-player-next</code>, <code>wilted-player-restart</code>, "
+            "<code>wilted-player-mark-completed</code>, and <code>wilted-player-scrubber</code>. Restart and "
+            "Mark completed sit together because they are the same kind of decision about the whole episode "
+            "rather than about the playhead: start it over, or close it out. Marking writes the same finished "
+            "record that reaching the end writes, and deliberately does not advance to the next episode; the "
+            "button then reads Completed and is unavailable, which is the only thing on the row that changes. "
+            "The speed control opens at the last chosen rate, 1.25x on a fresh install, and keeps whatever is "
+            "chosen across relaunch. Where the item has no artwork the rail shows the produce tile its row "
+            "does.",
             captures),
         "transcript": figure(
             "fig-playback-transcript", "6.2-transcript-expanded",
@@ -371,6 +384,8 @@ def build(captures, commit, date_iso, date_human, previous):
 <li>Press the keyboard's play/pause key with Wilted in the background and confirm the audio stops and starts, and that the widget agrees.</li>
 <li>Use the widget's skip controls and confirm they move by the same 15 and 30 seconds the on-screen rail does, and that next and previous are unavailable at the ends of Up Next.</li>
 <li>Let an episode reach its end with the window closed and confirm the widget stops claiming to be playing.</li>
+<li>Press Mark completed part way through an episode and confirm the audio stops, the button reads Completed, the queue stays on the same episode, and the Larder row changes to &ldquo;Played&rdquo;.</li>
+<li>Skip an episode from its row button in one press, confirm it leaves Larder, and find it under Removed on Podcast feeds with Restore beside it.</li>
 </ol></section>
 
 </main></body></html>

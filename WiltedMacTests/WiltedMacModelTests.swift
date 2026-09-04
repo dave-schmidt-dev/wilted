@@ -1074,6 +1074,76 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(spans.first?.summary, "Ad removed \u{00B7} 1:00 \u{00B7} original 0:30–1:30")
     }
 
+    /// An episode the listener is finished with early has no other way to
+    /// close out: progress is written from where the audio is, so it stays at
+    /// the abandoned position for good and the Larder goes on offering it.
+    /// The press has to reach the durable record and come back to the row,
+    /// because a control whose only effect is a scrubber jumping to the end is
+    /// indistinguishable from one that did nothing.
+    func testMarkingTheCurrentEpisodeCompletedShowsOnItsRow() async throws {
+        let directory = temporaryDirectory("episode-mark-completed")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let audioURL = directory.appendingPathComponent("episode.m4a")
+
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/completed.xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/completed.mp3"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let episodeID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "completed-1", enclosureURL: enclosureURL
+        )
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+
+        let model = WiltedMacModel(
+            arguments: [],
+            stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Finished", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await store.save(episode: try PodcastEpisode(
+                    itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: "completed-1",
+                    title: "Finished episode", publishedTime: created, enclosureURL: enclosureURL,
+                    enclosureMediaType: "audio/mpeg", createdAt: created
+                ))
+                let assembled = try AudioAssembler().assemble(
+                    pcm: (0..<44_100).map { Float(0.2 * sin(2 * Double.pi * 220 * Double($0) / 44_100)) },
+                    itemID: episodeID, destinationURL: audioURL
+                )
+                try await store.finalizePodcastDownload(
+                    revision: assembled.revision, mediaURL: audioURL,
+                    download: try PodcastDownload(
+                        episodeID: episodeID, status: .completed,
+                        bytesReceived: assembled.revision.byteCount,
+                        expectedByteCount: assembled.revision.byteCount,
+                        localURL: audioURL, contentHash: assembled.revision.contentHash,
+                        updatedAt: created
+                    )
+                )
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let episode = try XCTUnwrap(model.episodes.first)
+        XCTAssertFalse(episode.isPlayed)
+        model.playEpisode(episode)
+        try await settle(model)
+        XCTAssertFalse(model.playbackCompleted)
+
+        model.markCurrentPlaybackCompleted()
+        try await settle(model)
+        XCTAssertTrue(model.playbackCompleted, "the player has to stop offering to mark what it just marked")
+        XCTAssertFalse(model.isPlaying, "marking an episode finished stops the audio")
+
+        let marked = try XCTUnwrap(model.episodes.first)
+        XCTAssertTrue(marked.isPlayed, "the row reads its played state from the record the player wrote")
+        XCTAssertEqual(marked.playbackSeconds, model.playbackDurationSeconds, accuracy: 0.01)
+    }
+
     /// Placement is the whole point: a cut is meaningless unless it sits where
     /// the audio jumps. The seam is the end of the last kept interval carried
     /// onto the output clock, so the second cut of an episode has to account

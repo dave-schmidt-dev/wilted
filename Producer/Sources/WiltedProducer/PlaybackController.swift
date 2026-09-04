@@ -334,6 +334,28 @@ public final class PlaybackController {
         try await beginNewSession(intent: .restart, position: 0, reloadBackend: true)
     }
 
+    /// Retires the loaded revision without playing the rest of it.
+    ///
+    /// Progress is written from where the audio actually is, so an episode the
+    /// listener is finished with at 91% stays at 91% for good: nothing else
+    /// writes the completed flag except audio reaching the end on its own. The
+    /// same terminal checkpoint is written here, so a manually finished episode
+    /// and a naturally finished one are the same durable record.
+    ///
+    /// Nothing advances. The queue moving on is what happens when audio ends
+    /// while someone is listening; pressing this says they are done, not that
+    /// they want the next thing. The backend's generation is marked handled for
+    /// the same reason — its clock now sits at the end of the file, so a later
+    /// resume would otherwise fire a natural completion and pull in the next
+    /// episode unasked.
+    public func markCompleted() async throws {
+        guard currentRevision != nil else { throw PlaybackControllerError.noLoadedRevision }
+        backend.pause()
+        isPlaying = false
+        completionHandledGeneration = loadedBackendGeneration
+        try await checkpointCompletedRevision()
+    }
+
     public func checkpoint() async throws {
         guard let revision = currentRevision, let itemID, let revisionID, let sessionID else {
             throw PlaybackControllerError.noLoadedRevision

@@ -851,20 +851,28 @@ private struct WiltedMacEpisodeRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             downloadControl
-            Menu {
-                // Redoing a good preparation is rare, so it lives here rather
-                // than as a row button; a failed one is retried from Prep,
-                // next to the reason it failed.
-                if case .prepared = episode.preparationState {
+            // Skipping is the most common thing done to a row, and it was the
+            // only thing the menu held, so it cost two presses to reach the
+            // one action a reader repeats down a feed. It sits beside Download
+            // as its opposite: take this one, pass on that one.
+            Button("Skip") { model.removeEpisode(episode) }
+                .accessibilityLabel("Skip \(episode.title)")
+                .accessibilityIdentifier("wilted-episode-skip-\(episode.id)")
+            // Redoing a good preparation is rare, so it stays in a menu rather
+            // than becoming a third button; a failed one is retried from Prep,
+            // next to the reason it failed. Only prepared rows can offer it,
+            // and a menu with nothing in it is worse than no menu.
+            if case .prepared = episode.preparationState {
+                Menu {
                     Button("Prepare again") { model.prepareEpisode(episode) }
+                } label: {
+                    Image(systemName: "ellipsis").accessibilityLabel("More actions for \(episode.title)")
                 }
-                Button("Remove from Larder", role: .destructive) { model.removeEpisode(episode) }
-            } label: {
-                Image(systemName: "ellipsis").accessibilityLabel("More actions for \(episode.title)")
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityIdentifier("wilted-episode-actions-\(episode.id)")
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .accessibilityIdentifier("wilted-episode-actions-\(episode.id)")
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
         .contentShape(Rectangle())
@@ -949,6 +957,10 @@ private struct WiltedMacEpisodeRow: View {
 
     private var progressLabel: String {
         guard let duration = episode.durationSeconds else { return "Duration unavailable" }
+        // Finished beats how far in, and it is not the same fact: audio can
+        // stop seconds short of the end, and an episode finished by hand never
+        // reached it, so "2:37:10 of 2:37:15" would read as still going.
+        if episode.isPlayed { return "Played · \(WiltedDuration.clock(duration))" }
         if episode.playbackSeconds > 0 {
             return WiltedDuration.progress(position: episode.playbackSeconds, duration: duration)
         }
@@ -1350,6 +1362,16 @@ struct WiltedMacCompactPlayer: View {
                     .disabled(!model.hasCurrentPlayback)
                     .keyboardShortcut("r", modifiers: .command)
                     .accessibilityIdentifier("wilted-player-restart")
+                // Beside Restart because they are the same kind of decision
+                // about the whole episode rather than about the playhead: one
+                // says start over, the other says done with it. The label goes
+                // past tense once the record says so, which is the only thing
+                // on this row that changes, so the press is visible.
+                Button(model.playbackCompleted ? "Completed" : "Mark completed") {
+                    model.markCurrentPlaybackCompleted()
+                }
+                .disabled(!model.hasCurrentPlayback || model.playbackCompleted)
+                .accessibilityIdentifier("wilted-player-mark-completed")
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("wilted-player-keyboard-transports")

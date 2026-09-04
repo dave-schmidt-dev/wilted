@@ -207,6 +207,55 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(relaunchedCompletedState).completed)
     }
 
+    /// Progress is written from where the audio is, so an episode the listener
+    /// is finished with at 91% stays at 91% and the Larder goes on offering it.
+    /// Marking it writes the same terminal record a natural finish writes, and
+    /// deliberately does not advance: the press says "done with this", not
+    /// "play the next thing". The queue must also stay put afterwards, because
+    /// the backend's clock now sits at the end of the file and a later resume
+    /// would otherwise fire a completion nobody asked for.
+    func testMarkingCompletedWritesTheTerminalRecordWithoutAdvancing() async throws {
+        let path = storeURL(); let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let first = try await queueRevision(index: 3, root: root, store: store)
+        let second = try await queueRevision(index: 4, root: root, store: store)
+        try await store.replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: [first.revision.itemID, second.revision.itemID],
+            currentEpisodeID: first.revision.itemID
+        ))
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        await controller.restorePodcastQueue()
+        XCTAssertEqual(controller.itemID, first.revision.itemID)
+        backend.currentTime = 20
+        try await controller.checkpoint()
+        XCTAssertFalse(controller.completed)
+
+        try await controller.markCompleted()
+        XCTAssertTrue(controller.completed)
+        XCTAssertFalse(controller.isPlaying)
+        XCTAssertFalse(backend.isPlaying)
+        XCTAssertEqual(controller.positionSeconds, controller.durationSeconds)
+        XCTAssertEqual(controller.itemID, first.revision.itemID, "marking completed advances nothing")
+        let queueState = try await store.podcastQueueState()
+        XCTAssertEqual(queueState.currentEpisodeID, first.revision.itemID)
+
+        let storedState = try await store.playbackState(
+            for: first.revision.itemID, revisionID: first.revision.revisionID
+        )
+        let stored = try XCTUnwrap(storedState)
+        XCTAssertTrue(stored.completed)
+        XCTAssertEqual(stored.positionSeconds, stored.durationSeconds)
+
+        backend.finish(successfully: true)
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(controller.itemID, first.revision.itemID,
+                       "a resume that runs out at the end it was already marked at must not pull in the next episode")
+        XCTAssertEqual(backend.loadCount, 1)
+    }
+
     func testSelectingPodcastWithAutoplayStartsBackend() async throws {
         let path = storeURL(); let root = path.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: root) }
