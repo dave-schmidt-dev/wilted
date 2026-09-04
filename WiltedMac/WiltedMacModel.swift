@@ -2447,6 +2447,10 @@ final class WiltedMacModel {
     private func loadEpisodeTranscript(itemID: ItemID) async {
         guard let store, let stored = try? await store.readyRevision(for: itemID) else {
             currentTranscript = .unavailable
+            // Spans loaded earlier in the session describe a revision that can
+            // no longer be resolved. Leaving them would list cuts under
+            // "Transcript unavailable" against audio nothing can vouch for.
+            removedSpansByEpisode[itemID.rawValue] = []
             return
         }
         await loadTranscript(itemID: itemID, revisionID: stored.revision.revisionID)
