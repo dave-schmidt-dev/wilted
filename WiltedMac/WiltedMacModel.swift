@@ -835,6 +835,10 @@ final class WiltedMacModel {
     private var podcastDownloadCoordinator: PodcastDownloadCoordinator?
     private var podcastPreparationPipeline: PodcastPreparationPipeline?
     private var podcastPreparationTasks: [String: Task<Void, Never>] = [:]
+    /// One preparation runs at a time; the rest queue. See
+    /// `WiltedPreparationGate` for why concurrent runs cost work rather
+    /// than saving time.
+    private let preparationGate = WiltedPreparationGate()
     private var podcastRestoreTasks: [String: Task<Void, Never>] = [:]
     /// Removing advertisements is why preparation exists. Read once, when the
     /// pipeline is built, so this is not a switch: a Settings control would
@@ -1654,13 +1658,32 @@ final class WiltedMacModel {
         }
         guard let pipeline = podcastPreparationPipeline,
               let itemID = try? ItemID(rawValue: episode.id) else { return }
-        updateEpisode(episode.id) { $0.preparationState = .preparing(stage: "Preparing…") }
-        podcastOperationMessage = "Preparing \(episode.title)…"
+        // Whether this run waits is decided now, so the row can say so now.
+        let queued = preparationGate.isBusy
+        updateEpisode(episode.id) {
+            $0.preparationState = .preparing(stage: queued ? Self.preparationQueuedStage : Self.preparingStage)
+        }
+        podcastOperationMessage = queued
+            ? "\(episode.title) is queued behind the preparation in flight."
+            : "Preparing \(episode.title)…"
         // The row says only that the episode is preparing. Every status the
         // worker emits is journalled by the pipeline, and Prep reads that
         // journal back as the narrative and, on request, the full log.
         podcastPreparationTasks[episode.id] = Task { [weak self] in
             defer { self?.podcastPreparationTasks[episode.id] = nil }
+            guard let gate = self?.preparationGate else { return }
+            do {
+                try await gate.admit()
+            } catch {
+                self?.updateEpisode(episode.id) { $0.preparationState = .notPrepared }
+                self?.podcastOperationMessage = "Preparation cancelled."
+                return
+            }
+            defer { gate.release() }
+            if queued {
+                self?.updateEpisode(episode.id) { $0.preparationState = .preparing(stage: Self.preparingStage) }
+                self?.podcastOperationMessage = "Preparing \(episode.title)…"
+            }
             do {
                 let result = try await pipeline.prepare(episodeID: itemID)
                 guard let self else { return }
@@ -1694,6 +1717,13 @@ final class WiltedMacModel {
 
     /// What a row says when its preparation failed. The cause is on Prep.
     nonisolated static let preparationFailedLabel = "Preparation failed. See \(WiltedScreenCopy.processor)."
+
+    /// What a row says once its preparation owns the single run slot.
+    nonisolated static let preparingStage = "Preparing…"
+
+    /// What a row says while it waits for the run ahead of it to finish. The
+    /// GPU admits one preparation, so the rest queue instead of failing.
+    nonisolated static let preparationQueuedStage = "Queued"
 
     /// Stops the run Prep is showing. Article runs have their own cancel.
     func cancelProcessorRun(_ run: WiltedMacProcessorRun) {

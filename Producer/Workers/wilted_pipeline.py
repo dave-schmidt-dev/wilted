@@ -181,6 +181,16 @@ ALIGNED_STT_CACHE_MAXIMUM_ENTRIES = 32
 # it bounded so a wedged daemon produces an actionable worker failure.
 STT_EVICTION_BARRIER_TIMEOUT_S = 10.0
 
+# How long to wait for a shared GPU inference lock somebody else is holding.
+# The eviction barrier above was doing double duty as this bound, and the two
+# measure different things: ten seconds is long for a daemon that has stopped
+# answering and absurdly short for a peer that legitimately holds the GPU for
+# the length of a detect run. Three episodes downloaded at once cost two whole
+# preparations to that conflation, each failing with `ads-model-wait-failed`
+# ten seconds into a wait that was going to be fine. Waiting is the correct
+# behaviour, and `ads.model.wait` reports it every second while it happens.
+GPU_LOCK_ACQUISITION_TIMEOUT_S = 30 * 60.0
+
 # How many of the previous project's warnings are relayed verbatim before the
 # rest are counted. The ad detector logs one warning per failed batch and
 # halves down to singletons, so a dead backend produces thousands.
@@ -1234,7 +1244,13 @@ def prepare_ad_model_lock(_model: str, *, aligned_stt: bool):
     """Hold the canonical GPU flock after broker residency and work drain."""
     from speech_stack import client as speech_client
 
-    deadline = time.monotonic() + STT_EVICTION_BARRIER_TIMEOUT_S
+    # Two budgets, because they bound two different failures. Acquiring the
+    # lock waits on a peer and is allowed to take as long as that peer's work;
+    # everything after it talks to the daemon and must fail fast if the daemon
+    # has stopped answering. The barrier budget starts when the lock is first
+    # held, not at entry, so a long wait does not spend it before the first RPC.
+    lock_deadline = time.monotonic() + GPU_LOCK_ACQUISITION_TIMEOUT_S
+    barrier_deadline = None
     source = "aligned STT" if aligned_stt else "published transcript"
     progress("ads.model.wait", f"waiting for exclusive GPU admission after {source}")
     lock_stack = None
@@ -1242,10 +1258,12 @@ def prepare_ad_model_lock(_model: str, *, aligned_stt: bool):
         while True:
             lock_stack = contextlib.ExitStack()
             try:
-                lock_stack.enter_context(_canonical_gpu_flock(deadline))
+                lock_stack.enter_context(_canonical_gpu_flock(lock_deadline))
+                if barrier_deadline is None:
+                    barrier_deadline = time.monotonic() + STT_EVICTION_BARRIER_TIMEOUT_S
                 snapshot = _speech_rpc_with_progress(
                     lambda timeout: speech_client.status(timeout=timeout),
-                    deadline,
+                    barrier_deadline,
                     "waiting for speech daemon status",
                 )
                 resident_models, in_flight = _validate_daemon_admission_snapshot(snapshot)
@@ -1271,7 +1289,7 @@ def prepare_ad_model_lock(_model: str, *, aligned_stt: bool):
                     for task in ("stt", "tts"):
                         _speech_rpc_with_progress(
                             lambda timeout, task=task: speech_client.evict(task, timeout=timeout),
-                            deadline,
+                            barrier_deadline,
                             f"waiting to evict resident {task} model",
                         )
                 _speech_rpc_with_progress(
@@ -1280,7 +1298,7 @@ def prepare_ad_model_lock(_model: str, *, aligned_stt: bool):
                         timeout=timeout,
                         barrier="wilted-gpu-drained",
                     ),
-                    deadline,
+                    barrier_deadline,
                     "waiting for speech daemon FIFO drain",
                 )
             except speech_client.DaemonUnavailable:

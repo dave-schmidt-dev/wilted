@@ -1346,6 +1346,7 @@ class PreflightTests(unittest.TestCase):
         blocked = BlockingIOError()
         blocked.errno = wp.errno.EAGAIN
         with mock.patch.object(wp.fcntl, "flock", side_effect=blocked), \
+                mock.patch.object(wp, "GPU_LOCK_ACQUISITION_TIMEOUT_S", 10.0), \
                 mock.patch.object(wp.time, "monotonic", side_effect=clock), \
                 mock.patch.object(wp.time, "sleep"), redirect_stderr(stream), \
                 self.assertRaises(wp.WorkerError) as raised:
@@ -1355,6 +1356,43 @@ class PreflightTests(unittest.TestCase):
         self.assertIn("timed out waiting for exclusive GPU model admission", str(raised.exception))
         waits = [json.loads(line) for line in stream.getvalue().splitlines()]
         self.assertGreaterEqual(sum("shared GPU inference lock" in event["detail"] for event in waits), 2)
+
+    def test_a_peer_holding_the_lock_past_the_eviction_budget_still_admits(self):
+        # One ten-second budget used to cover both the wait for the lock and
+        # every daemon call after it, so a peer that held the GPU for longer
+        # than that made admission impossible rather than merely slow. Three
+        # episodes downloaded together lost two preparations to exactly that.
+        rpc_timeouts = []
+        install_fake_speech_stack(
+            statuses=({"resident_models": 0, "in_flight": 1},), rpc_timeouts=rpc_timeouts
+        )
+        contended = BlockingIOError()
+        contended.errno = wp.errno.EAGAIN
+        attempts = []
+
+        def flock(_fd, _flags):
+            attempts.append(True)
+            if len(attempts) <= 40:
+                raise contended
+
+        tick = [0.0]
+
+        def clock():
+            current = tick[0]
+            tick[0] += 1.0
+            return current
+
+        events = []
+        with mock.patch.object(wp.fcntl, "flock", side_effect=flock), \
+                mock.patch.object(wp.time, "monotonic", side_effect=clock), \
+                mock.patch.object(wp.time, "sleep"), redirect_stderr(io.StringIO()):
+            with wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=False):
+                events.append("ads.work")
+        self.assertEqual(events, ["ads.work"])
+        self.assertGreater(tick[0], wp.STT_EVICTION_BARRIER_TIMEOUT_S)
+        # The barrier budget starts when the lock is first held, so the status
+        # call that follows a long wait is not already out of time.
+        self.assertGreater(rpc_timeouts[0][1], wp.STT_EVICTION_BARRIER_TIMEOUT_S / 2)
 
     def test_speech_rpc_wait_reports_live_progress(self):
         stream = io.StringIO()
