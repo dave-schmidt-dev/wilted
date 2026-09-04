@@ -27,6 +27,14 @@ xcode_test_timeout_seconds="${WILTED_XCODE_TEST_TIMEOUT_SECONDS:-300}"
 # keeps the UI leg from silently using a different first-listed iPhone model.
 ios_ui_device_name='iPhone 17 Pro'
 ios_ui_baseline_geometry='402x874 normalized to 390x844'
+# shellcheck source=lib/temp-sweep.sh
+source "$repo_root/scripts/lib/temp-sweep.sh"
+# A prior run that died to SIGKILL or a harness timeout never ran its own EXIT
+# trap, so its wilted-native-gate.XXXXXX directory is still sitting in
+# $TMPDIR. Sweep before minting this run's own directory, not after: the 24h
+# cutoff is what keeps this safe next to a gate that is genuinely still
+# running, whose directory is at most minutes old.
+wilted_sweep_stale_temp_dirs
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-native-gate.XXXXXX")"
 derived_data="$tmp_root/DerivedData"
 # A failed real Mac UI run is the one disposable artifact worth retaining for

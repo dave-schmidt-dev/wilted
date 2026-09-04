@@ -2,6 +2,13 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/temp-sweep.sh
+source "$repo_root/scripts/lib/temp-sweep.sh"
+# Phase 0 legs run in parallel and some mint their own wilted-* temp roots; a
+# killed prior aggregate run leaves those behind with no trap left to run.
+# Sweep before this run mints its own, same 24h cutoff so a genuinely
+# concurrent phase-0 run's directories (minutes old) are never touched.
+wilted_sweep_stale_temp_dirs
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-phase0.XXXXXX")"
 phase0_self_test="${PHASE0_SELF_TEST:-0}"
 if [[ ! -d "$tmp_root" ]]; then
@@ -196,6 +203,7 @@ run_leg_async "test-audio-contract-probe" "$repo_root/tests/test-audio-contract-
 run_leg_async "test-audit-walkthrough" "$repo_root/tests/test-audit-walkthrough.sh"
 run_leg_async "test-pipeline-worker" "$repo_root/tests/test-pipeline-worker.sh"
 run_leg_async "test-install-mac-app" "$repo_root/tests/test-install-mac-app.sh"
+run_leg_async "test-temp-sweep" "$repo_root/tests/test-temp-sweep.sh"
 if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
   run_leg_async "test-audio-contract-ios-build" "$repo_root/tests/test-audio-contract-ios-build.sh"
 fi

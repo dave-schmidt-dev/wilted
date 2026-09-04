@@ -3,6 +3,11 @@ set -Eeuo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 gate="$repo_root/scripts/test-gate.sh"
+# shellcheck source=../scripts/lib/temp-sweep.sh
+source "$repo_root/scripts/lib/temp-sweep.sh"
+# This meta-test mints its own wilted-native-gate-meta.XXXXXX root on every
+# run; sweep abandoned ones from a killed prior run before adding another.
+wilted_sweep_stale_temp_dirs
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/wilted-native-gate-meta.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
 

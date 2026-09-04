@@ -22,7 +22,7 @@ struct WiltedMacApp: App {
         // it would put whatever the owner was listening to into the menu bar
         // under a process XCTest is about to kill.
         let arguments = ProcessInfo.processInfo.arguments
-        let hostsTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        let hostsTests = WiltedMacModel.hostsTests
         let ownsSystemPlayback = !hostsTests && !WiltedMacModel.isFixtureLaunch(arguments: arguments)
         _model = State(initialValue: WiltedMacModel(
             arguments: arguments,

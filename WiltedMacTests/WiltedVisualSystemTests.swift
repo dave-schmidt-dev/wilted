@@ -215,7 +215,29 @@ final class WiltedVisualSystemTests: XCTestCase {
         await model.waitForPlaybackOperationForTesting()
 
         let store = try LocalLibraryStore(url: root.appendingPathComponent("library.sqlite"))
-        let secondID = try ItemID(rawValue: "item-" + String(repeating: "8", count: 64))
+        // The second episode is a row in the store as well as in the model. An
+        // episode finishing reloads the library rows so the one just left
+        // behind shows its Played badge, and a row that exists only in memory
+        // does not survive that. A stored row also has to carry the identity
+        // the store derives from its feed and enclosure, so the identifier is
+        // derived rather than invented.
+        let storedEpisodes = try await store.podcastEpisodes()
+        let storedFirst = try XCTUnwrap(storedEpisodes.first(where: { $0.itemID.rawValue == first.id }))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/second-podcast.mp3"))
+        let secondID = try ItemID.derivePodcastEpisode(
+            feedURL: storedFirst.feedURL, rssGUID: "queue-boundary-second", enclosureURL: enclosureURL
+        )
+        try await store.save(episode: try PodcastEpisode(
+            itemID: secondID,
+            feedID: storedFirst.feedID,
+            feedURL: storedFirst.feedURL,
+            rssGUID: "queue-boundary-second",
+            title: "Second queued episode",
+            publishedTime: storedFirst.publishedTime,
+            enclosureURL: enclosureURL,
+            enclosureMediaType: "audio/mpeg",
+            createdAt: Timestamp(Date())
+        ))
         let mediaURL = root.appendingPathComponent("second-podcast.mp3")
         _ = FileManager.default.createFile(atPath: mediaURL.path, contents: Data([8]))
         let revision = try AudioRevision(

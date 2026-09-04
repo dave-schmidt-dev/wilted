@@ -3,6 +3,11 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 phase0_script="$repo_root/scripts/test-phase0.sh"
+# shellcheck source=../scripts/lib/temp-sweep.sh
+source "$repo_root/scripts/lib/temp-sweep.sh"
+# This meta-test mints its own wilted-phase0-agg.XXXXXX root on every run;
+# sweep abandoned ones from a killed prior run before adding another.
+wilted_sweep_stale_temp_dirs
 
 expected_legs=(
   "assert-mac-first-docs"
@@ -16,6 +21,7 @@ expected_legs=(
   "test-audit-walkthrough"
   "test-pipeline-worker"
   "test-install-mac-app"
+  "test-temp-sweep"
 )
 if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
   expected_legs+=("test-audio-contract-ios-build")

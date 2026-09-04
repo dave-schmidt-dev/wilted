@@ -327,6 +327,69 @@ final class WiltedMacModelTests: XCTestCase {
             .appendingPathComponent("wilted-mac-model-\(suffix)-\(UUID().uuidString)", isDirectory: true)
     }
 
+    /// Builds one downloaded, transcript-ready podcast episode -- the
+    /// minimum a row needs to qualify as "ready" for continuous playback.
+    private static func addReadyEpisode(
+        _ episodeID: ItemID, guid: String, feedID: ItemID, feedURL: URL, enclosureURL: URL,
+        publishedAt: Date, directory: URL, store: LocalLibraryStore, created: Timestamp
+    ) async throws {
+        try await store.save(episode: try PodcastEpisode(
+            itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: guid,
+            title: "Episode \(guid)", publishedTime: Timestamp(publishedAt), enclosureURL: enclosureURL,
+            enclosureMediaType: "audio/mpeg", createdAt: created
+        ))
+        let audioURL = directory.appendingPathComponent("\(guid).m4a")
+        let assembled = try AudioAssembler().assemble(
+            pcm: (0..<44_100).map { Float(0.2 * sin(2 * Double.pi * 220 * Double($0) / 44_100)) },
+            itemID: episodeID, destinationURL: audioURL
+        )
+        // `AudioAssembler` derives its revision from the audio's content hash
+        // alone, which is right for synthesis and wrong here: every fixture
+        // episode is assembled from the same samples, so they would all land on
+        // one immutable revision and the second download could not finalize.
+        // A downloaded podcast revision is keyed on the episode as well, which
+        // is what production stores.
+        let revision = try AudioRevision(
+            itemID: episodeID,
+            revisionID: try RevisionID.derive(
+                podcastDownloadedAudioItemID: episodeID, contentHash: assembled.revision.contentHash
+            ),
+            durationSeconds: assembled.revision.durationSeconds,
+            byteCount: assembled.revision.byteCount,
+            contentHash: assembled.revision.contentHash,
+            mediaType: assembled.revision.mediaType,
+            createdAt: created,
+            schemaVersion: assembled.revision.schemaVersion
+        )
+        try await store.finalizePodcastDownload(
+            revision: revision, mediaURL: audioURL,
+            download: try PodcastDownload(
+                episodeID: episodeID, status: .completed,
+                bytesReceived: revision.byteCount, expectedByteCount: revision.byteCount,
+                localURL: audioURL, contentHash: revision.contentHash, updatedAt: created
+            )
+        )
+        try await store.save(transcript: try Transcript(
+            itemID: episodeID, revisionID: revision.revisionID,
+            availability: .available, text: "Line.", timing: .published,
+            cues: [try TranscriptCue(startSeconds: 0, endSeconds: 0.5, text: "Line.")],
+            updatedAt: created
+        ))
+    }
+
+    /// Adds an episode with no download at all, so it can never qualify as
+    /// ready for continuous playback to pick up.
+    private static func addUndownloadedEpisode(
+        _ episodeID: ItemID, guid: String, feedID: ItemID, feedURL: URL, enclosureURL: URL,
+        publishedAt: Date, store: LocalLibraryStore, created: Timestamp
+    ) async throws {
+        try await store.save(episode: try PodcastEpisode(
+            itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: guid,
+            title: "Episode \(guid)", publishedTime: Timestamp(publishedAt), enclosureURL: enclosureURL,
+            enclosureMediaType: "audio/mpeg", createdAt: created
+        ))
+    }
+
     // MARK: Library preferences
 
     func testLibraryOrderSurvivesRelaunch() throws {
@@ -486,6 +549,29 @@ final class WiltedMacModelTests: XCTestCase {
 
         model.stopPlaybackCheckpointTicker()
         XCTAssertFalse(model.playbackCheckpointTickerIsRunning)
+    }
+
+    /// The unit tests run inside the app bundle, so a test that plays an
+    /// episode plays it out of the machine's speakers -- which is what a gate
+    /// run's unexplained tone was for days. This is the guard against it
+    /// returning. Starting silent is not enough on its own: the model pushes
+    /// the owner's saved volume into the backend on every load, so the check
+    /// that matters is that asking for full volume changes nothing.
+    func testTheTestHostNeverDrivesAudioOutput() async throws {
+        let preferences = try automationSettingsPreferences()
+        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
+        let directory = temporaryDirectory("silent-playback")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        XCTAssertEqual(model.playbackOutputVolumeForTesting(), 0,
+                       "a backend built inside the test host starts silent")
+        model.setPlaybackVolume(1)
+        XCTAssertEqual(model.playbackOutputVolumeForTesting(), 0,
+                       "and the owner's saved volume does not bring the sound back")
     }
 
     func testTheOpenWindowTickerRestartsAfterBeingStopped() async throws {
@@ -1692,6 +1778,286 @@ final class WiltedMacModelTests: XCTestCase {
             model.processorOperationMessage,
             "Removed episode is no longer in Larder. Add it again before retrying preparation."
         )
+    }
+
+    // MARK: Continuing across the Larder when playback runs out
+
+    /// `.oldest` puts the second episode after the first in the Larder's own
+    /// displayed order, matching what "next" means to a listener: forward
+    /// through the feed, not `.newest`'s reversal of it.
+    func testANaturallyFinishedEpisodeStartsTheNextReadyOneAndRemovesItself() async throws {
+        let directory = temporaryDirectory("continue-ready")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/continue-ready.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let firstEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/continue-ready-1.mp3"))
+        let secondEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/continue-ready-2.mp3"))
+        let firstID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "continue-ready-1", enclosureURL: firstEnclosure
+        )
+        let secondID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "continue-ready-2", enclosureURL: secondEnclosure
+        )
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Continuing", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    firstID, guid: "continue-ready-1", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: firstEnclosure, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                try await Self.addReadyEpisode(
+                    secondID, guid: "continue-ready-2", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: secondEnclosure, publishedAt: created.date.addingTimeInterval(60),
+                    directory: directory, store: store, created: created
+                )
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.libraryOrder = .oldest
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let first = try XCTUnwrap(model.episodes.first { $0.id == firstID.rawValue })
+        model.playEpisode(first)
+        try await settle(model)
+        XCTAssertEqual(model.currentEpisode?.id, firstID.rawValue)
+
+        model.markCurrentPlaybackCompleted()
+        try await settle(model)
+        model.simulatePodcastPlaybackFinishedForTesting()
+        try await settle(model)
+
+        XCTAssertEqual(model.currentEpisode?.id, secondID.rawValue,
+                       "the next ready episode should start once the current one runs out with nothing queued")
+        XCTAssertFalse(model.episodes.contains { $0.id == firstID.rawValue },
+                       "the episode that was listened to all the way through is gone from the Larder")
+        XCTAssertTrue(model.dismissedEpisodes.contains { $0.id == firstID.rawValue },
+                      "and gone durably, so the next feed refresh cannot put it back")
+        XCTAssertEqual(model.podcastOperationMessage, "Removed \(first.title).")
+    }
+
+    /// The undownloaded middle episode is never a candidate; the search has
+    /// to keep going past it rather than stopping at the first row after the
+    /// one that finished.
+    func testNaturalCompletionSkipsAnUndownloadedEpisodeToReachTheNextReadyOne() async throws {
+        let directory = temporaryDirectory("continue-skip")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/continue-skip.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let firstEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/continue-skip-1.mp3"))
+        let secondEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/continue-skip-2.mp3"))
+        let thirdEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/continue-skip-3.mp3"))
+        let firstID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "continue-skip-1", enclosureURL: firstEnclosure
+        )
+        let secondID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "continue-skip-2", enclosureURL: secondEnclosure
+        )
+        let thirdID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "continue-skip-3", enclosureURL: thirdEnclosure
+        )
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Skipping", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    firstID, guid: "continue-skip-1", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: firstEnclosure, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                try await Self.addUndownloadedEpisode(
+                    secondID, guid: "continue-skip-2", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: secondEnclosure, publishedAt: created.date.addingTimeInterval(60),
+                    store: store, created: created
+                )
+                try await Self.addReadyEpisode(
+                    thirdID, guid: "continue-skip-3", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: thirdEnclosure, publishedAt: created.date.addingTimeInterval(120),
+                    directory: directory, store: store, created: created
+                )
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.libraryOrder = .oldest
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let first = try XCTUnwrap(model.episodes.first { $0.id == firstID.rawValue })
+        model.playEpisode(first)
+        try await settle(model)
+
+        model.markCurrentPlaybackCompleted()
+        try await settle(model)
+        model.simulatePodcastPlaybackFinishedForTesting()
+        try await settle(model)
+
+        XCTAssertEqual(model.currentEpisode?.id, thirdID.rawValue,
+                       "an undownloaded episode in between has to be skipped, not offered")
+        XCTAssertFalse(model.episodes.contains { $0.id == firstID.rawValue },
+                       "the episode that finished is removed")
+        XCTAssertTrue(model.episodes.contains { $0.id == secondID.rawValue },
+                      "the one merely passed over is not -- it was never listened to")
+    }
+
+    /// Nothing else in the Larder is ready, so playback has to stop and the
+    /// operation message has to say why -- silence with no explanation reads
+    /// as a stall, not as "nothing to play."
+    func testNaturalCompletionWithNoReadyEpisodeLeftStopsAndSaysSo() async throws {
+        let directory = temporaryDirectory("continue-none")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/continue-none.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let onlyEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/continue-none-1.mp3"))
+        let onlyID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "continue-none-1", enclosureURL: onlyEnclosure
+        )
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Alone", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    onlyID, guid: "continue-none-1", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: onlyEnclosure, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let only = try XCTUnwrap(model.episodes.first { $0.id == onlyID.rawValue })
+        model.playEpisode(only)
+        try await settle(model)
+
+        model.markCurrentPlaybackCompleted()
+        try await settle(model)
+        model.simulatePodcastPlaybackFinishedForTesting()
+        try await settle(model)
+
+        // Removing what was playing empties the player, exactly as removing it
+        // by hand from the Larder does; there is no episode left to show.
+        XCTAssertNil(model.currentEpisode, "the finished episode was removed and nothing replaced it")
+        XCTAssertFalse(model.episodes.contains { $0.id == onlyID.rawValue })
+        XCTAssertEqual(model.podcastOperationMessage,
+                       "Removed \(only.title). No other downloaded, prepared episode is ready to play next.")
+    }
+
+    /// The handler is podcast-specific; an article running out must not go
+    /// looking through the Larder at all.
+    func testArticleCompletionDoesNotSearchForANextPodcastEpisode() {
+        let directory = temporaryDirectory("continue-article")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        let article = WiltedMacArticle(
+            id: "article-1", title: "A Long Read", source: "example.com",
+            url: URL(string: "https://example.com/read")!, isReady: true,
+            durationSeconds: 300, createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        model.installPlaybackStateForTesting(article: article, isPlaying: true, position: 300, duration: 300)
+
+        model.simulatePodcastPlaybackFinishedForTesting()
+
+        XCTAssertNil(model.podcastOperationMessage, "an article finishing has nothing to do with the podcast queue")
+    }
+
+    /// `applyPodcastPlaybackObservation` also covers `PlaybackController`'s
+    /// own within-queue advance, which already wrote the outgoing episode's
+    /// completed record before this fires; the in-memory Larder rows would
+    /// otherwise not know until something else happened to reload them.
+    func testMovingToAnotherPodcastEpisodeRefreshesTheLibraryRows() async throws {
+        let directory = temporaryDirectory("continue-move-reload")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/continue-move.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let firstEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/continue-move-1.mp3"))
+        let secondEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/continue-move-2.mp3"))
+        let firstID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "continue-move-1", enclosureURL: firstEnclosure
+        )
+        let secondID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "continue-move-2", enclosureURL: secondEnclosure
+        )
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Moving", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    firstID, guid: "continue-move-1", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: firstEnclosure, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                try await Self.addReadyEpisode(
+                    secondID, guid: "continue-move-2", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: secondEnclosure, publishedAt: created.date.addingTimeInterval(60),
+                    directory: directory, store: store, created: created
+                )
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let first = try XCTUnwrap(model.episodes.first { $0.id == firstID.rawValue })
+        model.playEpisode(first)
+        try await settle(model)
+
+        let phantom = WiltedMacEpisode(
+            id: "phantom-episode", title: "Not really in the store", feedTitle: "Moving",
+            summary: "", artworkURL: nil, releasedAt: created.date, durationSeconds: 60,
+            playbackSeconds: 0, downloadState: .completed
+        )
+        model.installEpisodeForTesting(phantom)
+        XCTAssertTrue(model.episodes.contains { $0.id == phantom.id })
+
+        model.applyPodcastPlaybackObservationForTesting(itemID: secondID, fault: nil)
+        try await settle(model)
+
+        XCTAssertEqual(model.currentEpisode?.id, secondID.rawValue)
+        XCTAssertFalse(model.episodes.contains { $0.id == phantom.id },
+                       "moving to another episode has to reload the Larder from the store, not keep stale rows")
+    }
+
+    /// Pure enumeration logic, but it is the one line that decides whether an
+    /// episode still preparing or one that failed can be handed to
+    /// continuous playback, so it earns its own direct check.
+    func testEpisodePreparationStateReportsWhetherItIsPrepared() {
+        XCTAssertTrue(WiltedMacEpisodePreparationState.prepared(summary: "Ready").isPrepared)
+        XCTAssertFalse(WiltedMacEpisodePreparationState.notPrepared.isPrepared)
+        XCTAssertFalse(WiltedMacEpisodePreparationState.preparing(stage: "Preparing…").isPrepared)
+        XCTAssertFalse(WiltedMacEpisodePreparationState.failed("Failed").isPrepared)
     }
 }
 

@@ -306,6 +306,11 @@ enum WiltedMacEpisodePreparationState: Equatable, Sendable {
 
     var isRunning: Bool { if case .preparing = self { true } else { false } }
 
+    /// Whether preparation finished successfully. `.notPrepared`, `.preparing`,
+    /// and `.failed` all mean the audio behind the row is not the finished
+    /// cut, so none of them are safe to hand to continuous playback.
+    var isPrepared: Bool { if case .prepared = self { true } else { false } }
+
     /// The line the row shows under the title, or nil when there is nothing
     /// worth saying.
     var label: String? {
@@ -952,6 +957,29 @@ final class WiltedMacModel {
             || arguments.contains("--wilted-ui-fixture-podcasts")
             || arguments.contains("--wilted-ui-fixture-download-failure")
     }
+
+    /// Whether this process is running the unit tests.
+    ///
+    /// The unit-test host is the app bundle itself, so the model cannot tell a
+    /// test run from a launch by argument alone; XCTest's own environment
+    /// variable is the only thing that separates them.
+    static var hostsTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+
+#if canImport(WiltedProducer)
+    /// The audio backend this process should own.
+    ///
+    /// A UI fixture launch gets the scripted backend it has always had. A unit
+    /// test host gets the real one with its output silenced, because the tests
+    /// run inside this bundle and one that plays an episode plays it aloud on
+    /// the owner's machine.
+    private static func playbackBackend(fixtureMode: Bool) -> any PlaybackBackend {
+        if fixtureMode { return WiltedFixturePlaybackBackend() }
+        if hostsTests { return WiltedSilentPlaybackBackend() }
+        return AVAudioPlayerBackend()
+    }
+#endif
 
     private static func clampPlaybackRate(_ value: Double) -> Double {
         min(max(value.isFinite ? value : initialPlaybackRate, 0.5), 2)
@@ -1895,33 +1923,54 @@ final class WiltedMacModel {
     /// Without it a removal lasted until the next launch, because this set is
     /// all there was.
     func removeEpisode(_ episode: WiltedMacEpisode) {
-        podcastDownloadTasks[episode.id]?.cancel()
-        podcastPreparationTasks[episode.id]?.cancel()
-        hiddenEpisodeIDs.insert(episode.id)
-        if selectedLibraryItemID == episode.id { selectedLibraryItemID = nil }
+        hideEpisode(episode)
         podcastOperationMessage = "Removed \(episode.title). Refreshing will not bring it back."
 #if canImport(WiltedProducer)
-        guard let store, let id = try? ItemID(rawValue: episode.id) else { return }
         Task { [weak self] in
             guard let self else { return }
-            do {
-                try await store.dismissPodcastEpisode(id)
-                if let playback = self.playback {
-                    try? await playback.removePodcastQueueEpisode(id)
-                    await self.refreshPodcastQueueState()
-                }
-                let values = try await self.loadLibrary(from: store)
-                self.articles = values.articles
-                self.episodes = values.episodes
-                self.subscriptions = values.subscriptions
-                self.dismissedEpisodes = try await self.loadDismissedEpisodes(from: store)
-            } catch {
-                self.hiddenEpisodeIDs.remove(episode.id)
+            if await self.dismissEpisode(episode) == false {
                 self.podcastOperationMessage = "\(episode.title) could not be removed."
             }
         }
 #endif
     }
+
+    /// The optimistic half of a removal: the row leaves the screen on the next
+    /// render, and any work still running for it stops.
+    private func hideEpisode(_ episode: WiltedMacEpisode) {
+        podcastDownloadTasks[episode.id]?.cancel()
+        podcastPreparationTasks[episode.id]?.cancel()
+        hiddenEpisodeIDs.insert(episode.id)
+        if selectedLibraryItemID == episode.id { selectedLibraryItemID = nil }
+    }
+
+#if canImport(WiltedProducer)
+    /// The durable half of a removal, awaited rather than fired off so a
+    /// caller with something to do afterwards can do it in order.
+    ///
+    /// Returns whether the dismissal stuck. The optimistic hide is rolled back
+    /// here when it did not, but the message stays the caller's to write:
+    /// removal by hand and removal on finishing have different things to say.
+    private func dismissEpisode(_ episode: WiltedMacEpisode) async -> Bool {
+        guard let store, let id = try? ItemID(rawValue: episode.id) else { return false }
+        do {
+            try await store.dismissPodcastEpisode(id)
+            if let playback {
+                try? await playback.removePodcastQueueEpisode(id)
+                await refreshPodcastQueueState()
+            }
+            let values = try await loadLibrary(from: store)
+            articles = values.articles
+            episodes = values.episodes
+            subscriptions = values.subscriptions
+            dismissedEpisodes = try await loadDismissedEpisodes(from: store)
+            return true
+        } catch {
+            hiddenEpisodeIDs.remove(episode.id)
+            return false
+        }
+    }
+#endif
 
     /// Restores a removed episode only after a current feed proves the exact identity still exists.
     func restoreEpisode(_ dismissal: WiltedMacDismissedEpisode) {
@@ -2781,6 +2830,17 @@ final class WiltedMacModel {
 #endif
     }
 
+    /// What the audio backend would actually play at, so a test can assert the
+    /// silencing above is in force. The backend type is file-private, and the
+    /// volume is the property the silencing is about.
+    func playbackOutputVolumeForTesting() -> Float? {
+#if canImport(WiltedProducer)
+        playback?.backend.volume
+#else
+        nil
+#endif
+    }
+
     /// Puts the model in the state a real load leaves behind, so the system
     /// integration can be asserted on without an audio engine.
     ///
@@ -2839,6 +2899,21 @@ final class WiltedMacModel {
         applyPodcastPlaybackObservation(itemID: itemID, fault: fault)
     }
 #endif
+
+    /// Deterministic test seam for the natural-completion path.
+    ///
+    /// Production reaches `handlePodcastPlaybackFinished` only through
+    /// `playback?.playbackDidFinishHandler`, which the audio backend fires
+    /// from its own completion callback -- not something a test can trigger
+    /// without a real, timed audio file. Driving `playback.completed` to
+    /// `true` first (for example with `markCurrentPlaybackCompleted()`, the
+    /// same checkpoint natural completion writes) and then calling this
+    /// reaches the same guard and search logic natural completion does.
+    func simulatePodcastPlaybackFinishedForTesting() {
+#if canImport(WiltedProducer)
+        handlePodcastPlaybackFinished()
+#endif
+    }
 
 #if canImport(WiltedProducer)
     private func update(_ status: PreparationStatus) {
@@ -3236,7 +3311,7 @@ final class WiltedMacModel {
         playback = configuredStore.map {
             PlaybackController(
                 store: $0,
-                backend: fixtureMode ? WiltedFixturePlaybackBackend() : AVAudioPlayerBackend(),
+                backend: Self.playbackBackend(fixtureMode: fixtureMode),
                 deviceID: "mac"
             )
         }
@@ -3247,9 +3322,12 @@ final class WiltedMacModel {
         // An episode that ends with nothing behind it stops the audio without
         // changing which item is loaded. The on-screen readout would catch up
         // on its next tick, but the system widget has no tick of its own, so
-        // without this it would sit there claiming to be playing.
+        // without this it would sit there claiming to be playing. For a
+        // podcast episode this is also the only signal that the Producer's
+        // own Up Next queue had nothing to advance into, which is where
+        // continuing across the Larder picks up.
         playback?.playbackDidFinishHandler = { [weak self] in
-            self?.refreshPlaybackReadout()
+            self?.handlePodcastPlaybackFinished()
         }
         podcastDownloadCoordinator = configuredStore.map {
             PodcastDownloadCoordinator(store: $0, libraryDirectory: mediaDirectory)
@@ -3332,8 +3410,87 @@ final class WiltedMacModel {
         // stay on screen against the new audio.
         if movedToAnotherEpisode, let itemID {
             currentTranscript = .unavailable
-            Task { [weak self] in await self?.loadEpisodeTranscript(itemID: itemID) }
+            Task { [weak self] in
+                guard let self else { return }
+                await self.loadEpisodeTranscript(itemID: itemID)
+                // The episode just left behind may be the one that finished
+                // and pushed the queue into this one; its Played badge is
+                // otherwise stale until something else happens to reload it.
+                await self.reloadLibraryRows()
+            }
         }
+    }
+
+    /// Handles a podcast episode running out with nothing queued behind it.
+    ///
+    /// `PlaybackController` already advances on its own when the Up Next
+    /// queue has another entry — that case surfaces through
+    /// `applyPodcastPlaybackObservation` instead and never reaches here. Up
+    /// Next is a manually curated list though: pressing Play on a single
+    /// episode queues only that one, so the ordinary case of a listen
+    /// finishing with nothing queued after it is the common one, not the
+    /// exception. This is that case: look at the Larder in the order it is
+    /// shown and start the next episode that is both downloaded and
+    /// successfully prepared, rather than trading one stall for another with
+    /// no one watching.
+    ///
+    /// The episode that just finished is then removed, the same removal the
+    /// Skip button performs: a listened episode is done with, and leaving it
+    /// in the Larder means the owner clears by hand what playing it to the
+    /// end already said.
+    private func handlePodcastPlaybackFinished() {
+        refreshPlaybackReadout()
+        guard isPodcastPlayback, let finishedID = currentPodcastEpisodeID,
+              playback?.completed == true, !canSelectNextEpisode else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            // The completed record was already written by the controller
+            // before this handler fired; reload so the finished row's Played
+            // badge (and any other row that changed underneath it) is
+            // current before searching past it.
+            await self.reloadLibraryRows()
+            let finished = self.episodes.first { $0.id == finishedID }
+            // The successor is chosen before the finished episode goes,
+            // because the search walks the ordered rows past the finished one
+            // and there is nothing to walk past once it has been taken out.
+            let next = self.nextReadyEpisode(after: finishedID)
+            var note: String?
+            if let finished {
+                self.hideEpisode(finished)
+                note = await self.dismissEpisode(finished)
+                    ? "Removed \(finished.title)."
+                    : "\(finished.title) could not be removed."
+            }
+            guard let next else {
+                self.podcastOperationMessage = [note, "No other downloaded, prepared episode is ready to play next."]
+                    .compactMap { $0 }.joined(separator: " ")
+                return
+            }
+            self.podcastOperationMessage = note
+            self.playEpisode(next)
+        }
+    }
+
+    /// The next episode after `finishedID`, in the same order the Larder
+    /// shows them, whose audio is downloaded and whose preparation finished
+    /// successfully.
+    ///
+    /// Already-played rows are skipped so a shorter episode already listened
+    /// to does not loop back in; optimistically-hidden rows are skipped for
+    /// the same reason `libraryItems` skips them, because a removal the
+    /// store has not yet confirmed should not be handed back to the player.
+    private func nextReadyEpisode(after finishedID: String) -> WiltedMacEpisode? {
+        let ordered = episodes
+            .filter { !hiddenEpisodeIDs.contains($0.id) }
+            .sorted {
+                if $0.releasedAt != $1.releasedAt {
+                    return libraryOrder == .newest ? $0.releasedAt > $1.releasedAt : $0.releasedAt < $1.releasedAt
+                }
+                return $0.id < $1.id
+            }
+        guard let index = ordered.firstIndex(where: { $0.id == finishedID }) else { return nil }
+        return ordered[ordered.index(after: index)...]
+            .first { $0.downloadState == .completed && $0.preparationState.isPrepared && !$0.isPlayed }
     }
 
     /// Re-reads the rows the Library draws from the store.
@@ -3761,7 +3918,19 @@ final class WiltedMacModel {
 
     private static func stateDirectory(fixtureMode: Bool) -> URL {
         if fixtureMode {
-            return FileManager.default.temporaryDirectory
+            let temporaryDirectory = FileManager.default.temporaryDirectory
+            // XCUITest terminates the fixture host it drives by design, so this
+            // process's own previous wilted-ui-fixture-<pid> directory (from a
+            // prior launch that never got to run any cleanup, trapped or
+            // otherwise) is still sitting in $TMPDIR. Shell callers get this
+            // from scripts/lib/temp-sweep.sh; this is its Swift equivalent,
+            // scoped only to the family this function itself creates. The 24h
+            // cutoff mirrors that library's and is the same safety argument: a
+            // directory nothing has touched in a day belongs to a run that is
+            // not coming back, and a fixture launch that is still running is at
+            // most minutes old.
+            sweepStaleFixtureDirectories(in: temporaryDirectory)
+            return temporaryDirectory
                 .appendingPathComponent(
                     "wilted-ui-fixture-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true
                 )
@@ -3769,6 +3938,26 @@ final class WiltedMacModel {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return base.appendingPathComponent("Wilted", isDirectory: true)
+    }
+
+    /// Removes abandoned `wilted-ui-fixture-*` directories under `root` older
+    /// than 24 hours. Never throws and never fails the caller: this is
+    /// housekeeping in front of a fixture launch, not a precondition for one.
+    private static func sweepStaleFixtureDirectories(in root: URL) {
+        let maxAge: TimeInterval = 24 * 60 * 60
+        let fileManager = FileManager.default
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]
+        ) else { return }
+        let cutoff = Date().addingTimeInterval(-maxAge)
+        for entry in entries {
+            // Re-validated here, in the loop that deletes, not only by relying
+            // on this being the only prefix `stateDirectory` ever mints.
+            guard entry.lastPathComponent.hasPrefix("wilted-ui-fixture-") else { continue }
+            guard let modified = (try? entry.resourceValues(forKeys: [.contentModificationDateKey]))
+                .flatMap(\.contentModificationDate), modified < cutoff else { continue }
+            try? fileManager.removeItem(at: entry)
+        }
     }
 #endif
 }
@@ -3795,5 +3984,51 @@ private final class WiltedFixturePlaybackBackend: PlaybackBackend {
         isPlaying = false
         completionHandler?(loadedGeneration, successfully)
     }
+}
+
+/// The real audio backend with its output pinned to silence.
+///
+/// A test that plays an episode plays it out of the machine's speakers: a tone
+/// during a gate run with nothing on screen to say where it came from. The
+/// scripted fixture backend above is not a substitute, because it invents its
+/// duration from the file name and the tests that play do so to assert on real
+/// durations and on completion firing off the audio clock. So the real backend
+/// does the work and only its output is taken away.
+///
+/// The mute is applied twice on purpose. `AVAudioPlayerBackend.load` copies its
+/// own stored volume onto each new player, so the inner backend has to start at
+/// zero; and the model pushes the owner's saved volume through
+/// `PlaybackController.setVolume` on every load, so the setter here is answered
+/// rather than obeyed.
+@MainActor
+private final class WiltedSilentPlaybackBackend: PlaybackBackend {
+    private let inner = AVAudioPlayerBackend()
+
+    init() { inner.volume = 0 }
+
+    var duration: TimeInterval { inner.duration }
+    var currentTime: TimeInterval {
+        get { inner.currentTime }
+        set { inner.currentTime = newValue }
+    }
+    var isPlaying: Bool { inner.isPlaying }
+    var rate: Float {
+        get { inner.rate }
+        set { inner.rate = newValue }
+    }
+    var volume: Float {
+        get { inner.volume }
+        set { _ = newValue }
+    }
+    var loadedGeneration: UInt64 { inner.loadedGeneration }
+    var completionHandler: (@MainActor @Sendable (UInt64, Bool) -> Void)? {
+        get { inner.completionHandler }
+        set { inner.completionHandler = newValue }
+    }
+
+    func load(url: URL) throws { try inner.load(url: url) }
+    @discardableResult func play() -> Bool { inner.play() }
+    func pause() { inner.pause() }
+    func stop() { inner.stop() }
 }
 #endif
