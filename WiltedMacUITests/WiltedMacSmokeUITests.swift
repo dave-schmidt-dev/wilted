@@ -289,6 +289,33 @@ final class WiltedMacSmokeUITests: XCTestCase {
         )
     }
 
+    /// The notes were only reachable from the player, so answering "what is
+    /// this episode about?" meant playing it. The row's own title has to open
+    /// them, and the URLs the feed wrote out have to arrive as links.
+    func testEpisodeTitleOpensItsShowNotes() {
+        let app = launch(arguments: [
+            "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"
+        ])
+        let title = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-notes-item-'")
+        ).firstMatch
+        XCTAssertTrue(title.waitForExistence(timeout: 5), "A row with notes must offer them from its title.")
+        title.click()
+        let notes = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-notes-text-'")
+        ).firstMatch
+        // The same first-click swallow the menu test guards against.
+        if !notes.waitForExistence(timeout: 3) { title.click() }
+        XCTAssertTrue(notes.waitForExistence(timeout: 5))
+        // The row's own summary is the notes' first paragraph, so asserting on
+        // that would pass without the popover having opened at all. The guest
+        // line appears nowhere but the full notes.
+        XCTAssertTrue(
+            notes.label.contains("Ada Ferris"),
+            "The popover must carry the feed's notes, not just the row's one-line summary."
+        )
+    }
+
     /// A build that never loaded the ad detector marked every episode prepared
     /// with nothing cut, and removal is permanent, so a prepared row had no
     /// way back. Pressing the control must actually start a run: the fixture

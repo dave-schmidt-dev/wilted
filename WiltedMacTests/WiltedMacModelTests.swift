@@ -693,7 +693,7 @@ final class WiltedMacModelTests: XCTestCase {
 
     func testNotesLinksAreClickable() {
         let notes = "Guest: Ada (https://example.com/ada) and code WILTED at example.com/quiet."
-        let linked = WiltedMacCompactPlayer.linkedNotes(notes)
+        let linked = WiltedShowNotes.linked(notes)
         let links = linked.runs.compactMap(\.link)
         XCTAssertEqual(links.map(\.absoluteString), ["https://example.com/ada", "http://example.com/quiet"])
         XCTAssertEqual(String(linked.characters), notes, "linking must not alter the words")

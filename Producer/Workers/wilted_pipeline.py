@@ -85,6 +85,10 @@ PUBLISHED_TRANSCRIPT_GAP_FRACTION = 0.005
 # swallowed by a runaway answer.
 PREROLL_RECOVERY_MAX_SECONDS = 300.0
 PREROLL_RECOVERY_MAX_SEGMENTS = 96
+# How far past the transcript's own first second a detection may begin and
+# still count as having claimed the opening. Anything later leaves
+# advertising in front of it.
+PREROLL_ALREADY_CLAIMED_SECONDS = 1.0
 # Below this a positive answer is more likely to be the model splitting a
 # sentence than an advertisement worth cutting.
 PREROLL_RECOVERY_MINIMUM_SECONDS = 10.0
@@ -1366,7 +1370,15 @@ def recover_transcript_start_preroll(ads_module, backend, segments, detections):
     hosts talking in that passage, so the second question finds them and the
     cut never happens.
     """
-    if not segments or any(ad.start_s < segments[0].end_s for ad in detections):
+    if not segments:
+        return detections
+    # Only an opening already claimed from its first second is left alone. A
+    # detection that begins a few seconds in is the case this exists for: the
+    # advertisement's opening sentences were not recognised as advertising, so
+    # what survives the cut is a commercial, and it is the first thing the
+    # listener hears. Giant Bombcast 955 kept thirteen seconds of an insurance
+    # spot that way, with the detector's own span starting at 13.0.
+    if any(ad.start_s <= segments[0].start_s + PREROLL_ALREADY_CLAIMED_SECONDS for ad in detections):
         return detections
     window_ids = [0]
     for segment_id in range(1, len(segments)):

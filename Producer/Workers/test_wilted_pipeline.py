@@ -658,6 +658,21 @@ class AdDetectionTests(unittest.TestCase):
                                   "label": "sponsor", "confidence": 0.9}])
         self.assertEqual([r for r in llm.requests if r.get("field") == "program_start_id"], [])
 
+    def test_an_opening_the_detector_claimed_only_part_of_is_still_reviewed(self):
+        # Giant Bombcast 955 shipped this way: the detector called 13.0-131.1 an
+        # advertisement and left the spot's first thirteen seconds in front of
+        # it, so the episode opened on an insurance commercial. A span that
+        # starts after the first second does not mean the opening is handled.
+        llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=-1)
+        install_fake_ads(llm, detections=[FakeAd(6.4, 51.9)])
+        with redirect_stderr(io.StringIO()), mock.patch.object(wp, "probe_duration", return_value=200.0):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
+        # One span, from the first second to where the program begins: the
+        # recovered opening absorbs the partial detection rather than sitting
+        # beside it.
+        self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 84.5,
+                                  "label": "ad_break", "confidence": 1.0}])
+
     def test_an_unanswered_opening_review_never_cuts(self):
         llm = FakeLLM(fail_generate=None)
         install_fake_ads(llm)

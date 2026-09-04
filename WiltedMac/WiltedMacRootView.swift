@@ -711,6 +711,28 @@ struct WiltedMacLinkField: View {
     }
 }
 
+/// Show notes, wherever they are read.
+///
+/// The player and the Larder row render the same feed text, so the URL pass
+/// lives apart from either rather than in whichever surface asked first.
+enum WiltedShowNotes {
+    /// Feed notes arrive as plain text with the URLs written out; make each
+    /// one a link so a sponsor code or guest site is a click, not a copy.
+    static func linked(_ notes: String) -> AttributedString {
+        var text = AttributedString(notes)
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
+            return text
+        }
+        let whole = NSRange(notes.startIndex..., in: notes)
+        for match in detector.matches(in: notes, range: whole) {
+            guard let url = match.url, let range = Range(match.range, in: notes),
+                  let attributedRange = Range(range, in: text) else { continue }
+            text[attributedRange].link = url
+        }
+        return text
+    }
+}
+
 private struct WiltedMacPreparationView: View {
     let model: WiltedMacModel
     let preparation: WiltedMacPreparation
@@ -822,15 +844,14 @@ private struct WiltedMacEpisodeRow: View {
     let model: WiltedMacModel
     let episode: WiltedMacEpisode
     @Environment(\.colorScheme) private var colorScheme
+    @State private var isShowingNotes = false
+    @State private var isHoveringTitle = false
 
     var body: some View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
             artwork
             VStack(alignment: .leading, spacing: 2) {
-                Text(episode.title)
-                    .font(WiltedTheme.font(.body))
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                    .lineLimit(1)
+                title
                 Text("\(episode.feedTitle) · \(relativeAge)")
                     .font(WiltedTheme.font(.utility))
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
@@ -886,6 +907,63 @@ private struct WiltedMacEpisodeRow: View {
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(model.selectedLibraryItemID == episode.id ? .isSelected : [])
         .accessibilityIdentifier("wilted-episode-row-\(episode.id)")
+    }
+
+    /// The title opens this episode's show notes.
+    ///
+    /// The notes were only reachable from the player, which meant playing an
+    /// episode to read what it is about. The row already carries the title, so
+    /// the title is where the question gets asked.
+    ///
+    /// A popover rather than an inline disclosure: notes run to hundreds of
+    /// lines on some shows, and growing a row that far reflows everything below
+    /// it while a reader is working down the list.
+    @ViewBuilder private var title: some View {
+        if let notes = episode.notes, !notes.isEmpty {
+            // Selecting as well as opening: the row selects on a tap anywhere
+            // else, and a button swallows the parent gesture, so without this
+            // the title would be the one part of the row that does not select it.
+            Button {
+                model.selectLibraryItem(episode.id)
+                isShowingNotes = true
+            } label: { titleText.underline(isHoveringTitle) }
+                .buttonStyle(.plain)
+                // Every title turning accent-coloured would repaint the whole
+                // list for an action taken on one row at a time, so the link
+                // shows itself under the pointer instead.
+                .onHover { isHoveringTitle = $0 }
+                .help("Show notes for \(episode.title)")
+                .accessibilityLabel("Show notes for \(episode.title)")
+                .accessibilityIdentifier("wilted-episode-notes-\(episode.id)")
+                .popover(isPresented: $isShowingNotes, arrowEdge: .bottom) {
+                    notesPopover(notes)
+                }
+        } else {
+            titleText
+        }
+    }
+
+    private var titleText: some View {
+        Text(episode.title)
+            .font(WiltedTheme.font(.body))
+            .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+            .lineLimit(1)
+    }
+
+    private func notesPopover(_ notes: String) -> some View {
+        ScrollView {
+            Text(WiltedShowNotes.linked(notes))
+                .font(WiltedTheme.font(.body))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("wilted-episode-notes-text-\(episode.id)")
+        }
+        .padding(WiltedTheme.Spacing.medium)
+        // Wide enough for a paragraph, short enough to stay on screen beside a
+        // row near the bottom of a full window.
+        .frame(width: 420, height: 360)
+        .accessibilityIdentifier("wilted-episode-notes-popover-\(episode.id)")
     }
 
     @ViewBuilder private var artwork: some View {
@@ -1643,7 +1721,7 @@ struct WiltedMacCompactPlayer: View {
                 Text("Show Notes")
                     .font(WiltedTheme.font(.title))
                 if let notes = model.currentEpisode?.notes {
-                    Text(Self.linkedNotes(notes))
+                    Text(WiltedShowNotes.linked(notes))
                         .font(WiltedTheme.font(.body))
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1659,22 +1737,6 @@ struct WiltedMacCompactPlayer: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-player-notes-list")
-    }
-
-    /// Feed notes arrive as plain text with the URLs written out; make each
-    /// one a link so a sponsor code or guest site is a click, not a copy.
-    static func linkedNotes(_ notes: String) -> AttributedString {
-        var text = AttributedString(notes)
-        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
-            return text
-        }
-        let whole = NSRange(notes.startIndex..., in: notes)
-        for match in detector.matches(in: notes, range: whole) {
-            guard let url = match.url, let range = Range(match.range, in: notes),
-                  let attributedRange = Range(range, in: text) else { continue }
-            text[attributedRange].link = url
-        }
-        return text
     }
 
     private var upNextContent: some View {
