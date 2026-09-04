@@ -14,7 +14,15 @@ run_case() {
   # Every pre-existing case asserts against a gate that RUNS the macOS UI leg.
   # The leg now defers unless opted in, so opt in here; the deferral path has
   # its own dedicated cases below, which re-override this to 0.
-  env NATIVE_SELF_TEST=1 WILTED_MAC_UI=1 "$@" >"$output" 2>&1
+  #
+  # A passing macOS UI leg also clears the retained
+  # failure bundle. Without a per-case diagnostics directory that clear lands
+  # on the repository's own `.logs/native-gate-diagnostics`, so running the
+  # headless gate destroyed the evidence the previous `make native-ui` kept.
+  # Cases that need their own directory pass it in "$@", which wins over this.
+  env NATIVE_SELF_TEST=1 WILTED_MAC_UI=1 \
+    WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR="$tmp_dir/diagnostics/$label" \
+    "$@" >"$output" 2>&1
   local result=$?
   set -e
   printf 'meta-test[%s] status=%s\n' "$label" "$result" >&2
@@ -499,6 +507,16 @@ assert_result_bundle_contract() {
 
 assert_result_bundle_contract
 
+# The retained failure bundle is the only record of why a macOS UI journey
+# failed, and it is written by a run that cannot be repeated cheaply. Prove the
+# meta-test leaves it alone rather than trusting the override above.
+real_diagnostics="$repo_root/.logs/native-gate-diagnostics"
+real_bundle="$real_diagnostics/macos-ui-tests.xcresult"
+retained_bundle_before=absent
+if [[ -e "$real_bundle" ]]; then
+  retained_bundle_before=present
+fi
+
 success_log="$tmp_dir/success.log"
 success_status="$(run_case success "$success_log" bash "$gate")"
 [[ "$success_status" -eq 0 ]] || { cat "$success_log" >&2; exit 1; }
@@ -673,4 +691,14 @@ assert_contains 'native.macos-ui.failure-bundle path=' "$mac_ui_zero_log"
 assert_contains 'self_test_macos_ui_zero_test_evidence' \
   "$mac_ui_zero_diagnostics/macos-ui-tests.xcresult/self-test-evidence"
 
-printf '%s\n' 'native gate aggregate meta-test passed (nine native Xcode legs; the macOS UI leg defers unless WILTED_MAC_UI=1 and its deferral is fail-loud; forced and zero-test failures are fail-closed)'
+retained_bundle_after=absent
+if [[ -e "$real_bundle" ]]; then
+  retained_bundle_after=present
+fi
+if [[ "$retained_bundle_before" != "$retained_bundle_after" ]]; then
+  printf '%s\n' \
+    "assertion failed: the meta-test changed $real_bundle from $retained_bundle_before to $retained_bundle_after" >&2
+  exit 1
+fi
+
+printf '%s\n' 'native gate aggregate meta-test passed (nine native Xcode legs; the macOS UI leg defers unless WILTED_MAC_UI=1 and its deferral is fail-loud; forced and zero-test failures are fail-closed; the retained failure bundle is untouched)'
