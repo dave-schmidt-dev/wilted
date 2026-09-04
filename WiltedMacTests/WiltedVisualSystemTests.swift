@@ -752,39 +752,53 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertEqual(removed.id, "episode-id", "Restore identity must remain stable across renders")
     }
 
-    /// The Removed section wraps rows that carry their own identifiers, so it
-    /// has to be an explicit accessibility container. An identifier on a bare
-    /// container makes it an implicit element instead, and the rows stop
-    /// vending `wilted-podcast-removed-row-*` to a UI query even though they
-    /// still draw. That is exactly how the 2026-09-03 Mixed Larder journey
-    /// failed against a screenshot that showed the row present.
-    func testTheRemovedSectionIsAnExplicitAccessibilityContainer() throws {
+    /// The Removed rows must reach the card with no accessibility container
+    /// between them, because an intermediate one swallows them.
+    ///
+    /// Two fixes were tried and neither worked. Marking the section
+    /// `.accessibilityElement(children: .contain)` made the section vend but
+    /// left its rows hoisted into it; adding a content shape to the row changed
+    /// nothing. The 2026-09-04 hierarchy snapshot settled it: the feed rows sit
+    /// directly inside the same card with no container between, and they vend
+    /// `wilted-podcast-feed-row-*` normally, while unselected and therefore
+    /// while their background is clear. The container was the only difference.
+    func testTheRemovedRowsReachTheCardWithNoAccessibilityContainerBetween() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
         let source = try String(contentsOf: root)
 
-        let identifier = try XCTUnwrap(source.range(of: ".accessibilityIdentifier(\"wilted-podcast-removed\")"))
-        let preceding = source[source.startIndex..<identifier.lowerBound]
-        let lastModifier = try XCTUnwrap(
-            preceding.range(of: ".accessibilityElement(children: .contain)", options: .backwards)
-        )
-        let between = preceding[lastModifier.upperBound...]
-        XCTAssertFalse(
-            between.contains("}"),
-            "wilted-podcast-removed must sit directly on a container marked .accessibilityElement(children: .contain)"
-        )
-        XCTAssertTrue(source.contains("wilted-podcast-restore-\\(dismissal.id)"))
-
-        // The row itself only vends a group when it has a shape to vend. The
-        // hierarchy snapshot from the failing 2026-09-03 journey shows the
-        // title and Restore button hoisted into the section instead, because
-        // this content shape was missing.
+        // The row is the element the UI journey queries, so it keeps its own
+        // container and identifier.
         let row = try XCTUnwrap(
             source.range(of: ".accessibilityIdentifier(\"wilted-podcast-removed-row-\\(dismissal.id)\")")
         )
         let rowModifiers = source[source.range(of: "private func dismissedRow")!.lowerBound..<row.lowerBound]
-        XCTAssertTrue(rowModifiers.contains(".contentShape(Rectangle())"))
         XCTAssertTrue(rowModifiers.contains(".accessibilityElement(children: .contain)"))
+        XCTAssertFalse(
+            rowModifiers.contains(".contentShape("),
+            "the row needs no shape to vend a group; the feed rows vend with a clear background"
+        )
+        XCTAssertTrue(source.contains("wilted-podcast-restore-\\(dismissal.id)"))
+
+        // Nothing between the rows and the enclosing card may claim to be an
+        // accessibility element. `wilted-podcast-removed` was exactly that.
+        let sectionStart = try XCTUnwrap(source.range(of: "dismissedRow(dismissal)")).upperBound
+        // Anchored forward from the rows. The operation message also renders on
+        // Larder, far above this section, so searching the whole file finds that
+        // one and inverts the range.
+        let sectionEnd = try XCTUnwrap(
+            source.range(of: "WiltedMacPodcastOperationMessage(model: model)",
+                         range: sectionStart..<source.endIndex)
+        ).lowerBound
+        let between = source[sectionStart..<sectionEnd]
+        XCTAssertFalse(
+            between.contains(".accessibilityElement("),
+            "an accessibility container between the Removed rows and the card stops the rows vending"
+        )
+        XCTAssertFalse(
+            between.contains(".accessibilityIdentifier("),
+            "an identifier on the Removed section makes it an implicit element that absorbs its rows"
+        )
     }
 
     /// The producer window has no Downloads destination, so its copy must not

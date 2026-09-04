@@ -538,17 +538,20 @@ private struct WiltedMacFeedsView: View {
                     .font(WiltedTheme.font(.title))
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-podcast-removed-title")
+                // Deliberately carries no accessibility modifiers, exactly like
+                // the subscriptions stack above. An intermediate container
+                // between the card and the rows is what stopped
+                // `wilted-podcast-removed-row-*` from vending: the 2026-09-04
+                // hierarchy snapshot shows the section group holding the row's
+                // title, feed name, and Restore button as direct children, while
+                // the feed rows in the same card, with no container between them
+                // and the card, each vend their own group.
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(model.dismissedEpisodes.enumerated()), id: \.element.id) { index, dismissal in
                         if index > 0 { Divider() }
                         dismissedRow(dismissal)
                     }
                 }
-                // Without this the section is an implicit accessibility
-                // element, and the rows it wraps stop vending their own
-                // identifiers even though they still draw.
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("wilted-podcast-removed")
             }
             WiltedMacPodcastOperationMessage(model: model)
         }
@@ -636,13 +639,6 @@ private struct WiltedMacFeedsView: View {
                 .accessibilityIdentifier("wilted-podcast-restore-\(dismissal.id)")
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
-        // A `.contain` group with no drawn or hit-testable shape is not vended
-        // as an element on macOS: the 2026-09-03 hierarchy snapshot shows this
-        // row's title and Restore button hoisted straight into the section,
-        // with no `wilted-podcast-removed-row-*` group between them. Both rows
-        // that do vend one carry a shape here (`wilted-episode-row-*` a
-        // content shape, `wilted-podcast-feed-row-*` a background).
-        .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-podcast-removed-row-\(dismissal.id)")
     }
