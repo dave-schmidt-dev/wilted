@@ -63,3 +63,6 @@ opencode.jsonc
 
 # Attended Development CloudKit qualification builds and logs
 .attended-build/
+
+# Ad-hoc verification scratch: Xcode derived data from focused reruns
+.verify-tmp/
