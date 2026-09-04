@@ -368,6 +368,59 @@ class ForwardedWarnings(logging.Handler):
             progress("log.suppressed", f"{self.suppressed} further warnings not relayed")
 
 
+# How many discarded runs to name before reporting only the count.
+DISCARDED_RUN_REPORT_LIMIT = 12
+
+
+class DiscardedRuns(logging.Handler):
+    """Collect the archived detector's own notices about runs it threw away.
+
+    The detector flags a span, fails to evidence it, and drops it with a line
+    at INFO -- which the WARNING+ forwarder above never sees. That left a real
+    question unanswerable: The Daily's closing Chase Sapphire spot was missing
+    from the output and nothing in the journal said whether it had been flagged
+    and then dropped for lacking a price or an address, or never flagged at
+    all. Those two want different fixes, so the difference is worth one line.
+    """
+
+    def __init__(self, segments, limit: int = DISCARDED_RUN_REPORT_LIMIT):
+        super().__init__(level=logging.INFO)
+        self.segments = segments
+        self.limit = limit
+        self.notices: list[str] = []
+        self.count = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = record.getMessage()
+            if not message.startswith("Discarding"):
+                return
+            self.count += 1
+            if len(self.notices) < self.limit:
+                self.notices.append(self._with_times(message))
+        except Exception:  # noqa: BLE001 - a handler must never unwind its caller
+            self.handleError(record)
+
+    def _with_times(self, message: str) -> str:
+        """Add the run's clock times, because a segment ID means nothing later."""
+        found = re.search(r"\b(\d+)-(\d+)\b", message)
+        if not found:
+            return message
+        first, last = int(found.group(1)), int(found.group(2))
+        if not 0 <= first <= last < len(self.segments):
+            return message
+        span = f"{float(self.segments[first].start_s):.1f}-{float(self.segments[last].end_s):.1f}s"
+        return f"{message} ({span})"
+
+    def summarize(self) -> None:
+        if not self.count:
+            return
+        detail = "; ".join(self.notices)
+        if self.count > len(self.notices):
+            detail += f"; and {self.count - len(self.notices)} more"
+        progress("ads.detect.discarded", f"{self.count} flagged runs dropped: {detail}")
+
+
 # ---------------------------------------------------------------------------
 # Cue timing
 # ---------------------------------------------------------------------------
@@ -2046,7 +2099,20 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
         try:
             progress("ads.detect.start", f"{len(segments)} segments")
             install_legacy_sponsor_opening_compatibility(ads_module)
-            detections = ads_module.detect_ads(segments, counting)
+            # The archive says what it threw away at INFO, and the logger's
+            # effective level is WARNING, so the level is lifted for the length
+            # of the detection and put back afterwards.
+            discarded = DiscardedRuns(segments)
+            ads_logger = logging.getLogger("wilted.ads")
+            previous_level = ads_logger.level
+            ads_logger.addHandler(discarded)
+            ads_logger.setLevel(logging.INFO)
+            try:
+                detections = ads_module.detect_ads(segments, counting)
+            finally:
+                ads_logger.removeHandler(discarded)
+                ads_logger.setLevel(previous_level)
+                discarded.summarize()
             # Probed before the recovery passes, not after them. The closing
             # review cuts to the end of the file and sizes itself against the
             # episode, and the case it exists for is the one where the detector

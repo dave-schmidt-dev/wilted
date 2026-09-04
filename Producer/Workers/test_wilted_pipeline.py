@@ -625,6 +625,45 @@ class AdDetectionTests(unittest.TestCase):
         # A half-constructed backend still holds whatever it allocated.
         self.assertTrue(llm.closed)
 
+    def test_a_run_the_detector_threw_away_is_named_in_the_journal(self):
+        # The archive drops a flagged run it cannot evidence and says so at
+        # INFO, below the level the warning forwarder relays. Without this,
+        # a missing advertisement cannot be told apart from one that was never
+        # flagged, and the two want different fixes.
+        llm = FakeLLM()
+        ads = install_fake_ads(llm)
+        logger = logging.getLogger("wilted.ads")
+
+        def detect(segments, _backend):
+            logger.info("Discarding sparse ad run %d-%d without promotional evidence", 0, 1)
+            logger.info("Discarding self-promo housekeeping run %d-%d", 1, 1)
+            return []
+
+        ads.detect_ads = detect
+        stream = io.StringIO()
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=200.0):
+            wp.detect_and_cut(self.request, self.audio, [], self.segments)
+        detail = next(json.loads(line)["detail"] for line in stream.getvalue().splitlines()
+                      if json.loads(line)["stage"] == "ads.detect.discarded")
+        self.assertIn("2 flagged runs dropped", detail)
+        # With clock times, because a segment ID means nothing after the run.
+        self.assertIn("(0.0-4.0s)", detail)
+        self.assertIn("(2.0-4.0s)", detail)
+
+    def test_the_detector_log_level_is_put_back_after_detection(self):
+        # The level is lifted only for the length of the detection; leaving it
+        # raised would relay every INFO line the archive writes for the rest of
+        # the run.
+        logger = logging.getLogger("wilted.ads")
+        logger.setLevel(logging.ERROR)
+        self.addCleanup(logger.setLevel, logging.NOTSET)
+        llm = FakeLLM()
+        install_fake_ads(llm)
+        with redirect_stderr(io.StringIO()), mock.patch.object(wp, "probe_duration", return_value=200.0):
+            wp.detect_and_cut(self.request, self.audio, [], self.segments)
+        self.assertEqual(logger.level, logging.ERROR)
+        self.assertEqual([h for h in logger.handlers if isinstance(h, wp.DiscardedRuns)], [])
+
     def test_detections_are_reported_and_the_call_count_is_journaled(self):
         llm = FakeLLM()
         install_fake_ads(llm, detections=[FakeAd(0.0, 2.0)])
