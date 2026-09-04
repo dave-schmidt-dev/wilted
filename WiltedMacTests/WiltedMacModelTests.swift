@@ -415,6 +415,38 @@ final class WiltedMacModelTests: XCTestCase {
                        "a stop request is a state the surface can show, not silence")
     }
 
+    /// Automation starts from the launch path, and the shipped defaults keep it
+    /// inert.
+    ///
+    /// Both halves matter. Without the launch wiring a persisted claim is never
+    /// resumed, so "a claim survives a crash" would be true of the store and
+    /// false of the product. And because the default policy is manual, a launch
+    /// that reaches this point must still do nothing, which is what preserves
+    /// the behaviour of every build before automation existed.
+    func testLaunchStartsAutomationAndTheDefaultPolicyDoesNothing() async throws {
+        let preferences = try automationSettingsPreferences()
+        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
+        let directory = temporaryDirectory("automation-launch")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        XCTAssertEqual(model.automationSettings.refreshPolicy, .manual)
+        XCTAssertEqual(model.automationSettings.downloadPolicy, .manual)
+
+        XCTAssertEqual(model.startupState, .loading(attempt: 0))
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        XCTAssertEqual(model.startupState, .ready,
+                       "the launch pass is started from the ready transition, so it has to be reached")
+        await model.waitForAutomation()
+
+        XCTAssertEqual(model.automationStatus, .idle,
+                       "the launch pass ran and the manual policy declined it")
+        XCTAssertNil(model.lastAutomationRefreshAt,
+                     "a declined pass records no refresh, so an interval policy set later starts fresh")
+        model.stopAutomationTicker()
+    }
+
     /// The scheduling timestamp is the only thing standing between an interval
     /// policy and repeating its work on every tick, so it has to outlive the
     /// process. It lives in preferences rather than the store because losing it

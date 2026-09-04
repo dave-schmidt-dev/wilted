@@ -44,6 +44,13 @@ enum WiltedAutomationStatus: Equatable, Sendable {
     case finished(refreshed: Int, downloaded: Int)
 }
 
+/// A fault automation raises rather than reporting work it did not do.
+enum WiltedAutomationFault: Error, Equatable {
+    /// A durable claim whose episode is not in the loaded library. The claim
+    /// stays, so a later launch can retry it once the library is whole.
+    case claimedEpisodeMissing(String)
+}
+
 /// Policy evaluation, scheduling metadata, serialised admission, retry, and
 /// cancellation for app-open automation.
 ///
@@ -173,7 +180,18 @@ actor WiltedAutomationCoordinator {
     /// A claim is durable and a running download is not, so a crash mid-transfer
     /// leaves a `queued` or `downloading` record with nothing behind it. The
     /// store is the only thing that knows which episodes those are.
+    ///
+    /// Takes the same single-pass slot as `run`, because a reconcile and a pass
+    /// would otherwise drain the same claims concurrently.
     func reconcile() async {
+        guard running == nil else { return }
+        let task = Task { await self.performReconcile() }
+        running = task
+        await task.value
+        running = nil
+    }
+
+    private func performReconcile() async {
         let claims: [String]
         do {
             claims = try await operations.unfinishedClaims()

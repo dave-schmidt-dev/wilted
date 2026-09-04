@@ -2136,21 +2136,10 @@ public actor LocalLibraryStore {
         _ episodes: [PodcastEpisode],
         admission: PodcastEpisodeAdmission
     ) throws -> PodcastEpisodeAdmissionResult {
-        guard !episodes.isEmpty else {
-            return PodcastEpisodeAdmissionResult(saved: [], newlyAdmitted: [], skipped: 0)
-        }
-        let context = ModelContext(container)
-        let existing = Set(
-            try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>()).map(\.id)
-        )
-        let admitted = try admittedPodcastEpisodes(episodes, admission: admission, in: context)
-        try upsertPodcastEpisodes(admitted, in: context)
-        try context.save()
-        return PodcastEpisodeAdmissionResult(
-            saved: admitted.map(\.itemID),
-            newlyAdmitted: admitted.filter { !existing.contains($0.itemID.rawValue) }.map(\.itemID),
-            skipped: episodes.count - admitted.count
-        )
+        // One admission path, not two. A claiming limit of zero is exactly this
+        // call, and keeping a second hand-written copy of the admit-and-upsert
+        // sequence is how the two drift apart.
+        try admitPodcastEpisodes(episodes, admission: admission, claimingNewest: 0).admission
     }
 
     /// What one admission claimed for automatic download.
@@ -2177,7 +2166,8 @@ public actor LocalLibraryStore {
     /// separate claim row is one more thing that can disagree with it.
     ///
     /// A `limit` of zero admits and claims nothing, which is what a manual
-    /// download policy asks for.
+    /// download policy asks for, and `.backfill` claims nothing whatever the
+    /// limit: subscribing is not a request to download a back catalogue.
     public func admitPodcastEpisodes(
         _ episodes: [PodcastEpisode],
         admission: PodcastEpisodeAdmission,
@@ -2198,7 +2188,10 @@ public actor LocalLibraryStore {
         try upsertPodcastEpisodes(admitted, in: context)
         let newlyAdmitted = admitted.filter { !existing.contains($0.itemID.rawValue) }
         var claimed: [ItemID] = []
-        if limit > 0 {
+        // Backfill never claims, whatever the caller asks for. Subscribing is
+        // not a request to download a back catalogue, and refusing here means a
+        // future caller cannot make it one by passing a limit.
+        if limit > 0, admission == .incremental {
             let tracked = Set(
                 try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
                     .map(\.episodeID)

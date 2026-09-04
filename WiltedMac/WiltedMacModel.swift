@@ -765,6 +765,7 @@ final class WiltedMacModel {
 #if canImport(WiltedProducer)
     private var automation: WiltedAutomationCoordinator?
     private var automationTask: Task<Void, Never>?
+    private var automationTicker: Task<Void, Never>?
 #endif
     private var podcastDownloadTasks: [String: Task<Void, Never>] = [:]
     private var podcastDownloadCoordinator: PodcastDownloadCoordinator?
@@ -904,33 +905,94 @@ final class WiltedMacModel {
         automationStatus = status
     }
 
+    /// How often an open window re-evaluates the policy.
+    ///
+    /// Coarse on purpose: the evaluation is a pure function of settings and a
+    /// stored timestamp, and this exists only so a window left open overnight
+    /// still notices the next due refresh.
+    static let automationTickInterval: TimeInterval = 900
+
+    /// Resumes last session's claims, then evaluates this launch.
+    ///
+    /// Sequential, and started only once the library has loaded. The coordinator
+    /// runs one pass at a time, so firing both concurrently would drop one, and
+    /// resuming a claim before `episodes` is populated would fault every
+    /// recovered download.
+    func startAutomationOnLaunch() {
 #if canImport(WiltedProducer)
+        guard !fixtureMode, let coordinator = automationCoordinator() else { return }
+        automationTask = Task {
+            await coordinator.reconcile()
+            await coordinator.run(trigger: .launch)
+        }
+#endif
+    }
+
+    /// Starts the open-window tick. Idempotent, so repeated scene callbacks are
+    /// harmless.
+    func startAutomationTicker(interval: TimeInterval = WiltedMacModel.automationTickInterval) {
+#if canImport(WiltedProducer)
+        guard !fixtureMode, automationTicker == nil, store != nil else { return }
+        automationTicker = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                } catch {
+                    return
+                }
+                self?.runAutomation(trigger: .openWindowTick)
+            }
+        }
+#endif
+    }
+
+    func stopAutomationTicker() {
+#if canImport(WiltedProducer)
+        automationTicker?.cancel()
+        automationTicker = nil
+#endif
+    }
+
     /// Evaluates the automation policy and runs one pass if it is due.
     ///
     /// Called when the window opens and on the open-window tick. Both go through
     /// the same coordinator, so the policy is decided in one place rather than
     /// at each call site.
     func runAutomation(trigger: WiltedAutomationTrigger) {
+#if canImport(WiltedProducer)
         guard !fixtureMode, let coordinator = automationCoordinator() else { return }
         automationTask = Task { await coordinator.run(trigger: trigger) }
+#endif
     }
 
     /// Resumes claims that outlived the process that made them.
     func reconcileAutomation() {
+#if canImport(WiltedProducer)
         guard !fixtureMode, let coordinator = automationCoordinator() else { return }
         automationTask = Task { await coordinator.reconcile() }
+#endif
     }
 
     /// Stops the pass in flight. Claims stay durable and the next launch
     /// reconciles them, so stopping loses no eligibility.
     func cancelAutomation() {
+#if canImport(WiltedProducer)
         let coordinator = automation
         automationTask?.cancel()
         automationTask = nil
         Task { await coordinator?.cancel() }
         automationStatus = .cancelled
+#endif
     }
 
+    /// Deterministic test seam; production does not wait on this task.
+    func waitForAutomation() async {
+#if canImport(WiltedProducer)
+        await automationTask?.value
+#endif
+    }
+
+#if canImport(WiltedProducer)
     private func automationCoordinator() -> WiltedAutomationCoordinator? {
         if let automation { return automation }
         guard store != nil else { return nil }
@@ -1002,7 +1064,13 @@ final class WiltedMacModel {
     /// on a domestic connection would rather have one episode finish than six
     /// crawl.
     private func startClaimedDownload(_ episodeID: String) async throws {
-        guard let episode = episodes.first(where: { $0.id == episodeID }) else { return }
+        // Throwing, never returning. Automation only runs once the library has
+        // loaded, so a claim with no episode behind it is a genuine fault. A
+        // silent return would count it as downloaded and clear a claim that no
+        // transfer ever serviced.
+        guard let episode = episodes.first(where: { $0.id == episodeID }) else {
+            throw WiltedAutomationFault.claimedEpisodeMissing(episodeID)
+        }
         downloadEpisode(episode, alreadyClaimed: true)
         await podcastDownloadTasks[episodeID]?.value
     }
@@ -2324,6 +2392,7 @@ final class WiltedMacModel {
     }
 
     func checkpointForQuit() {
+        stopAutomationTicker()
 #if canImport(WiltedProducer)
         guard let playback else { return }
         Task { [weak self] in
@@ -2724,6 +2793,10 @@ final class WiltedMacModel {
                 pendingSyncReconciliation = false
                 reconcileSyncOnLaunchOrForeground()
             }
+            // After the library is in memory, not in a parallel task: automation
+            // resolves a claimed episode ID against `episodes`.
+            startAutomationOnLaunch()
+            startAutomationTicker()
         } catch {
             configureStoreDependencies(nil)
             let retainedURL = await Task.detached { [libraryURL, retainedPathsBeforeAttempt] in

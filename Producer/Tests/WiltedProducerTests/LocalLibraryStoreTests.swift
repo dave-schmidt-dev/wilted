@@ -1276,10 +1276,12 @@ final class LocalLibraryStoreTests: XCTestCase {
         let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [5, 1, 4, 2, 3])
         let store = try LocalLibraryStore(url: url)
         try await store.save(feed: feed)
-        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+        try await store.save(subscription: PodcastSubscription(
+            feedID: feed.itemID, subscribedAt: Timestamp(origin.addingTimeInterval(-30 * 86_400))
+        ))
 
         let claimedAt = Timestamp(origin.addingTimeInterval(60))
-        let first = try await store.admitPodcastEpisodes(all, admission: .backfill,
+        let first = try await store.admitPodcastEpisodes(all, admission: .incremental,
                                                           claimingNewest: 3, claimedAt: claimedAt)
         XCTAssertEqual(first.admission.newlyAdmitted.count, 5)
         let claimedGUIDs = try await store.podcastEpisodes(for: feed.itemID)
@@ -1302,6 +1304,29 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertEqual(afterRepeat.count, 3)
     }
 
+    /// Subscribing is not a request to download a back catalogue.
+    ///
+    /// The refusal lives in the store rather than only at the caller, so no
+    /// later wiring can turn subscribe-time admission into a download queue by
+    /// passing a limit.
+    func testBackfillAdmissionClaimsNothingEvenWhenAskedTo() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/catalogue/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 2, 3])
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+
+        let subscribed = try await store.admitPodcastEpisodes(all, admission: .backfill, claimingNewest: 20)
+        XCTAssertEqual(subscribed.admission.newlyAdmitted.count, 3, "the episodes are still admitted")
+        XCTAssertEqual(subscribed.claimed, [])
+        let downloads = try await store.downloads()
+        XCTAssertTrue(downloads.isEmpty, "nothing is queued by subscribing")
+        let unfinished = try await store.unfinishedPodcastDownloads()
+        XCTAssertTrue(unfinished.isEmpty, "and a relaunch has nothing to reconcile")
+    }
+
     /// A manual download already in flight owns the episode. Automation admits
     /// it and moves on to the next one rather than starting a second transfer.
     func testAutomaticAdmissionSkipsAnEpisodeSomethingElseAlreadyHolds() async throws {
@@ -1312,11 +1337,13 @@ final class LocalLibraryStoreTests: XCTestCase {
         let newest = try XCTUnwrap(all.first { $0.rssGUID == "day-1" })
         let store = try LocalLibraryStore(url: url)
         try await store.save(feed: feed)
-        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+        try await store.save(subscription: PodcastSubscription(
+            feedID: feed.itemID, subscribedAt: Timestamp(origin.addingTimeInterval(-30 * 86_400))
+        ))
         try await store.save(download: PodcastDownload(episodeID: newest.itemID, status: .downloading,
                                                         bytesReceived: 512, updatedAt: Timestamp(origin)))
 
-        let result = try await store.admitPodcastEpisodes(all, admission: .backfill, claimingNewest: 2)
+        let result = try await store.admitPodcastEpisodes(all, admission: .incremental, claimingNewest: 2)
         XCTAssertTrue(result.admission.newlyAdmitted.contains(newest.itemID),
                       "the episode is still admitted; only the claim is declined")
         XCTAssertFalse(result.claimed.contains(newest.itemID))
@@ -1338,8 +1365,10 @@ final class LocalLibraryStoreTests: XCTestCase {
         let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 2, 3])
         var store = try LocalLibraryStore(url: url)
         try await store.save(feed: feed)
-        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
-        let admitted = try await store.admitPodcastEpisodes(all, admission: .backfill, claimingNewest: 2)
+        try await store.save(subscription: PodcastSubscription(
+            feedID: feed.itemID, subscribedAt: Timestamp(origin.addingTimeInterval(-30 * 86_400))
+        ))
+        let admitted = try await store.admitPodcastEpisodes(all, admission: .incremental, claimingNewest: 2)
         XCTAssertEqual(admitted.claimed.count, 2)
 
         store = try LocalLibraryStore(url: url)
@@ -1406,10 +1435,12 @@ final class LocalLibraryStoreTests: XCTestCase {
         let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 2])
         let store = try LocalLibraryStore(url: url)
         try await store.save(feed: feed)
-        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+        try await store.save(subscription: PodcastSubscription(
+            feedID: feed.itemID, subscribedAt: Timestamp(origin.addingTimeInterval(-30 * 86_400))
+        ))
 
-        let manual = try await store.admitPodcastEpisodes(all, admission: .backfill, claimingNewest: 0)
-        let equivalent = try await store.savePodcastEpisodes([], admission: .backfill)
+        let manual = try await store.admitPodcastEpisodes(all, admission: .incremental, claimingNewest: 0)
+        let equivalent = try await store.savePodcastEpisodes([], admission: .incremental)
         XCTAssertEqual(manual.admission.newlyAdmitted.count, 2)
         XCTAssertEqual(manual.claimed, [])
         XCTAssertEqual(equivalent.newlyAdmitted, [])
