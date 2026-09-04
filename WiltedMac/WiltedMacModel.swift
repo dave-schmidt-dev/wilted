@@ -785,6 +785,7 @@ final class WiltedMacModel {
     private var automation: WiltedAutomationCoordinator?
     private var automationTask: Task<Void, Never>?
     private var automationTicker: Task<Void, Never>?
+    private var playbackCheckpointTicker: Task<Void, Never>?
 #endif
     private var podcastDownloadTasks: [String: Task<Void, Never>] = [:]
     private var podcastDownloadCoordinator: PodcastDownloadCoordinator?
@@ -945,6 +946,17 @@ final class WiltedMacModel {
     /// still notices the next due refresh.
     static let automationTickInterval: TimeInterval = 900
 
+    /// How often playback progress is written to the store while audio runs.
+    ///
+    /// Progress was persisted only on an explicit transport press or a clean
+    /// quit, so anything that ended the process without one -- an installer
+    /// replacing the app, a force quit, a crash, a power loss -- rewound the
+    /// listener to wherever they last pressed a button. Ten seconds bounds
+    /// what such an exit can cost. It is a local store write, and only an
+    /// article's checkpoint is queued for sync, so the tick does not touch
+    /// CloudKit.
+    static let playbackCheckpointInterval: TimeInterval = 10
+
     /// Resumes last session's claims, then evaluates this launch.
     ///
     /// Sequential, and started only once the library has loaded. The coordinator
@@ -994,6 +1006,51 @@ final class WiltedMacModel {
         automationTicker != nil
 #else
         false
+#endif
+    }
+
+    /// Starts the playback progress tick. Idempotent.
+    ///
+    /// Deliberately not stopped when the app loses focus, unlike the
+    /// automation tick: audio keeps running with the window closed, and that
+    /// is precisely when nothing else is checkpointing.
+    func startPlaybackCheckpointTicker(interval: TimeInterval = WiltedMacModel.playbackCheckpointInterval) {
+#if canImport(WiltedProducer)
+        guard !fixtureMode, playbackCheckpointTicker == nil, store != nil else { return }
+        playbackCheckpointTicker = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                } catch {
+                    return
+                }
+                await self?.checkpointPlaybackIfAdvancing()
+            }
+        }
+#endif
+    }
+
+    func stopPlaybackCheckpointTicker() {
+#if canImport(WiltedProducer)
+        playbackCheckpointTicker?.cancel()
+        playbackCheckpointTicker = nil
+#endif
+    }
+
+    var playbackCheckpointTickerIsRunning: Bool {
+#if canImport(WiltedProducer)
+        playbackCheckpointTicker != nil
+#else
+        false
+#endif
+    }
+
+    /// One tick. Writes only while the engine is actually advancing, so a
+    /// paused or finished item does not rewrite the same row every interval.
+    func checkpointPlaybackIfAdvancing() async {
+#if canImport(WiltedProducer)
+        guard let playback, playback.liveIsPlaying else { return }
+        try? await playback.checkpoint()
 #endif
     }
 
@@ -2984,6 +3041,7 @@ final class WiltedMacModel {
             // resolves a claimed episode ID against `episodes`.
             startAutomationOnLaunch()
             startAutomationTicker()
+            startPlaybackCheckpointTicker()
         } catch {
             configureStoreDependencies(nil)
             let retainedURL = await Task.detached { [libraryURL, retainedPathsBeforeAttempt] in

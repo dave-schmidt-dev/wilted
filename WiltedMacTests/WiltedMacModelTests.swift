@@ -451,6 +451,43 @@ final class WiltedMacModelTests: XCTestCase {
     /// it again on the way back, or a window left open past the first focus dip
     /// never ticks again for the rest of the process, which is the only case the
     /// ticker exists for.
+    /// Progress is written only on a transport press or a clean quit, so the
+    /// periodic tick is the only thing standing between an abrupt exit and a
+    /// listener sent back to wherever they last pressed a button. Unlike the
+    /// automation tick it must survive the app losing focus, because audio
+    /// keeps running with the window closed and that is exactly when nothing
+    /// else is checkpointing.
+    func testThePlaybackCheckpointTickerOutlivesFocusLoss() async throws {
+        let preferences = try automationSettingsPreferences()
+        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
+        let directory = temporaryDirectory("playback-checkpoint-ticker")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        XCTAssertFalse(model.playbackCheckpointTickerIsRunning, "nothing ticks before a store is loaded")
+        model.startPlaybackCheckpointTicker()
+        XCTAssertFalse(model.playbackCheckpointTickerIsRunning, "and asking early is a no-op")
+
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        await model.waitForAutomation()
+        XCTAssertTrue(model.playbackCheckpointTickerIsRunning, "the ready transition starts it")
+
+        model.startPlaybackCheckpointTicker()
+        XCTAssertTrue(model.playbackCheckpointTickerIsRunning, "a repeated call is harmless")
+
+        model.checkpointForQuit()
+        XCTAssertTrue(model.playbackCheckpointTickerIsRunning,
+                      "hiding the app stops the automation tick, not this one")
+
+        // With nothing loaded the tick is a no-op rather than a write of an
+        // empty position over whatever the store already holds.
+        await model.checkpointPlaybackIfAdvancing()
+
+        model.stopPlaybackCheckpointTicker()
+        XCTAssertFalse(model.playbackCheckpointTickerIsRunning)
+    }
+
     func testTheOpenWindowTickerRestartsAfterBeingStopped() async throws {
         let preferences = try automationSettingsPreferences()
         defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }

@@ -96,6 +96,43 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(backend.loadCount, 2)
     }
 
+    /// Progress reached the store only on a transport press or a clean quit,
+    /// so a process that ended without one -- an installer replacing the app,
+    /// a force quit, a crash -- resumed from wherever the listener last
+    /// pressed a button rather than where the audio actually was. A checkpoint
+    /// taken while the engine is still running has to persist the live
+    /// playhead and leave playback alone.
+    func testACheckpointTakenMidPlaybackPersistsWithoutStopping() async throws {
+        let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: path)
+        let (_, revision) = try fixture()
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend, deviceID: "test-device")
+        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
+        try controller.play()
+        backend.currentTime = 31
+
+        try await controller.checkpoint()
+
+        XCTAssertTrue(backend.isPlaying, "checkpointing is not a transport action")
+        XCTAssertTrue(controller.isPlaying)
+        let itemID = try XCTUnwrap(controller.itemID)
+        let revisionID = try XCTUnwrap(controller.revisionID)
+        let stored = try await store.playbackState(for: itemID, revisionID: revisionID)
+        let persisted = try XCTUnwrap(stored)
+        XCTAssertEqual(persisted.positionSeconds, 31, "a relaunch resumes from here")
+        XCTAssertFalse(persisted.completed)
+
+        // The playhead keeps moving; the next tick has to overtake the last one
+        // rather than lose to its sequence number.
+        backend.currentTime = 44
+        try await controller.checkpoint()
+        let storedLater = try await store.playbackState(for: itemID, revisionID: revisionID)
+        let later = try XCTUnwrap(storedLater)
+        XCTAssertEqual(later.positionSeconds, 42, "clamped to the revision duration")
+        XCTAssertGreaterThan(later.sequence, persisted.sequence)
+    }
+
     func testRewindAndRestartCreateNewSessionsAndExplicitIntent() async throws {
         let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
         let store = try LocalLibraryStore(url: path)
