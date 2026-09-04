@@ -609,7 +609,7 @@ assert_deferred_mac_ui_contract() {
   assert_contains 'clear_macos_ui_failure_bundle' "$gate"
   # The Makefile must keep an opt-in route, or the leg becomes unreachable
   # rather than deferred.
-  assert_contains 'WILTED_MAC_UI=1 bash scripts/test-gate.sh' "$repo_root/Makefile"
+  assert_contains 'WILTED_MAC_UI=1 caffeinate -disu bash scripts/test-gate.sh' "$repo_root/Makefile"
 }
 assert_deferred_mac_ui_contract
 
@@ -690,6 +690,20 @@ assert_contains 'native.zero-tests label=macos-ui-tests' "$mac_ui_zero_log"
 assert_contains 'native.macos-ui.failure-bundle path=' "$mac_ui_zero_log"
 assert_contains 'self_test_macos_ui_zero_test_evidence' \
   "$mac_ui_zero_diagnostics/macos-ui-tests.xcresult/self-test-evidence"
+
+# A locked screen makes every UI journey fail its activation timeout, which
+# reads as a broken application. The leg must say so before it spends twenty
+# minutes proving it.
+mac_ui_locked_log="$tmp_dir/mac-ui-locked.log"
+mac_ui_locked_status="$(run_case mac-ui-locked "$mac_ui_locked_log" \
+  env WILTED_MAC_UI=1 NATIVE_FORCE_SCREEN_LOCKED=1 bash "$gate")"
+[[ "$mac_ui_locked_status" -ne 0 ]] || { cat "$mac_ui_locked_log" >&2; exit 1; }
+assert_contains 'native.macos-ui.screen-locked' "$mac_ui_locked_log"
+assert_contains 'cannot activate an application while the screen is locked' "$mac_ui_locked_log"
+if rg -q 'Testing started' "$mac_ui_locked_log"; then
+  printf '%s\n' 'assertion failed: the locked-screen leg still started xcodebuild' >&2
+  exit 1
+fi
 
 retained_bundle_after=absent
 if [[ -e "$real_bundle" ]]; then

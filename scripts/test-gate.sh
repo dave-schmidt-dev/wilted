@@ -12,6 +12,7 @@ forced_fail_leg="${NATIVE_FORCE_FAIL_LEG:-}"
 forced_zero_leg="${NATIVE_FORCE_ZERO_TEST_LEG:-}"
 forced_snapshot_baseline="${NATIVE_FORCE_SNAPSHOT_BASELINE:-}"
 forced_missing_ios_mvp_journey="${NATIVE_FORCE_MISSING_IOS_MVP_JOURNEY:-0}"
+forced_screen_locked="${NATIVE_FORCE_SCREEN_LOCKED:-0}"
 wilted_development_team="${WILTED_DEVELOPMENT_TEAM:-4CJ49V6QHW}"
 # macOS XCUITest has no headless mode: it drives real HID events through
 # WindowServer, so the macos-ui-tests leg seizes the operator's cursor,
@@ -838,6 +839,19 @@ leg_ios_unit_tests() {
   xcode_test_leg ios-unit-tests "$integration_root/WiltediOSTests" WiltediOS "platform=iOS Simulator,id=$udid" WiltediOSTests
 }
 
+# XCUITest cannot bring an application forward while the login session is
+# locked: every test in the leg fails its activation timeout instead, so a
+# locked Mac reads as sixteen broken journeys and costs a twenty-minute run to
+# find out. Ask first. `caffeinate` in the Makefile keeps the display awake,
+# which is a different problem and does not unlock anything.
+screen_is_locked() {
+  if [[ "$native_self_test" == "1" ]]; then
+    [[ "$forced_screen_locked" == "1" ]]
+    return
+  fi
+  ioreg -n Root -d1 -a 2>/dev/null | grep -A 1 'CGSSessionScreenIsLocked' | grep -q '<true/>'
+}
+
 leg_macos_ui_tests() {
   local label=macos-ui-tests
   local source_dir="$integration_root/WiltedMacUITests"
@@ -1033,6 +1047,15 @@ else
   fi
   validate_pixel_snapshot_baselines "$snapshot_validation_root"
   validate_ios_pixel_snapshot_baselines "$repo_root"
+fi
+
+# Preflight, not a leg check: the UI leg runs eighth, so a locked screen
+# discovered there costs twelve minutes of build and seven of activation
+# timeouts before saying anything useful.
+if ! is_deferred_leg macos-ui-tests && screen_is_locked; then
+  status 'native.macos-ui.screen-locked remedy="unlock the Mac and rerun make native-ui"'
+  fail 'the macOS UI leg cannot activate an application while the screen is locked'
+  exit 1
 fi
 
 run_leg "${leg_names[0]}" "${leg_reports[0]}" leg_xcodegen_reproducible
