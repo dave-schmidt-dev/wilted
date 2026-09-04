@@ -154,6 +154,14 @@ POSTROLL_RECOVERY_MAX_SECONDS = 300.0
 POSTROLL_RECOVERY_MAX_SEGMENTS = 96
 POSTROLL_ALREADY_CLAIMED_SECONDS = 1.0
 POSTROLL_RECOVERY_MINIMUM_SECONDS = 10.0
+# How much of the silence before a produced spot the cut may claim. The seam
+# between the sign-off and the spot is the spot's own leader, and leaving it
+# behind leaves the advertisement in: TechCrunch's is 6.3 seconds, The Daily's
+# 4.2. The bound is there because a long silence might be untranscribed program
+# audio rather than a leader, and the only thing at risk is the silence itself.
+# The gap is never evidence, only a boundary. The two largest seams in The Daily
+# are 9.9 seconds each and both fall between news stories.
+POSTROLL_LEADER_MAX_SECONDS = 15.0
 
 POSTROLL_PROGRAM_END_PROMPT = """\
 The excerpt is the end of a podcast episode. Advertising is sometimes appended after the program
@@ -1788,6 +1796,11 @@ def recover_transcript_end_postroll(ads_module, backend, segments, detections, t
         boundary_carries_program = False
 
     start_s = float(segments[advertising_start_id].start_s)
+    if advertising_start_id > 0:
+        start_s = max(
+            float(segments[advertising_start_id - 1].end_s),
+            start_s - POSTROLL_LEADER_MAX_SECONDS,
+        )
     if total_seconds - start_s < POSTROLL_RECOVERY_MINIMUM_SECONDS:
         progress("ads.detect.postroll.skipped", "the ending is too short to be a produced spot")
         return detections
@@ -1828,7 +1841,11 @@ def recover_transcript_end_postroll(ads_module, backend, segments, detections, t
         # and asked once more. A second disagreement is not a boundary dispute,
         # it is the review being wrong about the whole ending.
         shrunk_ids = [segment_id for segment_id in tail_ids if segment_id > program_id]
-        start_s = float(segments[shrunk_ids[0]].start_s) if shrunk_ids else 0.0
+        start_s = (
+            max(float(segments[shrunk_ids[0] - 1].end_s),
+                float(segments[shrunk_ids[0]].start_s) - POSTROLL_LEADER_MAX_SECONDS)
+            if shrunk_ids else 0.0
+        )
         if not shrunk_ids or total_seconds - start_s < POSTROLL_RECOVERY_MINIMUM_SECONDS:
             progress("ads.detect.postroll.skipped", f"the ending holds program content at {program_id}")
             return detections

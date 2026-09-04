@@ -787,6 +787,26 @@ class AdDetectionTests(unittest.TestCase):
                          [(760.0, 810.0, "ad_break")])
         self.assertIn("after program ID 19", details["ads.detect.postroll"])
 
+    def test_the_cut_claims_the_spots_own_leader(self):
+        # The silence between the sign-off and the spot is the spot's leader,
+        # and leaving it behind leaves the advertisement in. TechCrunch's is 6.3
+        # seconds, The Daily's 4.2.
+        leader = [*self.POSTROLL[:19], FakeSegment(766.0, 800.0, "segment 19")]
+        llm = FakeLLM(postroll_advertising_start_id=19, tail_carries_program=False,
+                      preroll_program_id=-1)
+        recovered, _details = self.postroll(llm, segments=leader)
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in recovered], [(760.0, 810.0)])
+
+    def test_a_silence_too_long_to_be_a_leader_is_left_where_it_is(self):
+        # A minute of silence is more likely untranscribed program audio than a
+        # spot's leader, so the claim stops fifteen seconds short of the spot
+        # rather than running back to the sign-off.
+        gap = [*self.POSTROLL[:19], FakeSegment(790.0, 800.0, "segment 19")]
+        llm = FakeLLM(postroll_advertising_start_id=19, tail_carries_program=False,
+                      preroll_program_id=-1)
+        recovered, _details = self.postroll(llm, segments=gap)
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in recovered], [(775.0, 810.0)])
+
     def test_an_ending_the_detector_already_claimed_is_not_reviewed_again(self):
         llm = FakeLLM(postroll_advertising_start_id=19, preroll_program_id=-1)
         recovered, details = self.postroll(llm, detections=[FakeAd(760.0, 800.0)])
