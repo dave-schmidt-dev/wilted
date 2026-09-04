@@ -417,6 +417,27 @@ class SegmentProjectionTests(unittest.TestCase):
         self.assertEqual(cues[0]["startSeconds"], 0.0)
         self.assertEqual(cues[2]["endSeconds"], 9.0)
 
+    def test_segments_are_put_in_time_order_before_anything_reads_them(self):
+        # The detector reads this list by position: which segments fall in a
+        # classification window, where a coarse run begins, and which segment
+        # the opening review calls first all assume time order.
+        ordered = wp.in_time_order([
+            FakeSegment(5.0, 6.5, "third"),
+            FakeSegment(1.0, 2.0, "first"),
+            FakeSegment(5.0, 5.5, "second"),
+        ])
+        self.assertEqual([s.text for s in ordered], ["first", "second", "third"])
+
+    def test_ordering_ties_break_on_the_shorter_segment(self):
+        # Two segments starting together is what a stitched chunk boundary
+        # produces; the shorter one is the one that ends inside the other.
+        ordered = wp.in_time_order([FakeSegment(3.0, 9.0, "long"), FakeSegment(3.0, 4.0, "short")])
+        self.assertEqual([s.text for s in ordered], ["short", "long"])
+
+    def test_an_already_ordered_transcript_is_unchanged(self):
+        segments = [FakeSegment(0.0, 1.0, "a"), FakeSegment(1.0, 2.0, "b")]
+        self.assertEqual([s.text for s in wp.in_time_order(segments)], ["a", "b"])
+
     def test_text_joins_in_reading_order(self):
         self.assertEqual(wp.cues_to_text([{"text": "one"}, {"text": "two"}]), "one two")
 
@@ -865,6 +886,85 @@ class ExplicitSponsorFallbackTests(unittest.TestCase):
         ]
         spans, _events = self.detect(segments, [])
         self.assertEqual(spans, [])
+
+    def test_a_sponsor_whose_address_is_ordinary_words_is_recovered_by_its_own_name(self):
+        # Giant Bombcast 955 shipped with this ninety-second read intact. The
+        # detector found the anchor and the recovery declined it: the address
+        # is videogame.town, which an unpunctuated transcript writes as three
+        # ordinary words, so every address pattern in the gate found nothing.
+        # The sponsor's name came back thirteen times, which is what a read is.
+        segments = [
+            FakeSegment(3455.16, 3458.28, "this episode is brought to you by video game town"),
+            FakeSegment(3458.28, 3470.52, "video game town is an independent media site with fascinating articles"),
+            FakeSegment(3470.52, 3483.32, "video game town proudly presents the best in gaming coverage"),
+            FakeSegment(3483.32, 3499.68, "video game town is run by two friends grant and jared"),
+            FakeSegment(3499.68, 3517.76, "so check them out at video game town wherever you get your podcasts"),
+            FakeSegment(3527.0, 3540.0, "holy moly don't get discombobulated folks"),
+        ]
+        spans, _events = self.detect(segments, [])
+        self.assertEqual(
+            spans,
+            # The cut ends where the read's own last cue ends, not where the
+            # program's first one begins: the pause between them is the show's.
+            [{"startSeconds": 3455.16, "endSeconds": 3517.76, "label": "sponsor_read", "confidence": 1.0}],
+        )
+
+    def test_a_recurring_name_without_a_call_to_action_does_not_cut(self):
+        # Recurrence replaces the address, not the instruction. A company
+        # discussed at length is still a company being discussed.
+        segments = [
+            FakeSegment(0.0, 10.0, "this episode is brought to you by video game town"),
+            FakeSegment(10.0, 20.0, "video game town keeps coming up in the news this week"),
+            FakeSegment(20.0, 30.0, "video game town hired three people"),
+            FakeSegment(30.0, 40.0, "video game town is still a small operation"),
+            FakeSegment(40.0, 50.0, "anyway that was the news"),
+        ]
+        spans, events = self.detect(segments, [])
+        self.assertEqual(spans, [])
+        self.assertIn("ads.detect.recovery.skipped", [event["stage"] for event in events])
+
+    def test_a_name_that_only_recurs_minutes_later_is_not_a_read(self):
+        # Ten minutes is long enough for a topic to be named this often
+        # honestly, so recurrence only counts while it is dense.
+        segments = [
+            FakeSegment(0.0, 10.0, "this episode is brought to you by video game town"),
+            FakeSegment(120.0, 130.0, "video game town came up again"),
+            FakeSegment(240.0, 250.0, "video game town once more"),
+            FakeSegment(360.0, 370.0, "video game town a third time"),
+            FakeSegment(380.0, 390.0, "go check it out"),
+            FakeSegment(400.0, 410.0, "back to the show"),
+        ]
+        spans, _events = self.detect(segments, [])
+        self.assertEqual(spans, [])
+
+    def test_the_anchors_own_naming_is_not_recurrence(self):
+        # "brought to you by Video Game Town Video Game Town is an independent"
+        # is one naming run into the next sentence by a transcript with no
+        # punctuation. Counting it would give every anchor a free mention.
+        anchor = "this episode is brought to you by video game town video game town is an"
+        ads = install_fake_ads(FakeLLM())
+        wp.install_legacy_sponsor_opening_compatibility(ads)
+        pattern = ads._EXPLICIT_HOST_READ_OPENING_RE
+        counts = {}
+        wp.count_sponsor_name_mentions(
+            wp.sponsor_name_recurrence_text(anchor, pattern),
+            wp.explicit_sponsor_name_phrases(anchor, pattern),
+            counts,
+        )
+        self.assertEqual(counts.get("video game town", 0), 0)
+
+    def test_evidence_patterns_cover_how_a_host_read_actually_reads(self):
+        # Every one of these was a miss: `.town` is not in a 2005 top-level
+        # domain list, and "check them out" is not "check it out".
+        self.assertIsNotNone(wp.EXPLICIT_SPONSOR_LITERAL_DOMAIN_RE.search("check them out at videogame.town"))
+        self.assertIsNotNone(wp.EXPLICIT_SPONSOR_DOT_DOMAIN_RE.search("that is videogame dot town"))
+        self.assertIsNotNone(wp.EXPLICIT_SPONSOR_CTA_RE.search("so check them out at videogame.town"))
+        self.assertIsNotNone(wp.EXPLICIT_SPONSOR_CTA_RE.search("and be sure to subscribe wherever you listen"))
+        self.assertIsNotNone(wp.EXPLICIT_SPONSOR_SPOKEN_PATH_RE.search("directly support at patreon slash videogametown"))
+        self.assertIsNotNone(wp.EXPLICIT_SPONSOR_OFFER_CODE_RE.search("use code wilted for ten percent off"))
+        # A figure of speech is not an address, and a person is not a sponsor.
+        self.assertIsNone(wp.EXPLICIT_SPONSOR_SPOKEN_PATH_RE.search("he is a writer slash producer"))
+        self.assertIsNone(wp.EXPLICIT_SPONSOR_LITERAL_DOMAIN_RE.search("we talked about that yesterday"))
 
     def test_already_covered_explicit_anchor_does_not_add_a_cut(self):
         segments = [
@@ -1868,6 +1968,19 @@ class AlignedSTTCacheTests(unittest.TestCase):
                 wp.run(self.request)
         self.assertEqual(raised.exception.code, "ads-down")
         self.assertTrue(self.cache_path().exists())
+
+    def test_out_of_order_transcription_is_still_cached(self):
+        # Chunked speech-to-text stitches 120-second windows and emits a few
+        # segments that start before the one ahead of them. The cache rejected
+        # every transcript it was ever offered, so every episode paid for
+        # speech-to-text twice and the journal only ever said `cache.failed`.
+        install_fake_wilted()
+        sys.modules["wilted.transcribe"].transcribe_audio = lambda _path, model_name, **_: [
+            FakeSegment(2.0, 3.0, "second"), FakeSegment(0.0, 1.0, "first"),
+        ]
+        self.run_pipeline()
+        cached = json.loads(self.cache_path().read_text())
+        self.assertEqual([entry["text"] for entry in cached["segments"]], ["first", "second"])
 
     def test_published_and_readable_transcripts_never_replace_the_detector_cache(self):
         install_fake_wilted({"vtt": [FakeSegment(0, 1, "published")]})

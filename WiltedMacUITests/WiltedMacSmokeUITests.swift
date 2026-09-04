@@ -479,7 +479,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(library.isHittable)
         for identifier in [
             "wilted-player-speed", "wilted-player-rewind", "wilted-player-play-pause",
-            "wilted-player-forward", "wilted-player-overflow", "wilted-player-transcript",
+            "wilted-player-forward", "wilted-player-transcript",
             "wilted-player-notes", "wilted-player-up-next", "wilted-player-route-recovery", "wilted-player-volume",
             "wilted-player-scrubber", "wilted-player-previous", "wilted-player-next",
             "wilted-player-restart", "wilted-player-keyboard-transports", "wilted-player-status"

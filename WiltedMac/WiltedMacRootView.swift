@@ -1396,15 +1396,6 @@ struct WiltedMacCompactPlayer: View {
                 .accessibilityLabel("Speed")
                 .accessibilityIdentifier("wilted-player-speed")
 
-                Menu {
-                    Button("Transcript") { open(.transcript) }
-                    Button("Up Next") { open(.upNext) }
-                } label: {
-                    Image(systemName: "ellipsis")
-                }
-                .menuStyle(.borderlessButton)
-                .accessibilityLabel("More playback options")
-                .accessibilityIdentifier("wilted-player-overflow")
             }
 
             HStack(spacing: WiltedTheme.Spacing.medium) {
@@ -1829,10 +1820,6 @@ struct WiltedMacCompactPlayer: View {
 
     static func upNextRemoveAccessibilityValue(canRemove: Bool) -> String {
         canRemove ? "Available" : "Unavailable for the current episode"
-    }
-
-    private func open(_ target: Expansion) {
-        expansion = target
     }
 
     private func toggle(_ target: Expansion) {

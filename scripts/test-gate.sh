@@ -150,8 +150,8 @@ validate_pixel_snapshot_baselines() {
     fail 'Mac player baselines do not render the shipping compact player'
   for identifier in \
     wilted-compact-player wilted-player-speed wilted-player-rewind \
-    wilted-player-play-pause wilted-player-forward wilted-player-overflow \
-    wilted-player-transcript wilted-player-up-next wilted-player-route-recovery \
+    wilted-player-play-pause wilted-player-forward \
+    wilted-player-transcript wilted-player-notes wilted-player-up-next wilted-player-route-recovery \
     wilted-player-volume wilted-player-scrubber wilted-player-previous \
     wilted-player-next wilted-player-restart wilted-player-keyboard-transports \
     wilted-player-status wilted-player-transcript-expanded \

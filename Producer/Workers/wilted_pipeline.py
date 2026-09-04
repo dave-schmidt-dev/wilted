@@ -111,16 +111,64 @@ Return only the strict JSON object {"program_id": ID}, with no prose or Markdown
 EXPLICIT_SPONSOR_RECOVERY_MAX_SEGMENTS = 64
 EXPLICIT_SPONSOR_RECOVERY_MAX_SECONDS = 10 * 60
 EXPLICIT_SPONSOR_RESUMPTION_TAIL_SEGMENTS = 32
+# What a host read tells the listener to do. "check it out" was here and
+# "check them out" was not, which is the difference between a sponsor and a
+# person, and hosts say both.
 EXPLICIT_SPONSOR_CTA_RE = re.compile(
-    r"\b(?:learn|find\s+out)\s+more\b|\bget\s+started\b|\bcheck\s+it\s+out\b|"
+    r"\b(?:learn|find\s+out|hear)\s+more\b|\bget\s+started\b|"
+    r"\b(?:go\s+)?check\s+(?:it|them|us|these|those|that|him|her)\s+out\b|"
+    r"\bgo\s+(?:check|see|read|grab|watch)\b|\bhead\s+(?:on\s+)?(?:over\s+)?to\b|"
+    r"\bsign\s+up\b|\bsubscribe\b|\bfree\s+trial\b|\border\s+(?:now|today)\b|"
+    r"\b(?:directly\s+)?support\s+(?:us|them|the\s+show|at)\b|\bavailable\s+(?:now\s+)?(?:at|on)\b|"
     r"\bdownload\b|\bjoin\b|\bvisit\b|\bgo\s+to\b",
     re.IGNORECASE,
 )
-EXPLICIT_SPONSOR_DOT_DOMAIN_RE = re.compile(r"\bdot\s+(?:com|ai|org|net)\b", re.IGNORECASE)
+# Where a host read sends the listener. The detector reads an unpunctuated
+# transcript, so the spoken form carries most of these; the written form is
+# here for a published transcript, which does have orthography.
+#
+# The top-level domain lists were com/ai/org/net and com/co/io/net/org/tv/ai,
+# which is a 2005 view of the namespace. Giant Bombcast 955 sends listeners to
+# videogame.town, and neither list had ever heard of it.
+EXPLICIT_SPONSOR_TOP_LEVEL_DOMAINS = (
+    r"com|net|org|edu|gov|co|io|ai|app|dev|tv|fm|gg|me|us|uk|ca|de|shop|store|"
+    r"club|live|life|news|blog|page|site|town|studio|media|games|show|xyz|link"
+)
+EXPLICIT_SPONSOR_DOT_DOMAIN_RE = re.compile(
+    rf"\bdot\s+(?:{EXPLICIT_SPONSOR_TOP_LEVEL_DOMAINS})\b", re.IGNORECASE
+)
 EXPLICIT_SPONSOR_URL_RE = re.compile(r"\bhttps?\b|\bwww\b", re.IGNORECASE)
 EXPLICIT_SPONSOR_LITERAL_DOMAIN_RE = re.compile(
-    r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:ai|co|com|io|net|org|tv)\b",
+    rf"\b(?:[a-z0-9](?:[a-z0-9-]{{0,61}}[a-z0-9])?\.)+(?:{EXPLICIT_SPONSOR_TOP_LEVEL_DOMAINS})\b",
     re.IGNORECASE,
+)
+# A spoken web address on a platform the sponsor does not own. "patreon slash
+# videogametown" is an address; "writer slash producer" is a figure of speech,
+# so only the platforms are accepted, never a bare slash.
+EXPLICIT_SPONSOR_SPOKEN_PATH_RE = re.compile(
+    r"\b(?:patreon|youtube|instagram|twitter|facebook|tiktok|twitch|reddit|"
+    r"linktree|discord|substack|bandcamp|kickstarter)\s+slash\b",
+    re.IGNORECASE,
+)
+# An offer code is a place to act even when no address is spoken.
+EXPLICIT_SPONSOR_OFFER_CODE_RE = re.compile(
+    r"\b(?:promo|offer|coupon|discount)\s+code\b|\buse\s+(?:the\s+)?code\b|"
+    r"\bcode\s+[a-z0-9]{3,}\s+at\s+checkout\b",
+    re.IGNORECASE,
+)
+# How often the sponsor's own name has to come back before recurrence counts
+# as advertising copy rather than a subject someone happens to be discussing.
+EXPLICIT_SPONSOR_NAME_MAX_WORDS = 4
+EXPLICIT_SPONSOR_NAME_MINIMUM_CHARACTERS = 6
+EXPLICIT_SPONSOR_NAME_MINIMUM_REPEATS = 3
+# Recurrence only counts while it is dense. A ten-minute window is long enough
+# for a topic to be named this often honestly; ninety seconds of it is a read.
+EXPLICIT_SPONSOR_NAME_WINDOW_SECONDS = 90.0
+EXPLICIT_SPONSOR_NAME_WORD_RE = re.compile(r"[a-z0-9][a-z0-9'’]*", re.IGNORECASE)
+# Words a host read starts with before it reaches the sponsor, which must not
+# become the phrase whose recurrence is counted.
+EXPLICIT_SPONSOR_NAME_LEADING_FILLER = frozenset(
+    {"the", "a", "an", "our", "my", "your", "this", "today", "todays", "good", "folks", "fine", "great"}
 )
 STT_EVICTION_BARRIER_POLL_INTERVAL_S = 0.1
 GPU_LOCK_PROGRESS_INTERVAL_S = 1.0
@@ -304,6 +352,26 @@ def remap_cues(cues: list[dict], keeps: list[KeepInterval]) -> list[dict]:
     # invariant on the Swift side, so it is restored here rather than there.
     remapped.sort(key=lambda c: c["startSeconds"])
     return remapped
+
+
+def in_time_order(segments):
+    """Return the segments in the order every consumer already assumes.
+
+    Speech-to-text runs in 120-second GPU windows with 15 seconds of overlap,
+    and stitching those windows can emit a segment that starts before the one
+    ahead of it. The display cues never showed it because `segments_to_cues`
+    sorts, but the detector is handed this list unsorted and reads it by
+    position: which segments fall in a classification window, where a coarse
+    run begins and ends, and which segment the opening review calls first all
+    depend on the order being time order. The aligned cache is the only thing
+    that ever objected, and it objects by declining to save, so every episode
+    paid for speech-to-text twice and nothing said why.
+    """
+    # A tier that found nothing returns None, and "nothing, in order" is still
+    # nothing; sorting is not the place to turn that into an empty list.
+    if not segments:
+        return segments
+    return sorted(segments, key=lambda segment: (float(segment.start_s), float(segment.end_s)))
 
 
 def segments_to_cues(segments) -> list[dict]:
@@ -962,7 +1030,7 @@ def transcribe_with_daemon(audio_path: Path, model: str = ALIGNED_STT_MODEL):
     from wilted import transcribe
 
     progress("transcript.stt.start", str(audio_path.name))
-    segments = transcribe.transcribe_audio(audio_path, model_name=model)
+    segments = in_time_order(transcribe.transcribe_audio(audio_path, model_name=model))
     progress("transcript.stt.complete", f"{len(segments)} segments")
     return segments
 
@@ -1230,6 +1298,67 @@ def prepare_ad_model_lock(_model: str, *, aligned_stt: bool):
         yield
 
 
+def explicit_sponsor_name_phrases(text, opening_pattern):
+    """The names a host read might be repeating, longest first.
+
+    A read says its sponsor over and over; a conversation that happens to open
+    like one says it once. Counting that recurrence is the evidence that
+    survives a transcript with no punctuation, and no punctuation is what the
+    detector is handed: `videogame.town` reaches it as three ordinary words
+    with no dot anywhere in them.
+
+    Which words are the name is not knowable from the text alone, because
+    nothing marks where it ends -- "brought to you by Video Game Town Video
+    Game Town is an independent" runs the name straight into the next
+    sentence. So return every prefix instead and let recurrence pick: only the
+    real name comes back again.
+    """
+    match = opening_pattern.search(text)
+    if match is None:
+        return []
+    words = [word.lower() for word in EXPLICIT_SPONSOR_NAME_WORD_RE.findall(text[match.end():])]
+    while words and words[0] in EXPLICIT_SPONSOR_NAME_LEADING_FILLER:
+        words.pop(0)
+    phrases = []
+    for length in range(min(len(words), EXPLICIT_SPONSOR_NAME_MAX_WORDS), 0, -1):
+        phrase = " ".join(words[:length])
+        # Short enough to be a common word is short enough to recur honestly.
+        if len(phrase.replace(" ", "")) >= EXPLICIT_SPONSOR_NAME_MINIMUM_CHARACTERS:
+            phrases.append(phrase)
+    return phrases
+
+
+def sponsor_name_recurrence_text(text, opening_pattern):
+    """The part of the anchor segment where a name could come *back*.
+
+    The anchor names its sponsor once by definition -- that is what "brought to
+    you by" is followed by -- so counting that naming would give every anchor a
+    free mention. Skip past the opening and the longest name it could have
+    introduced, and count only what follows.
+    """
+    match = opening_pattern.search(text)
+    if match is None:
+        return text
+    trailing = text[match.end():]
+    words = list(EXPLICIT_SPONSOR_NAME_WORD_RE.finditer(trailing))
+    if len(words) <= EXPLICIT_SPONSOR_NAME_MAX_WORDS:
+        return ""
+    return trailing[words[EXPLICIT_SPONSOR_NAME_MAX_WORDS - 1].end():]
+
+
+def count_sponsor_name_mentions(text, phrases, counts):
+    """Add this segment's mentions of each candidate name to the running count."""
+    lowered = text.lower()
+    for phrase in phrases:
+        start = 0
+        while True:
+            found = lowered.find(phrase, start)
+            if found < 0:
+                break
+            counts[phrase] = counts.get(phrase, 0) + 1
+            start = found + len(phrase)
+
+
 def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, detections):
     """Recover or extend explicit host reads through verified content return."""
     recovered = []
@@ -1257,6 +1386,14 @@ def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, dete
             )
             continue
 
+        # Two independent signals, as before, but the second one no longer has
+        # to be an address. A sponsor whose domain is spoken as ordinary words
+        # is invisible to every address pattern there is, and Giant Bombcast
+        # 955's ninety-second read was skipped for exactly that: no dot, no
+        # http, and a `.town` top-level domain no list had. Its own name came
+        # back thirteen times, which is what a read is.
+        name_phrases = explicit_sponsor_name_phrases(anchor.text, opening_pattern)
+        name_counts = {}
         domain_seen = False
         cta_seen = False
         evidence_id = None
@@ -1268,10 +1405,24 @@ def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, dete
                     EXPLICIT_SPONSOR_DOT_DOMAIN_RE,
                     EXPLICIT_SPONSOR_URL_RE,
                     EXPLICIT_SPONSOR_LITERAL_DOMAIN_RE,
+                    EXPLICIT_SPONSOR_SPOKEN_PATH_RE,
+                    EXPLICIT_SPONSOR_OFFER_CODE_RE,
                 )
             )
             cta_seen = cta_seen or EXPLICIT_SPONSOR_CTA_RE.search(text) is not None
-            if domain_seen and cta_seen:
+            if (
+                name_phrases
+                and segments[segment_id].start_s - anchor.start_s <= EXPLICIT_SPONSOR_NAME_WINDOW_SECONDS
+            ):
+                count_sponsor_name_mentions(
+                    text if segment_id != anchor_id else sponsor_name_recurrence_text(text, opening_pattern),
+                    name_phrases,
+                    name_counts,
+                )
+            name_repeated = any(
+                count >= EXPLICIT_SPONSOR_NAME_MINIMUM_REPEATS for count in name_counts.values()
+            )
+            if cta_seen and (domain_seen or name_repeated):
                 evidence_id = segment_id
                 break
 
@@ -1575,9 +1726,12 @@ def run(request: dict) -> dict:
     published = request.get("publishedTranscript") if allow_published_transcript else None
     if published:
         progress("transcript.published.parse", published.get("mediaType", ""))
-        segments = parse_published_transcript(
+        # Sorted for the same reason speech-to-text is: a feed's own file is no
+        # more guaranteed to be in time order, and the detector reads it by
+        # position either way.
+        segments = in_time_order(parse_published_transcript(
             published.get("body", ""), published.get("mediaType", ""), published.get("url", "")
-        )
+        ))
         if segments and not published_transcript_matches_audio(segments, audio_path):
             # Dropped rather than kept with a warning: these segments are what
             # the detector cuts from, so keeping them would aim the cut at the
