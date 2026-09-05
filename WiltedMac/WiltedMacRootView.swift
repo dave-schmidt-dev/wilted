@@ -493,8 +493,29 @@ private struct WiltedMacFeedsView: View {
 
     var body: some View {
         WiltedMacDestination(title: WiltedScreenCopy.feeds, identifier: "wilted-mac-feeds-detail") {
-            subscribeComposer
+            addFeedControl
             feedManagement
+        }
+    }
+
+    /// Subscribing behind a button, matching the Larder's Add article. The
+    /// composer keeps its own identifier so what the popover holds is the same
+    /// element it was when it sat on the page.
+    private var addFeedControl: some View {
+        HStack {
+            Spacer()
+            Button {
+                model.isPresentingSubscribeComposer = true
+            } label: {
+                Label(WiltedScreenCopy.subscribeToPodcast, systemImage: "plus")
+            }
+            .accessibilityIdentifier("wilted-add-feed-button")
+            .popover(isPresented: $model.isPresentingSubscribeComposer, arrowEdge: .bottom) {
+                subscribeComposer
+                    .frame(width: 460)
+                    .padding(WiltedTheme.Spacing.large)
+                    .background(WiltedTheme.color(.card, scheme: colorScheme))
+            }
         }
     }
 
@@ -505,9 +526,6 @@ private struct WiltedMacFeedsView: View {
     /// that pause reads as work rather than as a button that did nothing.
     private var subscribeComposer: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            Text(WiltedScreenCopy.subscribeToPodcast)
-                .wiltedFont(.title)
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             Text(WiltedScreenCopy.subscribeToPodcastDetail)
                 .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
@@ -542,7 +560,6 @@ private struct WiltedMacFeedsView: View {
                 )
             }
         }
-        .wiltedCard(colorScheme)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-podcast-subscribe-composer")
     }

@@ -195,8 +195,12 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(navFeeds.waitForExistence(timeout: 8))
         navFeeds.click()
 
+        let feedTrigger = app.descendants(matching: .any)["wilted-add-feed-button"]
+        XCTAssertTrue(feedTrigger.waitForExistence(timeout: 8), "Feeds asks for a subscription behind a button")
+        feedTrigger.click()
+
         let composer = app.descendants(matching: .any)["wilted-podcast-subscribe-composer"]
-        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        XCTAssertTrue(composer.waitForExistence(timeout: 8), "the trigger must open the subscribe box")
         let field = app.descendants(matching: .any)["wilted-podcast-feed-url"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         let subscribe = app.descendants(matching: .any)["wilted-podcast-subscribe"]

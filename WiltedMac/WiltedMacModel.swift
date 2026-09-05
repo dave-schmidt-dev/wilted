@@ -797,6 +797,10 @@ final class WiltedMacModel {
     /// is used once a session and was charging the library a card of room for
     /// it every time the reader looked at the list.
     var isPresentingComposer = false
+    /// The subscribe box, behind its own button for the same reason the
+    /// article one is: a control used once a session should not hold the
+    /// top of a page the reader scrolls every day.
+    var isPresentingSubscribeComposer = false
     var selectedNavigation: WiltedMacNavigation = .library
     private(set) var articles: [WiltedMacArticle] = []
     private(set) var episodes: [WiltedMacEpisode] = []
@@ -2090,14 +2094,41 @@ final class WiltedMacModel {
         hideEpisode(episode)
         podcastOperationMessage = "Removed \(episode.title). Refreshing will not bring it back."
 #if canImport(WiltedProducer)
+        // Read before the removal runs: once the row is gone there is nothing
+        // left to compare the playing episode against.
+        let wasPlaying = currentPodcastEpisodeID == episode.id
         Task { [weak self] in
             guard let self else { return }
+            if wasPlaying { await self.stopPlaybackForRemovedEpisode() }
             if await self.dismissEpisode(episode) == false {
                 self.podcastOperationMessage = "\(episode.title) could not be removed."
             }
         }
 #endif
     }
+
+#if canImport(WiltedProducer)
+    /// Stops the transport when the episode being removed is the one playing.
+    ///
+    /// Removal took the row, the stored records and the Up Next entry and left
+    /// the player running, so Skip on a playing episode kept the audio going
+    /// for something the library no longer held, with the rail and the system
+    /// widget still offering controls for it. `removeArticle` already cleared
+    /// its side; this is the same care for the other kind.
+    private func stopPlaybackForRemovedEpisode() async {
+        try? await playback?.pause()
+        stopPlaybackCheckpointTicker()
+        currentPodcastEpisodeID = nil
+        isPodcastPlayback = false
+        isNowPlaying = false
+        isPlaying = false
+        currentTranscript = nil
+        playbackPositionSeconds = 0
+        playbackDurationSeconds = 0
+        // Nothing is loaded any more, so the widget has to stop showing it.
+        publishNowPlaying(force: true)
+    }
+#endif
 
     /// The optimistic half of a removal: the row leaves the screen on the next
     /// render, and any work still running for it stops.

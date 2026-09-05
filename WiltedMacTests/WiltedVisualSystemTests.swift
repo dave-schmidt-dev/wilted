@@ -331,6 +331,36 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertEqual(queueAfterFailure, queueBeforeFailure)
     }
 
+    /// Skip on the episode that is playing has to stop it.
+    ///
+    /// Removal took the row, the stored records and the Up Next entry and left
+    /// the transport running, so the audio carried on for an episode the
+    /// library no longer held while the rail and the system widget still
+    /// offered controls for it.
+    @MainActor
+    func testRemovingThePlayingEpisodeStopsTheAudioItRemoved() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
+            stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        let episode = try XCTUnwrap(model.episodes.first)
+        model.playEpisode(episode)
+        await model.waitForPlaybackOperationForTesting()
+        XCTAssertEqual(model.currentPodcastEpisodeID, episode.id)
+        XCTAssertTrue(model.isPlaying)
+
+        model.removeEpisode(episode)
+        for _ in 0..<300 {
+            if model.currentPodcastEpisodeID == nil, !model.isPlaying { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNil(model.currentPodcastEpisodeID, "a removed episode must not remain the playing one")
+        XCTAssertFalse(model.isPlaying, "Skip must stop the audio it removed")
+        XCTAssertFalse(model.isNowPlaying, "Now Playing must not keep offering a removed episode")
+    }
+
     @MainActor
     func testUpNextMutationWhileArticlePlaysPreservesArticleCompactPlayerIdentity() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
