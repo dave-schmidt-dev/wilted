@@ -37,6 +37,12 @@ struct WiltedMacRootView: View {
             }
         }
         .task {
+            // The unit-test host is the app bundle, so this view is shown
+            // there too, and it would open the daily driver's own library
+            // under every test run. On 2026-09-05 that closed a live
+            // preparation run in the owner's library from inside a test.
+            // Tests build their own models and bootstrap those on purpose.
+            guard !WiltedMacModel.hostsTests else { return }
             model.startStoreBootstrap()
         }
     }
@@ -279,8 +285,6 @@ private struct WiltedMacLibraryView: View {
 
     var body: some View {
         WiltedMacDestination(title: WiltedScreenCopy.library, identifier: "wilted-mac-library-detail") {
-            addArticleControl
-
             WiltedMacPodcastOperationMessage(model: model)
 
             // Shown above the results rather than beside the field: the case
@@ -315,15 +319,16 @@ private struct WiltedMacLibraryView: View {
                 }
                 .accessibilityIdentifier("wilted-mac-empty-state")
 
-                // A Larder emptied by skipping or finishing everything still
-                // needs a way back to what left it. The list header that
-                // normally carries this button does not exist in this
-                // branch, so it sits under the empty state instead.
-                if !model.dismissedEpisodes.isEmpty {
-                    HStack {
+                // An empty Larder still needs a way in and, when something
+                // was skipped or finished, a way back. The list header that
+                // normally carries both buttons does not exist in this
+                // branch, so they sit under the empty state instead.
+                HStack(spacing: WiltedTheme.Spacing.medium) {
+                    if !model.dismissedEpisodes.isEmpty {
                         removedButton
-                        Spacer()
                     }
+                    addArticleButton
+                    Spacer()
                 }
             } else {
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
@@ -338,6 +343,7 @@ private struct WiltedMacLibraryView: View {
                         if !model.dismissedEpisodes.isEmpty {
                             removedButton
                         }
+                        addArticleButton
                         Picker("Order", selection: $model.libraryOrder) {
                             ForEach(WiltedMacLibraryOrder.allCases) { order in Text(order.rawValue).tag(order) }
                         }
@@ -394,23 +400,21 @@ private struct WiltedMacLibraryView: View {
     ///
     /// The box itself used to be a card holding the top of the Larder, which
     /// is a card of room spent on a control used once a session. Behind a
-    /// button it costs one row, and the library starts where the reader is
-    /// looking.
-    private var addArticleControl: some View {
-        HStack {
-            Spacer()
-            Button {
-                model.isPresentingComposer = true
-            } label: {
-                Label(WiltedScreenCopy.addLink, systemImage: "plus")
-            }
-            .accessibilityIdentifier("wilted-add-article-button")
-            .popover(isPresented: $model.isPresentingComposer, arrowEdge: .bottom) {
-                composer
-                    .frame(width: 420)
-                    .padding(WiltedTheme.Spacing.large)
-                    .background(WiltedTheme.color(.card, scheme: colorScheme))
-            }
+    /// button it costs nothing: it sits in the list header beside Removed,
+    /// so everything that changes what the list holds is in one row, and
+    /// the library starts where the reader is looking.
+    private var addArticleButton: some View {
+        Button {
+            model.isPresentingComposer = true
+        } label: {
+            Label(WiltedScreenCopy.addLink, systemImage: "plus")
+        }
+        .accessibilityIdentifier("wilted-add-article-button")
+        .popover(isPresented: $model.isPresentingComposer, arrowEdge: .bottom) {
+            composer
+                .frame(width: 420)
+                .padding(WiltedTheme.Spacing.large)
+                .background(WiltedTheme.color(.card, scheme: colorScheme))
         }
     }
 

@@ -1744,6 +1744,108 @@ final class WiltedMacModelTests: XCTestCase {
                        "Restoring a same-session dismissal must clear the in-memory hide, not just the store record")
     }
 
+    /// The reported bug (2026-09-05): an episode that had been prepared (ads
+    /// removed, transcript aligned), then skipped and restored from the
+    /// Removed list, came back with no media -- Download button showing,
+    /// `downloadState` `.notDownloaded` -- while still reading "Ready · 3 ads
+    /// removed (4:38) · transcript synced". `dismissPodcastEpisode` deleted
+    /// the episode, queue, download, speed, and artwork rows but left the
+    /// revision, transcript, and playback records behind, so `loadLibrary`
+    /// found the surviving revision and transcript after restore and reported
+    /// the old finished cut as ready. The fix deletes those three record kinds
+    /// too, while keeping the preparation journal so the Removed list can
+    /// still say a preparation happened.
+    func testARestoredEpisodeDoesNotPresentItsOldFinishedCutAsReady() async throws {
+        let directory = temporaryDirectory("restore-clears-old-cut")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let libraryURL = directory.appendingPathComponent("library.sqlite")
+        let store = try LocalLibraryStore(url: libraryURL)
+        let feedURL = URL(string: "https://podcasts.example.test/waveform.xml")!
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let targetURL = URL(string: "https://cdn.example.test/waveform.mp3")!
+        let targetID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "wave", enclosureURL: targetURL)
+        let feed = try PodcastFeed(
+            itemID: feedID, canonicalURL: feedURL, title: "Waveform",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        )
+        let target = try PodcastEpisode(
+            itemID: targetID, feedID: feedID, feedURL: feedURL, rssGUID: "wave", title: "Wave episode",
+            publishedTime: Timestamp(Date(timeIntervalSince1970: 1_600_000_000)),
+            enclosureURL: targetURL, enclosureMediaType: "audio/mpeg",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_600_000_000))
+        )
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(
+            feedID: feedID, subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        ))
+        try await store.save(episode: target)
+
+        let created = Timestamp(Date(timeIntervalSince1970: 1_600_000_500))
+        let revision = try AudioRevision(
+            itemID: targetID,
+            revisionID: try RevisionID.derive(podcastDownloadedAudioItemID: targetID, contentHash: "sha256:\(String(repeating: "d", count: 64))"),
+            durationSeconds: 278, byteCount: 4_096,
+            contentHash: "sha256:\(String(repeating: "d", count: 64))", mediaType: "audio/mp4",
+            createdAt: created, schemaVersion: 1
+        )
+        let mediaURL = directory.appendingPathComponent("wave.m4a")
+        try await store.finalizePodcastDownload(
+            revision: revision, mediaURL: mediaURL,
+            download: try PodcastDownload(
+                episodeID: targetID, status: .completed,
+                bytesReceived: revision.byteCount, expectedByteCount: revision.byteCount,
+                localURL: mediaURL, contentHash: revision.contentHash, updatedAt: created
+            )
+        )
+        try await store.save(transcript: try Transcript(
+            itemID: targetID, revisionID: revision.revisionID, availability: .available,
+            text: "Aligned words.", timing: .aligned,
+            cues: [try TranscriptCue(startSeconds: 0, endSeconds: 1, text: "Aligned words.")],
+            updatedAt: created
+        ))
+        let requestID = WiltedMacModel.podcastRequestPrefix + targetID.rawValue
+        try await store.record(preparation: PreparationJournalEntry(
+            id: requestID + "|terminal", itemID: targetID, requestID: requestID,
+            status: try PreparationStatus(
+                stage: .completed, detail: "Ready · 3 ads removed (4:38) · transcript synced",
+                fraction: 1, cancellable: false,
+                terminalResult: try PreparationTerminalResult(outcome: .succeeded, revisionID: revision.revisionID),
+                emittedAt: created
+            )
+        ))
+
+        let xml = """
+        <rss><channel><title>Waveform</title>
+        <item><title>Wave episode</title><guid>wave</guid><pubDate>Sun, 13 Sep 2020 12:26:40 GMT</pubDate><enclosure url="https://cdn.example.test/waveform.mp3" type="audio/mpeg" /></item>
+        </channel></rss>
+        """
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            podcastFeedClient: PodcastFeedClient(
+                loader: FixedBodyLoader(body: Data(xml.utf8)), now: { Date(timeIntervalSince1970: 1_700_000_100) }
+            ), preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let prepared = try XCTUnwrap(model.episodes.first { $0.id == targetID.rawValue })
+        XCTAssertEqual(prepared.downloadState, .completed)
+        XCTAssertEqual(prepared.preparationState, .prepared(summary: "Ready · 3 ads removed (4:38) · transcript synced"))
+
+        model.removeEpisode(prepared)
+        try await settle(model)
+        let dismissal = try XCTUnwrap(model.dismissedEpisodes.first { $0.id == prepared.id })
+        XCTAssertTrue(dismissal.hasPreparationHistory, "the journal must survive so the Removed list can still say a preparation happened")
+
+        model.restoreEpisode(dismissal)
+        await model.waitForPodcastOperations()
+
+        let restored = try XCTUnwrap(model.episodes.first { $0.id == targetID.rawValue })
+        XCTAssertEqual(restored.downloadState, .notDownloaded)
+        XCTAssertEqual(restored.preparationState, .notPrepared)
+        XCTAssertNil(restored.preparationState.label)
+    }
+
     /// The Undo button beside the removal message calls
     /// `restoreEpisode(model.undoableRemoval!)`. Undo must clear the record it
     /// used, so the button does not linger offering to restore an episode a
@@ -2213,6 +2315,99 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertFalse(WiltedMacEpisodePreparationState.notPrepared.isPrepared)
         XCTAssertFalse(WiltedMacEpisodePreparationState.preparing(stage: "Preparing…").isPrepared)
         XCTAssertFalse(WiltedMacEpisodePreparationState.failed("Failed").isPrepared)
+    }
+
+    // MARK: - Interrupted preparation runs
+
+    /// The bug this covers: an install quit Wilted at 18:59 while an episode
+    /// downloaded at 18:56 was still transcribing. The pipeline writes a run's
+    /// terminal entry from inside the run, so the journal kept a live entry
+    /// with nothing behind it, and the next launch read it back as
+    /// "Preparing…" with a Stop that stopped nothing.
+    func testBootstrapClosesARunTheJournalStillCallsLive() async throws {
+        let directory = temporaryDirectory("interrupted-run")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let feedURL = URL(string: "https://podcasts.example.test/interrupted.xml")!
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        try await store.save(feed: try PodcastFeed(itemID: feedID, canonicalURL: feedURL, title: "Waveform", createdAt: created))
+        try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+        func episode(_ guid: String) async throws -> ItemID {
+            let enclosure = URL(string: "https://cdn.example.test/\(guid).mp3")!
+            let id = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: guid, enclosureURL: enclosure)
+            try await store.save(episode: try PodcastEpisode(
+                itemID: id, feedID: feedID, feedURL: feedURL, rssGUID: guid, title: "Episode \(guid)",
+                publishedTime: created, enclosureURL: enclosure, enclosureMediaType: "audio/mpeg", createdAt: created
+            ))
+            return id
+        }
+        let interrupted = try await episode("interrupted")
+        let finished = try await episode("finished")
+        let interruptedRequest = WiltedMacModel.podcastRequestPrefix + interrupted.rawValue
+        let finishedRequest = WiltedMacModel.podcastRequestPrefix + finished.rawValue
+        // What the journal held when the process died: a start and a stage,
+        // no terminal.
+        try await store.record(preparation: PreparationJournalEntry(
+            id: interruptedRequest + "|pipeline.start#1", itemID: interrupted, requestID: interruptedRequest,
+            status: try PreparationStatus(stage: .preparing, detail: "Episode interrupted", cancellable: true, emittedAt: created)
+        ))
+        try await store.record(preparation: PreparationJournalEntry(
+            id: interruptedRequest + "|transcript.stt.start#2", itemID: interrupted, requestID: interruptedRequest,
+            status: try PreparationStatus(stage: .extracting, detail: "rev-abc.mp3", cancellable: true,
+                                          emittedAt: Timestamp(created.date.addingTimeInterval(1)))
+        ))
+        // A run that did finish is not this launch's business.
+        try await store.record(preparation: PreparationJournalEntry(
+            id: finishedRequest + "|terminal", itemID: finished, requestID: finishedRequest,
+            status: try PreparationStatus(stage: .completed, detail: "Prepared.", cancellable: false,
+                                          terminalResult: try PreparationTerminalResult(
+                                              outcome: .succeeded,
+                                              revisionID: try RevisionID(rawValue: "rev-" + String(repeating: "a", count: 64))
+                                          ),
+                                          emittedAt: created)
+        ))
+
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory,
+                                   preferences: WiltedMacTestPreferences.ephemeral())
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let runs = Dictionary(uniqueKeysWithValues: try await store.preparationRuns().map { ($0.requestID, $0) })
+        let closed = try XCTUnwrap(runs[interruptedRequest])
+        XCTAssertTrue(closed.isTerminal, "a run no process is running must not stay live across a launch")
+        XCTAssertEqual(closed.outcome, .failed)
+        XCTAssertEqual(closed.failure?.message, WiltedMacModel.preparationInterruptedMessage)
+        XCTAssertEqual(closed.entries.count, 3, "the run's own entries stay; one closing entry is added")
+        let untouched = try XCTUnwrap(runs[finishedRequest])
+        XCTAssertEqual(untouched.outcome, .succeeded)
+        XCTAssertEqual(untouched.entries.count, 1)
+
+        let row = try XCTUnwrap(model.episodes.first { $0.id == interrupted.rawValue })
+        XCTAssertEqual(row.preparationState, .failed(WiltedMacModel.preparationFailedLabel),
+                       "the row says the run failed and points at Prep, where the retry is")
+        XCTAssertEqual(model.episodes.first { $0.id == finished.rawValue }?.preparationState.isRunning, false)
+    }
+
+    /// The closing entry is written only for a run that has no terminal
+    /// entry, and it is one the journal reader recognises as a failure.
+    func testInterruptedEntryIsWrittenOnlyForALiveRun() throws {
+        let itemID = try ItemID(rawValue: "item-" + String(repeating: "c", count: 64))
+        let requestID = WiltedMacModel.podcastRequestPrefix + itemID.rawValue
+        let when = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        func run(isTerminal: Bool) -> PreparationRunSummary {
+            PreparationRunSummary(requestID: requestID, itemID: itemID, startedAt: when, updatedAt: when,
+                                  stage: isTerminal ? .completed : .extracting, detail: "x", fraction: nil,
+                                  isTerminal: isTerminal, outcome: isTerminal ? .succeeded : nil, failure: nil)
+        }
+        XCTAssertNil(WiltedMacModel.interruptedPreparationEntry(for: run(isTerminal: true), at: when))
+        let entry = try XCTUnwrap(WiltedMacModel.interruptedPreparationEntry(for: run(isTerminal: false), at: when))
+        XCTAssertEqual(entry.id, requestID + "|interrupted")
+        XCTAssertEqual(entry.requestID, requestID)
+        XCTAssertTrue(entry.status.terminal)
+        XCTAssertEqual(entry.status.terminalResult?.outcome, .failed)
+        XCTAssertEqual(entry.status.terminalResult?.error?.retryable, true)
+        XCTAssertEqual(entry.status.detail, WiltedMacModel.preparationInterruptedMessage)
     }
 }
 

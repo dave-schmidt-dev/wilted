@@ -3532,6 +3532,9 @@ final class WiltedMacModel {
             // The account-review gate is durable state, so restore it before
             // the ready surface can expose sync controls.
             syncLifecycle?.restoreAccountQuarantine()
+            // Before the library is read, so the rows derive from a journal
+            // that tells the truth about what is running: nothing, yet.
+            await closeInterruptedPreparationRuns(in: configuredStore)
             let library = try await loadLibrary(from: configuredStore)
             articles = library.articles
             episodes = library.episodes
@@ -3563,6 +3566,46 @@ final class WiltedMacModel {
             ))
         }
         startupTask = nil
+    }
+
+    /// Closes every run the journal still calls live.
+    ///
+    /// Found 2026-09-05: an install quit Wilted while an episode was
+    /// preparing. The pipeline journals a run's terminal entry from inside
+    /// the run, so a run that dies with its process never gets one, and on
+    /// the next launch the row read "Preparing…" with nothing behind it and
+    /// a Stop that stopped nothing. Every run belongs to the process that
+    /// started it, and this process has started none, so a run the journal
+    /// calls live at bootstrap is an interrupted one. It is closed as failed
+    /// with the reason, which puts it on Prep beside a retry, where every
+    /// other failure goes.
+    private func closeInterruptedPreparationRuns(in store: LocalLibraryStore) async {
+        guard let runs = try? await store.preparationRuns() else { return }
+        for run in runs where !run.isTerminal {
+            guard let entry = Self.interruptedPreparationEntry(for: run, at: Timestamp(Date())) else { continue }
+            try? await store.record(preparation: entry)
+        }
+    }
+
+    /// What Prep says about a run its process did not live to finish.
+    nonisolated static let preparationInterruptedMessage =
+        "Wilted quit while this was preparing. Retry it from \(WiltedScreenCopy.processor)."
+
+    /// The terminal entry that closes an interrupted run, or nil for a run
+    /// that already has one.
+    nonisolated static func interruptedPreparationEntry(
+        for run: PreparationRunSummary, at emittedAt: Timestamp
+    ) -> PreparationJournalEntry? {
+        guard !run.isTerminal,
+              let error = try? ProducerError(code: .failed, message: preparationInterruptedMessage,
+                                             retryable: true, stage: "interrupted"),
+              let terminal = try? PreparationTerminalResult(outcome: .failed, error: error),
+              let status = try? PreparationStatus(stage: .failed, detail: preparationInterruptedMessage,
+                                                  cancellable: false, terminalResult: terminal, emittedAt: emittedAt)
+        else { return nil }
+        return PreparationJournalEntry(
+            id: run.requestID + "|interrupted", itemID: run.itemID, requestID: run.requestID, status: status
+        )
     }
 
     private func configureStoreDependencies(_ configuredStore: LocalLibraryStore?) {

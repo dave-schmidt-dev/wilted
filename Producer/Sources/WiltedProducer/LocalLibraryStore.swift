@@ -2519,8 +2519,14 @@ public actor LocalLibraryStore {
     /// Both halves are needed. Deleting the row alone lasts until the next
     /// refresh, which parses the same episode out of the same feed and inserts
     /// it again; recording the dismissal alone leaves the row on screen. So the
-    /// record is written, the row and everything hanging off it goes, and
-    /// `savePodcastEpisodes` declines to re-admit the identity afterwards.
+    /// record is written, and the episode, queue, download, speed, artwork,
+    /// revision, transcript, and playback records go. `savePodcastEpisodes`
+    /// declines to re-admit the identity afterwards.
+    ///
+    /// The preparation journal stays. It is what lets the Removed list say a
+    /// preparation happened for this episode, and restoring the episode should
+    /// not resurrect a finished cut that no longer has a revision or transcript
+    /// behind it.
     ///
     /// Downloaded media stays on disk for the reason `unsubscribeFromPodcast`
     /// gives: a `RevisionID` is derived from content, so two episodes with
@@ -2557,6 +2563,12 @@ public actor LocalLibraryStore {
         where record.itemID == identifier { context.delete(record) }
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>())
         where record.ownerID == identifier { context.delete(record) }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
+        where record.itemID == identifier { context.delete(record) }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
+        where record.itemID == identifier { context.delete(record) }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
+        where record.itemID == identifier { context.delete(record) }
         try context.save()
         return true
     }

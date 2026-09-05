@@ -1255,6 +1255,74 @@ final class LocalLibraryStoreTests: XCTestCase {
                        "Up Next must not hold an episode the Larder removed")
     }
 
+    /// The bug this covers: dismissing a prepared episode deleted its download
+    /// and queue rows but left the revision, transcript, and playback records
+    /// behind. Restoring it later found the surviving revision and transcript
+    /// and showed the old finished cut as ready, with no media to back it.
+    func testDismissingAPreparedEpisodeClearsItsRevisionTranscriptAndPlayback() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/prepared-dismiss/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 2])
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+        try await store.savePodcastEpisodes(all, admission: .backfill)
+        let doomed = all[0], kept = all[1]
+
+        let revision = try AudioRevision(
+            itemID: doomed.itemID, revisionID: RevisionID(rawValue: "rev-doomed"), durationSeconds: 278, byteCount: 4_096,
+            contentHash: "sha256:\(String(repeating: "b", count: 64))", mediaType: "audio/mp4",
+            createdAt: Timestamp(origin), schemaVersion: 1
+        )
+        let transcript = try Transcript(
+            itemID: doomed.itemID, revisionID: revision.revisionID, availability: .available,
+            text: "Aligned transcript text.", languageCode: "en", timing: .aligned,
+            cues: [try TranscriptCue(startSeconds: 0, endSeconds: 5, text: "Hello.")],
+            updatedAt: Timestamp(origin)
+        )
+        try await store.saveReadyRevision(revision, mediaURL: URL(fileURLWithPath: "/tmp/doomed.m4a"), transcript: transcript)
+
+        let keptRevision = try AudioRevision(
+            itemID: kept.itemID, revisionID: RevisionID(rawValue: "rev-kept"), durationSeconds: 200, byteCount: 2_048,
+            contentHash: "sha256:\(String(repeating: "c", count: 64))", mediaType: "audio/mp4",
+            createdAt: Timestamp(origin), schemaVersion: 1
+        )
+        try await store.saveReadyRevision(keptRevision, mediaURL: URL(fileURLWithPath: "/tmp/kept.m4a"))
+
+        try await store.record(preparation: PreparationJournalEntry(
+            id: "prep-doomed", itemID: doomed.itemID, requestID: "request-doomed",
+            status: try PreparationStatus(
+                stage: .completed, detail: "ready", fraction: 1, cancellable: false,
+                terminalResult: try PreparationTerminalResult(outcome: .succeeded, revisionID: revision.revisionID),
+                emittedAt: Timestamp(origin)
+            )
+        ))
+        try await store.save(playback: try PlaybackState(
+            itemID: doomed.itemID, revisionID: revision.revisionID, sessionID: "session-1", sequence: 1,
+            positionSeconds: 30, durationSeconds: revision.durationSeconds, completed: false, intent: .progress,
+            deviceID: "device-mac", updatedAt: Timestamp(origin)
+        ))
+
+        try await store.dismissPodcastEpisode(doomed.itemID, at: Timestamp(origin))
+
+        let readyAfter = try await store.readyRevision(for: doomed.itemID)
+        XCTAssertNil(readyAfter, "the revision must not survive dismissal")
+        let revisionsAfter = try await store.revisions(for: doomed.itemID)
+        XCTAssertTrue(revisionsAfter.isEmpty)
+        let transcriptAfter = try await store.transcript(for: doomed.itemID, revisionID: revision.revisionID)
+        XCTAssertNil(transcriptAfter)
+        let playbackAfter = try await store.playbackState(for: doomed.itemID, revisionID: revision.revisionID)
+        XCTAssertNil(playbackAfter)
+        let runs = try await store.preparationRuns()
+        XCTAssertTrue(runs.contains { $0.requestID == "request-doomed" },
+                      "the preparation journal survives, so the Removed list can still say a preparation happened")
+
+        // The sibling episode's revision is untouched.
+        let keptReady = try await store.readyRevision(for: kept.itemID)
+        XCTAssertEqual(keptReady?.revision.revisionID, keptRevision.revisionID)
+    }
+
     /// Unsubscribing forgets the feed's dismissals too, so resubscribing does
     /// not inherit an invisible blocklist.
     func testUnsubscribingForgetsTheFeedsDismissals() async throws {
