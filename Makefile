@@ -47,5 +47,9 @@ ad-corpus:
 # re-preparing anything. Loads the GGUF model and takes minutes; it takes the
 # same GPU admission lock a preparation takes, so running it while the app is
 # working queues rather than contends.
+# The archive's interpreter, not the system one, and resolved from the same
+# variable Swift resolves it from: the model bindings the detector imports live
+# in that virtualenv and nowhere else.
 ad-corpus-replay:
-	@python3 Producer/Workers/ad_corpus.py --mode replay
+	@"$${WILTED_PIPELINE_PYTHON:-$$HOME/Documents/Projects/wilted-old/.venv/bin/python}" \
+		Producer/Workers/ad_corpus.py --mode replay

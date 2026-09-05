@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import sqlite3
 import sys
 from dataclasses import dataclass, field
@@ -41,6 +42,12 @@ DEFAULT_ALIGNED_CACHE = (
     Path.home() / "Library" / "Application Support" / "Wilted" / "media" / "preparation"
     / "wilted-pipeline" / "aligned-stt-cache"
 )
+
+# Where the archived detector lives. Swift resolves this from the same variable
+# with the same fallback when it spawns the worker, in
+# `PodcastPreparationPipeline.Configuration.resolved`; a replay that resolved it
+# differently would be measuring a detector the app does not run.
+DEFAULT_ARCHIVE_SOURCES = Path.home() / "Documents" / "Projects" / "wilted-old" / "src"
 
 # A cut boundary lands on a transcript segment edge, and the labelled truth was
 # read off those same edges, so a second of slack absorbs rounding without
@@ -202,6 +209,12 @@ def cached_segments(case: dict, *, cache: Path):
     return None
 
 
+def archive_sources() -> Path:
+    """The directory holding `wilted.ads`, resolved the way the app resolves it."""
+    override = os.environ.get("WILTED_PIPELINE_PYTHONPATH")
+    return Path(override) if override else DEFAULT_ARCHIVE_SOURCES
+
+
 def replay_spans(case: dict, *, cache: Path) -> list[Span] | None:
     """Re-run the live detector over this case's cached segments.
 
@@ -214,6 +227,15 @@ def replay_spans(case: dict, *, cache: Path) -> list[Span] | None:
     if segments is None:
         return None
 
+    # The worker never sets this up itself -- Swift hands it a PYTHONPATH when it
+    # spawns it -- so a replay has to do the same job or die on `import wilted`.
+    sources = archive_sources()
+    if not (sources / "wilted" / "ads.py").is_file():
+        raise RuntimeError(
+            f"no archived detector under {sources}; set WILTED_PIPELINE_PYTHONPATH "
+            "to the previous project's src directory"
+        )
+    sys.path.insert(0, str(sources))
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import wilted_pipeline as wp  # noqa: PLC0415 - deferred; loading it is expensive
 

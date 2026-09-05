@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -2680,6 +2681,7 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         package = types.ModuleType("wilted")
         package.ads, package.llm = ads, llm
         sys.modules.update({"wilted": package, "wilted.ads": ads, "wilted.llm": llm})
+        self.use_archive(self.fake_archive())
 
         for name in ("recover_unclaimed_explicit_sponsor_reads", "recover_transcript_start_preroll",
                      "recover_transcript_end_postroll", "resize_oversized_ad_spans"):
@@ -2692,6 +2694,46 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
                    lambda _module: calls.append(("install_legacy",)))
         self.patch("install_produced_disclaimer_evidence",
                    lambda _module: calls.append(("install_disclaimer",)))
+
+    def fake_archive(self):
+        """A directory shaped like the archive, for the existence check to find.
+
+        `sys.modules` already holds the stub package, so the import itself would
+        succeed anywhere; the check that runs before it is what needs a path.
+        """
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        (Path(root) / "wilted").mkdir()
+        (Path(root) / "wilted" / "ads.py").write_text("")
+        return root
+
+    def use_archive(self, path):
+        patcher = mock.patch.dict(os.environ, {"WILTED_PIPELINE_PYTHONPATH": str(path)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_archive_is_resolved_the_way_the_app_resolves_it(self):
+        # Swift hands the worker a PYTHONPATH from this variable with this
+        # fallback. A replay resolving it any other way would be measuring a
+        # different detector than the one the app runs.
+        self.use_archive("/tmp/somewhere-else/src")
+        self.assertEqual(self.corpus.archive_sources(), Path("/tmp/somewhere-else/src"))
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(self.corpus.archive_sources(), self.corpus.DEFAULT_ARCHIVE_SOURCES)
+        self.assertTrue(str(self.corpus.DEFAULT_ARCHIVE_SOURCES).endswith("wilted-old/src"))
+
+    def test_a_missing_archive_is_named_rather_than_left_as_an_import_error(self):
+        # Nothing in the worker puts the archive on the path -- Swift does it
+        # from outside -- so a replay run from a shell finds it or explains why.
+        case = self.waveform()
+        self.install_stubs()
+        empty = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, empty, True)
+        self.use_archive(empty)
+        with self.assertRaises(RuntimeError) as caught:
+            self.corpus.replay_spans(case, cache=self.corpus.DEFAULT_ALIGNED_CACHE)
+        self.assertIn(empty, str(caught.exception))
+        self.assertIn("WILTED_PIPELINE_PYTHONPATH", str(caught.exception))
 
     def patch(self, name, replacement):
         """`mock.patch.object` in the form the system interpreter supports.
