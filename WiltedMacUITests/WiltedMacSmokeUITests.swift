@@ -78,9 +78,10 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(
             app.descendants(matching: .any)["wilted-mac-processor-detail"].waitForExistence(timeout: 5)
         )
-        // A fixture library has never prepared anything, so both regions
+        // A fixture library has never prepared anything, so all three regions
         // state their emptiness rather than rendering nothing at all.
         XCTAssertTrue(app.descendants(matching: .any)["wilted-processor-idle"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-processor-waiting-empty"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["wilted-processor-empty"].exists)
     }
 

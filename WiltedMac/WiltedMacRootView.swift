@@ -1105,6 +1105,32 @@ private struct WiltedMacProcessorView: View {
 
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
                 HStack {
+                    Text("Waiting")
+                        .font(WiltedTheme.font(.title))
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    Spacer()
+                    Text(waitingCountLabel)
+                        .font(WiltedTheme.font(.utility))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                }
+                if model.preparationQueue.isEmpty {
+                    Text("Nothing is waiting. One preparation runs at a time; the rest queue here.")
+                        .font(WiltedTheme.font(.body))
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-processor-waiting-empty")
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(model.preparationQueue.entries.enumerated()), id: \.element.id) { index, waiting in
+                            if index > 0 { Divider() }
+                            waitingRow(waiting, position: index + 1)
+                        }
+                    }
+                    .wiltedCard(colorScheme)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+                HStack {
                     Text("Recent runs")
                         .font(WiltedTheme.font(.title))
                         .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
@@ -1150,6 +1176,42 @@ private struct WiltedMacProcessorView: View {
     private var runCountLabel: String {
         let count = recentRuns.count
         return "\(count) recorded"
+    }
+
+    private var waitingCountLabel: String {
+        let count = model.preparationQueue.entries.count
+        return count == 1 ? "1 waiting" : "\(count) waiting"
+    }
+
+    /// A preparation that has not started. It has journalled nothing, so there
+    /// is no stage, no progress and no log to show -- only its place in line
+    /// and a way to give that place up.
+    private func waitingRow(_ waiting: WiltedMacWaitingPreparation, position: Int) -> some View {
+        HStack(alignment: .top, spacing: WiltedTheme.Spacing.medium) {
+            Text("\(position)")
+                .font(WiltedTheme.font(.title))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .frame(minWidth: 20, alignment: .trailing)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                Text(waiting.title)
+                    .font(WiltedTheme.font(.body))
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                Text(waiting.source)
+                    .font(WiltedTheme.font(.utility))
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Stop") { model.cancelWaitingPreparation(waiting) }
+                .accessibilityLabel("Stop the queued preparation for \(waiting.title)")
+                .accessibilityIdentifier("wilted-processor-waiting-stop-\(waiting.id)")
+        }
+        .padding(.vertical, WiltedTheme.Spacing.small)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(waiting.title), number \(position) in the preparation queue")
+        .accessibilityIdentifier("wilted-processor-waiting-\(waiting.id)")
     }
 
     /// A podcast run in progress: what it is doing now, a way to stop it,

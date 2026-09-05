@@ -774,6 +774,9 @@ final class WiltedMacModel {
     private(set) var playbackDurationSeconds: TimeInterval = 0
     /// Every recorded preparation attempt, newest first.
     private(set) var processorRuns: [WiltedMacProcessorRun] = []
+    /// Preparations waiting for the single run slot, nearest turn first. The
+    /// journal cannot supply this: a waiting run has emitted nothing yet.
+    private(set) var preparationQueue = WiltedMacPreparationQueue()
     private(set) var processorOperationMessage: String?
     /// Progress for an in-flight transcript backfill (W-INV-001: a network
     /// fetch never runs without the surface saying so).
@@ -1228,7 +1231,7 @@ final class WiltedMacModel {
         )
         let values = try await loadLibrary(from: store)
         articles = values.articles
-        episodes = values.episodes
+        applyEpisodes(values.episodes)
         subscriptions = values.subscriptions
         dismissedEpisodes = try await loadDismissedEpisodes(from: store)
         return result.claimed.map(\.rawValue)
@@ -1631,14 +1634,27 @@ final class WiltedMacModel {
                     }
                 }
                 guard let store = self.store else { throw CancellationError() }
-                let values = try await self.loadLibrary(from: store)
-                self.articles = values.articles
-                self.episodes = values.episodes
-                self.subscriptions = values.subscriptions
-                self.dismissedEpisodes = try await self.loadDismissedEpisodes(from: store)
                 self.podcastOperationMessage = "\(episode.title) is available offline."
                 self.podcastDownloadTasks[episode.id] = nil
+                // Asked for before the library is reloaded, not after. The
+                // reload reads the whole library and three downloads landing
+                // together each run one, so preparation used to be requested
+                // seconds after the transfer it follows -- and until it is
+                // requested the row has no state to keep and nothing names it
+                // as pending. It reports what it will do straight away, so the
+                // reload below has something to preserve.
                 self.prepareEpisode(episode)
+                // The file has landed and its preparation is under way, so a
+                // reload that fails from here leaves stale rows -- it does not
+                // mean the download failed, and the catch below would say so.
+                // The next reload picks the rows up.
+                do {
+                    let values = try await self.loadLibrary(from: store)
+                    self.articles = values.articles
+                    self.applyEpisodes(values.episodes)
+                    self.subscriptions = values.subscriptions
+                    self.dismissedEpisodes = try await self.loadDismissedEpisodes(from: store)
+                } catch {}
                 return
             } catch PodcastDownloadCoordinatorError.cancelled {
                 self.updateEpisode(episode.id) { $0.downloadState = .cancelled }
@@ -1686,10 +1702,28 @@ final class WiltedMacModel {
         }
         guard let pipeline = podcastPreparationPipeline,
               let itemID = try? ItemID(rawValue: episode.id) else { return }
-        // Whether this run waits is decided now, so the row can say so now.
-        let queued = preparationGate.isBusy
+        // Whether this run waits is decided now, so the row can say so now,
+        // and so Prep can list it in the order it will run. The place in line
+        // is taken here rather than where the run suspends on the gate: those
+        // are one main-actor hop apart, and a row saying `Queued` that Prep
+        // cannot name is the gap this closes.
+        //
+        // The gate is asked, and so is this process: a run becomes the gate's
+        // business only when its task body reaches `admit()`, one main-actor
+        // hop after it was started, so two downloads landing together could
+        // both find the gate free and both claim to be preparing. A task
+        // already in the table is a run that precedes this one -- this episode
+        // cannot be in it, the guard above refused that -- and if that run
+        // turns out to be leaving, this one is admitted immediately and the
+        // row is corrected below rather than left waiting.
+        let queued = preparationGate.isBusy || !podcastPreparationTasks.isEmpty
         updateEpisode(episode.id) {
             $0.preparationState = .preparing(stage: queued ? Self.preparationQueuedStage : Self.preparingStage)
+        }
+        if queued {
+            preparationQueue.enter(WiltedMacWaitingPreparation(
+                id: episode.id, title: episode.title, source: episode.feedTitle
+            ))
         }
         podcastOperationMessage = queued
             ? "\(episode.title) is queued behind the preparation in flight."
@@ -1698,7 +1732,12 @@ final class WiltedMacModel {
         // worker emits is journalled by the pipeline, and Prep reads that
         // journal back as the narrative and, on request, the full log.
         podcastPreparationTasks[episode.id] = Task { [weak self] in
-            defer { self?.podcastPreparationTasks[episode.id] = nil }
+            defer {
+                self?.podcastPreparationTasks[episode.id] = nil
+                // Every way out of this run leaves the line, including the
+                // ones that never reached the admission below.
+                self?.preparationQueue.leave(episode.id)
+            }
             guard let gate = self?.preparationGate else { return }
             do {
                 try await gate.admit()
@@ -1708,6 +1747,7 @@ final class WiltedMacModel {
                 return
             }
             defer { gate.release() }
+            self?.preparationQueue.leave(episode.id)
             if queued {
                 self?.updateEpisode(episode.id) { $0.preparationState = .preparing(stage: Self.preparingStage) }
                 self?.podcastOperationMessage = "Preparing \(episode.title)…"
@@ -1720,7 +1760,7 @@ final class WiltedMacModel {
                 if let store = self.store {
                     let values = try await self.loadLibrary(from: store)
                     self.articles = values.articles
-                    self.episodes = values.episodes
+                    self.applyEpisodes(values.episodes)
                     self.subscriptions = values.subscriptions
                 }
                 // Applied after the reload, not before. The reload derives
@@ -1775,6 +1815,14 @@ final class WiltedMacModel {
 
     func cancelEpisodePreparation(_ episode: WiltedMacEpisode) {
         podcastPreparationTasks[episode.id]?.cancel()
+    }
+
+    /// Stops a run that is still waiting for the slot, from Prep, where the
+    /// waiting run is named but its episode row is not in reach. The gate lets
+    /// a queued caller leave at the moment it is cancelled rather than when
+    /// the run ahead of it finishes, so the row clears now.
+    func cancelWaitingPreparation(_ waiting: WiltedMacWaitingPreparation) {
+        podcastPreparationTasks[waiting.id]?.cancel()
     }
 
 #if canImport(WiltedProducer)
@@ -1876,7 +1924,7 @@ final class WiltedMacModel {
                 ))
                 let values = try await self.loadLibrary(from: store)
                 self.articles = values.articles
-                self.episodes = values.episodes
+                self.applyEpisodes(values.episodes)
                 self.subscriptions = values.subscriptions
                 self.podcastOperationMessage = enabled
                     ? "\(subscription.title) is showing in Larder again."
@@ -1902,7 +1950,7 @@ final class WiltedMacModel {
                 let removed = try await store.unsubscribeFromPodcast(feedID: feedID)
                 let values = try await self.loadLibrary(from: store)
                 self.articles = values.articles
-                self.episodes = values.episodes
+                self.applyEpisodes(values.episodes)
                 self.subscriptions = values.subscriptions
                 self.dismissedEpisodes = try await self.loadDismissedEpisodes(from: store)
                 self.podcastOperationMessage =
@@ -1961,7 +2009,7 @@ final class WiltedMacModel {
             }
             let values = try await loadLibrary(from: store)
             articles = values.articles
-            episodes = values.episodes
+            applyEpisodes(values.episodes)
             subscriptions = values.subscriptions
             dismissedEpisodes = try await loadDismissedEpisodes(from: store)
             return true
@@ -2042,7 +2090,7 @@ final class WiltedMacModel {
             }
             let values = try await loadLibrary(from: store)
             articles = values.articles
-            episodes = values.episodes
+            applyEpisodes(values.episodes)
             subscriptions = values.subscriptions
             dismissedEpisodes = try await loadDismissedEpisodes(from: store)
             podcastOperationMessage = "Restored \(dismissal.title) to Larder."
@@ -2127,13 +2175,53 @@ final class WiltedMacModel {
         withheldPodcastEpisodeCount = withheld
         let values = try await loadLibrary(from: store)
         articles = values.articles
-        episodes = values.episodes
+        applyEpisodes(values.episodes)
         subscriptions = values.subscriptions
         dismissedEpisodes = try await loadDismissedEpisodes(from: store)
         return result
     }
 
 #endif
+
+    /// Publishes freshly loaded rows without dropping what only this process
+    /// knows.
+    ///
+    /// `preparationState` is derived from what the library can prove, and a
+    /// preparation waiting for the run slot has proved nothing: it has no
+    /// journal entry until the worker starts, so the store reports it as not
+    /// prepared. Every download that lands reloads the whole library, so one
+    /// episode finishing its transfer used to put another episode's `Queued`
+    /// row back to offering `Prepare` -- a button that does nothing, because
+    /// the run it would start already exists -- while its turn was still
+    /// coming. A run this process started keeps the state this process gave it
+    /// until it reaches a terminal one of its own.
+    private func applyEpisodes(_ loaded: [WiltedMacEpisode]) {
+#if canImport(WiltedProducer)
+        let running = Set(podcastPreparationTasks.keys)
+#else
+        let running: Set<String> = []
+#endif
+        episodes = Self.applyingRunningPreparations(to: loaded, from: episodes, running: running)
+    }
+
+    /// Carries a preparation state this process owns onto the loaded row.
+    /// Separated from the reload so the rule can be read and tested on its own.
+    nonisolated static func applyingRunningPreparations(
+        to loaded: [WiltedMacEpisode], from current: [WiltedMacEpisode], running: Set<String>
+    ) -> [WiltedMacEpisode] {
+        var inFlight: [String: WiltedMacEpisodePreparationState] = [:]
+        for episode in current where running.contains(episode.id) {
+            guard case .preparing = episode.preparationState else { continue }
+            inFlight[episode.id] = episode.preparationState
+        }
+        guard !inFlight.isEmpty else { return loaded }
+        return loaded.map { episode in
+            guard let state = inFlight[episode.id] else { return episode }
+            var value = episode
+            value.preparationState = state
+            return value
+        }
+    }
 
     private func updateEpisode(_ id: String, transform: (inout WiltedMacEpisode) -> Void) {
         guard let index = episodes.firstIndex(where: { $0.id == id }) else { return }
@@ -3501,7 +3589,7 @@ final class WiltedMacModel {
     private func reloadLibraryRows() async {
         guard let store, let values = try? await loadLibrary(from: store) else { return }
         articles = values.articles
-        episodes = values.episodes
+        applyEpisodes(values.episodes)
         subscriptions = values.subscriptions
     }
 
@@ -3682,7 +3770,7 @@ final class WiltedMacModel {
             guard let self else { return }
             guard let values = try? await self.loadLibrary(from: store) else { return }
             self.articles = values.articles
-            self.episodes = values.episodes
+            self.applyEpisodes(values.episodes)
             self.subscriptions = values.subscriptions
             self.dismissedEpisodes = (try? await self.loadDismissedEpisodes(from: store)) ?? self.dismissedEpisodes
         }
