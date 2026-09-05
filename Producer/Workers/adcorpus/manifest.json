@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "operation": "detect-and-cut",
+  "provenance": "Ground truth labelled by hand on 2026-09-05 from two detector failures David reported the same day. Timings are read from the aligned-STT cache entry the detector itself consumed, so a replay sees byte-identical input. No podcast prose or audio is stored here: each case points at a cache entry by sourceHash and the harness resolves it locally at run time. `audioDurationSeconds` is what the detector's own `probe_duration` saw: preparation overwrites the download in place, so it is derived as the cut file's measured duration plus the spans the run removed, rather than probed from an original that no longer exists.",
+  "license": "MIT",
+  "labels": {
+    "must-cut": "Advertising. The detector is wrong if it leaves any of this in.",
+    "must-keep": "Programme content. The detector is wrong if it removes any of this. A failure here destroys something the listener wanted.",
+    "acceptable-cut": "Not advertising, but David has said he does not mind losing it. Neither cutting nor keeping is a defect; recorded so a replay does not score it either way."
+  },
+  "cases": [
+    {
+      "id": "waveform-two-preroll-sponsor-reads",
+      "itemID": "item-bbe4696c58ab56020bc275eb40ded01b99028415cb0a046451403f254adacb2d",
+      "show": "Waveform",
+      "sourceHash": "sha256:38166909883bb20ba662299aa4a63df7590e8eea5960b2616b46dfaab40f08b5",
+      "sttModel": "mlx-community/parakeet-tdt-1.1b",
+      "segmentCount": 622,
+      "intentionalCondition": "Two back-to-back produced pre-roll spots open the episode and neither was detected. The second one literally opens 'support for the show comes from Google Gemini'. The detector returned three correct mid-and-late-roll spans and nothing at the leading edge, so this is a miss, not a mis-sizing.",
+      "reportedBy": "David, 2026-09-05: 'it opens with a deepgram.com ad and then a gemeini ad, neither were removed'",
+      "expected": [
+        {
+          "start": 0.24,
+          "end": 32.88,
+          "label": "must-cut",
+          "why": "Deepgram Flux TTS spot, segments 0-1, ends on the call to action 'come try all the voices free through september twelfth'."
+        },
+        {
+          "start": 33.52,
+          "end": 66.08,
+          "label": "must-cut",
+          "why": "Google Gemini spot, segments 2-4, ends on 'visit gemini dot google dot com to learn more'."
+        },
+        {
+          "start": 68.48,
+          "end": 2729.8,
+          "label": "must-keep",
+          "why": "Programme, from the first round of the game at segment 5."
+        },
+        {
+          "start": 2729.8,
+          "end": 2917.96,
+          "label": "must-cut",
+          "why": "Mid-roll break. The detector already gets this one right; it is here so a fix for the leading edge cannot quietly lose it."
+        },
+        {
+          "start": 4162.76,
+          "end": 4191.24,
+          "label": "must-cut",
+          "why": "Host sponsor read. Already correct, held as a regression guard."
+        },
+        {
+          "start": 5278.64,
+          "end": 5339.76,
+          "label": "must-cut",
+          "why": "Closing break, Home Depot and Walmart spots running to the end of the file. Already correct, held as a regression guard."
+        }
+      ],
+      "recorded": [
+        {
+          "start": 2729.8,
+          "end": 2917.96,
+          "confidence": 1.0,
+          "label": "ad_break"
+        },
+        {
+          "start": 4162.76,
+          "end": 4191.24,
+          "confidence": 1.0,
+          "label": "sponsor_read"
+        },
+        {
+          "start": 5278.64,
+          "end": 5339.76,
+          "confidence": 1.0,
+          "label": "ad_break"
+        }
+      ],
+      "transcriptEndSeconds": 5339.76,
+      "audioDurationSeconds": 5337.26
+    },
+    {
+      "id": "pchh-preroll-swallowed-the-premise",
+      "itemID": "item-826354b467a20103e90b141e3f0a9c1fad2513705a8efff4455f6a9611ec2b64",
+      "show": "Pop Culture Happy Hour",
+      "sourceHash": "sha256:6089921a9f668de9a384cd71450f7e70ee279d600cfcd82d42d686874ec4d469",
+      "sttModel": "mlx-community/parakeet-tdt-1.1b",
+      "segmentCount": 122,
+      "intentionalCondition": "A sponsor-free NPR feed. The detector cut 0-51.52 at confidence 1.0, which is a house self-promo followed by twenty-one seconds of the actual programme: the premise of the episode, naming Wile E. Coyote, the Acme suit, and the film. The overreach is the defect; the promo itself is not.",
+      "reportedBy": "David, 2026-09-05: 'pop culture happy hour should be ad free, yet it lists 2 ads removed, what were those?' and, on the promo, 'im not against it being removed, I just wanted to know'",
+      "expected": [
+        {
+          "start": 0.4,
+          "end": 26.48,
+          "label": "acceptable-cut",
+          "why": "NPR house self-promo asking listeners to follow the show. Not a paid spot; David does not mind it going."
+        },
+        {
+          "start": 30.8,
+          "end": 51.12,
+          "label": "must-keep",
+          "why": "Programme. Segment 2 sets up the episode's premise and is inside the span the detector removed. This is the content loss."
+        },
+        {
+          "start": 51.52,
+          "end": 1514.56,
+          "label": "must-keep",
+          "why": "Programme."
+        },
+        {
+          "start": 1514.56,
+          "end": 1543.76,
+          "label": "acceptable-cut",
+          "why": "Sign-off and credits. Not advertising, but David raised no objection to losing it."
+        }
+      ],
+      "recorded": [
+        {
+          "start": 0.0,
+          "end": 51.52,
+          "confidence": 1.0,
+          "label": "ad_break"
+        },
+        {
+          "start": 1523.2,
+          "end": 1546.94,
+          "confidence": 1.0,
+          "label": "ad_break"
+        }
+      ],
+      "transcriptEndSeconds": 1543.76,
+      "audioDurationSeconds": 1545.93
+    }
+  ]
+}

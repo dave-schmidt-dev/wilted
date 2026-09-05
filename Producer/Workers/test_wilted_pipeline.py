@@ -30,6 +30,20 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKER_PATH = REPO_ROOT / "Producer" / "Workers" / "wilted_pipeline.py"
 
 
+def load_ad_corpus():
+    """Load the corpus scorer the same way the worker is loaded.
+
+    `sys.modules` has to hold the module before `exec_module` runs, because
+    `@dataclass` resolves its fields by looking the defining module up there.
+    """
+    path = REPO_ROOT / "Producer" / "Workers" / "ad_corpus.py"
+    spec = importlib.util.spec_from_file_location("ad_corpus", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["ad_corpus"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def load_worker():
     spec = importlib.util.spec_from_file_location("wilted_pipeline", WORKER_PATH)
     module = importlib.util.module_from_spec(spec)
@@ -2490,6 +2504,255 @@ class CrossLanguageContractTests(unittest.TestCase):
         self.assertIsNotNone(block, "timedMediaTypes is no longer where this test looks for it")
         swift_types = set(re.findall(r'"([^"]+)"', block.group(1)))
         self.assertEqual(swift_types, set(wp.TIMED_MEDIA_TYPES))
+
+
+class AdCorpusScoringTests(unittest.TestCase):
+    """The scorer that measures the detector against hand-labelled episodes.
+
+    These stay dependency-free like the rest of this suite: the scorer is pure,
+    so the tests hand it spans directly rather than reaching for the library
+    database or the model.
+    """
+
+    def setUp(self):
+        self.corpus = load_ad_corpus()
+
+    def case(self, *expected):
+        return {"id": "case", "show": "Show", "expected": list(expected)}
+
+    def expect(self, label, start, end):
+        return {"label": label, "start": start, "end": end, "why": "test"}
+
+    def score(self, case, cuts):
+        spans = [self.corpus.Span(start, end) for start, end in cuts]
+        return self.corpus.score_case(case, spans)
+
+    def test_removing_programme_content_fails_the_case(self):
+        verdict = self.score(self.case(self.expect("must-keep", 30.0, 60.0)), [(0.0, 50.0)])
+        self.assertFalse(verdict.passed)
+        self.assertIn("20.0s of programme", verdict.reason)
+
+    def test_a_boundary_landing_a_hair_inside_the_programme_is_forgiven(self):
+        # A cut lands on a transcript segment edge and the truth was read off
+        # those same edges, so sub-second slop is rounding, not a defect.
+        verdict = self.score(self.case(self.expect("must-keep", 30.0, 60.0)), [(0.0, 30.9)])
+        self.assertTrue(verdict.passed)
+
+    def test_an_advertisement_left_whole_fails_the_case(self):
+        verdict = self.score(self.case(self.expect("must-cut", 0.0, 32.0)), [(100.0, 200.0)])
+        self.assertFalse(verdict.passed)
+        self.assertIn("left 32.0s of advertising", verdict.reason)
+
+    def test_an_advertisement_missing_only_its_last_breath_still_passes(self):
+        verdict = self.score(self.case(self.expect("must-cut", 0.0, 32.0)), [(0.0, 31.0)])
+        self.assertTrue(verdict.passed)
+
+    def test_an_advertisement_barely_clipped_does_not_count_as_removed(self):
+        verdict = self.score(self.case(self.expect("must-cut", 0.0, 32.0)), [(0.0, 8.0)])
+        self.assertFalse(verdict.passed)
+
+    def test_an_acceptable_cut_passes_whether_it_is_taken_or_left(self):
+        expected = self.expect("acceptable-cut", 0.0, 26.0)
+        self.assertTrue(self.score(self.case(expected), [(0.0, 26.0)]).passed)
+        self.assertTrue(self.score(self.case(expected), []).passed)
+
+    def test_an_unknown_label_is_refused_rather_than_silently_passed(self):
+        with self.assertRaises(ValueError):
+            self.score(self.case(self.expect("probably-fine", 0.0, 10.0)), [])
+
+
+class AdCorpusManifestTests(unittest.TestCase):
+    """The ground truth itself, and what it currently says about the detector."""
+
+    def setUp(self):
+        self.corpus = load_ad_corpus()
+        self.manifest = self.corpus.load_manifest()
+
+    def find(self, case_id):
+        for case in self.manifest["cases"]:
+            if case["id"] == case_id:
+                return case
+        self.fail(f"{case_id} is no longer in the corpus")
+
+    def frozen(self, case):
+        return [
+            self.corpus.Span(entry["start"], entry["end"]) for entry in case["recorded"]
+        ]
+
+    def test_every_labelled_span_is_well_formed_and_inside_its_episode(self):
+        for case in self.manifest["cases"]:
+            # The labels are read off transcript cue boundaries, and the size
+            # guards divide by the audio duration, so the manifest carries both
+            # and neither may go missing.
+            self.assertAlmostEqual(
+                case["transcriptEndSeconds"], case["audioDurationSeconds"], delta=5.0,
+                msg=f"{case['id']}: the transcript and the audio disagree about the episode length",
+            )
+            for expected in case["expected"]:
+                self.assertIn(expected["label"], self.manifest["labels"], case["id"])
+                self.assertLess(expected["start"], expected["end"], case["id"])
+                self.assertLessEqual(
+                    expected["end"], case["transcriptEndSeconds"] + 1.0, case["id"]
+                )
+                self.assertTrue(expected["why"].strip(), case["id"])
+
+    def test_waveform_still_leaves_both_opening_sponsor_reads_whole(self):
+        # A characterisation test, not an aspiration: it records the defect as
+        # measured on 2026-09-05 so that fixing the detector breaks this test
+        # loudly and forces the record to be updated with the new truth.
+        case = self.find("waveform-two-preroll-sponsor-reads")
+        verdict = self.corpus.score_case(case, self.frozen(case))
+        self.assertFalse(verdict.passed, "the leading-edge miss appears to be fixed; update this test")
+        missed = [span for span in verdict.spans if span.label == "must-cut" and not span.passed]
+        self.assertEqual([(s.span.start, s.span.end) for s in missed], [(0.24, 32.88), (33.52, 66.08)])
+        # The three spans it does get right have to survive any fix.
+        kept = [span for span in verdict.spans if span.label == "must-cut" and span.passed]
+        self.assertEqual(len(kept), 3)
+
+    def test_pop_culture_happy_hour_still_loses_the_episode_premise(self):
+        case = self.find("pchh-preroll-swallowed-the-premise")
+        verdict = self.corpus.score_case(case, self.frozen(case))
+        self.assertFalse(verdict.passed, "the overreach appears to be fixed; update this test")
+        lost = [span for span in verdict.spans if span.label == "must-keep" and not span.passed]
+        self.assertEqual(len(lost), 1)
+        self.assertAlmostEqual(lost[0].overlap_seconds, 20.32, places=2)
+
+    def test_the_detector_reports_the_same_confidence_for_every_span_it_finds(self):
+        # Both recorded runs come back at 1.0 throughout, including the spans
+        # that were wrong in each direction, which is why nothing in the app
+        # can currently use confidence to decide anything.
+        confidences = {
+            entry["confidence"]
+            for case in self.manifest["cases"] for entry in case["recorded"]
+        }
+        self.assertEqual(confidences, {1.0})
+
+
+class AdCorpusReplayWiringTests(unittest.TestCase):
+    """The replay path, with the model stubbed out.
+
+    Replay is the tool a detector fix will be measured with, and it only runs
+    for real behind a four-gigabyte model, so nothing else in the gate reaches
+    it. These tests stand in for `wilted.ads` and `wilted.llm` and check that a
+    replay hands the detector what a real preparation hands it -- the same
+    segment type, the same shims, the same passes in the same order, and the
+    duration of the audio rather than the end of the transcript.
+    """
+
+    def setUp(self):
+        self.corpus = load_ad_corpus()
+        self.calls = []
+        self.addCleanup(self.restore_modules, dict(sys.modules))
+
+    def restore_modules(self, snapshot):
+        for name in [n for n in sys.modules if n.startswith("wilted.") or n == "wilted"]:
+            if name not in snapshot:
+                del sys.modules[name]
+
+    def install_stubs(self, detections=()):
+        class Ad:
+            def __init__(self, start_s, end_s, confidence=1.0, label="ad_break"):
+                self.start_s, self.end_s = start_s, end_s
+                self.confidence, self.label = confidence, label
+
+        calls = self.calls
+        ads = types.ModuleType("wilted.ads")
+        ads.AdSegment = Ad
+
+        def detect_ads(segments, backend):
+            calls.append(("detect_ads", len(segments), type(segments[0]).__name__))
+            return [Ad(*span) for span in detections]
+
+        ads.detect_ads = detect_ads
+
+        class Backend:
+            def load(inner):
+                calls.append(("load",))
+
+            def close(inner):
+                calls.append(("close",))
+
+        llm = types.ModuleType("wilted.llm")
+        llm.DEFAULT_GGUF_MODEL = "/models/stand-in.gguf"
+        llm.create_backend = lambda kind, model: (
+            calls.append(("create_backend", kind, model)) or Backend()
+        )
+        package = types.ModuleType("wilted")
+        package.ads, package.llm = ads, llm
+        sys.modules.update({"wilted": package, "wilted.ads": ads, "wilted.llm": llm})
+
+        for name in ("recover_unclaimed_explicit_sponsor_reads", "recover_transcript_start_preroll",
+                     "recover_transcript_end_postroll", "resize_oversized_ad_spans"):
+            def pass_through(*args, _name=name, **_kwargs):
+                calls.append((_name, args[4] if len(args) > 4 else None))
+                return args[3]
+            self.patch(name, pass_through)
+        self.patch("prepare_ad_model_lock", lambda *_a, **_k: None)
+        self.patch("install_legacy_sponsor_opening_compatibility",
+                   lambda _module: calls.append(("install_legacy",)))
+        self.patch("install_produced_disclaimer_evidence",
+                   lambda _module: calls.append(("install_disclaimer",)))
+
+    def patch(self, name, replacement):
+        """`mock.patch.object` in the form the system interpreter supports.
+
+        This leg runs under whatever `python3` is first on PATH, which on this
+        host is 3.9 outside the gate, so `TestCase.enterContext` is not
+        available.
+        """
+        patcher = mock.patch.object(wp, name, replacement)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def waveform(self):
+        for case in self.corpus.load_manifest()["cases"]:
+            if case["id"] == "waveform-two-preroll-sponsor-reads":
+                return case
+        self.fail("the Waveform case is no longer in the corpus")
+
+    def replay(self, case, detections=()):
+        self.install_stubs(detections)
+        return self.corpus.replay_spans(case, cache=self.corpus.DEFAULT_ALIGNED_CACHE)
+
+    def test_a_replay_reproduces_the_worker_call_for_call(self):
+        case = self.waveform()
+        spans = self.replay(case, detections=[(100.0, 200.0)])
+        if spans is None:
+            self.skipTest("this machine has no cached transcript for the Waveform case")
+        names = [call[0] for call in self.calls]
+        self.assertEqual(names, [
+            "create_backend", "load", "install_legacy", "install_disclaimer", "detect_ads",
+            "recover_unclaimed_explicit_sponsor_reads", "recover_transcript_start_preroll",
+            "recover_transcript_end_postroll", "resize_oversized_ad_spans", "close",
+        ])
+        self.assertEqual([(span.start, span.end) for span in spans], [(100.0, 200.0)])
+
+    def test_the_detector_is_handed_the_type_the_worker_hands_it(self):
+        # Duck typing makes the archive's own `TranscriptSegment` look
+        # interchangeable here. It is not the call the app makes.
+        case = self.waveform()
+        if self.replay(case) is None:
+            self.skipTest("this machine has no cached transcript for the Waveform case")
+        detect = next(call for call in self.calls if call[0] == "detect_ads")
+        self.assertEqual(detect[1], case["segmentCount"])
+        self.assertEqual(detect[2], "CachedAlignedSegment")
+
+    def test_the_size_guards_divide_by_the_audio_not_the_transcript(self):
+        case = self.waveform()
+        if self.replay(case) is None:
+            self.skipTest("this machine has no cached transcript for the Waveform case")
+        guarded = ("recover_transcript_end_postroll", "resize_oversized_ad_spans")
+        sized = [call[1] for call in self.calls if call[0] in guarded]
+        self.assertEqual(len(sized), len(guarded))
+        self.assertEqual(set(sized), {case["audioDurationSeconds"]})
+        self.assertNotEqual(case["audioDurationSeconds"], case["transcriptEndSeconds"])
+
+    def test_a_source_hash_no_cache_entry_matches_is_a_skip_not_an_empty_result(self):
+        # "Never prepared here" and "the detector found nothing" are opposite
+        # readings, and only one of them is a failure.
+        case = dict(self.waveform(), sourceHash="sha256:notacachedrun")
+        self.install_stubs()
+        self.assertIsNone(self.corpus.replay_spans(case, cache=self.corpus.DEFAULT_ALIGNED_CACHE))
 
 
 if __name__ == "__main__":

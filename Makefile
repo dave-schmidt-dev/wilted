@@ -1,4 +1,4 @@
-.PHONY: validate native-meta native native-ui install app-icon
+.PHONY: validate native-meta native native-ui install app-icon ad-corpus ad-corpus-replay
 
 validate:
 	@bash tests/test-phase0-aggregate.sh
@@ -34,3 +34,18 @@ app-icon:
 # required to hold; see the script for why that also protects the TCC grant.
 install:
 	@bash scripts/install-mac-app.sh
+
+# Scores the ad detector against hand-labelled real episodes, reading the cuts
+# each preparation already committed to the library. No model, no network, and
+# it answers the question the unit tests cannot: is the episode on this machine
+# still wrong? Exits non-zero while any case fails, which is the point.
+ad-corpus:
+	@python3 Producer/Workers/ad_corpus.py --mode recorded
+
+# The same scoring, but re-running the live detector over the aligned segments
+# the original run consumed, so a candidate fix can be measured without
+# re-preparing anything. Loads the GGUF model and takes minutes; it takes the
+# same GPU admission lock a preparation takes, so running it while the app is
+# working queues rather than contends.
+ad-corpus-replay:
+	@python3 Producer/Workers/ad_corpus.py --mode replay
