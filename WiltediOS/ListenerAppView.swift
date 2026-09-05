@@ -57,7 +57,7 @@ public struct WiltedListenerLibraryView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
                 Text(model.status.message)
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(model.status.tone.color(colorScheme))
                     .accessibilityIdentifier("wilted-listener-status")
 
@@ -115,7 +115,7 @@ public struct WiltedListenerLibraryView: View {
                 } else {
                     if scope == .downloaded {
                         Text(downloadSummary)
-                            .font(WiltedTheme.font(.utility))
+                            .wiltedFont(.utility)
                             .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                             .accessibilityIdentifier("wilted-downloads-summary")
                     }
@@ -153,11 +153,11 @@ public struct WiltedListenerLibraryView: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
-                    .font(WiltedTheme.font(.body))
+                    .wiltedFont(.body)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Text(metaLine(item))
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(
                         item.state == .downloaded
                             ? WiltedTheme.color(.secondaryText, scheme: colorScheme)
@@ -279,11 +279,11 @@ public struct WiltedListenerNowPlayingView: View {
                     .accessibilityValue(progressLabel(state))
 
                 Text(progressLabel(state))
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
 
                 Text(model.status.message)
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(model.status.tone.color(colorScheme))
                     .accessibilityIdentifier("wilted-now-playing-status")
 
@@ -349,12 +349,12 @@ public struct WiltedListenerNowPlayingView: View {
 
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                 Text(selectedItem?.title ?? WiltedScreenCopy.nowPlaying)
-                    .font(WiltedTheme.font(.title))
+                    .wiltedFont(.title)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     .lineLimit(2)
                 if let source = selectedItem?.source {
                     Text(source)
-                        .font(WiltedTheme.font(.utility))
+                        .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .lineLimit(1)
                 }
@@ -470,7 +470,7 @@ public struct WiltedListenerSettingsView: View {
                 VStack(spacing: WiltedTheme.Spacing.xSmall) {
                     WiltedWordmark(height: 16)
                     Text(Self.versionLabel)
-                        .font(WiltedTheme.font(.utility))
+                        .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 }
                 .frame(maxWidth: .infinity, alignment: .center)

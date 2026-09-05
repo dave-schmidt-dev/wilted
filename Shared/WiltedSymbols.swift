@@ -55,7 +55,11 @@ public extension Label where Title == Text, Icon == Image {
 /// leaf-tinted ground, the same size the artwork would be.
 public struct WiltedProduceTile: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.wiltedTextScale) private var textScale
     let symbol: WiltedSymbol
+    /// The size the tile would be at the platform's own text size. What it
+    /// actually draws is this carried up by the reader's chosen scale, so the
+    /// picture keeps pace with the words beside it.
     let size: CGFloat
 
     public init(symbol: WiltedSymbol, size: CGFloat) {
@@ -64,12 +68,13 @@ public struct WiltedProduceTile: View {
     }
 
     public var body: some View {
-        RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
+        let side = WiltedTheme.scaled(size, scale: textScale)
+        return RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
             .fill(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.2))
-            .frame(width: size, height: size)
+            .frame(width: side, height: side)
             .overlay(
                 Image(symbol)
-                    .font(.system(size: size * 0.5))
+                    .font(.system(size: side * 0.5))
                     .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
             )
     }

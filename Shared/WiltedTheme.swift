@@ -1,4 +1,9 @@
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 /// The visual vocabulary shared by the Mac producer and iPhone listener.
 ///
@@ -27,6 +32,43 @@ public enum WiltedTheme {
         case body
         case utility
         case caption
+    }
+
+    /// How much bigger than the platform's own text the app draws itself.
+    ///
+    /// macOS has no Dynamic Type: the pixel gate renders every state at both
+    /// `.medium` and `.xxxLarge` and all 38 pairs are byte-identical, so
+    /// `.dynamicTypeSize` cannot carry this on the Mac and the app has to own
+    /// the scale. `standard` is the platform's own sizing, kept exactly --
+    /// it returns the same semantic fonts the app used before there was a
+    /// choice -- so it stays the reference the other steps are measured from.
+    public enum TextScale: String, CaseIterable, Sendable, Identifiable {
+        case standard
+        case large
+        case larger
+        case largest
+
+        public var id: String { rawValue }
+
+        public var multiplier: CGFloat {
+            switch self {
+            case .standard: 1.0
+            case .large: 1.2
+            case .larger: 1.4
+            case .largest: 1.6
+            }
+        }
+
+        /// What the setting calls each step. `standard` says whose standard it
+        /// is, because on a Mac 13pt body text is the system's choice, not ours.
+        public var label: String {
+            switch self {
+            case .standard: "System"
+            case .large: "Large"
+            case .larger: "Larger"
+            case .largest: "Largest"
+            }
+        }
     }
 
     public enum Spacing {
@@ -90,18 +132,88 @@ public enum WiltedTheme {
     }
 
     public static func font(_ role: TypographyRole) -> Font {
+        font(role, scale: .standard)
+    }
+
+    /// The role's font at a chosen scale.
+    ///
+    /// At `.standard` this returns exactly what it always returned, semantic
+    /// text styles included, so nothing about the platform's own rendering is
+    /// reinterpreted when the reader has not asked for a change. Above it the
+    /// two semantic roles have to become concrete point sizes, because a text
+    /// style cannot be multiplied -- the size they resolve to is read from the
+    /// platform rather than written down here, so a system that changes its
+    /// own metrics moves this with it.
+    public static func font(_ role: TypographyRole, scale: TextScale) -> Font {
+        guard scale != .standard else {
+            switch role {
+            case .display:
+                return .system(size: 30, weight: .semibold, design: .default)
+            case .title:
+                return .system(.title2, design: .default).weight(.semibold)
+            case .body:
+                return .system(.body, design: .default)
+            case .utility:
+                return .system(size: 12, weight: .medium, design: .monospaced)
+            case .caption:
+                return .system(.caption, design: .monospaced)
+            }
+        }
+        let size = scaled(baseSize(role), scale: scale)
         switch role {
         case .display:
-            .system(size: 30, weight: .semibold, design: .default)
+            return .system(size: size, weight: .semibold, design: .default)
         case .title:
-            .system(.title2, design: .default).weight(.semibold)
+            return .system(size: size, weight: .semibold, design: .default)
         case .body:
-            .system(.body, design: .default)
+            return .system(size: size, design: .default)
         case .utility:
-            .system(size: 12, weight: .medium, design: .monospaced)
+            return .system(size: size, weight: .medium, design: .monospaced)
         case .caption:
-            .system(.caption, design: .monospaced)
+            return .system(size: size, design: .monospaced)
         }
+    }
+
+    /// A fixed measurement -- an artwork tile, a symbol well -- carried up with
+    /// the text so an enlarged row does not draw big words beside a small
+    /// picture. Rounded, because a half-pixel frame blurs the edge it draws.
+    public static func scaled(_ base: CGFloat, scale: TextScale) -> CGFloat {
+        (base * scale.multiplier).rounded()
+    }
+
+    /// What the two semantic roles actually measure on this platform. The
+    /// display and utility roles were always literal sizes and stay literal.
+    static func baseSize(_ role: TypographyRole) -> CGFloat {
+        switch role {
+        case .display: 30
+        case .utility: 12
+        case .title: platformSize(.title2, fallback: 17)
+        case .body: platformSize(.body, fallback: 13)
+        case .caption: platformSize(.caption, fallback: 10)
+        }
+    }
+
+    /// The roles this app names, mapped to the styles the platform names.
+    enum PlatformTextStyle { case title2, body, caption }
+
+    private static func platformSize(_ style: PlatformTextStyle, fallback: CGFloat) -> CGFloat {
+#if canImport(AppKit)
+        let mapped: NSFont.TextStyle = switch style {
+        case .title2: .title2
+        case .body: .body
+        case .caption: .caption1
+        }
+        return NSFont.preferredFont(forTextStyle: mapped).pointSize
+#elseif canImport(UIKit)
+        let mapped: UIFont.TextStyle = switch style {
+        case .title2: .title2
+        case .body: .body
+        case .caption: .caption1
+        }
+        return UIFont.preferredFont(forTextStyle: mapped).pointSize
+#else
+        return fallback
+#endif
     }
 
     private static func relativeLuminance(_ hex: UInt32) -> Double {
@@ -115,6 +227,57 @@ public enum WiltedTheme {
                 : pow((component + 0.055) / 1.055, 2.4)
         }
         return 0.2126 * components[0] + 0.7152 * components[1] + 0.0722 * components[2]
+    }
+}
+
+/// The app's chosen text scale, read by `wiltedFont` and by the few fixed
+/// measurements that have to keep pace with it. It defaults to `.standard`,
+/// so a surface that never sets it -- the iPhone listener, which already has
+/// the system's own Dynamic Type -- is unchanged by any of this.
+private struct WiltedTextScaleKey: EnvironmentKey {
+    static let defaultValue: WiltedTheme.TextScale = .standard
+}
+
+public extension EnvironmentValues {
+    var wiltedTextScale: WiltedTheme.TextScale {
+        get { self[WiltedTextScaleKey.self] }
+        set { self[WiltedTextScaleKey.self] = newValue }
+    }
+}
+
+private struct WiltedFontModifier: ViewModifier {
+    @Environment(\.wiltedTextScale) private var scale
+    let role: WiltedTheme.TypographyRole
+
+    func body(content: Content) -> some View {
+        content.font(WiltedTheme.font(role, scale: scale))
+    }
+}
+
+private struct WiltedScaledSquare: ViewModifier {
+    @Environment(\.wiltedTextScale) private var scale
+    let base: CGFloat
+
+    func body(content: Content) -> some View {
+        let side = WiltedTheme.scaled(base, scale: scale)
+        return content.frame(width: side, height: side)
+    }
+}
+
+public extension View {
+    /// A square well -- artwork, a transport glyph -- that grows with the text
+    /// around it. A fixed frame would clip a symbol once the font moved.
+    func wiltedSquare(_ base: CGFloat) -> some View {
+        modifier(WiltedScaledSquare(base: base))
+    }
+}
+
+public extension View {
+    /// `.font(WiltedTheme.font(role))` that honours the reader's chosen scale.
+    /// Every typographic site in both apps goes through this rather than
+    /// setting a font directly, so there is one place the scale can miss.
+    func wiltedFont(_ role: WiltedTheme.TypographyRole) -> some View {
+        modifier(WiltedFontModifier(role: role))
     }
 }
 

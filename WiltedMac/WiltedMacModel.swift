@@ -738,6 +738,7 @@ final class WiltedMacModel {
     static let backwardSkipSeconds: Double = 15
     static let forwardSkipSeconds: Double = 30
     static let automationSettingsPreferenceKey = "wilted.automation.settings"
+    static let textScalePreferenceKey = "wilted.appearance.textScale"
     /// When automation last completed a refresh.
     ///
     /// Kept in preferences rather than the store because losing it costs one
@@ -747,6 +748,13 @@ final class WiltedMacModel {
     private let preferences: UserDefaults
     /// Automation reads this one validated value, never individual preference keys.
     private(set) var automationSettings = WiltedAutomationSettings.defaults
+    /// How much bigger than the system's own text the window draws itself.
+    ///
+    /// The Mac has no Dynamic Type to inherit, so the app carries this and the
+    /// root hands it to every surface through the environment. `.large` is the
+    /// default because 13pt is the system's body size and this is a window
+    /// read across a room as often as at a desk.
+    private(set) var textScale: WiltedTheme.TextScale = .large
     /// What automation is doing, so Settings can show it and a listener can stop it.
     private(set) var automationStatus: WiltedAutomationStatus = .idle
     var selectedNavigation: WiltedMacNavigation = .library
@@ -936,6 +944,7 @@ final class WiltedMacModel {
             playbackRate = Self.clampPlaybackRate(self.preferences.double(forKey: Self.playbackRatePreferenceKey))
         }
         automationSettings = Self.loadAutomationSettings(from: self.preferences)
+        textScale = Self.loadTextScale(from: self.preferences)
 #if canImport(WiltedProducer)
         // Fixture launches build their controller above, before the stored
         // rate is known; production builds it later, in
@@ -993,6 +1002,20 @@ final class WiltedMacModel {
         guard settings.isValid, let data = try? JSONEncoder().encode(settings) else { return }
         automationSettings = settings
         preferences.set(data, forKey: Self.automationSettingsPreferenceKey)
+    }
+
+    func setTextScale(_ scale: WiltedTheme.TextScale) {
+        textScale = scale
+        preferences.set(scale.rawValue, forKey: Self.textScalePreferenceKey)
+    }
+
+    /// An absent or unrecognised value takes the default rather than the
+    /// smallest step, so a preference written by a later version that named a
+    /// step this one does not know does not silently shrink the window.
+    static func loadTextScale(from preferences: UserDefaults) -> WiltedTheme.TextScale {
+        guard let raw = preferences.string(forKey: textScalePreferenceKey),
+              let scale = WiltedTheme.TextScale(rawValue: raw) else { return .large }
+        return scale
     }
 
     private static func loadAutomationSettings(from preferences: UserDefaults) -> WiltedAutomationSettings {

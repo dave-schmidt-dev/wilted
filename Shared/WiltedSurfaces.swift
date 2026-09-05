@@ -89,11 +89,11 @@ public struct WiltedSettingsRow: View {
     public var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: WiltedTheme.Spacing.medium) {
             Text(label)
-                .font(WiltedTheme.font(.body))
+                .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             Spacer(minLength: WiltedTheme.Spacing.large)
             Text(value)
-                .font(WiltedTheme.font(.utility))
+                .wiltedFont(.utility)
                 .foregroundStyle(tone.color(colorScheme))
                 .multilineTextAlignment(.trailing)
         }
@@ -127,7 +127,7 @@ public struct WiltedAccountRecoveryNotice: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
             Text(WiltedScreenCopy.useCurrentAccountDetail)
-                .font(WiltedTheme.font(.utility))
+                .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
             Button(WiltedScreenCopy.useCurrentAccount, action: action)
@@ -173,7 +173,7 @@ public struct WiltedTranscriptSection: View {
             if isReadable, let text {
                 DisclosureGroup(title) {
                     Text(text)
-                        .font(WiltedTheme.font(.body))
+                        .wiltedFont(.body)
                         .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                         .textSelection(.enabled)
                         .padding(.top, WiltedTheme.Spacing.small)
@@ -181,7 +181,7 @@ public struct WiltedTranscriptSection: View {
                 .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
             } else {
                 Label(unavailableLabel, systemImage: "doc.text.magnifyingglass")
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             }
         }
@@ -317,11 +317,11 @@ public struct WiltedSyncedTranscriptView: View {
         Button { onSelect(cue) } label: {
             HStack(alignment: .firstTextBaseline, spacing: WiltedTheme.Spacing.small) {
                 Text(cue.stamp)
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .monospacedDigit()
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 Text(cue.text)
-                    .font(WiltedTheme.font(.body))
+                    .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(isActive ? .primaryText : .secondaryText, scheme: colorScheme))
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -347,11 +347,11 @@ public struct WiltedSyncedTranscriptView: View {
     @ViewBuilder private func removedLine(_ marker: WiltedTranscriptMarkerLine) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: WiltedTheme.Spacing.small) {
             Text(marker.stamp)
-                .font(WiltedTheme.font(.utility))
+                .wiltedFont(.utility)
                 .monospacedDigit()
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             Text(marker.text)
-                .font(WiltedTheme.font(.utility))
+                .wiltedFont(.utility)
                 .italic()
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -394,7 +394,7 @@ public struct WiltedTranscriptPanel: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
             Text(title)
-                .font(WiltedTheme.font(.title))
+                .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
 
             Divider()
@@ -403,12 +403,12 @@ public struct WiltedTranscriptPanel: View {
                 Group {
                     if isReadable, let text {
                         Text(text)
-                            .font(WiltedTheme.font(.body))
+                            .wiltedFont(.body)
                             .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                             .textSelection(.enabled)
                     } else {
                         Label(unavailableLabel, systemImage: "doc.text.magnifyingglass")
-                            .font(WiltedTheme.font(.utility))
+                            .wiltedFont(.utility)
                             .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     }
                 }
@@ -443,7 +443,7 @@ public struct WiltedSettingsCard<Content: View>: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             Text(title)
-                .font(WiltedTheme.font(.title))
+                .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             content
         }

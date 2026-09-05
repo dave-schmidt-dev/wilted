@@ -103,6 +103,9 @@ struct WiltedMacRootView: View {
             }
         }
         .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+        // One place the chosen size enters the window. Every typographic
+        // site reads it back out through `wiltedFont`.
+        .environment(\.wiltedTextScale, model.textScale)
         .toolbar { wordmark }
         // Three names for the same thing sat in one toolbar: the mark, the
         // window title beside it, and the destination heading below. macOS 26
@@ -119,7 +122,7 @@ struct WiltedMacRootView: View {
             ProgressView("Opening and updating your larder…")
                 .accessibilityLabel("Opening and updating your larder")
             Text("Your saved library stays in place while Wilted checks its format.")
-                .font(WiltedTheme.font(.body))
+                .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -131,23 +134,23 @@ struct WiltedMacRootView: View {
     private func startupRecovery(_ failure: WiltedMacStartupFailure) -> some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             Label("Your larder needs attention", systemImage: "exclamationmark.triangle")
-                .font(WiltedTheme.font(.display))
+                .wiltedFont(.display)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             Text(failure.message)
-                .font(WiltedTheme.font(.body))
+                .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             if let detail = failure.detail {
                 Text(detail)
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .textSelection(.enabled)
                     .accessibilityIdentifier("wilted-mac-startup-error-detail")
             }
             if let retainedURL = failure.retainedV5StoreURL {
                 Text("A retained V5 recovery copy is available at:")
-                    .font(WiltedTheme.font(.body))
+                    .wiltedFont(.body)
                 Text(retainedURL.path)
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .textSelection(.enabled)
                     .accessibilityIdentifier("wilted-mac-retained-v5-location")
                 Button("Show Recovery Copy in Finder") {
@@ -162,7 +165,7 @@ struct WiltedMacRootView: View {
                 .accessibilityIdentifier("wilted-mac-startup-retry")
             } else {
                 Text("Retry limit reached. Keep the recovery copy and relaunch Wilted before trying again.")
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             }
         }
@@ -237,7 +240,7 @@ private struct WiltedMacDestination<Content: View>: View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xLarge) {
                 Text(title)
-                    .font(WiltedTheme.font(.display))
+                    .wiltedFont(.display)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 content
             }
@@ -290,7 +293,7 @@ private struct WiltedMacLibraryView: View {
                     // add box and the items.
                     HStack(spacing: WiltedTheme.Spacing.medium) {
                         Text("Saved articles and episodes")
-                            .font(WiltedTheme.font(.title))
+                            .wiltedFont(.title)
                             .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Picker("Order", selection: $model.libraryOrder) {
@@ -341,10 +344,10 @@ private struct WiltedMacLibraryView: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             Text(WiltedScreenCopy.addLinkTitle)
-                .font(WiltedTheme.font(.title))
+                .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             Text(WiltedScreenCopy.addLinkDetail)
-                .font(WiltedTheme.font(.body))
+                .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: WiltedTheme.Spacing.medium) {
@@ -357,7 +360,7 @@ private struct WiltedMacLibraryView: View {
             }
             if let status = model.linkDraftStatus {
                 Text(status)
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("wilted-link-status")
@@ -392,7 +395,7 @@ private struct WiltedMacAdvertisedFeedOffer: View {
     var body: some View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
             Text("That page publishes a feed at \(feedURL.host ?? feedURL.absoluteString).")
-                .font(WiltedTheme.font(.utility))
+                .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -437,10 +440,10 @@ private struct WiltedMacFeedsView: View {
     private var subscribeComposer: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             Text(WiltedScreenCopy.subscribeToPodcast)
-                .font(WiltedTheme.font(.title))
+                .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             Text(WiltedScreenCopy.subscribeToPodcastDetail)
-                .font(WiltedTheme.font(.body))
+                .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: WiltedTheme.Spacing.medium) {
@@ -462,7 +465,7 @@ private struct WiltedMacFeedsView: View {
             }
             if let status = model.podcastFeedDraftStatus {
                 Text(status)
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("wilted-podcast-subscribe-status")
@@ -485,7 +488,7 @@ private struct WiltedMacFeedsView: View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
             // Not "Podcast feeds" again: that is the page's own heading now.
             Text("Subscriptions")
-                .font(WiltedTheme.font(.title))
+                .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 .frame(maxWidth: .infinity, alignment: .leading)
             if model.isRefreshingPodcasts {
@@ -507,7 +510,7 @@ private struct WiltedMacFeedsView: View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             refreshHeader
             Text(WiltedScreenCopy.feedsPolicy)
-                .font(WiltedTheme.font(.body))
+                .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("wilted-podcast-feeds-policy")
@@ -515,13 +518,13 @@ private struct WiltedMacFeedsView: View {
                 Text(model.withheldPodcastEpisodeCount == 1
                      ? "1 older episode stayed in its feed."
                      : "\(model.withheldPodcastEpisodeCount) older episodes stayed in their feeds.")
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-podcast-feeds-withheld")
             }
             if model.subscriptions.isEmpty {
                 Text(WiltedScreenCopy.feedsEmptyDetail)
-                    .font(WiltedTheme.font(.body))
+                    .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-podcast-feeds-empty")
             } else {
@@ -535,7 +538,7 @@ private struct WiltedMacFeedsView: View {
             if !model.dismissedEpisodes.isEmpty {
                 Divider()
                 Text("Removed")
-                    .font(WiltedTheme.font(.title))
+                    .wiltedFont(.title)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-podcast-removed-title")
                 // Deliberately carries no accessibility modifiers, exactly like
@@ -581,15 +584,15 @@ private struct WiltedMacFeedsView: View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                 Text(subscription.title)
-                    .font(WiltedTheme.font(.body))
+                    .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 Text(subscription.feedURL.host ?? subscription.feedURL.absoluteString)
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(Self.feedCountSummary(subscription))
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-podcast-feed-count-\(subscription.id)")
             }
@@ -622,14 +625,14 @@ private struct WiltedMacFeedsView: View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                 Text(dismissal.title)
-                    .font(WiltedTheme.font(.body))
+                    .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 Text(dismissal.feedTitle ?? "Feed unavailable")
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 if dismissal.hasPreparationHistory {
                     Text("Prep history available")
-                        .font(WiltedTheme.font(.utility))
+                        .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 }
             }
@@ -656,7 +659,7 @@ private struct WiltedMacPodcastOperationMessage: View {
     var body: some View {
         if let message = model.podcastOperationMessage {
             Text(message)
-                .font(WiltedTheme.font(.utility))
+                .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("wilted-podcast-operation-message")
@@ -690,7 +693,7 @@ struct WiltedMacLinkField: View {
     var body: some View {
         TextField(placeholder, text: $text)
             .textFieldStyle(.plain)
-            .font(WiltedTheme.font(.body))
+            .wiltedFont(.body)
             .padding(.horizontal, WiltedTheme.Spacing.medium)
             .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
             .background(
@@ -742,7 +745,7 @@ private struct WiltedMacPreparationView: View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             HStack {
                 Text(preparation.phase.title)
-                    .font(WiltedTheme.font(.title))
+                    .wiltedFont(.title)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 Spacer()
                 if preparation.cancellable {
@@ -761,7 +764,7 @@ private struct WiltedMacPreparationView: View {
                     .accessibilityIdentifier("wilted-preparation-progress")
             }
             Text(preparation.detail)
-                .font(WiltedTheme.font(.utility))
+                .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .accessibilityIdentifier("wilted-preparation-detail")
         }
@@ -782,7 +785,7 @@ private struct WiltedMacArticleRow: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(article.title)
-                    .font(WiltedTheme.font(.body))
+                    .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -790,7 +793,7 @@ private struct WiltedMacArticleRow: View {
                 // card each meant four articles filled the window; a library
                 // is a list to scan, not a page to read.
                 Text(metaLine)
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(
                         article.isReady
                             ? WiltedTheme.color(.secondaryText, scheme: colorScheme)
@@ -853,19 +856,19 @@ private struct WiltedMacEpisodeRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 title
                 Text("\(episode.feedTitle) · \(relativeAge)")
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .lineLimit(1)
                 Text(episode.summary)
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .lineLimit(2)
                 Text(progressLabel)
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 if let preparation = episode.preparationState.label {
                     Text(preparation)
-                        .font(WiltedTheme.font(.utility))
+                        .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-episode-preparation-\(episode.id)")
                 }
@@ -945,7 +948,7 @@ private struct WiltedMacEpisodeRow: View {
 
     private var titleText: some View {
         Text(episode.title)
-            .font(WiltedTheme.font(.body))
+            .wiltedFont(.body)
             .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             .lineLimit(1)
     }
@@ -953,7 +956,7 @@ private struct WiltedMacEpisodeRow: View {
     private func notesPopover(_ notes: String) -> some View {
         ScrollView {
             Text(WiltedShowNotes.linked(notes))
-                .font(WiltedTheme.font(.body))
+                .wiltedFont(.body)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -973,7 +976,7 @@ private struct WiltedMacEpisodeRow: View {
                 else if phase.error != nil { fallbackArtwork }
                 else { ProgressView().accessibilityLabel("Loading artwork for \(episode.title)") }
             }
-            .frame(width: 56, height: 56).clipped()
+            .wiltedSquare(56).clipped()
             .accessibilityLabel("Artwork for \(episode.title)")
         } else { fallbackArtwork }
     }
@@ -1087,7 +1090,7 @@ private struct WiltedMacProcessorView: View {
         WiltedMacDestination(title: WiltedScreenCopy.processor, identifier: "wilted-mac-processor-detail") {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
                 Text("Active")
-                    .font(WiltedTheme.font(.title))
+                    .wiltedFont(.title)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 if let preparation = model.preparation, !preparation.phase.isTerminal {
                     WiltedMacPreparationView(model: model, preparation: preparation)
@@ -1097,7 +1100,7 @@ private struct WiltedMacProcessorView: View {
                 }
                 if !hasActiveArticle && activeRuns.isEmpty {
                     Text("Nothing is preparing. Add an article in Larder to start a run.")
-                        .font(WiltedTheme.font(.body))
+                        .wiltedFont(.body)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-processor-idle")
                 }
@@ -1106,16 +1109,16 @@ private struct WiltedMacProcessorView: View {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
                 HStack {
                     Text("Waiting")
-                        .font(WiltedTheme.font(.title))
+                        .wiltedFont(.title)
                         .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     Spacer()
                     Text(waitingCountLabel)
-                        .font(WiltedTheme.font(.utility))
+                        .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 }
                 if model.preparationQueue.isEmpty {
                     Text("Nothing is waiting. One preparation runs at a time; the rest queue here.")
-                        .font(WiltedTheme.font(.body))
+                        .wiltedFont(.body)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-processor-waiting-empty")
                 } else {
@@ -1132,16 +1135,16 @@ private struct WiltedMacProcessorView: View {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
                 HStack {
                     Text("Recent runs")
-                        .font(WiltedTheme.font(.title))
+                        .wiltedFont(.title)
                         .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     Spacer()
                     Text(runCountLabel)
-                        .font(WiltedTheme.font(.utility))
+                        .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 }
                 if recentRuns.isEmpty {
                     Text("No preparation has been recorded on this Mac yet.")
-                        .font(WiltedTheme.font(.body))
+                        .wiltedFont(.body)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-processor-empty")
                 } else {
@@ -1155,7 +1158,7 @@ private struct WiltedMacProcessorView: View {
                 }
                 if let message = model.processorOperationMessage {
                     Text(message)
-                        .font(WiltedTheme.font(.utility))
+                        .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("wilted-processor-operation-message")
@@ -1189,18 +1192,18 @@ private struct WiltedMacProcessorView: View {
     private func waitingRow(_ waiting: WiltedMacWaitingPreparation, position: Int) -> some View {
         HStack(alignment: .top, spacing: WiltedTheme.Spacing.medium) {
             Text("\(position)")
-                .font(WiltedTheme.font(.title))
+                .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .frame(minWidth: 20, alignment: .trailing)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                 Text(waiting.title)
-                    .font(WiltedTheme.font(.body))
+                    .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     .lineLimit(2)
                     .truncationMode(.tail)
                 Text(waiting.source)
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1220,12 +1223,12 @@ private struct WiltedMacProcessorView: View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             HStack(alignment: .top, spacing: WiltedTheme.Spacing.medium) {
                 Image(WiltedSymbol.processor)
-                    .font(WiltedTheme.font(.title))
+                    .wiltedFont(.title)
                     .foregroundStyle(WiltedStatusTone.active.color(colorScheme))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                     Text(run.title)
-                        .font(WiltedTheme.font(.title))
+                        .wiltedFont(.title)
                         .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                         .lineLimit(2)
                         .truncationMode(.tail)
@@ -1242,7 +1245,7 @@ private struct WiltedMacProcessorView: View {
                     .tint(WiltedTheme.color(.progress, scheme: colorScheme))
             }
             Text(run.narrative)
-                .font(WiltedTheme.font(.utility))
+                .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .accessibilityIdentifier("wilted-processor-narrative-\(run.id)")
             runActions(run, canStop: true)
@@ -1259,14 +1262,14 @@ private struct WiltedMacProcessorView: View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                 Text(run.title)
-                    .font(WiltedTheme.font(.body))
+                    .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     .lineLimit(2)
                     .truncationMode(.tail)
                 runMetadata(run)
             }
             Text(run.narrative)
-                .font(WiltedTheme.font(.utility))
+                .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .lineLimit(openLogs.contains(run.id) ? nil : 2)
             if let timeline = run.timeline, !timeline.removed.isEmpty {
@@ -1289,7 +1292,7 @@ private struct WiltedMacProcessorView: View {
     private func runMetadata(_ run: WiltedMacProcessorRun) -> some View {
         HStack(spacing: WiltedTheme.Spacing.small) {
             Text(run.source)
-                .font(WiltedTheme.font(.utility))
+                .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -1297,11 +1300,11 @@ private struct WiltedMacProcessorView: View {
             // The word always carries the outcome; the tone only emphasises it
             // (W-INV-010).
             Text(run.outcomeLabel)
-                .font(WiltedTheme.font(.utility))
+                .wiltedFont(.utility)
                 .foregroundStyle(run.tone.color(colorScheme))
                 .lineLimit(1)
             Text(Self.stamp.string(from: run.updatedAt))
-                .font(WiltedTheme.font(.utility))
+                .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .lineLimit(1)
         }
@@ -1333,11 +1336,11 @@ private struct WiltedMacProcessorView: View {
                                  for run: WiltedMacProcessorRun) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("Removed spans")
-                .font(WiltedTheme.font(.utility))
+                .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             ForEach(Array(timeline.removed.enumerated()), id: \.offset) { index, removed in
                 Text(WiltedMacModel.removedSpanLine(removed, in: timeline))
-                    .font(WiltedTheme.font(.utility).monospacedDigit())
+                    .wiltedFont(.utility).monospacedDigit()
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .textSelection(.enabled)
                     .accessibilityIdentifier("wilted-processor-removed-\(run.id)-\(index)")
@@ -1364,16 +1367,16 @@ private struct WiltedMacProcessorView: View {
             LazyVStack(alignment: .leading, spacing: 2) {
                 if run.events.isEmpty {
                     Text("Nothing journalled yet.")
-                        .font(WiltedTheme.font(.utility).monospaced())
+                        .wiltedFont(.utility).monospaced()
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 }
                 ForEach(run.events) { event in
                     HStack(alignment: .top, spacing: WiltedTheme.Spacing.small) {
                         Text(Self.clock.string(from: event.at))
-                            .font(WiltedTheme.font(.utility).monospaced())
+                            .wiltedFont(.utility).monospaced()
                             .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         Text(event.line)
-                            .font(WiltedTheme.font(.utility).monospaced())
+                            .wiltedFont(.utility).monospaced()
                             .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                             .textSelection(.enabled)
                             .accessibilityIdentifier("wilted-processor-event-\(event.id)")
@@ -1434,10 +1437,10 @@ struct WiltedMacCompactPlayer: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .lineLimit(1)
-                        .font(WiltedTheme.font(.body))
+                        .wiltedFont(.body)
                     Text(detail)
                         .lineLimit(1)
-                        .font(WiltedTheme.font(.utility))
+                        .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityLabel(detail)
                 }
@@ -1526,7 +1529,7 @@ struct WiltedMacCompactPlayer: View {
                 .accessibilityIdentifier("wilted-player-scrubber")
 
                 Text(model.playbackProgressLabel)
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
 
                 expansionButton("Transcript", expansion: .transcript, id: "wilted-player-transcript")
                 // Show notes belong to episodes; an article has its own text.
@@ -1571,7 +1574,7 @@ struct WiltedMacCompactPlayer: View {
 
             if let status = model.playbackOperationStatus {
                 Text(status)
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .accessibilityIdentifier("wilted-player-operation-status")
             }
             } else {
@@ -1603,7 +1606,7 @@ struct WiltedMacCompactPlayer: View {
 
     private var playbackStatus: some View {
         Text(model.playbackStatusMessage)
-            .font(WiltedTheme.font(.utility))
+            .wiltedFont(.utility)
             .foregroundStyle(model.playbackStatusTone.color(colorScheme))
             .accessibilityIdentifier("wilted-player-status")
     }
@@ -1611,19 +1614,19 @@ struct WiltedMacCompactPlayer: View {
     private var minimizedIdlePlayer: some View {
         HStack(spacing: WiltedTheme.Spacing.small) {
             Image(systemName: "play.circle")
-                .font(WiltedTheme.font(.title))
+                .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Nothing is playing")
-                    .font(WiltedTheme.font(.body))
+                    .wiltedFont(.body)
                 Text("Choose an episode or article from Larder to start playback.")
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Text("Minimized")
-                .font(WiltedTheme.font(.utility))
+                .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
         }
         .accessibilityElement(children: .combine)
@@ -1695,7 +1698,7 @@ struct WiltedMacCompactPlayer: View {
         if model.hasCurrentPlayback, transcript.isSynchronized {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                 Text(transcript.disclosureTitle)
-                    .font(WiltedTheme.font(.utility))
+                    .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-now-playing-transcript")
                 WiltedSyncedTranscriptView(
@@ -1720,7 +1723,7 @@ struct WiltedMacCompactPlayer: View {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                 if !model.hasCurrentPlayback {
                     Text(WiltedScreenCopy.nowPlayingEmptyDetailProducer)
-                        .font(WiltedTheme.font(.body))
+                        .wiltedFont(.body)
                 } else {
                     WiltedTranscriptSection(
                         isReadable: transcript.isReadable,
@@ -1737,7 +1740,7 @@ struct WiltedMacCompactPlayer: View {
                         VStack(alignment: .leading, spacing: 2) {
                             ForEach(model.currentRemovedSpans) { span in
                                 Text(span.summary)
-                                    .font(WiltedTheme.font(.utility))
+                                    .wiltedFont(.utility)
                                     .italic()
                                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                                     .accessibilityIdentifier("wilted-now-playing-removed-\(span.id)")
@@ -1757,7 +1760,7 @@ struct WiltedMacCompactPlayer: View {
                     }
                     if let status = model.transcriptBackfillStatus {
                         Text(status)
-                            .font(WiltedTheme.font(.utility))
+                            .wiltedFont(.utility)
                             .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityIdentifier("wilted-now-playing-transcript-status")
@@ -1772,16 +1775,16 @@ struct WiltedMacCompactPlayer: View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                 Text("Show Notes")
-                    .font(WiltedTheme.font(.title))
+                    .wiltedFont(.title)
                 if let notes = model.currentEpisode?.notes {
                     Text(WiltedShowNotes.linked(notes))
-                        .font(WiltedTheme.font(.body))
+                        .wiltedFont(.body)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("wilted-player-notes-text")
                 } else {
                     Text("This episode's feed did not include show notes.")
-                        .font(WiltedTheme.font(.body))
+                        .wiltedFont(.body)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-player-notes-unavailable")
                 }
@@ -1796,10 +1799,10 @@ struct WiltedMacCompactPlayer: View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                 Text("Up Next")
-                    .font(WiltedTheme.font(.title))
+                    .wiltedFont(.title)
                 if model.podcastQueueIDs.isEmpty {
                     Text("Nothing queued")
-                        .font(WiltedTheme.font(.body))
+                        .wiltedFont(.body)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 } else {
                     ForEach(Array(model.podcastQueueIDs.enumerated()), id: \.element) { index, episodeID in
@@ -1849,7 +1852,7 @@ struct WiltedMacCompactPlayer: View {
             } placeholder: {
                 fallbackArtwork
             }
-            .frame(width: 44, height: 44)
+            .wiltedSquare(44)
             .clipped()
         } else {
             fallbackArtwork
@@ -1910,7 +1913,7 @@ struct WiltedMacCompactPlayer: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .frame(width: 28, height: 28)
+                .wiltedSquare(28)
         }
         .buttonStyle(.borderless)
         .accessibilityLabel(label)
@@ -1929,8 +1932,34 @@ private struct WiltedMacSettingsView: View {
 
     var body: some View {
         WiltedMacDestination(title: WiltedScreenCopy.settings, identifier: "wilted-mac-settings") {
+            appearanceCard
             syncCard
         }
+    }
+
+    /// The Mac inherits no text size from the system the way iPhone does, so
+    /// this is the only place the reader can change it.
+    private var appearanceCard: some View {
+        WiltedSettingsCard(title: "Appearance") {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                Picker("Text and icon size", selection: Binding(
+                    get: { model.textScale },
+                    set: { model.setTextScale($0) }
+                )) {
+                    ForEach(WiltedTheme.TextScale.allCases) { scale in
+                        Text(scale.label).tag(scale)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("wilted-text-scale")
+                Text("Applies to every screen. Icons and artwork grow with the text.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-appearance-controls")
     }
 
     private var syncCard: some View {

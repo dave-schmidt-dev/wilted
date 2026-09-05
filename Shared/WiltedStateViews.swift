@@ -22,17 +22,17 @@ public struct WiltedStateCard: View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             HStack(alignment: .top, spacing: WiltedTheme.Spacing.medium) {
                 Image(symbol: fixture.state.symbolName)
-                    .font(WiltedTheme.font(.title))
+                    .wiltedFont(.title)
                     .foregroundStyle(tint)
                     .frame(width: WiltedTheme.Spacing.minimumTouchTarget, height: WiltedTheme.Spacing.minimumTouchTarget)
                     .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                     Text(fixture.state.title)
-                        .font(WiltedTheme.font(.title))
+                        .wiltedFont(.title)
                         .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     Text(fixture.state.detail)
-                        .font(WiltedTheme.font(.body))
+                        .wiltedFont(.body)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -45,7 +45,7 @@ public struct WiltedStateCard: View {
                         .accessibilityLabel("Preparation progress")
                         .accessibilityValue(stage.title)
                     Text(stage.title.uppercased())
-                        .font(WiltedTheme.font(.utility))
+                        .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityHidden(true)
                 }
@@ -105,7 +105,7 @@ public struct WiltedLibraryShell: View {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.section) {
                 if fixture.state == .emptyLibrary {
                     Text(WiltedScreenCopy.noArticles)
-                        .font(WiltedTheme.font(.body))
+                        .wiltedFont(.body)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 }
                 WiltedStateCard(fixture: fixture)
@@ -139,10 +139,10 @@ public struct WiltedDownloadsShell: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
             Text(WiltedScreenCopy.downloads)
-                .font(WiltedTheme.font(.display))
+                .wiltedFont(.display)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             Text(WiltedScreenCopy.noDownloads)
-                .font(WiltedTheme.font(.body))
+                .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .accessibilityIdentifier(WiltedScreenCopy.downloadsEmptyIdentifier)
             Spacer()
@@ -173,14 +173,14 @@ public struct WiltedNowPlayingEmptyView: View {
     public var body: some View {
         VStack(spacing: WiltedTheme.Spacing.large) {
             Image(systemName: "waveform")
-                .font(WiltedTheme.font(.display))
+                .wiltedFont(.display)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .accessibilityHidden(true)
             Text(WiltedScreenCopy.nowPlayingEmpty)
-                .font(WiltedTheme.font(.title))
+                .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             Text(detail)
-                .font(WiltedTheme.font(.body))
+                .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -202,7 +202,7 @@ public struct WiltedSettingsShell: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
             Text(WiltedScreenCopy.settings)
-                .font(WiltedTheme.font(.display))
+                .wiltedFont(.display)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             Spacer()
         }
@@ -226,11 +226,11 @@ public struct WiltedPlayerShell: View {
         VStack(spacing: WiltedTheme.Spacing.large) {
             WiltedMark(size: 64, color: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
             Text(fixture.articleTitle)
-                .font(WiltedTheme.font(.title))
+                .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 .multilineTextAlignment(.center)
             Text(fixture.sourceLabel)
-                .font(WiltedTheme.font(.utility))
+                .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             HStack(spacing: WiltedTheme.Spacing.medium) {
                 playerButton("gobackward.15", label: "Rewind 15 seconds")
