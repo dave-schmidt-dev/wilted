@@ -807,13 +807,21 @@ final class WiltedVisualSystemTests: XCTestCase {
     /// The Removed rows must reach the card with no accessibility container
     /// between them, because an intermediate one swallows them.
     ///
-    /// Two fixes were tried and neither worked. Marking the section
-    /// `.accessibilityElement(children: .contain)` made the section vend but
-    /// left its rows hoisted into it; adding a content shape to the row changed
-    /// nothing. The 2026-09-04 hierarchy snapshot settled it: the feed rows sit
-    /// directly inside the same card with no container between, and they vend
-    /// `wilted-podcast-feed-row-*` normally, while unselected and therefore
-    /// while their background is clear. The container was the only difference.
+    /// Two fixes were tried on the Feeds card and neither worked. Marking the
+    /// section `.accessibilityElement(children: .contain)` made the section
+    /// vend but left its rows hoisted into it; adding a content shape to the
+    /// row changed nothing. The 2026-09-04 hierarchy snapshot settled it: the
+    /// feed rows sit directly inside the same card with no container between,
+    /// and they vend `wilted-podcast-feed-row-*` normally. The container was
+    /// the only difference.
+    ///
+    /// On 2026-09-05 the section moved to a collapsed `DisclosureGroup` at the
+    /// top of the Larder. The same rule applies to the new shape: between the
+    /// rows and the card there is the disclosure's content stack, its label,
+    /// and the group's own modifiers, and none of them may claim to be an
+    /// accessibility element or carry an identifier. The one identifier in
+    /// that region is the title inside the label, a leaf, which the UI journey
+    /// clicks to expand the group.
     func testTheRemovedRowsReachTheCardWithNoAccessibilityContainerBetween() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
@@ -832,17 +840,20 @@ final class WiltedVisualSystemTests: XCTestCase {
         )
         XCTAssertTrue(source.contains("wilted-podcast-restore-\\(dismissal.id)"))
 
-        // Nothing between the rows and the enclosing card may claim to be an
-        // accessibility element. `wilted-podcast-removed` was exactly that.
+        // The section is the Larder's disclosure, and only that: the Feeds card
+        // no longer renders these rows.
+        XCTAssertEqual(source.components(separatedBy: "dismissedRow(dismissal)").count, 2,
+                       "the Removed rows render in exactly one place")
         let sectionStart = try XCTUnwrap(source.range(of: "dismissedRow(dismissal)")).upperBound
-        // Anchored forward from the rows. The operation message also renders on
-        // Larder, far above this section, so searching the whole file finds that
-        // one and inverts the range.
+        // Anchored forward from the rows to the card modifier that closes the
+        // disclosure group; everything in between is the path a row's
+        // identifier has to travel to reach the card.
         let sectionEnd = try XCTUnwrap(
-            source.range(of: "WiltedMacPodcastOperationMessage(model: model)",
-                         range: sectionStart..<source.endIndex)
+            source.range(of: ".wiltedCard(colorScheme)", range: sectionStart..<source.endIndex)
         ).lowerBound
         let between = source[sectionStart..<sectionEnd]
+            .replacingOccurrences(of: ".accessibilityIdentifier(\"wilted-podcast-removed-title\")", with: "")
+        XCTAssertTrue(between.contains("} label: {"), "the scanned region must span the disclosure's content and label")
         XCTAssertFalse(
             between.contains(".accessibilityElement("),
             "an accessibility container between the Removed rows and the card stops the rows vending"

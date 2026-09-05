@@ -134,9 +134,28 @@ PREROLL_RECOVERY_MINIMUM_SECONDS = 10.0
 # self-naming promoter an advertisement's voice, was tried and made things
 # strictly worse: Waveform did not move and Pop Culture Happy Hour went back to
 # losing its premise. That is the same backfire the note below records, so the
-# wording stays as it is. The remaining Waveform failure wants the structural
-# answer -- one question per passage, as the boundary question already asks --
-# and not another adjective.
+# wording stays as it is.
+#
+# On 2026-09-05 the structural answer was tried instead of another adjective:
+# one boolean question per passage inside the nominated opening, each passage
+# read on its own, instead of one confirmation reading the whole opening at
+# once. Measured against the corpus replay it was strictly worse, not better.
+# On Waveform, the nomination question itself nominated program ID 20 at
+# 105.600s, when the program actually starts at ID 5, 68.48s; asked one at a
+# time, every passage from 0 through 19 answered advertising, including the
+# programme's own short game passages 5 through 19 ("name five", "snarlax
+# whoa"), so the cut still ran to 105.6s and took 37.1s of programme with it.
+# On Pop Culture Happy Hour, passage 2 -- the episode's premise, wholly
+# programme -- answered advertising standing on its own, and the cut ran
+# 0-51.5s, taking 20.3s of programme: the same defect the whole-opening
+# confirmation exists to prevent. A passage judged on its own under an
+# advertising framing reads as advertising; the whole-opening scan stays
+# because it is the only shape that has kept Pop Culture Happy Hour's premise.
+# The nomination progress line added during that experiment is worth keeping
+# regardless: it showed Q1 itself over-nominating on Waveform, ID 20 at
+# 105.6s against a real start at ID 5, 68.48s, a second defect on the leading
+# edge that the confirmation's veto had been masking. The next move belongs
+# to the nomination question, not the confirmation.
 PREROLL_PROGRAM_START_PROMPT = """\
 The excerpt is the beginning of a podcast episode. Advertising is sometimes inserted before the
 program starts: a produced commercial, a trailer for another show, or a promotional spot voiced by
@@ -1790,6 +1809,7 @@ def recover_transcript_start_preroll(ads_module, backend, segments, detections):
     # advertising cue, because the insertion gap between them is the spot's
     # own music bed and leaving it behind is leaving the advertisement in.
     end_s = float(segments[program_start_id].start_s)
+    progress("ads.detect.preroll.nominated", f"program ID {program_start_id} at {end_s:.3f}s")
     if end_s < PREROLL_RECOVERY_MINIMUM_SECONDS:
         progress("ads.detect.preroll.skipped", f"the opening is only {end_s:.1f}s long")
         return detections

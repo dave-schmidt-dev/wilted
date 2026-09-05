@@ -2182,6 +2182,19 @@ final class WiltedMacModel {
     }
 
 #if canImport(WiltedProducer)
+    /// Clears the optimistic hide once the store confirms the episode is
+    /// restored, so the row can actually reappear this session.
+    ///
+    /// Reported 2026-09-05: skipping the Waveform episode, then restoring it
+    /// in the same session, left the store saying "Restored X to Larder."
+    /// while the row stayed off screen until the app relaunched. `removeEpisode`
+    /// inserts the id into `hiddenEpisodeIDs` immediately, ahead of the store
+    /// round-trip, and `libraryItems` filters on that set. The store-side
+    /// restore was working the whole time; nothing ever told the hide set the
+    /// row was no longer hidden. Both branches below -- the store reporting a
+    /// fresh restore, and the store reporting the episode was already
+    /// restored on an earlier attempt -- have to clear the id, because either
+    /// one means the store no longer considers the episode dismissed.
     private func restoreEpisode(
         _ dismissal: WiltedMacDismissedEpisode, episodeID: ItemID, store: LocalLibraryStore
     ) async {
@@ -2231,10 +2244,12 @@ final class WiltedMacModel {
         do {
             let result = try await store.restorePodcastEpisode(target, from: loadedMatch.episodes)
             guard result.restored else {
+                hiddenEpisodeIDs.remove(dismissal.id)
                 dismissedEpisodes = try await loadDismissedEpisodes(from: store)
                 podcastOperationMessage = "\(dismissal.title) was already restored."
                 return
             }
+            hiddenEpisodeIDs.remove(dismissal.id)
             let values = try await loadLibrary(from: store)
             articles = values.articles
             applyEpisodes(values.episodes)

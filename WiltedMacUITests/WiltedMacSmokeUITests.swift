@@ -289,12 +289,18 @@ final class WiltedMacSmokeUITests: XCTestCase {
             "Article behavior remains available after episode removal"
         )
 
-        app.descendants(matching: .any)["wilted-navigation-feeds"].click()
+        // Removed now lives at the top of the Larder itself, not on Podcast
+        // feeds: no navigation away from this destination. The disclosure is
+        // collapsed by default, so it has to be opened before its rows exist;
+        // its title sits in the disclosure label, and clicking it toggles it.
+        let removedTitle = app.descendants(matching: .any)["wilted-podcast-removed-title"]
+        XCTAssertTrue(removedTitle.waitForExistence(timeout: 5), "the Removed disclosure must appear in the Larder")
+        removedTitle.click()
         XCTAssertTrue(
             app.descendants(matching: .any).matching(
                 NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-removed-row-'")
             ).firstMatch.waitForExistence(timeout: 5),
-            "every durable dismissal must remain visible on Podcast feeds"
+            "every durable dismissal must remain visible at the top of the Larder"
         )
         XCTAssertTrue(
             app.buttons.matching(

@@ -1646,6 +1646,70 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertTrue(persistedDismissals.isEmpty)
     }
 
+    /// The reported bug (2026-09-05): skipping the Waveform episode, then
+    /// restoring it in the same session, left the store saying "Restored X to
+    /// Larder." while the row stayed off screen until relaunch. `removeEpisode`
+    /// hides the row through `hiddenEpisodeIDs` immediately, ahead of the
+    /// store round-trip that `restoreEpisode` waits on, and nothing cleared
+    /// that id when the store confirmed the restore. The fixture above
+    /// dismisses with `store.dismissPodcastEpisode` directly, which never
+    /// populates the set and so never reproduces this; this one dismisses
+    /// through the model, the way Skip actually does.
+    func testRestoringAnEpisodeSkippedThisSessionReturnsItToTheLarder() async throws {
+        let directory = temporaryDirectory("restore-same-session")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let libraryURL = directory.appendingPathComponent("library.sqlite")
+        let store = try LocalLibraryStore(url: libraryURL)
+        let feedURL = URL(string: "https://podcasts.example.test/waveform.xml")!
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let targetURL = URL(string: "https://cdn.example.test/waveform.mp3")!
+        let targetID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "wave", enclosureURL: targetURL)
+        let feed = try PodcastFeed(
+            itemID: feedID, canonicalURL: feedURL, title: "Waveform",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        )
+        let target = try PodcastEpisode(
+            itemID: targetID, feedID: feedID, feedURL: feedURL, rssGUID: "wave", title: "Wave episode",
+            publishedTime: Timestamp(Date(timeIntervalSince1970: 1_600_000_000)),
+            enclosureURL: targetURL, enclosureMediaType: "audio/mpeg",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_600_000_000))
+        )
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(
+            feedID: feedID, subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        ))
+        try await store.save(episode: target)
+        let xml = """
+        <rss><channel><title>Waveform</title>
+        <item><title>Wave episode</title><guid>wave</guid><pubDate>Sun, 13 Sep 2020 12:26:40 GMT</pubDate><enclosure url="https://cdn.example.test/waveform.mp3" type="audio/mpeg" /></item>
+        </channel></rss>
+        """
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            podcastFeedClient: PodcastFeedClient(
+                loader: FixedBodyLoader(body: Data(xml.utf8)), now: { Date(timeIntervalSince1970: 1_700_000_100) }
+            ), preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let episode = try XCTUnwrap(model.episodes.first { $0.id == targetID.rawValue })
+        XCTAssertTrue(model.libraryItems.contains { $0.id == episode.id })
+
+        model.removeEpisode(episode)
+        try await settle(model)
+        XCTAssertFalse(model.libraryItems.contains { $0.id == episode.id },
+                        "Skip must hide the row this session, not just once the store round-trip lands")
+
+        let dismissal = try XCTUnwrap(model.dismissedEpisodes.first { $0.id == episode.id })
+        model.restoreEpisode(dismissal)
+        await model.waitForPodcastOperations()
+
+        XCTAssertTrue(model.dismissedEpisodes.isEmpty)
+        XCTAssertTrue(model.libraryItems.contains { $0.id == episode.id },
+                       "Restoring a same-session dismissal must clear the in-memory hide, not just the store record")
+    }
+
     /// A legacy dismissal without a feed searches subscriptions sequentially;
     /// one broken feed does not prevent a later feed from restoring the item.
     func testFeedlessRestoreToleratesAnIndividualFeedFailure() async throws {

@@ -271,6 +271,7 @@ private struct WiltedMacDestination<Content: View>: View {
 private struct WiltedMacLibraryView: View {
     @Bindable private var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
+    @State private var showsRemoved = false
 
     init(model: WiltedMacModel) {
         _model = Bindable(model)
@@ -281,6 +282,16 @@ private struct WiltedMacLibraryView: View {
             addArticleControl
 
             WiltedMacPodcastOperationMessage(model: model)
+
+            // Moved here from the Feeds card (2026-09-05): skipped and
+            // finished episodes belong to the Larder, which is where a reader
+            // decides what to bring back, not to the feed list, which is
+            // about subscriptions. Collapsed by default so an empty-feeling
+            // Larder does not open with a list of things that are not there
+            // any more.
+            if !model.dismissedEpisodes.isEmpty {
+                removedDisclosure
+            }
 
             // Shown above the results rather than beside the field: the case
             // that needs it is a search whose visible list is still empty
@@ -444,6 +455,68 @@ private struct WiltedMacLibraryView: View {
     /// separate decision, so it is offered as an action rather than taken.
     private func advertisedFeedOffer(_ feedURL: URL) -> some View {
         WiltedMacAdvertisedFeedOffer(model: model, feedURL: feedURL, identifier: "wilted-advertised-feed")
+    }
+
+    /// Collapsed by default: what to skim is what is still in the Larder, not
+    /// what left it. A UI test expands it by clicking the title in the label,
+    /// `wilted-podcast-removed-title`; the group itself carries no identifier,
+    /// because on the Feeds card an identifier on the section made it an
+    /// implicit element that absorbed its rows (2026-09-04).
+    ///
+    /// The rows sit as direct children of the disclosure's content, with no
+    /// wrapping `VStack` accessibility modifiers, for the same reason: an
+    /// intermediate container between the card and a row is what stopped
+    /// `wilted-podcast-removed-row-*` from vending there. This placement has
+    /// not been checked against an accessibility hierarchy snapshot -- that UI
+    /// leg could not run in this session -- so treat the row identifiers here
+    /// as unverified until one runs.
+    private var removedDisclosure: some View {
+        DisclosureGroup(isExpanded: $showsRemoved) {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(model.dismissedEpisodes.enumerated()), id: \.element.id) { index, dismissal in
+                    if index > 0 { Divider() }
+                    dismissedRow(dismissal)
+                }
+            }
+            .padding(.top, WiltedTheme.Spacing.small)
+        } label: {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                Text("Removed \u{00B7} \(model.dismissedEpisodes.count)")
+                    .wiltedFont(.title)
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-podcast-removed-title")
+                Text("Skipped and finished episodes. Restore brings one back.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            }
+        }
+        .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+        .wiltedCard(colorScheme)
+    }
+
+    private func dismissedRow(_ dismissal: WiltedMacDismissedEpisode) -> some View {
+        HStack(spacing: WiltedTheme.Spacing.medium) {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                Text(dismissal.title)
+                    .wiltedFont(.body)
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                Text(dismissal.feedTitle ?? "Feed unavailable")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                if dismissal.hasPreparationHistory {
+                    Text("Prep history available")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Restore") { model.restoreEpisode(dismissal) }
+                .accessibilityLabel("Restore \(dismissal.title)")
+                .accessibilityIdentifier("wilted-podcast-restore-\(dismissal.id)")
+        }
+        .padding(.vertical, WiltedTheme.Spacing.small)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-podcast-removed-row-\(dismissal.id)")
     }
 }
 
@@ -618,27 +691,6 @@ private struct WiltedMacFeedsView: View {
                     }
                 }
             }
-            if !model.dismissedEpisodes.isEmpty {
-                Divider()
-                Text("Removed")
-                    .wiltedFont(.title)
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-podcast-removed-title")
-                // Deliberately carries no accessibility modifiers, exactly like
-                // the subscriptions stack above. An intermediate container
-                // between the card and the rows is what stopped
-                // `wilted-podcast-removed-row-*` from vending: the 2026-09-04
-                // hierarchy snapshot shows the section group holding the row's
-                // title, feed name, and Restore button as direct children, while
-                // the feed rows in the same card, with no container between them
-                // and the card, each vend their own group.
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(model.dismissedEpisodes.enumerated()), id: \.element.id) { index, dismissal in
-                        if index > 0 { Divider() }
-                        dismissedRow(dismissal)
-                    }
-                }
-            }
             WiltedMacPodcastOperationMessage(model: model)
         }
         .wiltedCard(colorScheme)
@@ -704,30 +756,6 @@ private struct WiltedMacFeedsView: View {
         .accessibilityIdentifier("wilted-podcast-feed-row-\(subscription.id)")
     }
 
-    private func dismissedRow(_ dismissal: WiltedMacDismissedEpisode) -> some View {
-        HStack(spacing: WiltedTheme.Spacing.medium) {
-            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                Text(dismissal.title)
-                    .wiltedFont(.body)
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                Text(dismissal.feedTitle ?? "Feed unavailable")
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                if dismissal.hasPreparationHistory {
-                    Text("Prep history available")
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Restore") { model.restoreEpisode(dismissal) }
-                .accessibilityLabel("Restore \(dismissal.title)")
-                .accessibilityIdentifier("wilted-podcast-restore-\(dismissal.id)")
-        }
-        .padding(.vertical, WiltedTheme.Spacing.small)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-podcast-removed-row-\(dismissal.id)")
-    }
 }
 
 /// The running report for the last podcast action.

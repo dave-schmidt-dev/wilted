@@ -2658,6 +2658,84 @@ class PrerollPromptWordingTests(unittest.TestCase):
         self.assertNotIn("names themselves", wp.PREROLL_CONFIRM_PROMPT)
 
 
+class TranscriptStartPrerollRecoveryTests(unittest.TestCase):
+    """`recover_transcript_start_preroll` called directly, to reach the guard
+    cases the corpus-level `AdDetectionTests` do not exercise on their own:
+    the confirmation answered, the confirmation unanswerable, and the two
+    guards (already-claimed, under the minimum) that skip it outright. Also
+    pins the `ads.detect.preroll.nominated` progress line added on 2026-09-05,
+    which is what first showed the nomination question itself over-nominating
+    on Waveform -- see the history note above `PREROLL_PROGRAM_START_PROMPT`.
+    """
+
+    def preroll(self, llm, segments, detections=()):
+        ads = install_fake_ads(llm)
+        llm.load()  # `detect_and_cut` does this; a direct call has to say so.
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            result = wp.recover_transcript_start_preroll(ads, llm, segments, list(detections))
+        details = {json.loads(line)["stage"]: json.loads(line)["detail"]
+                   for line in stream.getvalue().splitlines()}
+        return result, details
+
+    def segments(self):
+        return [FakeSegment(i * 20.0, i * 20.0 + 20.0, f"segment {i}") for i in range(6)]
+
+    def existing(self):
+        return [FakeAd(150.0, 180.0, label="sponsor_read")]
+
+    def test_a_confirmation_that_finds_no_program_content_is_cut_and_merged(self):
+        llm = FakeLLM(preroll_program_start_id=5, preroll_program_id=-1)
+        result, _details = self.preroll(llm, self.segments(), self.existing())
+        self.assertEqual(
+            [(ad.start_s, ad.end_s, ad.label) for ad in result],
+            [(0.0, 100.0, "ad_break"), (150.0, 180.0, "sponsor_read")],
+        )
+
+    def test_a_confirmation_that_finds_program_content_leaves_detections_unchanged(self):
+        llm = FakeLLM(preroll_program_start_id=5, preroll_program_id=2)
+        result, details = self.preroll(llm, self.segments(), self.existing())
+        self.assertEqual([(ad.start_s, ad.end_s, ad.label) for ad in result],
+                          [(150.0, 180.0, "sponsor_read")])
+        self.assertIn("program content at 2", details["ads.detect.preroll.skipped"])
+
+    def test_an_unanswerable_confirmation_leaves_detections_unchanged(self):
+        # `answer` is the detector's own "[]", which is not a program_id
+        # object: a malformed completion leaves the audio alone.
+        llm = FakeLLM(preroll_program_start_id=5, answer="not json")
+        result, details = self.preroll(llm, self.segments(), self.existing())
+        self.assertEqual([(ad.start_s, ad.end_s, ad.label) for ad in result],
+                          [(150.0, 180.0, "sponsor_read")])
+        self.assertIn("opening confirmation failed", details["ads.detect.preroll.skipped"])
+
+    def test_a_program_starting_at_the_first_segment_asks_no_confirmation_question(self):
+        llm = FakeLLM(preroll_program_start_id=0)
+        result, _details = self.preroll(llm, self.segments(), self.existing())
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in result], [(150.0, 180.0)])
+        self.assertEqual([r for r in llm.requests if r.get("field") == "program_id"], [])
+
+    def test_an_opening_the_detector_already_claimed_asks_no_questions_at_all(self):
+        llm = FakeLLM(preroll_program_start_id=5, preroll_program_id=-1)
+        existing = [FakeAd(0.5, 30.0, label="sponsor_read")]
+        result, _details = self.preroll(llm, self.segments(), existing)
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in result], [(0.5, 30.0)])
+        self.assertEqual(llm.requests, [])
+
+    def test_a_nominated_boundary_under_the_minimum_asks_no_confirmation_question(self):
+        segments = [FakeSegment(0.0, 5.0, "segment 0"), FakeSegment(5.0, 10.0, "segment 1"),
+                    FakeSegment(10.0, 15.0, "segment 2")]
+        llm = FakeLLM(preroll_program_start_id=1)
+        result, details = self.preroll(llm, segments, self.existing())
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in result], [(150.0, 180.0)])
+        self.assertIn("only 5.0s long", details["ads.detect.preroll.skipped"])
+        self.assertEqual([r for r in llm.requests if r.get("field") == "program_id"], [])
+
+    def test_the_nomination_progress_line_reports_the_nominated_id_and_seconds(self):
+        llm = FakeLLM(preroll_program_start_id=5, preroll_program_id=-1)
+        _result, details = self.preroll(llm, self.segments(), self.existing())
+        self.assertEqual(details["ads.detect.preroll.nominated"], "program ID 5 at 100.000s")
+
+
 class AdCorpusReplayWiringTests(unittest.TestCase):
     """The replay path, with the model stubbed out.
 
