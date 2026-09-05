@@ -282,6 +282,19 @@ private struct WiltedMacLibraryView: View {
 
             WiltedMacPodcastOperationMessage(model: model)
 
+            // Shown above the results rather than beside the field: the case
+            // that needs it is a search whose visible list is still empty
+            // while the store is reading transcripts.
+            if model.isSearchingTranscripts {
+                HStack(spacing: WiltedTheme.Spacing.small) {
+                    ProgressView().controlSize(.small)
+                    Text("Searching transcripts\u{2026}")
+                        .wiltedFont(.caption)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                }
+                .accessibilityIdentifier("wilted-transcript-search-progress")
+            }
+
             if let preparation = model.preparation {
                 WiltedMacPreparationView(model: model, preparation: preparation)
             }
@@ -295,7 +308,9 @@ private struct WiltedMacLibraryView: View {
                 } description: {
                     Text(model.librarySearchQuery.isEmpty
                         ? WiltedScreenCopy.libraryEmptyDetailProducer
-                        : "Try another search or filter.")
+                        : model.isSearchingTranscripts
+                            ? "Still reading transcripts\u{2026}"
+                            : "Try another search or filter.")
                 }
                 .accessibilityIdentifier("wilted-mac-empty-state")
             } else {
@@ -318,14 +333,28 @@ private struct WiltedMacLibraryView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(model.libraryItems.enumerated()), id: \.element.id) { index, item in
                             if index > 0 { Divider() }
-                            Group {
+                            VStack(alignment: .leading, spacing: 0) {
                                 switch item {
                                 case .article(let article):
                                     WiltedMacArticleRow(model: model, article: article)
                                 case .episode(let episode):
                                     WiltedMacEpisodeRow(model: model, episode: episode)
                                 }
+                                // Without this the row shows no occurrence of
+                                // the words searched for, and reads as a bug.
+                                if model.matchedOnlyInTranscript(item) {
+                                    Label("Matches the transcript", systemImage: "text.quote")
+                                        .wiltedFont(.caption)
+                                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                                        .padding(.horizontal, WiltedTheme.Spacing.medium)
+                                        .padding(.bottom, WiltedTheme.Spacing.small)
+                                        .accessibilityIdentifier("wilted-transcript-match-note")
+                                }
                             }
+                            // The wrapper must stretch exactly as the bare row
+                            // did, or the selection background and tap target
+                            // shrink to the row's intrinsic width.
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .background(
                                 model.selectedLibraryItemID == item.id
                                     ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.16)
@@ -338,7 +367,7 @@ private struct WiltedMacLibraryView: View {
                 }
             }
         }
-        .searchable(text: $model.librarySearchQuery, prompt: "Search titles, shows, and show notes")
+        .searchable(text: $model.librarySearchQuery, prompt: "Search titles, shows, notes, and transcripts")
         .searchScopes($model.libraryFilter) {
             ForEach(WiltedMacLibraryFilter.allCases) { filter in
                 Text(filter.rawValue).tag(filter)

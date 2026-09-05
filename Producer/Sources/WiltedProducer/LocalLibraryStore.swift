@@ -1494,6 +1494,45 @@ public actor LocalLibraryStore {
         return try decodeTranscript(record)
     }
 
+    /// Item identifiers whose current transcript contains `query`.
+    ///
+    /// The search runs here rather than in a presentation layer because a
+    /// transcript is tens of kilobytes of text the library list deliberately
+    /// does not carry. Asking the store "which items say this" costs one
+    /// query; loading every transcript into a view model to ask the same
+    /// question does not survive a library of any size.
+    ///
+    /// Only an item's newest revision is consulted. Revisions accumulate -- a
+    /// re-prepared episode keeps the transcript of the audio it replaced --
+    /// and that older text still holds the advertising the cut removed. So
+    /// matching every revision would hand the reader an episode whose
+    /// transcript no longer contains the words they searched for, which reads
+    /// as the search being broken rather than as history being kept.
+    public func itemIDsWithTranscript(matching query: String) throws -> Set<ItemID> {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return [] }
+        let context = ModelContext(container)
+        let matched = try context.fetch(
+            FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>(
+                predicate: #Predicate { ($0.text?.localizedStandardContains(needle)) == true }
+            )
+        )
+        guard !matched.isEmpty else { return [] }
+
+        var newestRevision: [String: (id: String, createdAt: Date)] = [:]
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>()) {
+            if let held = newestRevision[record.itemID], held.createdAt >= record.createdAt { continue }
+            newestRevision[record.itemID] = (record.id, record.createdAt)
+        }
+
+        var found: Set<ItemID> = []
+        for record in matched where newestRevision[record.itemID]?.id == record.revisionID {
+            guard let id = try? ItemID(rawValue: record.itemID) else { continue }
+            found.insert(id)
+        }
+        return found
+    }
+
     private func upsert(_ transcript: Transcript, in context: ModelContext) throws {
         let id = "\(transcript.itemID.rawValue)|\(transcript.revisionID.rawValue)"
         let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())

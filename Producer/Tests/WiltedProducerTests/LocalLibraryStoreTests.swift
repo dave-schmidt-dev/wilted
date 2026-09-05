@@ -1524,4 +1524,61 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertTrue(noDownloads.isEmpty)
         XCTAssertTrue(noClaims.isEmpty)
     }
+
+    /// Searching transcripts must read the audio the reader can actually play.
+    ///
+    /// A re-prepared episode keeps the transcript of the revision it replaced,
+    /// and that superseded text still contains the advertising the cut removed.
+    /// Matching it would offer an episode whose transcript no longer holds the
+    /// searched words -- indistinguishable, from the reader's side, from the
+    /// search being broken.
+    func testTranscriptSearchReadsTheCurrentRevisionAndIgnoresTheOneItReplaced() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let episode = try ItemID(rawValue: "item-" + String(repeating: "a", count: 64))
+        let other = try ItemID(rawValue: "item-" + String(repeating: "b", count: 64))
+        let store = try LocalLibraryStore(url: url)
+
+        try await save(revision: "rev-uncut", of: episode, at: 100,
+                       saying: "Today's episode is sponsored by Wilted Greens.", into: store, near: url)
+        try await save(revision: "rev-cut", of: episode, at: 200,
+                       saying: "The heron stands very still in the shallows.", into: store, near: url)
+        try await save(revision: "rev-other", of: other, at: 150,
+                       saying: "A kestrel hovers over the verge.", into: store, near: url)
+
+        let current = try await store.itemIDsWithTranscript(matching: "heron stands")
+        XCTAssertEqual(current, [episode])
+
+        let superseded = try await store.itemIDsWithTranscript(matching: "sponsored by Wilted Greens")
+        XCTAssertEqual(superseded, [], "the replaced revision's advertising must not match")
+
+        let caseFolded = try await store.itemIDsWithTranscript(matching: "HERON STANDS")
+        XCTAssertEqual(caseFolded, [episode], "search is case-insensitive")
+
+        let across = try await store.itemIDsWithTranscript(matching: "e")
+        XCTAssertEqual(across, [episode, other])
+
+        let absent = try await store.itemIDsWithTranscript(matching: "cormorant")
+        XCTAssertEqual(absent, [])
+
+        let blank = try await store.itemIDsWithTranscript(matching: "   ")
+        XCTAssertEqual(blank, [], "a blank query selects nothing rather than everything")
+    }
+
+    private func save(revision id: String, of itemID: ItemID, at second: TimeInterval,
+                      saying text: String, into store: LocalLibraryStore, near url: URL) async throws {
+        let revisionID = try RevisionID(rawValue: id)
+        let mediaURL = url.deletingLastPathComponent().appendingPathComponent("\(id).m4a")
+        try Data([0x00]).write(to: mediaURL)
+        let revision = try AudioRevision(
+            itemID: itemID, revisionID: revisionID, durationSeconds: second, byteCount: 1,
+            contentHash: "sha256:" + String(repeating: "0", count: 64), mediaType: "audio/mp4",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000 + second)), schemaVersion: 1
+        )
+        let transcript = try Transcript(
+            itemID: itemID, revisionID: revisionID, availability: .available, text: text,
+            updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000 + second))
+        )
+        try await store.saveReadyRevision(revision, mediaURL: mediaURL, transcript: transcript)
+    }
 }

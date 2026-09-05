@@ -400,8 +400,9 @@ enum WiltedMacLibraryItem: Identifiable, Hashable, Sendable {
     /// An episode's show notes are already carried on every row -- the row
     /// leads with their opening paragraph and Now Playing shows the whole of
     /// them -- so they are text the reader has seen and can reasonably expect
-    /// to search. An article's body is not held in the library at all, so its
-    /// title and source remain everything there is to match.
+    /// to search. An article's body is not carried on the row, so there is
+    /// nothing here to match; it is reached instead through the stored
+    /// transcript, which is where an article's extracted text lives.
     var searchableDetail: String {
         switch self {
         case .article: ""
@@ -728,7 +729,28 @@ final class WiltedMacModel {
     /// before the subscription. Reported so a partial view of a feed is never
     /// presented as the whole feed.
     var withheldPodcastEpisodeCount = 0
-    var librarySearchQuery = ""
+    /// The Larder's search text. Every change reschedules the transcript
+    /// search, which is the one part of matching that cannot be answered from
+    /// what the list already carries.
+    var librarySearchQuery = "" {
+        didSet {
+            guard librarySearchQuery != oldValue else { return }
+            scheduleTranscriptSearch()
+        }
+    }
+    /// Items whose stored transcript contains the current query. Empty until
+    /// the store answers, so a row matching only in its transcript arrives a
+    /// moment after the rows matching text the list already holds.
+    private(set) var transcriptSearchMatches: Set<String> = []
+    /// A search that reaches disk has to say so rather than let the list grow
+    /// under the reader with no explanation (INV-1).
+    private(set) var isSearchingTranscripts = false
+    private var transcriptSearchTask: Task<Void, Never>?
+    /// Shorter than this and a query matches so much transcript text that the
+    /// result is noise, while every keystroke still pays for the scan.
+    static let transcriptSearchMinimumLength = 3
+    /// How long the field must be still before the store is asked.
+    static let transcriptSearchDebounce: Duration = .milliseconds(250)
     var libraryFilter: WiltedMacLibraryFilter = .all
     /// Survives relaunch: a listener who reads the Larder oldest-first should
     /// not have to say so again every time the app opens.
@@ -1312,11 +1334,53 @@ final class WiltedMacModel {
     /// Separated from the list so the rule can be read and tested on its own:
     /// the field sits above a list of rows that each show a line of show
     /// notes, and matching only the title made those visible words unfindable.
-    nonisolated static func matches(_ item: WiltedMacLibraryItem, query: String) -> Bool {
+    nonisolated static func matches(
+        _ item: WiltedMacLibraryItem,
+        query: String,
+        transcriptMatches: Set<String> = []
+    ) -> Bool {
         guard !query.isEmpty else { return true }
         return item.title.localizedCaseInsensitiveContains(query)
             || item.source.localizedCaseInsensitiveContains(query)
             || item.searchableDetail.localizedCaseInsensitiveContains(query)
+            || transcriptMatches.contains(item.id)
+    }
+
+    /// Asks the store which transcripts match, once the field goes quiet.
+    ///
+    /// Debounced because every call reads transcript text from disk, and
+    /// checked against the live query on the way back because a slow answer
+    /// must not repopulate the list for a search the reader has moved off.
+    /// Cancellation alone would not settle it: a task can finish its read just
+    /// before the cancel lands.
+    private func scheduleTranscriptSearch() {
+        transcriptSearchTask?.cancel()
+        let query = librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.count >= Self.transcriptSearchMinimumLength, let store else {
+            transcriptSearchTask = nil
+            isSearchingTranscripts = false
+            transcriptSearchMatches = []
+            return
+        }
+        isSearchingTranscripts = true
+        transcriptSearchTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.transcriptSearchDebounce)
+            guard !Task.isCancelled else { return }
+            let found = (try? await store.itemIDsWithTranscript(matching: query)) ?? []
+            guard !Task.isCancelled, let self else { return }
+            guard self.librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+            self.transcriptSearchMatches = Set(found.map(\.rawValue))
+            self.isSearchingTranscripts = false
+        }
+    }
+
+    /// True when a row is in the results only because of its transcript, so
+    /// the surface can say why: the reader is otherwise looking at a row with
+    /// no visible occurrence of the words they typed.
+    func matchedOnlyInTranscript(_ item: WiltedMacLibraryItem) -> Bool {
+        let query = librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, transcriptSearchMatches.contains(item.id) else { return false }
+        return !Self.matches(item, query: query)
     }
 
     var libraryItems: [WiltedMacLibraryItem] {
@@ -1324,7 +1388,7 @@ final class WiltedMacModel {
         let combined = articles.map(WiltedMacLibraryItem.article) +
             episodes.filter { !hiddenEpisodeIDs.contains($0.id) }.map(WiltedMacLibraryItem.episode)
         let filtered = combined.filter { item in
-            let matchesQuery = Self.matches(item, query: query)
+            let matchesQuery = Self.matches(item, query: query, transcriptMatches: transcriptSearchMatches)
             guard matchesQuery else { return false }
             let progress = item.progress
             let finished = progress.duration.map { $0 > 0 && progress.position >= $0 * 0.95 } ?? false

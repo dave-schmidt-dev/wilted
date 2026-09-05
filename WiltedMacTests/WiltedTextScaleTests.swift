@@ -174,13 +174,44 @@ final class WiltedLibrarySearchTests: XCTestCase {
         XCTAssertTrue(WiltedMacModel.matches(item, query: "Reyes"))
     }
 
-    /// An article's body is not held in the library, so there is nothing more
-    /// to match and the test says so rather than leaving it to be assumed.
-    func testAnArticleMatchesOnlyItsTitleAndSource() {
+    /// An article's row carries no body text, so the row itself has nothing
+    /// beyond title and source to match. Its body is still reachable -- an
+    /// article's extracted text is stored as a transcript -- which is the
+    /// separate path the transcript tests below cover.
+    func testAnArticleRowMatchesOnItsTitleAndSourceAndCarriesNoBodyText() {
         let item = article(title: "A quiet week", source: "Example Review")
         XCTAssertTrue(WiltedMacModel.matches(item, query: "quiet"))
         XCTAssertTrue(WiltedMacModel.matches(item, query: "Example"))
         XCTAssertEqual(item.searchableDetail, "")
+    }
+
+    /// The store answers which transcripts match; the matcher unions that
+    /// answer with the text the row already shows.
+    func testATranscriptMatchAdmitsARowWhoseVisibleTextDoesNot() {
+        let item = episode(title: "Episode 5", show: "Field Notes", summary: "Summary", notes: "Notes")
+        XCTAssertFalse(WiltedMacModel.matches(item, query: "cormorant"))
+        XCTAssertTrue(WiltedMacModel.matches(item, query: "cormorant", transcriptMatches: ["episode"]))
+    }
+
+    /// The union must not widen a query that matches nothing: an identifier in
+    /// the set is an answer about that item, not a licence to show others.
+    func testATranscriptMatchAdmitsOnlyTheItemItNames() {
+        let item = episode(title: "Episode 5", show: "Field Notes", notes: "Notes")
+        XCTAssertFalse(WiltedMacModel.matches(item, query: "cormorant", transcriptMatches: ["a-different-item"]))
+    }
+
+    /// An empty query keeps everything whatever the transcript set says, so a
+    /// cleared field cannot leave a stale answer filtering the list.
+    func testAnEmptyQueryIsUnaffectedByAStaleTranscriptSet() {
+        let item = episode(title: "Episode 5", show: "Field Notes", notes: "Notes")
+        XCTAssertTrue(WiltedMacModel.matches(item, query: "", transcriptMatches: []))
+        XCTAssertTrue(WiltedMacModel.matches(item, query: "", transcriptMatches: ["episode"]))
+    }
+
+    /// A query below the floor never reaches the store, so the reader is not
+    /// charged a transcript scan for one or two characters.
+    func testTheTranscriptSearchHasAFloorBeforeItReadsFromDisk() {
+        XCTAssertEqual(WiltedMacModel.transcriptSearchMinimumLength, 3)
     }
 
     // MARK: - Fixtures
