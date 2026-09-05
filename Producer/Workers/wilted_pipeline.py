@@ -115,19 +115,45 @@ PREROLL_ALREADY_CLAIMED_SECONDS = 1.0
 # sentence than an advertisement worth cutting.
 PREROLL_RECOVERY_MINIMUM_SECONDS = 10.0
 
+# Both opening questions used to describe the program by its shape -- an
+# opening, a title, host introductions, banter -- and a passage that was none of
+# those read as advertising whatever it said. That definition failed in both
+# directions on the same day. Pop Culture Happy Hour's third passage is the
+# episode's premise stated plainly, with no introduction and no banter in it, and
+# the confirmation called the whole opening advertising and took twenty seconds
+# of the show. Waveform's first passage is a Deepgram spot written as two people
+# chatting, which matched "unstructured banter" exactly, and the confirmation
+# vetoed a cut over sixty-five seconds of advertising. So both prompts now name
+# the show's own subject as program, which is the wording the boundary question
+# already answers reliably with, and both say outright that a promotion is a
+# promotion however conversational it sounds.
+#
+# That fixed Pop Culture Happy Hour and left Waveform alone, because Waveform's
+# spot also says "i'm drew", which the confirmation reads as a host introducing
+# himself. Scoping the introduction to this program's own host, and calling a
+# self-naming promoter an advertisement's voice, was tried and made things
+# strictly worse: Waveform did not move and Pop Culture Happy Hour went back to
+# losing its premise. That is the same backfire the note below records, so the
+# wording stays as it is. The remaining Waveform failure wants the structural
+# answer -- one question per passage, as the boundary question already asks --
+# and not another adjective.
 PREROLL_PROGRAM_START_PROMPT = """\
 The excerpt is the beginning of a podcast episode. Advertising is sometimes inserted before the
 program starts: a produced commercial, a trailer for another show, or a promotional spot voiced by
 someone who does not appear on this program. Find the first ID at which the program itself begins.
-The program's own opening, its title, its host introductions, and unstructured banter all count as
-program. Return 0 when the program begins immediately and nothing precedes it. Use only a supplied ID.
+The program's own opening, its title, its host introductions, its unstructured banter, and its
+reporting or discussion of the episode's own subject all count as program. A passage that promotes a
+product, a service, or another show is advertising however conversational its voice. Return 0 when
+the program begins immediately and nothing precedes it. Use only a supplied ID.
 Return only the strict JSON object {"program_start_id": ID}, with no prose or Markdown."""
 
 PREROLL_CONFIRM_PROMPT = """\
 The excerpt is the opening of a podcast episode, believed to be entirely advertising or promotion
 carried before the program starts. Find the first ID that belongs to the program itself rather than
-to advertising or promotion. Host introductions, the show title, and unstructured banter belong to
-the program. Return -1 when no supplied ID belongs to the program. Use only a supplied ID or -1.
+to advertising or promotion. Host introductions, the show title, unstructured banter, and the show's
+own reporting or discussion of the episode's subject all belong to the program. A passage that
+promotes a product, a service, or another show is advertising however conversational its voice.
+Return -1 when no supplied ID belongs to the program. Use only a supplied ID or -1.
 Return only the strict JSON object {"program_id": ID}, with no prose or Markdown."""
 
 # How much of the span a resize review may read. The same bound as the opening

@@ -2629,6 +2629,35 @@ class AdCorpusManifestTests(unittest.TestCase):
         self.assertEqual(confidences, {1.0})
 
 
+class PrerollPromptWordingTests(unittest.TestCase):
+    """Pin the two clauses a measured experiment proved the opening needs.
+
+    The gate cannot run the detector -- that needs a four-gigabyte model -- so
+    nothing else here would notice these being reworded. They are not style: the
+    first stopped Pop Culture Happy Hour losing twenty seconds of its premise,
+    and removing either returns the opening to deciding advertising by how a
+    passage sounds rather than by what it does. `make ad-corpus-replay` is what
+    re-measures them; this only makes a silent revert impossible.
+    """
+
+    def prompts(self):
+        return (wp.PREROLL_PROGRAM_START_PROMPT, wp.PREROLL_CONFIRM_PROMPT)
+
+    def test_both_opening_questions_count_the_show_s_own_subject_as_program(self):
+        for prompt in self.prompts():
+            self.assertIn("reporting or discussion", prompt)
+
+    def test_both_opening_questions_refuse_to_be_fooled_by_a_conversational_advertisement(self):
+        for prompt in self.prompts():
+            self.assertIn("however conversational its voice", prompt)
+
+    def test_the_confirmation_does_not_single_out_a_self_naming_promoter(self):
+        # Tried on 2026-09-05 and measured strictly worse: Waveform did not move
+        # and Pop Culture Happy Hour went back to losing its premise. It reads
+        # like a tightening, so this says plainly that it was tested.
+        self.assertNotIn("names themselves", wp.PREROLL_CONFIRM_PROMPT)
+
+
 class AdCorpusReplayWiringTests(unittest.TestCase):
     """The replay path, with the model stubbed out.
 
