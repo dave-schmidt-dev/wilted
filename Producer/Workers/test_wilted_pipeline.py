@@ -2678,9 +2678,25 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         llm.create_backend = lambda kind, model: (
             calls.append(("create_backend", kind, model)) or Backend()
         )
+        # The archive will not build a model outside this, and the worker claims
+        # it in `main` rather than in any pass, so a replay importing the passes
+        # directly gets no capability unless it claims one itself.
+        @contextmanager
+        def capability_scope(*, owner_id, data_dir):
+            calls.append(("capability", owner_id, str(data_dir)))
+            try:
+                yield object()
+            finally:
+                calls.append(("capability_released",))
+
+        capability = types.ModuleType("wilted.execution_capability")
+        capability.execution_capability_scope = capability_scope
+
         package = types.ModuleType("wilted")
         package.ads, package.llm = ads, llm
-        sys.modules.update({"wilted": package, "wilted.ads": ads, "wilted.llm": llm})
+        package.execution_capability = capability
+        sys.modules.update({"wilted": package, "wilted.ads": ads, "wilted.llm": llm,
+                            "wilted.execution_capability": capability})
         self.use_archive(self.fake_archive())
 
         for name in ("recover_unclaimed_explicit_sponsor_reads", "recover_transcript_start_preroll",
@@ -2763,11 +2779,27 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
             self.skipTest("this machine has no cached transcript for the Waveform case")
         names = [call[0] for call in self.calls]
         self.assertEqual(names, [
+            "capability",
             "create_backend", "load", "install_legacy", "install_disclaimer", "detect_ads",
             "recover_unclaimed_explicit_sponsor_reads", "recover_transcript_start_preroll",
             "recover_transcript_end_postroll", "resize_oversized_ad_spans", "close",
+            "capability_released",
         ])
         self.assertEqual([(span.start, span.end) for span in spans], [(100.0, 200.0)])
+
+    def test_the_model_is_built_inside_a_claimed_execution_capability(self):
+        # The archive gates multi-gigabyte model construction on this, and the
+        # worker claims it in `main`. A replay calls the passes directly, so
+        # without its own claim `create_backend` raises before any measurement.
+        case = self.waveform()
+        if self.replay(case) is None:
+            self.skipTest("this machine has no cached transcript for the Waveform case")
+        claimed = next(call for call in self.calls if call[0] == "capability")
+        self.assertEqual(claimed[1], "wilted-ad-corpus-replay")
+        self.assertEqual(claimed[2], str(self.corpus.DEFAULT_ALIGNED_CACHE.parent))
+        self.assertLess(self.calls.index(claimed),
+                        [call[0] for call in self.calls].index("create_backend"))
+        self.assertEqual(self.calls[-1][0], "capability_released")
 
     def test_the_detector_is_handed_the_type_the_worker_hands_it(self):
         # Duck typing makes the archive's own `TranscriptSegment` look
