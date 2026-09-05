@@ -111,7 +111,11 @@ final class WiltedTextScaleTests: XCTestCase {
                 let source = try String(contentsOf: base.appendingPathComponent(relative), encoding: .utf8)
                 scanned += 1
                 for (offset, line) in source.components(separatedBy: .newlines).enumerated()
-                where line.contains(".font(WiltedTheme.font(") {
+                // Naming a scale explicitly is the deliberate form -- the root
+                // sets a base font that way for the controls that never name a
+                // role. What is banned is the call that silently takes the
+                // platform's size whatever the reader chose.
+                where line.contains(".font(WiltedTheme.font(") && !line.contains("scale:") {
                     offenders.append("\(directory)/\(relative):\(offset + 1)")
                 }
             }
@@ -131,5 +135,73 @@ final class WiltedTextScaleTests: XCTestCase {
         )
         XCTAssertTrue(source.contains(".environment(\\.wiltedTextScale, model.textScale)"),
                       "the Mac root must publish the chosen scale")
+    }
+}
+
+/// The Larder's search field sits above rows that each show a line of the
+/// episode's show notes, and it matched only the title and the show -- so the
+/// words a reader could see on the row were the words that found nothing.
+@MainActor
+final class WiltedLibrarySearchTests: XCTestCase {
+    func testAnEmptyQueryKeepsEverything() {
+        XCTAssertTrue(WiltedMacModel.matches(episode(notes: nil), query: ""))
+        XCTAssertTrue(WiltedMacModel.matches(article(), query: "   ".trimmingCharacters(in: .whitespaces)))
+    }
+
+    func testTitleAndShowStillMatchAndIgnoreCase() {
+        let item = episode(title: "The Hegseth Signal", show: "The Daily", notes: nil)
+        XCTAssertTrue(WiltedMacModel.matches(item, query: "hegseth"))
+        XCTAssertTrue(WiltedMacModel.matches(item, query: "THE DAILY"))
+        XCTAssertFalse(WiltedMacModel.matches(item, query: "Bombcast"))
+    }
+
+    /// The reason this was reported: words visible on the row found nothing.
+    func testWordsFromTheShowNotesFindTheEpisode() {
+        let item = episode(
+            title: "Episode 412",
+            show: "Field Notes",
+            notes: "Sam Boulos joins us to talk about adaptive security and the winter garden."
+        )
+        XCTAssertTrue(WiltedMacModel.matches(item, query: "winter garden"))
+        XCTAssertTrue(WiltedMacModel.matches(item, query: "Boulos"))
+        XCTAssertFalse(WiltedMacModel.matches(item, query: "not in the notes"))
+    }
+
+    /// A feed that publishes no notes still has the row's one-line summary,
+    /// which is what the reader sees, so that is what has to be searched.
+    func testAnEpisodeWithoutNotesFallsBackToTheLineTheRowShows() {
+        let item = episode(title: "Episode 5", show: "Field Notes", summary: "Marta Reyes desk", notes: nil)
+        XCTAssertTrue(WiltedMacModel.matches(item, query: "Reyes"))
+    }
+
+    /// An article's body is not held in the library, so there is nothing more
+    /// to match and the test says so rather than leaving it to be assumed.
+    func testAnArticleMatchesOnlyItsTitleAndSource() {
+        let item = article(title: "A quiet week", source: "Example Review")
+        XCTAssertTrue(WiltedMacModel.matches(item, query: "quiet"))
+        XCTAssertTrue(WiltedMacModel.matches(item, query: "Example"))
+        XCTAssertEqual(item.searchableDetail, "")
+    }
+
+    // MARK: - Fixtures
+
+    private func episode(
+        title: String = "Title", show: String = "Show",
+        summary: String = "Summary", notes: String?
+    ) -> WiltedMacLibraryItem {
+        .episode(WiltedMacEpisode(
+            id: "episode", title: title, feedTitle: show, summary: summary, notes: notes,
+            artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            durationSeconds: 600, playbackSeconds: 0,
+            downloadState: .completed, preparationState: .notPrepared
+        ))
+    }
+
+    private func article(title: String = "Title", source: String = "Source") -> WiltedMacLibraryItem {
+        .article(WiltedMacArticle(
+            id: "article", title: title, source: source,
+            url: URL(string: "https://example.com/a")!, isReady: true,
+            durationSeconds: 300, createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        ))
     }
 }

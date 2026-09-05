@@ -395,6 +395,19 @@ enum WiltedMacLibraryItem: Identifiable, Hashable, Sendable {
     var date: Date {
         switch self { case .article(let value): value.createdAt; case .episode(let value): value.releasedAt }
     }
+    /// What a search reads besides the title and the source.
+    ///
+    /// An episode's show notes are already carried on every row -- the row
+    /// leads with their opening paragraph and Now Playing shows the whole of
+    /// them -- so they are text the reader has seen and can reasonably expect
+    /// to search. An article's body is not held in the library at all, so its
+    /// title and source remain everything there is to match.
+    var searchableDetail: String {
+        switch self {
+        case .article: ""
+        case .episode(let value): value.notes ?? value.summary
+        }
+    }
     var progress: (position: TimeInterval, duration: TimeInterval?) {
         switch self {
         case .article(let value): (0, value.durationSeconds)
@@ -1294,13 +1307,24 @@ final class WiltedMacModel {
         return defaults
     }
 
+    /// What the Larder's search field matches.
+    ///
+    /// Separated from the list so the rule can be read and tested on its own:
+    /// the field sits above a list of rows that each show a line of show
+    /// notes, and matching only the title made those visible words unfindable.
+    nonisolated static func matches(_ item: WiltedMacLibraryItem, query: String) -> Bool {
+        guard !query.isEmpty else { return true }
+        return item.title.localizedCaseInsensitiveContains(query)
+            || item.source.localizedCaseInsensitiveContains(query)
+            || item.searchableDetail.localizedCaseInsensitiveContains(query)
+    }
+
     var libraryItems: [WiltedMacLibraryItem] {
         let query = librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let combined = articles.map(WiltedMacLibraryItem.article) +
             episodes.filter { !hiddenEpisodeIDs.contains($0.id) }.map(WiltedMacLibraryItem.episode)
         let filtered = combined.filter { item in
-            let matchesQuery = query.isEmpty || item.title.localizedCaseInsensitiveContains(query) ||
-                item.source.localizedCaseInsensitiveContains(query)
+            let matchesQuery = Self.matches(item, query: query)
             guard matchesQuery else { return false }
             let progress = item.progress
             let finished = progress.duration.map { $0 > 0 && progress.position >= $0 * 0.95 } ?? false

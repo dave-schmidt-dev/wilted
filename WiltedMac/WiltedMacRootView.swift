@@ -56,6 +56,7 @@ struct WiltedMacRootView: View {
                         model.selectedNavigation = destination
                     } label: {
                         Label(destination.title, symbol: destination.symbolName)
+                            .wiltedFont(.body)
                             .foregroundStyle(
                                 isSelected
                                     ? WiltedTheme.color(.primaryText, scheme: colorScheme)
@@ -81,7 +82,11 @@ struct WiltedMacRootView: View {
             // in every Mac pixel baseline.
             .scrollContentBackground(.hidden)
             .background(WiltedTheme.color(.page, scheme: colorScheme))
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 260)
+            .navigationSplitViewColumnWidth(
+                min: WiltedTheme.scaled(180, scale: model.textScale),
+                ideal: WiltedTheme.scaled(200, scale: model.textScale),
+                max: WiltedTheme.scaled(260, scale: model.textScale)
+            )
             .navigationTitle("Wilted")
             .accessibilityIdentifier("wilted-mac-sidebar")
         } detail: {
@@ -106,6 +111,13 @@ struct WiltedMacRootView: View {
         // One place the chosen size enters the window. Every typographic
         // site reads it back out through `wiltedFont`.
         .environment(\.wiltedTextScale, model.textScale)
+        // And a base font for everything that never named one. A button, a
+        // picker and a sidebar row take the platform's default font rather
+        // than a theme role, so they are invisible to `wiltedFont` and stayed
+        // at 13pt while the text around them grew. At `.standard` this is the
+        // same font they were already inheriting, so it changes nothing until
+        // the reader asks for a change.
+        .font(WiltedTheme.font(.body, scale: model.textScale))
         .toolbar { wordmark }
         // Three names for the same thing sat in one toolbar: the mark, the
         // window title beside it, and the destination heading below. macOS 26
@@ -326,7 +338,7 @@ private struct WiltedMacLibraryView: View {
                 }
             }
         }
-        .searchable(text: $model.librarySearchQuery, prompt: "Search articles and episodes")
+        .searchable(text: $model.librarySearchQuery, prompt: "Search titles, shows, and show notes")
         .searchScopes($model.libraryFilter) {
             ForEach(WiltedMacLibraryFilter.allCases) { filter in
                 Text(filter.rawValue).tag(filter)
