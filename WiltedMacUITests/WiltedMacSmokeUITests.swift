@@ -177,9 +177,19 @@ final class WiltedMacSmokeUITests: XCTestCase {
     func testFeedsPageOwnsSubscribingAndLarderAsksForAnArticle() {
         let app = launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
 
+        // The box is behind a button now, so opening it is part of the
+        // journey: a trigger that draws but opens nothing would otherwise
+        // leave the address field unreachable and this test still passing.
+        let trigger = app.descendants(matching: .any)["wilted-add-article-button"]
+        XCTAssertTrue(trigger.waitForExistence(timeout: 8))
+        XCTAssertEqual(trigger.label, "Add article", "Larder's button must name what it takes")
+        trigger.click()
+
         let add = app.descendants(matching: .any)["wilted-add-link"]
-        XCTAssertTrue(add.waitForExistence(timeout: 8))
-        XCTAssertEqual(add.label, "Add article", "Larder's button must name what it takes")
+        XCTAssertTrue(add.waitForExistence(timeout: 8), "the trigger must open the address box")
+        let articleField = app.descendants(matching: .any)["wilted-link-url"]
+        XCTAssertTrue(articleField.waitForExistence(timeout: 5), "the opened box must carry its field")
+        app.typeKey(.escape, modifierFlags: [])
 
         let navFeeds = app.descendants(matching: .any)["wilted-navigation-feeds"]
         XCTAssertTrue(navFeeds.waitForExistence(timeout: 8))

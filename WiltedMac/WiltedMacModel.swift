@@ -757,6 +757,11 @@ final class WiltedMacModel {
     private(set) var textScale: WiltedTheme.TextScale = .large
     /// What automation is doing, so Settings can show it and a listener can stop it.
     private(set) var automationStatus: WiltedAutomationStatus = .idle
+    /// Whether the address box is open. It is a sheet-like popover now
+    /// rather than a card that always held the top of the Larder: the control
+    /// is used once a session and was charging the library a card of room for
+    /// it every time the reader looked at the list.
+    var isPresentingComposer = false
     var selectedNavigation: WiltedMacNavigation = .library
     private(set) var articles: [WiltedMacArticle] = []
     private(set) var episodes: [WiltedMacEpisode] = []

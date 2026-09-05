@@ -266,7 +266,7 @@ private struct WiltedMacLibraryView: View {
 
     var body: some View {
         WiltedMacDestination(title: WiltedScreenCopy.library, identifier: "wilted-mac-library-detail") {
-            composer
+            addArticleControl
 
             WiltedMacPodcastOperationMessage(model: model)
 
@@ -334,13 +334,39 @@ private struct WiltedMacLibraryView: View {
         }
     }
 
+    /// The way in to the address box.
+    ///
+    /// The box itself used to be a card holding the top of the Larder, which
+    /// is a card of room spent on a control used once a session. Behind a
+    /// button it costs one row, and the library starts where the reader is
+    /// looking.
+    private var addArticleControl: some View {
+        HStack {
+            Spacer()
+            Button {
+                model.isPresentingComposer = true
+            } label: {
+                Label(WiltedScreenCopy.addLink, systemImage: "plus")
+            }
+            .accessibilityIdentifier("wilted-add-article-button")
+            .popover(isPresented: $model.isPresentingComposer, arrowEdge: .bottom) {
+                composer
+                    .frame(width: 420)
+                    .padding(WiltedTheme.Spacing.large)
+                    .background(WiltedTheme.color(.card, scheme: colorScheme))
+            }
+        }
+    }
+
     /// One box for both kinds of address.
     ///
-    /// It is a card inside Library, not the page itself: as the page's own
-    /// heading it read as an unrelated form sitting where the library was
-    /// supposed to be. The status line below the field is not decoration --
-    /// classifying an address can take a network round trip, and a button that
-    /// pauses without saying so reads as a broken one.
+    /// The status line below the field is not decoration -- classifying an
+    /// address can take a network round trip, and a button that pauses without
+    /// saying so reads as a broken one. That is also why the popover holding
+    /// this closes only when the reader dismisses it: the answer, and the
+    /// offer to follow a feed the page advertises, both arrive after the
+    /// button was pressed, and a popover that closed on submit would take
+    /// them with it.
     private var composer: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             Text(WiltedScreenCopy.addLinkTitle)
@@ -369,7 +395,6 @@ private struct WiltedMacLibraryView: View {
                 advertisedFeedOffer(advertised)
             }
         }
-        .wiltedCard(colorScheme)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-mac-composer")
     }
