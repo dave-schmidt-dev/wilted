@@ -2850,6 +2850,31 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         self.assertEqual(set(sized), {case["audioDurationSeconds"]})
         self.assertNotEqual(case["audioDurationSeconds"], case["transcriptEndSeconds"])
 
+    def test_a_replay_says_which_case_it_is_working_on(self):
+        # A replay spends minutes per case and emits nothing of its own
+        # meanwhile: the detector's journal names no case and the report only
+        # lands at the end, so two cases running are one interleaved stream
+        # nobody can attribute.
+        stderr = io.StringIO()
+        with mock.patch.object(self.corpus, "replay_spans", lambda case, *, cache: None), \
+                redirect_stderr(stderr):
+            results = self.corpus.run(
+                "replay", library=Path("/nowhere"), cache=Path("/nowhere"))
+        named = [line for line in stderr.getvalue().splitlines()
+                 if line.startswith("ad-corpus: replaying ")]
+        self.assertEqual(len(named), len(results))
+        for verdict, line in zip(results, named):
+            self.assertIn(verdict.case_id, line)
+
+    def test_reading_the_library_back_does_not_announce_itself(self):
+        # `recorded` is milliseconds a case and prints its report immediately,
+        # so the same line there would be noise rather than progress.
+        stderr = io.StringIO()
+        with mock.patch.object(self.corpus, "recorded_spans", lambda case, *, library: None), \
+                redirect_stderr(stderr):
+            self.corpus.run("recorded", library=Path("/nowhere"), cache=Path("/nowhere"))
+        self.assertNotIn("replaying", stderr.getvalue())
+
     def test_a_source_hash_no_cache_entry_matches_is_a_skip_not_an_empty_result(self):
         # "Never prepared here" and "the detector found nothing" are opposite
         # readings, and only one of them is a failure.

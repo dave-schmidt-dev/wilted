@@ -303,6 +303,14 @@ def replay_spans(case: dict, *, cache: Path) -> list[Span] | None:
 def run(mode: str, *, library: Path, cache: Path, manifest: Path = MANIFEST) -> list[CaseVerdict]:
     results: list[CaseVerdict] = []
     for case in load_manifest(manifest)["cases"]:
+        if mode == "replay":
+            # A replay loads a four-gigabyte model and spends minutes per case,
+            # and the only thing it emits meanwhile is the detector's own
+            # journal, which names no case. Two cases running produce one
+            # interleaved stream nobody can attribute until the report lands, so
+            # say whose turn it is first. Stderr, because stdout carries the
+            # report and the `--json` payload.
+            print(f"ad-corpus: replaying {case['id']}", file=sys.stderr, flush=True)
         produced = (
             recorded_spans(case, library=library) if mode == "recorded"
             else replay_spans(case, cache=cache)
