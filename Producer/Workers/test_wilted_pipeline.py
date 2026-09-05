@@ -276,6 +276,17 @@ def install_fake_ads(llm: FakeLLM, detections=()):
         r")\b",
         re.IGNORECASE,
     )
+    ads._SPARSE_PROMO_CUES = (  # noqa: SLF001 - mirrors the legacy module seam
+        re.compile(r"\b(?:brought to you by|paid for by|sponsor(?:ed|ship)?)\b", re.IGNORECASE),
+        re.compile(r"\b[a-z0-9-]+\.(?:com|net|org|io)\b|\bdot[ -]?com\b", re.IGNORECASE),
+        re.compile(r"\b(?:(?:promo|offer|discount) code|use code)\b", re.IGNORECASE),
+        re.compile(
+            r"\$\s*\d|\b\d+(?:\.\d+)?\s*(?:%|percent)\s+off\b"
+            r"|\b(?:price|priced|pricing|discount|free trial)\b",
+            re.IGNORECASE,
+        ),
+        re.compile(r"\blimited[- ]time sale\b", re.IGNORECASE),
+    )
     ads.AdSegment = lambda start_s, end_s, confidence, label: FakeAd(  # noqa: E731
         start_s, end_s, label, confidence
     )
@@ -1113,6 +1124,84 @@ class LegacySponsorOpeningCompatibilityTests(unittest.TestCase):
         del ads._SPONSOR_OPENING_RE
         with self.assertRaises(AttributeError):
             wp.install_legacy_sponsor_opening_compatibility(ads)
+
+
+class ProducedDisclaimerEvidenceTests(unittest.TestCase):
+    """The gate that decides whether a one- or two-segment flagged run survives.
+
+    The archived detector asks `any(pattern.search(text))` over its cue tuple
+    and discards the run when nothing matches. These tests ask the same
+    question of the tuple this worker installs.
+    """
+
+    # As the detector saw it: a produced brand spot naming no price, no
+    # address and no offer code, which the gate discarded on The Daily's
+    # Hegseth episode.
+    CHASE_SPOT = (
+        "with my sapphire preferred card we took a trip to a desert oasis earning five times the points on chase travel two times the points on all other travel plus a hundred dollar hotel credit chase sapphire preferred a card that's preferred for a reason cards issued by jp morgan chase bank and a member of fdic subject to credit approval terms apply"
+    )
+    # The pre-roll from the same episode, produced copy of the same shape.
+    YOUTUBE_SPOT = (
+        "if you like youtube you'll love youtube premium hi i'm haley bailey with youtube premium i get ad free videos offline downloads background play and so much more so try youtube premium for two months free at youtube dot com slash premium trial eligibility varies terms apply cancel any time"
+    )
+
+    def evidenced(self, ads, text):
+        return any(pattern.search(text) for pattern in ads._SPARSE_PROMO_CUES)
+
+    def test_a_produced_spot_reciting_terms_survives_the_sparse_gate(self):
+        ads = install_fake_ads(FakeLLM())
+        self.assertFalse(
+            self.evidenced(ads, self.CHASE_SPOT),
+            "the archive's own cues are what let this spot through in the first place",
+        )
+        wp.install_produced_disclaimer_evidence(ads)
+        self.assertTrue(self.evidenced(ads, self.CHASE_SPOT))
+
+    def test_a_produced_spot_naming_a_domain_needs_no_help(self):
+        ads = install_fake_ads(FakeLLM())
+        self.assertTrue(
+            self.evidenced(ads, self.YOUTUBE_SPOT),
+            "the archive already keeps this one for its address",
+        )
+
+    def test_editorial_speech_is_still_discarded(self):
+        ads = install_fake_ads(FakeLLM())
+        wp.install_produced_disclaimer_evidence(ads)
+        editorial = (
+            "Ford rehired engineers after its AI rollout failed.",
+            "The discussion turned to Ford's business strategy and recent layoffs.",
+            "Analysts discussed the back-to-school event and its weak effect on retail demand.",
+            "The panel debated whether seasonal sales still matter to shoppers.",
+            "The same terms apply to the agreement the two sides signed last week.",
+            "The bank issued a statement about the approval process for new accounts.",
+        )
+        for text in editorial:
+            with self.subTest(text=text):
+                self.assertFalse(self.evidenced(ads, text))
+
+    def test_the_archive_cues_are_kept_and_the_new_one_goes_last(self):
+        ads = install_fake_ads(FakeLLM())
+        before = ads._SPARSE_PROMO_CUES
+        wp.install_produced_disclaimer_evidence(ads)
+        after = ads._SPARSE_PROMO_CUES
+        self.assertEqual(after[: len(before)], before)
+        self.assertEqual(len(after), len(before) + 1)
+        # One caller slices the sponsor acknowledgement off the front to ask
+        # for a commercial signal beyond it. Appending keeps that slice whole.
+        self.assertEqual(after[-1].pattern, wp.PRODUCED_DISCLAIMER_CUE_PATTERN)
+
+    def test_repeated_install_appends_once(self):
+        ads = install_fake_ads(FakeLLM())
+        wp.install_produced_disclaimer_evidence(ads)
+        once = ads._SPARSE_PROMO_CUES
+        wp.install_produced_disclaimer_evidence(ads)
+        self.assertEqual(ads._SPARSE_PROMO_CUES, once)
+
+    def test_a_missing_archive_cue_tuple_is_a_contract_failure(self):
+        ads = install_fake_ads(FakeLLM())
+        del ads._SPARSE_PROMO_CUES
+        with self.assertRaises(AttributeError):
+            wp.install_produced_disclaimer_evidence(ads)
 
 
 class ExplicitSponsorFallbackTests(unittest.TestCase):

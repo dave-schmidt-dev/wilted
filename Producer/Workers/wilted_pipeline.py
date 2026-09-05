@@ -56,6 +56,28 @@ LEGACY_SPONSOR_OPENING_COMPATIBILITY_PATTERN = (
     r"\bbrought\s+to\s+you(?:\s+(?:today|this\s+week))?\s+by\b"
 )
 
+# Legal boilerplate only produced advertising reads aloud. The archived
+# detector discards a one- or two-segment flagged run that carries no price,
+# no address and no offer code, which is exactly the shape of a produced
+# brand spot: the Chase Sapphire read on The Daily's Hegseth episode was
+# flagged by the coarse pass and thrown away by that gate. A recorded spot
+# still has to recite its terms, and conversation never does. Measured across
+# ten transcripts and 98,374 words on 2026-09-04: seven matches, all of them
+# inside two produced advertisements, and nothing in editorial.
+PRODUCED_DISCLAIMER_CUE_PATTERN = (
+    r"\b(?:"
+    r"subject\s+to\s+credit\s+approval|"
+    r"member\s+(?:of\s+)?fdic|"
+    r"cards?\s+issued\s+by|"
+    r"eligibility\s+varies|"
+    r"cancel\s+any\s?time|"
+    r"terms\s+and\s+conditions\s+apply|"
+    r"(?:offer|eligibility)\s+restrictions\s+apply|"
+    r"void\s+where\s+prohibited|"
+    r"rates\s+and\s+fees"
+    r")\b"
+)
+
 # How much longer than its transcript a downloaded file may be before the
 # transcript is treated as describing a different rendering of the episode.
 #
@@ -1310,6 +1332,25 @@ def install_legacy_sponsor_opening_compatibility(ads_module) -> None:
         )
 
 
+def install_produced_disclaimer_evidence(ads_module) -> None:
+    """Let recited legal terms stand as the promotional evidence a sparse run needs.
+
+    Appended rather than substituted, so the archive's own cues keep deciding
+    everything they already decided. The position matters: the tuple's first
+    entry is the sponsor acknowledgement, and one caller slices it off to ask
+    for a commercial signal beyond that acknowledgement. Added at the end, a
+    disclaimer answers that question too, which is right -- reciting terms is
+    not an acknowledgement, it is the spot itself.
+    """
+    existing = ads_module._SPARSE_PROMO_CUES
+    if any(PRODUCED_DISCLAIMER_CUE_PATTERN == pattern.pattern for pattern in existing):
+        return
+    ads_module._SPARSE_PROMO_CUES = (
+        *existing,
+        re.compile(PRODUCED_DISCLAIMER_CUE_PATTERN, re.IGNORECASE),
+    )
+
+
 def _remaining_admission_budget(deadline: float) -> float:
     """Return the remaining shared lock/RPC budget or fail at its one deadline."""
     remaining = deadline - time.monotonic()
@@ -2099,6 +2140,7 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
         try:
             progress("ads.detect.start", f"{len(segments)} segments")
             install_legacy_sponsor_opening_compatibility(ads_module)
+            install_produced_disclaimer_evidence(ads_module)
             # The archive says what it threw away at INFO, and the logger's
             # effective level is WARNING, so the level is lifted for the length
             # of the detection and put back afterwards.
