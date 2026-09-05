@@ -805,6 +805,11 @@ final class WiltedMacModel {
     private(set) var articles: [WiltedMacArticle] = []
     private(set) var episodes: [WiltedMacEpisode] = []
     private(set) var podcastOperationMessage: String?
+    /// The episode an Undo button beside `podcastOperationMessage` would
+    /// restore. Set only by `removeEpisode`'s success path, and cleared at the
+    /// start of every operation that replaces the message it belongs to, so
+    /// Undo never survives to attach itself to an unrelated sentence.
+    private(set) var undoableRemoval: WiltedMacDismissedEpisode?
     private(set) var isRefreshingPodcasts = false
     private(set) var selectedLibraryItemID: String?
     private(set) var preparation: WiltedMacPreparation?
@@ -2064,6 +2069,7 @@ final class WiltedMacModel {
     func unsubscribe(_ subscription: WiltedMacSubscription) {
 #if canImport(WiltedProducer)
         guard let store, let feedID = try? ItemID(rawValue: subscription.id) else { return }
+        undoableRemoval = nil
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -2092,7 +2098,8 @@ final class WiltedMacModel {
     /// all there was.
     func removeEpisode(_ episode: WiltedMacEpisode) {
         hideEpisode(episode)
-        podcastOperationMessage = "Removed \(episode.title). Refreshing will not bring it back."
+        undoableRemoval = nil
+        podcastOperationMessage = "Removed \(episode.title)."
 #if canImport(WiltedProducer)
         // Read before the removal runs: once the row is gone there is nothing
         // left to compare the playing episode against.
@@ -2102,6 +2109,8 @@ final class WiltedMacModel {
             if wasPlaying { await self.stopPlaybackForRemovedEpisode() }
             if await self.dismissEpisode(episode) == false {
                 self.podcastOperationMessage = "\(episode.title) could not be removed."
+            } else {
+                self.undoableRemoval = self.dismissedEpisodes.first { $0.id == episode.id }
             }
         }
 #endif
@@ -2172,6 +2181,7 @@ final class WiltedMacModel {
 #if canImport(WiltedProducer)
         guard podcastRestoreTasks[dismissal.id] == nil,
               let store, let episodeID = try? ItemID(rawValue: dismissal.id) else { return }
+        undoableRemoval = nil
         podcastOperationMessage = "Checking feeds for \(dismissal.title)…"
         podcastRestoreTasks[dismissal.id] = Task { [weak self] in
             guard let self else { return }
@@ -2266,6 +2276,7 @@ final class WiltedMacModel {
     private func startPodcastRefresh(urls: [URL], subscribing: Bool) {
         guard podcastRefreshTask == nil else { return }
         isRefreshingPodcasts = true
+        undoableRemoval = nil
         podcastOperationMessage = subscribing ? "Adding podcast feed…" : "Refreshing subscribed podcasts…"
         podcastRefreshTask = Task { [weak self] in
             guard let self else { return }
@@ -3261,6 +3272,7 @@ final class WiltedMacModel {
     func removeArticle(_ article: WiltedMacArticle) {
 #if canImport(WiltedProducer)
         guard let store else { return }
+        undoableRemoval = nil
         if selectedArticleID == article.id {
             selectedArticleID = nil
             isNowPlaying = false
@@ -3706,6 +3718,10 @@ final class WiltedMacModel {
             let next = self.nextReadyEpisode(after: finishedID)
             var note: String?
             if let finished {
+                // Finishing is not an accident, so no Undo is offered; and an
+                // Undo left over from an earlier Skip must not attach itself
+                // to this sentence about a different episode.
+                self.undoableRemoval = nil
                 self.hideEpisode(finished)
                 note = await self.dismissEpisode(finished)
                     ? "Removed \(finished.title)."

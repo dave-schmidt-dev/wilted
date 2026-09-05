@@ -283,16 +283,6 @@ private struct WiltedMacLibraryView: View {
 
             WiltedMacPodcastOperationMessage(model: model)
 
-            // Moved here from the Feeds card (2026-09-05): skipped and
-            // finished episodes belong to the Larder, which is where a reader
-            // decides what to bring back, not to the feed list, which is
-            // about subscriptions. Collapsed by default so an empty-feeling
-            // Larder does not open with a list of things that are not there
-            // any more.
-            if !model.dismissedEpisodes.isEmpty {
-                removedDisclosure
-            }
-
             // Shown above the results rather than beside the field: the case
             // that needs it is a search whose visible list is still empty
             // while the store is reading transcripts.
@@ -324,6 +314,17 @@ private struct WiltedMacLibraryView: View {
                             : "Try another search or filter.")
                 }
                 .accessibilityIdentifier("wilted-mac-empty-state")
+
+                // A Larder emptied by skipping or finishing everything still
+                // needs a way back to what left it. The list header that
+                // normally carries this button does not exist in this
+                // branch, so it sits under the empty state instead.
+                if !model.dismissedEpisodes.isEmpty {
+                    HStack {
+                        removedButton
+                        Spacer()
+                    }
+                }
             } else {
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
                     // The order control belongs to the list it orders. On its
@@ -334,6 +335,9 @@ private struct WiltedMacLibraryView: View {
                             .wiltedFont(.title)
                             .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                             .frame(maxWidth: .infinity, alignment: .leading)
+                        if !model.dismissedEpisodes.isEmpty {
+                            removedButton
+                        }
                         Picker("Order", selection: $model.libraryOrder) {
                             ForEach(WiltedMacLibraryOrder.allCases) { order in Text(order.rawValue).tag(order) }
                         }
@@ -457,41 +461,68 @@ private struct WiltedMacLibraryView: View {
         WiltedMacAdvertisedFeedOffer(model: model, feedURL: feedURL, identifier: "wilted-advertised-feed")
     }
 
-    /// Collapsed by default: what to skim is what is still in the Larder, not
-    /// what left it. A UI test expands it by clicking the title in the label,
-    /// `wilted-podcast-removed-title`; the group itself carries no identifier,
-    /// because on the Feeds card an identifier on the section made it an
-    /// implicit element that absorbed its rows (2026-09-04).
+    /// Moved out of the list header's card and into a popover (2026-09-05):
+    /// with 26 removed episodes the disclosure card took the Larder's prime
+    /// space above "Saved articles and episodes", the section whose job is to
+    /// show what is still there to play. The Removed list is what came off
+    /// the shelf, consulted only right after a mistake, so it now costs one
+    /// button in the header rather than the top of the page.
     ///
-    /// The rows sit as direct children of the disclosure's content, with no
-    /// wrapping `VStack` accessibility modifiers, for the same reason: an
-    /// intermediate container between the card and a row is what stopped
-    /// `wilted-podcast-removed-row-*` from vending there. This placement has
-    /// not been checked against an accessibility hierarchy snapshot -- that UI
-    /// leg could not run in this session -- so treat the row identifiers here
-    /// as unverified until one runs.
-    private var removedDisclosure: some View {
-        DisclosureGroup(isExpanded: $showsRemoved) {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(model.dismissedEpisodes.enumerated()), id: \.element.id) { index, dismissal in
-                    if index > 0 { Divider() }
-                    dismissedRow(dismissal)
-                }
-            }
-            .padding(.top, WiltedTheme.Spacing.small)
+    /// A UI test opens the popover by clicking this button,
+    /// `wilted-podcast-removed-title`; the button itself is the only
+    /// identifier on the chain down to a row, because on the Feeds card an
+    /// identifier on an intermediate container made it an implicit element
+    /// that absorbed its rows (2026-09-04).
+    private var removedButton: some View {
+        Button {
+            showsRemoved.toggle()
         } label: {
-            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                Text("Removed \u{00B7} \(model.dismissedEpisodes.count)")
-                    .wiltedFont(.title)
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-podcast-removed-title")
-                Text("Skipped and finished episodes. Restore brings one back.")
+            Text("Removed \u{00B7} \(model.dismissedEpisodes.count)")
+                .wiltedFont(.utility)
+        }
+        .accessibilityIdentifier("wilted-podcast-removed-title")
+        .accessibilityLabel("Show removed episodes")
+        .popover(isPresented: $showsRemoved, arrowEdge: .bottom) {
+            removedPopover
+        }
+    }
+
+    /// The rows sit as direct children of this stack, with no wrapping
+    /// accessibility modifiers between the popover root and a row, for the
+    /// same reason `removedButton`'s doc records: an intermediate container
+    /// is what stopped `wilted-podcast-removed-row-*` from vending on the
+    /// Feeds card. This placement inside a popover has not been checked
+    /// against an accessibility hierarchy snapshot -- that UI leg could not
+    /// run in this session -- so treat the row identifiers here as unverified
+    /// until one runs.
+    private var removedPopover: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+            Text("Removed")
+                .wiltedFont(.title)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+            Text("Skipped and finished episodes. Restore checks the feed, then brings one back.")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            Divider()
+            if model.dismissedEpisodes.isEmpty {
+                Text("Nothing is removed.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(model.dismissedEpisodes.enumerated()), id: \.element.id) { index, dismissal in
+                            if index > 0 { Divider() }
+                            dismissedRow(dismissal)
+                        }
+                    }
+                }
+                .frame(maxHeight: 420)
             }
         }
-        .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-        .wiltedCard(colorScheme)
+        .padding(WiltedTheme.Spacing.large)
+        .frame(width: 440)
+        // end removedPopover
     }
 
     private func dismissedRow(_ dismissal: WiltedMacDismissedEpisode) -> some View {
@@ -769,11 +800,20 @@ private struct WiltedMacPodcastOperationMessage: View {
 
     var body: some View {
         if let message = model.podcastOperationMessage {
-            Text(message)
-                .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("wilted-podcast-operation-message")
+            HStack(spacing: WiltedTheme.Spacing.small) {
+                Text(message)
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-podcast-operation-message")
+                if let undoable = model.undoableRemoval {
+                    Button("Undo") {
+                        model.restoreEpisode(undoable)
+                    }
+                    .accessibilityIdentifier("wilted-podcast-undo-removal")
+                    .accessibilityLabel("Undo removing \(undoable.title)")
+                }
+            }
         }
     }
 }

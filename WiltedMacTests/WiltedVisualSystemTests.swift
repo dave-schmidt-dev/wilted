@@ -804,8 +804,8 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertEqual(removed.id, "episode-id", "Restore identity must remain stable across renders")
     }
 
-    /// The Removed rows must reach the card with no accessibility container
-    /// between them, because an intermediate one swallows them.
+    /// The Removed rows must reach the popover root with no accessibility
+    /// container between them, because an intermediate one swallows them.
     ///
     /// Two fixes were tried on the Feeds card and neither worked. Marking the
     /// section `.accessibilityElement(children: .contain)` made the section
@@ -815,13 +815,16 @@ final class WiltedVisualSystemTests: XCTestCase {
     /// and they vend `wilted-podcast-feed-row-*` normally. The container was
     /// the only difference.
     ///
-    /// On 2026-09-05 the section moved to a collapsed `DisclosureGroup` at the
-    /// top of the Larder. The same rule applies to the new shape: between the
-    /// rows and the card there is the disclosure's content stack, its label,
-    /// and the group's own modifiers, and none of them may claim to be an
-    /// accessibility element or carry an identifier. The one identifier in
-    /// that region is the title inside the label, a leaf, which the UI journey
-    /// clicks to expand the group.
+    /// On 2026-09-05 the section moved a second time, off a collapsed
+    /// `DisclosureGroup` and into a popover behind a header button. 26 removed
+    /// episodes in that card were taking the Larder's prime space above
+    /// "Saved articles and episodes" -- the section whose job is to show what
+    /// is still there to play, not what came off the shelf. The Removed list
+    /// is consulted only right after a mistake, so it now costs one button in
+    /// the list header (or, when the Larder is empty, one button under the
+    /// empty state) rather than the top of the page. The same accessibility
+    /// rule applies to the popover: nothing between the rows and the popover's
+    /// root may claim to be an accessibility element or carry an identifier.
     func testTheRemovedRowsReachTheCardWithNoAccessibilityContainerBetween() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
@@ -840,27 +843,36 @@ final class WiltedVisualSystemTests: XCTestCase {
         )
         XCTAssertTrue(source.contains("wilted-podcast-restore-\\(dismissal.id)"))
 
-        // The section is the Larder's disclosure, and only that: the Feeds card
-        // no longer renders these rows.
+        // The disclosure card is gone: the collapsible section that used to
+        // hold these rows at the top of the Larder no longer exists.
+        XCTAssertFalse(source.contains("removedDisclosure"), "the disclosure card was replaced by a popover")
+        XCTAssertFalse(
+            source.contains("DisclosureGroup(isExpanded: $showsRemoved"),
+            "the disclosure card was replaced by a popover"
+        )
+        XCTAssertTrue(
+            source.contains(".popover(isPresented: $showsRemoved"),
+            "the Removed list now opens from a popover, not a disclosure"
+        )
+
+        // The rows render in exactly one place: inside removedPopover.
         XCTAssertEqual(source.components(separatedBy: "dismissedRow(dismissal)").count, 2,
                        "the Removed rows render in exactly one place")
         let sectionStart = try XCTUnwrap(source.range(of: "dismissedRow(dismissal)")).upperBound
-        // Anchored forward from the rows to the card modifier that closes the
-        // disclosure group; everything in between is the path a row's
-        // identifier has to travel to reach the card.
+        // Anchored forward from the rows to a comment marking the close of
+        // removedPopover's body; everything in between is the path a row's
+        // identifier has to travel to reach the popover root.
         let sectionEnd = try XCTUnwrap(
-            source.range(of: ".wiltedCard(colorScheme)", range: sectionStart..<source.endIndex)
+            source.range(of: "// end removedPopover", range: sectionStart..<source.endIndex)
         ).lowerBound
         let between = source[sectionStart..<sectionEnd]
-            .replacingOccurrences(of: ".accessibilityIdentifier(\"wilted-podcast-removed-title\")", with: "")
-        XCTAssertTrue(between.contains("} label: {"), "the scanned region must span the disclosure's content and label")
         XCTAssertFalse(
             between.contains(".accessibilityElement("),
-            "an accessibility container between the Removed rows and the card stops the rows vending"
+            "an accessibility container between the Removed rows and the popover root stops the rows vending"
         )
         XCTAssertFalse(
             between.contains(".accessibilityIdentifier("),
-            "an identifier on the Removed section makes it an implicit element that absorbs its rows"
+            "an identifier between the Removed rows and the popover root makes it an implicit element that absorbs its rows"
         )
     }
 

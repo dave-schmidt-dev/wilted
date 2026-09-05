@@ -281,6 +281,10 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(skip.waitForExistence(timeout: 3))
         skip.click()
         XCTAssertFalse(episode.exists)
+        XCTAssertTrue(
+            app.buttons["wilted-podcast-undo-removal"].waitForExistence(timeout: 3),
+            "the removal message must offer Undo right after Skip"
+        )
         search.click()
         search.typeKey("a", modifierFlags: .command)
         search.typeKey(.delete, modifierFlags: [])
@@ -289,12 +293,12 @@ final class WiltedMacSmokeUITests: XCTestCase {
             "Article behavior remains available after episode removal"
         )
 
-        // Removed now lives at the top of the Larder itself, not on Podcast
-        // feeds: no navigation away from this destination. The disclosure is
-        // collapsed by default, so it has to be opened before its rows exist;
-        // its title sits in the disclosure label, and clicking it toggles it.
+        // Removed now lives behind a button in the Larder's own list header,
+        // not on Podcast feeds: no navigation away from this destination, and
+        // no card holding the Larder's prime space either. The button opens a
+        // popover, so its rows do not exist until it is clicked.
         let removedTitle = app.descendants(matching: .any)["wilted-podcast-removed-title"]
-        XCTAssertTrue(removedTitle.waitForExistence(timeout: 5), "the Removed disclosure must appear in the Larder")
+        XCTAssertTrue(removedTitle.waitForExistence(timeout: 5), "the Removed button must appear in the Larder")
         removedTitle.click()
         XCTAssertTrue(
             app.descendants(matching: .any).matching(

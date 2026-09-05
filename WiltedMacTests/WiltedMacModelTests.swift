@@ -289,8 +289,7 @@ final class WiltedMacModelTests: XCTestCase {
         model.removeEpisode(unwanted)
         try await settle(model)
         XCTAssertEqual(model.episodes.map(\.feedTitle), ["Beta"])
-        XCTAssertEqual(model.podcastOperationMessage,
-                       "Removed \(unwanted.title). Refreshing will not bring it back.")
+        XCTAssertEqual(model.podcastOperationMessage, "Removed \(unwanted.title).")
 
         let relaunched = WiltedMacModel(
             arguments: [],
@@ -305,6 +304,41 @@ final class WiltedMacModelTests: XCTestCase {
         try await settle(relaunched)
         XCTAssertEqual(relaunched.episodes.map(\.feedTitle), ["Beta"],
                        "a removal that only lives in memory reappears here")
+    }
+
+    /// The Undo button beside the removal message needs the removed episode's
+    /// identity to restore it. `removeEpisode` must record that identity once
+    /// the store confirms the dismissal, not just the optimistic hide.
+    func testRemovingAnEpisodeRecordsItForUndo() async throws {
+        let directory = temporaryDirectory("episode-remove-undo")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (model, _) = try await modelWithFeeds(["Alpha", "Beta"], directory: directory)
+        let unwanted = try XCTUnwrap(model.episodes.first { $0.feedTitle == "Alpha" })
+
+        model.removeEpisode(unwanted)
+        try await settle(model)
+
+        XCTAssertEqual(model.undoableRemoval?.id, unwanted.id)
+        XCTAssertEqual(model.podcastOperationMessage, "Removed \(unwanted.title).")
+    }
+
+    /// A second removal must replace the first's undo record: only the most
+    /// recent removal is one keystroke away from being undone.
+    func testASecondRemovalReplacesTheFirstsUndoRecord() async throws {
+        let directory = temporaryDirectory("episode-remove-undo-replace")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (model, _) = try await modelWithFeeds(["Alpha", "Beta"], directory: directory)
+        let first = try XCTUnwrap(model.episodes.first { $0.feedTitle == "Alpha" })
+        let second = try XCTUnwrap(model.episodes.first { $0.feedTitle == "Beta" })
+
+        model.removeEpisode(first)
+        try await settle(model)
+        XCTAssertEqual(model.undoableRemoval?.id, first.id)
+
+        model.removeEpisode(second)
+        try await settle(model)
+        XCTAssertEqual(model.undoableRemoval?.id, second.id,
+                        "the newer removal must own the undo record, not the older one")
     }
 
     /// The manage actions run detached tasks, so a test has to let the
@@ -1708,6 +1742,63 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertTrue(model.dismissedEpisodes.isEmpty)
         XCTAssertTrue(model.libraryItems.contains { $0.id == episode.id },
                        "Restoring a same-session dismissal must clear the in-memory hide, not just the store record")
+    }
+
+    /// The Undo button beside the removal message calls
+    /// `restoreEpisode(model.undoableRemoval!)`. Undo must clear the record it
+    /// used, so the button does not linger offering to restore an episode a
+    /// second time, and must actually bring the episode back to the Larder.
+    func testUndoingARemovalClearsTheRecordAndRestoresTheEpisode() async throws {
+        let directory = temporaryDirectory("restore-same-session-undo")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let libraryURL = directory.appendingPathComponent("library.sqlite")
+        let store = try LocalLibraryStore(url: libraryURL)
+        let feedURL = URL(string: "https://podcasts.example.test/waveform.xml")!
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let targetURL = URL(string: "https://cdn.example.test/waveform.mp3")!
+        let targetID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "wave", enclosureURL: targetURL)
+        let feed = try PodcastFeed(
+            itemID: feedID, canonicalURL: feedURL, title: "Waveform",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        )
+        let target = try PodcastEpisode(
+            itemID: targetID, feedID: feedID, feedURL: feedURL, rssGUID: "wave", title: "Wave episode",
+            publishedTime: Timestamp(Date(timeIntervalSince1970: 1_600_000_000)),
+            enclosureURL: targetURL, enclosureMediaType: "audio/mpeg",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_600_000_000))
+        )
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(
+            feedID: feedID, subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        ))
+        try await store.save(episode: target)
+        let xml = """
+        <rss><channel><title>Waveform</title>
+        <item><title>Wave episode</title><guid>wave</guid><pubDate>Sun, 13 Sep 2020 12:26:40 GMT</pubDate><enclosure url="https://cdn.example.test/waveform.mp3" type="audio/mpeg" /></item>
+        </channel></rss>
+        """
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            podcastFeedClient: PodcastFeedClient(
+                loader: FixedBodyLoader(body: Data(xml.utf8)), now: { Date(timeIntervalSince1970: 1_700_000_100) }
+            ), preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let episode = try XCTUnwrap(model.episodes.first { $0.id == targetID.rawValue })
+        model.removeEpisode(episode)
+        try await settle(model)
+
+        let undoable = try XCTUnwrap(model.undoableRemoval)
+        XCTAssertEqual(undoable.id, episode.id)
+
+        model.restoreEpisode(undoable)
+        XCTAssertNil(model.undoableRemoval, "Undo must clear the record it just used")
+        await model.waitForPodcastOperations()
+
+        XCTAssertTrue(model.libraryItems.contains { $0.id == episode.id },
+                       "Undo must actually bring the episode back to the Larder")
     }
 
     /// A legacy dismissal without a feed searches subscriptions sequentially;
