@@ -123,7 +123,7 @@ def build(captures, commit, date_iso, date_human, previous):
             "title, show, notes, and transcript text, so a phrase heard in an episode finds the episode. There "
             "is no address field in the page body and no feed card on this route; feeds live on Podcast feeds. "
             "The idle rail (<code>wilted-player-idle</code>) reads &ldquo;Nothing is playing&rdquo;. The text "
-            "and icon size is the Large step here because the fixture chooses it; the default is System.",
+            "and icon size is Large here, which is the setting a fresh install starts at; System is one step smaller.",
             captures),
         "larder-prepared": figure(
             "fig-larder-prepared", "4.2-larder-prepared-episode",
