@@ -4065,6 +4065,11 @@ final class WiltedMacModel {
                 title: "Quiet Machines", author: "Field Notes desk",
                 publishedTime: Timestamp(Date(timeIntervalSince1970: 1_699_827_200)),
                 enclosureURL: enclosureURL, enclosureMediaType: "audio/mpeg", durationSeconds: 1_482,
+                // Persisted as well as drawn: a download or a play reloads the
+                // rows from the store, and a fixture episode saved without its
+                // notes came back with none, so the player's notes pane and the
+                // title's popover tested a row that no longer existed.
+                notes: Self.fixtureEpisodeNotes,
                 createdAt: Timestamp(Date(timeIntervalSince1970: 1_699_827_200))
               ) else { return }
         episodes = [WiltedMacEpisode(

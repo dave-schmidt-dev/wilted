@@ -30,10 +30,12 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["wilted-player-keyboard-transports"].exists)
 
         let emptyState = app.descendants(matching: .any)["wilted-mac-empty-state"]
-        let urlField = app.descendants(matching: .any)["wilted-link-url"]
+        // The address box lives behind this button, so the button is what
+        // marks the Larder as the one destination that takes an article.
+        let addArticle = app.descendants(matching: .any)["wilted-add-article-button"]
         let syncControls = app.descendants(matching: .any)["wilted-sync-controls"]
         XCTAssertTrue(emptyState.waitForExistence(timeout: 5))
-        XCTAssertTrue(urlField.exists)
+        XCTAssertTrue(addArticle.exists)
         XCTAssertFalse(syncControls.exists)
 
         // Feeds is its own destination, so the feed card must leave Larder and
@@ -45,7 +47,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         )
         XCTAssertTrue(app.descendants(matching: .any)["wilted-podcast-feeds"].exists)
         XCTAssertTrue(compact.exists)
-        XCTAssertFalse(urlField.exists)
+        XCTAssertFalse(addArticle.exists)
         XCTAssertFalse(emptyState.exists)
 
         navProcessor.click()
@@ -53,7 +55,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
             app.descendants(matching: .any)["wilted-mac-processor-detail"].waitForExistence(timeout: 5)
         )
         XCTAssertTrue(compact.exists)
-        XCTAssertFalse(urlField.exists)
+        XCTAssertFalse(addArticle.exists)
         XCTAssertFalse(app.descendants(matching: .any)["wilted-mac-feeds-detail"].exists)
 
         navSettings.click()
@@ -62,7 +64,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["wilted-mac-processor-detail"].exists)
 
         navLibrary.click()
-        XCTAssertTrue(urlField.waitForExistence(timeout: 5))
+        XCTAssertTrue(addArticle.waitForExistence(timeout: 5))
         XCTAssertTrue(emptyState.exists)
         XCTAssertTrue(compact.exists)
         XCTAssertFalse(syncControls.exists)
@@ -234,11 +236,20 @@ final class WiltedMacSmokeUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-row-'")
         ).firstMatch
         XCTAssertTrue(episode.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Quiet Machines"].exists)
+        // The title is the notes button on a row that has notes, so it is
+        // found by what it offers rather than as a bare text.
+        XCTAssertTrue(app.buttons["Show notes for Quiet Machines"].exists)
         XCTAssertTrue(app.staticTexts["24:42"].exists)
 
         episode.click()
         XCTAssertTrue(episode.isSelected)
+
+        XCTAssertEqual(
+            app.descendants(matching: .any).matching(
+                NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-actions-'")
+            ).count, 0,
+            "A row that never finished downloading has nothing to put in a menu, so it draws none."
+        )
 
         let search = app.searchFields.firstMatch
         XCTAssertTrue(search.waitForExistence(timeout: 3))
@@ -269,8 +280,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertEqual(
             app.descendants(matching: .any).matching(
                 NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-actions-'")
-            ).count, 0,
-            "A row that never finished downloading has nothing to put in a menu, so it draws none."
+            ).count, 1,
+            "The retry finished the download, and a finished download can be fetched again from its menu."
         )
         // Skipping is a row button, not a menu item: it is the one action a
         // reader repeats down a feed, and reaching it through a menu that held
@@ -336,7 +347,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         // that would pass without the popover having opened at all. The guest
         // line appears nowhere but the full notes.
         XCTAssertTrue(
-            notes.label.contains("Ada Ferris"),
+            visibleText(of: notes).contains("Ada Ferris"),
             "The popover must carry the feed's notes, not just the row's one-line summary."
         )
     }
@@ -556,7 +567,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         let notesText = app.descendants(matching: .any)["wilted-player-notes-text"]
         XCTAssertTrue(notesText.waitForExistence(timeout: 5))
         XCTAssertTrue(
-            (notesText.value as? String ?? notesText.label).contains("Guest: Ada Ferris"),
+            visibleText(of: notesText).contains("Guest: Ada Ferris"),
             "Show notes pane must show the feed's notes"
         )
         XCTAssertEqual(notes.value as? String, "Expanded")
@@ -660,6 +671,9 @@ final class WiltedMacSmokeUITests: XCTestCase {
     func testArticleFlowAddsThenCancelsPreparation() {
         let app = launch(arguments: ["--wilted-ui-fixture-article-flow"])
 
+        let trigger = app.descendants(matching: .any)["wilted-add-article-button"]
+        XCTAssertTrue(trigger.waitForExistence(timeout: 5))
+        trigger.click()
         let url = app.descendants(matching: .any)["wilted-link-url"]
         XCTAssertTrue(url.waitForExistence(timeout: 5))
         url.click()
@@ -751,6 +765,16 @@ final class WiltedMacSmokeUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter().wait(for: [recovered], timeout: 5), .completed)
         XCTAssertFalse(review.exists)
+    }
+
+    /// The words an element shows. macOS puts a Text's words in its value, not
+    /// its label, and a Text with links can hand each run to a child, so the
+    /// element and its static-text descendants are read together.
+    private func visibleText(of element: XCUIElement) -> String {
+        let own = [element.value as? String, element.label].compactMap { $0 }
+        let children = element.descendants(matching: .staticText).allElementsBoundByIndex
+            .map { $0.value as? String ?? $0.label }
+        return (own + children).joined(separator: " ")
     }
 
     private func launch(arguments: [String]) -> XCUIApplication {
