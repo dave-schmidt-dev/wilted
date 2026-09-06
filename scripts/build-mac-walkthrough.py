@@ -66,8 +66,12 @@ def geometry(captures):
     if not sidecars:
         raise SystemExit(f"no geometry sidecars in {captures}")
     shapes = set()
+    popovers = []
     for sidecar in sidecars:
         data = json.loads(sidecar.read_text())
+        if data.get("kind") == "popover":
+            popovers.append((data["name"], data["capturedPixels"]["width"], data["capturedPixels"]["height"]))
+            continue
         shapes.add((
             data["window"]["width"], data["window"]["height"],
             data["capturedPixels"]["width"], data["capturedPixels"]["height"],
@@ -78,9 +82,14 @@ def geometry(captures):
         return ("Frames were not captured at one geometry: "
                 + "; ".join(str(shape) for shape in sorted(shapes))), len(sidecars), None, None
     w, h, cw, ch, ew, eh, inset = shapes.pop()
+    window_frames = len(sidecars) - len(popovers)
     line = (f"<code>window={w:g}x{h:g}</code>, <code>captured-pixels={cw}x{ch}</code>, "
             f"<code>embedded-pixels={ew}x{eh}</code>, <code>inset={inset}px per edge</code> "
-            f"&mdash; identical across all {len(sidecars)} frames")
+            f"&mdash; identical across all {window_frames} window frames")
+    if popovers:
+        line += ("; the " + ", ".join(f"{name} ({pw}x{ph})" for name, pw, ph in popovers)
+                 + " frames are popovers, each captured uninset at its own size, because a popover is a window "
+                 "of its own and never appears in the main window's frame")
     # Backing scale is observed, not assumed: the capture lands on whichever
     # display the window was restored to, and stating 1x on a Retina run (or
     # the reverse) would be a false claim inside audited evidence.
@@ -104,14 +113,17 @@ def build(captures, commit, date_iso, date_human, previous):
     figures = {
         "larder": figure(
             "fig-larder-idle", "4.1-larder-idle",
-            "Wilted Larder in its idle state showing the single add box, the saved-item list, and the bottom rail",
+            "Wilted Larder in its idle state showing the list header with Add article and the order control, "
+            "the saved-item list, the search field, and the bottom rail",
             "<strong>4.1 Larder, idle.</strong> The always-visible bottom rail is present with nothing playing. "
-            "One box takes both kinds of address: <code>wilted-mac-composer</code> holds "
-            "<code>wilted-link-url</code> and <code>wilted-add-link</code>, and the card states that Wilted works "
-            "out for itself whether the address is an article or a podcast feed. Below it the saved list carries "
-            "its own ordering control, <code>wilted-library-order</code>. There is no feed field and no feed card "
-            "on this route; both moved to Podcast feeds. The idle rail (<code>wilted-player-idle</code>) reads "
-            "&ldquo;Nothing is playing&rdquo;.",
+            "The list header holds everything that changes what the list contains: Add article "
+            "(<code>wilted-add-article-button</code>) opens the address box in a popover (4.3), Removed appears "
+            "beside it once an episode has been skipped or finished (4.4, 4.5), and the ordering control "
+            "(<code>wilted-library-order</code>) sits at the end. The toolbar's search field filters the list by "
+            "title, show, notes, and transcript text, so a phrase heard in an episode finds the episode. There "
+            "is no address field in the page body and no feed card on this route; feeds live on Podcast feeds. "
+            "The idle rail (<code>wilted-player-idle</code>) reads &ldquo;Nothing is playing&rdquo;. The text "
+            "and icon size is the Large step here because the fixture chooses it; the default is System.",
             captures),
         "larder-prepared": figure(
             "fig-larder-prepared", "4.2-larder-prepared-episode",
@@ -133,10 +145,40 @@ def build(captures, commit, date_iso, date_human, previous):
             "Skipping is "
             "a row button beside Download (<code>wilted-episode-skip-item-&lt;hash&gt;</code>): it is the one "
             "action a reader repeats down a feed, and it is permanent in the sense that a refresh will not "
-            "bring the episode back, though it is listed under Removed on Podcast feeds with a Restore beside "
-            "it. A row whose durable record says the episode is finished reads &ldquo;Played &middot; "
+            "bring the episode back, though it is listed under Removed in the Larder header with a Restore "
+            "beside it (4.4, 4.5). A row whose durable record says the episode is finished reads &ldquo;Played &middot; "
             "&lt;length&gt;&rdquo; in place of its progress line. Every row leads with a produce tile where "
             "there is no artwork: lettuce for an article, cabbage for an episode.",
+            captures),
+        "larder-add": figure(
+            "fig-larder-add-article", "4.3-larder-add-article",
+            "The Add article popover with its address field and Add button",
+            "<strong>4.3 Add article.</strong> The popover the header button opens: one field "
+            "(<code>wilted-link-url</code>) and one button (<code>wilted-add-link</code>), with the card stating "
+            "that Wilted works out for itself whether the address is an article or a podcast feed. It stays open "
+            "after Add so the answer, and the offer to follow a feed the page advertises, arrive where the "
+            "address was typed; Escape or a click elsewhere closes it. This frame is the popover's own window, "
+            "captured at its own size.",
+            captures),
+        "larder-skipped": figure(
+            "fig-larder-skipped-undo", "4.4-larder-skipped-undo",
+            "Larder after Skip, with the removal message offering Undo and Removed in the list header",
+            "<strong>4.4 Larder after Skip.</strong> Skip (<code>wilted-episode-skip-item-&lt;hash&gt;</code>) "
+            "is one press. The episode leaves the list, the message above the list says so and offers Undo "
+            "(<code>wilted-podcast-undo-removal</code>), and the header gains Removed with its count "
+            "(<code>wilted-podcast-removed-title</code>). Skipping the episode that is playing stops the audio. "
+            "A skipped episode does not come back on a feed refresh; Undo or Restore is how it returns.",
+            captures),
+        "larder-removed": figure(
+            "fig-larder-removed", "4.5-larder-removed",
+            "The Removed popover listing the skipped episode with a Restore button",
+            "<strong>4.5 Removed.</strong> The popover behind the header button lists skipped and finished "
+            "episodes, each as <code>wilted-podcast-removed-row-&lt;id&gt;</code> with its show and, where a "
+            "run was recorded, &ldquo;Prep history available&rdquo;. Restore "
+            "(<code>wilted-podcast-restore-&lt;id&gt;</code>) checks the feed and brings the episode back to "
+            "the list in the same session, without its old cut: the revision, transcript, and playback "
+            "position went with the removal, so a restored episode reads as not prepared until it is prepared "
+            "again. This frame is the popover's own window.",
             captures),
         "feeds": figure(
             "fig-feeds-page", "5.1-feeds-page",
@@ -212,8 +254,11 @@ def build(captures, commit, date_iso, date_human, previous):
             "The Prep destination with the bottom rail still carrying its playing state",
             "<strong>7.1 Prep, with playback retained.</strong> Switching destination did not remove the rail or "
             "its current-item state, which is the behaviour the always-visible bottom rail is meant to produce. "
-            "Prep reports &ldquo;Nothing is preparing&rdquo; and &ldquo;0 recorded&rdquo;: no fixture starts a "
-            "run, so this is the empty Prep route, not an idle one.",
+            "Prep reports &ldquo;Nothing is preparing&rdquo;, an empty Waiting region "
+            "(<code>wilted-processor-waiting-empty</code>), and &ldquo;0 recorded&rdquo;: no fixture starts a "
+            "run, so this is the empty Prep route, not an idle one. One preparation runs at a time; the "
+            "others wait in the Waiting region with a Stop of their own, so a queue of downloads has "
+            "somewhere to say it is queued rather than reading as stuck.",
             captures),
         "prep-run": figure(
             "fig-prep-recorded-run", "7.2-prep-recorded-run",
@@ -223,8 +268,11 @@ def build(captures, commit, date_iso, date_human, previous):
             "the same &ldquo;Ready &middot; 5 ads removed (7:22) &middot; transcript synced&rdquo; sentence "
             "the Larder row carries, and Show log (<code>wilted-processor-log-toggle-&lt;id&gt;</code>). A "
             "failed run shows its reason here with Retry beside it; the Larder row for a failure says only "
-            "&ldquo;Preparation failed. See Prep.&rdquo; A running podcast preparation appears under Active "
-            "with the latest worker stage as a sentence, a progress bar, Stop, and the food-processor symbol.",
+            "&ldquo;Preparation failed. See Prep.&rdquo; A run the app quit in the middle of (an install "
+            "over a running app, for one) is closed at the next launch as a failure that reads &ldquo;Wilted "
+            "quit while this was preparing&rdquo;, with the same Retry, rather than staying Preparing for "
+            "good. A running podcast preparation appears under Active with the latest worker stage as a "
+            "sentence, a progress bar, Stop, and the food-processor symbol.",
             captures),
         "prep-log": figure(
             "fig-prep-run-log", "7.3-prep-run-log",
@@ -243,9 +291,12 @@ def build(captures, commit, date_iso, date_human, previous):
             "fig-settings-frame", "8.1-settings-with-playback",
             "The Settings destination with the bottom rail still carrying its playing state",
             "<strong>8.1 Settings, with playback retained.</strong> As on Prep, the rail survives the route "
-            "change with its current-item state intact. Sync reads Disabled with the detail &ldquo;Sync is not "
-            "configured.&rdquo;, producer identity Unavailable, and last fetch and last send Not yet. Refresh and "
-            "Upload are rendered disabled in this state.",
+            "change with its current-item state intact. Appearance (<code>wilted-appearance-controls</code>) "
+            "comes first: Text and icon size offers System, Large, Larger, and Largest, applies to every "
+            "screen including the sidebar, the controls, and the search field, and survives relaunch. Sync "
+            "reads Disabled with the detail &ldquo;Sync is not configured.&rdquo;, producer identity "
+            "Unavailable, and last fetch and last send Not yet. Refresh and Upload are rendered disabled in "
+            "this state.",
             captures),
         "download": figure(
             "fig-download-recovery", "9.1-download-failure-retry",
@@ -280,7 +331,7 @@ def build(captures, commit, date_iso, date_human, previous):
 <p class="eyebrow">Wilted &middot; Mac daily-driver walkthrough &middot; {date_human} &middot; candidate evidence</p>
 <h1>Mac daily-driver review.<br><em>Signed content-viewport evidence.</em></h1>
 <p>This report is a screen-by-screen review of the Wilted Mac app as built from the candidate commit below. Every image is an app-owned, window-scoped capture of the Wilted process itself, taken during a signed local XCUITest session. It is candidate evidence for owner review. It is not owner acceptance, not a release record, and not evidence of any production, device, or store state.</p>
-<p>It supersedes the {previous} report, which predates the single address box in Larder and the Podcast feeds destination. Every frame here was retaken; none is carried over.</p>
+<p>It supersedes the {previous} report, which predates the Larder list header, the Removed popover, and the text-size setting. Every frame here was retaken; none is carried over.</p>
 <nav class="toc" aria-label="Contents"><a href="#current">Current state</a><a href="#method">Method</a><a href="#onboarding">Onboarding</a><a href="#library">Larder</a><a href="#feeds">Podcast feeds</a><a href="#playback">Playback</a><a href="#prep">Prep</a><a href="#settings">Settings</a><a href="#recovery">Recovery</a><a href="#roles">Roles</a><a href="#system-boundaries">System boundaries</a><a href="#limits">Coverage limits</a><a href="#non-claims">Non-claims</a><a href="#owner-checklist">Owner checklist</a></nav>
 </header>
 
@@ -289,11 +340,11 @@ def build(captures, commit, date_iso, date_human, previous):
 <table><thead><tr><th>Property</th><th>Observed value</th></tr></thead><tbody>
 <tr><td>Bundle identifier</td><td><code>com.zerodelta.wilted.mac</code></td></tr>
 <tr><td>Signature</td><td><code>CODE_SIGN_IDENTITY=Apple Development</code>, <code>DEVELOPMENT_TEAM=4CJ49V6QHW</code>; the gate verifies the runner with <code>codesign --verify --deep --strict</code> and refuses quarantine or FinderInfo metadata on either bundle</td></tr>
-<tr><td>Captured processes</td><td>Seven launches across six capture scenarios &mdash; the recovery scenario launches twice, once for the download failure and once for the quarantine notice. Each frame is scoped to its own launch's window.</td></tr>
+<tr><td>Captured processes</td><td>Seven launches across six capture scenarios &mdash; the recovery scenario launches twice, once for the download failure and once for the quarantine notice. Each frame is scoped to its own launch's window, or, for the two popover frames, to the popover that launch opened.</td></tr>
 <tr><td>Window geometry</td><td>{geometry_line}</td></tr>
 <tr><td>Reproducing this report</td><td><code>scripts/record-walkthrough-frames.sh</code> writes the frames and a geometry sidecar beside each one, by setting <code>WILTED_WALKTHROUGH_CAPTURE=1</code> inside the generated scheme's TestAction and running <code>-only-testing:WiltedMacUITests/WiltedMacWalkthroughCapture</code>; <code>scripts/build-mac-walkthrough.py</code> assembles this document from that directory</td></tr>
 </tbody></table>
-<div class="warning"><strong>What changed since the {previous} report.</strong> Fourteen commits, all on the same routes. The sidebar, the rows, the rail, and the empty Larder now use Wilted&rsquo;s own symbols (a larder, a cutting board for Prep, broccoli for Podcast feeds, lettuce for an article, cabbage for an episode, a food processor for a run in progress); they appear in every frame. Now Playing gained a Notes pane for episodes (6.4), and an episode row leads with its notes&rsquo; opening sentence. Preparation detail left the Larder row for Prep: a prepared row carries the outcome sentence (4.2), Prep lists each run with Show log and, for a failure, Retry (7.2, 7.3), and Prepare again and Remove live in the row&rsquo;s &hellip; menu; Remove is now permanent. The Larder order and the playback speed survive relaunch, and the speed defaults to 1.25x. Under the surface the pipeline reads the episode twice (a plain pass for advertisement detection and a punctuated pass for reading), corrects names and addresses from the show notes, and no longer primes the audio output at launch, which was the click on opening. Every frame was retaken at this commit.</div>
+<div class="warning"><strong>What changed since the {previous} report.</strong> Fifty-six commits; the routes are the same four. The Larder's address box moved behind an Add article button in the list header (4.1, 4.3), and Removed moved from Podcast feeds to the same header as a button and popover (4.4, 4.5); Skip is one press with Undo in the message it leaves, stops the audio if it was playing, and a restored episode comes back without the cut it had. The toolbar search now reads transcripts as well as titles, shows, and notes. Settings gained Appearance, a four-step text and icon size that every screen follows (8.1). Playback continues to the next episode in Up Next when one ends. Prep gained a Waiting region, admits one preparation at a time (7.1), and closes a run the app quit in the middle of as a failure with Retry instead of leaving it Preparing (7.2). Under the surface, the pipeline recovers produced advertising at both edges of an episode, refuses a span that would cover most of it, cuts inserted advertising the published transcript never described, and is measured against labelled real episodes rather than scripted answers; automation runs from the launch path and refuses back-catalogue claims. Every frame was retaken at this commit.</div>
 </section>
 
 <section id="method"><h2>2. Method and evidence labels</h2>
@@ -309,16 +360,19 @@ def build(captures, commit, date_iso, date_human, previous):
 </section>
 
 <section id="onboarding"><h2>3. Onboarding and first run</h2>
-<p>Wilted has no account creation, sign-in, or welcome sequence. First run opens directly on Larder with the add box and an empty saved list; the app is usable without configuring anything. Sync is opt-in and lives in Settings; it is not part of first run and does not gate any Larder function.</p>
+<p>Wilted has no account creation, sign-in, or welcome sequence. First run opens directly on Larder with an empty saved list and the Add article button under it; the app is usable without configuring anything. Sync is opt-in and lives in Settings; it is not part of first run and does not gate any Larder function.</p>
 <p>Subscribing to a podcast is likewise not an onboarding step, and it is not a separate skill to learn: the same box that saves an article takes a feed address. The Podcast feeds destination is empty until the listener adds one, and it says so in place rather than hiding.</p>
 <p class="muted">No separate onboarding screen exists in this build, so none is captured. If one is added, this report must be refreshed.</p>
 </section>
 
 <section id="library"><h2>4. Larder</h2>
 <p>Larder is the primary library destination and the default route at launch. The sidebar (<code>wilted-mac-sidebar</code>) holds the wordmark and four destinations: <code>wilted-navigation-library</code>, <code>wilted-navigation-feeds</code>, <code>wilted-navigation-processor</code>, and <code>wilted-navigation-settings</code>, drawn with the larder, broccoli, cutting-board, and gear symbols; the first three are Wilted&rsquo;s own, compiled from <code>Shared/WiltedSymbols.xcassets</code>. The detail pane is <code>wilted-mac-library-detail</code>.</p>
-<p>Larder is for the things worth reading and listening to. Adding something is one field and one button; there is no second box, and nothing asks the reader to say in advance whether an address is an article or a podcast. An address ending <code>.xml</code>, <code>.rss</code>, or <code>.atom</code> is taken as a feed without a fetch. Anything else is fetched once, bounded, and read: a document whose root element is <code>&lt;rss&gt;</code>, <code>&lt;feed&gt;</code>, or <code>&lt;rdf:RDF&gt;</code> is a feed, and a page is an article. A page that publishes a feed of its own is still saved as the article that was pasted, with the feed offered as an explicit Subscribe action rather than followed silently. While the fetch is in flight the box says so in <code>wilted-link-status</code>, and an address that cannot be reached is reported there rather than guessed at.</p>
+<p>Larder is for the things worth reading and listening to. Adding something is one button, one field, and one more button; there is no second box, and nothing asks the reader to say in advance whether an address is an article or a podcast. An address ending <code>.xml</code>, <code>.rss</code>, or <code>.atom</code> is taken as a feed without a fetch. Anything else is fetched once, bounded, and read: a document whose root element is <code>&lt;rss&gt;</code>, <code>&lt;feed&gt;</code>, or <code>&lt;rdf:RDF&gt;</code> is a feed, and a page is an article. A page that publishes a feed of its own is still saved as the article that was pasted, with the feed offered as an explicit Subscribe action rather than followed silently. While the fetch is in flight the box says so in <code>wilted-link-status</code>, and an address that cannot be reached is reported there rather than guessed at.</p>
 {figures["larder"]}
+{figures["larder-add"]}
 {figures["larder-prepared"]}
+{figures["larder-skipped"]}
+{figures["larder-removed"]}
 <p>Per-item controls carry a stable content hash in their identifier: <code>wilted-article-row-item-&lt;hash&gt;</code> and <code>wilted-episode-row-item-&lt;hash&gt;</code> for the rows, with <code>wilted-article-actions-item-&lt;hash&gt;</code> and <code>wilted-episode-actions-item-&lt;hash&gt;</code> for their action menus. These identifiers are present in the Accessibility tree for every captured route.</p>
 </section>
 
@@ -372,7 +426,7 @@ def build(captures, commit, date_iso, date_human, previous):
 <p>What this report does not cover, stated rather than implied:</p>
 <ul>
 <li>No frame shows a real feed. Every capture runs against a UI fixture, so titles, counts, and durations are fixture values.</li>
-<li>The single add box is captured idle. Its three outcomes &mdash; feed, article, and article-advertising-a-feed &mdash; are covered by automated tests rather than by pixels here, because each needs a live fetch the capture session does not perform.</li>
+<li>The address box is captured open and idle (4.3). Its three outcomes &mdash; feed, article, and article-advertising-a-feed &mdash; are covered by automated tests rather than by pixels here, because each needs a live fetch the capture session does not perform.</li>
 <li>Preparation is captured empty. No frame shows advertisement removal running or a prepared summary, and therefore no frame shows a removed-advertisement marker in the transcript either. Placement is covered by tests; that it reads correctly beside real speech is an owner observation, listed in section 14.</li>
 <li>Transcript synchronisation against real audio is not captured. The panel is shown expanded; a timed transcript following the playback clock is covered by tests, not by a frame.</li>
 <li>The sidebar in these frames is the real one, but pixel snapshot baselines cannot see it: a <code>NavigationSplitView</code> navigation column is hosted in a separate AppKit hierarchy that offscreen rendering does not draw. Sidebar behaviour is owned by the XCUITest suite instead.</li>
@@ -398,7 +452,9 @@ def build(captures, commit, date_iso, date_human, previous):
 <li>Use the widget's skip controls and confirm they move by the same 15 and 30 seconds the on-screen rail does, and that next and previous are unavailable at the ends of Up Next.</li>
 <li>Let an episode reach its end with the window closed and confirm the widget stops claiming to be playing.</li>
 <li>Press Mark completed part way through an episode and confirm the audio stops, the button reads Completed, the queue stays on the same episode, and the Larder row changes to &ldquo;Played&rdquo;.</li>
-<li>Skip an episode from its row button in one press, confirm it leaves Larder, and find it under Removed on Podcast feeds with Restore beside it.</li>
+<li>Skip an episode from its row button in one press, confirm it leaves Larder and the message offers Undo, then open Removed in the Larder header and confirm Restore brings it back without its old cut.</li>
+<li>Change Text and icon size in Settings and confirm the sidebar, the rows, the search field, and the rail all follow, and that the choice survives relaunch.</li>
+<li>Quit Wilted while an episode is preparing, relaunch, and confirm Prep shows the run as failed with the reason and a Retry, and that Retry prepares it.</li>
 </ol></section>
 
 </main></body></html>

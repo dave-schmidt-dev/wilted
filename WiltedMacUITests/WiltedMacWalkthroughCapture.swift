@@ -63,6 +63,35 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         XCTAssertTrue(element(app, "wilted-library-order").waitForExistence(timeout: 15))
         XCTAssertTrue(element(app, "wilted-player-idle").waitForExistence(timeout: 10))
         try write(app, "4.1-larder-idle", into: root)
+
+        // The address box is behind Add article now, and a popover is its
+        // own window, so the main window's frame cannot show it: the popover
+        // is captured as itself.
+        element(app, "wilted-add-article-button").click()
+        XCTAssertTrue(element(app, "wilted-link-url").waitForExistence(timeout: 10))
+        try write(popover: app.popovers.firstMatch, "4.3-larder-add-article", into: root)
+        app.typeKey(.escape, modifierFlags: [])
+
+        // Skip is one press, and the message it leaves offers Undo; Removed
+        // then appears in the list header and opens the removed list.
+        let skip = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-skip-'")
+        ).firstMatch
+        XCTAssertTrue(skip.waitForExistence(timeout: 10))
+        skip.click()
+        XCTAssertTrue(element(app, "wilted-podcast-undo-removal").waitForExistence(timeout: 10))
+        try write(app, "4.4-larder-skipped-undo", into: root)
+
+        let removed = element(app, "wilted-podcast-removed-title")
+        XCTAssertTrue(removed.waitForExistence(timeout: 10))
+        removed.click()
+        let removedRow = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-removed-row-'")
+        ).firstMatch
+        if !removedRow.waitForExistence(timeout: 3) { removed.click() }
+        XCTAssertTrue(removedRow.waitForExistence(timeout: 10))
+        try write(popover: app.popovers.firstMatch, "4.5-larder-removed", into: root)
+        app.typeKey(.escape, modifierFlags: [])
         app.terminate()
     }
 
@@ -214,6 +243,27 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         "capturedPixels":{"width":\(source.pixelsWide),"height":\(source.pixelsHigh)},\
         "embeddedPixels":{"width":\(cropped.pixelsWide),"height":\(cropped.pixelsHigh)},\
         "insetPixelsPerEdge":\(inset)}
+        """
+        try Data(sidecar.utf8).write(to: root.appendingPathComponent("\(name).json"))
+    }
+
+    /// Writes one PNG of a popover plus its sidecar.
+    ///
+    /// A popover is a window of its own, so the main window's screenshot
+    /// never contains it. The frame is the popover element's, uninset, and
+    /// the sidecar says so with `"kind":"popover"`, which is how the report
+    /// keeps these out of the one-geometry claim it makes for window frames.
+    private func write(popover: XCUIElement, _ name: String, into root: URL) throws {
+        XCTAssertTrue(popover.waitForExistence(timeout: 10))
+        let shot = popover.screenshot()
+        let source = try XCTUnwrap(NSBitmapImageRep(data: shot.pngRepresentation))
+        try shot.pngRepresentation.write(to: root.appendingPathComponent("\(name).png"))
+        let sidecar = """
+        {"name":"\(name)","kind":"popover","window":{"x":\(popover.frame.origin.x),"y":\(popover.frame.origin.y),\
+        "width":\(popover.frame.width),"height":\(popover.frame.height)},\
+        "capturedPixels":{"width":\(source.pixelsWide),"height":\(source.pixelsHigh)},\
+        "embeddedPixels":{"width":\(source.pixelsWide),"height":\(source.pixelsHigh)},\
+        "insetPixelsPerEdge":0}
         """
         try Data(sidecar.utf8).write(to: root.appendingPathComponent("\(name).json"))
     }
