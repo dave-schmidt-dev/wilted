@@ -1046,11 +1046,17 @@ private struct WiltedMacEpisodeRow: View {
                     // First because it is the one that can undo a bad run.
                     // Preparation writes over the download, so an episode cut
                     // from a transcript that did not describe it has no source
-                    // left to prepare again from.
-                    Button("Download again") { model.redownloadEpisode(episode) }
+                    // left to prepare again from. The labels say which file
+                    // each one works on, and the line under them says why
+                    // that matters, because "Download again" and "Prepare
+                    // again" read as two routes to the same result when the
+                    // second can only ever re-cut the cut.
+                    Button("Download again, then prepare") { model.redownloadEpisode(episode) }
                     if case .prepared = episode.preparationState {
-                        Button("Prepare again") { model.prepareEpisode(episode) }
+                        Button("Prepare this copy again") { model.prepareEpisode(episode) }
                     }
+                    Divider()
+                    Text("Preparing writes the cut audio over the download.")
                 } label: {
                     Image(systemName: "ellipsis").accessibilityLabel("More actions for \(episode.title)")
                 }

@@ -377,12 +377,20 @@ final class WiltedMacSmokeUITests: XCTestCase {
             .firstMatch
         XCTAssertTrue(actions.waitForExistence(timeout: 5))
         actions.click()
-        let again = app.menuItems["Prepare again"]
+        let again = app.menuItems["Prepare this copy again"]
         // A freshly launched app occasionally swallows the first click on a
         // menu button (seen once on 2026-09-01: passed alone, failed in a
         // pair). One more click is the same gesture the reader would make.
         if !again.waitForExistence(timeout: 3) { actions.click() }
-        XCTAssertTrue(again.waitForExistence(timeout: 5), "A prepared episode's menu must offer Prepare again.")
+        XCTAssertTrue(again.waitForExistence(timeout: 5), "A prepared episode's menu must offer Prepare this copy again.")
+        XCTAssertTrue(
+            app.menuItems["Download again, then prepare"].exists,
+            "The fresh-copy route sits beside the re-cut route, so the two read as different files."
+        )
+        XCTAssertTrue(
+            app.menuItems["Preparing writes the cut audio over the download."].exists,
+            "The menu says why the two routes differ."
+        )
         again.click()
         XCTAssertTrue(
             app.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].waitForNonExistence(timeout: 10),
