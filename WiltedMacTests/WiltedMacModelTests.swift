@@ -185,6 +185,35 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(model.articles.map(\.title), ["Fixture article"])
     }
 
+    func testAudioRouteRecoveryAutomaticallyAttemptsOnceThenExposesManualRetry() async throws {
+        let directory = temporaryDirectory("audio-route-recovery")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: directory,
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        let article = try XCTUnwrap(model.articles.first)
+        model.openNowPlaying(for: article)
+        try await settle(model)
+
+        model.failNextAudioRouteRecoveryForTesting()
+        model.reportAudioRouteFault("Playback is unavailable.")
+        try await settle(model)
+
+        XCTAssertTrue(model.audioRouteFault, "failed automatic recovery exposes manual retry")
+        XCTAssertEqual(model.playbackError, "Audio route recovery failed.")
+
+        model.reportAudioRouteFault("Playback is unavailable.")
+        try await settle(model)
+        XCTAssertTrue(model.audioRouteFault, "a repeated fault must not start another automatic retry")
+
+        model.recoverAudioRoute()
+        try await settle(model)
+        XCTAssertFalse(model.audioRouteFault)
+        XCTAssertNil(model.playbackError)
+    }
+
     // MARK: - Feed management
 
     /// Builds a store-backed model whose library already holds `feeds`, each

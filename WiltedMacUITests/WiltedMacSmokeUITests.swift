@@ -114,8 +114,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-off-peak-end"].exists)
         let explanation = app.descendants(matching: .any)["wilted-automation-off-peak-explanation"]
         XCTAssertTrue(explanation.exists)
-        XCTAssertTrue(explanation.label.localizedCaseInsensitiveContains("local time"))
-        XCTAssertTrue(explanation.label.localizedCaseInsensitiveContains("overnight"))
+        XCTAssertTrue(visibleText(of: explanation).localizedCaseInsensitiveContains("local time"))
+        XCTAssertTrue(visibleText(of: explanation).localizedCaseInsensitiveContains("overnight"))
     }
 
     func testProcessorReportsActiveWorkAndRunHistory() {
@@ -572,9 +572,9 @@ final class WiltedMacSmokeUITests: XCTestCase {
         for identifier in [
             "wilted-player-speed", "wilted-player-rewind", "wilted-player-play-pause",
             "wilted-player-forward", "wilted-player-transcript",
-            "wilted-player-notes", "wilted-player-up-next", "wilted-player-route-recovery", "wilted-player-volume",
+            "wilted-player-notes", "wilted-player-up-next", "wilted-player-volume",
             "wilted-player-scrubber", "wilted-player-previous", "wilted-player-next",
-            "wilted-player-restart", "wilted-player-keyboard-transports", "wilted-player-status"
+            "wilted-player-restart", "wilted-player-keyboard-transports"
         ] {
             XCTAssertEqual(
                 app.descendants(matching: .any).matching(identifier: identifier).count, 1,
@@ -586,6 +586,14 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertEqual(playPause.label, "Pause")
         app.typeKey(.space, modifierFlags: [])
         XCTAssertEqual(playPause.label, "Play", "Space must invoke the compact player's primary shortcut")
+
+        let itemTitle = app.descendants(matching: .any)["wilted-player-item-title"]
+        XCTAssertTrue(itemTitle.waitForExistence(timeout: 5))
+        let itemTitleBeforeExpansion = visibleText(of: itemTitle)
+        XCTAssertTrue(itemTitleBeforeExpansion.contains("Quiet Machines"))
+        let speed = app.descendants(matching: .any)["wilted-player-speed"]
+        let speedBeforeExpansion = speed.value
+        XCTAssertNotNil(speedBeforeExpansion, "Playback speed must expose its selected value")
 
         let scrubber = app.descendants(matching: .any)["wilted-player-scrubber"]
         guard let initialScrubberValue = Self.numericAXValue(of: scrubber) else {
@@ -601,23 +609,65 @@ final class WiltedMacSmokeUITests: XCTestCase {
             evaluatedWith: scrubber
         )
         waitForExpectations(timeout: 2)
+        guard let scrubberBeforeExpansion = Self.numericAXValue(of: scrubber) else {
+            return XCTFail("Playback scrubber must retain a numeric accessibility value while paused")
+        }
 
         let transcript = app.descendants(matching: .any)["wilted-player-transcript"]
         transcript.click()
         let transcriptExpansion = app.descendants(matching: .any)["wilted-player-transcript-expanded"]
         XCTAssertTrue(transcriptExpansion.waitForExistence(timeout: 5))
+        let fullWindow = app.descendants(matching: .any)["wilted-player-full-window"]
+        let collapse = app.descendants(matching: .any)["wilted-player-collapse"]
+        XCTAssertTrue(fullWindow.waitForExistence(timeout: 5))
+        XCTAssertTrue(collapse.exists)
+        XCTAssertFalse(library.isHittable, "The mounted work destination must not expose live controls beneath Now Playing")
         XCTAssertEqual(transcript.value as? String, "Expanded")
+        XCTAssertEqual(visibleText(of: itemTitle), itemTitleBeforeExpansion)
+        XCTAssertEqual("\(speed.value ?? "")", "\(speedBeforeExpansion ?? "")")
+        guard let scrubberDuringExpansion = Self.numericAXValue(of: scrubber) else {
+            return XCTFail("Playback scrubber must remain numeric while expanded")
+        }
+        XCTAssertEqual(scrubberDuringExpansion, scrubberBeforeExpansion, accuracy: 0.5)
+        let playbackStateBeforeCollapse = playPause.label
+        collapse.click()
+        XCTAssertTrue(fullWindow.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(compact.exists)
+        XCTAssertTrue(library.exists)
+        XCTAssertTrue(library.isHittable)
+        XCTAssertEqual(visibleText(of: itemTitle), itemTitleBeforeExpansion)
+        XCTAssertEqual("\(speed.value ?? "")", "\(speedBeforeExpansion ?? "")")
+        guard let scrubberAfterCollapse = Self.numericAXValue(of: scrubber) else {
+            return XCTFail("Playback scrubber must remain numeric after collapse")
+        }
+        XCTAssertEqual(scrubberAfterCollapse, scrubberBeforeExpansion, accuracy: 0.5)
+        XCTAssertEqual(playPause.label, playbackStateBeforeCollapse)
+
+        let transcriptAfterCollapse = app.descendants(matching: .any)["wilted-player-transcript"]
+        XCTAssertTrue(transcriptAfterCollapse.waitForExistence(timeout: 5))
+        XCTAssertEqual(transcriptAfterCollapse.value as? String, "Collapsed")
+        app.typeKey(.space, modifierFlags: [])
+        XCTAssertTrue(
+            fullWindow.waitForExistence(timeout: 5),
+            "Collapse must restore keyboard focus to the Transcript toggle"
+        )
+        XCTAssertFalse(library.isHittable)
         app.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(transcriptExpansion.waitForNonExistence(timeout: 5))
-        XCTAssertEqual(transcript.value as? String, "Collapsed")
+        XCTAssertTrue(fullWindow.waitForNonExistence(timeout: 5))
+        let transcriptAfterEscape = app.descendants(matching: .any)["wilted-player-transcript"]
+        XCTAssertTrue(transcriptAfterEscape.waitForExistence(timeout: 5))
+        XCTAssertEqual(transcriptAfterEscape.value as? String, "Collapsed")
         app.typeKey(.space, modifierFlags: [])
         XCTAssertTrue(
             transcriptExpansion.waitForExistence(timeout: 5),
             "Escape must restore keyboard focus to the Transcript toggle"
         )
-        app.typeKey(.escape, modifierFlags: [])
-        XCTAssertTrue(transcriptExpansion.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(fullWindow.exists)
 
+        // Switch sections inside the full-window player. This verifies that
+        // the presentation owns one shared transport while avoiding a second
+        // collapse/reopen cycle that would add no new focus evidence.
         let notes = app.descendants(matching: .any)["wilted-player-notes"]
         notes.click()
         let notesText = app.descendants(matching: .any)["wilted-player-notes-text"]
@@ -626,21 +676,27 @@ final class WiltedMacSmokeUITests: XCTestCase {
             visibleText(of: notesText).contains("Guest: Ada Ferris"),
             "Show notes pane must show the feed's notes"
         )
+        XCTAssertTrue(fullWindow.waitForExistence(timeout: 5))
         XCTAssertEqual(notes.value as? String, "Expanded")
         XCTAssertEqual(notes.label, "Hide Notes")
-        app.typeKey(.escape, modifierFlags: [])
-        XCTAssertTrue(
-            app.descendants(matching: .any)["wilted-player-notes-expanded"].waitForNonExistence(timeout: 5)
-        )
 
         let upNext = app.descendants(matching: .any)["wilted-player-up-next"]
         upNext.click()
         XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-player-notes-expanded"].waitForNonExistence(timeout: 5)
+        )
+        XCTAssertTrue(
             app.descendants(matching: .any)["wilted-player-up-next-expanded"]
                 .waitForExistence(timeout: 5)
         )
-        XCTAssertTrue(library.exists)
-        XCTAssertTrue(library.isHittable)
+        XCTAssertTrue(fullWindow.waitForExistence(timeout: 5))
+        XCTAssertFalse(library.isHittable)
+        XCTAssertEqual(visibleText(of: itemTitle), itemTitleBeforeExpansion)
+        XCTAssertEqual("\(speed.value ?? "")", "\(speedBeforeExpansion ?? "")")
+        guard let scrubberInUpNext = Self.numericAXValue(of: scrubber) else {
+            return XCTFail("Playback scrubber must remain numeric in Up Next")
+        }
+        XCTAssertEqual(scrubberInUpNext, scrubberBeforeExpansion, accuracy: 0.5)
 
         let remove = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-player-up-next-remove-'")
@@ -664,15 +720,21 @@ final class WiltedMacSmokeUITests: XCTestCase {
             app.descendants(matching: .any)["wilted-player-up-next-expanded"]
                 .waitForNonExistence(timeout: 5)
         )
+        XCTAssertTrue(fullWindow.waitForNonExistence(timeout: 5))
         app.typeKey(.space, modifierFlags: [])
         XCTAssertTrue(
             app.descendants(matching: .any)["wilted-player-up-next-expanded"]
                 .waitForExistence(timeout: 5),
             "Escape must restore keyboard focus to the Up Next toggle"
         )
-        app.typeKey(.escape, modifierFlags: [])
-        library.scroll(byDeltaX: 0, deltaY: -500)
+        XCTAssertTrue(fullWindow.exists)
+        app.descendants(matching: .any)["wilted-navigation-settings"].click()
+        XCTAssertTrue(fullWindow.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-mac-settings"].waitForExistence(timeout: 5)
+        )
         XCTAssertTrue(compact.exists)
+        XCTAssertFalse(library.exists)
     }
     func testSelectingEmptyNowPlayingDoesNotResizeWindow() {
         let app = launch(arguments: ["--wilted-ui-smoke"])
@@ -708,7 +770,9 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertEqual(progress.label, "Playback position")
 
         let status = app.descendants(matching: .any)["wilted-player-status"]
-        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        XCTAssertFalse(status.exists, "Plain playback state is conveyed by the play/pause transport")
+        let playPause = app.descendants(matching: .any)["wilted-player-play-pause"]
+        XCTAssertTrue(["Play", "Pause"].contains(playPause.label))
 
         app.descendants(matching: .any)["wilted-player-transcript"].click()
         XCTAssertTrue(
@@ -721,8 +785,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         )
 
         let routeRecovery = app.descendants(matching: .any)["wilted-player-route-recovery"]
-        XCTAssertTrue(routeRecovery.waitForExistence(timeout: 5))
-        XCTAssertFalse(routeRecovery.isEnabled)
+        XCTAssertFalse(routeRecovery.exists, "Recover audio appears only after automatic route recovery fails")
     }
     func testArticleFlowAddsThenCancelsPreparation() {
         let app = launch(arguments: ["--wilted-ui-fixture-article-flow"])

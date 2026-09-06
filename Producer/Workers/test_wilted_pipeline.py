@@ -209,6 +209,8 @@ class FakeLLM:
     fail_load: Exception | None = None
     fail_generate: Exception | None = None
     boundary_content_start_id: int | None = None
+    left_boundary_include: bool | None = None
+    left_boundary_answer: str | None = None
     preroll_program_start_id: int | None = None
     preroll_program_id: int | None = None
     boundary_starts_program: bool | None = None
@@ -250,6 +252,11 @@ class FakeLLM:
                 return (json.dumps({name: answer}) if answer is not None else self.answer), 1
         if response_format and response_format.get("field") == "include":
             candidate_id = int(user_content.partition("candidate=")[2])
+            if "edge=left" in user_content:
+                if self.left_boundary_answer is not None:
+                    return self.left_boundary_answer, 1
+                if self.left_boundary_include is not None:
+                    return json.dumps({"include": self.left_boundary_include}), 1
             content_start_id = self.boundary_content_start_id
             return json.dumps({"include": content_start_id is not None and candidate_id < content_start_id}), 1
         return self.answer, 1
@@ -352,16 +359,19 @@ def install_fake_ads(llm: FakeLLM, detections=()):
         lambda content_id, _minimum_id, segments: segments[content_id - 1].end_s
     )
 
-    def probe_boundary(candidate_id, _adjacent_id, _edge, _segments, backend):
+    def probe_boundary(candidate_id, _adjacent_id, edge, _segments, backend):
         response, _tokens = backend.generate(
             "verify immediate boundary",
-            f"candidate={candidate_id}",
+            f"edge={edge};candidate={candidate_id}",
             response_format={"field": "include", "candidate": candidate_id},
         )
-        parsed = json.loads(response)
-        if set(parsed) != {"include"} or not isinstance(parsed["include"], bool):
-            raise ValueError("invalid boundary response")
-        return parsed["include"]
+        try:
+            parsed = json.loads(response)
+            if set(parsed) != {"include"} or not isinstance(parsed["include"], bool):
+                raise ValueError("invalid boundary response")
+            return parsed["include"]
+        except (TypeError, ValueError):
+            return None
 
     ads._probe_boundary_candidate = probe_boundary  # noqa: SLF001
 
@@ -1117,6 +1127,18 @@ class LegacySponsorOpeningCompatibilityTests(unittest.TestCase):
                 self.assertIsNotNone(ads._SPONSOR_OPENING_RE.search(opening))
                 self.assertIsNotNone(ads._EXPLICIT_HOST_READ_OPENING_RE.search(opening))
 
+    def test_support_for_the_show_is_not_installed_into_either_archive_pattern(self):
+        ads = install_fake_ads(FakeLLM())
+        wp.install_legacy_sponsor_opening_compatibility(ads)
+        openings = (
+            "support for the show comes from grokipedia",
+            "support for this show comes from acme",
+        )
+        for opening in openings:
+            with self.subTest(opening=opening):
+                self.assertIsNone(ads._SPONSOR_OPENING_RE.search(opening))
+                self.assertIsNone(ads._EXPLICIT_HOST_READ_OPENING_RE.search(opening))
+
     def test_repeated_install_keeps_both_legacy_patterns_unchanged(self):
         ads = install_fake_ads(FakeLLM())
         wp.install_legacy_sponsor_opening_compatibility(ads)
@@ -1445,6 +1467,83 @@ class ExplicitSponsorFallbackTests(unittest.TestCase):
         segments.append(FakeSegment(80.0, 82.0, "back to the show"))
         spans, _events = self.detect(segments, [], content_start_id=40)
         self.assertEqual((spans[0]["startSeconds"], spans[0]["endSeconds"]), (0.0, 80.0))
+
+    def consecutive_preroll(self, *, left_include=None, left_answer=None, anchor_start=20.4):
+        segments = [
+            FakeSegment(0.24, 20.4, "produced conversational first sponsor spot"),
+            FakeSegment(anchor_start, 32.88, "support for the show comes from acme at acme dot com"),
+            FakeSegment(33.52, 42.16, "the sponsor describes its service"),
+            FakeSegment(42.72, 62.96, "visit today to learn more about the service"),
+            FakeSegment(62.96, 66.08, "get started at acme dot com"),
+            FakeSegment(68.48, 80.0, "the hosts begin the episode discussion"),
+        ]
+        llm = FakeLLM(
+            boundary_content_start_id=5,
+            left_boundary_include=left_include,
+            left_boundary_answer=left_answer,
+        )
+        self.last_llm = llm
+        ads = install_fake_ads(llm)
+        ads.detect_ads = lambda _segments, _backend: []
+        stream = io.StringIO()
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=5000.0):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
+        return spans, [json.loads(line) for line in stream.getvalue().splitlines()]
+
+    def test_consecutive_opening_spots_join_the_verified_anchor_to_transcript_start(self):
+        spans, events = self.consecutive_preroll(left_include=True)
+        self.assertEqual(
+            spans,
+            [{"startSeconds": 0.0, "endSeconds": 66.08,
+              "label": "sponsor_read", "confidence": 1.0}],
+        )
+        extended = next(
+            event for event in events
+            if event["stage"] == "ads.detect.recovery.preroll.extended"
+        )
+        self.assertIn("anchor ID 1", extended["detail"])
+        self.assertIn("prefix ID 0", extended["detail"])
+
+    def test_a_false_left_probe_keeps_the_explicit_anchor_boundary(self):
+        spans, events = self.consecutive_preroll(left_include=False)
+        self.assertEqual(spans[0]["startSeconds"], 20.4)
+        left = next(event for event in events if event["stage"] == "ads.detect.recovery.preroll.left")
+        self.assertIn("include=false", left["detail"])
+
+    def test_an_unanswered_left_probe_keeps_the_explicit_anchor_boundary(self):
+        spans, events = self.consecutive_preroll(left_answer="not json")
+        self.assertEqual(spans[0]["startSeconds"], 20.4)
+        left = next(event for event in events if event["stage"] == "ads.detect.recovery.preroll.left")
+        self.assertIn("include=unanswered", left["detail"])
+
+    def test_a_failed_left_probe_keeps_the_explicit_anchor_boundary(self):
+        llm = FakeLLM()
+        llm.load()
+        ads = install_fake_ads(llm)
+        ads._probe_boundary_candidate = mock.Mock(side_effect=RuntimeError("probe failed"))
+        segments = [
+            FakeSegment(0.24, 20.4, "produced conversational first sponsor spot"),
+            FakeSegment(20.4, 32.88, "support for the show comes from acme"),
+        ]
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            start_s = wp.consecutive_preroll_start(ads, llm, segments, 1)
+        self.assertEqual(start_s, 20.4)
+        events = [json.loads(line) for line in stream.getvalue().splitlines()]
+        left = next(event for event in events if event["stage"] == "ads.detect.recovery.preroll.left")
+        self.assertIn("include=unanswered", left["detail"])
+
+    def test_a_non_opening_anchor_cannot_extend_to_transcript_start(self):
+        llm = FakeLLM(left_boundary_include=True)
+        llm.load()
+        ads = install_fake_ads(llm)
+        segments = [
+            FakeSegment(0.0, 10.0, "editorial opening"),
+            FakeSegment(10.0, 20.0, "produced promotion"),
+            FakeSegment(20.0, 30.0, "support for the show comes from acme"),
+        ]
+        self.assertEqual(wp.consecutive_preroll_start(ads, llm, segments, 2), 20.0)
+        self.assertEqual(llm.requests, [])
 
 
 def install_legacy_recovery_fixture(llm: FakeLLM):
@@ -2734,7 +2833,6 @@ class TranscriptStartPrerollRecoveryTests(unittest.TestCase):
         llm = FakeLLM(preroll_program_start_id=5, preroll_program_id=-1)
         _result, details = self.preroll(llm, self.segments(), self.existing())
         self.assertEqual(details["ads.detect.preroll.nominated"], "program ID 5 at 100.000s")
-
 
 class AdCorpusReplayWiringTests(unittest.TestCase):
     """The replay path, with the model stubbed out.

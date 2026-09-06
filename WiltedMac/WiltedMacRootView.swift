@@ -20,6 +20,8 @@ enum WiltedMacStartupAccessibility {
 struct WiltedMacRootView: View {
     @Bindable private var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
+    @State private var playerPresentation: WiltedMacPlayerSection?
+    @State private var playerFocusRequest: WiltedMacPlayerSection?
 
     init(model: WiltedMacModel) {
         _model = Bindable(model)
@@ -59,6 +61,7 @@ struct WiltedMacRootView: View {
                 ForEach(WiltedMacNavigation.allCases) { destination in
                     let isSelected = model.selectedNavigation == destination
                     Button {
+                        playerPresentation = nil
                         model.selectedNavigation = destination
                     } label: {
                         Label(destination.title, symbol: destination.symbolName)
@@ -96,21 +99,48 @@ struct WiltedMacRootView: View {
             .navigationTitle("Wilted")
             .accessibilityIdentifier("wilted-mac-sidebar")
         } detail: {
-            VStack(spacing: 0) {
-                Group {
-                    switch model.selectedNavigation {
-                    case .library:
-                        WiltedMacLibraryView(model: model)
-                    case .feeds:
-                        WiltedMacFeedsView(model: model)
-                    case .processor:
-                        WiltedMacProcessorView(model: model)
-                    case .settings:
-                        WiltedMacSettingsView(model: model)
+            ZStack {
+                VStack(spacing: 0) {
+                    Group {
+                        switch model.selectedNavigation {
+                        case .library:
+                            WiltedMacLibraryView(model: model)
+                        case .feeds:
+                            WiltedMacFeedsView(model: model)
+                        case .processor:
+                            WiltedMacProcessorView(model: model)
+                        case .settings:
+                            WiltedMacSettingsView(model: model)
+                        }
+                    }
+                    if playerPresentation == nil {
+                        Divider()
+                        WiltedMacCompactPlayer(
+                            model: model,
+                            presentation: $playerPresentation,
+                            focusRequest: playerFocusRequest
+                        )
                     }
                 }
-                Divider()
-                WiltedMacCompactPlayer(model: model)
+                // Keep the selected destination mounted so Collapse returns to
+                // the same scroll position, but make its controls unavailable
+                // while the full-window player is presented. Otherwise the
+                // overlay would leave duplicate live controls in the AX tree.
+                .allowsHitTesting(playerPresentation == nil)
+                .accessibilityHidden(playerPresentation != nil)
+                .disabled(playerPresentation != nil)
+
+                if let presentation = playerPresentation {
+                    WiltedMacFullWindowPlayer(
+                        model: model,
+                        presentation: presentation,
+                        onSelect: { playerPresentation = $0 },
+                        onCollapse: { section in
+                            playerPresentation = nil
+                            playerFocusRequest = section
+                        }
+                    )
+                }
             }
         }
         .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
@@ -1576,22 +1606,170 @@ private struct WiltedMacProcessorView: View {
 // MARK: - Persistent Player
 /// A fixed footer outside every destination's scroll view. It keeps playback
 /// visible while the Larder moves and owns the complete local podcast surface.
-struct WiltedMacCompactPlayer: View {
-    private enum Expansion: Hashable {
-        case transcript
-        case notes
-        case upNext
+enum WiltedMacPlayerSection: String, Hashable, CaseIterable {
+    case transcript
+    case notes
+    case upNext
+
+    var title: String {
+        switch self {
+        case .transcript: "Transcript"
+        case .notes: "Notes"
+        case .upNext: "Up Next"
+        }
     }
+
+    var expandedAccessibilityIdentifier: String {
+        switch self {
+        case .transcript: "wilted-player-transcript-expanded"
+        case .notes: "wilted-player-notes-expanded"
+        case .upNext: "wilted-player-up-next-expanded"
+        }
+    }
+}
+
+private enum WiltedMacPlayerLayout: Equatable {
+    case rail
+    case fullWindow
+}
+
+struct WiltedMacCompactPlayer: View {
+    @Bindable var model: WiltedMacModel
+    @Binding private var presentation: WiltedMacPlayerSection?
+    private let focusRequest: WiltedMacPlayerSection?
+
+    init(model: WiltedMacModel) {
+        self.model = model
+        _presentation = .constant(nil)
+        focusRequest = nil
+    }
+
+    init(
+        model: WiltedMacModel,
+        presentation: Binding<WiltedMacPlayerSection?>,
+        focusRequest: WiltedMacPlayerSection?
+    ) {
+        self.model = model
+        _presentation = presentation
+        self.focusRequest = focusRequest
+    }
+
+    var body: some View {
+        WiltedMacPlayerContent(
+            model: model,
+            presentation: $presentation,
+            layout: .rail,
+            focusRequest: focusRequest,
+            onCollapse: { _ in }
+        )
+        .padding(.horizontal, WiltedTheme.Spacing.medium)
+        .padding(.vertical, WiltedTheme.Spacing.small)
+        .background(WiltedTheme.color(.card, scheme: colorScheme))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Playback rail")
+        .accessibilityValue(presentation == nil ? "Collapsed" : "Expanded")
+        .accessibilityIdentifier("wilted-compact-player")
+    }
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    static func canRemoveFromUpNext(episodeID: String, currentEpisodeID: String?) -> Bool {
+        episodeID != currentEpisodeID
+    }
+
+    static func upNextRemoveAccessibilityValue(canRemove: Bool) -> String {
+        canRemove ? "Available" : "Unavailable for the current episode"
+    }
+}
+
+/// A presentation layer over the selected work destination, not a destination
+/// itself. The root retains its selected navigation and model while this fills
+/// the detail column, so collapsing returns to precisely the prior work view.
+struct WiltedMacFullWindowPlayer: View {
+    @Bindable var model: WiltedMacModel
+    let presentation: WiltedMacPlayerSection
+    let onSelect: (WiltedMacPlayerSection) -> Void
+    let onCollapse: (WiltedMacPlayerSection) -> Void
+
+    init(
+        model: WiltedMacModel,
+        presentation: WiltedMacPlayerSection,
+        onSelect: @escaping (WiltedMacPlayerSection) -> Void,
+        onCollapse: @escaping (WiltedMacPlayerSection) -> Void
+    ) {
+        self.model = model
+        self.presentation = presentation
+        self.onSelect = onSelect
+        self.onCollapse = onCollapse
+    }
+
+    var body: some View {
+        WiltedMacPlayerContent(
+            model: model,
+            presentation: .constant(presentation),
+            layout: .fullWindow,
+            focusRequest: nil,
+            onCollapse: onCollapse,
+            onSelect: onSelect
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(WiltedTheme.Spacing.section)
+        .background(WiltedTheme.color(.page, scheme: colorScheme))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-player-full-window")
+    }
+
+    @Environment(\.colorScheme) private var colorScheme
+}
+
+/// The rail and full-window presentation deliberately delegate here. It owns
+/// every transport, label, identifier, enabled state, and selected pane, so a
+/// visual change cannot give either form of Now Playing a different player.
+private struct WiltedMacPlayerContent: View {
 
     @Bindable var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
-    @State private var expansion: Expansion?
+    @Binding private var presentation: WiltedMacPlayerSection?
+    private let layout: WiltedMacPlayerLayout
+    private let focusRequest: WiltedMacPlayerSection?
+    private let onCollapse: (WiltedMacPlayerSection) -> Void
+    private let onSelect: (WiltedMacPlayerSection) -> Void
     @FocusState private var primaryTransportFocused: Bool
-    @FocusState private var keyboardFocus: Expansion?
-    @AccessibilityFocusState private var accessibilityFocus: Expansion?
+    @FocusState private var keyboardFocus: WiltedMacPlayerSection?
+    @AccessibilityFocusState private var accessibilityFocus: WiltedMacPlayerSection?
+
+    init(
+        model: WiltedMacModel,
+        presentation: Binding<WiltedMacPlayerSection?>,
+        layout: WiltedMacPlayerLayout,
+        focusRequest: WiltedMacPlayerSection?,
+        onCollapse: @escaping (WiltedMacPlayerSection) -> Void,
+        onSelect: @escaping (WiltedMacPlayerSection) -> Void = { _ in }
+    ) {
+        self.model = model
+        _presentation = presentation
+        self.layout = layout
+        self.focusRequest = focusRequest
+        self.onCollapse = onCollapse
+        self.onSelect = onSelect
+    }
 
     var body: some View {
         VStack(spacing: WiltedTheme.Spacing.small) {
+            if layout == .fullWindow {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Now Playing")
+                            .wiltedFont(.display)
+                        Text(presentation?.title ?? "")
+                            .wiltedFont(.utility)
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    }
+                    Spacer()
+                    Button("Collapse") { collapsePresentation() }
+                        .accessibilityIdentifier("wilted-player-collapse")
+                }
+            }
             if model.hasCurrentPlayback {
                 HStack(spacing: WiltedTheme.Spacing.medium) {
                 artwork
@@ -1599,6 +1777,7 @@ struct WiltedMacCompactPlayer: View {
                     Text(title)
                         .lineLimit(1)
                         .wiltedFont(.body)
+                        .accessibilityIdentifier("wilted-player-item-title")
                     Text(detail)
                         .lineLimit(1)
                         .wiltedFont(.utility)
@@ -1699,9 +1878,10 @@ struct WiltedMacCompactPlayer: View {
                 }
                 expansionButton("Up Next", expansion: .upNext, id: "wilted-player-up-next")
 
-                Button("Recover audio") { model.recoverAudioRoute() }
-                    .disabled(!model.hasCurrentPlayback || !model.audioRouteFault)
-                    .accessibilityIdentifier("wilted-player-route-recovery")
+                if model.audioRouteFault {
+                    Button("Recover audio") { model.recoverAudioRoute() }
+                        .accessibilityIdentifier("wilted-player-route-recovery")
+                }
 
                 Image(systemName: "speaker.fill")
                     .accessibilityHidden(true)
@@ -1727,10 +1907,10 @@ struct WiltedMacCompactPlayer: View {
                 playbackStatus
             }
 
-            if let expansion {
+            if let presentation {
                 Divider()
-                expandedContent(expansion)
-                    .frame(maxHeight: 170)
+                expandedContent(presentation)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
 
             if let status = model.playbackOperationStatus {
@@ -1742,20 +1922,13 @@ struct WiltedMacCompactPlayer: View {
                 minimizedIdlePlayer
             }
         }
-        .padding(.horizontal, WiltedTheme.Spacing.medium)
-        .padding(.vertical, WiltedTheme.Spacing.small)
-        .background(WiltedTheme.color(.card, scheme: colorScheme))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Playback rail")
-        .accessibilityValue(expansion == nil ? "Collapsed" : "Expanded")
-        .accessibilityIdentifier("wilted-compact-player")
         .onExitCommand {
-            collapseExpansion()
+            collapsePresentation()
         }
         .task(id: model.hasCurrentPlayback) {
             guard model.hasCurrentPlayback else { return }
             await Task.yield()
-            if expansion == nil, keyboardFocus == nil {
+            if layout == .rail, presentation == nil, keyboardFocus == nil {
                 primaryTransportFocused = true
             }
             while !Task.isCancelled {
@@ -1763,13 +1936,24 @@ struct WiltedMacCompactPlayer: View {
                 try? await Task.sleep(for: .seconds(1))
             }
         }
+        .task(id: focusRequest) {
+            guard layout == .rail, let focusRequest else { return }
+            await Task.yield()
+            keyboardFocus = focusRequest
+        }
     }
 
+    @ViewBuilder
     private var playbackStatus: some View {
-        Text(model.playbackStatusMessage)
-            .wiltedFont(.utility)
-            .foregroundStyle(model.playbackStatusTone.color(colorScheme))
-            .accessibilityIdentifier("wilted-player-status")
+        // The play/pause transport already speaks these two states. Do not
+        // create a second visible or accessible status row for them.
+        if model.playbackStatusMessage != "Playing",
+           model.playbackStatusMessage != "Paused" {
+            Text(model.playbackStatusMessage)
+                .wiltedFont(.utility)
+                .foregroundStyle(model.playbackStatusTone.color(colorScheme))
+                .accessibilityIdentifier("wilted-player-status")
+        }
     }
 
     private var minimizedIdlePlayer: some View {
@@ -1799,7 +1983,7 @@ struct WiltedMacCompactPlayer: View {
     @ViewBuilder
     private func expansionButton(
         _ label: String,
-        expansion target: Expansion,
+        expansion target: WiltedMacPlayerSection,
         id: String
     ) -> some View {
         // The same button closes what it opened, and says so: the pane pushes
@@ -1816,10 +2000,10 @@ struct WiltedMacCompactPlayer: View {
         } label: {
             ZStack {
                 Text("Hide \(label)").hidden()
-                Text(expansion == target ? "Hide \(label)" : label)
+                Text(presentation == target ? "Hide \(label)" : label)
             }
         }
-        .accessibilityLabel(expansion == target ? "Hide \(label)" : label)
+        .accessibilityLabel(presentation == target ? "Hide \(label)" : label)
         .focusable()
         .focused($keyboardFocus, equals: target)
         .onKeyPress(.space) {
@@ -1827,27 +2011,27 @@ struct WiltedMacCompactPlayer: View {
             return .handled
         }
         .onKeyPress(.escape) {
-            guard expansion != nil else { return .ignored }
-            collapseExpansion()
+            guard presentation != nil else { return .ignored }
+            collapsePresentation()
             return .handled
         }
         .accessibilityFocused($accessibilityFocus, equals: target)
-        .accessibilityValue(expansion == target ? "Expanded" : "Collapsed")
+        .accessibilityValue(presentation == target ? "Expanded" : "Collapsed")
         .accessibilityIdentifier(id)
     }
 
     @ViewBuilder
-    private func expandedContent(_ target: Expansion) -> some View {
+    private func expandedContent(_ target: WiltedMacPlayerSection) -> some View {
         switch target {
         case .transcript:
             transcriptContent
-                .accessibilityIdentifier("wilted-player-transcript-expanded")
+                .accessibilityIdentifier(target.expandedAccessibilityIdentifier)
         case .notes:
             notesContent
-                .accessibilityIdentifier("wilted-player-notes-expanded")
+                .accessibilityIdentifier(target.expandedAccessibilityIdentifier)
         case .upNext:
             upNextContent
-                .accessibilityIdentifier("wilted-player-up-next-expanded")
+                .accessibilityIdentifier(target.expandedAccessibilityIdentifier)
         }
     }
 
@@ -1968,7 +2152,7 @@ struct WiltedMacCompactPlayer: View {
                 } else {
                     ForEach(Array(model.podcastQueueIDs.enumerated()), id: \.element) { index, episodeID in
                         let episodeTitle = queueTitle(for: episodeID)
-                        let canRemove = Self.canRemoveFromUpNext(
+                        let canRemove = WiltedMacCompactPlayer.canRemoveFromUpNext(
                             episodeID: episodeID,
                             currentEpisodeID: model.currentPodcastEpisodeID
                         )
@@ -1981,7 +2165,7 @@ struct WiltedMacCompactPlayer: View {
                             }
                             .disabled(!canRemove)
                             .accessibilityLabel("Remove \(episodeTitle) from Up Next")
-                            .accessibilityValue(Self.upNextRemoveAccessibilityValue(canRemove: canRemove))
+                            .accessibilityValue(WiltedMacCompactPlayer.upNextRemoveAccessibilityValue(canRemove: canRemove))
                             .accessibilityIdentifier("wilted-player-up-next-remove-\(episodeID)")
                             Button("Move Earlier") {
                                 model.moveEpisodeInUpNext(from: index, to: index - 1)
@@ -2040,19 +2224,14 @@ struct WiltedMacCompactPlayer: View {
         model.episodes.first(where: { $0.id == episodeID })?.title ?? "Saved episode"
     }
 
-    static func canRemoveFromUpNext(episodeID: String, currentEpisodeID: String?) -> Bool {
-        episodeID != currentEpisodeID
-    }
-
-    static func upNextRemoveAccessibilityValue(canRemove: Bool) -> String {
-        canRemove ? "Available" : "Unavailable for the current episode"
-    }
-
-    private func toggle(_ target: Expansion) {
-        if expansion == target {
-            collapseExpansion()
+    private func toggle(_ target: WiltedMacPlayerSection) {
+        if presentation == target {
+            collapsePresentation()
         } else {
-            expansion = target
+            presentation = target
+            if layout == .fullWindow {
+                onSelect(target)
+            }
             primaryTransportFocused = false
             Task { @MainActor in
                 await Task.yield()
@@ -2061,9 +2240,13 @@ struct WiltedMacCompactPlayer: View {
         }
     }
 
-    private func collapseExpansion() {
-        guard expansion != nil else { return }
-        expansion = nil
+    private func collapsePresentation() {
+        guard let presentation else { return }
+        if layout == .fullWindow {
+            onCollapse(presentation)
+        } else {
+            self.presentation = nil
+        }
     }
 
     private func transport(

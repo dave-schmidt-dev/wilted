@@ -783,10 +783,52 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(log.contains("wilted-processor-event-\\(event.id)"))
 
         XCTAssertTrue(source.contains("Text(model.playbackStatusMessage)"))
+        XCTAssertTrue(source.contains("if model.playbackStatusMessage != \"Playing\""))
+        XCTAssertTrue(source.contains("model.playbackStatusMessage != \"Paused\""))
+        XCTAssertFalse(source.contains(".opacity(model.playbackStatusMessage =="))
         XCTAssertFalse(source.contains("if let error = model.playbackError"))
         XCTAssertTrue(source.contains("wilted-player-recoverable-error"))
         XCTAssertTrue(source.contains("Button(\"Recover audio\") { model.recoverAudioRoute() }"))
         XCTAssertTrue(source.contains("wilted-player-route-recovery"))
+        XCTAssertTrue(source.contains("if model.audioRouteFault"))
+
+        let modelRoot = root.deletingLastPathComponent().appendingPathComponent("WiltedMacModel.swift")
+        let modelSource = try String(contentsOf: modelRoot)
+        XCTAssertTrue(modelSource.contains("guard !audioRouteRecoveryAttempted else { return }"))
+        XCTAssertTrue(modelSource.contains("audioRouteRecoveryAttempted = true"))
+        XCTAssertTrue(modelSource.contains("self.audioRouteFault = true"))
+    }
+
+    /// The rail opens a detail presentation rather than growing a short pane
+    /// under its controls. Both forms must render through the same content
+    /// implementation, or their transport affordances will drift apart.
+    func testFullWindowPlayerPresentationContracts() throws {
+        XCTAssertEqual(
+            WiltedMacPlayerSection.allCases.map(\.expandedAccessibilityIdentifier),
+            [
+                "wilted-player-transcript-expanded",
+                "wilted-player-notes-expanded",
+                "wilted-player-up-next-expanded"
+            ]
+        )
+
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
+        let source = try String(contentsOf: root)
+        let player = try XCTUnwrap(source.range(of: "private struct WiltedMacPlayerContent")?.lowerBound)
+        let playerSource = source[player...]
+
+        XCTAssertTrue(source.contains("WiltedMacFullWindowPlayer("))
+        XCTAssertTrue(source.contains("wilted-player-full-window"))
+        XCTAssertTrue(source.contains("wilted-player-collapse"))
+        XCTAssertTrue(source.contains("wilted-player-item-title"))
+        XCTAssertTrue(source.contains("WiltedMacPlayerContent("))
+        XCTAssertFalse(playerSource.contains("maxHeight: 170"))
+        XCTAssertTrue(playerSource.contains("maxHeight: .infinity"))
+        XCTAssertTrue(source.contains(".allowsHitTesting(playerPresentation == nil)"))
+        XCTAssertTrue(source.contains(".accessibilityHidden(playerPresentation != nil)"))
+        XCTAssertTrue(source.contains(".disabled(playerPresentation != nil)"))
+        XCTAssertTrue(source.contains("playerPresentation = nil\n                        model.selectedNavigation = destination"))
     }
 
     func testAutomationSettingsPresentationFollowsThePipelineAndOnlyShowsLiveControls() throws {

@@ -955,9 +955,9 @@ final class WiltedMacModel {
     private(set) var playbackOperationStatus: String?
     private(set) var articlePublicationCount = 0
     private(set) var articlePlaybackCheckpointCount = 0
-    /// Set only when a route operation actually failed. The recovery control
-    /// is gated on this so it does not advertise a fix for a fault that has
-    /// not happened, matching how every other recovery control here behaves.
+    /// Set only after the one automatic route recovery attempt fails. The
+    /// recovery control is gated on this so it is a manual retry, not a second
+    /// action competing with the automatic repair.
     private(set) var audioRouteFault = false
 
     let fixtureMode: Bool
@@ -1029,6 +1029,8 @@ final class WiltedMacModel {
     private var fixtureRevision: StoredAudioRevision?
     private var fixturePodcastInstallTask: Task<Void, Never>?
     private var playbackOperationTask: Task<Void, Never>?
+    private var audioRouteRecoveryInFlight = false
+    private var audioRouteRecoveryAttempted = false
     private var isPodcastPlayback = false
 #endif
 
@@ -3321,26 +3323,37 @@ final class WiltedMacModel {
 #endif
     }
 
-    /// Records a playback fault that a route recovery can plausibly clear, so
-    /// the recovery control appears only when it has something to act on.
+    /// Records a playback fault and gives the backend one automatic chance to
+    /// rebuild itself before exposing a manual retry.
     func reportAudioRouteFault(_ message: String) {
         playbackError = message
-        audioRouteFault = true
+#if canImport(WiltedProducer)
+        guard !audioRouteRecoveryAttempted else { return }
+        audioRouteRecoveryAttempted = true
+        recoverAudioRoute()
+#else
+        audioRouteFault = false
+#endif
     }
 
     func recoverAudioRoute() {
 #if canImport(WiltedProducer)
-        guard let playback else { return }
+        guard let playback, !audioRouteRecoveryInFlight else { return }
+        audioRouteRecoveryInFlight = true
+        audioRouteFault = false
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await playback.recoverFromRouteChange()
                 self.audioRouteFault = false
+                self.audioRouteRecoveryAttempted = false
                 self.playbackError = nil
                 self.refreshPlaybackReadout()
             } catch {
+                self.audioRouteFault = true
                 self.playbackError = "Audio route recovery failed."
             }
+            self.audioRouteRecoveryInFlight = false
         }
 #else
         audioRouteFault = false
@@ -3372,6 +3385,12 @@ final class WiltedMacModel {
     func completePodcastPlaybackForTesting(successfully: Bool = true) {
 #if canImport(WiltedProducer)
         (playback?.backend as? WiltedFixturePlaybackBackend)?.finish(successfully: successfully)
+#endif
+    }
+
+    func failNextAudioRouteRecoveryForTesting() {
+#if canImport(WiltedProducer)
+        (playback?.backend as? WiltedFixturePlaybackBackend)?.failNextLoad = true
 #endif
     }
 
@@ -4575,9 +4594,14 @@ private final class WiltedFixturePlaybackBackend: PlaybackBackend {
     var isPlaying = false
     var rate: Float = 1
     var volume: Float = 1
+    var failNextLoad = false
     private(set) var loadedGeneration: UInt64 = 0
     var completionHandler: (@MainActor @Sendable (UInt64, Bool) -> Void)?
     func load(url: URL) throws {
+        if failNextLoad {
+            failNextLoad = false
+            throw CocoaError(.fileReadCorruptFile)
+        }
         loadedGeneration += 1
         isPlaying = false
         duration = url.lastPathComponent.contains("podcast") ? 1_482 : 120

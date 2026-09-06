@@ -55,6 +55,11 @@ CUT_TOOLS = ("ffmpeg", "ffprobe")
 LEGACY_SPONSOR_OPENING_COMPATIBILITY_PATTERN = (
     r"\bbrought\s+to\s+you(?:\s+(?:today|this\s+week))?\s+by\b"
 )
+# This phrase feeds only the worker's explicit-host recovery. Installing it in
+# the archive's coarse sponsor regex also changes interior/bracketed run logic.
+EXPLICIT_SUPPORT_OPENING_COMPATIBILITY_PATTERN = (
+    r"\bsupport\s+for\s+(?:the|this)\s+show\s+comes\s+from\b"
+)
 
 # Legal boilerplate only produced advertising reads aloud. The archived
 # detector discards a one- or two-segment flagged run that carries no price,
@@ -262,6 +267,11 @@ prose or Markdown."""
 EXPLICIT_SPONSOR_RECOVERY_MAX_SEGMENTS = 64
 EXPLICIT_SPONSOR_RECOVERY_MAX_SECONDS = 10 * 60
 EXPLICIT_SPONSOR_RESUMPTION_TAIL_SEGMENTS = 32
+# A support anchor in the first minute may be the second half of a consecutive
+# produced preroll. Only its immediate left neighbor is eligible, and only the
+# existing contextual boundary verifier can claim it.
+EXPLICIT_SPONSOR_PREROLL_ANCHOR_MAX_SECONDS = 60.0
+EXPLICIT_SPONSOR_PREROLL_LEFT_GAP_MAX_SECONDS = 15.0
 # What a host read tells the listener to do. "check it out" was here and
 # "check them out" was not, which is the difference between a sponsor and a
 # person, and hosts say both.
@@ -1612,10 +1622,67 @@ def count_sponsor_name_mentions(text, phrases, counts):
             start = found + len(phrase)
 
 
+def explicit_sponsor_destination_seen(text):
+    """Return whether one passage contains a bounded sponsor destination."""
+    return any(
+        pattern.search(text) is not None
+        for pattern in (
+            EXPLICIT_SPONSOR_DOT_DOMAIN_RE,
+            EXPLICIT_SPONSOR_URL_RE,
+            EXPLICIT_SPONSOR_LITERAL_DOMAIN_RE,
+            EXPLICIT_SPONSOR_SPOKEN_PATH_RE,
+            EXPLICIT_SPONSOR_OFFER_CODE_RE,
+        )
+    )
+
+
+def consecutive_preroll_start(ads_module, backend, segments, anchor_id):
+    """Return zero only when the immediate prefix verifies as the same pod."""
+    anchor = segments[anchor_id]
+    first_start_s = float(segments[0].start_s)
+    if (
+        anchor_id != 1
+        or float(anchor.start_s) - first_start_s > EXPLICIT_SPONSOR_PREROLL_ANCHOR_MAX_SECONDS
+    ):
+        return float(anchor.start_s)
+    prefix_id = anchor_id - 1
+    gap_s = float(anchor.start_s) - float(segments[prefix_id].end_s)
+    if gap_s > EXPLICIT_SPONSOR_PREROLL_LEFT_GAP_MAX_SECONDS:
+        return float(anchor.start_s)
+    try:
+        include = ads_module._probe_boundary_candidate(  # noqa: SLF001
+            prefix_id,
+            anchor_id,
+            "left",
+            segments,
+            backend,
+        )
+    except Exception:  # noqa: BLE001 - model uncertainty must preserve source audio
+        include = None
+    result = "true" if include is True else "false" if include is False else "unanswered"
+    progress(
+        "ads.detect.recovery.preroll.left",
+        f"prefix ID {prefix_id} gap={max(0.0, gap_s):.3f}s include={result}",
+    )
+    if include is True:
+        progress(
+            "ads.detect.recovery.preroll.extended",
+            f"explicit anchor ID {anchor_id} joined opening prefix ID {prefix_id}",
+        )
+        return 0.0
+    return float(anchor.start_s)
+
+
 def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, detections):
     """Recover or extend explicit host reads through verified content return."""
     recovered = []
-    opening_pattern = ads_module._EXPLICIT_HOST_READ_OPENING_RE  # noqa: SLF001
+    archive_opening_pattern = ads_module._EXPLICIT_HOST_READ_OPENING_RE  # noqa: SLF001
+    # Keep the support anchor private to this wrapper. Both archive regexes are
+    # consulted inside detect_ads, so mutating either one changes base spans.
+    opening_pattern = re.compile(
+        f"(?:{archive_opening_pattern.pattern})|{EXPLICIT_SUPPORT_OPENING_COMPATIBILITY_PATTERN}",
+        archive_opening_pattern.flags,
+    )
     for anchor_id, anchor in enumerate(segments):
         if opening_pattern.search(anchor.text) is None:
             continue
@@ -1652,16 +1719,7 @@ def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, dete
         evidence_id = None
         for segment_id in context_ids:
             text = segments[segment_id].text
-            domain_seen = domain_seen or any(
-                pattern.search(text) is not None
-                for pattern in (
-                    EXPLICIT_SPONSOR_DOT_DOMAIN_RE,
-                    EXPLICIT_SPONSOR_URL_RE,
-                    EXPLICIT_SPONSOR_LITERAL_DOMAIN_RE,
-                    EXPLICIT_SPONSOR_SPOKEN_PATH_RE,
-                    EXPLICIT_SPONSOR_OFFER_CODE_RE,
-                )
-            )
+            domain_seen = domain_seen or explicit_sponsor_destination_seen(text)
             cta_seen = cta_seen or EXPLICIT_SPONSOR_CTA_RE.search(text) is not None
             if (
                 name_phrases
@@ -1726,12 +1784,15 @@ def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, dete
         )
         if overlapping and recovered_end <= max(ad.end_s for ad in overlapping):
             continue
+        recovered_start = consecutive_preroll_start(
+            ads_module, backend, segments, anchor_id
+        )
         recovered.append(
             ads_module.AdSegment(  # noqa: SLF001 - preserve legacy detection result type
                 # The fallback's proof is the full explicit host-read cue. Its
                 # natural sponsor lead-in can precede the regex phrase, so do
                 # not retain it by token-refining this worker-only recovery.
-                anchor.start_s,
+                recovered_start,
                 recovered_end,
                 1.0,
                 "sponsor_read",
@@ -1805,13 +1866,10 @@ def recover_transcript_start_preroll(ads_module, backend, segments, detections):
         progress("ads.detect.preroll.skipped", "the program starts at the first segment")
         return detections
 
-    # The cut runs to where the program begins rather than to the last
-    # advertising cue, because the insertion gap between them is the spot's
-    # own music bed and leaving it behind is leaving the advertisement in.
-    end_s = float(segments[program_start_id].start_s)
-    progress("ads.detect.preroll.nominated", f"program ID {program_start_id} at {end_s:.3f}s")
-    if end_s < PREROLL_RECOVERY_MINIMUM_SECONDS:
-        progress("ads.detect.preroll.skipped", f"the opening is only {end_s:.1f}s long")
+    nominated_end_s = float(segments[program_start_id].start_s)
+    progress("ads.detect.preroll.nominated", f"program ID {program_start_id} at {nominated_end_s:.3f}s")
+    if nominated_end_s < PREROLL_RECOVERY_MINIMUM_SECONDS:
+        progress("ads.detect.preroll.skipped", f"the opening is only {nominated_end_s:.1f}s long")
         return detections
 
     opening_ids = list(range(program_start_id))
@@ -1827,6 +1885,13 @@ def recover_transcript_start_preroll(ads_module, backend, segments, detections):
         progress("ads.detect.preroll.skipped", f"the opening holds program content at {program_id}")
         return detections
 
+    # The cut runs to where the program begins rather than to the last
+    # advertising cue, because the insertion gap between them is the spot's
+    # own music bed and leaving it behind is leaving the advertisement in.
+    end_s = float(segments[program_start_id].start_s)
+    if end_s < PREROLL_RECOVERY_MINIMUM_SECONDS:
+        progress("ads.detect.preroll.skipped", f"the opening is only {end_s:.1f}s long")
+        return detections
     preroll = ads_module.AdSegment(0.0, end_s, 1.0, "ad_break")  # noqa: SLF001 - legacy result type
     progress("ads.detect.preroll", f"0.000-{end_s:.3f} before program ID {program_start_id}")
     return ads_module._merge_adjacent(  # noqa: SLF001 - retain legacy overlap semantics

@@ -181,6 +181,36 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         }
     }
 
+    /// The selected pane is rendered as a detail-sized surface, not a taller
+    /// version of the old rail. A colour check is deliberate here: there is no
+    /// new bitmap baseline until the attended visual review records one.
+    func testMacFullWindowPlayerRendersAtDetailHeight() throws {
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready"],
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        if let article = model.articles.first { model.openNowPlaying(for: article) }
+        let image = render(
+            WiltedMacFullWindowPlayer(
+                model: model,
+                presentation: .transcript,
+                onSelect: { _ in },
+                onCollapse: { _ in }
+            ),
+            variant: WiltedVisualVariant(appearance: .dark, dynamicType: .standard, reduceMotion: false),
+            size: windowCanvas
+        )
+        let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+        XCTAssertEqual(bitmap.pixelsHigh, Int(windowCanvas.height))
+        XCTAssertGreaterThan(
+            distinctColorCount(
+                in: bitmap,
+                region: NSRect(x: 0, y: 0, width: bitmap.pixelsWide, height: bitmap.pixelsHigh)
+            ),
+            8
+        )
+    }
+
     func testMacNavigationSelectionPixelBaselines() {
         for appearance in WiltedAppearance.allCases {
             let variant = WiltedVisualVariant(

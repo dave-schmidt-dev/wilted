@@ -222,10 +222,11 @@ def build(captures, commit, date_iso, date_human, previous):
             captures),
         "transcript": figure(
             "fig-playback-transcript", "6.2-transcript-expanded",
-            "The transcript panel expanded inline above the bottom rail",
-            "<strong>6.2 Transcript, expanded inline.</strong> Activating <code>wilted-player-transcript</code> "
-            "expands <code>wilted-player-transcript-expanded</code> in place above the rail rather than opening "
-            "a sheet or a new route; the toggle renders selected while expanded. What the panel shows depends on "
+            "The full-window player showing the transcript while preserving the transport row",
+            "<strong>6.2 Transcript, full-window player.</strong> Activating <code>wilted-player-transcript</code> "
+            "opens <code>wilted-player-full-window</code> with <code>wilted-player-transcript-expanded</code> "
+            "and the same transport state as the rail. Collapse or Escape returns focus to the Transcript "
+            "toggle; choosing a sidebar destination dismisses the player without stopping playback. What the panel shows depends on "
             "the item: an episode whose feed publishes a timed transcript reads &ldquo;synced from the feed&rdquo; "
             "and follows the audio, and the fixture article here carries no transcript at all. "
             "A prepared episode also shows what preparation cut: each removed span appears in place at the "
@@ -237,17 +238,17 @@ def build(captures, commit, date_iso, date_human, previous):
             captures),
         "upnext": figure(
             "fig-playback-upnext", "6.3-up-next-expanded",
-            "The Up Next panel expanded inline above the bottom rail",
-            "<strong>6.3 Up Next, expanded inline.</strong> Activating <code>wilted-player-up-next</code> expands "
-            "<code>wilted-player-up-next-expanded</code> in the same inline position, with the rail's transport "
+            "The full-window player showing Up Next with the transport row retained",
+            "<strong>6.3 Up Next, full-window player.</strong> Activating <code>wilted-player-up-next</code> opens "
+            "<code>wilted-player-up-next-expanded</code> in the same full-window surface, with the transport "
             "row still reachable. The queue reads &ldquo;Nothing queued&rdquo; because the fixture queues nothing.",
             captures),
         "notes": figure(
             "fig-playback-notes", "6.4-notes-expanded",
-            "The show notes panel expanded inline above the bottom rail while a fixture episode plays",
-            "<strong>6.4 Notes, expanded inline.</strong> With the fixture episode playing, "
+            "The full-window player showing episode notes while preserving playback",
+            "<strong>6.4 Notes, full-window player.</strong> With the fixture episode playing, "
             "<code>wilted-player-notes</code> appears between Transcript and Up Next (it is absent for an "
-            "article, which has its own text) and expands <code>wilted-player-notes-expanded</code>: the feed's "
+            "article, which has its own text) and opens <code>wilted-player-notes-expanded</code>: the feed's "
             "show notes as plain text at <code>wilted-player-notes-text</code>, every address a link. The Larder "
             "row for the same episode leads with these notes' opening sentence instead of the author.",
             captures),
@@ -295,7 +296,10 @@ def build(captures, commit, date_iso, date_human, previous):
             "<strong>8.1 Settings, with playback retained.</strong> As on Prep, the rail survives the route "
             "change with its current-item state intact. Appearance (<code>wilted-appearance-controls</code>) "
             "comes first: Text and icon size offers System, Large, Larger, and Largest, applies to every "
-            "screen including the sidebar, the controls, and the search field, and survives relaunch. Sync "
+            "screen including the sidebar, the controls, and the search field, and survives relaunch. Podcast "
+            "automation separately configures refresh timing, bounded automatic downloads, immediate/manual/off-peak "
+            "processing, transcript preference, ad removal, and readable transcripts; the off-peak window appears "
+            "only for that processing choice. Sync "
             "reads Disabled with the detail &ldquo;Sync is not configured.&rdquo;, producer identity "
             "Unavailable, and last fetch and last send Not yet. Refresh and Upload are rendered disabled in "
             "this state.",
@@ -346,7 +350,7 @@ def build(captures, commit, date_iso, date_human, previous):
 <tr><td>Window geometry</td><td>{geometry_line}</td></tr>
 <tr><td>Reproducing this report</td><td><code>scripts/record-walkthrough-frames.sh</code> writes the frames and a geometry sidecar beside each one, by setting <code>WILTED_WALKTHROUGH_CAPTURE=1</code> inside the generated scheme's TestAction and running <code>-only-testing:WiltedMacUITests/WiltedMacWalkthroughCapture</code>; <code>scripts/build-mac-walkthrough.py</code> assembles this document from that directory</td></tr>
 </tbody></table>
-<div class="warning"><strong>What changed since the {previous} report.</strong> Fifty-six commits; the routes are the same four. The Larder's address box moved behind an Add article button in the list header (4.1, 4.3), and Removed moved from Podcast feeds to the same header as a button and popover (4.4, 4.5); Skip is one press with Undo in the message it leaves, stops the audio if it was playing, and a restored episode comes back without the cut it had. The toolbar search now reads transcripts as well as titles, shows, and notes. Settings gained Appearance, a four-step text and icon size that every screen follows (8.1). Playback continues to the next episode in Up Next when one ends. Prep gained a Waiting region, admits one preparation at a time (7.1), and closes a run the app quit in the middle of as a failure with Retry instead of leaving it Preparing (7.2). Under the surface, the pipeline recovers produced advertising at both edges of an episode, refuses a span that would cover most of it, cuts inserted advertising the published transcript never described, and is measured against labelled real episodes rather than scripted answers; automation runs from the launch path and refuses back-catalogue claims. Every frame was retaken at this commit.</div>
+<div class="warning"><strong>What changed since the {previous} report.</strong> The routes remain the same four. Transcript, Notes, and Up Next now open into a full-window player with the transport preserved, Collapse and Escape focus return, and destination navigation that dismisses the player without interrupting playback. Settings now exposes podcast refresh, bounded automatic download, immediate/manual/off-peak processing, transcript preference, ad-removal, and readability policy in addition to Appearance and Sync. Automatic work keeps the policy snapshot captured when it was admitted. Every frame was retaken at this commit.</div>
 </section>
 
 <section id="method"><h2>2. Method and evidence labels</h2>
@@ -386,13 +390,13 @@ def build(captures, commit, date_iso, date_human, previous):
 <p>Unsubscribing is the destructive action on this page and is driven, not merely rendered, by the shipping UI suite: <code>testFeedsPageListsPodcastFeedsWithPerFeedControls</code> clicks it and asserts the row count drops.</p>
 </section>
 
-<section id="playback"><h2>6. Always-visible bottom rail</h2>
-<p>Now Playing is not a destination. It is an always-visible bottom rail below the detail pane, so playback state is never more than a glance away and never costs a route change.</p>
+<section id="playback"><h2>6. Bottom rail and full-window player</h2>
+<p>Now Playing is not a destination. Its always-visible bottom rail keeps playback state within a glance; Transcript, Notes, and Up Next expand into a full-window player that retains the same transport state.</p>
 {figures["rail"]}
 {figures["transcript"]}
 {figures["upnext"]}
 {figures["notes"]}
-<p>Keyboard handling: the transport row is reachable by Tab, the expanded panels return focus to their toggle on collapse, and Escape collapses an expanded panel rather than leaving it open behind a route change.</p>
+<p>Keyboard handling: the transport row is reachable by Tab, Collapse and Escape return focus to the originating rail toggle, and the underlying destination is disabled and hidden from accessibility while the full-window player is open.</p>
 <p>The same transport is reachable without the app in front of you. What is playing is published to the system, so the episode appears in the menu bar's Now Playing widget and on the lock screen, with its show, artwork, elapsed time, and speed. The keyboard's media keys and the widget's own buttons drive the identical model the on-screen rail drives: play and pause, next and previous episode, a 15-second step back and a 30-second step forward, scrubbing, and the six speeds the rate control offers. Next and previous are greyed out at the ends of Up Next rather than drawn as buttons that do nothing.</p>
 </section>
 
@@ -404,7 +408,7 @@ def build(captures, commit, date_iso, date_human, previous):
 </section>
 
 <section id="settings"><h2>8. Settings</h2>
-<p>Settings holds sync, which is opt-in, and the account-review recovery path.</p>
+<p>Settings holds appearance, podcast automation policy, opt-in sync, and the account-review recovery path.</p>
 {figures["settings"]}
 </section>
 
@@ -456,6 +460,8 @@ def build(captures, commit, date_iso, date_human, previous):
 <li>Press Mark completed part way through an episode and confirm the audio stops, the button reads Completed, the queue stays on the same episode, and the Larder row changes to &ldquo;Played&rdquo;.</li>
 <li>Skip an episode from its row button in one press, confirm it leaves Larder and the message offers Undo, then open Removed in the Larder header and confirm Restore brings it back without its old cut.</li>
 <li>Change Text and icon size in Settings and confirm the sidebar, the rows, the search field, and the rail all follow, and that the choice survives relaunch.</li>
+<li>Choose each podcast processing policy in Settings, confirm the off-peak window appears only for Off-peak, and confirm the choice survives relaunch.</li>
+<li>Open Transcript, Notes, and Up Next, confirm each uses the full-window player without losing transport state, and confirm Collapse, Escape, and sidebar navigation dismiss it correctly.</li>
 <li>Quit Wilted while an episode is preparing, relaunch, and confirm Prep shows the run as failed with the reason and a Retry, and that Retry prepares it.</li>
 </ol></section>
 
