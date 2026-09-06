@@ -773,6 +773,7 @@ final class WiltedMacModel {
     static let backwardSkipSeconds: Double = 15
     static let forwardSkipSeconds: Double = 30
     static let automationSettingsPreferenceKey = "wilted.automation.settings"
+    static let deferredAutomaticPreparationsPreferenceKey = "wilted.automation.deferredPreparations"
     static let textScalePreferenceKey = "wilted.appearance.textScale"
     /// When automation last completed a refresh.
     ///
@@ -900,6 +901,10 @@ final class WiltedMacModel {
     private var podcastDownloadCoordinator: PodcastDownloadCoordinator?
     private var podcastPreparationPipeline: PodcastPreparationPipeline?
     private var podcastPreparationTasks: [String: Task<Void, Never>] = [:]
+    /// Automatic work that was admitted while its off-peak window was closed.
+    /// The snapshot belongs to the job rather than Settings, so changing a
+    /// preference cannot rewrite work already waiting for its window.
+    private(set) var deferredAutomaticPreparations: [DeferredAutomaticPreparation] = []
     /// One preparation runs at a time; the rest queue. See
     /// `WiltedPreparationGate` for why concurrent runs cost work rather
     /// than saving time.
@@ -993,6 +998,7 @@ final class WiltedMacModel {
             playbackRate = Self.clampPlaybackRate(self.preferences.double(forKey: Self.playbackRatePreferenceKey))
         }
         automationSettings = Self.loadAutomationSettings(from: self.preferences)
+        deferredAutomaticPreparations = Self.loadDeferredAutomaticPreparations(from: self.preferences)
         textScale = Self.loadTextScale(from: self.preferences)
 #if canImport(WiltedProducer)
         // Fixture launches build their controller above, before the stored
@@ -1136,6 +1142,7 @@ final class WiltedMacModel {
                 } catch {
                     return
                 }
+                self?.startEligibleAutomaticPreparations()
                 self?.runAutomation(trigger: .openWindowTick)
             }
         }
@@ -1768,7 +1775,7 @@ final class WiltedMacModel {
                 // requested the row has no state to keep and nothing names it
                 // as pending. It reports what it will do straight away, so the
                 // reload below has something to preserve.
-                self.prepareEpisode(episode)
+                self.admitAutomaticPreparation(for: episode, at: Date())
                 // The file has landed and its preparation is under way, so a
                 // reload that fails from here leaves stale rows -- it does not
                 // mean the download failed, and the catch below would say so.
@@ -1804,6 +1811,151 @@ final class WiltedMacModel {
     }
 #endif
 
+    /// One automatic job held outside the preparation gate until its original
+    /// off-peak window opens.
+    struct DeferredAutomaticPreparation: Codable, Equatable {
+        let episodeID: String
+        let processingPolicy: WiltedAutomationProcessingPolicy
+        let policySnapshot: PodcastPreparationPolicySnapshot
+    }
+
+    private struct DeferredAutomaticPreparationEnvelope: Codable {
+        static let currentVersion = 1
+        let version: Int
+        let jobs: [DeferredAutomaticPreparation]
+    }
+
+    static func loadDeferredAutomaticPreparations(
+        from preferences: UserDefaults
+    ) -> [DeferredAutomaticPreparation] {
+        guard let data = preferences.data(forKey: deferredAutomaticPreparationsPreferenceKey),
+              let envelope = try? JSONDecoder().decode(DeferredAutomaticPreparationEnvelope.self, from: data),
+              envelope.version == DeferredAutomaticPreparationEnvelope.currentVersion else { return [] }
+        var seen: Set<String> = []
+        return envelope.jobs.filter { job in
+            guard !job.episodeID.isEmpty,
+                  case .offPeak = job.processingPolicy,
+                  seen.insert(job.episodeID).inserted else { return false }
+            return true
+        }
+    }
+
+    static func persistDeferredAutomaticPreparations(
+        _ jobs: [DeferredAutomaticPreparation], to preferences: UserDefaults
+    ) {
+        guard !jobs.isEmpty else {
+            preferences.removeObject(forKey: Self.deferredAutomaticPreparationsPreferenceKey)
+            return
+        }
+        let envelope = DeferredAutomaticPreparationEnvelope(
+            version: DeferredAutomaticPreparationEnvelope.currentVersion,
+            jobs: jobs
+        )
+        guard let data = try? JSONEncoder().encode(envelope) else { return }
+        preferences.set(data, forKey: Self.deferredAutomaticPreparationsPreferenceKey)
+    }
+
+    private func persistDeferredAutomaticPreparations() {
+        Self.persistDeferredAutomaticPreparations(deferredAutomaticPreparations, to: preferences)
+    }
+
+    /// Maps the settings visible when a job is admitted into the worker's
+    /// immutable request shape.
+    static func preparationPolicySnapshot(
+        from settings: WiltedAutomationSettings
+    ) -> PodcastPreparationPolicySnapshot {
+        let transcriptPolicy: PodcastTranscriptPolicy
+        switch settings.transcriptPolicy {
+        case .bestAvailable: transcriptPolicy = .bestAvailable
+        case .alwaysTranscribe: transcriptPolicy = .alwaysTranscribe
+        case .noLocalSTT: transcriptPolicy = .noLocalSTT
+        }
+        return PodcastPreparationPolicySnapshot(
+            transcriptPolicy: transcriptPolicy,
+            removeAds: settings.removeAds,
+            readableTranscriptPass: settings.readableTranscriptPass
+        )
+    }
+
+    /// Starts, defers, or skips preparation for an automatically downloaded
+    /// episode. Manual preparation deliberately does not pass through here.
+    func admitAutomaticPreparation(for episode: WiltedMacEpisode, at date: Date) {
+        let settings = automationSettings
+        let snapshot = Self.preparationPolicySnapshot(from: settings)
+        switch WiltedAutomationCoordinator.preparationPlan(
+            processingPolicy: settings.processingPolicy, at: date
+        ) {
+        case .prepareNow:
+            prepareEpisode(episode, policySnapshot: snapshot)
+        case .skip:
+            break
+        case .deferUntilOffPeak:
+            guard !deferredAutomaticPreparations.contains(where: { $0.episodeID == episode.id }) else { return }
+            deferredAutomaticPreparations.append(DeferredAutomaticPreparation(
+                episodeID: episode.id,
+                processingPolicy: settings.processingPolicy, policySnapshot: snapshot
+            ))
+            persistDeferredAutomaticPreparations()
+            preparationQueue.enter(WiltedMacWaitingPreparation(
+                id: episode.id, title: episode.title, source: episode.feedTitle
+            ))
+            updateEpisode(episode.id) { $0.preparationState = .preparing(stage: Self.preparationQueuedStage) }
+            podcastOperationMessage = "\(episode.title) is queued for off-peak preparation."
+        }
+    }
+
+    /// Re-evaluates only already-admitted off-peak jobs. Later Settings edits
+    /// do not affect the stored policy snapshot or its window.
+    func startEligibleAutomaticPreparations(at date: Date = Date()) {
+        let eligible = deferredAutomaticPreparations.filter { deferred in
+            WiltedAutomationCoordinator.preparationPlan(
+                processingPolicy: deferred.processingPolicy, at: date
+            ) == .prepareNow
+        }
+        for deferred in eligible {
+            guard let episode = episodes.first(where: { $0.id == deferred.episodeID }) else {
+                removeDeferredAutomaticPreparation(deferred.episodeID)
+                continue
+            }
+            preparationQueue.leave(deferred.episodeID)
+            if prepareEpisode(episode, policySnapshot: deferred.policySnapshot) {
+                removeDeferredAutomaticPreparation(deferred.episodeID, leaveQueue: false)
+            } else {
+                preparationQueue.enter(WiltedMacWaitingPreparation(
+                    id: episode.id, title: episode.title, source: episode.feedTitle
+                ))
+            }
+        }
+    }
+
+    private func removeDeferredAutomaticPreparation(_ episodeID: String, leaveQueue: Bool = true) {
+        let oldCount = deferredAutomaticPreparations.count
+        deferredAutomaticPreparations.removeAll { $0.episodeID == episodeID }
+        guard deferredAutomaticPreparations.count != oldCount else { return }
+        if leaveQueue { preparationQueue.leave(episodeID) }
+        persistDeferredAutomaticPreparations()
+    }
+
+    /// Rebuilds the visible queue only after the library rows exist, then
+    /// starts work whose original window is already open. Missing, no-longer-
+    /// downloaded, and already-prepared rows cannot be resumed and are pruned.
+    private func restoreDeferredAutomaticPreparations(at date: Date = Date()) {
+        let resumable = Set(episodes.compactMap { episode -> String? in
+            guard episode.downloadState == .completed, !episode.preparationState.isPrepared else { return nil }
+            return episode.id
+        })
+        deferredAutomaticPreparations.removeAll { !resumable.contains($0.episodeID) }
+        persistDeferredAutomaticPreparations()
+        for deferred in deferredAutomaticPreparations {
+            guard let episode = episodes.first(where: { $0.id == deferred.episodeID }) else { continue }
+            preparationQueue.enter(WiltedMacWaitingPreparation(
+                id: episode.id, title: episode.title, source: episode.feedTitle
+            ))
+            updateEpisode(episode.id) { $0.preparationState = .preparing(stage: Self.preparationQueuedStage) }
+        }
+        startEligibleAutomaticPreparations(at: date)
+    }
+
     /// Removes the advertisements and synchronises the transcript.
     ///
     /// Runs automatically once a download lands, and manually from the row for
@@ -1813,7 +1965,18 @@ final class WiltedMacModel {
     /// indistinguishable from a hung one.
     func prepareEpisode(_ episode: WiltedMacEpisode) {
 #if canImport(WiltedProducer)
-        guard podcastPreparationTasks[episode.id] == nil else { return }
+        removeDeferredAutomaticPreparation(episode.id)
+        _ = prepareEpisode(episode, policySnapshot: Self.preparationPolicySnapshot(from: automationSettings))
+#endif
+    }
+
+    @discardableResult
+    private func prepareEpisode(
+        _ episode: WiltedMacEpisode,
+        policySnapshot: PodcastPreparationPolicySnapshot
+    ) -> Bool {
+#if canImport(WiltedProducer)
+        guard podcastPreparationTasks[episode.id] == nil else { return false }
         if fixtureMode {
             // No worker in fixture mode; the row still has to leave the state
             // it was in, so a UI test can tell a live control from a drawn one.
@@ -1823,10 +1986,10 @@ final class WiltedMacModel {
                 self?.updateEpisode(episode.id) { $0.preparationState = .failed("No preparation worker in fixture mode") }
                 self?.podcastPreparationTasks[episode.id] = nil
             }
-            return
+            return true
         }
         guard let pipeline = podcastPreparationPipeline,
-              let itemID = try? ItemID(rawValue: episode.id) else { return }
+              let itemID = try? ItemID(rawValue: episode.id) else { return false }
         // Whether this run waits is decided now, so the row can say so now,
         // and so Prep can list it in the order it will run. The place in line
         // is taken here rather than where the run suspends on the gate: those
@@ -1878,7 +2041,7 @@ final class WiltedMacModel {
                 self?.podcastOperationMessage = "Preparing \(episode.title)…"
             }
             do {
-                let result = try await pipeline.prepare(episodeID: itemID)
+                let result = try await pipeline.prepare(episodeID: itemID, policy: policySnapshot)
                 guard let self else { return }
                 let summary = result.summary
                 self.podcastOperationMessage = "\(episode.title): \(summary)"
@@ -1905,6 +2068,9 @@ final class WiltedMacModel {
                 self?.refreshProcessorRuns()
             }
         }
+        return true
+#else
+        return false
 #endif
     }
 
@@ -1939,6 +2105,12 @@ final class WiltedMacModel {
     }
 
     func cancelEpisodePreparation(_ episode: WiltedMacEpisode) {
+        if deferredAutomaticPreparations.contains(where: { $0.episodeID == episode.id }) {
+            removeDeferredAutomaticPreparation(episode.id)
+            updateEpisode(episode.id) { $0.preparationState = .notPrepared }
+            podcastOperationMessage = "Preparation cancelled."
+            return
+        }
         podcastPreparationTasks[episode.id]?.cancel()
     }
 
@@ -1947,6 +2119,12 @@ final class WiltedMacModel {
     /// a queued caller leave at the moment it is cancelled rather than when
     /// the run ahead of it finishes, so the row clears now.
     func cancelWaitingPreparation(_ waiting: WiltedMacWaitingPreparation) {
+        if deferredAutomaticPreparations.contains(where: { $0.episodeID == waiting.id }) {
+            removeDeferredAutomaticPreparation(waiting.id)
+            updateEpisode(waiting.id) { $0.preparationState = .notPrepared }
+            podcastOperationMessage = "Preparation cancelled."
+            return
+        }
         podcastPreparationTasks[waiting.id]?.cancel()
     }
 
@@ -2144,6 +2322,7 @@ final class WiltedMacModel {
     private func hideEpisode(_ episode: WiltedMacEpisode) {
         podcastDownloadTasks[episode.id]?.cancel()
         podcastPreparationTasks[episode.id]?.cancel()
+        removeDeferredAutomaticPreparation(episode.id)
         hiddenEpisodeIDs.insert(episode.id)
         if selectedLibraryItemID == episode.id { selectedLibraryItemID = nil }
     }
@@ -2371,6 +2550,7 @@ final class WiltedMacModel {
     private func applyEpisodes(_ loaded: [WiltedMacEpisode]) {
 #if canImport(WiltedProducer)
         let running = Set(podcastPreparationTasks.keys)
+            .union(deferredAutomaticPreparations.map(\.episodeID))
 #else
         let running: Set<String> = []
 #endif
@@ -3541,6 +3721,7 @@ final class WiltedMacModel {
             subscriptions = library.subscriptions
             dismissedEpisodes = try await loadDismissedEpisodes(from: configuredStore)
             await restorePodcastPlayback()
+            restoreDeferredAutomaticPreparations()
             startupState = .ready
             if pendingSyncReconciliation {
                 pendingSyncReconciliation = false

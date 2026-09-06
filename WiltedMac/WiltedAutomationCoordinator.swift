@@ -33,6 +33,13 @@ struct WiltedAutomationPlan: Equatable, Sendable {
     }
 }
 
+/// The disposition of one completed automatic download.
+enum WiltedAutomationPreparationPlan: Equatable, Sendable {
+    case prepareNow
+    case deferUntilOffPeak
+    case skip
+}
+
 /// What automation is doing, for a surface to show and a listener to stop.
 enum WiltedAutomationStatus: Equatable, Sendable {
     case idle
@@ -152,6 +159,33 @@ actor WiltedAutomationCoordinator {
             perFeedDownloadLimit: perFeed,
             refreshDownloadBudget: settings.downloadPolicy.maximumEpisodesPerRefresh
         )
+    }
+
+    /// Decides whether a completed automatic download may enter preparation.
+    ///
+    /// The caller supplies time so an off-peak boundary is deterministic in
+    /// tests and never needs a timer or a sleep. The end is exclusive: a
+    /// 22:00–06:00 window accepts 05:59 but not 06:00.
+    static func preparationPlan(
+        processingPolicy: WiltedAutomationProcessingPolicy,
+        at date: Date,
+        calendar: Calendar = .current
+    ) -> WiltedAutomationPreparationPlan {
+        switch processingPolicy {
+        case .immediate:
+            return .prepareNow
+        case .manual:
+            return .skip
+        case let .offPeak(window):
+            let components = calendar.dateComponents([.hour, .minute], from: date)
+            let minute = (components.hour ?? 0) * 60 + (components.minute ?? 0)
+            let start = window.start.hour * 60 + window.start.minute
+            let end = window.end.hour * 60 + window.end.minute
+            let eligible = start < end
+                ? minute >= start && minute < end
+                : minute >= start || minute < end
+            return eligible ? .prepareNow : .deferUntilOffPeak
+        }
     }
 
     // MARK: - Running

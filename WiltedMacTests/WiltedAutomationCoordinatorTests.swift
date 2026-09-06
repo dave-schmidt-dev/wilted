@@ -145,6 +145,37 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         XCTAssertEqual(plan(.newestOnePerEnabledFeed).limit(remainingBudget: nil), 1)
     }
 
+    func testPreparationEligibilityUsesTheProcessingPolicyAndInjectedLocalTime() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func date(hour: Int, minute: Int) -> Date {
+            calendar.date(from: DateComponents(year: 2026, month: 9, day: 6, hour: hour, minute: minute))!
+        }
+        func window(_ startHour: Int, _ endHour: Int) throws -> WiltedAutomationOffPeakWindow {
+            let start = try XCTUnwrap(WiltedAutomationLocalTime(hour: startHour, minute: 0))
+            let end = try XCTUnwrap(WiltedAutomationLocalTime(hour: endHour, minute: 0))
+            return try XCTUnwrap(WiltedAutomationOffPeakWindow(start: start, end: end))
+        }
+        func plan(_ policy: WiltedAutomationProcessingPolicy, hour: Int, minute: Int = 0) -> WiltedAutomationPreparationPlan {
+            WiltedAutomationCoordinator.preparationPlan(processingPolicy: policy, at: date(hour: hour, minute: minute), calendar: calendar)
+        }
+
+        XCTAssertEqual(plan(.immediate, hour: 12), .prepareNow)
+        XCTAssertEqual(plan(.manual, hour: 12), .skip)
+
+        let sameDay = try window(2, 5)
+        XCTAssertEqual(plan(.offPeak(sameDay), hour: 1, minute: 59), .deferUntilOffPeak)
+        XCTAssertEqual(plan(.offPeak(sameDay), hour: 2), .prepareNow)
+        XCTAssertEqual(plan(.offPeak(sameDay), hour: 4, minute: 59), .prepareNow)
+        XCTAssertEqual(plan(.offPeak(sameDay), hour: 5), .deferUntilOffPeak)
+
+        let overnight = try window(22, 6)
+        XCTAssertEqual(plan(.offPeak(overnight), hour: 21, minute: 59), .deferUntilOffPeak)
+        XCTAssertEqual(plan(.offPeak(overnight), hour: 22), .prepareNow)
+        XCTAssertEqual(plan(.offPeak(overnight), hour: 2), .prepareNow)
+        XCTAssertEqual(plan(.offPeak(overnight), hour: 6), .deferUntilOffPeak)
+    }
+
     // MARK: - Running
 
     /// A per-feed policy asks each feed for its own newest episodes and never

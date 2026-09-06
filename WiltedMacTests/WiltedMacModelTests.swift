@@ -495,6 +495,172 @@ final class WiltedMacModelTests: XCTestCase {
         return try XCTUnwrap(WiltedAutomationOffPeakWindow(start: start, end: end))
     }
 
+    private func localDate(hour: Int, minute: Int = 0) throws -> Date {
+        try XCTUnwrap(Calendar.current.date(from: DateComponents(
+            year: 2026, month: 9, day: 6, hour: hour, minute: minute
+        )))
+    }
+
+    private func automationFixture(_ suffix: String) throws -> (URL, WiltedMacModel, WiltedMacEpisode) {
+        let directory = temporaryDirectory(suffix)
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
+            stateDirectoryOverride: directory,
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        return (directory, model, try XCTUnwrap(model.episodes.first))
+    }
+
+    func testAutomaticAdmissionStartsImmediatePreparation() async throws {
+        let (directory, model, episode) = try automationFixture("automatic-immediate")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .immediate,
+            transcriptPolicy: .alwaysTranscribe, removeAds: false, readableTranscriptPass: false
+        ))
+
+        model.admitAutomaticPreparation(for: episode, at: try localDate(hour: 12))
+
+        XCTAssertTrue(model.episodes.first(where: { $0.id == episode.id })?.preparationState.isRunning == true)
+        XCTAssertTrue(model.deferredAutomaticPreparations.isEmpty)
+        XCTAssertTrue(model.preparationQueue.isEmpty)
+        try await Task.sleep(for: .milliseconds(10))
+    }
+
+    func testAutomaticAdmissionSkipsPreparationUnderManualPolicy() throws {
+        let (directory, model, episode) = try automationFixture("automatic-manual")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .manual,
+            transcriptPolicy: .alwaysTranscribe, removeAds: false, readableTranscriptPass: false
+        ))
+
+        model.admitAutomaticPreparation(for: episode, at: try localDate(hour: 12))
+
+        XCTAssertEqual(
+            model.episodes.first(where: { $0.id == episode.id })?.preparationState,
+            .notPrepared
+        )
+        XCTAssertTrue(model.deferredAutomaticPreparations.isEmpty)
+        XCTAssertTrue(model.preparationQueue.isEmpty)
+    }
+
+    func testOffPeakAdmissionKeepsItsOriginalWindowAndSnapshotUntilEligible() async throws {
+        let (directory, model, episode) = try automationFixture("automatic-off-peak")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let originalWindow = try offPeakWindow()
+        let originalSettings = WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .offPeak(originalWindow),
+            transcriptPolicy: .alwaysTranscribe, removeAds: false, readableTranscriptPass: false
+        )
+        model.setAutomationSettings(originalSettings)
+
+        model.admitAutomaticPreparation(for: episode, at: try localDate(hour: 12))
+
+        let admitted = try XCTUnwrap(model.deferredAutomaticPreparations.first)
+        XCTAssertEqual(admitted.episodeID, episode.id)
+        XCTAssertEqual(admitted.processingPolicy, .offPeak(originalWindow))
+        XCTAssertEqual(admitted.policySnapshot, PodcastPreparationPolicySnapshot(
+            transcriptPolicy: .alwaysTranscribe, removeAds: false, readableTranscriptPass: false
+        ))
+        XCTAssertEqual(model.preparationQueue.entries.map(\.id), [episode.id])
+        XCTAssertEqual(
+            model.episodes.first(where: { $0.id == episode.id })?.preparationState,
+            .preparing(stage: WiltedMacModel.preparationQueuedStage)
+        )
+
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .manual,
+            transcriptPolicy: .noLocalSTT, removeAds: true, readableTranscriptPass: true
+        ))
+        model.startEligibleAutomaticPreparations(at: try localDate(hour: 21))
+        XCTAssertEqual(model.deferredAutomaticPreparations, [admitted],
+                       "later settings cannot skip or rewrite the admitted job")
+
+        model.startEligibleAutomaticPreparations(at: try localDate(hour: 23))
+        XCTAssertTrue(model.deferredAutomaticPreparations.isEmpty)
+        XCTAssertTrue(model.preparationQueue.isEmpty)
+        XCTAssertTrue(model.episodes.first(where: { $0.id == episode.id })?.preparationState.isRunning == true)
+        try await Task.sleep(for: .milliseconds(10))
+    }
+
+    func testPreparationPolicySnapshotMapsEveryFutureWorkerChoice() throws {
+        let settings = WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .offPeak(try offPeakWindow()),
+            transcriptPolicy: .alwaysTranscribe, removeAds: false, readableTranscriptPass: false
+        )
+
+        let snapshot = WiltedMacModel.preparationPolicySnapshot(from: settings)
+
+        XCTAssertEqual(snapshot.transcriptPolicy, .alwaysTranscribe)
+        XCTAssertFalse(snapshot.removeAds)
+        XCTAssertFalse(snapshot.readableTranscriptPass)
+
+        let laterSettings = WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .manual,
+            transcriptPolicy: .noLocalSTT, removeAds: true, readableTranscriptPass: true
+        )
+        XCTAssertEqual(snapshot, PodcastPreparationPolicySnapshot(
+            transcriptPolicy: .alwaysTranscribe, removeAds: false, readableTranscriptPass: false
+        ), "a queued job retains the snapshot captured at admission")
+        XCTAssertNotEqual(snapshot, WiltedMacModel.preparationPolicySnapshot(from: laterSettings))
+    }
+
+    func testDeferredAutomaticPreparationPersistsItsAdmissionOrderWindowAndSnapshot() throws {
+        let preferences = try automationSettingsPreferences()
+        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
+        let window = try offPeakWindow()
+        let firstSnapshot = PodcastPreparationPolicySnapshot(
+            transcriptPolicy: .alwaysTranscribe, removeAds: false, readableTranscriptPass: true
+        )
+        let secondSnapshot = PodcastPreparationPolicySnapshot(
+            transcriptPolicy: .noLocalSTT, removeAds: true, readableTranscriptPass: false
+        )
+        let jobs = [
+            WiltedMacModel.DeferredAutomaticPreparation(
+                episodeID: "first", processingPolicy: .offPeak(window), policySnapshot: firstSnapshot
+            ),
+            WiltedMacModel.DeferredAutomaticPreparation(
+                episodeID: "second", processingPolicy: .offPeak(window), policySnapshot: secondSnapshot
+            )
+        ]
+
+        WiltedMacModel.persistDeferredAutomaticPreparations(jobs, to: preferences)
+        let restored = WiltedMacModel.loadDeferredAutomaticPreparations(from: preferences)
+
+        XCTAssertEqual(restored, jobs)
+        XCTAssertEqual(restored.map(\.episodeID), ["first", "second"])
+        XCTAssertEqual(restored.first?.policySnapshot, firstSnapshot)
+        XCTAssertEqual(restored.first?.processingPolicy, .offPeak(window))
+    }
+
+    func testExplicitPreparationStartsEvenWhenAutomaticProcessingIsManual() async throws {
+        let directory = temporaryDirectory("manual-preparation-policy")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
+            stateDirectoryOverride: directory,
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .manual,
+            transcriptPolicy: .bestAvailable, removeAds: true, readableTranscriptPass: true
+        ))
+        let episode = try XCTUnwrap(model.episodes.first)
+
+        model.prepareEpisode(episode)
+        XCTAssertTrue(
+            model.episodes.first(where: { $0.id == episode.id })?.preparationState.isRunning == true,
+            "the explicit action bypasses the automatic-processing policy"
+        )
+        try await Task.sleep(for: .milliseconds(10))
+
+        XCTAssertEqual(
+            model.episodes.first(where: { $0.id == episode.id })?.preparationState,
+            .failed("No preparation worker in fixture mode")
+        )
+    }
+
     /// Automation is stall-prone by construction: it refreshes feeds and pulls
     /// audio with nobody watching. Every stage it can sit in has to be readable
     /// from the model, and stopping it has to say so rather than going quiet.
