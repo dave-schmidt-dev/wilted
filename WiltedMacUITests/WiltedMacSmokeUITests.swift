@@ -70,6 +70,54 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertFalse(syncControls.exists)
         XCTAssertFalse(app.descendants(matching: .any)["wilted-podcast-feeds"].exists)
     }
+
+    func testSettingsAutomationControlsRevealOnlyTheRelevantOffPeakWindow() {
+        let app = launch(arguments: ["--wilted-ui-smoke"])
+        let navSettings = app.descendants(matching: .any)["wilted-navigation-settings"]
+        XCTAssertTrue(navSettings.waitForExistence(timeout: 5))
+        navSettings.click()
+
+        let controls = app.descendants(matching: .any)["wilted-automation-controls"]
+        XCTAssertTrue(controls.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-refresh-policy"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-download-policy"].exists)
+        let processing = app.descendants(matching: .any)["wilted-automation-processing-policy"]
+        XCTAssertTrue(processing.exists)
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-transcript-policy"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-remove-ads"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-readable-transcript"].exists)
+
+        // The fixture starts at immediate processing. No dormant time controls
+        // or stop action should occupy the Settings card while automation is idle,
+        // but the status must still say that nothing is running.
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-automation-off-peak-start"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-automation-off-peak-end"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-automation-off-peak-explanation"].exists)
+        let status = app.descendants(matching: .any)["wilted-automation-status"]
+        XCTAssertTrue(status.exists)
+        XCTAssertTrue(status.label.localizedCaseInsensitiveContains("idle"))
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-automation-stop"].exists)
+
+        processing.click()
+        let manual = app.menuItems["Manual"]
+        XCTAssertTrue(manual.waitForExistence(timeout: 5))
+        manual.click()
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-automation-off-peak-start"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-automation-off-peak-end"].exists)
+
+        processing.click()
+        let offPeak = app.menuItems["Off-peak"]
+        XCTAssertTrue(offPeak.waitForExistence(timeout: 5))
+        offPeak.click()
+
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-off-peak-start"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-off-peak-end"].exists)
+        let explanation = app.descendants(matching: .any)["wilted-automation-off-peak-explanation"]
+        XCTAssertTrue(explanation.exists)
+        XCTAssertTrue(explanation.label.localizedCaseInsensitiveContains("local time"))
+        XCTAssertTrue(explanation.label.localizedCaseInsensitiveContains("overnight"))
+    }
+
     func testProcessorReportsActiveWorkAndRunHistory() {
         let app = launch(arguments: ["--wilted-ui-smoke"])
 

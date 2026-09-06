@@ -104,6 +104,29 @@ enum WiltedAutomationRefreshPolicy: Equatable, Sendable, Codable {
     }
 
     private static let allowedIntervals: Set<Int> = [6, 12, 24]
+
+    /// The one listener-facing value used by Settings for each bounded choice.
+    var settingsControlLabel: String {
+        switch self {
+        case .manual: "Manual"
+        case .onLaunch: "On launch"
+        case .whileOpen(everyHours: 6): "Every 6 hours while open"
+        case .whileOpen(everyHours: 12): "Every 12 hours while open"
+        case .whileOpen(everyHours: 24): "Every 24 hours while open"
+        case .whileOpen: ""
+        }
+    }
+
+    static func fromSettingsControlLabel(_ label: String) -> Self? {
+        switch label {
+        case "Manual": .manual
+        case "On launch": .onLaunch
+        case "Every 6 hours while open": .whileOpen(everyHours: 6)
+        case "Every 12 hours while open": .whileOpen(everyHours: 12)
+        case "Every 24 hours while open": .whileOpen(everyHours: 24)
+        default: nil
+        }
+    }
 }
 
 /// The bounded automatic-download choices; manual download remains available in every case.
@@ -116,6 +139,25 @@ enum WiltedAutomationDownloadPolicy: String, Equatable, Sendable, Codable {
     var maximumEpisodesPerRefresh: Int? {
         if case .allNewlyAdmittedUpToTwenty = self { return 20 }
         return nil
+    }
+
+    var settingsControlLabel: String {
+        switch self {
+        case .manual: "Manual"
+        case .newestOnePerEnabledFeed: "Newest 1 per feed"
+        case .newestThreePerEnabledFeed: "Newest 3 per feed"
+        case .allNewlyAdmittedUpToTwenty: "All newly admitted, up to 20"
+        }
+    }
+
+    static func fromSettingsControlLabel(_ label: String) -> Self? {
+        switch label {
+        case "Manual": .manual
+        case "Newest 1 per feed": .newestOnePerEnabledFeed
+        case "Newest 3 per feed": .newestThreePerEnabledFeed
+        case "All newly admitted, up to 20": .allNewlyAdmittedUpToTwenty
+        default: nil
+        }
     }
 }
 
@@ -199,6 +241,23 @@ enum WiltedAutomationProcessingPolicy: Equatable, Sendable, Codable {
             try container.encode(window, forKey: .window)
         }
     }
+
+    var settingsControlLabel: String {
+        switch self {
+        case .immediate: "Immediately"
+        case .manual: "Manual"
+        case .offPeak: "Off-peak"
+        }
+    }
+
+    static func fromSettingsControlLabel(_ label: String, window: WiltedAutomationOffPeakWindow) -> Self? {
+        switch label {
+        case "Immediately": .immediate
+        case "Manual": .manual
+        case "Off-peak": .offPeak(window)
+        default: nil
+        }
+    }
 }
 
 /// The transcript source order selected for future podcast preparation.
@@ -206,6 +265,50 @@ enum WiltedAutomationTranscriptPolicy: String, Equatable, Sendable, Codable {
     case bestAvailable
     case alwaysTranscribe
     case noLocalSTT
+
+    var settingsControlLabel: String {
+        switch self {
+        case .bestAvailable: "Best available"
+        case .alwaysTranscribe: "Always transcribe"
+        case .noLocalSTT: "No local speech-to-text"
+        }
+    }
+
+    static func fromSettingsControlLabel(_ label: String) -> Self? {
+        switch label {
+        case "Best available": .bestAvailable
+        case "Always transcribe": .alwaysTranscribe
+        case "No local speech-to-text": .noLocalSTT
+        default: nil
+        }
+    }
+}
+
+extension WiltedAutomationStatus {
+    /// Idle and terminal results do not advertise a Stop action: only a pass
+    /// that can still be interrupted belongs in Settings' live-status row.
+    var isCancellable: Bool {
+        switch self {
+        case .refreshing, .downloading, .retrying: true
+        case .idle, .failed, .cancelled, .finished: false
+        }
+    }
+
+    var settingsStatusText: String {
+        switch self {
+        case let .refreshing(feedsRemaining):
+            "Refreshing \(feedsRemaining) feed\(feedsRemaining == 1 ? "" : "s")"
+        case let .downloading(episode, remaining):
+            "Downloading \(episode)\(remaining > 0 ? " (\(remaining) remaining)" : "")"
+        case let .retrying(afterSeconds, attempt):
+            "Retrying in \(Int(afterSeconds.rounded())) seconds (attempt \(attempt))"
+        case .idle: "Idle"
+        case let .failed(message): "Failed: \(message)"
+        case .cancelled: "Stopped"
+        case let .finished(refreshed, downloaded):
+            "Finished: \(refreshed) refreshed, \(downloaded) downloaded"
+        }
+    }
 }
 
 /// Versioned, Mac-local automation preferences. Invalid or newer stored values fall back to `defaults`.
@@ -1057,6 +1160,13 @@ final class WiltedMacModel {
         guard settings.isValid, let data = try? JSONEncoder().encode(settings) else { return }
         automationSettings = settings
         preferences.set(data, forKey: Self.automationSettingsPreferenceKey)
+    }
+
+    /// Settings always replaces the complete validated envelope. Work already
+    /// admitted by automation owns its policy snapshot, so this is deliberately
+    /// a preference for later work rather than a mutation of a queued job.
+    func updateAutomationSettings(_ update: (WiltedAutomationSettings) -> WiltedAutomationSettings) {
+        setAutomationSettings(update(automationSettings))
     }
 
     func setTextScale(_ scale: WiltedTheme.TextScale) {

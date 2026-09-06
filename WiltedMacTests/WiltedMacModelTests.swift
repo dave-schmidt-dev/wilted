@@ -857,6 +857,92 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(WiltedAutomationDownloadPolicy.allNewlyAdmittedUpToTwenty.maximumEpisodesPerRefresh, 20)
     }
 
+    func testEveryAutomationControlValueMapsAndPersists() throws {
+        let preferences = try automationSettingsPreferences()
+        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
+        let directory = temporaryDirectory("automation-control-values")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let window = try offPeakWindow()
+
+        let refreshPolicies: [WiltedAutomationRefreshPolicy] = [
+            .manual, .onLaunch, .whileOpen(everyHours: 6),
+            .whileOpen(everyHours: 12), .whileOpen(everyHours: 24)
+        ]
+        let downloadPolicies: [WiltedAutomationDownloadPolicy] = [
+            .manual, .newestOnePerEnabledFeed, .newestThreePerEnabledFeed, .allNewlyAdmittedUpToTwenty
+        ]
+        let processingPolicies: [WiltedAutomationProcessingPolicy] = [.immediate, .manual, .offPeak(window)]
+        let transcriptPolicies: [WiltedAutomationTranscriptPolicy] = [.bestAvailable, .alwaysTranscribe, .noLocalSTT]
+
+        XCTAssertEqual(Set(refreshPolicies.map(\.settingsControlLabel)).count, refreshPolicies.count)
+        XCTAssertEqual(Set(downloadPolicies.map(\.settingsControlLabel)).count, downloadPolicies.count)
+        XCTAssertEqual(Set(processingPolicies.map(\.settingsControlLabel)).count, processingPolicies.count)
+        XCTAssertEqual(Set(transcriptPolicies.map(\.settingsControlLabel)).count, transcriptPolicies.count)
+        for policy in refreshPolicies {
+            XCTAssertEqual(WiltedAutomationRefreshPolicy.fromSettingsControlLabel(policy.settingsControlLabel), policy)
+        }
+        for policy in downloadPolicies {
+            XCTAssertEqual(WiltedAutomationDownloadPolicy.fromSettingsControlLabel(policy.settingsControlLabel), policy)
+        }
+        for policy in processingPolicies {
+            XCTAssertEqual(
+                WiltedAutomationProcessingPolicy.fromSettingsControlLabel(policy.settingsControlLabel, window: window),
+                policy
+            )
+        }
+        for policy in transcriptPolicies {
+            XCTAssertEqual(WiltedAutomationTranscriptPolicy.fromSettingsControlLabel(policy.settingsControlLabel), policy)
+        }
+
+        let settings = refreshPolicies.map {
+            WiltedAutomationSettings(
+                refreshPolicy: $0, downloadPolicy: .manual, processingPolicy: .immediate,
+                transcriptPolicy: .bestAvailable, removeAds: true, readableTranscriptPass: true
+            )
+        } + downloadPolicies.map {
+            WiltedAutomationSettings(
+                refreshPolicy: .manual, downloadPolicy: $0, processingPolicy: .immediate,
+                transcriptPolicy: .bestAvailable, removeAds: true, readableTranscriptPass: true
+            )
+        } + processingPolicies.map {
+            WiltedAutomationSettings(
+                refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: $0,
+                transcriptPolicy: .bestAvailable, removeAds: true, readableTranscriptPass: true
+            )
+        } + transcriptPolicies.map {
+            WiltedAutomationSettings(
+                refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .immediate,
+                transcriptPolicy: $0, removeAds: true, readableTranscriptPass: true
+            )
+        }
+
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        for candidate in settings {
+            model.setAutomationSettings(candidate)
+            let relaunched = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+            XCTAssertEqual(relaunched.automationSettings, candidate)
+        }
+    }
+
+    func testAutomationStatusOnlyOffersStopWhileWorkCanBeInterrupted() {
+        XCTAssertFalse(WiltedAutomationStatus.idle.isCancellable)
+        XCTAssertFalse(WiltedAutomationStatus.failed("Network unavailable").isCancellable)
+        XCTAssertFalse(WiltedAutomationStatus.cancelled.isCancellable)
+        XCTAssertFalse(WiltedAutomationStatus.finished(refreshed: 2, downloaded: 1).isCancellable)
+        XCTAssertTrue(WiltedAutomationStatus.refreshing(feedsRemaining: 2).isCancellable)
+        XCTAssertTrue(WiltedAutomationStatus.downloading(episode: "Daily Brief", remaining: 1).isCancellable)
+        XCTAssertTrue(WiltedAutomationStatus.retrying(afterSeconds: 30, attempt: 2).isCancellable)
+        XCTAssertEqual(
+            WiltedAutomationStatus.refreshing(feedsRemaining: 1).settingsStatusText,
+            "Refreshing 1 feed"
+        )
+        XCTAssertEqual(WiltedAutomationStatus.failed("Network unavailable").settingsStatusText,
+                       "Failed: Network unavailable")
+        XCTAssertEqual(WiltedAutomationStatus.cancelled.settingsStatusText, "Stopped")
+        XCTAssertEqual(WiltedAutomationStatus.finished(refreshed: 2, downloaded: 1).settingsStatusText,
+                       "Finished: 2 refreshed, 1 downloaded")
+    }
+
     func testAutomationSettingsSurviveRelaunch() throws {
         let preferences = try automationSettingsPreferences()
         defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }

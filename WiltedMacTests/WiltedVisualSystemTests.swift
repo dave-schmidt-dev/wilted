@@ -789,6 +789,37 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(source.contains("wilted-player-route-recovery"))
     }
 
+    func testAutomationSettingsPresentationFollowsThePipelineAndOnlyShowsLiveControls() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
+        let source = try String(contentsOf: root)
+        let start = try XCTUnwrap(source.range(of: "private var automationCard")?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "private var syncCard", range: start..<source.endIndex)?.lowerBound)
+        let card = source[start..<end]
+
+        let feeds = try XCTUnwrap(card.range(of: "automationSectionTitle(\"Feeds\")")?.lowerBound)
+        let downloads = try XCTUnwrap(card.range(of: "automationSectionTitle(\"Downloads\")")?.lowerBound)
+        let processing = try XCTUnwrap(card.range(of: "automationSectionTitle(\"Processing\")")?.lowerBound)
+        XCTAssertLessThan(feeds, downloads)
+        XCTAssertLessThan(downloads, processing)
+        XCTAssertTrue(card.contains("wilted-automation-refresh-policy"))
+        XCTAssertTrue(card.contains("wilted-automation-download-policy"))
+        XCTAssertTrue(card.contains("wilted-automation-processing-policy"))
+        XCTAssertTrue(card.contains("wilted-automation-transcript-policy"))
+        XCTAssertTrue(card.contains("wilted-automation-remove-ads"))
+        XCTAssertTrue(card.contains("wilted-automation-readable-transcript"))
+        XCTAssertTrue(card.contains("wilted-automation-off-peak-start"))
+        XCTAssertTrue(card.contains("wilted-automation-off-peak-end"))
+        XCTAssertTrue(card.contains("Uses local time. The window may continue overnight."))
+        XCTAssertTrue(card.contains("if isOffPeakProcessing"))
+        XCTAssertTrue(card.contains("value: model.automationStatus.settingsStatusText"))
+        XCTAssertTrue(card.contains("if model.automationStatus.isCancellable"))
+        XCTAssertTrue(card.contains("wilted-automation-status"))
+        XCTAssertTrue(card.contains("wilted-automation-stop"))
+        XCTAssertTrue(card.contains("model.updateAutomationSettings"))
+        XCTAssertFalse(card.contains("UserDefaults"), "Settings must reuse the model's validated persistence")
+    }
+
     /// Removed rows carry enough presentation metadata to name the episode,
     /// its feed, and its retained Prep history without reconstructing a deleted
     /// episode record.

@@ -124,6 +124,31 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         }
     }
 
+    /// Settings is scrollable at window scale, so this focused render check
+    /// guards against the automation card collapsing the destination to a
+    /// blank surface without requiring a new unreviewed pixel baseline.
+    func testSettingsAutomationSurfaceRendersAtWindowScale() throws {
+        for appearance in WiltedAppearance.allCases {
+            let variant = WiltedVisualVariant(
+                appearance: appearance,
+                dynamicType: .standard,
+                reduceMotion: false
+            )
+            let model = WiltedMacModel(
+                arguments: ["--wilted-ui-fixture-ready"],
+                preferences: WiltedMacTestPreferences.ephemeral()
+            )
+            model.selectedNavigation = .settings
+            let image = render(WiltedMacRootView(model: model), variant: variant, size: windowCanvas)
+            let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+            let detail = NSRect(x: 260, y: 0, width: bitmap.pixelsWide - 260, height: bitmap.pixelsHigh)
+            XCTAssertGreaterThan(
+                distinctColorCount(in: bitmap, region: detail), 8,
+                "Settings automation surface is blank in \(appearance.rawValue) mode."
+            )
+        }
+    }
+
     func testMacLibraryShellPixelBaselines() {
         for appearance in WiltedAppearance.allCases {
             let variant = WiltedVisualVariant(

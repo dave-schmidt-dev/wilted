@@ -2094,6 +2094,7 @@ private struct WiltedMacSettingsView: View {
     var body: some View {
         WiltedMacDestination(title: WiltedScreenCopy.settings, identifier: "wilted-mac-settings") {
             appearanceCard
+            automationCard
             syncCard
         }
     }
@@ -2121,6 +2122,222 @@ private struct WiltedMacSettingsView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-appearance-controls")
+    }
+
+    /// Automation follows the path an admitted episode actually takes. The
+    /// quiet rules make that sequence scannable without introducing another
+    /// settings surface or a decorative treatment competing with the cards.
+    private var automationCard: some View {
+        WiltedSettingsCard(title: "Automation") {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                WiltedSettingsRow(
+                    "Status",
+                    value: model.automationStatus.settingsStatusText,
+                    identifier: "wilted-automation-status"
+                )
+                if model.automationStatus.isCancellable {
+                    Button("Stop") { model.cancelAutomation() }
+                        .accessibilityIdentifier("wilted-automation-stop")
+                }
+
+                Divider()
+
+                automationSectionTitle("Feeds")
+                Picker("Refresh feeds", selection: refreshPolicyBinding) {
+                    Text(WiltedAutomationRefreshPolicy.manual.settingsControlLabel)
+                        .tag(WiltedAutomationRefreshPolicy.manual.settingsControlLabel)
+                    Text(WiltedAutomationRefreshPolicy.onLaunch.settingsControlLabel)
+                        .tag(WiltedAutomationRefreshPolicy.onLaunch.settingsControlLabel)
+                    ForEach([6, 12, 24], id: \.self) { hours in
+                        let policy = WiltedAutomationRefreshPolicy.whileOpen(everyHours: hours)
+                        Text(policy.settingsControlLabel).tag(policy.settingsControlLabel)
+                    }
+                }
+                .accessibilityIdentifier("wilted-automation-refresh-policy")
+
+                Divider()
+
+                automationSectionTitle("Downloads")
+                Picker("Download episodes", selection: downloadPolicyBinding) {
+                    ForEach([
+                        WiltedAutomationDownloadPolicy.manual,
+                        .newestOnePerEnabledFeed,
+                        .newestThreePerEnabledFeed,
+                        .allNewlyAdmittedUpToTwenty
+                    ], id: \.rawValue) { policy in
+                        Text(policy.settingsControlLabel).tag(policy.settingsControlLabel)
+                    }
+                }
+                .accessibilityIdentifier("wilted-automation-download-policy")
+
+                Divider()
+
+                automationSectionTitle("Processing")
+                Picker("Prepare episodes", selection: processingPolicyBinding) {
+                    Text(WiltedAutomationProcessingPolicy.immediate.settingsControlLabel)
+                        .tag(WiltedAutomationProcessingPolicy.immediate.settingsControlLabel)
+                    Text(WiltedAutomationProcessingPolicy.manual.settingsControlLabel)
+                        .tag(WiltedAutomationProcessingPolicy.manual.settingsControlLabel)
+                    Text(WiltedAutomationProcessingPolicy.offPeak(defaultOffPeakWindow).settingsControlLabel)
+                        .tag(WiltedAutomationProcessingPolicy.offPeak(defaultOffPeakWindow).settingsControlLabel)
+                }
+                .accessibilityIdentifier("wilted-automation-processing-policy")
+
+                if isOffPeakProcessing {
+                    DatePicker("Start", selection: offPeakStartBinding, displayedComponents: .hourAndMinute)
+                        .accessibilityIdentifier("wilted-automation-off-peak-start")
+                    DatePicker("End", selection: offPeakEndBinding, displayedComponents: .hourAndMinute)
+                        .accessibilityIdentifier("wilted-automation-off-peak-end")
+                    Text("Uses local time. The window may continue overnight.")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wilted-automation-off-peak-explanation")
+                }
+
+                Divider()
+
+                automationSectionTitle("Transcript")
+                Picker("Transcript source", selection: transcriptPolicyBinding) {
+                    ForEach([
+                        WiltedAutomationTranscriptPolicy.bestAvailable,
+                        .alwaysTranscribe,
+                        .noLocalSTT
+                    ], id: \.rawValue) { policy in
+                        Text(policy.settingsControlLabel).tag(policy.settingsControlLabel)
+                    }
+                }
+                .accessibilityIdentifier("wilted-automation-transcript-policy")
+                Toggle("Remove ads", isOn: removeAdsBinding)
+                    .accessibilityIdentifier("wilted-automation-remove-ads")
+                Toggle("Make transcript easier to read", isOn: readableTranscriptBinding)
+                    .accessibilityIdentifier("wilted-automation-readable-transcript")
+
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-automation-controls")
+    }
+
+    private func automationSectionTitle(_ title: String) -> some View {
+        Text(title)
+            .wiltedFont(.utility)
+            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+    }
+
+    private var refreshPolicyBinding: Binding<String> {
+        Binding(
+            get: { model.automationSettings.refreshPolicy.settingsControlLabel },
+            set: { label in
+                guard let policy = WiltedAutomationRefreshPolicy.fromSettingsControlLabel(label) else { return }
+                replaceAutomationSettings(refreshPolicy: policy)
+            }
+        )
+    }
+
+    private var downloadPolicyBinding: Binding<String> {
+        Binding(
+            get: { model.automationSettings.downloadPolicy.settingsControlLabel },
+            set: { label in
+                guard let policy = WiltedAutomationDownloadPolicy.fromSettingsControlLabel(label) else { return }
+                replaceAutomationSettings(downloadPolicy: policy)
+            }
+        )
+    }
+
+    private var processingPolicyBinding: Binding<String> {
+        Binding(
+            get: { model.automationSettings.processingPolicy.settingsControlLabel },
+            set: { label in
+                guard let policy = WiltedAutomationProcessingPolicy.fromSettingsControlLabel(
+                    label, window: selectedOffPeakWindow
+                ) else { return }
+                replaceAutomationSettings(processingPolicy: policy)
+            }
+        )
+    }
+
+    private var transcriptPolicyBinding: Binding<String> {
+        Binding(
+            get: { model.automationSettings.transcriptPolicy.settingsControlLabel },
+            set: { label in
+                guard let policy = WiltedAutomationTranscriptPolicy.fromSettingsControlLabel(label) else { return }
+                replaceAutomationSettings(transcriptPolicy: policy)
+            }
+        )
+    }
+
+    private var removeAdsBinding: Binding<Bool> {
+        Binding(get: { model.automationSettings.removeAds }, set: { replaceAutomationSettings(removeAds: $0) })
+    }
+
+    private var readableTranscriptBinding: Binding<Bool> {
+        Binding(get: { model.automationSettings.readableTranscriptPass }, set: {
+            replaceAutomationSettings(readableTranscriptPass: $0)
+        })
+    }
+
+    private var defaultOffPeakWindow: WiltedAutomationOffPeakWindow {
+        let start = WiltedAutomationLocalTime(hour: 22, minute: 0)!
+        let end = WiltedAutomationLocalTime(hour: 6, minute: 0)!
+        return WiltedAutomationOffPeakWindow(start: start, end: end)!
+    }
+
+    private var selectedOffPeakWindow: WiltedAutomationOffPeakWindow {
+        if case let .offPeak(window) = model.automationSettings.processingPolicy { return window }
+        return defaultOffPeakWindow
+    }
+
+    private var isOffPeakProcessing: Bool {
+        if case .offPeak = model.automationSettings.processingPolicy { return true }
+        return false
+    }
+
+    private var offPeakStartBinding: Binding<Date> {
+        localTimeBinding(\.start)
+    }
+
+    private var offPeakEndBinding: Binding<Date> {
+        localTimeBinding(\.end)
+    }
+
+    private func localTimeBinding(_ keyPath: KeyPath<WiltedAutomationOffPeakWindow, WiltedAutomationLocalTime>) -> Binding<Date> {
+        Binding(
+            get: {
+                let time = selectedOffPeakWindow[keyPath: keyPath]
+                return Calendar.current.date(from: DateComponents(hour: time.hour, minute: time.minute)) ?? .now
+            },
+            set: { date in
+                let components = Calendar.current.dateComponents([.hour, .minute], from: date)
+                guard let hour = components.hour, let minute = components.minute,
+                      let replacement = WiltedAutomationLocalTime(hour: hour, minute: minute) else { return }
+                let window = selectedOffPeakWindow
+                let start = keyPath == \.start ? replacement : window.start
+                let end = keyPath == \.end ? replacement : window.end
+                guard let updatedWindow = WiltedAutomationOffPeakWindow(start: start, end: end) else { return }
+                replaceAutomationSettings(processingPolicy: .offPeak(updatedWindow))
+            }
+        )
+    }
+
+    private func replaceAutomationSettings(
+        refreshPolicy: WiltedAutomationRefreshPolicy? = nil,
+        downloadPolicy: WiltedAutomationDownloadPolicy? = nil,
+        processingPolicy: WiltedAutomationProcessingPolicy? = nil,
+        transcriptPolicy: WiltedAutomationTranscriptPolicy? = nil,
+        removeAds: Bool? = nil,
+        readableTranscriptPass: Bool? = nil
+    ) {
+        model.updateAutomationSettings { settings in
+            WiltedAutomationSettings(
+                refreshPolicy: refreshPolicy ?? settings.refreshPolicy,
+                downloadPolicy: downloadPolicy ?? settings.downloadPolicy,
+                processingPolicy: processingPolicy ?? settings.processingPolicy,
+                transcriptPolicy: transcriptPolicy ?? settings.transcriptPolicy,
+                removeAds: removeAds ?? settings.removeAds,
+                readableTranscriptPass: readableTranscriptPass ?? settings.readableTranscriptPass
+            )
+        }
     }
 
     private var syncCard: some View {
