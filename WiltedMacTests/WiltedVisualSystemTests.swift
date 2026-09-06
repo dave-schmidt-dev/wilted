@@ -828,7 +828,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(source.contains(".allowsHitTesting(playerPresentation == nil)"))
         XCTAssertTrue(source.contains(".accessibilityHidden(playerPresentation != nil)"))
         XCTAssertTrue(source.contains(".disabled(playerPresentation != nil)"))
-        XCTAssertTrue(source.contains("playerPresentation = nil\n                        model.selectedNavigation = destination"))
+        XCTAssertTrue(source.contains("playerPresentation = nil\n                        playerFocusRequest = nil\n                        model.selectedNavigation = destination"))
     }
 
     func testAutomationSettingsPresentationFollowsThePipelineAndOnlyShowsLiveControls() throws {

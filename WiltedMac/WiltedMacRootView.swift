@@ -62,6 +62,7 @@ struct WiltedMacRootView: View {
                     let isSelected = model.selectedNavigation == destination
                     Button {
                         playerPresentation = nil
+                        playerFocusRequest = nil
                         model.selectedNavigation = destination
                     } label: {
                         Label(destination.title, symbol: destination.symbolName)

@@ -730,12 +730,15 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(fullWindow.exists)
         app.descendants(matching: .any)["wilted-navigation-settings"].click()
         XCTAssertTrue(fullWindow.waitForNonExistence(timeout: 5))
-        XCTAssertTrue(
-            app.descendants(matching: .any)["wilted-mac-settings"].waitForExistence(timeout: 5)
-        )
+        let settings = app.descendants(matching: .any)["wilted-mac-settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        app.typeKey(.space, modifierFlags: [])
+        XCTAssertFalse(fullWindow.exists, "Space must not reopen Now Playing after sidebar navigation")
+        XCTAssertTrue(settings.exists, "Settings must remain visible after the stale focus regression probe")
         XCTAssertTrue(compact.exists)
         XCTAssertFalse(library.exists)
     }
+
     func testSelectingEmptyNowPlayingDoesNotResizeWindow() {
         let app = launch(arguments: ["--wilted-ui-smoke"])
 

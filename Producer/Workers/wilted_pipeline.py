@@ -1889,9 +1889,6 @@ def recover_transcript_start_preroll(ads_module, backend, segments, detections):
     # advertising cue, because the insertion gap between them is the spot's
     # own music bed and leaving it behind is leaving the advertisement in.
     end_s = float(segments[program_start_id].start_s)
-    if end_s < PREROLL_RECOVERY_MINIMUM_SECONDS:
-        progress("ads.detect.preroll.skipped", f"the opening is only {end_s:.1f}s long")
-        return detections
     preroll = ads_module.AdSegment(0.0, end_s, 1.0, "ad_break")  # noqa: SLF001 - legacy result type
     progress("ads.detect.preroll", f"0.000-{end_s:.3f} before program ID {program_start_id}")
     return ads_module._merge_adjacent(  # noqa: SLF001 - retain legacy overlap semantics

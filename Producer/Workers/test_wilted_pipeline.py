@@ -1545,6 +1545,28 @@ class ExplicitSponsorFallbackTests(unittest.TestCase):
         self.assertEqual(wp.consecutive_preroll_start(ads, llm, segments, 2), 20.0)
         self.assertEqual(llm.requests, [])
 
+    def test_an_anchor_after_the_first_minute_cannot_extend_to_transcript_start(self):
+        llm = FakeLLM(left_boundary_include=True)
+        llm.load()
+        ads = install_fake_ads(llm)
+        segments = [
+            FakeSegment(0.0, 50.0, "produced promotion"),
+            FakeSegment(60.01, 70.0, "support for the show comes from acme"),
+        ]
+        self.assertEqual(wp.consecutive_preroll_start(ads, llm, segments, 1), 60.01)
+        self.assertEqual(llm.requests, [])
+
+    def test_a_left_gap_greater_than_fifteen_seconds_cannot_extend_to_transcript_start(self):
+        llm = FakeLLM(left_boundary_include=True)
+        llm.load()
+        ads = install_fake_ads(llm)
+        segments = [
+            FakeSegment(0.0, 10.0, "produced promotion"),
+            FakeSegment(25.01, 35.0, "support for the show comes from acme"),
+        ]
+        self.assertEqual(wp.consecutive_preroll_start(ads, llm, segments, 1), 25.01)
+        self.assertEqual(llm.requests, [])
+
 
 def install_legacy_recovery_fixture(llm: FakeLLM):
     """Exercise the detector seam, seed gate, and resume gate without a model.
