@@ -57,8 +57,12 @@ LEGACY_SPONSOR_OPENING_COMPATIBILITY_PATTERN = (
 )
 # This phrase feeds only the worker's explicit-host recovery. Installing it in
 # the archive's coarse sponsor regex also changes interior/bracketed run logic.
+MISSING_SUPPORT_SPONSOR_COMPATIBILITY_PATTERN = (
+    r"^\s*for\s+(?:the|this)\s+show\s+comes\s+from(?=\s+[a-z0-9])"
+)
 EXPLICIT_SUPPORT_OPENING_COMPATIBILITY_PATTERN = (
-    r"\bsupport\s+for\s+(?:the|this)\s+show\s+comes\s+from\b"
+    r"(?:\bsupport\s+for\s+(?:the|this)\s+show\s+comes\s+from\b|"
+    rf"{MISSING_SUPPORT_SPONSOR_COMPATIBILITY_PATTERN}\b)"
 )
 
 # Legal boilerplate only produced advertising reads aloud. The archived
@@ -1271,40 +1275,6 @@ def transcribe_with_daemon(audio_path: Path, model: str = ALIGNED_STT_MODEL):
     return segments
 
 
-# The detector was tuned on parakeet-tdt-1.1b, which writes no punctuation
-# and no capitals; a run on the 0.6b-v3 output moved and split the cuts on the
-# same episode. So the 1.1b transcript stays the detector's input and v3, at
-# about four minutes for a two-and-a-half-hour episode, is transcribed again
-# for the listener. An LLM rewrite of the 1.1b text was the alternative, and
-# measured at seven tokens a second it would take longer than the episode.
-READABLE_STT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
-# The readable pass replaces the display transcript only when it heard about
-# as much as the detector's pass did; a truncated or empty result keeps the
-# plain one rather than losing lines.
-READABLE_MINIMUM_WORD_RATIO = 0.8
-
-
-def transcribe_readable(request: dict, audio_path: Path, plain_cues: list[dict]) -> list[dict]:
-    """A second pass with a punctuating model, for reading rather than cutting."""
-    from wilted import transcribe
-
-    model = request.get("readableTranscriptModel") or READABLE_STT_MODEL
-    progress("transcript.stt.readable.start", model.rsplit("/", 1)[-1])
-    try:
-        segments = transcribe.transcribe_audio(audio_path, model_name=model)
-    except Exception as error:  # noqa: BLE001 - the plain transcript is still a transcript
-        progress("transcript.stt.readable.failed", f"{type(error).__name__}: {error}")
-        return plain_cues
-    cues = segments_to_cues(segments)
-    plain_words = len(cues_to_text(plain_cues).split())
-    readable_words = len(cues_to_text(cues).split())
-    if not cues or readable_words < plain_words * READABLE_MINIMUM_WORD_RATIO:
-        progress("transcript.stt.readable.rejected", f"{readable_words} words against {plain_words}")
-        return plain_cues
-    progress("transcript.stt.readable.complete", f"{len(cues)} cues")
-    return cues
-
-
 # ---------------------------------------------------------------------------
 # Ad removal
 # ---------------------------------------------------------------------------
@@ -1622,8 +1592,8 @@ def count_sponsor_name_mentions(text, phrases, counts):
             start = found + len(phrase)
 
 
-def explicit_sponsor_destination_seen(text):
-    """Return whether one passage contains a bounded sponsor destination."""
+def explicit_sponsor_domain_seen(text):
+    """Return whether one passage contains a domain or platform address."""
     return any(
         pattern.search(text) is not None
         for pattern in (
@@ -1631,8 +1601,43 @@ def explicit_sponsor_destination_seen(text):
             EXPLICIT_SPONSOR_URL_RE,
             EXPLICIT_SPONSOR_LITERAL_DOMAIN_RE,
             EXPLICIT_SPONSOR_SPOKEN_PATH_RE,
-            EXPLICIT_SPONSOR_OFFER_CODE_RE,
         )
+    )
+
+
+def explicit_sponsor_destination_seen(text):
+    """Return whether one passage contains a bounded sponsor destination."""
+    return (
+        explicit_sponsor_domain_seen(text)
+        or EXPLICIT_SPONSOR_OFFER_CODE_RE.search(text) is not None
+    )
+
+
+def explicit_sponsor_anchor_ids(segments, opening_pattern):
+    """Return deterministic anchor IDs from the raw aligned STT pass only."""
+    return [
+        segment_id
+        for segment_id, segment in enumerate(segments)
+        if opening_pattern.search(segment.text or "") is not None
+    ]
+
+
+def sponsor_anchor_is_covered(anchor_id, segments, detections):
+    """Return whether a proposed raw-timed cut contains an anchor cue whole."""
+    anchor = segments[anchor_id]
+    return any(
+        float(ad.start_s) <= float(anchor.start_s)
+        and float(ad.end_s) >= float(anchor.end_s)
+        for ad in detections
+    )
+
+
+def explicit_sponsor_opening_pattern(ads_module):
+    """Build the worker-only anchor pattern without widening archive detection."""
+    archive_opening_pattern = ads_module._EXPLICIT_HOST_READ_OPENING_RE  # noqa: SLF001
+    return re.compile(
+        f"(?:{archive_opening_pattern.pattern})|{EXPLICIT_SUPPORT_OPENING_COMPATIBILITY_PATTERN}",
+        archive_opening_pattern.flags,
     )
 
 
@@ -1676,16 +1681,20 @@ def consecutive_preroll_start(ads_module, backend, segments, anchor_id):
 def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, detections):
     """Recover or extend explicit host reads through verified content return."""
     recovered = []
-    archive_opening_pattern = ads_module._EXPLICIT_HOST_READ_OPENING_RE  # noqa: SLF001
     # Keep the support anchor private to this wrapper. Both archive regexes are
     # consulted inside detect_ads, so mutating either one changes base spans.
-    opening_pattern = re.compile(
-        f"(?:{archive_opening_pattern.pattern})|{EXPLICIT_SUPPORT_OPENING_COMPATIBILITY_PATTERN}",
-        archive_opening_pattern.flags,
-    )
-    for anchor_id, anchor in enumerate(segments):
-        if opening_pattern.search(anchor.text) is None:
-            continue
+    opening_pattern = explicit_sponsor_opening_pattern(ads_module)
+    for anchor_id in explicit_sponsor_anchor_ids(segments, opening_pattern):
+        anchor = segments[anchor_id]
+        requires_domain = re.search(
+            MISSING_SUPPORT_SPONSOR_COMPATIBILITY_PATTERN,
+            anchor.text,
+            re.IGNORECASE,
+        ) is not None
+        progress(
+            "ads.detect.recovery.nominated",
+            f"raw anchor ID {anchor_id} at {float(anchor.start_s):.3f}s",
+        )
         claimed = [*detections, *recovered]
         overlapping = [
             ad for ad in claimed if ad.start_s < anchor.end_s and ad.end_s > anchor.start_s
@@ -1714,12 +1723,14 @@ def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, dete
         # back thirteen times, which is what a read is.
         name_phrases = explicit_sponsor_name_phrases(anchor.text, opening_pattern)
         name_counts = {}
-        domain_seen = False
+        actual_domain_seen = False
+        destination_seen = False
         cta_seen = False
         evidence_id = None
         for segment_id in context_ids:
             text = segments[segment_id].text
-            domain_seen = domain_seen or explicit_sponsor_destination_seen(text)
+            actual_domain_seen = actual_domain_seen or explicit_sponsor_domain_seen(text)
+            destination_seen = destination_seen or explicit_sponsor_destination_seen(text)
             cta_seen = cta_seen or EXPLICIT_SPONSOR_CTA_RE.search(text) is not None
             if (
                 name_phrases
@@ -1733,7 +1744,10 @@ def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, dete
             name_repeated = any(
                 count >= EXPLICIT_SPONSOR_NAME_MINIMUM_REPEATS for count in name_counts.values()
             )
-            if cta_seen and (domain_seen or name_repeated):
+            corroboration_seen = (
+                actual_domain_seen if requires_domain else destination_seen or name_repeated
+            )
+            if cta_seen and corroboration_seen:
                 evidence_id = segment_id
                 break
 
@@ -2311,7 +2325,29 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
         progress("ads.detect.complete", "0 spans")
         return audio_path, [], []
 
+    proposed_detections = detections
     detections = reject_implausible_ad_spans(detections, total)
+    # A valid sponsor anchor must not disappear after the final plausibility
+    # guards. The guards are intentionally conservative, so returning a
+    # non-success is safer than reporting a successful preparation that leaves
+    # an already-proposed, explicit host read in the delivered audio.
+    opening_pattern = explicit_sponsor_opening_pattern(ads_module)
+    dropped_anchor_ids = [
+        anchor_id
+        for anchor_id in explicit_sponsor_anchor_ids(segments, opening_pattern)
+        if sponsor_anchor_is_covered(anchor_id, segments, proposed_detections)
+        and not sponsor_anchor_is_covered(anchor_id, segments, detections)
+    ]
+    if dropped_anchor_ids:
+        details = ", ".join(
+            f"raw anchor ID {anchor_id} at {float(segments[anchor_id].start_s):.3f}s"
+            for anchor_id in dropped_anchor_ids
+        )
+        progress("ads.detect.recovery.audit.failed", details)
+        raise WorkerError(
+            "ads-recovery-audit-failed",
+            f"post-cut safeguards dropped explicit sponsor anchors: {details}",
+        )
     ad_spans = [
         {
             "startSeconds": round(float(ad.start_s), 3),
@@ -2428,9 +2464,6 @@ def run(request: dict) -> dict:
         except Exception as error:  # noqa: BLE001 - a failed tier falls through
             segments = None
             progress("transcript.stt.failed", f"{type(error).__name__}: {error}")
-        if cues and request.get("readableTranscript", True):
-            cues = transcribe_readable(request, audio_path, cues)
-
     if not cues:
         page = request.get("episodePage")
         if page:

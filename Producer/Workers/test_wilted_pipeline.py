@@ -1246,7 +1246,7 @@ class ExplicitSponsorFallbackTests(unittest.TestCase):
         self.audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
         self.request = {"audioPath": str(self.audio), "outputPath": "/tmp/never-written.mp3"}
 
-    def detect(self, segments, detections, content_start_id=None):
+    def detect(self, segments, detections, content_start_id=None, duration=5000.0):
         if content_start_id is None:
             content_start_id = max(1, len(segments) - 1)
         llm = FakeLLM(boundary_content_start_id=content_start_id)
@@ -1254,7 +1254,7 @@ class ExplicitSponsorFallbackTests(unittest.TestCase):
         ads = install_fake_ads(llm)
         ads.detect_ads = lambda _segments, _backend: list(detections)
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=5000.0):
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=duration):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
         events = [json.loads(line) for line in stream.getvalue().splitlines()]
         return spans, events
@@ -1297,6 +1297,102 @@ class ExplicitSponsorFallbackTests(unittest.TestCase):
         )
         self.assertEqual(spans, [])
         self.assertIn("ads.detect.recovery.skipped", [event["stage"] for event in events])
+
+    def test_the_exact_granola_missing_leading_word_variant_recovers_on_raw_timing(self):
+        # The single Parakeet 1.1B pass omitted only the leading word. This
+        # narrow compatibility anchor still takes every boundary from its raw
+        # cues and still needs CTA/domain evidence plus verified content return.
+        segments = [
+            FakeSegment(4066.16, 4076.0, "  for the show comes from granola"),
+            FakeSegment(4076.0, 4095.0, "visit granola dot com for the details"),
+            FakeSegment(4095.0, 4122.76, "learn more and get started today"),
+            FakeSegment(4122.76, 4132.0, "back to the gadget discussion"),
+        ]
+        spans, events = self.detect(segments, [], content_start_id=3)
+        self.assertEqual(
+            spans,
+            [{"startSeconds": 4066.16, "endSeconds": 4122.76,
+              "label": "sponsor_read", "confidence": 1.0}],
+        )
+        nominated = next(event for event in events if event["stage"] == "ads.detect.recovery.nominated")
+        self.assertIn("raw anchor ID 0", nominated["detail"])
+        self.assertIn("4066.160s", nominated["detail"])
+
+    def test_raw_anchor_ids_are_unique_and_deterministic(self):
+        segments = [FakeSegment(4066.16, 4076.0, "for the show comes from granola")]
+        ads = install_fake_ads(FakeLLM())
+        pattern = wp.explicit_sponsor_opening_pattern(ads)
+        nominated = [
+            (anchor_id, segments[anchor_id].start_s)
+            for anchor_id in wp.explicit_sponsor_anchor_ids(segments, pattern)
+        ]
+        repeated = [
+            (anchor_id, segments[anchor_id].start_s)
+            for anchor_id in wp.explicit_sponsor_anchor_ids(segments, pattern)
+        ]
+        self.assertEqual(nominated, [(0, 4066.16)])
+        self.assertEqual(repeated, nominated)
+
+    def test_the_granola_variant_without_cta_and_domain_does_not_cut(self):
+        segments = [
+            FakeSegment(4066.16, 4076.0, "for the show comes from granola"),
+            FakeSegment(4076.0, 4086.0, "the hosts continue their discussion"),
+        ]
+        spans, _events = self.detect(segments, [], content_start_id=1)
+        self.assertEqual(spans, [])
+
+    def test_the_granola_variant_requires_a_domain_not_only_name_recurrence(self):
+        segments = [
+            FakeSegment(100.0, 110.0, "for the show comes from granola"),
+            FakeSegment(110.0, 120.0, "granola helps you work and granola keeps notes"),
+            FakeSegment(120.0, 130.0, "try granola today and learn more"),
+            FakeSegment(130.0, 140.0, "back to the gadget discussion"),
+        ]
+        spans, _events = self.detect(segments, [], content_start_id=3)
+        self.assertEqual(spans, [])
+
+    def test_the_missing_word_variant_rejects_offer_code_only_corroboration(self):
+        segments = [
+            FakeSegment(100.0, 110.0, "for this show comes from acme"),
+            FakeSegment(110.0, 120.0, "use promo code acme and learn more today"),
+            FakeSegment(120.0, 130.0, "back to the gadget discussion"),
+        ]
+        spans, _events = self.detect(segments, [], content_start_id=2)
+        self.assertEqual(spans, [])
+
+    def test_the_generic_missing_leading_word_variant_cuts_with_full_corroboration(self):
+        segments = [
+            FakeSegment(100.0, 110.0, "for the show comes from acme"),
+            FakeSegment(110.0, 120.0, "visit acme dot com to learn more"),
+            FakeSegment(120.0, 130.0, "back to the gadget discussion"),
+        ]
+        spans, _events = self.detect(segments, [], content_start_id=2)
+        self.assertEqual(
+            spans,
+            [{"startSeconds": 100.0, "endSeconds": 120.0,
+              "label": "sponsor_read", "confidence": 1.0}],
+        )
+
+    def test_editorial_non_anchor_phrasing_does_not_nominate(self):
+        segments = [
+            FakeSegment(100.0, 110.0, "the idea for the show comes from acme research"),
+            FakeSegment(110.0, 120.0, "visit acme dot com to learn more"),
+            FakeSegment(120.0, 130.0, "back to the gadget discussion"),
+        ]
+        spans, events = self.detect(segments, [], content_start_id=2)
+        self.assertEqual(spans, [])
+        self.assertNotIn("ads.detect.recovery.nominated", [event["stage"] for event in events])
+
+    def test_post_cut_audit_fails_if_a_proposed_explicit_anchor_is_dropped(self):
+        segments = [
+            FakeSegment(0.0, 10.0, "support for the show comes from granola"),
+            FakeSegment(10.0, 20.0, "visit granola dot com for the details"),
+            FakeSegment(20.0, 30.0, "learn more and get started today"),
+            FakeSegment(30.0, 40.0, "back to the gadget discussion"),
+        ]
+        with self.assertRaises(wp.WorkerError) as raised:
+            self.detect(segments, [], content_start_id=3, duration=50.0)
+        self.assertEqual(raised.exception.code, "ads-recovery-audit-failed")
 
     def test_cta_and_domain_without_explicit_anchor_does_not_cut(self):
         spans, events = self.detect(
@@ -1698,14 +1794,14 @@ class PreflightTests(unittest.TestCase):
             result = wp.run({"audioPath": str(self.audio), "removeAds": False, "allowSpeechToText": False})
         self.assertTrue(result["ok"])
 
-    def test_all_stt_passes_finish_before_eviction_and_ad_model_load(self):
+    def test_the_single_aligned_stt_pass_finishes_before_eviction_and_ad_model_load(self):
         events = []
         transcribe = sys.modules["wilted.transcribe"]
         install_fake_speech_stack(events=events)
 
         def transcribe_audio(path, model_name="mlx-community/parakeet-tdt-1.1b", **_):
-            event = "aligned" if model_name == "mlx-community/parakeet-tdt-1.1b" else "readable"
-            return events.append(event) or [FakeSegment(0, 1, "content")]
+            self.assertEqual(model_name, "mlx-community/parakeet-tdt-1.1b")
+            return events.append("aligned") or [FakeSegment(0, 1, "content")]
 
         llm = FakeLLM()
         original_load = llm.load
@@ -1736,14 +1832,12 @@ class PreflightTests(unittest.TestCase):
             wp.run({
                 "audioPath": str(self.audio),
                 "removeAds": True,
-                "readableTranscript": True,
                 "llmModel": str(self.default_model),
             })
         self.assertEqual(
             events,
             [
                 "aligned",
-                "readable",
                 "status",
                 "ads.load",
                 "ads.detect",
@@ -2374,38 +2468,28 @@ class RunTests(unittest.TestCase):
         self.assertEqual(result["text"], "Leo Laporte on twit.tv")
         self.assertEqual([c["text"] for c in result["cues"]], ["Leo Laporte", "on twit.tv"])
 
-    def test_the_readable_pass_replaces_the_plain_transcript_when_it_heard_as_much(self):
-        plain = [FakeSegment(0, 2, "hello there world"), FakeSegment(2, 4, "leo laporte here")]
-        readable = [FakeSegment(0, 2, "Hello there, world."), FakeSegment(2, 4, "Leo Laporte here.")]
-        install_fake_wilted(transcriptions={"mlx-community/parakeet-tdt-1.1b": plain, wp.READABLE_STT_MODEL: readable})
+    def test_the_aligned_pass_is_both_detector_and_delivered_transcript_input(self):
+        aligned = [FakeSegment(0, 2, "hello there world"), FakeSegment(2, 4, "leo laporte here")]
+        calls = []
+        install_fake_wilted(transcriptions={"mlx-community/parakeet-tdt-1.1b": aligned})
+        transcribe = sys.modules["wilted.transcribe"]
+        original = transcribe.transcribe_audio
+
+        def recording_transcribe(*args, **kwargs):
+            calls.append(kwargs["model_name"])
+            return original(*args, **kwargs)
+
         with redirect_stderr(io.StringIO()) as err:
-            result = wp.run({"audioPath": str(self.audio), "removeAds": False})
+            with mock.patch.object(transcribe, "transcribe_audio", recording_transcribe):
+                result = wp.run({
+                    "audioPath": str(self.audio), "removeAds": False,
+                    "readableTranscript": True, "readableTranscriptModel": "ignored-model",
+                })
         self.assertEqual(result["timing"], "aligned")
-        self.assertEqual(result["text"], "Hello there, world. Leo Laporte here.")
+        self.assertEqual(result["text"], "hello there world leo laporte here")
+        self.assertEqual(calls, ["mlx-community/parakeet-tdt-1.1b"])
         stages = [json.loads(line)["stage"] for line in err.getvalue().splitlines()]
-        self.assertIn("transcript.stt.readable.complete", stages)
-
-    def test_a_short_or_failed_readable_pass_keeps_the_plain_transcript(self):
-        plain = [FakeSegment(0, 2, "one two three four five six seven eight nine ten")]
-        install_fake_wilted(transcriptions={"mlx-community/parakeet-tdt-1.1b": plain,
-                                            wp.READABLE_STT_MODEL: [FakeSegment(0, 1, "One, two.")]})
-        with redirect_stderr(io.StringIO()) as err:
-            result = wp.run({"audioPath": str(self.audio), "removeAds": False})
-        self.assertEqual(result["text"], "one two three four five six seven eight nine ten")
-        self.assertIn("transcript.stt.readable.rejected", err.getvalue())
-
-        install_fake_wilted(transcriptions={"mlx-community/parakeet-tdt-1.1b": plain,
-                                            wp.READABLE_STT_MODEL: RuntimeError("daemon gone")})
-        with redirect_stderr(io.StringIO()) as err:
-            result = wp.run({"audioPath": str(self.audio), "removeAds": False})
-        self.assertEqual(result["text"], "one two three four five six seven eight nine ten")
-        self.assertIn("transcript.stt.readable.failed", err.getvalue())
-
-        install_fake_wilted(transcriptions={"mlx-community/parakeet-tdt-1.1b": plain})
-        with redirect_stderr(io.StringIO()) as err:
-            result = wp.run({"audioPath": str(self.audio), "removeAds": False, "readableTranscript": False})
-        self.assertEqual(result["text"], "one two three four five six seven eight nine ten")
-        self.assertNotIn("transcript.stt.readable", err.getvalue())
+        self.assertFalse(any(stage.startswith("transcript.stt.readable") for stage in stages))
 
     def test_no_transcript_of_any_kind_still_returns_a_result(self):
         install_fake_wilted()
@@ -2582,7 +2666,7 @@ class AlignedSTTCacheTests(unittest.TestCase):
         cached = json.loads(self.cache_path().read_text())
         self.assertEqual([entry["text"] for entry in cached["segments"]], ["first", "second"])
 
-    def test_published_and_readable_transcripts_never_replace_the_detector_cache(self):
+    def test_published_transcripts_never_create_the_aligned_detector_cache(self):
         install_fake_wilted({"vtt": [FakeSegment(0, 1, "published")]})
         published = {**self.request, "publishedTranscript": {
             "body": "WEBVTT", "mediaType": "text/vtt", "url": "https://example.test/a.vtt",
@@ -2590,12 +2674,6 @@ class AlignedSTTCacheTests(unittest.TestCase):
         self.run_pipeline(published)
         self.assertFalse(self.cache_path(published).exists())
 
-        plain = [FakeSegment(0, 1, "plain detector text")]
-        readable = [FakeSegment(0, 1, "Readable listener text.")]
-        install_fake_wilted(transcriptions={"detector-v1": plain, wp.READABLE_STT_MODEL: readable})
-        readable_request = {**self.request, "readableTranscript": True}
-        self.run_pipeline(readable_request)
-        self.assertEqual(json.loads(self.cache_path(readable_request).read_text())["segments"][0]["text"], "plain detector text")
 
 
 class ProtocolTests(unittest.TestCase):
@@ -2718,7 +2796,7 @@ class AdCorpusManifestTests(unittest.TestCase):
                 )
                 self.assertTrue(expected["why"].strip(), case["id"])
 
-    def test_waveform_still_leaves_both_opening_sponsor_reads_whole(self):
+    def test_waveform_still_leaves_all_three_reported_advertisements_whole(self):
         # A characterisation test, not an aspiration: it records the defect as
         # measured on 2026-09-05 so that fixing the detector breaks this test
         # loudly and forces the record to be updated with the new truth.
@@ -2726,7 +2804,10 @@ class AdCorpusManifestTests(unittest.TestCase):
         verdict = self.corpus.score_case(case, self.frozen(case))
         self.assertFalse(verdict.passed, "the leading-edge miss appears to be fixed; update this test")
         missed = [span for span in verdict.spans if span.label == "must-cut" and not span.passed]
-        self.assertEqual([(s.span.start, s.span.end) for s in missed], [(0.24, 32.88), (33.52, 66.08)])
+        self.assertEqual(
+            [(s.span.start, s.span.end) for s in missed],
+            [(0.24, 32.88), (33.52, 66.08), (4066.16, 4122.76)],
+        )
         # The three spans it does get right have to survive any fix.
         kept = [span for span in verdict.spans if span.label == "must-cut" and span.passed]
         self.assertEqual(len(kept), 3)

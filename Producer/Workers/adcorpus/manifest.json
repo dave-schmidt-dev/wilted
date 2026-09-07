@@ -16,8 +16,8 @@
       "sourceHash": "sha256:38166909883bb20ba662299aa4a63df7590e8eea5960b2616b46dfaab40f08b5",
       "sttModel": "mlx-community/parakeet-tdt-1.1b",
       "segmentCount": 622,
-      "intentionalCondition": "Two back-to-back produced pre-roll spots open the episode and neither was detected. The second one literally opens 'support for the show comes from Google Gemini'. The detector returned three correct mid-and-late-roll spans and nothing at the leading edge, so this is a miss, not a mis-sizing.",
-      "reportedBy": "David, 2026-09-05: 'it opens with a deepgram.com ad and then a gemeini ad, neither were removed'",
+      "intentionalCondition": "Two back-to-back produced pre-roll spots open the episode and neither was detected. The second one literally opens 'support for the show comes from Google Gemini'. A later Granola host read beginning 'for the show comes from granola' was also left whole. The detector returned three other correct spans, so these are misses, not mis-sizing.",
+      "reportedBy": "David, 2026-09-05: 'it opens with a deepgram.com ad and then a gemeini ad, neither were removed'; David, 2026-09-07: reported the Granola host read at 4066.16-4122.76 was not removed.",
       "expected": [
         {
           "start": 0.24,
@@ -42,6 +42,12 @@
           "end": 2917.96,
           "label": "must-cut",
           "why": "Mid-roll break. The detector already gets this one right; it is here so a fix for the leading edge cannot quietly lose it."
+        },
+        {
+          "start": 4066.16,
+          "end": 4122.76,
+          "label": "must-cut",
+          "why": "Granola host sponsor read. The aligned STT omitted the leading word from its opening phrase and the recorded detector left the read whole."
         },
         {
           "start": 4162.76,
