@@ -15,8 +15,15 @@ final class PlaybackControllerTests: XCTestCase {
         private(set) var loadedGeneration: UInt64 = 0
         var completionHandler: (@MainActor @Sendable (UInt64, Bool) -> Void)?
         var failingURLs: Set<URL> = []
+        var cancelledURLs: Set<URL> = []
+        var cancelledLoadCount = 0
+        var resetsTimeOnFailure = false
 
         func load(url: URL) throws {
+            if cancelledURLs.contains(url) {
+                cancelledLoadCount += 1
+                throw CancellationError()
+            }
             if failingURLs.contains(url) { throw CocoaError(.fileReadCorruptFile) }
             loadCount += 1; loadedGeneration += 1; currentTime = 0; isPlaying = false
         }
@@ -24,6 +31,7 @@ final class PlaybackControllerTests: XCTestCase {
         func pause() { isPlaying = false }
         func stop() { isPlaying = false }
         func finish(generation: UInt64? = nil, successfully: Bool) {
+            if !successfully && resetsTimeOnFailure { currentTime = 0 }
             completionHandler?(generation ?? loadedGeneration, successfully)
         }
     }
@@ -170,18 +178,71 @@ final class PlaybackControllerTests: XCTestCase {
         let controller = PlaybackController(store: store, backend: backend)
         var observations: [(ItemID?, PlaybackControllerError?)] = []
         controller.podcastStateHandler = { observations.append(($0, $1)) }
+        var finishCount = 0
+        controller.playbackDidFinishHandler = { finishCount += 1 }
         await controller.restorePodcastQueue()
         XCTAssertEqual(controller.itemID, first.revision.itemID)
         let firstGeneration = backend.loadedGeneration
+        try controller.play()
+        backend.currentTime = 12
+        try await controller.checkpoint()
+        XCTAssertTrue(controller.isPlaying)
+        XCTAssertTrue(backend.isPlaying)
+        backend.currentTime = 19
 
         backend.finish(successfully: false)
+        await waitUntil { finishCount == 1 }
+        // An unsuccessful callback for the loaded generation stops both the
+        // controller and the backend, reports one recoverable stop observation,
+        // exposes a recoverable fault, preserves the current queue item, and
+        // does not mark the revision complete.
+        XCTAssertEqual(controller.itemID, first.revision.itemID)
+        XCTAssertFalse(controller.isPlaying, "the controller must stop on a failed callback")
+        XCTAssertFalse(backend.isPlaying, "the backend must be paused on a failed callback")
+        XCTAssertEqual(controller.recoverableFault, .playbackFailed(first.revision.itemID))
+        XCTAssertEqual(observations.count, 1)
+        XCTAssertEqual(observations.last?.0, first.revision.itemID)
+        XCTAssertEqual(observations.last?.1, .playbackFailed(first.revision.itemID))
+        XCTAssertEqual(finishCount, 1, "the failed callback must announce one stop observation")
+        XCTAssertFalse(controller.completed, "a failed callback must not mark the revision complete")
+        let retainedQueueState = try await store.podcastQueueState()
+        XCTAssertEqual(retainedQueueState.currentEpisodeID, first.revision.itemID,
+                       "a failed callback must not advance the queue")
+        let retainedPlaybackState = try await store.playbackState(
+            for: first.revision.itemID, revisionID: first.revision.revisionID
+        )
+        let retainedPlayback = try XCTUnwrap(retainedPlaybackState)
+        XCTAssertFalse(retainedPlayback.completed)
+        XCTAssertEqual(retainedPlayback.positionSeconds, 19)
+        // A repeated failure for the same generation is a duplicate and silent.
+        backend.finish(successfully: false)
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(finishCount, 1, "a duplicate failed callback must not announce again")
+
+        backend.finish(successfully: true)
+        backend.finish(successfully: true)
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(controller.itemID, first.revision.itemID,
+                       "a contradictory success must not advance a failed generation")
+        XCTAssertFalse(controller.completed)
+        XCTAssertEqual(observations.count, 1)
+        XCTAssertEqual(finishCount, 1)
+
+        backend.currentTime = 0 // A failed player may reset after its stop checkpoint.
+        try controller.play()
+        XCTAssertNotEqual(backend.loadedGeneration, firstGeneration)
+        XCTAssertEqual(backend.currentTime, 19)
+        XCTAssertNil(controller.recoverableFault)
+        XCTAssertTrue(controller.isPlaying)
+        backend.finish(generation: firstGeneration, successfully: true)
         try await Task.sleep(for: .milliseconds(20))
         XCTAssertEqual(controller.itemID, first.revision.itemID)
+        XCTAssertTrue(controller.isPlaying)
         backend.finish(successfully: true)
         backend.finish(successfully: true)
         await waitUntil { controller.itemID == second.revision.itemID }
         XCTAssertEqual(controller.itemID, second.revision.itemID)
-        XCTAssertEqual(backend.loadCount, 2, "duplicate completion must not create another playback session")
+        XCTAssertEqual(backend.loadCount, 3, "retry reloads once and duplicate completion must not load again")
         let advancedState = try await store.podcastQueueState()
         XCTAssertEqual(advancedState.currentEpisodeID, second.revision.itemID)
         let storedCompletedState = try await store.playbackState(
@@ -196,7 +257,13 @@ final class PlaybackControllerTests: XCTestCase {
         backend.finish(generation: firstGeneration, successfully: true)
         try await Task.sleep(for: .milliseconds(20))
         XCTAssertEqual(controller.itemID, second.revision.itemID)
-        XCTAssertEqual(backend.loadCount, 2, "a delayed old-player callback must not advance the replacement")
+        XCTAssertEqual(backend.loadCount, 3, "a delayed old-player callback must not advance the replacement")
+        backend.finish(generation: firstGeneration, successfully: false)
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertTrue(controller.isPlaying, "a stale failure must not pause the replacement")
+        XCTAssertTrue(backend.isPlaying)
+        XCTAssertNil(controller.recoverableFault)
+        XCTAssertEqual(finishCount, 1, "a stale failure must not announce another stop")
 
         let relaunched = PlaybackController(store: store, backend: FakeBackend())
         await relaunched.restorePodcastQueue()
@@ -205,6 +272,205 @@ final class PlaybackControllerTests: XCTestCase {
             for: first.revision.itemID, revisionID: first.revision.revisionID
         )
         XCTAssertTrue(try XCTUnwrap(relaunchedCompletedState).completed)
+    }
+
+    func testArticleFailureAtEndStaysIncompleteAndPlayRetryRearmsCompletion() async throws {
+        let path = storeURL()
+        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: path)
+        let (_, revision) = try fixture()
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        var finishCount = 0
+        var podcastObservationCount = 0
+        controller.playbackDidFinishHandler = { finishCount += 1 }
+        controller.podcastStateHandler = { _, _ in podcastObservationCount += 1 }
+        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/fake.m4a"))
+        try controller.play()
+        let failedGeneration = backend.loadedGeneration
+        backend.currentTime = backend.duration
+        backend.finish(successfully: false)
+        await waitUntil { finishCount == 1 }
+        try await controller.checkpoint()
+        let failedState = try await store.playbackState(for: revision.itemID, revisionID: revision.revisionID)
+        XCTAssertEqual(try XCTUnwrap(failedState).positionSeconds, backend.duration)
+        XCTAssertFalse(try XCTUnwrap(failedState).completed)
+        XCTAssertFalse(controller.completed)
+        XCTAssertEqual(podcastObservationCount, 0, "an article failure must preserve the UI's article identity")
+
+        backend.currentTime = 0
+        try controller.play()
+        XCTAssertNotEqual(backend.loadedGeneration, failedGeneration)
+        XCTAssertNil(controller.recoverableFault)
+        XCTAssertEqual(backend.currentTime, backend.duration,
+                       "retry must restore the stop checkpoint even if the failed player reset")
+        backend.finish(generation: failedGeneration, successfully: true)
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertTrue(controller.isPlaying)
+        XCTAssertEqual(finishCount, 1)
+
+        backend.finish(successfully: true)
+        await waitUntil { finishCount == 2 }
+        backend.finish(successfully: false)
+        backend.finish(successfully: true)
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertTrue(controller.completed)
+        XCTAssertNil(controller.recoverableFault, "failure after success is a contradictory duplicate")
+        XCTAssertEqual(finishCount, 2)
+        XCTAssertEqual(podcastObservationCount, 0)
+    }
+
+    func testFailureWithResetBackendRetainsCheckpointForRetry() async throws {
+        let path = storeURL()
+        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: path)
+        let (_, revision) = try fixture()
+        let backend = FakeBackend()
+        backend.resetsTimeOnFailure = true
+        let controller = PlaybackController(store: store, backend: backend)
+        var finishCount = 0
+        controller.playbackDidFinishHandler = { finishCount += 1 }
+        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/fake.m4a"))
+        try controller.play()
+        backend.currentTime = 19
+        try await controller.checkpoint()
+        backend.currentTime = 25
+        backend.finish(successfully: false)
+        await waitUntil { finishCount == 1 }
+        XCTAssertEqual(backend.currentTime, 0, "the fake resets before delivering the failure callback")
+        XCTAssertEqual(controller.livePositionSeconds, 19,
+                       "the readout must retain progress when the failed backend clock resets")
+        try await controller.checkpoint()
+        XCTAssertEqual(controller.livePositionSeconds, 19)
+        let saved = try await store.playbackState(for: revision.itemID, revisionID: revision.revisionID)
+        XCTAssertEqual(try XCTUnwrap(saved).positionSeconds, 19)
+        XCTAssertFalse(try XCTUnwrap(saved).completed)
+        try controller.play()
+        XCTAssertEqual(backend.currentTime, 19)
+        XCTAssertEqual(controller.positionSeconds, 19)
+
+        backend.finish(successfully: false)
+        await waitUntil { finishCount == 2 }
+        XCTAssertEqual(backend.currentTime, 0)
+        try await controller.recoverFromRouteChange()
+        XCTAssertEqual(backend.currentTime, 19, "route recovery must also retain the stop checkpoint")
+        XCTAssertEqual(controller.livePositionSeconds, 19)
+        XCTAssertNil(controller.recoverableFault)
+    }
+
+    func testReloadDuringCompletionCheckpointCannotAdvanceOrStopReplacement() async throws {
+        let path = storeURL()
+        let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let first = try await queueRevision(index: 1, root: root, store: store)
+        let next = try await queueRevision(index: 2, root: root, store: store)
+        try await store.replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: [first.revision.itemID, next.revision.itemID],
+            currentEpisodeID: first.revision.itemID
+        ))
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        var finishCount = 0
+        var observationCount = 0
+        controller.playbackDidFinishHandler = { finishCount += 1 }
+        controller.podcastStateHandler = { _, _ in observationCount += 1 }
+        await controller.restorePodcastQueue()
+        try controller.play()
+
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        await withCheckedContinuation { (entered: CheckedContinuation<Void, Never>) in
+            Task {
+                await store.holdPlaybackStoreForTesting(entered: { entered.resume() }, release: release)
+            }
+        }
+        backend.finish(successfully: true)
+        // Completion sets this synchronously before awaiting its blocked save.
+        await waitUntil { controller.completed }
+        XCTAssertTrue(controller.completed)
+        try await controller.recoverFromRouteChange()
+        try controller.play()
+        let replacementGeneration = backend.loadedGeneration
+        release.signal()
+        _ = try await store.playbackState(for: first.revision.itemID, revisionID: first.revision.revisionID)
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(backend.loadedGeneration, replacementGeneration)
+        XCTAssertEqual(controller.itemID, first.revision.itemID)
+        XCTAssertTrue(controller.isPlaying)
+        XCTAssertEqual(finishCount, 0)
+        XCTAssertEqual(observationCount, 0)
+        let state = try await store.podcastQueueState()
+        XCTAssertEqual(state.currentEpisodeID, first.revision.itemID)
+    }
+
+    func testMarkCompletedAfterFailureSurvivesLaterCheckpoints() async throws {
+        let path = storeURL()
+        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: path)
+        let (_, revision) = try fixture()
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        var finishCount = 0
+        controller.playbackDidFinishHandler = { finishCount += 1 }
+        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/fake.m4a"))
+        try controller.play()
+        backend.currentTime = 19
+        backend.finish(successfully: false)
+        await waitUntil { finishCount == 1 }
+        XCTAssertEqual(controller.recoverableFault, .playbackFailed(revision.itemID))
+
+        try await controller.markCompleted()
+        XCTAssertNil(controller.recoverableFault)
+        try await controller.checkpoint()
+        try await controller.pause()
+        try await controller.handlePauseOrQuit()
+        let saved = try await store.playbackState(for: revision.itemID, revisionID: revision.revisionID)
+        XCTAssertTrue(try XCTUnwrap(saved).completed)
+        XCTAssertEqual(try XCTUnwrap(saved).positionSeconds, backend.duration)
+        XCTAssertTrue(controller.completed)
+        XCTAssertNil(controller.recoverableFault)
+    }
+
+    func testRewindAndRestartClearFailureWithoutAnotherPlayReload() async throws {
+        let path = storeURL()
+        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: path)
+        let (_, revision) = try fixture()
+        let backend = FakeBackend()
+        backend.resetsTimeOnFailure = true
+        let controller = PlaybackController(store: store, backend: backend)
+        var finishCount = 0
+        controller.playbackDidFinishHandler = { finishCount += 1 }
+        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/fake.m4a"))
+        try controller.play()
+        backend.currentTime = 20
+        try await controller.checkpoint()
+        let interruptedSession = controller.sessionID
+        backend.finish(successfully: false)
+        await waitUntil { finishCount == 1 }
+        XCTAssertEqual(backend.currentTime, 0)
+        XCTAssertEqual(controller.livePositionSeconds, 20)
+
+        try await controller.seekBackward(seconds: 5)
+        XCTAssertEqual(controller.positionSeconds, 15)
+        XCTAssertEqual(controller.intent, .rewind)
+        XCTAssertNotEqual(controller.sessionID, interruptedSession)
+        XCTAssertNil(controller.recoverableFault)
+        XCTAssertEqual(backend.loadCount, 2)
+        try controller.play()
+        XCTAssertEqual(backend.loadCount, 2, "rewind already restored a valid backend generation")
+        XCTAssertEqual(backend.currentTime, 15)
+
+        backend.finish(successfully: false)
+        await waitUntil { finishCount == 2 }
+        try await controller.restart()
+        XCTAssertNil(controller.recoverableFault)
+        XCTAssertEqual(backend.loadCount, 3)
+        try controller.play()
+        XCTAssertEqual(backend.loadCount, 3, "restart already restored a valid backend generation")
+        XCTAssertEqual(backend.currentTime, 0)
     }
 
     /// Progress is written from where the audio is, so an episode the listener
@@ -372,13 +638,19 @@ final class PlaybackControllerTests: XCTestCase {
         let backend = FakeBackend()
         let controller = PlaybackController(store: store, backend: backend)
         var observedFault: PlaybackControllerError?
-        controller.podcastStateHandler = { _, fault in observedFault = fault }
+        var observedItem: ItemID?
+        var finishCount = 0
+        controller.podcastStateHandler = { item, fault in observedItem = item; observedFault = fault }
+        controller.playbackDidFinishHandler = { finishCount += 1 }
         await controller.restorePodcastQueue()
         backend.finish(successfully: true)
-        await waitUntil { controller.recoverableFault != nil }
+        await waitUntil { finishCount == 1 }
+        XCTAssertEqual(finishCount, 1)
         XCTAssertFalse(controller.isPlaying)
         XCTAssertEqual(controller.recoverableFault, .podcastMediaUnavailable(missing.revision.itemID))
         XCTAssertEqual(observedFault, controller.recoverableFault)
+        XCTAssertEqual(observedItem, first.revision.itemID,
+                       "a next-media fault must retain the completed item's UI identity")
         let retainedState = try await store.podcastQueueState()
         XCTAssertEqual(retainedState, state)
 
@@ -386,13 +658,57 @@ final class PlaybackControllerTests: XCTestCase {
         let corruptBackend = FakeBackend()
         corruptBackend.failingURLs.insert(missing.mediaURL)
         let corruptController = PlaybackController(store: store, backend: corruptBackend)
+        var corruptObservedItem: ItemID?
+        var corruptObservedFault: PlaybackControllerError?
+        var corruptFinishCount = 0
+        corruptController.playbackDidFinishHandler = { corruptFinishCount += 1 }
+        corruptController.podcastStateHandler = { item, fault in
+            corruptObservedItem = item; corruptObservedFault = fault
+        }
         await corruptController.restorePodcastQueue()
         corruptBackend.finish(successfully: true)
-        await waitUntil { corruptController.recoverableFault != nil }
+        await waitUntil { corruptFinishCount == 1 }
+        XCTAssertEqual(corruptFinishCount, 1)
         XCTAssertFalse(corruptController.isPlaying)
         XCTAssertEqual(corruptController.recoverableFault, .podcastMediaUnreadable(missing.revision.itemID))
+        XCTAssertEqual(corruptObservedItem, first.revision.itemID)
+        XCTAssertEqual(corruptObservedFault, .podcastMediaUnreadable(missing.revision.itemID))
         let corruptRetainedState = try await store.podcastQueueState()
         XCTAssertEqual(corruptRetainedState, state)
+    }
+
+    func testCancelledNextLoadDoesNotPublishSuccessFaultOrStop() async throws {
+        let path = storeURL()
+        let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let first = try await queueRevision(index: 1, root: root, store: store)
+        let next = try await queueRevision(index: 2, root: root, store: store)
+        let queue = try PodcastQueueState(
+            episodeIDs: [first.revision.itemID, next.revision.itemID],
+            currentEpisodeID: first.revision.itemID
+        )
+        try await store.replacePodcastQueue(queue)
+        let backend = FakeBackend()
+        backend.cancelledURLs.insert(next.mediaURL)
+        let controller = PlaybackController(store: store, backend: backend)
+        var observationCount = 0
+        var finishCount = 0
+        controller.podcastStateHandler = { _, _ in observationCount += 1 }
+        controller.playbackDidFinishHandler = { finishCount += 1 }
+        await controller.restorePodcastQueue()
+        backend.finish(successfully: true)
+        await waitUntil { backend.cancelledLoadCount == 1 }
+        XCTAssertEqual(backend.cancelledLoadCount, 1)
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(observationCount, 0)
+        XCTAssertEqual(finishCount, 0)
+        XCTAssertNil(controller.recoverableFault)
+        XCTAssertEqual(controller.itemID, first.revision.itemID)
+        XCTAssertTrue(controller.completed)
+        let retainedQueue = try await store.podcastQueueState()
+        XCTAssertEqual(retainedQueue, queue)
     }
 
     func testCorruptSelectionPreservesActivePlaybackAndCurrentQueueIdentity() async throws {
@@ -767,5 +1083,13 @@ final class PlaybackControllerTests: XCTestCase {
         } catch {
             errorHandler(error)
         }
+    }
+}
+
+private extension LocalLibraryStore {
+    /// Holds the store actor so completion must suspend at its checkpoint.
+    func holdPlaybackStoreForTesting(entered: @Sendable () -> Void, release: DispatchSemaphore) {
+        entered()
+        release.wait()
     }
 }

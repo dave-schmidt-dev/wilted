@@ -102,6 +102,9 @@ public enum PlaybackControllerError: Error, Equatable, Sendable {
     case invalidSeek(TimeInterval)
     case podcastMediaUnavailable(ItemID)
     case podcastMediaUnreadable(ItemID)
+    /// The audio engine reported unsuccessful playback, including failure at
+    /// the final frame. Recoverable: the listener can press play again.
+    case playbackFailed(ItemID)
 }
 
 /// Main-actor playback orchestration and durable resume state.
@@ -134,8 +137,12 @@ public final class PlaybackController {
     /// that gets persisted and synced. A readout that polls it while audio
     /// runs therefore sees it frozen at the last checkpoint, which is why the
     /// producer's elapsed time only moved when a transport button was
-    /// pressed. These two are the display reads, and they write nothing.
-    public var livePositionSeconds: TimeInterval { clamp(backend.currentTime) }
+    /// pressed. A failed backend may reset its clock, so that state displays
+    /// the retained stop checkpoint. These display reads write nothing.
+    public var livePositionSeconds: TimeInterval {
+        if let itemID, recoverableFault == .playbackFailed(itemID) { return positionSeconds }
+        return clamp(backend.currentTime)
+    }
     public var liveIsPlaying: Bool { backend.isPlaying }
     public var playbackRate: Float { backend.rate }
 
@@ -145,10 +152,10 @@ public final class PlaybackController {
     public private(set) var completed = false
     public private(set) var recoverableFault: PlaybackControllerError?
     @ObservationIgnored public var podcastStateHandler: (@MainActor @Sendable (ItemID?, PlaybackControllerError?) -> Void)?
-    /// Fired whenever the backend finishes an item and nothing advances behind
-    /// it: an article, or the last episode in the queue. `podcastStateHandler`
-    /// covers the advance, so without this the only signal that playback
-    /// stopped is `isPlaying`, which a surface has to be looking at to notice.
+    /// Fired when the backend stops unsuccessfully, or finishes an item with
+    /// nothing advancing behind it: an article, or the last queued episode.
+    /// `podcastStateHandler` carries queue advances and podcast faults; this
+    /// handler also lets surfaces observe that playback stopped.
     @ObservationIgnored public var playbackDidFinishHandler: (@MainActor @Sendable () -> Void)?
 
     private var currentRevision: AudioRevision?
@@ -181,11 +188,17 @@ public final class PlaybackController {
         try await loadRevision(revision, mediaURL: mediaURL)
     }
 
-    private func loadRevision(_ revision: AudioRevision, mediaURL: URL) async throws {
+    @discardableResult
+    private func loadRevision(
+        _ revision: AudioRevision, mediaURL: URL, expectedGeneration: UInt64? = nil
+    ) async throws -> UInt64 {
         let persisted = try await store.playbackState(
             for: revision.itemID,
             revisionID: revision.revisionID
         )
+        if let expectedGeneration, loadedBackendGeneration != expectedGeneration {
+            throw CancellationError()
+        }
         try backend.load(url: mediaURL)
         checkpointTask?.cancel()
         loadedBackendGeneration = backend.loadedGeneration
@@ -215,6 +228,7 @@ public final class PlaybackController {
         isPlaying = false
         recoverableFault = nil
         completionHandledGeneration = nil
+        return backend.loadedGeneration
     }
 
     /// Restores the durable current queue item without starting a duplicate
@@ -283,7 +297,19 @@ public final class PlaybackController {
 
     public func play() throws {
         guard currentRevision != nil else { throw PlaybackControllerError.noLoadedRevision }
+        if let itemID, recoverableFault == .playbackFailed(itemID) {
+            // A finished AVAudioPlayer no longer has a registered completion
+            // callback. Reload to give an explicit retry its own generation.
+            guard let mediaURL else { throw PlaybackControllerError.noLoadedRevision }
+            let position = clamp(positionSeconds)
+            try backend.load(url: mediaURL)
+            loadedBackendGeneration = backend.loadedGeneration
+            completionHandledGeneration = nil
+            backend.currentTime = position
+            positionSeconds = position
+        }
         isPlaying = backend.play()
+        if isPlaying { recoverableFault = nil }
     }
 
     public func pause() async throws {
@@ -302,7 +328,7 @@ public final class PlaybackController {
     public func seek(by offset: TimeInterval) async throws {
         guard currentRevision != nil else { throw PlaybackControllerError.noLoadedRevision }
         guard offset.isFinite else { throw PlaybackControllerError.invalidSeek(offset) }
-        try await seek(to: backend.currentTime + offset)
+        try await seek(to: livePositionSeconds + offset)
     }
 
     /// Moves directly to a bounded media time. Backward movement starts a new
@@ -310,7 +336,7 @@ public final class PlaybackController {
     public func seek(to value: TimeInterval) async throws {
         guard currentRevision != nil else { throw PlaybackControllerError.noLoadedRevision }
         guard value.isFinite else { throw PlaybackControllerError.invalidSeek(value) }
-        let current = clamp(backend.currentTime)
+        let current = livePositionSeconds
         let target = clamp(value)
         if target < current {
             try await beginNewSession(intent: .rewind, position: target, reloadBackend: true)
@@ -353,6 +379,7 @@ public final class PlaybackController {
         backend.pause()
         isPlaying = false
         completionHandledGeneration = loadedBackendGeneration
+        recoverableFault = nil
         try await checkpointCompletedRevision()
     }
 
@@ -360,9 +387,11 @@ public final class PlaybackController {
         guard let revision = currentRevision, let itemID, let revisionID, let sessionID else {
             throw PlaybackControllerError.noLoadedRevision
         }
-        positionSeconds = clamp(backend.currentTime)
+        let livePosition = clamp(backend.currentTime)
+        positionSeconds = recoverableFault == .playbackFailed(itemID)
+            ? max(positionSeconds, livePosition) : livePosition
         isPlaying = backend.isPlaying
-        completed = positionSeconds >= durationSeconds
+        completed = positionSeconds >= durationSeconds && recoverableFault != .playbackFailed(itemID)
         sequence = max(1, sequence + 1)
         let state = try PlaybackState(
             itemID: itemID,
@@ -388,45 +417,87 @@ public final class PlaybackController {
     public func recoverFromRouteChange() async throws {
         guard let mediaURL else { throw PlaybackControllerError.noLoadedRevision }
         let wasPlaying = backend.isPlaying || isPlaying
-        let position = clamp(backend.currentTime)
+        let position = livePositionSeconds
         backend.stop()
         try backend.load(url: mediaURL)
         loadedBackendGeneration = backend.loadedGeneration
+        completionHandledGeneration = nil
+        recoverableFault = nil
         backend.currentTime = position
         positionSeconds = position
         isPlaying = wasPlaying && backend.play()
     }
 
     private func handleBackendCompletion(generation: UInt64, successfully: Bool) async {
-        guard generation == loadedBackendGeneration, successfully,
-              completionHandledGeneration != generation else { return }
+        guard generation == loadedBackendGeneration,
+              completionHandledGeneration != generation,
+              let completedItemID = itemID else { return }
         completionHandledGeneration = generation
-        backend.pause()
-        isPlaying = false
-        do { try await checkpointCompletedRevision() }
-        catch {
-            playbackDidFinishHandler?()
-            return
-        }
-        guard let state = try? await store.podcastQueueState(), state.currentEpisodeID == itemID else {
-            // An article, or an episode played outside the queue. Nothing
-            // advances, so this is the only notice that the audio stopped.
-            playbackDidFinishHandler?()
-            return
-        }
-        guard let next = state.nextEpisodeID else {
-            podcastStateHandler?(itemID, nil)
-            playbackDidFinishHandler?()
-            return
-        }
-        do {
-            try await loadQueuedEpisode(next, playAfterLoad: true)
-            try await store.setCurrentPodcastQueueEpisode(next)
-            podcastStateHandler?(next, nil)
-        } catch {
+        if successfully {
             backend.pause()
             isPlaying = false
-            podcastStateHandler?(itemID, recoverableFault)
+            do { try await checkpointCompletedRevision() }
+            catch {
+                guard generation == loadedBackendGeneration, itemID == completedItemID else { return }
+                playbackDidFinishHandler?()
+                return
+            }
+            guard generation == loadedBackendGeneration, itemID == completedItemID else { return }
+            let state = try? await store.podcastQueueState()
+            guard generation == loadedBackendGeneration, itemID == completedItemID else { return }
+            guard let state, state.currentEpisodeID == completedItemID else {
+                // An article, or an episode played outside the queue. Nothing
+                // advances, so this is the only notice that the audio stopped.
+                playbackDidFinishHandler?()
+                return
+            }
+            guard let next = state.nextEpisodeID else {
+                podcastStateHandler?(itemID, nil)
+                playbackDidFinishHandler?()
+                return
+            }
+            var activeGeneration = generation
+            var activeItemID = completedItemID
+            do {
+                let nextGeneration = try await loadQueuedEpisode(
+                    next, playAfterLoad: true, expectedGeneration: generation
+                )
+                guard loadedBackendGeneration == nextGeneration, itemID == next else { return }
+                activeGeneration = nextGeneration
+                activeItemID = next
+                try await store.setCurrentPodcastQueueEpisode(next)
+                guard loadedBackendGeneration == activeGeneration, itemID == activeItemID else { return }
+                podcastStateHandler?(next, nil)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard loadedBackendGeneration == activeGeneration, itemID == activeItemID else { return }
+                backend.pause()
+                isPlaying = false
+                if let fault = recoverableFault,
+                   fault == .podcastMediaUnavailable(next) || fault == .podcastMediaUnreadable(next) {
+                    podcastStateHandler?(completedItemID, fault)
+                }
+                playbackDidFinishHandler?()
+            }
+        } else {
+            // Both callback outcomes consume the same generation. Only an
+            // explicit retry or reload can allow another completion.
+            backend.pause()
+            isPlaying = false
+            if let itemID { recoverableFault = .playbackFailed(itemID) }
+            // Keep the interrupted playhead, including failure at the final
+            // frame, without turning it into a completed revision. A store
+            // failure must not suppress the playback fault or stop signal.
+            try? await checkpoint()
+            let state = try? await store.podcastQueueState()
+            guard generation == loadedBackendGeneration,
+                  completionHandledGeneration == generation,
+                  itemID == completedItemID else { return }
+            if state?.currentEpisodeID == completedItemID {
+                podcastStateHandler?(completedItemID, .playbackFailed(completedItemID))
+            }
+            playbackDidFinishHandler?()
         }
     }
 
@@ -452,21 +523,40 @@ public final class PlaybackController {
         ))
     }
 
-    private func loadQueuedEpisode(_ episodeID: ItemID, playAfterLoad: Bool) async throws {
-        guard let stored = try await store.readyRevision(for: episodeID),
+    @discardableResult
+    private func loadQueuedEpisode(
+        _ episodeID: ItemID, playAfterLoad: Bool, expectedGeneration: UInt64? = nil
+    ) async throws -> UInt64 {
+        let ready = try await store.readyRevision(for: episodeID)
+        if let expectedGeneration, loadedBackendGeneration != expectedGeneration {
+            throw CancellationError()
+        }
+        guard let stored = ready,
               FileManager.default.fileExists(atPath: stored.mediaURL.path) else {
             recoverableFault = .podcastMediaUnavailable(episodeID)
             throw PlaybackControllerError.podcastMediaUnavailable(episodeID)
         }
+        let savedRate = try await store.playbackSpeed(for: episodeID).map { Float($0.speed) } ?? defaultRate
+        if let expectedGeneration, loadedBackendGeneration != expectedGeneration {
+            throw CancellationError()
+        }
+        let loadedGeneration: UInt64
         do {
-            try await loadRevision(stored.revision, mediaURL: stored.mediaURL)
+            loadedGeneration = try await loadRevision(
+                stored.revision, mediaURL: stored.mediaURL, expectedGeneration: expectedGeneration
+            )
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             recoverableFault = .podcastMediaUnreadable(episodeID)
             throw PlaybackControllerError.podcastMediaUnreadable(episodeID)
         }
-        let savedRate = try await store.playbackSpeed(for: episodeID).map { Float($0.speed) } ?? defaultRate
+        guard loadedBackendGeneration == loadedGeneration, itemID == episodeID else {
+            throw CancellationError()
+        }
         setRate(savedRate)
         if playAfterLoad { isPlaying = backend.play() }
+        return loadedGeneration
     }
 
     public func startPeriodicCheckpoint(every interval: TimeInterval = 5) {
@@ -507,6 +597,7 @@ public final class PlaybackController {
         sequence = 0
         self.intent = intent
         completed = false
+        recoverableFault = nil
         let target = clamp(position)
         backend.currentTime = target
         positionSeconds = target
