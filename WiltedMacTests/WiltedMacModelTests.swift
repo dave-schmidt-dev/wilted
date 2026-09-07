@@ -1328,6 +1328,23 @@ final class WiltedMacModelTests: XCTestCase {
                        .preparing(stage: "Preparing…"))
     }
 
+    func testEpisodePreparationStateLarderLabelsHideCompletedSummary() {
+        XCTAssertNil(WiltedMacEpisodePreparationState.notPrepared.larderLabel)
+
+        let summary = "Ready · 5 ads removed (7:22) · transcript synced"
+        let prepared = WiltedMacEpisodePreparationState.prepared(summary: summary)
+        XCTAssertEqual(prepared.label, summary)
+        XCTAssertNil(prepared.larderLabel)
+
+        let preparing = WiltedMacEpisodePreparationState.preparing(stage: "Preparing…")
+        XCTAssertEqual(preparing.label, "Preparing…")
+        XCTAssertEqual(preparing.larderLabel, "Preparing…")
+
+        let failed = WiltedMacEpisodePreparationState.failed(WiltedMacModel.preparationFailedLabel)
+        XCTAssertEqual(failed.label, WiltedMacModel.preparationFailedLabel)
+        XCTAssertEqual(failed.larderLabel, WiltedMacModel.preparationFailedLabel)
+    }
+
 
     // MARK: Transcript synchronisation
 

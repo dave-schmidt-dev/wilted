@@ -1052,7 +1052,7 @@ private struct WiltedMacEpisodeRow: View {
                 Text(progressLabel)
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                if let preparation = episode.preparationState.label {
+                if let preparation = episode.preparationState.larderLabel {
                     Text(preparation)
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))

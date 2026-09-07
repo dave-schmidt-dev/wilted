@@ -177,7 +177,11 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
     private func capturePrep(into root: URL) throws {
         let app = launch(["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"])
         XCTAssertTrue(element(app, "wilted-library-order").waitForExistence(timeout: 15))
-        XCTAssertTrue(app.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].waitForExistence(timeout: 10))
+        let row = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-row-'")
+        ).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].exists)
         try write(app, "4.2-larder-prepared-episode", into: root)
 
         element(app, "wilted-navigation-processor").click()

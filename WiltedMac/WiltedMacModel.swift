@@ -414,13 +414,27 @@ enum WiltedMacEpisodePreparationState: Equatable, Sendable {
     /// cut, so none of them are safe to hand to continuous playback.
     var isPrepared: Bool { if case .prepared = self { true } else { false } }
 
-    /// The line the row shows under the title, or nil when there is nothing
-    /// worth saying.
+    /// The full preparation status, including durable completion summaries.
+    /// Surfaces that intentionally suppress completed details use a scoped
+    /// presentation such as `larderLabel` instead.
     var label: String? {
         switch self {
         case .notPrepared: nil
         case .preparing(let stage): stage
         case .prepared(let summary): summary
+        case .failed(let message): message
+        }
+    }
+
+    /// The line the Larder row shows under the title.
+    ///
+    /// Completed summaries stay in the model and Prep history, but Larder rows
+    /// no longer render them, so they stay clean and compact.
+    var larderLabel: String? {
+        switch self {
+        case .notPrepared: nil
+        case .preparing(let stage): stage
+        case .prepared: nil
         case .failed(let message): message
         }
     }

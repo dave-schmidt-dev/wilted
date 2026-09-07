@@ -127,11 +127,10 @@ def build(captures, commit, date_iso, date_human, previous):
             captures),
         "larder-prepared": figure(
             "fig-larder-prepared", "4.2-larder-prepared-episode",
-            "Wilted Larder showing a prepared episode's row with its outcome summary and no Prepare button",
-            "<strong>4.2 Larder, a prepared episode.</strong> The prepared fixture's row reads "
-            "&ldquo;Ready &middot; 5 ads removed (7:22) &middot; transcript synced&rdquo;: the completion state "
-            "first, then each step's result, journalled by the pipeline when it finished rather than "
-            "reconstructed from the transcript. A prepared row offers Play and Up Next but no Prepare; "
+            "Wilted Larder showing a prepared episode's uncluttered row and no Prepare button",
+            "<strong>4.2 Larder, a prepared episode.</strong> The prepared fixture keeps its Larder row "
+            "uncluttered: completed preparation evidence remains in Prep (7.2), rather than appearing "
+            "here as a Ready, transcript, or advertisement-removal summary. A prepared row offers Play and Up Next but no Prepare; "
             "the row's &hellip; menu holds &ldquo;Download again, then prepare&rdquo; for any downloaded episode "
             "and &ldquo;Prepare this copy again&rdquo; for a prepared one "
             "(<code>wilted-episode-actions-item-&lt;hash&gt;</code>), under a line that reads &ldquo;Preparing "
@@ -268,8 +267,8 @@ def build(captures, commit, date_iso, date_human, previous):
             "The Prep destination listing one recorded preparation run with its outcome and Show log control",
             "<strong>7.2 Prep, a recorded run.</strong> The prepared fixture's run appears under Recent runs as "
             "<code>wilted-processor-run-podcast-prepare|&lt;id&gt;</code> with the episode title, Succeeded, "
-            "the same &ldquo;Ready &middot; 5 ads removed (7:22) &middot; transcript synced&rdquo; sentence "
-            "the Larder row carries, and Show log (<code>wilted-processor-log-toggle-&lt;id&gt;</code>). A "
+            "the &ldquo;Ready &middot; 5 ads removed (7:22) &middot; transcript synced&rdquo; completion sentence, "
+            "and Show log (<code>wilted-processor-log-toggle-&lt;id&gt;</code>). A "
             "failed run shows its reason here with Retry beside it; the Larder row for a failure says only "
             "&ldquo;Preparation failed. See Prep.&rdquo; A run the app quit in the middle of (an install "
             "over a running app, for one) is closed at the next launch as a failure that reads &ldquo;Wilted "

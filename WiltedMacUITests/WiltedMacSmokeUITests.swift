@@ -403,8 +403,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
     /// A build that never loaded the ad detector marked every episode prepared
     /// with nothing cut, and removal is permanent, so a prepared row had no
     /// way back. Pressing the control must actually start a run: the fixture
-    /// points at no media, so the row leaves the prepared state rather than
-    /// staying on the summary it started with.
+    /// points at no media, so the row leaves the prepared state and exposes
+    /// the durable failure instead of silently remaining prepared.
     func testPreparedEpisodeOffersToPrepareAgainFromItsMenu() {
         let app = launch(arguments: [
             "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"
@@ -413,8 +413,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-row-'")
         ).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].exists,
-                      "A prepared row states what was done, not only that a transcript exists.")
+        XCTAssertFalse(app.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].exists,
+                       "The Larder row no longer shows completed summaries.")
         XCTAssertEqual(
             app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-prepare'")).count, 0,
             "A prepared row shows no preparation button; redoing lives in its menu."
@@ -441,12 +441,14 @@ final class WiltedMacSmokeUITests: XCTestCase {
         )
         again.click()
         XCTAssertTrue(
-            app.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].waitForNonExistence(timeout: 10),
-            "Prepare again must start a run; the row kept the summary it began with."
+            app.staticTexts["No preparation worker in fixture mode"].waitForExistence(timeout: 5),
+            "Prepare again reaches the fixture's durable failed result."
         )
+        XCTAssertFalse(app.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].exists,
+                       "The completed summary stays out of the Larder row after preparing again.")
     }
 
-    /// The Larder row says only that an episode is preparing or prepared; what
+    /// The Larder row says only whether an episode is preparing or failed; what
     /// the run did lives on Prep, in a sentence by default and in the worker's
     /// own log when asked for.
     func testPrepNarratesARunAndShowsItsLogOnRequest() {
