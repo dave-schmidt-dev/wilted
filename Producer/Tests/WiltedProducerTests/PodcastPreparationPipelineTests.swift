@@ -39,7 +39,8 @@ struct PodcastPreparationPipelineTests {
         #expect(request["alignedTranscriptModel"] as? String == PodcastPreparationPipeline.alignedTranscriptModel)
         #expect(request["transcriptPolicy"] as? String == "bestAvailable")
         #expect(request["removeAds"] as? Bool == true)
-        #expect(request["readableTranscript"] as? Bool == true)
+        #expect(request["readableTranscript"] == nil)
+        #expect(request["readableTranscriptModel"] == nil)
         #expect(request["allowSpeechToText"] as? Bool == true)
         // The show notes ride along as the worker's glossary.
         #expect(request["episodeNotes"] as? String == "Host: Leo Laporte (https://twit.tv/people/leo-laporte)")
@@ -56,19 +57,19 @@ struct PodcastPreparationPipelineTests {
 
     @Test(arguments: [
         (PodcastPreparationPolicySnapshot(
-            transcriptPolicy: .bestAvailable, removeAds: true, readableTranscriptPass: true
-        ), "bestAvailable", true, true, true),
+            transcriptPolicy: .bestAvailable, removeAds: true
+        ), "bestAvailable", true, true),
         (PodcastPreparationPolicySnapshot(
-            transcriptPolicy: .alwaysTranscribe, removeAds: false, readableTranscriptPass: false
-        ), "alwaysTranscribe", false, false, true),
+            transcriptPolicy: .alwaysTranscribe, removeAds: false
+        ), "alwaysTranscribe", false, true),
         (PodcastPreparationPolicySnapshot(
-            transcriptPolicy: .noLocalSTT, removeAds: true, readableTranscriptPass: false
-        ), "noLocalSTT", true, false, false),
+            transcriptPolicy: .noLocalSTT, removeAds: true
+        ), "noLocalSTT", true, false),
     ])
     func mapsEachAdmissionPolicyIntoAnImmutableWorkerRequest(
-        argument: (PodcastPreparationPolicySnapshot, String, Bool, Bool, Bool)
+        argument: (PodcastPreparationPolicySnapshot, String, Bool, Bool)
     ) async throws {
-        let (policy, expectedName, expectedRemoveAds, expectedReadable, expectedSTT) = argument
+        let (policy, expectedName, expectedRemoveAds, expectedSTT) = argument
         let fixture = try await Fixture(publishesTranscript: true)
         defer { fixture.remove() }
         let stub = WorkerStub(response: [
@@ -81,9 +82,20 @@ struct PodcastPreparationPipelineTests {
         let request = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(request["transcriptPolicy"] as? String == expectedName)
         #expect(request["removeAds"] as? Bool == expectedRemoveAds)
-        #expect(request["readableTranscript"] as? Bool == expectedReadable)
+        #expect(request["readableTranscript"] == nil)
+        #expect(request["readableTranscriptModel"] == nil)
         #expect(request["allowSpeechToText"] as? Bool == expectedSTT)
         #expect((request["publishedTranscript"] != nil) == (policy.transcriptPolicy != .alwaysTranscribe))
+    }
+
+    @Test func legacyPolicySnapshotDecodesWithoutRestoringTheSecondPass() throws {
+        let data = Data(#"{"transcriptPolicy":"bestAvailable","removeAds":true,"readableTranscriptPass":false}"#.utf8)
+
+        let snapshot = try JSONDecoder().decode(PodcastPreparationPolicySnapshot.self, from: data)
+        #expect(snapshot == PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: true))
+
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot)) as? [String: Any]
+        #expect(encoded?["readableTranscriptPass"] == nil)
     }
 
     /// An unreachable transcript document is a downgrade, not a failure: the

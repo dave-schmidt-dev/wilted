@@ -319,8 +319,7 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         downloadPolicy: .manual,
         processingPolicy: .immediate,
         transcriptPolicy: .bestAvailable,
-        removeAds: true,
-        readableTranscriptPass: true
+        removeAds: true
     )
 
     let version: Int
@@ -329,22 +328,21 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     let processingPolicy: WiltedAutomationProcessingPolicy
     let transcriptPolicy: WiltedAutomationTranscriptPolicy
     let removeAds: Bool
-    let readableTranscriptPass: Bool
 
     init(refreshPolicy: WiltedAutomationRefreshPolicy, downloadPolicy: WiltedAutomationDownloadPolicy,
          processingPolicy: WiltedAutomationProcessingPolicy, transcriptPolicy: WiltedAutomationTranscriptPolicy,
-         removeAds: Bool, readableTranscriptPass: Bool) {
+         removeAds: Bool) {
         version = Self.currentVersion
         self.refreshPolicy = refreshPolicy
         self.downloadPolicy = downloadPolicy
         self.processingPolicy = processingPolicy
         self.transcriptPolicy = transcriptPolicy
         self.removeAds = removeAds
-        self.readableTranscriptPass = readableTranscriptPass
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, refreshPolicy, downloadPolicy, processingPolicy, transcriptPolicy, removeAds, readableTranscriptPass
+        case version, refreshPolicy, downloadPolicy, processingPolicy, transcriptPolicy, removeAds
+        case legacyReadableTranscriptPass = "readableTranscriptPass"
     }
 
     init(from decoder: Decoder) throws {
@@ -365,7 +363,9 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         processingPolicy = try container.decode(WiltedAutomationProcessingPolicy.self, forKey: .processingPolicy)
         transcriptPolicy = try container.decode(WiltedAutomationTranscriptPolicy.self, forKey: .transcriptPolicy)
         removeAds = try container.decode(Bool.self, forKey: .removeAds)
-        readableTranscriptPass = try container.decode(Bool.self, forKey: .readableTranscriptPass)
+        // Settings saved before the single-pass pipeline included this no-op
+        // preference. Deliberately accept and discard it on migration.
+        _ = try? container.decode(Bool.self, forKey: .legacyReadableTranscriptPass)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -380,7 +380,6 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         try container.encode(processingPolicy, forKey: .processingPolicy)
         try container.encode(transcriptPolicy, forKey: .transcriptPolicy)
         try container.encode(removeAds, forKey: .removeAds)
-        try container.encode(readableTranscriptPass, forKey: .readableTranscriptPass)
     }
 
     var isValid: Bool { version == Self.currentVersion && refreshPolicy.isValid }
@@ -428,13 +427,13 @@ enum WiltedMacEpisodePreparationState: Equatable, Sendable {
 
     /// The line the Larder row shows under the title.
     ///
-    /// Completed summaries stay in the model and Prep history, but Larder rows
-    /// no longer render them, so they stay clean and compact.
+    /// A completed summary appears only after the model has matched a successful
+    /// terminal journal entry to the audio revision currently ready to play.
     var larderLabel: String? {
         switch self {
         case .notPrepared: nil
         case .preparing(let stage): stage
-        case .prepared: nil
+        case .prepared(let summary): summary
         case .failed(let message): message
         }
     }
@@ -1998,8 +1997,7 @@ final class WiltedMacModel {
         }
         return PodcastPreparationPolicySnapshot(
             transcriptPolicy: transcriptPolicy,
-            removeAds: settings.removeAds,
-            readableTranscriptPass: settings.readableTranscriptPass
+            removeAds: settings.removeAds
         )
     }
 
@@ -2294,9 +2292,6 @@ final class WiltedMacModel {
         case "transcript.stt.start": "Transcribing the audio…"
         case "transcript.stt.complete": "Transcribed."
         case "transcript.stt.failed": "Transcription unavailable."
-        case "transcript.stt.readable.start": "Transcribing again for reading…"
-        case "transcript.stt.readable.complete": "Readable transcript ready."
-        case "transcript.stt.readable.failed", "transcript.stt.readable.rejected": "Keeping the plain transcript."
         case "transcript.glossary.terms", "transcript.glossary.progress", "transcript.glossary.complete":
             "Correcting names from the show notes…"
         case "transcript.prose.extract", "transcript.prose.accepted": "Reading the episode page…"
@@ -4165,7 +4160,9 @@ final class WiltedMacModel {
         let downloads = Dictionary(uniqueKeysWithValues: try await store.downloads().map { ($0.episodeID, $0) })
         var episodeValues: [WiltedMacEpisode] = []
         let runs = Dictionary(
-            uniqueKeysWithValues: ((try? await store.preparationRuns()) ?? [])
+            // Larder projects every subscribed episode, so its preparation
+            // evidence cannot use Prep's display-oriented 200-run default.
+            uniqueKeysWithValues: ((try? await store.preparationRuns(limit: Int.max)) ?? [])
                 .filter { $0.requestID.hasPrefix(Self.podcastRequestPrefix) }
                 .map { ($0.itemID, $0) }
         )
@@ -4206,7 +4203,11 @@ final class WiltedMacModel {
                 durationSeconds: revision?.revision.durationSeconds ?? episode.durationSeconds,
                 playbackSeconds: playbackState?.positionSeconds ?? 0,
                 isPlayed: playbackState?.completed ?? false, downloadState: downloadState,
-                preparationState: Self.preparationState(run: runs[episode.itemID], transcript: transcript)
+                preparationState: Self.preparationState(
+                    run: runs[episode.itemID],
+                    readyRevisionID: revision?.revision.revisionID,
+                    transcript: transcript
+                )
             ))
         }
         return (articleValues, episodeValues, subscriptionValues)
@@ -4246,15 +4247,19 @@ final class WiltedMacModel {
 
     /// What the library already knows about an episode's preparation.
     ///
-    /// The stored transcript is the evidence that survives a relaunch: it says
-    /// whether the words are synchronised with the audio. The journal supplies
-    /// the rest -- a failure worth showing, or a run this process did not start.
+    /// A successful terminal journal is the durable proof that preparation
+    /// completed. Its revision must be the audio revision currently ready to
+    /// play; transcript timing alone cannot prove that advertisements were cut.
     nonisolated static func preparationState(
-        run: PreparationRunSummary?, transcript: Transcript?
+        run: PreparationRunSummary?, readyRevisionID: RevisionID?, transcript: Transcript?
     ) -> WiltedMacEpisodePreparationState {
         if let run, !run.isTerminal { return .preparing(stage: "Preparing…") }
-        // Without a journal the transcript is the only evidence, and it says
-        // nothing about advertisements, so that step is not claimed.
+        if let run, run.outcome == .failed { return .failed(preparationFailedLabel) }
+        guard let readyRevisionID,
+              let terminal = run?.entries.last(where: { $0.status.terminal })?.status.terminalResult,
+              terminal.outcome == .succeeded,
+              terminal.revisionID == readyRevisionID else { return .notPrepared }
+
         let ready = PodcastPreparationResult.readyLabel
         switch transcript?.timing {
         case .published:
@@ -4264,13 +4269,8 @@ final class WiltedMacModel {
             return .prepared(summary: recordedSummary(of: run)
                              ?? "\(ready) · \(PodcastPreparationResult.transcriptStep(.aligned))")
         case nil, .some(.none):
-            if let run, run.isTerminal, run.outcome == .failed {
-                return .failed(preparationFailedLabel)
-            }
-            if transcript?.availability == .available {
-                return .prepared(summary: "\(ready) · \(PodcastPreparationResult.transcriptStep(.none))")
-            }
-            return .notPrepared
+            return .prepared(summary: recordedSummary(of: run)
+                             ?? "\(ready) · \(PodcastPreparationResult.transcriptStep(.none))")
         }
     }
 

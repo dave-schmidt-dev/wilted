@@ -57,7 +57,7 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
     ) -> WiltedAutomationSettings {
         WiltedAutomationSettings(refreshPolicy: refresh, downloadPolicy: download,
                                  processingPolicy: .immediate, transcriptPolicy: .bestAvailable,
-                                 removeAds: true, readableTranscriptPass: true)
+                                 removeAds: true)
     }
 
     private func coordinator(

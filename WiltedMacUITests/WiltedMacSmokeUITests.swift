@@ -85,7 +85,6 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(processing.exists)
         XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-transcript-policy"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-remove-ads"].exists)
-        XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-readable-transcript"].exists)
 
         // The fixture starts at immediate processing. No dormant time controls
         // or stop action should occupy the Settings card while automation is idle,
@@ -413,8 +412,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-row-'")
         ).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 5))
-        XCTAssertFalse(app.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].exists,
-                       "The Larder row no longer shows completed summaries.")
+        XCTAssertTrue(app.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].exists,
+                      "A proven prepared row shows the completion summary recorded by its journal.")
         XCTAssertEqual(
             app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-prepare'")).count, 0,
             "A prepared row shows no preparation button; redoing lives in its menu."
@@ -445,12 +444,11 @@ final class WiltedMacSmokeUITests: XCTestCase {
             "Prepare again reaches the fixture's durable failed result."
         )
         XCTAssertFalse(app.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].exists,
-                       "The completed summary stays out of the Larder row after preparing again.")
+                       "A new failed attempt replaces the earlier completed status.")
     }
 
-    /// The Larder row says only whether an episode is preparing or failed; what
-    /// the run did lives on Prep, in a sentence by default and in the worker's
-    /// own log when asked for.
+    /// Larder carries the successful run's concise recorded summary; Prep keeps
+    /// the full narrative and the worker's own log when asked for.
     func testPrepNarratesARunAndShowsItsLogOnRequest() {
         let app = launch(arguments: [
             "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"

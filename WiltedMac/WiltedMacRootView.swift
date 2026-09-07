@@ -2394,8 +2394,6 @@ private struct WiltedMacSettingsView: View {
                 .accessibilityIdentifier("wilted-automation-transcript-policy")
                 Toggle("Remove ads", isOn: removeAdsBinding)
                     .accessibilityIdentifier("wilted-automation-remove-ads")
-                Toggle("Make transcript easier to read", isOn: readableTranscriptBinding)
-                    .accessibilityIdentifier("wilted-automation-readable-transcript")
 
             }
         }
@@ -2455,12 +2453,6 @@ private struct WiltedMacSettingsView: View {
         Binding(get: { model.automationSettings.removeAds }, set: { replaceAutomationSettings(removeAds: $0) })
     }
 
-    private var readableTranscriptBinding: Binding<Bool> {
-        Binding(get: { model.automationSettings.readableTranscriptPass }, set: {
-            replaceAutomationSettings(readableTranscriptPass: $0)
-        })
-    }
-
     private var defaultOffPeakWindow: WiltedAutomationOffPeakWindow {
         let start = WiltedAutomationLocalTime(hour: 22, minute: 0)!
         let end = WiltedAutomationLocalTime(hour: 6, minute: 0)!
@@ -2509,8 +2501,7 @@ private struct WiltedMacSettingsView: View {
         downloadPolicy: WiltedAutomationDownloadPolicy? = nil,
         processingPolicy: WiltedAutomationProcessingPolicy? = nil,
         transcriptPolicy: WiltedAutomationTranscriptPolicy? = nil,
-        removeAds: Bool? = nil,
-        readableTranscriptPass: Bool? = nil
+        removeAds: Bool? = nil
     ) {
         model.updateAutomationSettings { settings in
             WiltedAutomationSettings(
@@ -2518,8 +2509,7 @@ private struct WiltedMacSettingsView: View {
                 downloadPolicy: downloadPolicy ?? settings.downloadPolicy,
                 processingPolicy: processingPolicy ?? settings.processingPolicy,
                 transcriptPolicy: transcriptPolicy ?? settings.transcriptPolicy,
-                removeAds: removeAds ?? settings.removeAds,
-                readableTranscriptPass: readableTranscriptPass ?? settings.readableTranscriptPass
+                removeAds: removeAds ?? settings.removeAds
             )
         }
     }

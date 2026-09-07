@@ -127,10 +127,11 @@ def build(captures, commit, date_iso, date_human, previous):
             captures),
         "larder-prepared": figure(
             "fig-larder-prepared", "4.2-larder-prepared-episode",
-            "Wilted Larder showing a prepared episode's uncluttered row and no Prepare button",
-            "<strong>4.2 Larder, a prepared episode.</strong> The prepared fixture keeps its Larder row "
-            "uncluttered: completed preparation evidence remains in Prep (7.2), rather than appearing "
-            "here as a Ready, transcript, or advertisement-removal summary. A prepared row offers Play and Up Next but no Prepare; "
+            "Wilted Larder showing a prepared episode's recorded completion summary and no Prepare button",
+            "<strong>4.2 Larder, a prepared episode.</strong> A successful terminal preparation journal "
+            "matching the audio revision ready to play supplies the row's Ready, transcript, and advertisement-removal summary. "
+            "A downloaded episode with only a transcript, or a journal for an older revision, stays unlabeled. "
+            "A prepared row offers Play and Up Next but no Prepare; "
             "the row's &hellip; menu holds &ldquo;Download again, then prepare&rdquo; for any downloaded episode "
             "and &ldquo;Prepare this copy again&rdquo; for a prepared one "
             "(<code>wilted-episode-actions-item-&lt;hash&gt;</code>), under a line that reads &ldquo;Preparing "
@@ -297,7 +298,7 @@ def build(captures, commit, date_iso, date_human, previous):
             "comes first: Text and icon size offers System, Large, Larger, and Largest, applies to every "
             "screen including the sidebar, the controls, and the search field, and survives relaunch. Podcast "
             "automation separately configures refresh timing, bounded automatic downloads, immediate/manual/off-peak "
-            "processing, transcript preference, ad removal, and readable transcripts; the off-peak window appears "
+            "processing, transcript preference, and ad removal; the off-peak window appears "
             "only for that processing choice. Sync "
             "reads Disabled with the detail &ldquo;Sync is not configured.&rdquo;, producer identity "
             "Unavailable, and last fetch and last send Not yet. Refresh and Upload are rendered disabled in "
@@ -349,7 +350,7 @@ def build(captures, commit, date_iso, date_human, previous):
 <tr><td>Window geometry</td><td>{geometry_line}</td></tr>
 <tr><td>Reproducing this report</td><td><code>scripts/record-walkthrough-frames.sh</code> writes the frames and a geometry sidecar beside each one, by setting <code>WILTED_WALKTHROUGH_CAPTURE=1</code> inside the generated scheme's TestAction and running <code>-only-testing:WiltedMacUITests/WiltedMacWalkthroughCapture</code>; <code>scripts/build-mac-walkthrough.py</code> assembles this document from that directory</td></tr>
 </tbody></table>
-<div class="warning"><strong>What changed since the {previous} report.</strong> The routes remain the same four. Transcript, Notes, and Up Next now open into a full-window player with the transport preserved, Collapse and Escape focus return, and destination navigation that dismisses the player without interrupting playback. Settings now exposes podcast refresh, bounded automatic download, immediate/manual/off-peak processing, transcript preference, ad-removal, and readability policy in addition to Appearance and Sync. Automatic work keeps the policy snapshot captured when it was admitted. Every frame was retaken at this commit.</div>
+<div class="warning"><strong>What changed since the {previous} report.</strong> The routes remain the same four. Transcript, Notes, and Up Next now open into a full-window player with the transport preserved, Collapse and Escape focus return, and destination navigation that dismisses the player without interrupting playback. Settings now exposes podcast refresh, bounded automatic download, immediate/manual/off-peak processing, transcript preference, and ad-removal in addition to Appearance and Sync. Automatic work keeps the policy snapshot captured when it was admitted. Every frame was retaken at this commit.</div>
 </section>
 
 <section id="method"><h2>2. Method and evidence labels</h2>

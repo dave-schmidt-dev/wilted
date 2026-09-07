@@ -67,12 +67,9 @@ Manual download from a Larder row remains available under every policy.
 These exist as settings today — **Immediately after download** (default), **Manual**, or
 **Off-peak while open** with a local start/end time for processing; and **Best
 available** (default), **Always transcribe**, or **No local STT** for transcript
-acquisition, alongside the `removeAds` and `readableTranscriptPass` booleans (both
-default on) — and they validate and persist correctly. See Known limits: none of them is
-currently read by anything that prepares an episode. Preparation still runs immediately
-after every download, manual or automatic, using the preparation pipeline's own built-in
-default policy (best-available transcript, ads removed, readable pass on), regardless of
-what is configured here.
+acquisition, alongside the `removeAds` boolean (default on). They validate, persist, and
+are captured when preparation is admitted. When local speech-to-text is needed, one
+1.1B model pass supplies both the ad detector and the displayed transcript.
 
 ## Claims: what stops the same episode transferring twice
 
@@ -180,14 +177,9 @@ listener cannot act on directly.
 - **The default policy is all-manual.** `refreshPolicy` defaults to `.manual`, so
   automation performs no action of any kind — no refresh, no download — until a listener
   changes it. Absent any configuration, this feature is inert.
-- **`processingPolicy` and `transcriptPolicy` (and `removeAds` /
-  `readableTranscriptPass`) are stored and validated but not yet wired to anything.**
-  Every preparation, automatic or manual, still runs immediately after download using the
-  preparation pipeline's own fixed default policy. Configuring an off-peak processing
-  window or a different transcript policy currently has no observable effect.
-- **There is currently no in-app control surface for these settings.** They are only
-  reachable through `WiltedMacModel.setAutomationSettings(_:)`; nothing in the Mac UI
-  presents Feeds, Downloads, or Processing controls yet.
+- **Manual preparation starts immediately.** Processing schedules govern automatically
+  admitted work; choosing Prepare from an episode row remains an explicit request to run
+  now.
 - **A download that fails after it starts requires a manual retry.** It settles to
   `.failed`, which is a decision reconciliation treats as already made, not an unfinished
   claim to resume.

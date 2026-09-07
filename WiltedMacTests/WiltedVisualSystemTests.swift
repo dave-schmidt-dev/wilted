@@ -849,7 +849,6 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(card.contains("wilted-automation-processing-policy"))
         XCTAssertTrue(card.contains("wilted-automation-transcript-policy"))
         XCTAssertTrue(card.contains("wilted-automation-remove-ads"))
-        XCTAssertTrue(card.contains("wilted-automation-readable-transcript"))
         XCTAssertTrue(card.contains("wilted-automation-off-peak-start"))
         XCTAssertTrue(card.contains("wilted-automation-off-peak-end"))
         XCTAssertTrue(card.contains("Uses local time. The window may continue overnight."))

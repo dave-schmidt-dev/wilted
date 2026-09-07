@@ -431,22 +431,18 @@ public enum PodcastTranscriptPolicy: String, Codable, Equatable, Sendable {
 public struct PodcastPreparationPolicySnapshot: Codable, Equatable, Sendable {
     public let transcriptPolicy: PodcastTranscriptPolicy
     public let removeAds: Bool
-    public let readableTranscriptPass: Bool
 
     public static let defaultValue = PodcastPreparationPolicySnapshot(
         transcriptPolicy: .bestAvailable,
-        removeAds: true,
-        readableTranscriptPass: true
+        removeAds: true
     )
 
     public init(
         transcriptPolicy: PodcastTranscriptPolicy,
-        removeAds: Bool,
-        readableTranscriptPass: Bool
+        removeAds: Bool
     ) {
         self.transcriptPolicy = transcriptPolicy
         self.removeAds = removeAds
-        self.readableTranscriptPass = readableTranscriptPass
     }
 }
 
@@ -480,8 +476,7 @@ public actor PodcastPreparationPipeline {
         self.workDirectory = workDirectory
         self.defaultPolicy = PodcastPreparationPolicySnapshot(
             transcriptPolicy: allowSpeechToText ? .bestAvailable : .noLocalSTT,
-            removeAds: removeAds,
-            readableTranscriptPass: true
+            removeAds: removeAds
         )
         self.now = now
     }
@@ -536,7 +531,6 @@ public actor PodcastPreparationPipeline {
                 "workDir": workDirectory.path,
                 "transcriptPolicy": policy.transcriptPolicy.rawValue,
                 "removeAds": policy.removeAds,
-                "readableTranscript": policy.readableTranscriptPass,
                 "allowSpeechToText": policy.transcriptPolicy != .noLocalSTT,
                 "sourceHash": stored.revision.contentHash,
                 "alignedTranscriptModel": Self.alignedTranscriptModel,

@@ -438,6 +438,15 @@ final class WiltedMacModelTests: XCTestCase {
             cues: [try TranscriptCue(startSeconds: 0, endSeconds: 0.5, text: "Line.")],
             updatedAt: created
         ))
+        let requestID = WiltedMacModel.podcastRequestPrefix + episodeID.rawValue
+        try await store.record(preparation: PreparationJournalEntry(
+            id: requestID + "|terminal", itemID: episodeID, requestID: requestID,
+            status: try PreparationStatus(
+                stage: .completed, detail: "Ready · transcript synced from the feed", cancellable: false,
+                terminalResult: PreparationTerminalResult(outcome: .succeeded, revisionID: revision.revisionID),
+                emittedAt: created
+            )
+        ))
     }
 
     /// Adds an episode with no download at all, so it can never qualify as
@@ -545,7 +554,7 @@ final class WiltedMacModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         model.setAutomationSettings(WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .immediate,
-            transcriptPolicy: .alwaysTranscribe, removeAds: false, readableTranscriptPass: false
+            transcriptPolicy: .alwaysTranscribe, removeAds: false
         ))
 
         model.admitAutomaticPreparation(for: episode, at: try localDate(hour: 12))
@@ -561,7 +570,7 @@ final class WiltedMacModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         model.setAutomationSettings(WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .manual,
-            transcriptPolicy: .alwaysTranscribe, removeAds: false, readableTranscriptPass: false
+            transcriptPolicy: .alwaysTranscribe, removeAds: false
         ))
 
         model.admitAutomaticPreparation(for: episode, at: try localDate(hour: 12))
@@ -580,7 +589,7 @@ final class WiltedMacModelTests: XCTestCase {
         let originalWindow = try offPeakWindow()
         let originalSettings = WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .offPeak(originalWindow),
-            transcriptPolicy: .alwaysTranscribe, removeAds: false, readableTranscriptPass: false
+            transcriptPolicy: .alwaysTranscribe, removeAds: false
         )
         model.setAutomationSettings(originalSettings)
 
@@ -590,7 +599,7 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(admitted.episodeID, episode.id)
         XCTAssertEqual(admitted.processingPolicy, .offPeak(originalWindow))
         XCTAssertEqual(admitted.policySnapshot, PodcastPreparationPolicySnapshot(
-            transcriptPolicy: .alwaysTranscribe, removeAds: false, readableTranscriptPass: false
+            transcriptPolicy: .alwaysTranscribe, removeAds: false
         ))
         XCTAssertEqual(model.preparationQueue.entries.map(\.id), [episode.id])
         XCTAssertEqual(
@@ -600,7 +609,7 @@ final class WiltedMacModelTests: XCTestCase {
 
         model.setAutomationSettings(WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .manual,
-            transcriptPolicy: .noLocalSTT, removeAds: true, readableTranscriptPass: true
+            transcriptPolicy: .noLocalSTT, removeAds: true
         ))
         model.startEligibleAutomaticPreparations(at: try localDate(hour: 21))
         XCTAssertEqual(model.deferredAutomaticPreparations, [admitted],
@@ -616,21 +625,20 @@ final class WiltedMacModelTests: XCTestCase {
     func testPreparationPolicySnapshotMapsEveryFutureWorkerChoice() throws {
         let settings = WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .offPeak(try offPeakWindow()),
-            transcriptPolicy: .alwaysTranscribe, removeAds: false, readableTranscriptPass: false
+            transcriptPolicy: .alwaysTranscribe, removeAds: false
         )
 
         let snapshot = WiltedMacModel.preparationPolicySnapshot(from: settings)
 
         XCTAssertEqual(snapshot.transcriptPolicy, .alwaysTranscribe)
         XCTAssertFalse(snapshot.removeAds)
-        XCTAssertFalse(snapshot.readableTranscriptPass)
 
         let laterSettings = WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .manual,
-            transcriptPolicy: .noLocalSTT, removeAds: true, readableTranscriptPass: true
+            transcriptPolicy: .noLocalSTT, removeAds: true
         )
         XCTAssertEqual(snapshot, PodcastPreparationPolicySnapshot(
-            transcriptPolicy: .alwaysTranscribe, removeAds: false, readableTranscriptPass: false
+            transcriptPolicy: .alwaysTranscribe, removeAds: false
         ), "a queued job retains the snapshot captured at admission")
         XCTAssertNotEqual(snapshot, WiltedMacModel.preparationPolicySnapshot(from: laterSettings))
     }
@@ -640,10 +648,10 @@ final class WiltedMacModelTests: XCTestCase {
         defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let window = try offPeakWindow()
         let firstSnapshot = PodcastPreparationPolicySnapshot(
-            transcriptPolicy: .alwaysTranscribe, removeAds: false, readableTranscriptPass: true
+            transcriptPolicy: .alwaysTranscribe, removeAds: false
         )
         let secondSnapshot = PodcastPreparationPolicySnapshot(
-            transcriptPolicy: .noLocalSTT, removeAds: true, readableTranscriptPass: false
+            transcriptPolicy: .noLocalSTT, removeAds: true
         )
         let jobs = [
             WiltedMacModel.DeferredAutomaticPreparation(
@@ -673,7 +681,7 @@ final class WiltedMacModelTests: XCTestCase {
         )
         model.setAutomationSettings(WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .manual,
-            transcriptPolicy: .bestAvailable, removeAds: true, readableTranscriptPass: true
+            transcriptPolicy: .bestAvailable, removeAds: true
         ))
         let episode = try XCTUnwrap(model.episodes.first)
 
@@ -854,7 +862,7 @@ final class WiltedMacModelTests: XCTestCase {
         let settings = WiltedAutomationSettings(
             refreshPolicy: .whileOpen(everyHours: 12), downloadPolicy: .newestOnePerEnabledFeed,
             processingPolicy: .immediate, transcriptPolicy: .bestAvailable,
-            removeAds: true, readableTranscriptPass: true
+            removeAds: true
         )
         let tooSoon = WiltedAutomationCoordinator.plan(
             settings: settings, trigger: .openWindowTick,
@@ -874,8 +882,7 @@ final class WiltedMacModelTests: XCTestCase {
             downloadPolicy: .newestThreePerEnabledFeed,
             processingPolicy: .offPeak(try offPeakWindow()),
             transcriptPolicy: .alwaysTranscribe,
-            removeAds: false,
-            readableTranscriptPass: false
+            removeAds: false
         )
 
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
@@ -884,6 +891,16 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(model.automationSettings, settings)
         XCTAssertNotNil(preferences.data(forKey: WiltedMacModel.automationSettingsPreferenceKey))
         XCTAssertEqual(WiltedAutomationDownloadPolicy.allNewlyAdmittedUpToTwenty.maximumEpisodesPerRefresh, 20)
+    }
+
+    func testLegacyReadableTranscriptSettingDecodesButIsNotReencoded() throws {
+        let payload = #"{"version":1,"refreshPolicy":{"kind":"manual"},"downloadPolicy":"manual","processingPolicy":{"kind":"immediate"},"transcriptPolicy":"bestAvailable","removeAds":true,"readableTranscriptPass":false}"#
+
+        let settings = try JSONDecoder().decode(WiltedAutomationSettings.self, from: Data(payload.utf8))
+        XCTAssertEqual(settings, .defaults)
+
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(settings)) as? [String: Any]
+        XCTAssertNil(encoded?["readableTranscriptPass"])
     }
 
     func testEveryAutomationControlValueMapsAndPersists() throws {
@@ -926,22 +943,22 @@ final class WiltedMacModelTests: XCTestCase {
         let settings = refreshPolicies.map {
             WiltedAutomationSettings(
                 refreshPolicy: $0, downloadPolicy: .manual, processingPolicy: .immediate,
-                transcriptPolicy: .bestAvailable, removeAds: true, readableTranscriptPass: true
+                transcriptPolicy: .bestAvailable, removeAds: true
             )
         } + downloadPolicies.map {
             WiltedAutomationSettings(
                 refreshPolicy: .manual, downloadPolicy: $0, processingPolicy: .immediate,
-                transcriptPolicy: .bestAvailable, removeAds: true, readableTranscriptPass: true
+                transcriptPolicy: .bestAvailable, removeAds: true
             )
         } + processingPolicies.map {
             WiltedAutomationSettings(
                 refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: $0,
-                transcriptPolicy: .bestAvailable, removeAds: true, readableTranscriptPass: true
+                transcriptPolicy: .bestAvailable, removeAds: true
             )
         } + transcriptPolicies.map {
             WiltedAutomationSettings(
                 refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .immediate,
-                transcriptPolicy: $0, removeAds: true, readableTranscriptPass: true
+                transcriptPolicy: $0, removeAds: true
             )
         }
 
@@ -982,8 +999,7 @@ final class WiltedMacModelTests: XCTestCase {
             downloadPolicy: .allNewlyAdmittedUpToTwenty,
             processingPolicy: .manual,
             transcriptPolicy: .noLocalSTT,
-            removeAds: false,
-            readableTranscriptPass: true
+            removeAds: false
         )
 
         let first = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
@@ -1056,8 +1072,7 @@ final class WiltedMacModelTests: XCTestCase {
             downloadPolicy: .newestOnePerEnabledFeed,
             processingPolicy: .immediate,
             transcriptPolicy: .bestAvailable,
-            removeAds: true,
-            readableTranscriptPass: true
+            removeAds: true
         ))
         let relaunched = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
 
@@ -1113,7 +1128,7 @@ final class WiltedMacModelTests: XCTestCase {
             itemID: itemID, revisionID: revisionID, availability: .available, text: "Words.", timing: .aligned,
             cues: [try TranscriptCue(startSeconds: 0, endSeconds: 1, text: "Words.")], updatedAt: when
         )
-        func run(terminal: String, completion: String?) throws -> PreparationRunSummary {
+        func run(terminal: String, completion: String?, terminalRevisionID: RevisionID) throws -> PreparationRunSummary {
             var entries: [PreparationJournalEntry] = []
             if let completion {
                 entries.append(PreparationJournalEntry(
@@ -1121,6 +1136,14 @@ final class WiltedMacModelTests: XCTestCase {
                     status: try PreparationStatus(stage: .preparing, detail: completion, cancellable: true, emittedAt: when)
                 ))
             }
+            entries.append(PreparationJournalEntry(
+                id: requestID + "|terminal", itemID: itemID, requestID: requestID,
+                status: try PreparationStatus(
+                    stage: .completed, detail: terminal, cancellable: false,
+                    terminalResult: PreparationTerminalResult(outcome: .succeeded, revisionID: terminalRevisionID),
+                    emittedAt: when
+                )
+            ))
             return PreparationRunSummary(
                 requestID: requestID, itemID: itemID, startedAt: when, updatedAt: when, stage: .completed,
                 detail: terminal, fraction: nil, isTerminal: true, outcome: .succeeded, failure: nil, entries: entries
@@ -1130,28 +1153,45 @@ final class WiltedMacModelTests: XCTestCase {
         // A current build journals the summary itself as the terminal row.
         XCTAssertEqual(
             WiltedMacModel.preparationState(run: try run(terminal: "Ready · 5 ads removed (7:22) · transcript synced",
-                                                         completion: "5 advertisements, 1307 cues"), transcript: transcript),
+                                                         completion: "5 advertisements, 1307 cues",
+                                                         terminalRevisionID: revisionID),
+                                            readyRevisionID: revisionID, transcript: transcript),
             .prepared(summary: "Ready · 5 ads removed (7:22) · transcript synced")
         )
         // Older builds wrote "Prepared." and counted advertisements one row
         // earlier; zero there is the honest state of an episode the broken
         // detector build marked prepared.
         XCTAssertEqual(
-            WiltedMacModel.preparationState(run: try run(terminal: "Prepared.", completion: "0 advertisements, 1345 cues"),
-                                            transcript: transcript),
+            WiltedMacModel.preparationState(run: try run(terminal: "Prepared.", completion: "0 advertisements, 1345 cues",
+                                                         terminalRevisionID: revisionID),
+                                            readyRevisionID: revisionID, transcript: transcript),
             .prepared(summary: "Ready · no ads found · transcript synced")
         )
         XCTAssertEqual(
-            WiltedMacModel.preparationState(run: try run(terminal: "Prepared.", completion: "3 advertisements, 900 cues"),
-                                            transcript: transcript),
+            WiltedMacModel.preparationState(run: try run(terminal: "Prepared.", completion: "3 advertisements, 900 cues",
+                                                         terminalRevisionID: revisionID),
+                                            readyRevisionID: revisionID, transcript: transcript),
             .prepared(summary: "Ready · 3 ads removed · transcript synced")
         )
-        // No journal at all: the transcript is the only evidence.
-        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: transcript),
-                       .prepared(summary: "Ready · transcript synced"))
+        // Transcript timing alone cannot prove that preparation completed.
+        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, readyRevisionID: revisionID, transcript: transcript),
+                       .notPrepared)
         XCTAssertEqual(
-            WiltedMacModel.preparationState(run: try run(terminal: "Prepared.", completion: nil), transcript: transcript),
+            WiltedMacModel.preparationState(run: try run(terminal: "Prepared.", completion: nil,
+                                                         terminalRevisionID: revisionID),
+                                            readyRevisionID: revisionID, transcript: transcript),
             .prepared(summary: "Ready · transcript synced")
+        )
+        let staleRevisionID = try RevisionID(rawValue: "rev-" + String(repeating: "8", count: 64))
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(
+                run: try run(terminal: "Ready · transcript synced", completion: nil,
+                             terminalRevisionID: staleRevisionID),
+                readyRevisionID: revisionID,
+                transcript: transcript
+            ),
+            .notPrepared,
+            "A successful journal for an older audio revision cannot label the current download prepared."
         )
     }
 
@@ -1260,8 +1300,6 @@ final class WiltedMacModelTests: XCTestCase {
         let cases: [(String, String)] = [
             ("transcript.published.fetch", "Fetching the published transcript…"),
             ("transcript.stt.start", "Transcribing the audio…"),
-            ("transcript.stt.readable.start", "Transcribing again for reading…"),
-            ("transcript.stt.readable.rejected", "Keeping the plain transcript."),
             ("transcript.glossary.progress", "Correcting names from the show notes…"),
             ("transcript.glossary.complete", "Correcting names from the show notes…"),
             ("ads.detect.start", "Finding advertisements…"),
@@ -1282,8 +1320,8 @@ final class WiltedMacModelTests: XCTestCase {
         )
     }
 
-    /// The stored transcript is what survives a relaunch, so it decides
-    /// whether an episode reads as prepared.
+    /// Only a successful terminal journal for the ready revision proves that
+    /// an episode is prepared; transcript timing is descriptive, not proof.
     func testPreparationStateComesFromWhatTheLibraryCanProve() throws {
         let itemID = try ItemID(rawValue: "item-" + String(repeating: "7", count: 64))
         let revisionID = try RevisionID(rawValue: "rev-" + String(repeating: "7", count: 64))
@@ -1297,15 +1335,13 @@ final class WiltedMacModelTests: XCTestCase {
             )
         }
 
-        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: nil), .notPrepared)
-        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: try transcript(.published)),
-                       .prepared(summary: "Ready · transcript synced from the feed"))
-        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: try transcript(.aligned)),
-                       .prepared(summary: "Ready · transcript synced"))
-        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: try transcript(.none)),
-                       .prepared(summary: "Ready · transcript not synced"))
-        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, transcript: try transcript(.none, .absent)),
-                       .notPrepared)
+        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, readyRevisionID: revisionID, transcript: nil), .notPrepared)
+        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, readyRevisionID: revisionID,
+                                                       transcript: try transcript(.published)), .notPrepared)
+        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, readyRevisionID: revisionID,
+                                                       transcript: try transcript(.aligned)), .notPrepared)
+        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, readyRevisionID: revisionID,
+                                                       transcript: try transcript(.none)), .notPrepared)
 
         let failed = PreparationRunSummary(
             requestID: "podcast-prepare|" + itemID.rawValue, itemID: itemID, startedAt: when, updatedAt: when,
@@ -1313,28 +1349,29 @@ final class WiltedMacModelTests: XCTestCase {
             fraction: nil, isTerminal: true, outcome: .failed, failure: nil
         )
         // The row says only that it failed; the reason and the log are on Prep.
-        XCTAssertEqual(WiltedMacModel.preparationState(run: failed, transcript: nil),
+        XCTAssertEqual(WiltedMacModel.preparationState(run: failed, readyRevisionID: revisionID, transcript: nil),
                        .failed(WiltedMacModel.preparationFailedLabel))
-        // A transcript outranks an old failure: the words are there.
-        XCTAssertEqual(WiltedMacModel.preparationState(run: failed, transcript: try transcript(.aligned)),
-                       .prepared(summary: "Ready · transcript synced"))
+        XCTAssertEqual(WiltedMacModel.preparationState(run: failed, readyRevisionID: revisionID,
+                                                       transcript: try transcript(.aligned)),
+                       .failed(WiltedMacModel.preparationFailedLabel))
 
         let running = PreparationRunSummary(
             requestID: failed.requestID, itemID: itemID, startedAt: when, updatedAt: when,
             stage: .extracting, detail: "Transcribing", fraction: nil, isTerminal: false,
             outcome: nil, failure: nil
         )
-        XCTAssertEqual(WiltedMacModel.preparationState(run: running, transcript: try transcript(.aligned)),
+        XCTAssertEqual(WiltedMacModel.preparationState(run: running, readyRevisionID: revisionID,
+                                                       transcript: try transcript(.aligned)),
                        .preparing(stage: "Preparing…"))
     }
 
-    func testEpisodePreparationStateLarderLabelsHideCompletedSummary() {
+    func testEpisodePreparationStateLarderLabelsShowOnlyProvenCompletedSummary() {
         XCTAssertNil(WiltedMacEpisodePreparationState.notPrepared.larderLabel)
 
         let summary = "Ready · 5 ads removed (7:22) · transcript synced"
         let prepared = WiltedMacEpisodePreparationState.prepared(summary: summary)
         XCTAssertEqual(prepared.label, summary)
-        XCTAssertNil(prepared.larderLabel)
+        XCTAssertEqual(prepared.larderLabel, summary)
 
         let preparing = WiltedMacEpisodePreparationState.preparing(stage: "Preparing…")
         XCTAssertEqual(preparing.label, "Preparing…")
@@ -1343,6 +1380,12 @@ final class WiltedMacModelTests: XCTestCase {
         let failed = WiltedMacEpisodePreparationState.failed(WiltedMacModel.preparationFailedLabel)
         XCTAssertEqual(failed.label, WiltedMacModel.preparationFailedLabel)
         XCTAssertEqual(failed.larderLabel, WiltedMacModel.preparationFailedLabel)
+    }
+
+    func testLibraryProjectionDoesNotCapPreparationEvidenceAtThePrepDisplayLimit() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacModel.swift"))
+        XCTAssertTrue(source.contains("store.preparationRuns(limit: Int.max)"))
     }
 
 
