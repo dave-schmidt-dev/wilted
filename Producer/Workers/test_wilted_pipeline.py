@@ -204,6 +204,7 @@ class FakeLLM:
     """
 
     answer: str = "[]"
+    classifier_answer: str = '{"ads":[]}'
     loaded: bool = False
     closed: bool = False
     fail_load: Exception | None = None
@@ -232,6 +233,8 @@ class FakeLLM:
             raise RuntimeError("Model not loaded. Call load() first.")
         if self.fail_generate is not None:
             raise self.fail_generate
+        if system_prompt in {"archive ad classifier", "archive ad classifier correction"}:
+            return self.classifier_answer, 1
         # The boundary probe asks for free JSON like the coarse pass does, so the
         # system prompt is what tells them apart here as well as in the log.
         if "starts_program" in system_prompt:
@@ -282,7 +285,64 @@ def install_fake_ads(llm: FakeLLM, detections=()):
     """
     if "speech_stack.client" not in sys.modules:
         install_fake_speech_stack()
-    ads = types.ModuleType("wilted.ads")
+    class FakeAdsModule(types.ModuleType):
+        def __setattr__(self, name, value):
+            if name == "detect_ads" and callable(value) and not getattr(value, "_covers_classifier", False):
+                raw_detector = value
+
+                def detector_with_classifier_coverage(segments, backend):
+                    ids = list(range(len(segments)))
+                    rendered = "\n".join(
+                        f"[ID {segment_id}] [{segment.start_s:.3f}s - {segment.end_s:.3f}s] {segment.text}"
+                        for segment_id, segment in enumerate(segments)
+                    )
+                    for prompt in (self._AD_DETECT_SYSTEM_PROMPT, self._AD_DETECT_CORRECTION_PROMPT):
+                        try:
+                            response, _ = backend.generate(
+                                prompt, rendered, response_format=self._AD_DETECT_RESPONSE_FORMAT
+                            )
+                            self._parse_ad_response(response, ids)
+                            break
+                        except Exception:  # noqa: BLE001 - archive retries malformed classifier responses
+                            continue
+                    return raw_detector(segments, backend)
+
+                detector_with_classifier_coverage._covers_classifier = True
+                value = detector_with_classifier_coverage
+            super().__setattr__(name, value)
+
+    ads = FakeAdsModule("wilted.ads")
+    ads._AD_DETECT_SYSTEM_PROMPT = "archive ad classifier"
+    ads._AD_DETECT_CORRECTION_PROMPT = "archive ad classifier correction"
+    ads._AD_DETECT_RESPONSE_FORMAT = {
+        "type": "json_object",
+        "schema": {
+            "type": "object",
+            "properties": {"ads": {"type": "array"}},
+            "required": ["ads"],
+            "additionalProperties": False,
+        },
+    }
+
+    def parse_ad_response(response, expected_ids):
+        parsed = json.loads(response)
+        if not isinstance(parsed, dict) or set(parsed) != {"ads"} or not isinstance(parsed["ads"], list):
+            raise ValueError("invalid ads response")
+        positions = {segment_id: index for index, segment_id in enumerate(expected_ids)}
+        labels = {}
+        for item in parsed["ads"]:
+            if (not isinstance(item, list) or len(item) != 2 or isinstance(item[0], bool)
+                    or not isinstance(item[0], int) or item[0] not in positions
+                    or item[0] in labels or item[1] not in {
+                        "sponsor_read", "self_promo", "ad_break", "newsletter_pitch"
+                    }):
+                raise ValueError("invalid ad entry")
+            labels[item[0]] = item[1]
+        if list(labels) != sorted(labels, key=positions.__getitem__):
+            raise ValueError("ads are out of order")
+        return [(segment_id, segment_id in labels, labels.get(segment_id)) for segment_id in expected_ids]
+
+    ads._parse_ad_response = parse_ad_response
     ads._SPONSOR_OPENING_RE = re.compile(  # noqa: SLF001 - matches the legacy module seam
         r"\b(?:this|the)\s+episode\s+is\s+(?:brought\s+to\s+you\s+by|sponsored\s+by)\b"
         r"|\bthis\s+message\s+is\s+brought\s+to\s+you\s+by\b"
@@ -376,14 +436,7 @@ def install_fake_ads(llm: FakeLLM, detections=()):
     ads._probe_boundary_candidate = probe_boundary  # noqa: SLF001
 
     def detect_ads(segments, backend):
-        answered = False
-        for segment in segments:
-            try:
-                backend.generate("classify", segment.text, response_format={"type": "json_object"})
-            except Exception:  # noqa: BLE001 - the real detector is this forgiving
-                continue
-            answered = True
-        return list(detections) if answered else []
+        return list(detections)
 
     ads.detect_ads = detect_ads
     ads._compute_keep_segments = lambda total, ads_found, pad: []  # noqa: SLF001
@@ -606,7 +659,7 @@ class AdDetectionTests(unittest.TestCase):
 
     def test_the_model_is_loaded_before_detection_and_closed_after(self):
         llm = FakeLLM()
-        install_fake_ads(llm)
+        ads = install_fake_ads(llm)
         with redirect_stderr(io.StringIO()), \
                 mock.patch.object(wp, "probe_duration", return_value=200.0):
             _path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
@@ -616,7 +669,7 @@ class AdDetectionTests(unittest.TestCase):
         # Constrained JSON is how the tuned prompts were accepted; the proxy
         # must not strip the keyword on its way through. The last two requests
         # are the opening and closing reviews, which every episode gets once.
-        self.assertEqual(llm.requests, [{"type": "json_object"}, {"type": "json_object"},
+        self.assertEqual(llm.requests, [ads._AD_DETECT_RESPONSE_FORMAT,
                                         {"field": "program_start_id", "ids": [0, 1]},
                                         {"field": "advertising_start_id", "ids": [-1, 0, 1]}])
 
@@ -1097,7 +1150,7 @@ class AdDetectionTests(unittest.TestCase):
             # because one completion got through, and the opening review that
             # follows detection is asked of the same dead backend.
             failure = llm.fail_generate
-            if user_content == "content":
+            if system_prompt == "archive ad classifier correction":
                 llm.fail_generate = None
             try:
                 return original(system_prompt, user_content, response_format=response_format)
@@ -1110,7 +1163,7 @@ class AdDetectionTests(unittest.TestCase):
                 mock.patch.object(wp, "probe_duration", return_value=200.0):
             wp.detect_and_cut(self.request, self.audio, [], segments)
         self.assertEqual(raised.exception.code, "ads-backend-failed")
-        self.assertIn("4 of 5", str(raised.exception))
+        self.assertIn("3 of 4", str(raised.exception))
 
 
 class LegacySponsorOpeningCompatibilityTests(unittest.TestCase):
@@ -1710,7 +1763,7 @@ class LegacySponsorRecoveryTests(unittest.TestCase):
 
     def test_positive_seed_and_verified_resumption_return_exact_superhuman_boundary(self):
         llm = FakeLLM(answer=json.dumps({"ads": [{"confidence": 0.97}]}))
-        install_legacy_recovery_fixture(llm)
+        ads = install_legacy_recovery_fixture(llm)
         segments = [
             FakeSegment(212.25, 216.0, "our show this week brought to you by superhuman"),
             FakeSegment(216.0, 248.75, "this is the sponsor message"),
@@ -1722,7 +1775,7 @@ class LegacySponsorRecoveryTests(unittest.TestCase):
             spans,
             [{"startSeconds": 212.25, "endSeconds": 248.75, "label": "sponsor", "confidence": 0.97}],
         )
-        self.assertEqual(llm.requests, [{"type": "json_object"}])
+        self.assertEqual(llm.requests, [ads._AD_DETECT_RESPONSE_FORMAT, {"type": "json_object"}])
 
     def test_positive_seed_without_sponsor_opening_is_editorial_content(self):
         llm = FakeLLM(answer=json.dumps({"ads": [{"confidence": 0.97}]}))
@@ -2936,6 +2989,329 @@ class TranscriptStartPrerollRecoveryTests(unittest.TestCase):
         llm = FakeLLM(preroll_program_start_id=5, preroll_program_id=-1)
         _result, details = self.preroll(llm, self.segments(), self.existing())
         self.assertEqual(details["ads.detect.preroll.nominated"], "program ID 5 at 100.000s")
+
+class AuditedDetectorAdapterTests(unittest.TestCase):
+    """Exercise retry coverage without loading the archived model or detector."""
+
+    def setUp(self):
+        self.segments = [
+            FakeSegment(0.0, 10.0, "first segment"),
+            FakeSegment(10.0, 20.0, "second segment"),
+            FakeSegment(20.0, 30.0, "third segment"),
+        ]
+        self.patches = [
+            mock.patch.object(wp, name, lambda _ads, _backend, _segments, detections, *_args: detections)
+            for name in (
+                "recover_unclaimed_explicit_sponsor_reads",
+                "recover_transcript_start_preroll",
+                "recover_transcript_end_postroll",
+                "resize_oversized_ad_spans",
+            )
+        ]
+        for patcher in self.patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def ads(self, detector):
+        ads = types.ModuleType("wilted.ads")
+        ads._AD_DETECT_SYSTEM_PROMPT = "classify"
+        ads._AD_DETECT_CORRECTION_PROMPT = "correct"
+        ads._AD_DETECT_RESPONSE_FORMAT = {
+            "type": "json_object",
+            "schema": {
+                "type": "object",
+                "properties": {"ads": {"type": "array"}},
+                "required": ["ads"],
+                "additionalProperties": False,
+            },
+        }
+
+        def parse_ad_response(response, expected_ids):
+            parsed = json.loads(response)
+            if not isinstance(parsed, dict) or set(parsed) != {"ads"} or not isinstance(parsed["ads"], list):
+                raise ValueError("invalid response")
+            positions = {segment_id: index for index, segment_id in enumerate(expected_ids)}
+            labels = {}
+            for item in parsed["ads"]:
+                if (not isinstance(item, list) or len(item) != 2 or isinstance(item[0], bool)
+                        or not isinstance(item[0], int) or item[0] not in positions
+                        or item[0] in labels or item[1] not in {
+                            "sponsor_read", "self_promo", "ad_break", "newsletter_pitch"
+                        }):
+                    raise ValueError("invalid ad entry")
+                labels[item[0]] = item[1]
+            if list(labels) != sorted(labels, key=positions.__getitem__):
+                raise ValueError("out-of-order response")
+            return [(segment_id, segment_id in labels, labels.get(segment_id)) for segment_id in expected_ids]
+
+        ads._parse_ad_response = parse_ad_response
+        ads._SPONSOR_OPENING_RE = re.compile("sponsor")
+        ads._EXPLICIT_HOST_READ_OPENING_RE = re.compile("sponsor")
+        ads._SPARSE_PROMO_CUES = ()
+        ads.detect_ads = detector
+        return ads
+
+    @staticmethod
+    def rendered(ids, *, truncated=False):
+        lines = [f"[ID {segment_id}] [{segment_id}.0s - {segment_id + 1}.0s] cue" for segment_id in ids]
+        if truncated:
+            lines.append(" …[TRUNCATED]… ")
+        return "\n".join(lines)
+
+    @staticmethod
+    def classifier(backend, ids, *, result=None, truncated=False):
+        response, _tokens = backend.generate(
+            "classify",
+            AuditedDetectorAdapterTests.rendered(ids, truncated=truncated),
+            response_format=backend._classification_response_format,
+        )
+        if result is not None:
+            return result(response)
+        response, _tokens = backend.generate(
+            "correct",
+            AuditedDetectorAdapterTests.rendered(ids, truncated=truncated),
+            response_format=backend._classification_response_format,
+        )
+        return response
+
+    def analysis(self, detector, responses, *, auto_cover=True, **kwargs):
+        class Backend:
+            def __init__(inner):
+                inner.responses = iter(responses)
+                inner.calls = []
+
+            def generate(inner, prompt, content, *, response_format=None):
+                inner.calls.append((prompt, content))
+                if prompt == "classify" and content == AuditedDetectorAdapterTests.rendered([0, 1, 2]):
+                    return '{"ads":[]}', 1
+                return next(inner.responses), 1
+
+        backend = Backend()
+        def detector_with_coverage(segments, auditing_backend):
+            result = detector(segments, auditing_backend)
+            if auto_cover:
+                auditing_backend.generate(
+                    "classify", self.rendered([0, 1, 2]),
+                    response_format=auditing_backend._classification_response_format,
+                )
+            return result
+
+        return wp.analyze_ad_detections(
+            self.ads(detector_with_coverage), backend, self.segments, 100.0, **kwargs
+        ), backend
+
+    def test_exhausted_singleton_is_unresolved_not_a_clean_no_ads_result(self):
+        def detector(_segments, backend):
+            self.classifier(backend, [0])
+            return []
+
+        with self.assertRaises(wp.WorkerError) as raised:
+            self.analysis(detector, ["not json", "still not json"])
+        self.assertEqual(raised.exception.code, "ads-classification-unresolved")
+
+    def test_corrected_and_split_classification_has_resolved_coverage(self):
+        def detector(_segments, backend):
+            first = self.classifier(backend, [0, 1])
+            self.assertEqual(first, "still not json")
+            left, _ = backend.generate("classify", self.rendered([0]), response_format=backend._classification_response_format)
+            right, _ = backend.generate("classify", self.rendered([1]), response_format=backend._classification_response_format)
+            self.assertEqual(left, '{"ads":[]}')
+            self.assertEqual(right, '{"ads":[[1,"sponsor_read"]]}')
+            return [FakeAd(10.0, 20.0)]
+
+        analysis, _backend = self.analysis(
+            detector,
+            ["not json", "still not json", '{"ads":[]}', '{"ads":[[1,"sponsor_read"]]}'],
+        )
+        self.assertEqual(analysis.audit.unresolved_ids, ())
+        self.assertEqual(len(analysis.detections), 1)
+
+    def test_corrective_response_has_resolved_coverage(self):
+        def detector(_segments, backend):
+            self.classifier(backend, [0])
+            return []
+
+        analysis, _backend = self.analysis(detector, ["not json", '{"ads":[]}'])
+        self.assertEqual(analysis.audit.unresolved_ids, ())
+
+    def test_an_independently_failed_window_remains_unresolved(self):
+        def detector(_segments, backend):
+            self.classifier(backend, [0])
+            backend.generate("classify", self.rendered([1]), response_format=backend._classification_response_format)
+            return []
+
+        with self.assertRaises(wp.WorkerError) as raised:
+            self.analysis(detector, ["bad", "bad", '{"ads":[]}'])
+        self.assertEqual(raised.exception.code, "ads-classification-unresolved")
+        self.assertIn("0", str(raised.exception))
+
+    def test_observed_diagnostics_do_not_claim_archive_filter_state(self):
+        def detector(_segments, backend):
+            backend.generate("classify", self.rendered([0], truncated=True), response_format=backend._classification_response_format)
+            backend.generate("classify", self.rendered([0]), response_format=backend._classification_response_format)
+            return []
+
+        analysis, _backend = self.analysis(
+            detector,
+            ['{"ads":[[0,"sponsor_read"]]}', '{"ads":[]}'],
+        )
+        candidates = {candidate.kind: candidate for candidate in analysis.audit.candidates}
+        self.assertEqual(
+            set(candidates),
+            {"positive-missing-final-span", "request-disagreement", "visible-truncation"},
+        )
+        self.assertNotIn("sparse", " ".join(candidate.detail for candidate in candidates.values()).lower())
+
+    def test_adaptation_is_disabled_by_default_and_budgeted_when_explicit(self):
+        def detector(_segments, backend):
+            backend.generate("classify", self.rendered([1]), response_format=backend._classification_response_format)
+            return []
+
+        analysis, backend = self.analysis(detector, ['{"ads":[[1,"sponsor_read"]]}'])
+        self.assertEqual(len(backend.calls), 2)
+        self.assertEqual(analysis.audit.speculative_cuts, ())
+        candidate = analysis.audit.candidates[0]
+
+        experimental, experimental_backend = self.analysis(
+            detector,
+            ['{"ads":[[1,"sponsor_read"]]}', '{"ad_ids":[1]}', '{"programme_ids":[0,2]}'],
+            experimental_candidates=[candidate],
+            experimental_max_additional_model_calls=2,
+        )
+        self.assertEqual(experimental.audit.speculative_cuts[0]["ids"], (1,))
+        self.assertEqual(experimental.audit.experimental_requests, 2)
+        self.assertEqual(len(experimental_backend.calls), 4)
+
+    def test_incomplete_adaptation_returns_no_speculative_cut(self):
+        def detector(_segments, backend):
+            backend.generate("classify", self.rendered([1]), response_format=backend._classification_response_format)
+            return []
+
+        report, _unused_backend = self.analysis(
+            detector,
+            ['{"ads":[[1,"sponsor_read"]]}'],
+            experimental_candidates=[wp.AuditCandidate("unobserved", (1,), "missing evidence")],
+            experimental_max_additional_model_calls=1,
+        )
+        self.assertEqual(report.audit.speculative_cuts, ())
+        self.assertIsNotNone(report.audit.incomplete_error)
+
+    def test_adaptation_over_budget_returns_no_speculative_cut(self):
+        def detector(_segments, backend):
+            backend.generate("classify", self.rendered([1]), response_format=backend._classification_response_format)
+            return []
+
+        baseline, _backend = self.analysis(detector, ['{"ads":[[1,"sponsor_read"]]}'])
+
+        report, _backend = self.analysis(
+            detector,
+            ['{"ads":[[1,"sponsor_read"]]}'],
+            experimental_candidates=[baseline.audit.candidates[0]],
+            experimental_max_additional_model_calls=1,
+        )
+        self.assertEqual(report.audit.speculative_cuts, ())
+        self.assertIn("budget", report.audit.incomplete_error)
+        self.assertEqual(len(_backend.calls), 2, "budget refusal must occur before experimental inference")
+
+    def test_unknown_classifier_shape_and_schema_fail_closed(self):
+        def unknown_prompt(_segments, backend):
+            try:
+                backend.generate("new classification format", self.rendered([0]))
+            except wp.WorkerError:
+                pass
+            return []
+
+        with self.assertRaises(wp.WorkerError) as raised:
+            self.analysis(unknown_prompt, [])
+        self.assertEqual(raised.exception.code, "ads-audit-contract-unavailable")
+
+        def wrong_schema(_segments, backend):
+            try:
+                backend.generate("classify", self.rendered([0]), response_format={"type": "json_object"})
+            except wp.WorkerError:
+                pass
+            return []
+
+        with self.assertRaises(wp.WorkerError) as raised:
+            self.analysis(wrong_schema, [])
+        self.assertEqual(raised.exception.code, "ads-audit-contract-unavailable")
+
+    def test_unrelated_boundary_prompt_is_allowed_but_cannot_replace_classifier_coverage(self):
+        def detector(_segments, backend):
+            response, _ = backend.generate(
+                "BOUNDARY review",
+                self.rendered([0]),
+                response_format={"field": "program_id", "ids": [0]},
+            )
+            self.assertEqual(response, '{"program_id":0}')
+            return []
+
+        with self.assertRaises(wp.WorkerError) as raised:
+            self.analysis(detector, ['{"program_id":0}'], auto_cover=False)
+        self.assertEqual(raised.exception.code, "ads-classification-incomplete")
+
+    def test_partial_valid_coverage_fails_with_missing_global_ids(self):
+        def detector(_segments, backend):
+            backend.generate("classify", self.rendered([0]), response_format=backend._classification_response_format)
+            return []
+
+        with self.assertRaises(wp.WorkerError) as raised:
+            self.analysis(detector, ['{"ads":[]}'], auto_cover=False)
+        self.assertEqual(raised.exception.code, "ads-classification-incomplete")
+        self.assertIn("1, 2", str(raised.exception))
+
+    def test_invalid_experimental_answer_returns_no_arbitrary_cut(self):
+        def detector(_segments, backend):
+            backend.generate("classify", self.rendered([1]), response_format=backend._classification_response_format)
+            return []
+
+        baseline, _backend = self.analysis(detector, ['{"ads":[[1,"sponsor_read"]]}'])
+        report, _backend = self.analysis(
+            detector,
+            ['{"ads":[[1,"sponsor_read"]]}', '{"ad_ids":[99]}'],
+            experimental_candidates=[baseline.audit.candidates[0]],
+            experimental_max_additional_model_calls=2,
+        )
+        self.assertEqual(report.audit.speculative_cuts, ())
+        self.assertIn("incomplete", report.audit.incomplete_error)
+        self.assertEqual(report.audit.experimental_requests, 1)
+
+    def test_experimental_nonfinite_duration_and_oversized_context_fail_before_calls(self):
+        class Backend:
+            calls = 0
+
+            def generate(self, *_args, **_kwargs):
+                self.calls += 1
+                raise AssertionError("unsafe experimental input reached inference")
+
+        candidate = wp.AuditCandidate("visible-truncation", (1,), "bounded evidence")
+        audit = wp.AdAnalysisAudit(candidates=(candidate,))
+        backend = Backend()
+        result = wp._experimental_speculative_cuts(audit, backend, self.segments, float("inf"), [candidate], 2)
+        self.assertEqual((backend.calls, result.speculative_cuts), (0, ()))
+
+        segments = [FakeSegment(float(i), float(i + 1), f"cue {i}") for i in range(70)]
+        candidate = wp.AuditCandidate("visible-truncation", tuple(range(1, 65)), "bounded evidence")
+        audit = wp.AdAnalysisAudit(candidates=(candidate,))
+        backend = Backend()
+        result = wp._experimental_speculative_cuts(audit, backend, segments, 1000.0, [candidate], 2)
+        self.assertEqual((backend.calls, result.speculative_cuts), (0, ()))
+        self.assertIn("context ID budget", result.incomplete_error)
+
+    def test_duplicate_and_out_of_range_rendered_ids_fail_closed(self):
+        for ids in ([0, 0], [99]):
+            with self.subTest(ids=ids):
+                def detector(_segments, backend, ids=ids):
+                    try:
+                        backend.generate("classify", self.rendered(ids), response_format=backend._classification_response_format)
+                    except wp.WorkerError:
+                        pass
+                    return []
+
+                with self.assertRaises(wp.WorkerError) as raised:
+                    self.analysis(detector, [])
+                self.assertEqual(raised.exception.code, "ads-audit-contract-unavailable")
+
 
 class AdCorpusReplayWiringTests(unittest.TestCase):
     """The replay path, with the model stubbed out.
