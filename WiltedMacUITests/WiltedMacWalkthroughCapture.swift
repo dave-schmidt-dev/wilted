@@ -168,6 +168,22 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         element(app, "wilted-navigation-settings").click()
         XCTAssertTrue(element(app, "wilted-sync-controls").waitForExistence(timeout: 10))
         try write(app, "8.1-settings-with-playback", into: root)
+
+        // The one settings state that refuses work. Ad removal is timed from
+        // an aligned local pass, so pairing it with No local speech-to-text
+        // makes every preparation fail before any model time is spent, and
+        // neither control is disabled or rewritten -- the notice is all the
+        // owner gets, which is why the walkthrough shows it rather than
+        // describing it. A fixture launch has its own defaults domain, so
+        // driving the picker here cannot reach the owner's own choice.
+        let transcriptPolicy = element(app, "wilted-automation-transcript-policy")
+        XCTAssertTrue(transcriptPolicy.waitForExistence(timeout: 10))
+        transcriptPolicy.click()
+        let noLocalSTT = app.menuItems["No local speech-to-text"]
+        XCTAssertTrue(noLocalSTT.waitForExistence(timeout: 10))
+        noLocalSTT.click()
+        XCTAssertTrue(element(app, "wilted-automation-transcript-conflict").waitForExistence(timeout: 10))
+        try write(app, "8.2-settings-transcript-conflict", into: root)
         app.terminate()
     }
 

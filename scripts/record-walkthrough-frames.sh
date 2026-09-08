@@ -24,6 +24,22 @@ trap 'rm -rf "$tmp_root"' EXIT
 
 status() { printf '%s\n' "$*" >&2; }
 
+# The same preflight the native gate's UI leg runs, for the same reason and one
+# more. XCUITest cannot bring an application forward while the login session is
+# locked, and against a locked screen the symptoms name everything except the
+# lock: controls report present but `isHittable == false`, window frames land
+# across display boundaries, and audio playback fails with the app's own
+# "Audio route recovery failed." Measured 2026-09-07, eight capture runs spent
+# on those symptoms before the lock was found.
+screen_is_locked() {
+  ioreg -n Root -d1 -a 2>/dev/null | grep -A 1 'CGSSessionScreenIsLocked' | grep -q '<true/>'
+}
+
+if screen_is_locked; then
+  status 'capture.failed: the screen is locked; unlock the Mac and rerun'
+  exit 1
+fi
+
 [[ "$development_team" =~ ^[A-Z0-9]{10}$ ]] ||
   { status 'WILTED_DEVELOPMENT_TEAM must be a ten-character Apple team identifier'; exit 1; }
 
@@ -64,7 +80,7 @@ start_marker="$tmp_root/start"
 : >"$start_marker"
 
 status 'capture.start suite=WiltedMacUITests/WiltedMacWalkthroughCapture'
-xcodebuild test \
+caffeinate -disu xcodebuild test \
   -project "$root/Wilted.xcodeproj" \
   -scheme WiltedMac \
   -destination 'platform=macOS' \

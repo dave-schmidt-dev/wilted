@@ -213,9 +213,13 @@ def build(captures, commit, date_iso, date_human, previous):
             "<code>wilted-player-next</code>, <code>wilted-player-restart</code>, "
             "<code>wilted-player-mark-completed</code>, and <code>wilted-player-scrubber</code>. Restart and "
             "Mark completed sit together because they are the same kind of decision about the whole episode "
-            "rather than about the playhead: start it over, or close it out. Marking writes the same finished "
-            "record that reaching the end writes, and deliberately does not advance to the next episode; the "
-            "button then reads Completed and is unavailable, which is the only thing on the row that changes. "
+            "rather than about the playhead: start it over, or close it out. Marking does two things: it writes "
+            "the same finished record that reaching the end writes, and it retires the episode from the "
+            "Larder. It deliberately does not advance to the next episode. The button reads Completed and "
+            "is unavailable only once both have happened -- an episode marked finished but still on the "
+            "shelf, which is what a failed dismissal or a completion synced from the iPhone leaves behind, "
+            "keeps reading Mark completed and stays live, and pressing it retires the row without "
+            "rewriting the record. An article settles on the record alone, having no Larder retirement. "
             "The speed control opens at the last chosen rate, 1.25x on a fresh install, and keeps whatever is "
             "chosen across relaunch. Where the item has no artwork the rail shows the produce tile its row "
             "does.",
@@ -303,6 +307,19 @@ def build(captures, commit, date_iso, date_human, previous):
             "reads Disabled with the detail &ldquo;Sync is not configured.&rdquo;, producer identity "
             "Unavailable, and last fetch and last send Not yet. Refresh and Upload are rendered disabled in "
             "this state.",
+            captures),
+        "settings-conflict": figure(
+            "fig-settings-transcript-conflict", "8.2-settings-transcript-conflict",
+            "Podcast automation showing the transcript source set to No local speech-to-text with Remove ads on, "
+            "and the notice that explains why nothing will prepare",
+            "<strong>8.2 Settings, the one automation pair that refuses work.</strong> Ad removal is timed from a "
+            "local pass aligned to this audio and never from a publisher's cues, so choosing "
+            "<em>No local speech-to-text</em> while <em>Remove ads</em> is on makes the worker refuse every "
+            "preparation before it spends any model time. Neither control is disabled and neither is silently "
+            "rewritten: a configuration saved before removal required the aligned pass is a legitimate file, and "
+            "turning removal off on the owner's behalf would quietly stop cutting advertisements. "
+            "<code>wilted-automation-transcript-conflict</code> appears under the toggle for that pair only, "
+            "naming the effect first and then both ways out.",
             captures),
         "download": figure(
             "fig-download-recovery", "9.1-download-failure-retry",
@@ -410,6 +427,7 @@ def build(captures, commit, date_iso, date_human, previous):
 <section id="settings"><h2>8. Settings</h2>
 <p>Settings holds appearance, podcast automation policy, opt-in sync, and the account-review recovery path.</p>
 {figures["settings"]}
+{figures["settings-conflict"]}
 </section>
 
 <section id="recovery"><h2>9. Download and recovery states</h2>
