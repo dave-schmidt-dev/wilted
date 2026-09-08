@@ -916,10 +916,12 @@ final class WiltedMacSmokeUITests: XCTestCase {
     /// walkthrough had been documenting a faulted player and only the last frame
     /// said so.
     ///
-    /// The second cause is separate and still open: after Transcript or Up Next
-    /// is expanded and collapsed, clicks on the Larder rows underneath stop
-    /// landing. That is tracked on its own, with this test's shape as the
-    /// reproduction.
+    /// A second finding from the same capture is still open and is probably not
+    /// an app defect: after Transcript or Up Next was expanded and collapsed, a
+    /// click on a Larder row did not land. Expanding either one replaces the
+    /// pane with the full-window player, where those rows are correctly
+    /// disabled, so the likeliest reading is that the capture never got back to
+    /// Larder. Tracked on its own, with this test's shape as the starting point.
     func testThePlayingFixtureComesUpWithoutAnAudioFault() {
         let app = launch(arguments: ["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts"])
         XCTAssertTrue(app.descendants(matching: .any)["wilted-player-play-pause"]

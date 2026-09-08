@@ -144,12 +144,15 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
 
         // Notes exist only for an episode, so this frame comes from the
         // podcast fixture's episode rather than the playing article -- and from
-        // a launch of its own. Starting an episode from the Larder rows after
-        // the panels above have been expanded and collapsed does not work:
-        // the row's play button reports hittable, the geometry is unchanged,
-        // and the click lands on nothing. That is tracked as its own defect;
-        // relaunching keeps the capture measuring what it is for, which is what
-        // the rail looks like, rather than failing on an unrelated bug.
+        // a launch of its own. Clicking a Larder row after the panels above
+        // have been expanded and collapsed did not work: the play button
+        // reported hittable and the click landed on nothing. Frame 6.3 shows
+        // why that is probably this suite's fault rather than the app's --
+        // expanding Up Next replaces the whole pane with the full-window
+        // player, where the rows behind are correctly disabled -- so the
+        // second click may never have returned here at all. Relaunching keeps
+        // the capture measuring the rail either way; the open question is
+        // tracked separately.
         let episodeApp = launch(["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts"])
         XCTAssertTrue(element(episodeApp, "wilted-player-play-pause").waitForExistence(timeout: 15))
         let playEpisode = episodeApp.descendants(matching: .any).matching(
