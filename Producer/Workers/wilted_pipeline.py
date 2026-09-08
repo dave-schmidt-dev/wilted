@@ -66,6 +66,19 @@ EXPLICIT_SUPPORT_OPENING_COMPATIBILITY_PATTERN = (
     r"(?:\bsupport\s+for\s+(?:the|this)\s+show\s+comes\s+from\b|"
     rf"{MISSING_SUPPORT_SPONSOR_COMPATIBILITY_PATTERN}\b)"
 )
+# A host read does not have to announce itself. Practical AI's Framer read
+# opens "that's why i appreciate so much what our partner framer is doing" --
+# no "brought to you by", no "today's sponsor", nothing any anchor here knew,
+# and the classifier called all four cues content with the vanity URL and the
+# discount in full view. "Our partner" is the naming, and it is general sponsor
+# language rather than one show's phrasing. It is safe to anchor on because an
+# anchor only nominates: the recovery pass still requires two independent
+# signals afterwards -- a spoken address, a call to action, or the sponsor's own
+# name coming back -- which is what separates a read from an interview guest
+# mentioning a business partner once.
+PARTNER_SPONSOR_OPENING_COMPATIBILITY_PATTERN = (
+    r"\bour\s+partners?\s+(?:at\s+)?(?=[a-z0-9])"
+)
 
 # Legal boilerplate only produced advertising reads aloud. The archived
 # detector discards a one- or two-segment flagged run that carries no price,
@@ -2218,7 +2231,9 @@ def explicit_sponsor_opening_pattern(ads_module):
     """Build the worker-only anchor pattern without widening archive detection."""
     archive_opening_pattern = ads_module._EXPLICIT_HOST_READ_OPENING_RE  # noqa: SLF001
     return re.compile(
-        f"(?:{archive_opening_pattern.pattern})|{EXPLICIT_SUPPORT_OPENING_COMPATIBILITY_PATTERN}",
+        f"(?:{archive_opening_pattern.pattern})"
+        f"|{EXPLICIT_SUPPORT_OPENING_COMPATIBILITY_PATTERN}"
+        f"|{PARTNER_SPONSOR_OPENING_COMPATIBILITY_PATTERN}",
         archive_opening_pattern.flags,
     )
 

@@ -1878,6 +1878,53 @@ class ExplicitSponsorFallbackTests(unittest.TestCase):
         self.assertIsNone(wp.EXPLICIT_SPONSOR_SPOKEN_PATH_RE.search("he is a writer slash producer"))
         self.assertIsNone(wp.EXPLICIT_SPONSOR_LITERAL_DOMAIN_RE.search("we talked about that yesterday"))
 
+    def test_a_partner_named_mid_sentence_is_recovered(self):
+        # Practical AI's Framer read, as the aligned transcript actually carries
+        # it. Nothing announces the read: it opens inside a sentence about being
+        # a business owner and names the sponsor as "our partner". Every window
+        # covering it classified all four cues as content with the vanity URL and
+        # the discount in plain view, so the anchor is the only thing left.
+        segments = [
+            FakeSegment(1117.52, 1137.70, "that's why i appreciate so much what our partner framer is doing framer is the"),
+            FakeSegment(1137.70, 1157.80, "pro website builder for creators teams and businesses that want a professional site"),
+            FakeSegment(1157.80, 1166.30, "you can learn more about framer"),
+            FakeSegment(1166.90, 1186.92, "get started building for free today at framer dot com slash practical ai for thirty percent off"),
+            FakeSegment(1186.92, 1194.80, "so that is super cool i'm going to borrow those techniques myself"),
+        ]
+        spans, _events = self.detect(segments, [])
+        self.assertEqual(
+            spans,
+            [{"startSeconds": 1117.52, "endSeconds": 1186.92, "label": "sponsor_read", "confidence": 1.0}],
+        )
+
+    def test_a_business_partner_named_in_conversation_is_not_a_read(self):
+        # "Our partner" is ordinary speech as well as sponsor language, which is
+        # why anchoring on it is only safe while the recovery still demands its
+        # two independent signals. A company discussed at length is a company
+        # being discussed.
+        segments = [
+            FakeSegment(0.0, 10.0, "we built that integration with our partner northwind logistics last year"),
+            FakeSegment(10.0, 20.0, "northwind logistics had run into exactly the same problem we did"),
+            FakeSegment(20.0, 30.0, "northwind logistics eventually solved it in house"),
+            FakeSegment(30.0, 40.0, "anyway back to the architecture question"),
+        ]
+        spans, _events = self.detect(segments, [])
+        self.assertEqual(spans, [])
+
+    def test_the_partner_anchor_names_the_sponsor_and_needs_one(self):
+        ads = install_fake_ads(FakeLLM())
+        wp.install_legacy_sponsor_opening_compatibility(ads)
+        pattern = wp.explicit_sponsor_opening_pattern(ads)
+        self.assertIn(
+            "framer",
+            wp.explicit_sponsor_name_phrases(
+                "what our partner framer is doing framer is the", pattern
+            ),
+        )
+        # An anchor with nothing after it names nobody, so it can raise no
+        # recurrence evidence and cannot carry a recovery on its own.
+        self.assertEqual(wp.explicit_sponsor_name_phrases("thanks to our partner", pattern), [])
+
     def test_already_covered_explicit_anchor_does_not_add_a_cut(self):
         segments = [
             FakeSegment(100.0, 110.0, "this week in tech brought to you this week by claud"),
