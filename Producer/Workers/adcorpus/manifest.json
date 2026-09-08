@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "operation": "detect-and-cut",
-  "provenance": "Ground truth labelled by hand on 2026-09-05 from two detector failures David reported the same day. Timings are read from the aligned-STT cache entry the detector itself consumed, so a replay sees byte-identical input. No podcast prose or audio is stored here: each case points at a cache entry by sourceHash and the harness resolves it locally at run time. `audioDurationSeconds` is what the detector's own `probe_duration` saw: preparation overwrites the download in place, so it is derived as the cut file's measured duration plus the spans the run removed, rather than probed from an original that no longer exists.",
+  "provenance": "Ground truth labelled by hand on 2026-09-05 from two detector failures David reported the same day, and extended on 2026-09-07 with the Amazon Prime span the review named as an evaluation gap, per-case `provenance`, and a top-level `gaps` inventory of reviewed incidents that have no case because their input or labels no longer exist. Timings are read from the aligned-STT cache entry the detector itself consumed, so a replay sees byte-identical input. No podcast prose or audio is stored here: each case points at a cache entry by sourceHash and the harness resolves it locally at run time. `audioDurationSeconds` is what the detector's own `probe_duration` saw: preparation overwrites the download in place, so it is derived as the cut file's measured duration plus the spans the run removed, rather than probed from an original that no longer exists.",
   "license": "MIT",
   "labels": {
     "must-cut": "Advertising. The detector is wrong if it leaves any of this in.",
