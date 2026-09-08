@@ -46,10 +46,15 @@ ad-corpus:
 # the original run consumed, so a candidate fix can be measured without
 # re-preparing anything. Loads the GGUF model and takes minutes; it takes the
 # same GPU admission lock a preparation takes, so running it while the app is
-# working queues rather than contends.
+# working queues rather than contends. `--strict` because this is the mode a
+# candidate fix is judged in: a case whose cached transcript is missing here
+# measured nothing, and a corpus that silently shrinks to whatever this machine
+# holds is how a fix gets called good. `ad-corpus` stays lenient -- it reads
+# mutable library state and a machine that has prepared neither episode should
+# still be able to run it and read the report.
 # The archive's interpreter, not the system one, and resolved from the same
 # variable Swift resolves it from: the model bindings the detector imports live
 # in that virtualenv and nowhere else.
 ad-corpus-replay:
 	@"$${WILTED_PIPELINE_PYTHON:-$$HOME/Documents/Projects/wilted-old/.venv/bin/python}" \
-		Producer/Workers/ad_corpus.py --mode replay
+		Producer/Workers/ad_corpus.py --mode replay --strict

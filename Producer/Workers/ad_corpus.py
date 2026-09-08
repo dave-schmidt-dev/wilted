@@ -20,8 +20,13 @@ GGUF model and takes minutes, so it is opt-in and never in the gate.
 
 Scoring is asymmetric on purpose. Leaving an advertisement in is an annoyance;
 removing programme content destroys something the listener wanted and cannot
-get back from the cut file. `must-keep` is therefore scored to a tight
-tolerance and `must-cut` to a coverage fraction.
+get back from the cut file. `must-keep` is therefore bounded twice, per span
+and across the episode, while `must-cut` is bounded once.
+
+Both labels are measured against the *union* of the produced cuts. Two
+overlapping nominations for one spot are one removal, and summing them would
+have reported a thirty-second spot as sixty seconds removed -- coverage above
+100% and programme loss above what was lost.
 """
 
 from __future__ import annotations
@@ -55,10 +60,30 @@ DEFAULT_ARCHIVE_SOURCES = Path.home() / "Documents" / "Projects" / "wilted-old" 
 # seconds; nothing this tolerance forgives is a defect anyone would notice.
 KEEP_TOLERANCE_SECONDS = 1.0
 
-# An advertisement is "found" when most of it is gone. Requiring every second
-# would fail a fix that trims a spot's last breath, which is not the failure
-# mode worth guarding.
-CUT_COVERAGE_FLOOR = 0.75
+# The same slack in the other direction, a second at each edge, and for the
+# same reason: both boundaries land on cue edges and both can round. A fraction
+# would have been the wrong shape -- three quarters of a sixty-second read
+# leaves fifteen seconds of advertising playing, which is the failure being
+# measured, not a rounding error. An advertisement is removed when what is left
+# of it is an edge. Two seconds rather than one because at one second the saved
+# Waveform closing break fails on a 1.2s leading remnant that is a cue edge, not
+# advertising anyone hears: the number was widened after seeing that run, which
+# is worth knowing when reading a verdict it produces.
+CUT_REMNANT_TOLERANCE_SECONDS = 2.0
+
+# Per-span tolerance forgives rounding once. Twenty spans each losing nine
+# tenths of a second is a sentence gone from every break in the episode, and
+# every one of them passes. This bounds the total. Five seconds because the
+# smallest loss anyone has reported noticing is the twenty-second Pop Culture
+# Happy Hour premise, and a whole spoken sentence is a few seconds: below this
+# the aggregate would fire on rounding, above it the losses stop being edges.
+# Chosen here, not measured from a reported failure.
+KEEP_LOSS_BUDGET_SECONDS = 5.0
+
+# Cut time that falls in no labelled region is neither right nor wrong -- the
+# labels simply do not reach it. Past this much of it, the case's verdict is
+# reported as partial, because most of what the detector did went unmeasured.
+UNKNOWN_CUT_TOLERANCE_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -96,10 +121,70 @@ class CaseVerdict:
     spans: list[SpanVerdict] = field(default_factory=list)
     produced: list[Span] = field(default_factory=list)
     skipped: bool = False
+    # Programme seconds removed across every `must-keep` span, which is what
+    # the aggregate budget is measured against.
+    keep_loss_seconds: float = 0.0
+    # Cut time that lands in no labelled region at all. Neither a pass nor a
+    # failure: the labels do not reach it, and saying so is the honest report.
+    unknown_cut_seconds: float = 0.0
+    # How much of the episode carries any label. Both manifest cases label
+    # their openings closely and leave the middle alone, so a verdict of
+    # "every labelled span is where it should be" covers less than it sounds.
+    labelled_coverage: float = 0.0
+    coverage_complete: bool = True
+    audit: dict | None = None
+
+
+class ReplayRefused(RuntimeError):
+    """The worker refused to produce an analysis, carrying its refusal code.
+
+    A refusal is a measurement, not a crash: it is the pipeline declining to
+    guess. Raised as its own type so `run` can record which case refused and
+    why without importing the worker at module scope.
+    """
+
+    def __init__(self, code: str, message: str):
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.detail = message
 
 
 def load_manifest(path: Path = MANIFEST) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def union_spans(spans) -> list[Span]:
+    """The same seconds, counted once, in order.
+
+    The detector nominates spans and the recovery passes add more; two of them
+    covering one advertisement is normal. Overlap is only double counting.
+    """
+    merged: list[Span] = []
+    for span in sorted(spans, key=lambda item: (item.start, item.end)):
+        if merged and span.start <= merged[-1].end:
+            if span.end > merged[-1].end:
+                merged[-1] = Span(merged[-1].start, span.end)
+        else:
+            merged.append(span)
+    return merged
+
+
+def _invalid_interval(span: Span, total: float | None) -> str | None:
+    """Why this produced interval cannot be scored, or None if it can.
+
+    A cut the arithmetic cannot make sense of has to be named rather than
+    absorbed: silently ignoring it reports the episode as clean.
+    """
+    for name, value in (("start", span.start), ("end", span.end)):
+        if value != value or value in (float("inf"), float("-inf")):
+            return f"{name} is not a finite number"
+    if span.end <= span.start:
+        return "ends at or before it starts"
+    if span.start < 0.0:
+        return "starts before the audio does"
+    if total is not None and span.start >= total:
+        return f"starts after the {total:.1f}s episode ends"
+    return None
 
 
 def score_case(case: dict, produced: list[Span]) -> CaseVerdict:
@@ -110,13 +195,40 @@ def score_case(case: dict, produced: list[Span]) -> CaseVerdict:
     """
     verdicts: list[SpanVerdict] = []
     failures: list[str] = []
+    total = float(case["audioDurationSeconds"]) if "audioDurationSeconds" in case else None
+
+    malformed = [
+        f"cut {span.start}-{span.end} {why}"
+        for span in produced
+        for why in [_invalid_interval(span, total)]
+        if why is not None
+    ]
+    if malformed:
+        # Refused rather than scored around. An interval the arithmetic cannot
+        # read makes every number below it meaningless, and reporting a clean
+        # episode off one is worse than reporting nothing.
+        return CaseVerdict(
+            case_id=case["id"], show=case["show"], passed=False,
+            reason="; ".join(malformed), produced=produced,
+        )
+
+    cuts = union_spans(produced)
+    keep_loss = 0.0
 
     for expected in case["expected"]:
         span = Span(float(expected["start"]), float(expected["end"]))
         label = expected["label"]
-        shared = sum(span.overlap(cut) for cut in produced)
+        # Scored against the part of the label that is inside the audio. Labels
+        # are read off cue edges and the transcript can run past the probed
+        # duration -- Waveform's closing break is labelled 2.5s beyond the end
+        # of its own file -- and counting seconds that do not exist as
+        # advertising left playing is measuring the transcript, not the cut.
+        scored = _clamped([span], total)
+        scored_span = scored[0] if scored else Span(span.start, span.start)
+        shared = sum(scored_span.overlap(cut) for cut in cuts)
 
         if label == "must-keep":
+            keep_loss += shared
             passed = shared <= KEEP_TOLERANCE_SECONDS
             note = (
                 f"{shared:.1f}s of programme removed"
@@ -126,13 +238,12 @@ def score_case(case: dict, produced: list[Span]) -> CaseVerdict:
             if not passed:
                 failures.append(f"lost {shared:.1f}s of programme at {span.start:.1f}s")
         elif label == "must-cut":
-            covered = shared / span.seconds if span.seconds else 0.0
-            passed = covered >= CUT_COVERAGE_FLOOR
-            note = f"{covered:.0%} of the advertisement removed"
+            remnant = scored_span.seconds - shared
+            covered = shared / scored_span.seconds if scored_span.seconds else 0.0
+            passed = remnant <= CUT_REMNANT_TOLERANCE_SECONDS
+            note = f"{covered:.0%} of the advertisement removed, {remnant:.1f}s left"
             if not passed:
-                failures.append(
-                    f"left {span.seconds - shared:.1f}s of advertising at {span.start:.1f}s"
-                )
+                failures.append(f"left {remnant:.1f}s of advertising at {span.start:.1f}s")
         elif label == "acceptable-cut":
             # Deliberately unscored. Recorded so a reader can see what happened
             # to it without the harness taking a side David has not taken.
@@ -146,6 +257,23 @@ def score_case(case: dict, produced: list[Span]) -> CaseVerdict:
                         overlap_seconds=shared, passed=passed, note=note)
         )
 
+    if keep_loss > KEEP_LOSS_BUDGET_SECONDS:
+        failures.append(
+            f"lost {keep_loss:.1f}s of programme across the episode"
+            f" (budget {KEEP_LOSS_BUDGET_SECONDS:.1f}s)"
+        )
+
+    labelled = union_spans(
+        Span(float(entry["start"]), float(entry["end"])) for entry in case["expected"]
+    )
+    unknown = sum(
+        max(0.0, cut.seconds - sum(cut.overlap(region) for region in labelled))
+        for cut in _clamped(cuts, total)
+    )
+    labelled_coverage = (
+        sum(region.seconds for region in _clamped(labelled, total)) / total if total else 0.0
+    )
+
     return CaseVerdict(
         case_id=case["id"],
         show=case["show"],
@@ -153,7 +281,19 @@ def score_case(case: dict, produced: list[Span]) -> CaseVerdict:
         reason="; ".join(failures) if failures else "every labelled span is where it should be",
         spans=verdicts,
         produced=produced,
+        keep_loss_seconds=keep_loss,
+        unknown_cut_seconds=unknown,
+        labelled_coverage=labelled_coverage,
+        coverage_complete=unknown <= UNKNOWN_CUT_TOLERANCE_SECONDS,
     )
+
+
+def _clamped(spans, total: float | None) -> list[Span]:
+    """The spans inside the episode. A cut to end-of-file overhangs the probe."""
+    if total is None:
+        return list(spans)
+    inside = [Span(max(0.0, s.start), min(total, s.end)) for s in spans]
+    return [s for s in inside if s.seconds > 0.0]
 
 
 def recorded_spans(case: dict, *, library: Path) -> list[Span] | None:
@@ -215,13 +355,19 @@ def archive_sources() -> Path:
     return Path(override) if override else DEFAULT_ARCHIVE_SOURCES
 
 
-def replay_spans(case: dict, *, cache: Path) -> list[Span] | None:
+def replay_spans(case: dict, *, cache: Path):
     """Re-run the live detector over this case's cached segments.
 
-    Imports through `wilted_pipeline` so every compatibility shim and recovery
-    pass the real preparation installs is installed here too. A replay that
-    reached `wilted.ads` directly would measure a detector the app does not
-    ship.
+    Returns the spans it produced and the serialized audit that travels with
+    every live analysis, or None when this machine has no cached transcript
+    for the case.
+
+    The judgement, the safeguards and the refusals all come from
+    `analyze_ad_detections`, which is the same call `detect_and_cut` makes. The
+    corpus deliberately owns none of it: a replay that assembled the passes
+    itself would drift from the app one edit at a time, and it drifted already
+    -- it was missing the coverage refusals and the dropped-anchor audit, so it
+    could score a run the app would have refused outright.
     """
     segments = cached_segments(case, cache=cache)
     if segments is None:
@@ -274,33 +420,23 @@ def replay_spans(case: dict, *, cache: Path) -> list[Span] | None:
             (lock or contextlib.nullcontext()):
         backend = llm_module.create_backend("gguf", model=model)
         backend.load()
-        # Wrapped exactly as the worker wraps it, so a replay against a model
-        # that is failing every request reports that instead of "no ads".
-        counting = wp.CountingBackend(backend)
         try:
-            wp.install_legacy_sponsor_opening_compatibility(ads_module)
-            wp.install_produced_disclaimer_evidence(ads_module)
-            detections = ads_module.detect_ads(aligned, counting)
-            detections = wp.recover_unclaimed_explicit_sponsor_reads(
-                ads_module, counting, aligned, detections)
-            detections = wp.recover_transcript_start_preroll(
-                ads_module, counting, aligned, detections)
-            detections = wp.recover_transcript_end_postroll(
-                ads_module, counting, aligned, detections, total)
-            detections = wp.resize_oversized_ad_spans(
-                ads_module, counting, aligned, detections, total)
+            # Handed the raw backend, exactly as `detect_and_cut` hands its own:
+            # the audit wrapper is built inside, so the replay cannot wrap it
+            # differently from the run it is reproducing.
+            analysis = wp.analyze_ad_detections(ads_module, backend, aligned, total)
+        except wp.WorkerError as error:
+            raise ReplayRefused(error.code, str(error)) from error
         finally:
             backend.close()
-    if counting.mostly_failed:
-        raise RuntimeError(
-            f"the model failed {counting.failures} of {counting.calls} requests;"
-            f" this replay measured nothing: {counting.last_error}"
-        )
-    detections = wp.reject_implausible_ad_spans(detections, total)
-    return [Span(float(ad.start_s), float(ad.end_s)) for ad in detections]
+    return (
+        [Span(float(ad.start_s), float(ad.end_s)) for ad in analysis.detections],
+        wp.serialize_ad_audit(analysis.audit),
+    )
 
 
-def run(mode: str, *, library: Path, cache: Path, manifest: Path = MANIFEST) -> list[CaseVerdict]:
+def run(mode: str, *, library: Path, cache: Path, manifest: Path = MANIFEST,
+        strict: bool = False) -> list[CaseVerdict]:
     results: list[CaseVerdict] = []
     for case in load_manifest(manifest)["cases"]:
         if mode == "replay":
@@ -311,18 +447,39 @@ def run(mode: str, *, library: Path, cache: Path, manifest: Path = MANIFEST) -> 
             # say whose turn it is first. Stderr, because stdout carries the
             # report and the `--json` payload.
             print(f"ad-corpus: replaying {case['id']}", file=sys.stderr, flush=True)
-        produced = (
-            recorded_spans(case, library=library) if mode == "recorded"
-            else replay_spans(case, cache=cache)
-        )
-        if produced is None:
+        audit = None
+        try:
+            if mode == "recorded":
+                produced = recorded_spans(case, library=library)
+            else:
+                replayed = replay_spans(case, cache=cache)
+                produced, audit = replayed if replayed is not None else (None, None)
+        except ReplayRefused as refusal:
+            # The pipeline declining to guess is a result, not a crash, and it
+            # belongs against the case that provoked it rather than taking the
+            # rest of the corpus down with it.
             results.append(CaseVerdict(
-                case_id=case["id"], show=case["show"], passed=True, skipped=True,
-                reason=("no preparation for this item in the local library"
-                        if mode == "recorded" else "no cached transcript for this source hash"),
+                case_id=case["id"], show=case["show"], passed=False,
+                reason=f"the worker refused this analysis -- {refusal}",
             ))
             continue
-        results.append(score_case(case, produced))
+        if produced is None:
+            missing = (
+                f"no preparation for {case['itemID']} in {library}" if mode == "recorded"
+                else f"no cached transcript for {case['sourceHash']} in {cache}"
+            )
+            results.append(CaseVerdict(
+                case_id=case["id"], show=case["show"],
+                # Strict is the candidate-measurement mode: a case that did not
+                # run measured nothing, and a corpus that quietly shrinks to the
+                # cases a machine happens to hold is how a fix gets called good.
+                passed=not strict, skipped=not strict,
+                reason=missing if strict else missing + " (skipped)",
+            ))
+            continue
+        verdict = score_case(case, produced)
+        verdict.audit = audit
+        results.append(verdict)
     return results
 
 
@@ -340,12 +497,23 @@ def report(results: list[CaseVerdict]) -> str:
         if result.produced:
             cuts = ", ".join(f"{s.start:.1f}-{s.end:.1f}" for s in result.produced)
             lines.append(f"      detector cut: {cuts}")
+        if result.spans:
+            # Said on every case, passing or not: "every labelled span is where
+            # it should be" is a much smaller claim when the labels cover half
+            # the episode and a minute of cutting happened outside them.
+            lines.append(
+                f"      {result.labelled_coverage:.0%} of the episode is labelled"
+                f", {result.unknown_cut_seconds:.1f}s cut outside those labels"
+                f"{'' if result.coverage_complete else ' -- verdict is partial'}"
+            )
         lines.append("")
     scored = [r for r in results if not r.skipped]
     failed = [r for r in scored if not r.passed]
+    partial = [r for r in scored if not r.coverage_complete]
     lines.append(
         f"ad-corpus: {len(scored) - len(failed)}/{len(scored)} cases pass"
         f", {len(results) - len(scored)} skipped"
+        f", {len(partial)} scored only in part"
     )
     return "\n".join(lines)
 
@@ -356,20 +524,29 @@ def main(argv: list[str] | None = None) -> int:
                         help="score the library's committed cuts, or re-run the live detector")
     parser.add_argument("--library", type=Path, default=DEFAULT_LIBRARY)
     parser.add_argument("--cache", type=Path, default=DEFAULT_ALIGNED_CACHE)
+    parser.add_argument("--strict", action="store_true",
+                        help="require every case to run; a missing input fails rather than skips")
     parser.add_argument("--json", action="store_true", help="machine-readable verdicts")
     args = parser.parse_args(argv)
 
-    results = run(args.mode, library=args.library, cache=args.cache)
+    results = run(args.mode, library=args.library, cache=args.cache, strict=args.strict)
     if args.json:
         print(json.dumps([{
             "case": r.case_id, "passed": r.passed, "skipped": r.skipped, "reason": r.reason,
+            "keepLossSeconds": round(r.keep_loss_seconds, 3),
+            "unknownCutSeconds": round(r.unknown_cut_seconds, 3),
+            "labelledCoverage": round(r.labelled_coverage, 4),
+            "coverageComplete": r.coverage_complete,
             "spans": [{"label": s.label, "start": s.span.start, "end": s.span.end,
                        "passed": s.passed, "note": s.note} for s in r.spans],
+            # The same evidence the live result publishes, so a corpus verdict
+            # can be trusted or distrusted on the same grounds as a preparation.
+            "audit": r.audit,
         } for r in results], indent=2))
     else:
         print(report(results))
-    # A skip is not a pass. It exits zero so a machine without the library can
-    # still run the gate, and says so on the last line either way.
+    # Outside strict mode a skip exits zero, so a machine holding neither the
+    # library nor the cache can still run this and read the report.
     return 1 if any(not r.passed for r in results) else 0
 
 

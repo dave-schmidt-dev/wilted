@@ -22,7 +22,7 @@ import tempfile
 import time
 import types
 import unittest
-from contextlib import contextmanager, redirect_stderr
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
 from unittest import mock
@@ -2912,8 +2912,9 @@ class AdCorpusScoringTests(unittest.TestCase):
     def setUp(self):
         self.corpus = load_ad_corpus()
 
-    def case(self, *expected):
-        return {"id": "case", "show": "Show", "expected": list(expected)}
+    def case(self, *expected, duration=3600.0):
+        return {"id": "case", "show": "Show", "expected": list(expected),
+                "audioDurationSeconds": duration}
 
     def expect(self, label, start, end):
         return {"label": label, "start": start, "end": end, "why": "test"}
@@ -2942,6 +2943,22 @@ class AdCorpusScoringTests(unittest.TestCase):
         verdict = self.score(self.case(self.expect("must-cut", 0.0, 32.0)), [(0.0, 31.0)])
         self.assertTrue(verdict.passed)
 
+    def test_a_second_missed_at_each_end_is_rounding_and_three_seconds_is_not(self):
+        # Both boundaries land on cue edges and both can round, so the slack is
+        # per edge. Past it the listener is hearing advertising, which is the
+        # thing being measured.
+        case = self.case(self.expect("must-cut", 0.0, 32.0))
+        self.assertTrue(self.score(case, [(1.0, 31.0)]).passed)
+        self.assertFalse(self.score(case, [(1.5, 30.5)]).passed)
+
+    def test_a_label_running_past_the_end_of_the_audio_is_scored_where_it_exists(self):
+        # Waveform's closing break is labelled 2.5s beyond the end of its own
+        # file: the transcript's last cue outruns the probed duration. Counting
+        # seconds the file does not contain as advertising left playing would
+        # measure the transcript rather than the cut.
+        case = self.case(self.expect("must-cut", 90.0, 105.0), duration=100.0)
+        self.assertTrue(self.score(case, [(90.0, 100.0)]).passed)
+
     def test_an_advertisement_barely_clipped_does_not_count_as_removed(self):
         verdict = self.score(self.case(self.expect("must-cut", 0.0, 32.0)), [(0.0, 8.0)])
         self.assertFalse(verdict.passed)
@@ -2954,6 +2971,92 @@ class AdCorpusScoringTests(unittest.TestCase):
     def test_an_unknown_label_is_refused_rather_than_silently_passed(self):
         with self.assertRaises(ValueError):
             self.score(self.case(self.expect("probably-fine", 0.0, 10.0)), [])
+
+    def test_overlapping_cuts_score_exactly_as_their_union_does(self):
+        # The detector nominates a span and a recovery pass widens it; two
+        # cuts covering one advertisement is the normal shape of a result.
+        # Summing them reported a ten-second spot as sixteen seconds removed.
+        case = self.case(
+            self.expect("must-cut", 0.0, 10.0),
+            self.expect("must-keep", 10.0, 600.0),
+        )
+        overlapping = self.score(case, [(0.0, 6.0), (3.0, 10.0), (3.0, 10.0), (12.0, 20.0)])
+        union = self.score(case, [(0.0, 10.0), (12.0, 20.0)])
+        self.assertEqual([span.overlap_seconds for span in overlapping.spans],
+                         [span.overlap_seconds for span in union.spans])
+        self.assertEqual(overlapping.keep_loss_seconds, union.keep_loss_seconds)
+        self.assertEqual(overlapping.unknown_cut_seconds, union.unknown_cut_seconds)
+        self.assertEqual(overlapping.passed, union.passed)
+
+    def test_duplicate_cuts_cannot_report_more_of_a_spot_than_there_is(self):
+        verdict = self.score(self.case(self.expect("must-cut", 0.0, 10.0)),
+                             [(0.0, 10.0), (0.0, 10.0), (0.0, 10.0)])
+        self.assertEqual(verdict.spans[0].overlap_seconds, 10.0)
+        self.assertIn("100%", verdict.spans[0].note)
+
+    def test_duplicate_cuts_cannot_hide_programme_loss_either(self):
+        # The same arithmetic in the direction that matters more: without the
+        # union this reports sixty seconds lost from a thirty-second span,
+        # which is a number the episode cannot produce.
+        verdict = self.score(self.case(self.expect("must-keep", 30.0, 60.0)),
+                             [(30.0, 60.0), (30.0, 60.0)])
+        self.assertEqual(verdict.keep_loss_seconds, 30.0)
+
+    def test_a_second_lost_from_every_break_fails_even_though_each_is_forgiven(self):
+        # Per-span tolerance is for rounding and forgives it once. Ten spans
+        # each losing nine tenths of a second is a sentence gone from every
+        # break in the episode, and every one of them passes on its own.
+        expected = [self.expect("must-keep", 100.0 * n, 100.0 * n + 50.0) for n in range(1, 11)]
+        cuts = [(100.0 * n, 100.0 * n + 0.9) for n in range(1, 11)]
+        verdict = self.score(self.case(*expected), cuts)
+        self.assertTrue(all(span.passed for span in verdict.spans))
+        self.assertFalse(verdict.passed)
+        self.assertIn("9.0s of programme across the episode", verdict.reason)
+
+    def test_an_episode_losing_less_than_the_budget_still_passes(self):
+        expected = [self.expect("must-keep", 100.0 * n, 100.0 * n + 50.0) for n in range(1, 4)]
+        cuts = [(100.0 * n, 100.0 * n + 0.9) for n in range(1, 4)]
+        self.assertTrue(self.score(self.case(*expected), cuts).passed)
+
+    def test_an_interval_the_arithmetic_cannot_read_is_named_not_absorbed(self):
+        case = self.case(self.expect("must-cut", 0.0, 10.0))
+        for cuts, expected in (
+            ([(0.0, 10.0), (50.0, 40.0)], "ends at or before it starts"),
+            ([(-5.0, 10.0)], "starts before the audio does"),
+            ([(4000.0, 4100.0)], "starts after the 3600.0s episode ends"),
+            ([(0.0, float("inf"))], "end is not a finite number"),
+            ([(float("nan"), 10.0)], "start is not a finite number"),
+        ):
+            verdict = self.score(case, cuts)
+            self.assertFalse(verdict.passed, cuts)
+            self.assertIn(expected, verdict.reason)
+            # Nothing is scored around it: a malformed cut makes every number
+            # after it meaningless, and a clean report off one is the failure.
+            self.assertEqual(verdict.spans, [])
+
+    def test_a_cut_ending_past_the_probed_duration_is_still_a_cut(self):
+        # The closing review cuts to the end of the file, and the probe and the
+        # transcript disagree by a couple of seconds on a real episode. That
+        # overhang is normal, not a malformed interval.
+        verdict = self.score(self.case(self.expect("must-cut", 3550.0, 3605.0)), [(3550.0, 3605.0)])
+        self.assertTrue(verdict.passed)
+        self.assertEqual(verdict.unknown_cut_seconds, 0.0)
+
+    def test_cutting_where_nothing_is_labelled_is_reported_rather_than_scored(self):
+        case = self.case(self.expect("must-cut", 0.0, 10.0), duration=1000.0)
+        verdict = self.score(case, [(0.0, 10.0), (500.0, 560.0)])
+        # It passes -- the labels say nothing about 500-560s and the harness
+        # will not invent a verdict -- but it says how much went unmeasured.
+        self.assertTrue(verdict.passed)
+        self.assertEqual(verdict.unknown_cut_seconds, 60.0)
+        self.assertAlmostEqual(verdict.labelled_coverage, 0.01)
+        self.assertFalse(verdict.coverage_complete)
+
+    def test_a_case_whose_labels_reach_every_cut_is_complete(self):
+        verdict = self.score(self.case(self.expect("must-cut", 0.0, 10.0), duration=1000.0),
+                             [(0.0, 10.0)])
+        self.assertTrue(verdict.coverage_complete)
+        self.assertEqual(verdict.unknown_cut_seconds, 0.0)
 
 
 class AdCorpusManifestTests(unittest.TestCase):
@@ -3001,7 +3104,10 @@ class AdCorpusManifestTests(unittest.TestCase):
         missed = [span for span in verdict.spans if span.label == "must-cut" and not span.passed]
         self.assertEqual(
             [(s.span.start, s.span.end) for s in missed],
-            [(0.24, 32.88), (33.52, 66.08), (4066.16, 4122.76)],
+            # 4122.76-4162.76 is the Amazon Prime spot, labelled on 2026-09-07
+            # after the review named it an evaluation gap. The saved run misses
+            # it too; it was simply not being scored before.
+            [(0.24, 32.88), (33.52, 66.08), (4066.16, 4122.76), (4122.76, 4162.76)],
         )
         # The three spans it does get right have to survive any fix.
         kept = [span for span in verdict.spans if span.label == "must-cut" and span.passed]
@@ -3014,6 +3120,53 @@ class AdCorpusManifestTests(unittest.TestCase):
         lost = [span for span in verdict.spans if span.label == "must-keep" and not span.passed]
         self.assertEqual(len(lost), 1)
         self.assertAlmostEqual(lost[0].overlap_seconds, 20.32, places=2)
+
+    def test_every_case_says_who_labelled_it_and_against_which_input(self):
+        # A label with no provenance is an assertion, and this corpus is the
+        # thing a detector fix is accepted against. Owner and analyst being one
+        # person is a real limit of it, so the manifest has to say so rather
+        # than leave the reader to assume independence.
+        for case in self.manifest["cases"]:
+            provenance = case.get("provenance")
+            self.assertIsInstance(provenance, dict, case["id"])
+            for key in ("labelledBy", "labelledOn", "inputIdentity", "labelSource"):
+                self.assertTrue(str(provenance.get(key, "")).strip(), f"{case['id']}: {key}")
+            self.assertIn(case["sttModel"], provenance["inputIdentity"], case["id"])
+
+    def test_labelled_spans_within_a_case_never_overlap_each_other(self):
+        # The aggregate programme-loss budget adds up per-span losses, so two
+        # `must-keep` labels covering the same second would count it twice.
+        for case in self.manifest["cases"]:
+            spans = sorted((e["start"], e["end"]) for e in case["expected"])
+            for (_, first_end), (second_start, _) in zip(spans, spans[1:]):
+                self.assertLessEqual(first_end, second_start, case["id"])
+
+    def test_reviewed_incidents_with_no_case_are_inventoried_rather_than_invented(self):
+        # Thirteen historical failures were reviewed and two of them have
+        # fixtures. The rest are not silently absent: where the input or the
+        # label is gone, the manifest records what is missing and what would
+        # close it, because a corpus that lists only what it happens to hold
+        # reads as a corpus that covers everything.
+        gaps = self.manifest.get("gaps")
+        self.assertIsInstance(gaps, list)
+        self.assertTrue(gaps)
+        case_ids = {case["id"] for case in self.manifest["cases"]}
+        for gap in gaps:
+            for key in ("id", "show", "kind", "reported", "missing", "closes"):
+                self.assertTrue(str(gap.get(key, "")).strip(), f"{gap.get('id')}: {key}")
+            self.assertNotIn(gap["id"], case_ids)
+            # `runtime` and `policy` gaps have no labelled audio that could
+            # express them; saying which kind each is stops the inventory
+            # reading as a list of unfixed detector defects.
+            self.assertIn(gap["kind"], {"judgement", "runtime", "policy"})
+        self.assertEqual(len(gaps), len({gap["id"] for gap in gaps}))
+
+    def test_no_gap_claims_an_input_a_case_already_carries(self):
+        # A gap whose input is present is not a gap, it is an unwritten case.
+        hashes = {case["sourceHash"] for case in self.manifest["cases"]}
+        for gap in self.manifest["gaps"]:
+            for source_hash in hashes:
+                self.assertNotIn(source_hash, gap["missing"], gap["id"])
 
     def test_the_detector_reports_the_same_confidence_for_every_span_it_finds(self):
         # Both recorded runs come back at 1.0 throughout, including the spans
@@ -3268,6 +3421,36 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
         self.assertEqual(analysis.audit.unresolved_ids, ())
         self.assertEqual(len(analysis.detections), 1)
 
+    def test_the_recovery_passes_run_in_the_order_the_worker_defines(self):
+        # The order is the contract, not an implementation detail: the start
+        # and end recoveries nominate spans that the resize pass then bounds,
+        # so resizing first would bound spans that do not exist yet. It lives
+        # here rather than in the corpus tests because both the live path and
+        # the replay reach it only through this entry -- which is the point of
+        # there being one entry.
+        order = []
+        for name in ("recover_unclaimed_explicit_sponsor_reads", "recover_transcript_start_preroll",
+                     "recover_transcript_end_postroll", "resize_oversized_ad_spans"):
+            def record(*args, _name=name, **_kwargs):
+                order.append(_name)
+                return args[3]
+            patcher = mock.patch.object(wp, name, record)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        def detector(_segments, backend):
+            order.append("detect_ads")
+            return []
+
+        self.analysis(detector, [])
+        self.assertEqual(order, [
+            "detect_ads",
+            "recover_unclaimed_explicit_sponsor_reads",
+            "recover_transcript_start_preroll",
+            "recover_transcript_end_postroll",
+            "resize_oversized_ad_spans",
+        ])
+
     def test_corrective_response_has_resolved_coverage(self):
         def detector(_segments, backend):
             self.classifier(backend, [0])
@@ -3460,10 +3643,17 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
 
     Replay is the tool a detector fix will be measured with, and it only runs
     for real behind a four-gigabyte model, so nothing else in the gate reaches
-    it. These tests stand in for `wilted.ads` and `wilted.llm` and check that a
-    replay hands the detector what a real preparation hands it -- the same
-    segment type, the same shims, the same passes in the same order, and the
-    duration of the audio rather than the end of the transcript.
+    it. These tests stand in for `wilted.llm` and check that a replay hands the
+    shared analysis entry what a real preparation hands it -- the same segment
+    type, the same duration, inside the same capability -- and that a refusal
+    from it lands against the case that provoked it.
+
+    The judgement itself, and the order of the recovery passes around it, are
+    `analyze_ad_detections`' contract and are tested where they live. That is
+    the point of the change these tests describe: the replay used to assemble
+    that sequence itself, so it could drift from the app one edit at a time,
+    and it had -- it was missing the coverage refusals and the dropped-anchor
+    audit, and could score a run the app would have refused outright.
     """
 
     def setUp(self):
@@ -3476,7 +3666,28 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
             if name not in snapshot:
                 del sys.modules[name]
 
-    def install_stubs(self, detections=()):
+    def cache_for(self, case, *, segments=None):
+        """A cache directory holding exactly this case's entry.
+
+        Keyed by `sourceHash` the way the real one is, so `cached_segments`
+        finds it by the same match. Built rather than borrowed: the local
+        aligned-STT cache is mutable state that another machine does not have,
+        and a wiring test that skips itself there proves nothing in the gate.
+        """
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        count = case["segmentCount"] if segments is None else segments
+        step = float(case["audioDurationSeconds"]) / count
+        (root / "entry.json").write_text(json.dumps({
+            "sourceHash": case["sourceHash"],
+            "segments": [
+                {"text": f"cue {index}", "start_s": index * step, "end_s": (index + 1) * step}
+                for index in range(count)
+            ],
+        }))
+        return root
+
+    def install_stubs(self, detections=(), analyze=None):
         class Ad:
             def __init__(self, start_s, end_s, confidence=1.0, label="ad_break"):
                 self.start_s, self.end_s = start_s, end_s
@@ -3485,12 +3696,13 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         calls = self.calls
         ads = types.ModuleType("wilted.ads")
         ads.AdSegment = Ad
-
-        def detect_ads(segments, backend):
-            calls.append(("detect_ads", len(segments), type(segments[0]).__name__))
-            return [Ad(*span) for span in detections]
-
-        ads.detect_ads = detect_ads
+        # The classifier contract `AuditingBackend` refuses to run without.
+        # Only the live path builds one before handing it over, but the stub
+        # has to satisfy it for the parity test below to reach the same call.
+        ads._AD_DETECT_SYSTEM_PROMPT = "classify"
+        ads._AD_DETECT_CORRECTION_PROMPT = "correct"
+        ads._AD_DETECT_RESPONSE_FORMAT = {"type": "json_object"}
+        ads._parse_ad_response = lambda response, expected_ids: []
 
         class Backend:
             def load(inner):
@@ -3525,17 +3737,14 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
                             "wilted.execution_capability": capability})
         self.use_archive(self.fake_archive())
 
-        for name in ("recover_unclaimed_explicit_sponsor_reads", "recover_transcript_start_preroll",
-                     "recover_transcript_end_postroll", "resize_oversized_ad_spans"):
-            def pass_through(*args, _name=name, **_kwargs):
-                calls.append((_name, args[4] if len(args) > 4 else None))
-                return args[3]
-            self.patch(name, pass_through)
+        def recorder(ads_module, backend, segments, total, **kwargs):
+            calls.append(("analyze", segments, total, backend, ads_module))
+            if analyze is not None:
+                return analyze()
+            return wp.AdAnalysis(tuple(Ad(*span) for span in detections), wp.AdAnalysisAudit())
+
+        self.patch("analyze_ad_detections", recorder)
         self.patch("prepare_ad_model_lock", lambda *_a, **_k: None)
-        self.patch("install_legacy_sponsor_opening_compatibility",
-                   lambda _module: calls.append(("install_legacy",)))
-        self.patch("install_produced_disclaimer_evidence",
-                   lambda _module: calls.append(("install_disclaimer",)))
 
     def fake_archive(self):
         """A directory shaped like the archive, for the existence check to find.
@@ -3568,12 +3777,13 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         # Nothing in the worker puts the archive on the path -- Swift does it
         # from outside -- so a replay run from a shell finds it or explains why.
         case = self.waveform()
+        cache = self.cache_for(case)
         self.install_stubs()
         empty = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, empty, True)
         self.use_archive(empty)
         with self.assertRaises(RuntimeError) as caught:
-            self.corpus.replay_spans(case, cache=self.corpus.DEFAULT_ALIGNED_CACHE)
+            self.corpus.replay_spans(case, cache=cache)
         self.assertIn(empty, str(caught.exception))
         self.assertIn("WILTED_PIPELINE_PYTHONPATH", str(caught.exception))
 
@@ -3594,35 +3804,102 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
                 return case
         self.fail("the Waveform case is no longer in the corpus")
 
-    def replay(self, case, detections=()):
-        self.install_stubs(detections)
-        return self.corpus.replay_spans(case, cache=self.corpus.DEFAULT_ALIGNED_CACHE)
+    def replay(self, case, detections=(), analyze=None, cache=None):
+        cache = cache if cache is not None else self.cache_for(case)
+        self.install_stubs(detections, analyze)
+        return self.corpus.replay_spans(case, cache=cache)
+
+    def analyzed(self):
+        return next(call for call in self.calls if call[0] == "analyze")
 
     def test_a_replay_reproduces_the_worker_call_for_call(self):
         case = self.waveform()
-        spans = self.replay(case, detections=[(100.0, 200.0)])
-        if spans is None:
-            self.skipTest("this machine has no cached transcript for the Waveform case")
+        spans, audit = self.replay(case, detections=[(100.0, 200.0)])
         names = [call[0] for call in self.calls]
         self.assertEqual(names, [
-            "capability",
-            "create_backend", "load", "install_legacy", "install_disclaimer", "detect_ads",
-            "recover_unclaimed_explicit_sponsor_reads", "recover_transcript_start_preroll",
-            "recover_transcript_end_postroll", "resize_oversized_ad_spans", "close",
-            "capability_released",
+            "capability", "create_backend", "load", "analyze", "close", "capability_released",
         ])
         self.assertEqual([(span.start, span.end) for span in spans], [(100.0, 200.0)])
+        # The same evidence a live analysis publishes, so a corpus verdict can
+        # be trusted or distrusted on the same grounds as a preparation.
+        self.assertIn("modelRequests", audit)
+
+    def test_a_replay_and_a_preparation_make_the_same_analysis_call(self):
+        # The whole point of the shared entry: if these two ever diverge, the
+        # corpus is measuring a detector the app does not run, which is the
+        # defect this replaced. Driven through `detect_and_cut` rather than
+        # asserted by reading the two, because the divergence that happened
+        # before was invisible to anyone reading either one on its own -- both
+        # looked right, and the replay was quietly missing the coverage
+        # refusals and the dropped-anchor audit.
+        case = self.waveform()
+        self.replay(case)
+        replay_call = self.analyzed()
+
+        self.calls.clear()
+        segments = list(replay_call[1])
+        with mock.patch.object(wp, "probe_duration", lambda _path: replay_call[2]), \
+                mock.patch.object(wp, "prepare_ad_model_lock", lambda *_a, **_k: None), \
+                redirect_stderr(io.StringIO()):
+            wp.detect_and_cut({}, Path("/nowhere/in.m4a"), [], segments)
+        live_call = self.analyzed()
+
+        self.assertEqual(live_call[4], replay_call[4], "a different detector module")
+        self.assertEqual([(s.start_s, s.end_s, s.text) for s in live_call[1]],
+                         [(s.start_s, s.end_s, s.text) for s in replay_call[1]])
+        self.assertEqual(live_call[2], replay_call[2])
+
+    def test_a_replay_never_transcribes_anything_a_second_time(self):
+        # One Parakeet pass supplies both detection and the displayed
+        # transcript, and the corpus exists to measure that exact input. A
+        # replay that transcribed again would be scoring a different episode
+        # while reporting the case's source hash -- and on a machine where the
+        # daemon is not running it would fail rather than measure anything.
+        case = self.waveform()
+
+        def refuse(*_args, **_kwargs):
+            self.fail("the replay reached speech-to-text")
+
+        with mock.patch.object(wp, "transcribe_with_daemon", refuse):
+            spans, _ = self.replay(case, detections=[(1.0, 2.0)])
+        self.assertEqual([(span.start, span.end) for span in spans], [(1.0, 2.0)])
+
+    def test_a_refusal_is_recorded_against_its_case_rather_than_ending_the_run(self):
+        # `ads-classification-unresolved` means the classifier never resolved
+        # some cues. Scoring what it did return would be scoring a guess, and
+        # crashing the harness would lose every other case's verdict.
+        case = self.waveform()
+        cache = self.cache_for(case)
+
+        def refuse():
+            raise wp.WorkerError("ads-classification-unresolved",
+                                 "classifier exhausted normal and corrective retries for global IDs: 7")
+
+        self.install_stubs(analyze=refuse)
+        with self.assertRaises(self.corpus.ReplayRefused) as caught:
+            self.corpus.replay_spans(case, cache=cache)
+        self.assertEqual(caught.exception.code, "ads-classification-unresolved")
+
+        with redirect_stderr(io.StringIO()):
+            results = self.corpus.run("replay", library=Path("/nowhere"), cache=cache,
+                                      strict=True)
+        refused = next(r for r in results if r.case_id == case["id"])
+        self.assertFalse(refused.passed)
+        self.assertFalse(refused.skipped)
+        self.assertIn("ads-classification-unresolved", refused.reason)
+        self.assertEqual(refused.spans, [])
 
     def test_the_model_is_built_inside_a_claimed_execution_capability(self):
         # The archive gates multi-gigabyte model construction on this, and the
-        # worker claims it in `main`. A replay calls the passes directly, so
-        # without its own claim `create_backend` raises before any measurement.
+        # worker claims it in `main`. A replay calls the analysis entry
+        # directly, so without its own claim `create_backend` raises before any
+        # measurement.
         case = self.waveform()
-        if self.replay(case) is None:
-            self.skipTest("this machine has no cached transcript for the Waveform case")
+        cache = self.cache_for(case)
+        self.replay(case, cache=cache)
         claimed = next(call for call in self.calls if call[0] == "capability")
         self.assertEqual(claimed[1], "wilted-ad-corpus-replay")
-        self.assertEqual(claimed[2], str(self.corpus.DEFAULT_ALIGNED_CACHE.parent))
+        self.assertEqual(claimed[2], str(cache.parent))
         self.assertLess(self.calls.index(claimed),
                         [call[0] for call in self.calls].index("create_backend"))
         self.assertEqual(self.calls[-1][0], "capability_released")
@@ -3631,20 +3908,15 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         # Duck typing makes the archive's own `TranscriptSegment` look
         # interchangeable here. It is not the call the app makes.
         case = self.waveform()
-        if self.replay(case) is None:
-            self.skipTest("this machine has no cached transcript for the Waveform case")
-        detect = next(call for call in self.calls if call[0] == "detect_ads")
-        self.assertEqual(detect[1], case["segmentCount"])
-        self.assertEqual(detect[2], "CachedAlignedSegment")
+        self.replay(case)
+        _, segments, _, _, _ = self.analyzed()
+        self.assertEqual(len(segments), case["segmentCount"])
+        self.assertEqual(type(segments[0]).__name__, "CachedAlignedSegment")
 
     def test_the_size_guards_divide_by_the_audio_not_the_transcript(self):
         case = self.waveform()
-        if self.replay(case) is None:
-            self.skipTest("this machine has no cached transcript for the Waveform case")
-        guarded = ("recover_transcript_end_postroll", "resize_oversized_ad_spans")
-        sized = [call[1] for call in self.calls if call[0] in guarded]
-        self.assertEqual(len(sized), len(guarded))
-        self.assertEqual(set(sized), {case["audioDurationSeconds"]})
+        self.replay(case)
+        self.assertEqual(self.analyzed()[2], case["audioDurationSeconds"])
         self.assertNotEqual(case["audioDurationSeconds"], case["transcriptEndSeconds"])
 
     def test_a_replay_says_which_case_it_is_working_on(self):
@@ -3677,7 +3949,30 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         # readings, and only one of them is a failure.
         case = dict(self.waveform(), sourceHash="sha256:notacachedrun")
         self.install_stubs()
-        self.assertIsNone(self.corpus.replay_spans(case, cache=self.corpus.DEFAULT_ALIGNED_CACHE))
+        self.assertIsNone(self.corpus.replay_spans(case, cache=self.cache_for(self.waveform())))
+
+    def test_a_missing_input_skips_by_default_and_fails_the_candidate_run(self):
+        # The mode a fix is judged in cannot let the corpus shrink to whatever
+        # this machine happens to hold: two cases becoming one skipped case and
+        # one pass exits zero and reads as success.
+        empty = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, empty, True)
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            lenient = self.corpus.run("replay", library=Path("/nowhere"), cache=empty)
+            self.assertEqual(self.corpus.main(["--mode", "replay", "--cache", str(empty)]), 0)
+            strict = self.corpus.run("replay", library=Path("/nowhere"), cache=empty, strict=True)
+        self.assertTrue(all(r.skipped and r.passed for r in lenient))
+        self.assertTrue(strict)
+        for verdict in strict:
+            self.assertFalse(verdict.passed)
+            self.assertFalse(verdict.skipped)
+            # Named, not just counted: "something did not run" is not enough to
+            # act on when the fix is to go and prepare the missing episode.
+            self.assertIn("no cached transcript for sha256:", verdict.reason)
+            self.assertIn(str(empty), verdict.reason)
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(
+                self.corpus.main(["--mode", "replay", "--cache", str(empty), "--strict"]), 1)
 
 
 if __name__ == "__main__":
