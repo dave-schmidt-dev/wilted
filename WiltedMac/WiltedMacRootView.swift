@@ -1217,6 +1217,15 @@ private struct WiltedMacEpisodeRow: View {
     @ViewBuilder private var preparationControl: some View {
         switch episode.preparationState {
         case .preparing:
+            // A job held for its off-peak window can be run early. A job held
+            // by the preparation gate cannot: the gate is what keeps two
+            // preparations from running at once. Both say "Queued", so the
+            // question has to be asked of the model rather than the stage.
+            if model.isDeferredToOffPeak(episode.id) {
+                Button("Prepare now") { model.prepareDeferredPreparationNow(episode.id) }
+                    .accessibilityLabel("Prepare \(episode.title) now instead of waiting for off-peak hours")
+                    .accessibilityIdentifier("wilted-episode-prepare-now-\(episode.id)")
+            }
             Button("Stop") { model.cancelEpisodePreparation(episode) }
                 .accessibilityLabel("Stop preparing \(episode.title)")
                 .accessibilityIdentifier("wilted-episode-preparation-cancel-\(episode.id)")
@@ -1399,6 +1408,11 @@ private struct WiltedMacProcessorView: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            if model.isDeferredToOffPeak(waiting.id) {
+                Button("Prepare now") { model.prepareDeferredPreparationNow(waiting.id) }
+                    .accessibilityLabel("Prepare \(waiting.title) now instead of waiting for off-peak hours")
+                    .accessibilityIdentifier("wilted-processor-waiting-prepare-now-\(waiting.id)")
+            }
             Button("Stop") { model.cancelWaitingPreparation(waiting) }
                 .accessibilityLabel("Stop the queued preparation for \(waiting.title)")
                 .accessibilityIdentifier("wilted-processor-waiting-stop-\(waiting.id)")

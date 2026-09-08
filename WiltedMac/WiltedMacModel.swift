@@ -2260,6 +2260,39 @@ final class WiltedMacModel {
     /// waiting run is named but its episode row is not in reach. The gate lets
     /// a queued caller leave at the moment it is cancelled rather than when
     /// the run ahead of it finishes, so the row clears now.
+    /// Whether a queued row is waiting for its off-peak window rather than for
+    /// the preparation gate.
+    ///
+    /// Both render the same "Queued" stage, and only this one can be started
+    /// early. Overriding the gate would run two preparations at once, which is
+    /// the thing the gate exists to prevent.
+    func isDeferredToOffPeak(_ episodeID: String) -> Bool {
+        deferredAutomaticPreparations.contains { $0.episodeID == episodeID }
+    }
+
+    /// Runs a job that is waiting on the clock, now.
+    ///
+    /// It runs under the policy snapshot it was admitted with, exactly as
+    /// `startEligibleAutomaticPreparations` does when the window opens on its
+    /// own. That is the difference between this and the Stop-then-Prepare the
+    /// owner had to use before it existed: cancelling discards the snapshot, so
+    /// the job came back under whatever Settings happened to say at the time.
+    func prepareDeferredPreparationNow(_ episodeID: String) {
+        guard let deferred = deferredAutomaticPreparations.first(where: { $0.episodeID == episodeID }),
+              let episode = episodes.first(where: { $0.id == episodeID }) else { return }
+        preparationQueue.leave(episodeID)
+        if prepareEpisode(episode, policySnapshot: deferred.policySnapshot) {
+            removeDeferredAutomaticPreparation(episodeID, leaveQueue: false)
+            return
+        }
+        // The gate is busy with another episode. Put it back the way it was and
+        // say so, rather than leaving a button that looks broken.
+        preparationQueue.enter(WiltedMacWaitingPreparation(
+            id: episode.id, title: episode.title, source: episode.feedTitle
+        ))
+        podcastOperationMessage = "\(episode.title) will start when the current preparation finishes."
+    }
+
     func cancelWaitingPreparation(_ waiting: WiltedMacWaitingPreparation) {
         if deferredAutomaticPreparations.contains(where: { $0.episodeID == waiting.id }) {
             removeDeferredAutomaticPreparation(waiting.id)

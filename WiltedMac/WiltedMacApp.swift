@@ -47,6 +47,11 @@ struct WiltedMacApp: App {
                 )) { _ in
                     model.pauseForQuit()
                 }
+                .onAppear {
+                    if WiltedMacModel.isFixtureLaunch(arguments: ProcessInfo.processInfo.arguments) {
+                        Self.placeFixtureWindowOnPrimaryScreen()
+                    }
+                }
         }
         .commands {
             SidebarCommands()
@@ -66,5 +71,32 @@ struct WiltedMacApp: App {
                 model.checkpointForBackground()
             }
         }
+    }
+
+    /// Puts a fixture run's window wholly on the screen that owns the menu bar.
+    ///
+    /// Measured 2026-09-07 on a three-display Mac: the fixture window opened at
+    /// `(-1280, -399, 1280, 705)`, straddling a display boundary, and every
+    /// control in the bottom rail reported `isHittable == false` while
+    /// `isEnabled == true` -- XCUITest cannot click a point that is not on a
+    /// display, so the walkthrough capture failed on where the window landed
+    /// rather than on anything the app drew. The primary screen is
+    /// `NSScreen.screens.first` and not `NSScreen.main`, which is merely the
+    /// screen holding the key window and so is exactly the wrong one here.
+    ///
+    /// Fixture-only, for the same reason a fixture gets its own defaults domain
+    /// and state directory: the owner's own window placement is theirs.
+    private static func placeFixtureWindowOnPrimaryScreen() {
+        guard let window = NSApplication.shared.windows.first,
+              let screen = NSScreen.screens.first else { return }
+        let visible = screen.visibleFrame
+        var frame = window.frame
+        frame.size.width = min(frame.width, visible.width)
+        frame.size.height = min(frame.height, visible.height)
+        frame.origin = CGPoint(
+            x: visible.midX - frame.width / 2,
+            y: visible.midY - frame.height / 2
+        )
+        window.setFrame(frame, display: true)
     }
 }

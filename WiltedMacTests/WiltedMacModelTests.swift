@@ -622,6 +622,57 @@ final class WiltedMacModelTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(10))
     }
 
+    /// David hit a queued episode and had to press Stop and then Prepare to run
+    /// it. That workaround is worse than it looks: cancelling drops the stored
+    /// policy snapshot, so the job came back under whatever Settings said at
+    /// the time rather than what it was admitted with.
+    func testAQueuedOffPeakJobCanBeRunWithoutCancellingIt() async throws {
+        let (directory, model, episode) = try automationFixture("off-peak-prepare-now")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual,
+            processingPolicy: .offPeak(try offPeakWindow()),
+            transcriptPolicy: .alwaysTranscribe, removeAds: false
+        ))
+
+        model.admitAutomaticPreparation(for: episode, at: try localDate(hour: 12))
+        let admitted = try XCTUnwrap(model.deferredAutomaticPreparations.first)
+        XCTAssertTrue(model.isDeferredToOffPeak(episode.id),
+                      "a row waiting on the clock is the one that can be started early")
+
+        // Changing Settings afterwards must not decide anything here: this runs
+        // the admitted job, not a fresh one.
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .manual,
+            transcriptPolicy: .noLocalSTT, removeAds: true
+        ))
+        XCTAssertEqual(model.deferredAutomaticPreparations, [admitted],
+                       "the snapshot is still the admitted one when the button is pressed")
+
+        model.prepareDeferredPreparationNow(episode.id)
+
+        XCTAssertTrue(model.episodes.first(where: { $0.id == episode.id })?.preparationState.isRunning == true,
+                      "the queued job runs instead of waiting for the window")
+        XCTAssertTrue(model.deferredAutomaticPreparations.isEmpty, "and is no longer deferred")
+        XCTAssertTrue(model.preparationQueue.isEmpty, "and has left the visible queue")
+        XCTAssertFalse(model.isDeferredToOffPeak(episode.id))
+        try await Task.sleep(for: .milliseconds(10))
+    }
+
+    /// The button is offered only for the off-peak case. A row queued behind the
+    /// single-run admission gate says "Queued" too, and starting it early would
+    /// run two preparations at once, which is what the gate is for.
+    func testARowThatIsNotWaitingOnTheClockIsNotOfferedTheButton() throws {
+        let (directory, model, episode) = try automationFixture("off-peak-not-offered")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        XCTAssertFalse(model.isDeferredToOffPeak(episode.id),
+                       "nothing is deferred before anything is admitted")
+
+        model.prepareDeferredPreparationNow(episode.id)
+        XCTAssertEqual(model.episodes.first(where: { $0.id == episode.id })?.preparationState, .notPrepared,
+                       "asking to run a job that was never deferred does nothing")
+    }
+
     func testOnlyNoLocalSpeechToTextWithRemovalOnBlocksAdRemoval() throws {
         // The pane offers the two controls side by side, so every pair a reader
         // can reach is checked, not only the one that fails.
