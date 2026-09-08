@@ -1902,6 +1902,160 @@ def install_produced_disclaimer_evidence(ads_module) -> None:
 
 _PROPORTIONAL_RENDER_MARKER = "wilted_proportional_render_budget"
 
+# The archive intentionally treats overlap ties as content. A later window can
+# begin inside a short positive run, though, and lacks the leading context that
+# the earlier window used to classify the complete run. Mark the installed
+# callable so repeated setup does not stack wrappers.
+_CONTEXT_AWARE_OVERLAP_MARKER = "wilted_context_aware_overlap_resolution"
+
+
+def _context_aware_overlap_adjustment(raw_classifications):
+    """Return adjusted votes and the positive runs recovered by that adjustment."""
+    if not isinstance(raw_classifications, list):
+        return raw_classifications, frozenset()
+
+    windows = []
+    for chunk in raw_classifications:
+        if not isinstance(chunk, list):
+            return raw_classifications, frozenset()
+        entries = []
+        for entry in chunk:
+            if (
+                not isinstance(entry, tuple)
+                or len(entry) != 3
+                or isinstance(entry[0], bool)
+                or not isinstance(entry[0], int)
+                or not isinstance(entry[1], bool)
+            ):
+                return raw_classifications, frozenset()
+            entries.append(entry)
+        if any(right[0] <= left[0] for left, right in zip(entries, entries[1:])):
+            return raw_classifications, frozenset()
+        windows.append(entries)
+
+    removals: set[tuple[int, int]] = set()
+    recovered_ranges: set[tuple[int, int]] = set()
+    for source_index, source in enumerate(windows):
+        index = 0
+        while index < len(source):
+            if not source[index][1]:
+                index += 1
+                continue
+            start_index = index
+            while (
+                index + 1 < len(source)
+                and source[index + 1][1]
+                and source[index + 1][0] == source[index][0] + 1
+            ):
+                index += 1
+            end_index = index
+            index += 1
+
+            if start_index == 0 or end_index == len(source) - 1:
+                continue
+            start_id = source[start_index][0]
+            end_id = source[end_index][0]
+            if (
+                source[start_index - 1][0] != start_id - 1
+                or source[end_index + 1][0] != end_id + 1
+            ):
+                continue
+
+            for content_index, content in enumerate(windows):
+                if content_index == source_index or not content:
+                    continue
+                content_start_id, content_starts_as_ad, _label = content[0]
+                if content_starts_as_ad or not start_id <= content_start_id <= end_id:
+                    continue
+
+                tied_suffix = [
+                    (entry_index, entry)
+                    for entry_index, entry in enumerate(content)
+                    if content_start_id <= entry[0] <= end_id
+                ]
+                if [entry[0] for _entry_index, entry in tied_suffix] != list(
+                    range(content_start_id, end_id + 1)
+                ) or any(entry[1] for _entry_index, entry in tied_suffix):
+                    continue
+
+                candidate_removals = {
+                    (content_index, entry_index) for entry_index, _entry in tied_suffix
+                }
+                qualifies = True
+                for segment_id in range(start_id, end_id + 1):
+                    votes = [
+                        (window_index, entry_index, is_ad)
+                        for window_index, window in enumerate(windows)
+                        for entry_index, (vote_id, is_ad, _vote_label) in enumerate(window)
+                        if vote_id == segment_id
+                    ]
+                    if segment_id < content_start_id:
+                        if not votes or any(not is_ad for _window, _entry, is_ad in votes):
+                            qualifies = False
+                            break
+                    elif (
+                        len(votes) != 2
+                        or sum(is_ad for _window, _entry, is_ad in votes) != 1
+                        or not any(
+                            (window, entry) in candidate_removals and not is_ad
+                            for window, entry, is_ad in votes
+                        )
+                    ):
+                        qualifies = False
+                        break
+                if qualifies:
+                    removals.update(candidate_removals)
+                    recovered_ranges.add((start_id, end_id))
+
+    if not removals:
+        return raw_classifications, frozenset()
+    return (
+        [
+            [
+                entry
+                for entry_index, entry in enumerate(chunk)
+                if (chunk_index, entry_index) not in removals
+            ]
+            for chunk_index, chunk in enumerate(raw_classifications)
+        ],
+        frozenset(recovered_ranges),
+    )
+
+
+def install_context_aware_overlap_resolution(ads_module) -> None:
+    """Install the contextual exception and its coarse-right-edge guard."""
+    resolver = getattr(ads_module, "_resolve_overlaps")
+    sparse_content_start = getattr(ads_module, "_verify_sparse_content_start")
+    if getattr(resolver, _CONTEXT_AWARE_OVERLAP_MARKER, False):
+        return
+
+    provenance = threading.local()
+
+    def resolve_overlaps(raw_classifications, segments):
+        provenance.runs = ()
+        adapted, recovered_ranges = _context_aware_overlap_adjustment(raw_classifications)
+        runs = resolver(adapted, segments)
+        provenance.runs = tuple(
+            run for run in runs if (run.start_id, run.end_id) in recovered_ranges
+        )
+        return runs
+
+    def verify_sparse_content_start(coarse_run, confirmed_start_id, segments, backend):
+        recovered_runs = getattr(provenance, "runs", ())
+        if any(coarse_run is recovered for recovered in recovered_runs):
+            provenance.runs = tuple(
+                recovered for recovered in recovered_runs if recovered is not coarse_run
+            )
+            return coarse_run.end_id + 1
+        return sparse_content_start(coarse_run, confirmed_start_id, segments, backend)
+
+    setattr(resolve_overlaps, _CONTEXT_AWARE_OVERLAP_MARKER, True)
+    setattr(verify_sparse_content_start, _CONTEXT_AWARE_OVERLAP_MARKER, True)
+    ads_module._resolve_overlaps = resolve_overlaps  # noqa: SLF001 - archive adaptation seam
+    ads_module._verify_sparse_content_start = (  # noqa: SLF001 - paired archive seam
+        verify_sparse_content_start
+    )
+
 
 def _proportional_render_budgets(lengths: list[int], text_budget: int) -> list[int]:
     """Split a text budget so no cue is truncated while another's share goes unused.
@@ -2989,6 +3143,7 @@ def analyze_ad_detections(
     install_legacy_sponsor_opening_compatibility(ads_module)
     install_produced_disclaimer_evidence(ads_module)
     install_proportional_render_budget(ads_module)
+    install_context_aware_overlap_resolution(ads_module)
     discarded = DiscardedRuns(segments)
     ads_logger = logging.getLogger("wilted.ads")
     previous_level = ads_logger.level

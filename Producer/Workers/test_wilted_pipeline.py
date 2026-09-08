@@ -435,6 +435,7 @@ def install_fake_ads(llm: FakeLLM, detections=()):
             return None
 
     ads._probe_boundary_candidate = probe_boundary  # noqa: SLF001
+    attach_archive_overlap_resolver(ads)
 
     def detect_ads(segments, backend):
         return list(detections)
@@ -483,6 +484,57 @@ def attach_archive_render_helpers(ads, segment_prefix):
         )
 
     ads._truncate_head_tail = truncate_head_tail  # noqa: SLF001
+
+
+def attach_archive_overlap_resolver(ads):
+    """Give a fake archive its content-on-tie overlap resolver."""
+    @dataclass(frozen=True)
+    class CoarseRun:
+        start_id: int
+        end_id: int
+        confidence: float
+        label: str
+
+    def resolve_overlaps(raw_classifications, segments):
+        votes = [[] for _ in segments]
+        for chunk in raw_classifications:
+            for segment_id, is_ad, label in chunk:
+                votes[segment_id].append((is_ad, label))
+        decisions = []
+        for segment_votes in votes:
+            positive = [(is_ad, label) for is_ad, label in segment_votes if is_ad]
+            ratio = len(positive) / len(segment_votes) if segment_votes else 0.0
+            is_ad = bool(segment_votes) and len(positive) > len(segment_votes) - len(positive)
+            labels = [label for _is_ad, label in positive if label is not None]
+            dominant = max(sorted(set(labels)), key=labels.count) if labels else "ad_break"
+            decisions.append((is_ad, ratio, dominant))
+        runs = []
+        index = 0
+        while index < len(segments):
+            if not decisions[index][0]:
+                index += 1
+                continue
+            start_id, confidences, labels = index, [], []
+            while index < len(segments) and decisions[index][0]:
+                confidences.append(decisions[index][1])
+                labels.extend(
+                    label for is_ad, label in votes[index] if is_ad and label is not None
+                )
+                index += 1
+            runs.append(
+                CoarseRun(
+                    start_id,
+                    index - 1,
+                    sum(confidences) / len(confidences),
+                    max(sorted(set(labels)), key=labels.count),
+                )
+            )
+        return runs
+
+    ads._resolve_overlaps = resolve_overlaps  # noqa: SLF001 - archive seam under test
+    ads._verify_sparse_content_start = (  # noqa: SLF001 - archive seam under test
+        lambda coarse_run, _confirmed_start_id, _segments, _backend: coarse_run.end_id + 1
+    )
 
 
 class KeepMapTests(unittest.TestCase):
@@ -1596,6 +1648,212 @@ class ProportionalRenderBudgetTests(unittest.TestCase):
         del ads._truncate_head_tail
         with self.assertRaises(AttributeError):
             wp.install_proportional_render_budget(ads)
+
+
+class ContextAwareOverlapVoteTests(unittest.TestCase):
+    """Only a better-context positive run overrides the archive's tie rule."""
+
+    def setUp(self):
+        self.ads = types.ModuleType("wilted.ads")
+        attach_archive_overlap_resolver(self.ads)
+        self.segments = [
+            FakeSegment(float(index), float(index + 1), f"cue {index}")
+            for index in range(5)
+        ]
+
+    def resolve(self, raw_classifications):
+        return self.ads._resolve_overlaps(raw_classifications, self.segments)  # noqa: SLF001
+
+    @staticmethod
+    def run_shape(runs):
+        return [
+            (run.start_id, run.end_id, run.confidence, run.label)
+            for run in runs
+        ]
+
+    def test_contextual_tie_recovers_the_label_and_context_only_confidence(self):
+        wp.install_context_aware_overlap_resolution(self.ads)
+        runs = self.resolve(
+            [
+                [
+                    (0, False, None),
+                    (1, True, "self_promo"),
+                    (2, True, "self_promo"),
+                    (3, True, "self_promo"),
+                    (4, False, None),
+                ],
+                [(2, False, None), (3, False, None), (4, False, None)],
+            ]
+        )
+        self.assertEqual(self.run_shape(runs), [(1, 3, 1.0, "self_promo")])
+        self.assertGreaterEqual(runs[0].confidence, 0.8)
+
+    def test_an_ordinary_tie_remains_content(self):
+        wp.install_context_aware_overlap_resolution(self.ads)
+        self.assertEqual(
+            self.resolve([[(1, True, "self_promo")], [(1, False, None)]]),
+            [],
+        )
+
+    def test_runs_touching_either_source_window_edge_remain_content(self):
+        wp.install_context_aware_overlap_resolution(self.ads)
+        cases = (
+            [
+                [(0, True, "self_promo"), (1, True, "self_promo"), (2, False, None)],
+                [(0, False, None), (1, False, None)],
+            ],
+            [
+                [(0, False, None), (1, True, "self_promo"), (2, True, "self_promo")],
+                [(1, False, None), (2, False, None)],
+            ],
+        )
+        for classifications in cases:
+            with self.subTest(classifications=classifications):
+                self.assertEqual(self.resolve(classifications), [])
+
+    def test_content_window_starting_outside_the_run_remains_content(self):
+        wp.install_context_aware_overlap_resolution(self.ads)
+        self.assertEqual(
+            self.resolve(
+                [
+                    [
+                        (0, False, None),
+                        (1, True, "self_promo"),
+                        (2, True, "self_promo"),
+                        (3, False, None),
+                    ],
+                    [
+                        (0, False, None),
+                        (1, False, None),
+                        (2, False, None),
+                        (3, False, None),
+                    ],
+                ]
+            ),
+            [],
+        )
+
+    def test_missing_resolver_raises_and_reinstallation_is_idempotent(self):
+        with self.assertRaises(AttributeError):
+            wp.install_context_aware_overlap_resolution(types.ModuleType("wilted.ads"))
+        missing_sparse_verifier = types.ModuleType("wilted.ads")
+        attach_archive_overlap_resolver(missing_sparse_verifier)
+        del missing_sparse_verifier._verify_sparse_content_start  # noqa: SLF001
+        with self.assertRaises(AttributeError):
+            wp.install_context_aware_overlap_resolution(missing_sparse_verifier)
+        wp.install_context_aware_overlap_resolution(self.ads)
+        installed = self.ads._resolve_overlaps  # noqa: SLF001
+        installed_sparse_verifier = self.ads._verify_sparse_content_start  # noqa: SLF001
+        wp.install_context_aware_overlap_resolution(self.ads)
+        self.assertIs(self.ads._resolve_overlaps, installed)  # noqa: SLF001
+        self.assertIs(
+            self.ads._verify_sparse_content_start,  # noqa: SLF001
+            installed_sparse_verifier,
+        )
+
+    def test_detection_installs_the_resolver_before_the_archive_detector_runs(self):
+        llm = FakeLLM(loaded=True)
+        ads = install_fake_ads(llm)
+        observed = []
+
+        def detector(segments, backend):
+            observed.append(
+                getattr(
+                    ads._resolve_overlaps,  # noqa: SLF001
+                    wp._CONTEXT_AWARE_OVERLAP_MARKER,
+                    False,
+                )
+            )
+            backend.generate(
+                ads._AD_DETECT_SYSTEM_PROMPT,  # noqa: SLF001
+                "\n".join(
+                    f"[ID {index}] [{segment.start_s:.2f}s - {segment.end_s:.2f}s] {segment.text}"
+                    for index, segment in enumerate(segments)
+                ),
+                response_format=ads._AD_DETECT_RESPONSE_FORMAT,  # noqa: SLF001
+            )
+            return []
+
+        ads.detect_ads = detector
+        with redirect_stderr(io.StringIO()):
+            wp.analyze_ad_detections(ads, llm, self.segments, 5.0)
+        self.assertEqual(observed, [True])
+
+
+class ContextRecoveredBoundaryTests(unittest.TestCase):
+    """Context provenance suppresses only the archive's sparse right expansion."""
+
+    def setUp(self):
+        self.ads = types.ModuleType("wilted.ads")
+        attach_archive_overlap_resolver(self.ads)
+        self.segments = [
+            FakeSegment(float(index), float(index + 1), f"cue {index}")
+            for index in range(194)
+        ]
+        self.sparse_calls = []
+
+        def sparse_content_start(coarse_run, confirmed_start_id, _segments, _backend):
+            self.sparse_calls.append((coarse_run.start_id, coarse_run.end_id, confirmed_start_id))
+            return 193
+
+        self.ads._verify_sparse_content_start = sparse_content_start  # noqa: SLF001
+
+        def verify_boundaries(coarse_run, segments, backend):
+            verified_start = coarse_run.start_id
+            for _ in range(2):
+                candidate_id = verified_start - 1
+                if candidate_id < 0 or candidate_id != 182:
+                    break
+                verified_start = candidate_id
+            verified_end = coarse_run.end_id
+            if coarse_run.end_id - coarse_run.start_id + 1 <= 2:
+                content_start_id = self.ads._verify_sparse_content_start(  # noqa: SLF001
+                    coarse_run, verified_start, segments, backend
+                )
+                verified_end = content_start_id - 1
+            return verified_start, verified_end, coarse_run.confidence, coarse_run.label
+
+        self.ads._verify_ad_boundaries = verify_boundaries  # noqa: SLF001
+        wp.install_context_aware_overlap_resolution(self.ads)
+
+    @staticmethod
+    def contextual_votes():
+        return [
+            [
+                (182, False, None),
+                (183, True, "self_promo"),
+                (184, True, "self_promo"),
+                (185, False, None),
+            ],
+            [(segment_id, False, None) for segment_id in range(183, 194)],
+        ]
+
+    @staticmethod
+    def ordinary_sparse_votes():
+        return [[(183, True, "self_promo"), (184, True, "self_promo")]]
+
+    def detect(self, raw_classifications):
+        runs = self.ads._resolve_overlaps(raw_classifications, self.segments)  # noqa: SLF001
+        return [
+            self.ads._verify_ad_boundaries(run, self.segments, object())  # noqa: SLF001
+            for run in runs
+        ]
+
+    def test_context_recovery_keeps_the_coarse_right_edge_after_left_probe(self):
+        self.assertEqual(
+            self.detect(self.contextual_votes()),
+            [(182, 184, 1.0, "self_promo")],
+        )
+        self.assertEqual(self.sparse_calls, [])
+
+    def test_next_ordinary_sparse_run_still_uses_right_boundary_expansion(self):
+        self.detect(self.contextual_votes())
+        self.sparse_calls.clear()
+        self.assertEqual(
+            self.detect(self.ordinary_sparse_votes()),
+            [(182, 192, 1.0, "self_promo")],
+        )
+        self.assertEqual(self.sparse_calls, [(183, 184, 182)])
 
 
 class ExplicitSponsorFallbackTests(unittest.TestCase):
@@ -3734,6 +3992,7 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
             ads,
             lambda index, segment: f"[ID {index}] [{segment.start_s:.2f}s - {segment.end_s:.2f}s] ",
         )
+        attach_archive_overlap_resolver(ads)
         ads.detect_ads = detector
         # Kept so a test can ask what the worker installed on the module the
         # detector was actually handed.
@@ -3804,6 +4063,25 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
 
         self.analysis(detector, [])
         self.assertEqual(marked, [True])
+
+    def test_overlap_resolver_is_installed_before_the_archive_detector_runs(self):
+        observed = []
+
+        def detector(segments, _backend):
+            resolver = self.last_ads._resolve_overlaps  # noqa: SLF001
+            observed.append(getattr(resolver, wp._CONTEXT_AWARE_OVERLAP_MARKER, False))
+            runs = resolver(
+                [
+                    [(0, False, None), (1, True, "self_promo"), (2, False, None)],
+                    [(1, False, None), (2, False, None)],
+                ],
+                segments,
+            )
+            observed.append([(run.start_id, run.end_id, run.label) for run in runs])
+            return []
+
+        self.analysis(detector, [])
+        self.assertEqual(observed, [True, [(1, 1, "self_promo")]])
 
     def test_exhausted_singleton_is_unresolved_not_a_clean_no_ads_result(self):
         def detector(_segments, backend):
