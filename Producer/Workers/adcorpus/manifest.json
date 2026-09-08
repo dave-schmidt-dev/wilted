@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "operation": "detect-and-cut",
-  "provenance": "Ground truth labelled by hand on 2026-09-05 from two detector failures David reported the same day, and extended on 2026-09-07 with the Amazon Prime span the review named as an evaluation gap, per-case `provenance`, and a top-level `gaps` inventory of reviewed incidents that have no case because their input or labels no longer exist. Timings are read from the aligned-STT cache entry the detector itself consumed, so a replay sees byte-identical input. No podcast prose or audio is stored here: each case points at a cache entry by sourceHash and the harness resolves it locally at run time. `audioDurationSeconds` is what the detector's own `probe_duration` saw: preparation overwrites the download in place, so it is derived as the cut file's measured duration plus the spans the run removed, rather than probed from an original that no longer exists.",
+  "provenance": "Ground truth labelled by hand on 2026-09-05 from two detector failures David reported the same day, and extended on 2026-09-07 with the Amazon Prime span the review named as an evaluation gap, per-case `provenance`, and a top-level `gaps` inventory of reviewed incidents that have no case because their input or labels no longer exist. Extended again on 2026-09-08 with a Practical AI episode David reported the same day, whose two surviving host reads are the first labelled soft-open reads in the corpus and the first labelled cues that straddle an advertising boundary. Timings are read from the aligned-STT cache entry the detector itself consumed, so a replay sees byte-identical input. No podcast prose or audio is stored here: each case points at a cache entry by sourceHash and the harness resolves it locally at run time. `audioDurationSeconds` is what the detector's own `probe_duration` saw: preparation overwrites the download in place, so it is derived as the cut file's measured duration plus the spans the run removed, rather than probed from an original that no longer exists.",
   "license": "MIT",
   "labels": {
     "must-cut": "Advertising. The detector is wrong if it leaves any of this in.",
@@ -154,6 +154,76 @@
       ],
       "transcriptEndSeconds": 1543.76,
       "audioDurationSeconds": 1545.93
+    },
+    {
+      "id": "practical-ai-two-host-reads-left-whole",
+      "itemID": "item-25bdec0baf536bb4e8fd8bffe6b6e5f791d7b4697f37aa19873602eda4e4df1b",
+      "show": "Practical AI",
+      "sourceHash": "sha256:6664deea61754c68ceef94bb66b22fee6cc212c9629dbe19966ed95241517d2a",
+      "sttModel": "mlx-community/parakeet-tdt-1.1b",
+      "segmentCount": 273,
+      "intentionalCondition": "Two host-read sponsor spots survive whole and the detector's only nomination is the closing sponsor credit. Both reads open soft -- no station break, no stinger, the host simply changes subject mid-conversation -- and both close on a spoken domain and a call to action ('framer dot com slash practical ai for thirty percent off', 'prediction guard dot com slash practical ai book a time to get a demo'). The aligned transcript renders that copy cleanly, so this is a judgement failure and not a transcription one. Both reads also end inside a cue that continues into programme, which is the first labelled instance of that condition in this corpus.",
+      "reportedBy": "David, 2026-09-08: 'Listening to the Practical AI podcast, and around 18:50 there is an ad for Framer that was not remoed'. 18:50 is 1130s, inside the Framer read's opening cue, and the delivered file has no removal before it, so the reported time and the original timeline coincide. The Prediction Guard read at 1898.84-1959.36 was found by reading the transcript while timing the reported one; David has not been asked about it.",
+      "provenance": {
+        "labelledBy": "Framer reported by David Schmidt as the owner and timed by hand the same day. The Prediction Guard read was found by inspection, not reported, and carries no owner confirmation. No independent listening acceptance of any boundary is recorded, which is a limit of this corpus rather than a property of it.",
+        "labelledOn": "2026-09-08",
+        "inputIdentity": "Every timing is a cue boundary of the aligned-STT cache entry keyed by this case's sourceHash, produced by mlx-community/parakeet-tdt-1.1b over 273 cues. Nothing here is read from a detector span except the `recorded` snapshot itself.",
+        "labelSource": "One owner-reported failure, timed by hand against the cache entry, plus one unreported read found by inspection during that timing. The programme boundaries around both are read off the same cue edges."
+      },
+      "expected": [
+        {
+          "start": 2.24,
+          "end": 41.6,
+          "label": "acceptable-cut",
+          "why": "The show's own branded cold open and a self-promotion asking listeners to follow it, cues 0-1, closing on 'learn more at practical ai dot f m'. Not a paid spot. Marked acceptable by the precedent this corpus already set for the NPR house promo, not by a fresh decision from David, who has said nothing about this one."
+        },
+        {
+          "start": 41.6,
+          "end": 1117.52,
+          "label": "must-keep",
+          "why": "Programme. The interview opens at cue 2 and runs unbroken to the Framer read."
+        },
+        {
+          "start": 1117.52,
+          "end": 1186.92,
+          "label": "must-cut",
+          "why": "Framer host read, cues 107-110. Opens 'that's why i appreciate so much what our partner framer is doing' with no break before it, and closes on the offer repeated three times. This is the failure David reported."
+        },
+        {
+          "start": 1186.92,
+          "end": 1898.84,
+          "label": "must-keep",
+          "why": "Programme. Cue 111 straddles the boundary: it opens on the read's legal tail ('ai rules and restrictions may apply', about a second and a half) and spends the rest of its eight seconds back in the conversation. Truth is read at cue edges and the detector cuts at them, so the choice is a short remnant or six seconds of programme gone. This corpus says the remnant is the lesser error, and labelling the cue must-keep is how it says so."
+        },
+        {
+          "start": 1898.84,
+          "end": 1959.36,
+          "label": "must-cut",
+          "why": "Prediction Guard host read, cues 182-184. Same shape as the Framer read and equally unmarked: it follows a three-second musical sting inside the preceding programme cue and closes on 'prediction guard dot com slash practical ai'. The episode's own sign-off calls Prediction Guard a partner providing operational support, so this is a paid read and not the host mentioning his employer in passing."
+        },
+        {
+          "start": 1959.36,
+          "end": 2675.88,
+          "label": "must-keep",
+          "why": "Programme. Cue 185 straddles the boundary the same way cue 111 does, carrying about a second of the read's closing words before the conversation resumes, and is labelled must-keep for the same reason."
+        },
+        {
+          "start": 2696.04,
+          "end": 2711.042,
+          "label": "acceptable-cut",
+          "why": "Closing sponsor credit, sign-off and music bed, cue 272 and the untranscribed tail that follows it. This is the one span the run removed, and David objected only to what was left in. Acceptable by the precedent set for credits, not by a fresh decision. It ends at the probed duration rather than the last cue because the music runs about five seconds past anything the transcript carries."
+        }
+      ],
+      "recorded": [
+        {
+          "start": 2696.04,
+          "end": 2711.042,
+          "confidence": 1.0,
+          "label": "ad_break"
+        }
+      ],
+      "transcriptEndSeconds": 2705.96,
+      "audioDurationSeconds": 2711.042
     }
   ],
   "gaps": [
@@ -186,8 +256,8 @@
       "show": "Video Game Town",
       "kind": "judgement",
       "reported": "A host read survived: the coarse pass called it conversation, and the spoken domain name lacked the spelling the anchor expected.",
-      "missing": "No retained input for the episode has been identified, and no hand-timed interval exists for it.",
-      "closes": "The cached input plus hand-timed advertising and programme boundaries. Until then the anchor-plus-CTA recovery is covered only by synthetic cues."
+      "missing": "No retained input for this episode has been identified, and no hand-timed interval exists for it. The mechanism it exhibits is no longer unlabelled, though: the Practical AI case carries two host reads that open soft and close on a spoken domain, and the detector left both whole.",
+      "closes": "The cached input plus hand-timed boundaries, if this episode is ever recovered. The anchor-plus-CTA recovery is no longer covered only by synthetic cues -- practical-ai-two-host-reads-left-whole measures it on real audio -- so what remains open here is this show's specific failure, not the class of failure."
     },
     {
       "id": "daily-chase-sapphire-sparse-spot",
@@ -218,8 +288,8 @@
       "show": "not show-specific",
       "kind": "judgement",
       "reported": "Coarse cue boundaries held advertising and real content in one cue, and a postroll was removed only in part.",
-      "missing": "No retained input where a single cue is known to straddle the boundary has been identified. The corpus's two episodes do not exhibit it.",
-      "closes": "A retained episode with a hand-timed intra-cue boundary. Until then the mixed-cue and postroll questions are covered only by synthetic cues."
+      "missing": "Half of this is now carried: the Practical AI case labels two cues that straddle an advertising boundary, cue 111 and cue 185, each opening on a read's closing words and continuing into programme. What is still missing is a retained episode with a partially removed postroll; neither straddle here is at the end of the file.",
+      "closes": "The straddling-cue half is closed by practical-ai-two-host-reads-left-whole. The partial postroll needs a retained episode that exhibits one; until then it is covered only by synthetic cues."
     },
     {
       "id": "duplicate-transcription-passes",

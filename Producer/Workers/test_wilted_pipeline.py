@@ -3224,16 +3224,33 @@ class AdCorpusManifestTests(unittest.TestCase):
         for case in self.manifest["cases"]:
             # The labels are read off transcript cue boundaries, and the size
             # guards divide by the audio duration, so the manifest carries both
-            # and neither may go missing.
-            self.assertAlmostEqual(
-                case["transcriptEndSeconds"], case["audioDurationSeconds"], delta=5.0,
-                msg=f"{case['id']}: the transcript and the audio disagree about the episode length",
+            # and neither may go missing. The bound is asymmetric because the
+            # two numbers drift apart for different reasons. A cue end can
+            # round a second or two past the end of the file, so the transcript
+            # is allowed barely any headroom over the audio. Audio past the
+            # last cue is untranscribed lead-out -- Practical AI closes on five
+            # seconds of music the model emits no cue for -- and that can be
+            # long without meaning anything is wrong. Both bounds are far below
+            # the minutes that separate two different episodes, which is the
+            # mistake this is here to catch.
+            transcript = case["transcriptEndSeconds"]
+            audio = case["audioDurationSeconds"]
+            self.assertLessEqual(
+                transcript, audio + 5.0,
+                f"{case['id']}: the transcript runs past the end of the audio",
+            )
+            self.assertLessEqual(
+                audio - transcript, 60.0,
+                f"{case['id']}: the transcript and the audio disagree about the episode length",
             )
             for expected in case["expected"]:
                 self.assertIn(expected["label"], self.manifest["labels"], case["id"])
                 self.assertLess(expected["start"], expected["end"], case["id"])
+                # A label may reach the end of the audio even where no cue
+                # does, which is how the untranscribed lead-out gets labelled
+                # at all; it may not reach past both.
                 self.assertLessEqual(
-                    expected["end"], case["transcriptEndSeconds"] + 1.0, case["id"]
+                    expected["end"], max(transcript, audio) + 1.0, case["id"]
                 )
                 self.assertTrue(expected["why"].strip(), case["id"])
 
@@ -3263,6 +3280,25 @@ class AdCorpusManifestTests(unittest.TestCase):
         lost = [span for span in verdict.spans if span.label == "must-keep" and not span.passed]
         self.assertEqual(len(lost), 1)
         self.assertAlmostEqual(lost[0].overlap_seconds, 20.32, places=2)
+
+    def test_practical_ai_still_leaves_both_host_reads_whole(self):
+        # The same shape as the Waveform characterisation: it records what the
+        # 2026-09-08 run actually did, so a detector fix breaks this loudly.
+        # Both misses are host reads that open without a break of any kind,
+        # which is the condition this case exists to measure.
+        case = self.find("practical-ai-two-host-reads-left-whole")
+        verdict = self.corpus.score_case(case, self.frozen(case))
+        self.assertFalse(verdict.passed, "the host reads appear to be caught; update this test")
+        missed = [span for span in verdict.spans if span.label == "must-cut" and not span.passed]
+        self.assertEqual(
+            [(s.span.start, s.span.end) for s in missed],
+            [(1117.52, 1186.92), (1898.84, 1959.36)],
+        )
+        # Nothing was cut outside the closing credit, so the failure is purely
+        # what was left in. If a fix starts losing programme here, the aggregate
+        # budget below is what will say so.
+        self.assertEqual(verdict.keep_loss_seconds, 0.0)
+        self.assertTrue(verdict.coverage_complete, verdict.unknown_cut_seconds)
 
     def test_every_case_says_who_labelled_it_and_against_which_input(self):
         # A label with no provenance is an assertion, and this corpus is the
