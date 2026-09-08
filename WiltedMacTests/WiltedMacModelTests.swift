@@ -1963,6 +1963,57 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(withoutMarkers.rows.map(\.id), ["cue-0", "cue-1", "cue-2"])
     }
 
+    /// A name is drawn where the voice changes, not on every line. An
+    /// interview alternates two people for an hour, and repeating both names
+    /// down the whole transcript is noise the reader reads past to find words.
+    func testTheSpeakerIsLabelledOnlyWhereItChanges() {
+        let cues = [
+            WiltedTranscriptCueLine(id: 0, startSeconds: 0, text: "Welcome.", speaker: "Angie"),
+            WiltedTranscriptCueLine(id: 1, startSeconds: 5, text: "Still me.", speaker: "Angie"),
+            WiltedTranscriptCueLine(id: 2, startSeconds: 10, text: "Thanks.", speaker: "Chris"),
+            WiltedTranscriptCueLine(id: 3, startSeconds: 15, text: "Back again.", speaker: "Angie"),
+        ]
+        let view = WiltedSyncedTranscriptView(cues: cues, activeCueID: nil,
+                                              identifier: "test") { _ in }
+        XCTAssertEqual(view.speakerHeadingCueIDs, [0, 2, 3],
+                       "the first attributed line always says who is talking, then only changes do")
+    }
+
+    /// Publishers attribute the line that changes hands and leave the rest
+    /// bare. Treating a bare line as "unknown speaker" would redraw the name
+    /// on every line after it.
+    func testAnUnattributedLineDoesNotEndTheSpeakersRun() {
+        let cues = [
+            WiltedTranscriptCueLine(id: 0, startSeconds: 0, text: "Welcome.", speaker: "Angie"),
+            WiltedTranscriptCueLine(id: 1, startSeconds: 5, text: "No attribution here."),
+            WiltedTranscriptCueLine(id: 2, startSeconds: 10, text: "Still Angie.", speaker: "Angie"),
+        ]
+        let view = WiltedSyncedTranscriptView(cues: cues, activeCueID: nil,
+                                              identifier: "test") { _ in }
+        XCTAssertEqual(view.speakerHeadingCueIDs, [0])
+    }
+
+    func testATranscriptThatNamesNobodyLabelsNothing() {
+        let cues = [
+            WiltedTranscriptCueLine(id: 0, startSeconds: 0, text: "One."),
+            WiltedTranscriptCueLine(id: 1, startSeconds: 5, text: "Two."),
+        ]
+        let view = WiltedSyncedTranscriptView(cues: cues, activeCueID: nil,
+                                              identifier: "test") { _ in }
+        XCTAssertTrue(view.speakerHeadingCueIDs.isEmpty)
+    }
+
+    /// The visual heading is `accessibilityHidden` so the name is not read
+    /// twice. That makes the spoken label the only place a reader using
+    /// VoiceOver learns the voice changed.
+    func testTheSpokenLabelCarriesTheNameExactlyWhereTheHeadingDoes() {
+        let named = WiltedTranscriptCueLine(id: 0, startSeconds: 65, text: "Welcome.", speaker: "Angie")
+        let view = WiltedSyncedTranscriptView(cues: [named], activeCueID: nil,
+                                              identifier: "test") { _ in }
+        XCTAssertEqual(view.spokenLabel(named, showsSpeaker: true), "1:05. Angie. Welcome.")
+        XCTAssertEqual(view.spokenLabel(named, showsSpeaker: false), "1:05. Welcome.")
+    }
+
     // MARK: - One add box
 
     /// Builds a store-backed model whose add box classifies against `document`

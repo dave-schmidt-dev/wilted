@@ -12,7 +12,7 @@ final class TranscriptTests: XCTestCase {
                                    text: "Article body", languageCode: "en-US", updatedAt: timestamp)
         XCTAssertEqual(try JSONDecoder().decode(Transcript.self, from: JSONEncoder().encode(value)), value)
         XCTAssertEqual(value.format, .plainText)
-        XCTAssertEqual(value.schemaVersion, 2)
+        XCTAssertEqual(value.schemaVersion, Transcript.currentSchemaVersion)
         XCTAssertEqual(value.timing, .none, "a transcript with no cues claims no timing")
         XCTAssertNil(value.cues)
     }
@@ -44,7 +44,7 @@ final class TranscriptTests: XCTestCase {
                                              updatedAt: timestamp))
         XCTAssertThrowsError(try Transcript(itemID: itemID, revisionID: revisionID,
                                              availability: .available, text: "body", updatedAt: timestamp,
-                                             schemaVersion: 3))
+                                             schemaVersion: Transcript.currentSchemaVersion + 1))
     }
 
     /// Version one is still a real record shape, not a legacy alias. It decodes
@@ -158,6 +158,56 @@ final class TranscriptTests: XCTestCase {
                                    text: "body", updatedAt: timestamp)
         XCTAssertNil(value.cue(at: 0))
         XCTAssertNil(value.cue(at: 42))
+    }
+
+    func testCuesCarryTheSpeakerTheSourceNamed() throws {
+        let cue = try TranscriptCue(startSeconds: 0, endSeconds: 2, text: "Hello.", speaker: "  Angie  ")
+        XCTAssertEqual(cue.speaker, "Angie")
+        XCTAssertNil(try TranscriptCue(startSeconds: 0, endSeconds: 2, text: "Hello.").speaker)
+        // A name the publisher left blank is no name, not an empty label.
+        XCTAssertNil(try TranscriptCue(startSeconds: 0, endSeconds: 2, text: "Hello.", speaker: "   ").speaker)
+        XCTAssertThrowsError(try TranscriptCue(
+            startSeconds: 0, endSeconds: 2, text: "Hello.",
+            speaker: String(repeating: "N", count: TranscriptCue.maximumSpeakerUTF8Bytes + 1)
+        ))
+    }
+
+    func testVersionTwoCuesStillDecodeWithoutASpeaker() throws {
+        // Exactly what a cue written before schema version three looks like.
+        let payload = Data(#"{"startSeconds":0,"endSeconds":2,"text":"Hello."}"#.utf8)
+        let cue = try JSONDecoder().decode(TranscriptCue.self, from: payload)
+        XCTAssertNil(cue.speaker)
+        XCTAssertEqual(cue.text, "Hello.")
+
+        // And an unattributed cue re-encodes to the same bytes it was, rather
+        // than gaining a null key that every version-two reader would have to
+        // tolerate.
+        let reencoded = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(cue)
+        ) as? [String: Any]
+        XCTAssertNil(reencoded?["speaker"])
+        XCTAssertEqual(reencoded?.keys.count, 3)
+    }
+
+    func testTheSpeakerSurvivesACueRoundTrip() throws {
+        let cue = try TranscriptCue(startSeconds: 1, endSeconds: 3, text: "Words.", speaker: "Chris")
+        let decoded = try JSONDecoder().decode(
+            TranscriptCue.self, from: try JSONEncoder().encode(cue)
+        )
+        XCTAssertEqual(decoded, cue)
+        XCTAssertEqual(decoded.speaker, "Chris")
+    }
+
+    func testTranscriptsAcceptTheThirdSchemaVersionAndRefuseAFourth() throws {
+        XCTAssertEqual(Transcript.currentSchemaVersion, 3)
+        for version in Transcript.supportedSchemaVersions {
+            XCTAssertNoThrow(try Transcript(itemID: itemID, revisionID: revisionID,
+                                            availability: .absent, updatedAt: timestamp,
+                                            schemaVersion: version))
+        }
+        XCTAssertThrowsError(try Transcript(itemID: itemID, revisionID: revisionID,
+                                            availability: .absent, updatedAt: timestamp,
+                                            schemaVersion: 4))
     }
 
     func testCueCodecRoundTripsAndRefusesCorruptPayloads() throws {

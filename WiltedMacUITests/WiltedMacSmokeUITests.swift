@@ -945,6 +945,43 @@ final class WiltedMacSmokeUITests: XCTestCase {
             .waitForExistence(timeout: 10))
     }
 
+    /// The publisher's speaker names reach the reader, and only where the
+    /// voice changes. The fixture episode alternates two people with one
+    /// unattributed line between them, so this covers the whole rule: the
+    /// first attributed line is labelled, a change is labelled, a line nobody
+    /// was credited with is not, and a return to a previous voice is.
+    ///
+    /// Asserted through the cue's spoken label rather than the drawn heading.
+    /// The heading is `accessibilityHidden` so the name is not announced twice,
+    /// which means the label is the only place a reader who cannot see the
+    /// screen learns the voice changed -- and so it is the thing worth pinning.
+    func testTheTranscriptNamesWhoIsSpeakingWhereTheVoiceChanges() {
+        let app = launch(arguments: ["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts"])
+        let playEpisode = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-play-'"))
+            .firstMatch
+        XCTAssertTrue(playEpisode.waitForExistence(timeout: 15))
+        playEpisode.click()
+
+        let transcript = app.descendants(matching: .any)["wilted-player-transcript"]
+        XCTAssertTrue(transcript.waitForExistence(timeout: 15))
+        transcript.click()
+
+        let prefix = "wilted-now-playing-synced-transcript-cue-"
+        let first = app.descendants(matching: .any)["\(prefix)0"]
+        XCTAssertTrue(first.waitForExistence(timeout: 10),
+                      "a published transcript with cues follows the playback clock")
+        XCTAssertTrue(first.label.contains("Angie"),
+                      "the first attributed line says who is talking")
+        XCTAssertTrue(app.descendants(matching: .any)["\(prefix)1"].label.contains("Chris"),
+                      "the voice changed, so the new name is announced")
+        let unattributed = app.descendants(matching: .any)["\(prefix)2"].label
+        XCTAssertFalse(unattributed.contains("Angie") || unattributed.contains("Chris"),
+                       "a line the publisher credited to nobody carries no name")
+        XCTAssertTrue(app.descendants(matching: .any)["\(prefix)3"].label.contains("Angie"),
+                      "the voice came back, so the name is announced again")
+    }
+
     private func launch(arguments: [String]) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"] + arguments

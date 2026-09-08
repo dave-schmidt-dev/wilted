@@ -256,6 +256,17 @@ def build(captures, commit, date_iso, date_human, previous):
             "show notes as plain text at <code>wilted-player-notes-text</code>, every address a link. The Larder "
             "row for the same episode leads with these notes' opening sentence instead of the author.",
             captures),
+        "speakers": figure(
+            "fig-playback-speakers", "6.5-transcript-speakers",
+            "The synchronised transcript labelling each speaker where the voice changes",
+            "<strong>6.5 Transcript, who is speaking.</strong> The episode's transcript is the publisher's own "
+            "WebVTT, so it carries voice spans naming who is talking. The name is drawn where the voice "
+            "changes, not on every line: an interview alternating two people would otherwise repeat both names "
+            "down the whole transcript. A line the publisher credited to nobody carries no name and does not "
+            "end the previous speaker&rsquo;s run. The heading is hidden from VoiceOver and the name is folded "
+            "into the cue&rsquo;s own spoken label instead, so it is announced once rather than twice. "
+            "Text-to-speech names nobody, so an article&rsquo;s transcript shows none of this.",
+            captures),
         "prep": figure(
             "fig-prep-frame", "7.1-prep-with-playback",
             "The Prep destination with the bottom rail still carrying its playing state",
@@ -413,6 +424,7 @@ def build(captures, commit, date_iso, date_human, previous):
 {figures["transcript"]}
 {figures["upnext"]}
 {figures["notes"]}
+{figures["speakers"]}
 <p>Keyboard handling: the transport row is reachable by Tab, Collapse and Escape return focus to the originating rail toggle, and the underlying destination is disabled and hidden from accessibility while the full-window player is open.</p>
 <p>The same transport is reachable without the app in front of you. What is playing is published to the system, so the episode appears in the menu bar's Now Playing widget and on the lock screen, with its show, artwork, elapsed time, and speed. The keyboard's media keys and the widget's own buttons drive the identical model the on-screen rail drives: play and pause, next and previous episode, a 15-second step back and a 30-second step forward, scrubbing, and the six speeds the rate control offers. Next and previous are greyed out at the ends of Up Next rather than drawn as buttons that do nothing.</p>
 </section>

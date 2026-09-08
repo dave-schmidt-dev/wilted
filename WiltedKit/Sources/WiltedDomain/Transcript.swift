@@ -38,12 +38,27 @@ public enum TranscriptTiming: String, Codable, CaseIterable, Sendable {
 /// with its own remapped cues rather than invalidating these in place.
 public struct TranscriptCue: Codable, Equatable, Sendable {
     public static let maximumTextUTF8Bytes = 8_192
+    /// A name, not a sentence. WebVTT voice spans carry what the publisher
+    /// typed, and a publisher who types an essay into one does not get to
+    /// multiply the size of every cue in the transcript.
+    public static let maximumSpeakerUTF8Bytes = 128
 
     public let startSeconds: Double
     public let endSeconds: Double
     public let text: String
+    /// Who is speaking, when the source said so.
+    ///
+    /// Free-form rather than an index into a speaker table: a transcript has a
+    /// handful of names, the names are the publisher's own strings, and
+    /// interning them would buy bytes that `maximumCuesEncodedBytes` already
+    /// has room for at the cost of a second thing to keep consistent.
+    ///
+    /// Deliberately absent from `Transcript.text`. That string is what search
+    /// and ad detection read, and threading names through it would corrupt both
+    /// to buy a display feature.
+    public let speaker: String?
 
-    public init(startSeconds: Double, endSeconds: Double, text: String) throws {
+    public init(startSeconds: Double, endSeconds: Double, text: String, speaker: String? = nil) throws {
         guard startSeconds.isFinite, endSeconds.isFinite else {
             throw DomainError.invalidValue(field: "transcriptCue.time", reason: "must be finite")
         }
@@ -60,13 +75,28 @@ public struct TranscriptCue: Codable, Equatable, Sendable {
         guard trimmed.utf8.count <= Self.maximumTextUTF8Bytes else {
             throw DomainError.invalidValue(field: "transcriptCue.text", reason: "exceeds the 8192-byte cue limit")
         }
+        let trimmedSpeaker = speaker?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedSpeaker, !trimmedSpeaker.isEmpty {
+            guard trimmedSpeaker.utf8.count <= Self.maximumSpeakerUTF8Bytes else {
+                throw DomainError.invalidValue(
+                    field: "transcriptCue.speaker",
+                    reason: "exceeds the 128-byte speaker limit"
+                )
+            }
+            self.speaker = trimmedSpeaker
+        } else {
+            // A name the publisher left blank is no name. Storing "" would make
+            // the reader draw an empty label and would make "did the speaker
+            // change?" true between two cues nobody attributed.
+            self.speaker = nil
+        }
         self.startSeconds = startSeconds
         self.endSeconds = endSeconds
         self.text = trimmed
     }
 
     private enum CodingKeys: CodingKey {
-        case startSeconds, endSeconds, text
+        case startSeconds, endSeconds, text, speaker
     }
 
     public init(from decoder: Decoder) throws {
@@ -74,8 +104,21 @@ public struct TranscriptCue: Codable, Equatable, Sendable {
         try self.init(
             startSeconds: container.decode(Double.self, forKey: .startSeconds),
             endSeconds: container.decode(Double.self, forKey: .endSeconds),
-            text: container.decode(String.self, forKey: .text)
+            text: container.decode(String.self, forKey: .text),
+            // Absent on every cue written before schema version three, and on
+            // every cue from a source that never named anyone.
+            speaker: container.decodeIfPresent(String.self, forKey: .speaker)
         )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(startSeconds, forKey: .startSeconds)
+        try container.encode(endSeconds, forKey: .endSeconds)
+        try container.encode(text, forKey: .text)
+        // Encoded only when present, so an unattributed transcript stays the
+        // same bytes it was at version two.
+        try container.encodeIfPresent(speaker, forKey: .speaker)
     }
 }
 
@@ -84,8 +127,16 @@ public struct Transcript: Codable, Equatable, Sendable {
     /// Version two adds `timing` and `cues`. Version-one records still decode:
     /// they carry no timing, which is exactly what `TranscriptTiming.none`
     /// means, so the upgrade needs no data rewrite.
-    public static let currentSchemaVersion = 2
-    public static let supportedSchemaVersions = 1...2
+    ///
+    /// Version three adds `TranscriptCue.speaker`. Version-two cues still
+    /// decode -- the key is simply absent, which is what an unattributed cue
+    /// means -- so this too needs no data rewrite. The version is raised even
+    /// though the payload is backward-compatible, because the compatibility
+    /// runs one way only: a version-two reader would decode a version-three
+    /// transcript, drop every name it does not know about, and hand back a
+    /// record that looks complete. Refusing is the safer failure.
+    public static let currentSchemaVersion = 3
+    public static let supportedSchemaVersions = 1...3
     public static let maximumTextUTF8Bytes = 500_000
 
     /// Cue ceilings, sized against real material rather than a round number.
@@ -120,7 +171,7 @@ public struct Transcript: Codable, Equatable, Sendable {
         schemaVersion: Int = Transcript.currentSchemaVersion
     ) throws {
         guard Self.supportedSchemaVersions.contains(schemaVersion) else {
-            throw DomainError.invalidValue(field: "transcript.schemaVersion", reason: "must be version 1 or 2")
+            throw DomainError.invalidValue(field: "transcript.schemaVersion", reason: "must be version 1, 2, or 3")
         }
         if let languageCode {
             guard languageCode.utf8.count <= 35,

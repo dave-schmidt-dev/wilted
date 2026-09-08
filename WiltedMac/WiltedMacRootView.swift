@@ -2066,7 +2066,7 @@ private struct WiltedMacPlayerContent: View {
                     .accessibilityIdentifier("wilted-now-playing-transcript")
                 WiltedSyncedTranscriptView(
                     cues: transcript.cues.map {
-                        WiltedTranscriptCueLine(id: $0.id, startSeconds: $0.startSeconds, text: $0.text)
+                        WiltedTranscriptCueLine(id: $0.id, startSeconds: $0.startSeconds, text: $0.text, speaker: $0.speaker)
                     },
                     markers: model.currentRemovedSpans.map {
                         WiltedTranscriptMarkerLine(id: $0.id, atSeconds: $0.preparedSeconds, text: $0.summary)

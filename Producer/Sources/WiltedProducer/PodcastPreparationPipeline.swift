@@ -730,7 +730,15 @@ public actor PodcastPreparationPipeline {
                   let text = raw["text"] as? String else {
                 throw PodcastPreparationError.malformedWorkerResponse("malformed cue")
             }
-            guard let cue = try? TranscriptCue(startSeconds: start, endSeconds: end, text: text) else { continue }
+            // Absent for speech-to-text and for any published transcript whose
+            // publisher named nobody, which is most of them.
+            let speaker = raw["speaker"] as? String
+            guard let cue = try? TranscriptCue(
+                startSeconds: start,
+                endSeconds: end,
+                text: text,
+                speaker: speaker
+            ) else { continue }
             cues.append(cue)
         }
         let rawAds = try intervalObjects(named: "adSegments", in: object)

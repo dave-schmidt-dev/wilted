@@ -1,7 +1,7 @@
 {
   "contractVersion": 1,
   "supportedSchemaVersions": [1],
-  "transcriptSchemaVersions": [1, 2],
+  "transcriptSchemaVersions": [1, 2, 3],
   "database": {
     "scope": "private",
     "zoneType": "custom",

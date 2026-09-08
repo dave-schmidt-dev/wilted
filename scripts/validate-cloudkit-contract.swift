@@ -62,12 +62,13 @@ guard try string(database["scope"], "schema.database.scope") == "private",
 let supportedVersions = Set(try (schema["supportedSchemaVersions"] as? [Any] ?? []).map { try integer($0, "schema.supportedSchemaVersions") })
 guard supportedVersions == Set([Int64(1)]) else { throw ContractError("invalid-contract", "only schema version 1 is frozen") }
 // Transcripts are the one family whose own record version moved, because
-// timing was added additively at version two. Version-one transcript records
-// carry no timing or cues field and still decode; every other family stays at
-// version one, and the two sets are validated separately so a stray version
-// bump elsewhere still fails.
+// timing was added additively at version two, and the cue speaker at version
+// three. Version-one transcript records carry no timing or cues field and still
+// decode, and version-two cues carry no speaker and still decode; every other
+// family stays at version one, and the two sets are validated separately so a
+// stray version bump elsewhere still fails.
 let transcriptVersions = Set(try (schema["transcriptSchemaVersions"] as? [Any] ?? []).map { try integer($0, "schema.transcriptSchemaVersions") })
-guard transcriptVersions == Set([Int64(1), Int64(2)]) else { throw ContractError("invalid-contract", "transcript records accept schema versions 1 and 2") }
+guard transcriptVersions == Set([Int64(1), Int64(2), Int64(3)]) else { throw ContractError("invalid-contract", "transcript records accept schema versions 1, 2 and 3") }
 let queryIndexAllowlist = schema["queryIndexAllowlist"] as? [Any] ?? []
 guard queryIndexAllowlist.isEmpty else { throw ContractError("invalid-contract", "Phase 0 must not freeze custom query indexes") }
 let delayOfflineQuota = try object(schema["delayOfflineQuota"], "schema.delayOfflineQuota")

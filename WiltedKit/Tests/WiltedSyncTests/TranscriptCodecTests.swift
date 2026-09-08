@@ -86,6 +86,26 @@ func transcriptCodecCarriesTiming() throws {
     #expect(try codec.decodeTranscriptRecord(envelope).opaqueFields.isEmpty)
 }
 
+@Test("transcript codec carries the cue speaker through the compressed blob")
+func transcriptCodecCarriesSpeakers() throws {
+    let codec = WiltedRecordCodec()
+    let cues = [try TranscriptCue(startSeconds: 0, endSeconds: 2.5, text: "Welcome.", speaker: "Angie"),
+                try TranscriptCue(startSeconds: 2.5, endSeconds: 6, text: "Thanks.", speaker: "Chris"),
+                try TranscriptCue(startSeconds: 6, endSeconds: 8, text: "Unattributed.")]
+    let value = try Transcript(itemID: ItemID(rawValue: "item-transcript"),
+                               revisionID: RevisionID(rawValue: "rev-transcript"),
+                               availability: .available, text: "Welcome. Thanks. Unattributed.",
+                               languageCode: "en-US", timing: .published, cues: cues,
+                               updatedAt: Timestamp(iso8601: "2026-09-08T20:00:00Z"))
+    let decoded = try codec.decodeTranscript(try codec.encode(transcript: value))
+    #expect(decoded == value)
+    #expect(decoded.cues?.map(\.speaker) == ["Angie", "Chris", nil])
+    // The speaker rides inside the cue blob, so it must not have leaked out as
+    // a record field the transport would have to budget for.
+    #expect(try codec.decodeTranscriptRecord(try codec.encode(transcript: value))
+        .opaqueFields.isEmpty)
+}
+
 @Test("a record written before timing existed decodes as untimed rather than failing")
 func transcriptCodecAcceptsVersionOneRecords() throws {
     let codec = WiltedRecordCodec()
@@ -152,15 +172,21 @@ func timedTranscriptEnvelopeSurvivesJSONRoundTrip() throws {
                                availability: .available, text: "Line one", timing: .aligned,
                                cues: cues, updatedAt: Timestamp(iso8601: "2026-08-23T20:00:00Z"))
     let envelope = try codec.encode(transcript: value)
-    #expect(envelope.schemaVersion == 2)
+    #expect(envelope.schemaVersion == Transcript.currentSchemaVersion)
     let restored = try JSONDecoder().decode(WiltedRecordEnvelope.self, from: JSONEncoder().encode(envelope))
     #expect(restored == envelope)
     #expect(try codec.decodeTranscript(restored) == value)
 }
 
-@Test("only transcript envelopes accept version two")
-func onlyTranscriptEnvelopesAcceptVersionTwo() throws {
-    #expect(WiltedRecordEnvelope.supportedSchemaVersions(for: .transcript) == 1...2)
+@Test("only transcript envelopes accept a schema version above one")
+func onlyTranscriptEnvelopesAcceptVersionsAboveOne() throws {
+    // The transport range is the domain's range and not a second number to
+    // keep in step: a transcript schema bump has to reach the envelope, or a
+    // record the domain can write is one the transport would refuse.
+    #expect(WiltedRecordEnvelope.supportedSchemaVersions(for: .transcript)
+            == Transcript.supportedSchemaVersions)
+    #expect(WiltedRecordEnvelope.supportedSchemaVersions(for: .transcript).upperBound
+            == Transcript.currentSchemaVersion)
     for type in [WiltedRecordType.item, .revision, .playbackState] {
         #expect(WiltedRecordEnvelope.supportedSchemaVersions(for: type) == 1...1)
     }

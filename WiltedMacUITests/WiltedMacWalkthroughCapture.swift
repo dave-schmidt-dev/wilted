@@ -166,6 +166,18 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         XCTAssertTrue(element(episodeApp, "wilted-player-notes-expanded").waitForExistence(timeout: 10))
         try write(episodeApp, "6.4-notes-expanded", into: root)
         notes.click()
+
+        // The episode's transcript is the publisher's own, so it is the one
+        // surface that names who is speaking. The article fixture cannot show
+        // this: text-to-speech has one voice and credits nobody.
+        let episodeTranscript = element(episodeApp, "wilted-player-transcript")
+        if episodeTranscript.waitForExistence(timeout: 5) {
+            episodeTranscript.click()
+            XCTAssertTrue(element(episodeApp, "wilted-now-playing-synced-transcript-cue-0")
+                .waitForExistence(timeout: 10))
+            try write(episodeApp, "6.5-transcript-speakers", into: root)
+            episodeTranscript.click()
+        }
         episodeApp.terminate()
     }
 

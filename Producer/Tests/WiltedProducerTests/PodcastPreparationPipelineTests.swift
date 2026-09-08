@@ -15,6 +15,27 @@ struct PodcastPreparationPipelineTests {
     }
 
     /// The transcript the feed publishes is preferred, arrives already timed,
+    @Test func keepsTheSpeakerTheWorkerNamedOnEachCue() async throws {
+        let fixture = try await Fixture(publishesTranscript: true)
+        defer { fixture.remove() }
+        let stub = WorkerStub(response: [
+            "ok": true, "timing": "published", "audioPath": fixture.audioURL.path, "audioChanged": false,
+            "text": "Welcome back. Thanks for having me. And we are off.",
+            "languageCode": "en",
+            "cues": [["startSeconds": 0.0, "endSeconds": 2.5, "text": "Welcome back.", "speaker": "Angie"],
+                     ["startSeconds": 2.5, "endSeconds": 6.0, "text": "Thanks for having me.", "speaker": "Chris"],
+                     ["startSeconds": 6.0, "endSeconds": 8.0, "text": "And we are off."]],
+        ])
+
+        let result = try await fixture.pipeline(stub).prepare(episodeID: fixture.episodeID)
+
+        #expect(result.transcript.cues?.map(\.speaker) == ["Angie", "Chris", nil])
+        // The flattened text is what search and ad detection read. A name in
+        // there would corrupt both to buy a display feature.
+        #expect(result.transcript.text?.contains("Angie") == false)
+        #expect(result.transcript.schemaVersion == Transcript.currentSchemaVersion)
+    }
+
     /// and is handed to the worker as text rather than as a URL.
     @Test func fetchesThePublishedTranscriptAndKeepsItsTiming() async throws {
         let fixture = try await Fixture(publishesTranscript: true)
@@ -52,7 +73,7 @@ struct PodcastPreparationPipelineTests {
 
         let stored = try #require(try await fixture.store.transcript(for: fixture.episodeID, revisionID: fixture.revisionID))
         #expect(stored.cues?.last?.text == "Today we talk about latency.")
-        #expect(stored.schemaVersion == 2)
+        #expect(stored.schemaVersion == Transcript.currentSchemaVersion)
     }
 
     @Test(arguments: [

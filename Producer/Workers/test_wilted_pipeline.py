@@ -486,6 +486,16 @@ class RemapTests(unittest.TestCase):
         self.assertEqual(wp.remap_cues(cues, self.keeps),
                          [{"startSeconds": 11.0, "endSeconds": 15.0, "text": "after"}])
 
+    def test_cutting_an_advertisement_does_not_change_who_spoke(self):
+        cues = [{"startSeconds": 21, "endSeconds": 25, "text": "after", "speaker": "Angie"}]
+        self.assertEqual(wp.remap_cues(cues, self.keeps),
+                         [{"startSeconds": 11.0, "endSeconds": 15.0,
+                           "text": "after", "speaker": "Angie"}])
+
+    def test_an_unattributed_cue_gains_no_speaker_key_when_remapped(self):
+        cues = [{"startSeconds": 21, "endSeconds": 25, "text": "after"}]
+        self.assertNotIn("speaker", wp.remap_cues(cues, self.keeps)[0])
+
     def test_keeps_a_cue_that_straddles_a_boundary(self):
         cues = [{"startSeconds": 9, "endSeconds": 21, "text": "and now a word"}]
         remapped = wp.remap_cues(cues, self.keeps)
@@ -584,6 +594,61 @@ class PublishedTranscriptTests(unittest.TestCase):
         install_fake_wilted({"vtt": segments})
         with redirect_stderr(io.StringIO()):
             return wp.parse_published_transcript("WEBVTT", "text/vtt", "https://x.test/a.vtt")
+
+    def test_keeps_the_voice_span_name_as_the_speaker(self):
+        result = self._vtt("<v Angie>Welcome to the show.")
+        self.assertEqual(result[0].text, "Welcome to the show.")
+        self.assertEqual(result[0].speaker, "Angie")
+
+    def test_keeps_the_name_from_a_classed_voice_span(self):
+        result = self._vtt("<v.loud.first Angie Jones>Hello there.")
+        self.assertEqual(result[0].text, "Hello there.")
+        self.assertEqual(result[0].speaker, "Angie Jones")
+
+    def test_decodes_entities_in_the_speaker_name(self):
+        result = self._vtt("<v Ben &amp; Jerry>We make ice cream.")
+        self.assertEqual(result[0].speaker, "Ben & Jerry")
+
+    def test_closed_voice_spans_carry_the_speaker_too(self):
+        result = self._vtt("<v Chris>Thanks for having me.</v>")
+        self.assertEqual(result[0].text, "Thanks for having me.")
+        self.assertEqual(result[0].speaker, "Chris")
+
+    def test_a_cue_without_a_voice_span_has_no_speaker(self):
+        result = self._vtt("Just some narration.")
+        self.assertIsNone(result[0].speaker)
+
+    def test_a_voice_span_that_does_not_open_the_cue_is_not_the_speaker(self):
+        # A voice span mid-cue is a change of speaker the contract cannot
+        # represent, so the cue keeps whoever opened it -- here, nobody.
+        result = self._vtt("She said <v Angie>hello</v> and left.")
+        self.assertIsNone(result[0].speaker)
+        self.assertEqual(result[0].text, "She said hello and left.")
+
+    def test_an_overlong_name_is_dropped_rather_than_truncated(self):
+        result = self._vtt("<v %s>Words.</v>" % ("N" * 200))
+        self.assertIsNone(result[0].speaker)
+        self.assertEqual(result[0].text, "Words.")
+
+    def test_a_cue_that_is_only_a_voice_tag_takes_its_speaker_with_it(self):
+        result = self._vtt("<v Angie>", "<v Chris>Actual words.")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].speaker, "Chris")
+
+    def test_speakers_survive_projection_onto_the_cue_contract(self):
+        segments = self._vtt("<v Angie>First.", "<v Chris>Second.", "Third.")
+        cues = wp.segments_to_cues(segments)
+        self.assertEqual([c.get("speaker") for c in cues], ["Angie", "Chris", None])
+        # An unattributed cue omits the key rather than carrying a null: the
+        # Swift side decodes an absent key as "nobody said who", and a null
+        # would be a second spelling of the same thing.
+        self.assertNotIn("speaker", cues[2])
+
+    def test_the_speaker_is_absent_from_the_flattened_text(self):
+        segments = self._vtt("<v Angie>First.", "<v Chris>Second.")
+        text = wp.cues_to_text(wp.segments_to_cues(segments))
+        self.assertEqual(text, "First. Second.")
+        self.assertNotIn("Angie", text)
 
     def test_an_unclosed_voice_span_does_not_reach_the_reader(self):
         # The shape Changelog publishes: the span opens at the cue and runs to

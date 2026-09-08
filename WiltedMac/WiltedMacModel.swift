@@ -652,6 +652,8 @@ struct WiltedMacTranscriptCue: Identifiable, Equatable, Sendable {
     let startSeconds: TimeInterval
     let endSeconds: TimeInterval
     let text: String
+    /// Who is speaking, when the publisher's transcript said so.
+    var speaker: String?
 }
 
 struct WiltedMacTranscript: Equatable, Sendable {
@@ -3186,7 +3188,8 @@ final class WiltedMacModel {
             availability: availability, text: stored.text,
             cues: (stored.cues ?? []).enumerated().map { index, cue in
                 WiltedMacTranscriptCue(id: index, startSeconds: cue.startSeconds,
-                                       endSeconds: cue.endSeconds, text: cue.text)
+                                       endSeconds: cue.endSeconds, text: cue.text,
+                                       speaker: cue.speaker)
             },
             timingSource: timingSource
         )
@@ -4545,6 +4548,34 @@ final class WiltedMacModel {
     /// relaunch: the journal's terminal summary, not just "synced".
     static let fixturePreparedSummary = "Ready · 5 ads removed (7:22) · transcript synced"
 
+    /// A two-voice interview transcript for the fixture episode.
+    ///
+    /// Published timing rather than aligned, because a publisher's WebVTT is
+    /// the only thing that names anyone -- speech-to-text produces no speaker,
+    /// so an aligned fixture could not show the labels at all. Two people
+    /// alternating is the case the display rule exists for: the name is drawn
+    /// where the voice changes, and the run of lines in between carries none.
+    private static func fixtureEpisodeTranscript(
+        episodeID: ItemID, revisionID: RevisionID
+    ) -> Transcript? {
+        let lines: [(Double, Double, String, String?)] = [
+            (0, 6, "Welcome back to Field Notes. Today, the machines that keep the office quiet.", "Angie"),
+            (6, 13, "Thanks for having me. I have opinions about ventilation.", "Chris"),
+            (13, 20, "Everyone does, eventually.", nil),
+            (20, 28, "Let us start with the one under the stairs.", "Angie"),
+        ]
+        let cues = lines.compactMap {
+            try? TranscriptCue(startSeconds: $0.0, endSeconds: $0.1, text: $0.2, speaker: $0.3)
+        }
+        guard cues.count == lines.count else { return nil }
+        return try? Transcript(
+            itemID: episodeID, revisionID: revisionID, availability: .available,
+            text: cues.map(\.text).joined(separator: " "),
+            languageCode: "en", timing: .published, cues: cues,
+            updatedAt: Timestamp(Date(timeIntervalSince1970: 1_699_827_200))
+        )
+    }
+
     private func installPodcastFixture(in store: LocalLibraryStore) {
         let feedURL = URL(string: "https://fixtures.example.test/field-notes.xml")!
         let enclosureURL = URL(string: "https://fixtures.example.test/media/quiet-machines.mp3")!
@@ -4620,7 +4651,17 @@ final class WiltedMacModel {
                     subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_699_740_800)), enabled: false
                 ))
             }
-            if let revision { try? await store.saveReadyRevision(revision, mediaURL: mediaURL) }
+            if let revision {
+                if let transcript = Self.fixtureEpisodeTranscript(
+                    episodeID: episodeID, revisionID: revision.revisionID
+                ) {
+                    try? await store.saveReadyRevision(
+                        revision, mediaURL: mediaURL, transcript: transcript
+                    )
+                } else {
+                    try? await store.saveReadyRevision(revision, mediaURL: mediaURL)
+                }
+            }
             // A prepared fixture episode has a history for Prep to read, in
             // the worker's own vocabulary, so the detailed log is exercised
             // through the same journal the real pipeline writes.

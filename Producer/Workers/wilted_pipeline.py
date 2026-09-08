@@ -41,7 +41,7 @@ import tempfile
 import threading
 import time
 import unicodedata
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
@@ -794,11 +794,17 @@ def remap_cues(cues: list[dict], keeps: list[KeepInterval]) -> list[dict]:
         new_end = last.output_start_s + min(last.duration_s, max(0.0, end - last.start_s))
         if new_end < new_start:
             new_end = new_start
-        remapped.append({
+        moved = {
             "startSeconds": round(new_start, 3),
             "endSeconds": round(new_end, 3),
             "text": cue["text"],
-        })
+        }
+        # Cutting an advertisement out moves a cue; it does not change who said
+        # it.  This dict is rebuilt by hand, so the key has to be carried
+        # explicitly or it is dropped without a word.
+        if cue.get("speaker"):
+            moved["speaker"] = cue["speaker"]
+        remapped.append(moved)
     # Cutting can pull two cues onto the same instant. Order is a contract
     # invariant on the Swift side, so it is restored here rather than there.
     remapped.sort(key=lambda c: c["startSeconds"])
@@ -839,7 +845,13 @@ def segments_to_cues(segments) -> list[dict]:
             continue
         start = max(0.0, float(segment.start_s))
         end = max(start, float(segment.end_s))
-        cues.append({"startSeconds": round(start, 3), "endSeconds": round(end, 3), "text": text})
+        cue = {"startSeconds": round(start, 3), "endSeconds": round(end, 3), "text": text}
+        # Only published transcripts name anyone.  Speech-to-text segments have
+        # no such attribute, so this asks rather than assumes.
+        speaker = getattr(segment, "speaker", None)
+        if speaker:
+            cue["speaker"] = speaker
+        cues.append(cue)
     cues.sort(key=lambda c: c["startSeconds"])
     return cues
 
@@ -1240,26 +1252,74 @@ def polish_with_notes(request: dict, cues: list[dict]) -> list[dict]:
 # so every one of those reaches the stored cue and the reader follows along
 # against a literal "<v Chris>".
 CUE_MARKUP_PATTERN = re.compile(r"<[^>]*>")
+# A WebVTT voice span: "<v Angie>", "<v.loud Angie Jones>", "<v Chris>...</v>".
+# The name runs to the ">" and may contain spaces; the classes after "v" are
+# styling hooks and are not part of it.  Anchored to the start because a voice
+# span that opens a cue is the one that says who is speaking -- a later one is
+# a change of speaker mid-cue, which this contract has nowhere to put.
+CUE_VOICE_PATTERN = re.compile(r"^\s*<v(?:\.[^\s>]+)*\s+([^>]+)>")
+# Sized to the Swift contract's own speaker ceiling.  A publisher who types an
+# essay into a voice span gets no name rather than a truncated one, because a
+# name cut mid-word reads as a different person.
+MAXIMUM_SPEAKER_BYTES = 128
+
+
+@dataclass(frozen=True)
+class CueSegment:
+    """A published-transcript segment with the speaker kept alongside the text.
+
+    The archived parsers return their own segment type, which has nowhere to
+    put a name.  This mirrors the attribute names the rest of the pipeline
+    reads (`text`, `start_s`, `end_s`) so it can stand in for one, and adds the
+    field the cue contract gained at transcript schema version three.
+    """
+
+    text: str
+    start_s: float
+    end_s: float
+    speaker: str | None = None
+
+
+def extract_cue_speaker(text: str) -> str | None:
+    """Return the voice-span name opening this cue, if it has one."""
+    match = CUE_VOICE_PATTERN.match(text)
+    if not match:
+        return None
+    # The name is markup-free by construction but not entity-free: a publisher
+    # writes "Ben &amp; Jerry" the same way inside a voice span as anywhere else.
+    name = html.unescape(match.group(1)).strip()
+    if not name or len(name.encode("utf-8")) > MAXIMUM_SPEAKER_BYTES:
+        return None
+    return name
 
 
 def strip_cue_markup(segments):
-    """Return segments whose text is the spoken words alone.
+    """Return segments whose text is the spoken words alone, speaker preserved.
 
     Cues that hold nothing but markup are dropped rather than emitted empty:
     the Swift cue contract rejects empty text, and a blank cue would stall the
-    reader on a line with nothing to read.
+    reader on a line with nothing to read.  A cue that was only a voice tag
+    loses its name with it -- there is no text for the name to belong to.
     """
     cleaned = []
     for segment in segments:
-        # Order matters.  A literal "<" inside a cue payload has to be written
-        # "&lt;", so unescaping first would manufacture markup out of words
-        # somebody actually said and then strip them.
+        # The name has to come out before the markup does, for the obvious
+        # reason: stripping is what destroys it.
+        speaker = extract_cue_speaker(segment.text)
+        # Order matters here too.  A literal "<" inside a cue payload has to be
+        # written "&lt;", so unescaping first would manufacture markup out of
+        # words somebody actually said and then strip them.
         text = CUE_MARKUP_PATTERN.sub("", segment.text)
         text = html.unescape(text)
         text = re.sub(r"\s+", " ", text).strip()
         if not text:
             continue
-        cleaned.append(replace(segment, text=text))
+        cleaned.append(CueSegment(
+            text=text,
+            start_s=float(segment.start_s),
+            end_s=float(segment.end_s),
+            speaker=speaker,
+        ))
     return cleaned
 
 

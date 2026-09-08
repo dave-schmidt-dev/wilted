@@ -195,11 +195,15 @@ public struct WiltedTranscriptCueLine: Identifiable, Equatable, Sendable {
     public let id: Int
     public let startSeconds: TimeInterval
     public let text: String
+    /// Who is speaking, when the transcript said so. Nil for speech-to-text
+    /// and for any published transcript that named nobody.
+    public let speaker: String?
 
-    public init(id: Int, startSeconds: TimeInterval, text: String) {
+    public init(id: Int, startSeconds: TimeInterval, text: String, speaker: String? = nil) {
         self.id = id
         self.startSeconds = startSeconds
         self.text = text
+        self.speaker = speaker
     }
 
     /// The timestamp shown beside the line, which is also what tapping it
@@ -290,13 +294,41 @@ public struct WiltedSyncedTranscriptView: View {
         return merged
     }
 
+    /// The cues that draw a speaker's name above them.
+    ///
+    /// A name is drawn where it changes, not on every line: an interview
+    /// alternates two people for an hour, and repeating both names down the
+    /// whole transcript is noise the reader has to look past to find the words.
+    /// The first attributed cue always draws one, because there is nothing
+    /// before it to have established who is talking.
+    ///
+    /// Internal rather than private for the same reason `rows` is: which lines
+    /// carry a name is the behaviour, and it deserves a test rather than a
+    /// screenshot.
+    var speakerHeadingCueIDs: Set<Int> {
+        var headings: Set<Int> = []
+        var previous: String?
+        for cue in cues {
+            if let speaker = cue.speaker, speaker != previous {
+                headings.insert(cue.id)
+            }
+            // A cue with no speaker does not end the run. Publishers attribute
+            // the line that changes hands and leave the rest bare, so treating
+            // a bare cue as "unknown speaker" would redraw the name on every
+            // line after it.
+            if cue.speaker != nil { previous = cue.speaker }
+        }
+        return headings
+    }
+
     public var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                    let headings = speakerHeadingCueIDs
                     ForEach(rows) { row in
                         switch row {
-                        case .cue(let cue): line(cue)
+                        case .cue(let cue): line(cue, showsSpeaker: headings.contains(cue.id))
                         case .marker(let marker): removedLine(marker)
                         }
                     }
@@ -312,8 +344,32 @@ public struct WiltedSyncedTranscriptView: View {
         .accessibilityLabel("Transcript, synchronized with playback")
     }
 
-    @ViewBuilder private func line(_ cue: WiltedTranscriptCueLine) -> some View {
+    @ViewBuilder private func line(_ cue: WiltedTranscriptCueLine, showsSpeaker: Bool) -> some View {
         let isActive = cue.id == activeCueID
+        VStack(alignment: .leading, spacing: 0) {
+            if showsSpeaker, let speaker = cue.speaker {
+                Text(speaker)
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                    // Aligned with the words rather than the timestamp: the
+                    // name belongs to what was said, and the stamp column is
+                    // the seek target.
+                    .padding(.leading, WiltedTheme.Spacing.small)
+                    .padding(.top, WiltedTheme.Spacing.small)
+                    // The line below already announces it, so a reader using
+                    // VoiceOver would otherwise hear every name twice.
+                    .accessibilityHidden(true)
+                    .accessibilityIdentifier("\(identifier)-speaker-\(cue.id)")
+            }
+            cueButton(cue, isActive: isActive, showsSpeaker: showsSpeaker)
+        }
+    }
+
+    @ViewBuilder private func cueButton(
+        _ cue: WiltedTranscriptCueLine,
+        isActive: Bool,
+        showsSpeaker: Bool
+    ) -> some View {
         Button { onSelect(cue) } label: {
             HStack(alignment: .firstTextBaseline, spacing: WiltedTheme.Spacing.small) {
                 Text(cue.stamp)
@@ -337,9 +393,24 @@ public struct WiltedSyncedTranscriptView: View {
         }
         .buttonStyle(.plain)
         .id(cue.id)
-        .accessibilityLabel("\(cue.stamp). \(cue.text)")
+        // The name goes in the spoken label, not just on screen: a reader
+        // listening to the transcript needs to know the voice changed, and the
+        // visual heading above is hidden from them precisely so this reads once.
+        .accessibilityLabel(spokenLabel(cue, showsSpeaker: showsSpeaker))
         .accessibilityAddTraits(isActive ? .isSelected : [])
         .accessibilityIdentifier("\(identifier)-cue-\(cue.id)")
+    }
+
+    /// What a reader using VoiceOver hears for one cue.
+    ///
+    /// Internal so the name-once rule can be asserted directly: the visual
+    /// heading is `accessibilityHidden`, so if this dropped the name it would
+    /// disappear for exactly the readers who cannot see who is talking.
+    func spokenLabel(_ cue: WiltedTranscriptCueLine, showsSpeaker: Bool) -> String {
+        guard showsSpeaker, let speaker = cue.speaker else {
+            return "\(cue.stamp). \(cue.text)"
+        }
+        return "\(cue.stamp). \(speaker). \(cue.text)"
     }
 
     /// Deliberately not a button: there is nothing to seek to, because the
