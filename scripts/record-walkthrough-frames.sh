@@ -24,13 +24,15 @@ trap 'rm -rf "$tmp_root"' EXIT
 
 status() { printf '%s\n' "$*" >&2; }
 
-# The same preflight the native gate's UI leg runs, for the same reason and one
-# more. XCUITest cannot bring an application forward while the login session is
-# locked, and against a locked screen the symptoms name everything except the
-# lock: controls report present but `isHittable == false`, window frames land
-# across display boundaries, and audio playback fails with the app's own
-# "Audio route recovery failed." Measured 2026-09-07, eight capture runs spent
-# on those symptoms before the lock was found.
+# The same preflight the native gate's UI leg runs, for the same reason:
+# XCUITest cannot bring an application forward while the login session is
+# locked, so a capture started against a lock burns a full build and then fails
+# on an assertion that says nothing about the cause. The gate refuses rather
+# than run; this refuses too, so the two agree about when a capture is possible.
+# It refused a real lock on 2026-09-07. It is not the explanation for that
+# night's failed captures -- those ran against a live session, driving the app
+# through six sections before failing on an unhittable control in a window
+# placed at a negative origin across a display boundary.
 screen_is_locked() {
   ioreg -n Root -d1 -a 2>/dev/null | grep -A 1 'CGSSessionScreenIsLocked' | grep -q '<true/>'
 }
