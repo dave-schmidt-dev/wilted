@@ -396,6 +396,7 @@ def install_fake_ads(llm: FakeLLM, detections=()):
         return "\n".join([*headers, *(f"[{index}] {segments[index].text}" for index in context_ids)])
 
     ads._render_segments_bounded = render_segments_bounded  # noqa: SLF001
+    attach_archive_render_helpers(ads, lambda index, _segment: f"[{index}] ")
     ads._id_response_format = lambda field, ids: {"field": field, "ids": list(ids)}  # noqa: SLF001
     ads._generate_constrained_response = (  # noqa: SLF001
         lambda backend, system, transcript, response_format: backend.generate(
@@ -450,6 +451,38 @@ def install_fake_ads(llm: FakeLLM, detections=()):
     sys.modules["wilted.ads"] = ads
     sys.modules["wilted.llm"] = llm_module
     return ads
+
+
+ARCHIVE_TRUNCATION_MARKER = " \u2026[TRUNCATED]\u2026 "
+
+
+def attach_archive_render_helpers(ads, segment_prefix):
+    """Give a fake archive module the render helpers the worker's install needs.
+
+    The worker builds its replacement renderer out of the archive's own prefix,
+    truncation and cap, so a fake that omits them would silently skip the
+    install and leave the budget arithmetic untested. The truncation is the
+    archive's, copied rather than imported for the same reason the rest of this
+    module fakes `wilted.ads`: the gate never loads the archive.
+    """
+    ads._TRUNCATION_MARKER = ARCHIVE_TRUNCATION_MARKER  # noqa: SLF001
+    ads._MAX_CLASSIFICATION_BATCH_CHARS = 12_000  # noqa: SLF001
+    ads._segment_prefix = segment_prefix  # noqa: SLF001
+
+    def truncate_head_tail(text, max_chars):
+        if len(text) <= max_chars:
+            return text
+        if max_chars <= len(ARCHIVE_TRUNCATION_MARKER):
+            return ARCHIVE_TRUNCATION_MARKER[:max_chars]
+        remaining = max_chars - len(ARCHIVE_TRUNCATION_MARKER)
+        tail_chars = remaining // 2
+        return (
+            text[: (remaining + 1) // 2]
+            + ARCHIVE_TRUNCATION_MARKER
+            + (text[-tail_chars:] if tail_chars else "")
+        )
+
+    ads._truncate_head_tail = truncate_head_tail  # noqa: SLF001
 
 
 class KeepMapTests(unittest.TestCase):
@@ -1435,6 +1468,134 @@ class ProducedDisclaimerEvidenceTests(unittest.TestCase):
         del ads._SPARSE_PROMO_CUES
         with self.assertRaises(AttributeError):
             wp.install_produced_disclaimer_evidence(ads)
+
+
+class ProportionalRenderBudgetTests(unittest.TestCase):
+    """The classifier must see a whole sponsor read whenever the batch fits."""
+
+    # Shaped like a real classification window: a long host read beside the
+    # short conversational cues that surround it. Under the archive's equal
+    # split the short cues hold budget they cannot spend and the read loses its
+    # middle, which is how the Practical AI Framer read reached the model with
+    # its call to action cut out.
+    HOST_READ = (
+        "our sponsor framer is the pro website builder for creators teams and "
+        "businesses that want to look professional without hiring a designer "
+        "and you can start free today at framer dot com slash practical ai for "
+        "thirty percent off your first year of a pro plan"
+    )
+    CUES = ["right", "yeah exactly", HOST_READ, "mm hmm", "that is wild", "okay so"]
+
+    def setUp(self):
+        self.ads = install_fake_ads(FakeLLM())
+        wp.install_proportional_render_budget(self.ads)
+        self.segments = [
+            FakeSegment(float(index) * 10, float(index + 1) * 10, text)
+            for index, text in enumerate(self.CUES)
+        ]
+        self.ids = list(range(len(self.CUES)))
+
+    def render(self, max_chars, ids=None, headers=None):
+        return self.ads._render_segments_bounded(
+            self.ids if ids is None else ids, self.segments, headers, max_chars
+        )
+
+    @staticmethod
+    def flat_budgets(lengths, text_budget):
+        """The equal split this replaces, for contrast."""
+        share, remainder = divmod(text_budget, len(lengths))
+        return [share + (position < remainder) for position in range(len(lengths))]
+
+    def fixed_chars(self, ids, headers=()):
+        prefixes = [self.ads._segment_prefix(i, self.segments[i]) for i in ids]
+        line_count = len(headers) + len(ids)
+        return sum(map(len, headers)) + sum(map(len, prefixes)) + max(0, line_count - 1)
+
+    def fits_cap(self):
+        # Shaped like a real window: the whole batch fits, and one equal share
+        # does not cover the host read. Both halves matter -- the first is why
+        # nothing should be truncated, the second is why the archive was.
+        return self.fixed_chars(self.ids) + 400
+
+    def test_a_batch_that_fits_renders_every_cue_in_full(self):
+        rendered = self.render(self.fits_cap())
+        self.assertNotIn(self.ads._TRUNCATION_MARKER, rendered)
+        for text in self.CUES:
+            self.assertIn(text, rendered)
+
+    def test_the_equal_split_would_have_truncated_the_read_that_fits(self):
+        # The defect, stated as arithmetic: the batch is well under the cap and
+        # the archive truncates anyway, because the short cues are handed a
+        # share of the budget they will never use.
+        budget = self.fits_cap() - self.fixed_chars(self.ids)
+        lengths = [len(text) for text in self.CUES]
+        self.assertLess(sum(lengths), budget, "this batch fits under the cap in full")
+        flat = self.flat_budgets(lengths, budget)
+        self.assertLess(flat[2], lengths[2], "the equal split truncates the host read")
+        proportional = wp._proportional_render_budgets(lengths, budget)
+        self.assertEqual(proportional, lengths, "every cue is given exactly what it needs")
+
+    def test_over_budget_batches_stay_under_the_cap_and_keep_the_short_cues(self):
+        cap = self.fixed_chars(self.ids) + 120
+        rendered = self.render(cap)
+        self.assertLessEqual(len(rendered), cap)
+        self.assertIn(self.ads._TRUNCATION_MARKER, rendered)
+        lines = rendered.split("\n")
+        self.assertEqual(len(lines), len(self.CUES))
+        for index, text in enumerate(self.CUES):
+            if index == 2:
+                continue
+            self.assertIn(text, lines[index], "a short cue is never truncated to pay for a long one")
+        self.assertIn(self.ads._TRUNCATION_MARKER, lines[2])
+
+    def test_uniform_cues_render_exactly_as_the_equal_split_did(self):
+        # The fallback has to be the behaviour it replaces, or this is a
+        # rewrite of the archive's renderer rather than a budget fix.
+        lengths = [400, 400, 400, 400]
+        self.assertEqual(
+            wp._proportional_render_budgets(lengths, 802), self.flat_budgets(lengths, 802)
+        )
+
+    def test_every_allocation_spends_no_more_than_the_budget(self):
+        for lengths, budget in (
+            ([5, 5, 5], 9),
+            ([1, 1, 900], 100),
+            ([0, 0, 0], 7),
+            ([300], 12),
+            ([], 50),
+            ([2, 3, 4, 500, 600], 61),
+        ):
+            with self.subTest(lengths=lengths, budget=budget):
+                budgets = wp._proportional_render_budgets(lengths, budget)
+                self.assertEqual(len(budgets), len(lengths))
+                self.assertLessEqual(sum(budgets), budget)
+                for allocated, length in zip(budgets, lengths, strict=True):
+                    self.assertGreaterEqual(allocated, 0)
+                if sum(lengths) <= budget:
+                    self.assertEqual(budgets, lengths, "a batch that fits is never truncated")
+
+    def test_prefixes_order_and_headers_are_unchanged(self):
+        headers = ["window 0", "classify each ID"]
+        rendered = self.render(self.fits_cap() + sum(map(len, headers)) + 2, headers=headers)
+        lines = rendered.split("\n")
+        self.assertEqual(lines[: len(headers)], headers)
+        for index, line in enumerate(lines[len(headers) :]):
+            self.assertTrue(line.startswith(self.ads._segment_prefix(index, self.segments[index])))
+
+    def test_required_ids_that_cannot_fit_are_still_a_contract_failure(self):
+        with self.assertRaises(ValueError):
+            self.render(self.fixed_chars(self.ids) - 1)
+
+    def test_repeated_install_replaces_the_renderer_once(self):
+        once = self.ads._render_segments_bounded
+        wp.install_proportional_render_budget(self.ads)
+        self.assertIs(self.ads._render_segments_bounded, once)
+
+    def test_a_missing_archive_helper_is_a_contract_failure(self):
+        ads = install_fake_ads(FakeLLM())
+        del ads._truncate_head_tail
+        with self.assertRaises(AttributeError):
+            wp.install_proportional_render_budget(ads)
 
 
 class ExplicitSponsorFallbackTests(unittest.TestCase):
@@ -3522,7 +3683,14 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
         ads._SPONSOR_OPENING_RE = re.compile("sponsor")
         ads._EXPLICIT_HOST_READ_OPENING_RE = re.compile("sponsor")
         ads._SPARSE_PROMO_CUES = ()
+        attach_archive_render_helpers(
+            ads,
+            lambda index, segment: f"[ID {index}] [{segment.start_s:.2f}s - {segment.end_s:.2f}s] ",
+        )
         ads.detect_ads = detector
+        # Kept so a test can ask what the worker installed on the module the
+        # detector was actually handed.
+        self.last_ads = ads
         return ads
 
     @staticmethod
@@ -3573,6 +3741,22 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
         return wp.analyze_ad_detections(
             self.ads(detector_with_coverage), backend, self.segments, 100.0, **kwargs
         ), backend
+
+    def test_the_render_budget_is_installed_before_the_classifier_runs(self):
+        # An install that runs after `detect_ads` would fix nothing: the
+        # classification requests are rendered inside it.
+        marked = []
+
+        def detector(_segments, _backend):
+            marked.append(
+                getattr(
+                    self.last_ads._render_segments_bounded, wp._PROPORTIONAL_RENDER_MARKER, False
+                )
+            )
+            return []
+
+        self.analysis(detector, [])
+        self.assertEqual(marked, [True])
 
     def test_exhausted_singleton_is_unresolved_not_a_clean_no_ads_result(self):
         def detector(_segments, backend):

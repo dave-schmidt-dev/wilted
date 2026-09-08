@@ -1887,6 +1887,77 @@ def install_produced_disclaimer_evidence(ads_module) -> None:
     )
 
 
+_PROPORTIONAL_RENDER_MARKER = "wilted_proportional_render_budget"
+
+
+def _proportional_render_budgets(lengths: list[int], text_budget: int) -> list[int]:
+    """Split a text budget so no cue is truncated while another's share goes unused.
+
+    A water-fill: every cue that fits inside an equal share takes only what it
+    needs, and what it declines is redivided among the cues still over. Repeat
+    until nothing more fits, at which point the survivors split what is left
+    equally -- which is the flat allocation this replaces, so a batch of
+    uniformly long cues renders exactly as it did before.
+    """
+    budgets = [0] * len(lengths)
+    pending = list(range(len(lengths)))
+    remaining = text_budget
+    while pending:
+        share, extra = divmod(remaining, len(pending))
+        if all(lengths[index] > share for index in pending):
+            for rank, index in enumerate(pending):
+                budgets[index] = share + (rank < extra)
+            break
+        for index in pending:
+            if lengths[index] <= share:
+                budgets[index] = lengths[index]
+                remaining -= lengths[index]
+        pending = [index for index in pending if lengths[index] > share]
+    return budgets
+
+
+def install_proportional_render_budget(ads_module) -> None:
+    """Stop the classifier truncating short cues to pay for a share they cannot use.
+
+    The archive divides a request's character budget equally across its IDs, so
+    a two-word cue holds a share it will never spend while the sponsor read
+    beside it loses its middle. Measured on the Practical AI episode that left
+    the Framer read whole: every classification window fit under the cap in
+    full, and 20 to 25 of roughly 60 cues per window were truncated regardless,
+    discarding ~2,300 characters of transcript while ~3,600 characters of budget
+    went unused. The batching pass already sizes requests to fit; this makes the
+    renderer spend the budget the same way it was measured, and still falls back
+    to the equal split for cues that genuinely do not fit.
+    """
+    installed = getattr(ads_module, "_render_segments_bounded", None)
+    if getattr(installed, _PROPORTIONAL_RENDER_MARKER, False):
+        return
+    segment_prefix = ads_module._segment_prefix  # noqa: SLF001
+    truncate_head_tail = ads_module._truncate_head_tail  # noqa: SLF001
+    default_max_chars = ads_module._MAX_CLASSIFICATION_BATCH_CHARS  # noqa: SLF001
+
+    def render_segments_bounded(segment_ids, segments, headers=None, max_chars=default_max_chars):
+        """Render required IDs under a hard cap, giving each only what it needs."""
+        header_lines = list(headers or [])
+        prefixes = [segment_prefix(segment_id, segments[segment_id]) for segment_id in segment_ids]
+        line_count = len(header_lines) + len(segment_ids)
+        fixed_chars = sum(map(len, header_lines)) + sum(map(len, prefixes)) + max(0, line_count - 1)
+        if fixed_chars > max_chars:
+            raise ValueError("required transcript IDs and headers exceed the rendering budget")
+        texts = [segments[segment_id].text for segment_id in segment_ids]
+        budgets = _proportional_render_budgets(
+            [len(text) for text in texts], max_chars - fixed_chars
+        )
+        rendered = [
+            prefix + truncate_head_tail(text, budget)
+            for prefix, text, budget in zip(prefixes, texts, budgets, strict=True)
+        ]
+        return "\n".join(header_lines + rendered)
+
+    setattr(render_segments_bounded, _PROPORTIONAL_RENDER_MARKER, True)
+    ads_module._render_segments_bounded = render_segments_bounded  # noqa: SLF001
+
+
 def _remaining_admission_budget(deadline: float) -> float:
     """Return the remaining shared lock/RPC budget or fail at its one deadline."""
     remaining = deadline - time.monotonic()
@@ -2902,6 +2973,7 @@ def analyze_ad_detections(
     auditing_backend.bind_segment_count(len(segments))
     install_legacy_sponsor_opening_compatibility(ads_module)
     install_produced_disclaimer_evidence(ads_module)
+    install_proportional_render_budget(ads_module)
     discarded = DiscardedRuns(segments)
     ads_logger = logging.getLogger("wilted.ads")
     previous_level = ads_logger.level
