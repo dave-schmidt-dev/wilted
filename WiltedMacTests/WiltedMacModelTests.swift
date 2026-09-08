@@ -622,6 +622,54 @@ final class WiltedMacModelTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(10))
     }
 
+    func testOnlyNoLocalSpeechToTextWithRemovalOnBlocksAdRemoval() throws {
+        // The pane offers the two controls side by side, so every pair a reader
+        // can reach is checked, not only the one that fails.
+        for policy in [WiltedAutomationTranscriptPolicy.bestAvailable, .alwaysTranscribe, .noLocalSTT] {
+            for removeAds in [true, false] {
+                let settings = WiltedAutomationSettings(
+                    refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .immediate,
+                    transcriptPolicy: policy, removeAds: removeAds
+                )
+                let blocked = policy == .noLocalSTT && removeAds
+                XCTAssertEqual(settings.transcriptPolicyBlocksAdRemoval, blocked,
+                               "\(policy.settingsControlLabel) with removeAds \(removeAds)")
+            }
+        }
+    }
+
+    func testTheBlockedAdRemovalExplanationNamesTheCauseAndBothWaysOut() throws {
+        let explanation = WiltedAutomationSettings.transcriptPolicyBlocksAdRemovalExplanation
+
+        // Naming one control would leave a reader looking at the other one
+        // wondering which of them is wrong.
+        XCTAssertTrue(explanation.contains("Remove ads"), explanation)
+        XCTAssertTrue(explanation.contains(WiltedAutomationTranscriptPolicy.noLocalSTT.settingsControlLabel),
+                      explanation)
+        XCTAssertTrue(explanation.contains("no episode will prepare"), explanation)
+    }
+
+    func testABlockedConfigurationStillDecodesAndSurvivesRelaunch() throws {
+        // Removal once ran from a publisher's cues, so this pair is a file that
+        // legitimately exists. It is reported, not rejected: refusing to decode
+        // it would lose every other preference saved beside it.
+        let preferences = try automationSettingsPreferences()
+        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
+        let directory = temporaryDirectory("blocked-transcript-policy")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .immediate,
+            transcriptPolicy: .noLocalSTT, removeAds: true
+        ))
+
+        let relaunched = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+
+        XCTAssertEqual(relaunched.automationSettings.transcriptPolicy, .noLocalSTT)
+        XCTAssertTrue(relaunched.automationSettings.removeAds)
+        XCTAssertTrue(relaunched.automationSettings.transcriptPolicyBlocksAdRemoval)
+    }
+
     func testPreparationPolicySnapshotMapsEveryFutureWorkerChoice() throws {
         let settings = WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .offPeak(try offPeakWindow()),

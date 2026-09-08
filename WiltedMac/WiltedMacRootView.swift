@@ -2394,6 +2394,13 @@ private struct WiltedMacSettingsView: View {
                 .accessibilityIdentifier("wilted-automation-transcript-policy")
                 Toggle("Remove ads", isOn: removeAdsBinding)
                     .accessibilityIdentifier("wilted-automation-remove-ads")
+                if model.automationSettings.transcriptPolicyBlocksAdRemoval {
+                    Text(WiltedAutomationSettings.transcriptPolicyBlocksAdRemovalExplanation)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.degraded, scheme: colorScheme))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wilted-automation-transcript-conflict")
+                }
 
             }
         }

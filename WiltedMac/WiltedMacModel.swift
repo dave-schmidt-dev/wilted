@@ -383,6 +383,24 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     }
 
     var isValid: Bool { version == Self.currentVersion && refreshPolicy.isValid }
+
+    /// True when the two saved preferences cannot both be honoured. Ad removal
+    /// is timed from an aligned local pass and never from a publisher's cues,
+    /// so with local speech-to-text forbidden the worker refuses every
+    /// preparation before it spends any model time. Computed rather than
+    /// stored: a configuration saved before removal required the aligned pass
+    /// is a legitimate file, and re-versioning the format to record a fact
+    /// derivable from it would refuse to decode it for nothing.
+    var transcriptPolicyBlocksAdRemoval: Bool {
+        removeAds && transcriptPolicy == .noLocalSTT
+    }
+
+    /// Says what the pair does and how to leave it, in that order, because the
+    /// reader is looking at both controls and either one resolves it.
+    static let transcriptPolicyBlocksAdRemovalExplanation =
+        "Removing ads needs a local transcript timed to this audio, so no episode will prepare "
+        + "while the transcript source is No local speech-to-text. Turn off Remove ads, or choose "
+        + "another transcript source."
 }
 
 enum WiltedMacEpisodeDownloadState: Equatable, Sendable {

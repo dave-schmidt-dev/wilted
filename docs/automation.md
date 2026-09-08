@@ -73,9 +73,12 @@ are captured when preparation is admitted.
 Ad removal is not a preference the transcript policy can outvote: a removal run never
 fetches or parses the publisher's transcript, and one aligned `parakeet-tdt-1.1b` pass
 supplies both the ad detector and the displayed transcript. **No local STT** with
-`removeAds` still on is therefore a combination the Settings pane accepts and every
-preparation then refuses, typed as `aligned-stt-required` before any model work, leaving
-the downloaded audio untouched. On a transcript-only run (`removeAds` off) the published
+`removeAds` still on is therefore a pair that cannot both be honoured, and the pane says
+so while both are selected rather than leaving it to be discovered one episode at a time:
+the worker refuses each preparation, typed as `aligned-stt-required` before any model
+work, leaving the downloaded audio untouched. Neither control is disabled or silently
+rewritten -- a configuration saved when removal could still run from publisher cues stays
+readable, and either control resolves it. On a transcript-only run (`removeAds` off) the published
 transcript is used when it describes the downloaded file.
 
 ## Claims: what stops the same episode transferring twice
