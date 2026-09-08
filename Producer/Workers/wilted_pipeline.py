@@ -29,6 +29,7 @@ import contextlib
 import difflib
 import errno
 import fcntl
+import html
 import json
 import logging
 import os
@@ -40,7 +41,7 @@ import tempfile
 import threading
 import time
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
 
@@ -1231,6 +1232,37 @@ def polish_with_notes(request: dict, cues: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+# A WebVTT cue payload is markup, not plain text: <v Speaker> voice spans,
+# <b>/<i>/<u>/<c.class> styling, <lang> spans, and inline <00:01:23.456>
+# karaoke timestamps are all legal inside a cue, and the voice span is
+# commonly left unclosed because the spec runs it to the end of the cue.  SRT
+# permits the same HTML subset.  The archived parsers join cue lines verbatim,
+# so every one of those reaches the stored cue and the reader follows along
+# against a literal "<v Chris>".
+CUE_MARKUP_PATTERN = re.compile(r"<[^>]*>")
+
+
+def strip_cue_markup(segments):
+    """Return segments whose text is the spoken words alone.
+
+    Cues that hold nothing but markup are dropped rather than emitted empty:
+    the Swift cue contract rejects empty text, and a blank cue would stall the
+    reader on a line with nothing to read.
+    """
+    cleaned = []
+    for segment in segments:
+        # Order matters.  A literal "<" inside a cue payload has to be written
+        # "&lt;", so unescaping first would manufacture markup out of words
+        # somebody actually said and then strip them.
+        text = CUE_MARKUP_PATTERN.sub("", segment.text)
+        text = html.unescape(text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            continue
+        cleaned.append(replace(segment, text=text))
+    return cleaned
+
+
 def parse_published_transcript(body: str, media_type: str, url: str):
     """Parse a transcript the feed published, or return None if unusable."""
     from wilted import transcribe
@@ -1253,10 +1285,19 @@ def parse_published_transcript(body: str, media_type: str, url: str):
     if kind is None:
         return None
     try:
-        return parsers[kind](body) or None
+        segments = parsers[kind](body) or None
     except Exception as error:  # noqa: BLE001 - a bad transcript is not a failed episode
         progress("transcript.published.unparseable", f"{kind}: {error}")
         return None
+    if segments and kind in ("vtt", "srt"):
+        # Only the timed-text formats carry cue markup.  A Podcasting 2.0 JSON
+        # transcript's body is plain text, where "<" is a character somebody
+        # typed and stripping it would delete their words.
+        marked = sum(1 for segment in segments if "<" in segment.text or "&" in segment.text)
+        segments = strip_cue_markup(segments) or None
+        if marked:
+            progress("transcript.published.markup-stripped", f"{kind}: {marked} cues")
+    return segments
 
 
 def published_transcript_matches_audio(segments, audio_path: Path) -> bool:

@@ -579,6 +579,84 @@ class PublishedTranscriptTests(unittest.TestCase):
         install_fake_wilted({"vtt": []})
         self.assertIsNone(wp.parse_published_transcript("WEBVTT", "text/vtt", "https://x.test/a.vtt"))
 
+    def _vtt(self, *texts):
+        segments = [FakeSegment(float(i), float(i + 1), t) for i, t in enumerate(texts)]
+        install_fake_wilted({"vtt": segments})
+        with redirect_stderr(io.StringIO()):
+            return wp.parse_published_transcript("WEBVTT", "text/vtt", "https://x.test/a.vtt")
+
+    def test_an_unclosed_voice_span_does_not_reach_the_reader(self):
+        # The shape Changelog publishes: the span opens at the cue and runs to
+        # the end of it, so there is never a closing tag to pair with.
+        result = self._vtt(
+            "<v Narrator>Welcome to the Practical AI Podcast.",
+            "<v Chris>Glad to be here.",
+            "<v Angie>Likewise.",
+        )
+        self.assertEqual(
+            [s.text for s in result],
+            ["Welcome to the Practical AI Podcast.", "Glad to be here.", "Likewise."],
+        )
+
+    def test_closed_spans_styling_and_inline_timestamps_are_removed(self):
+        result = self._vtt(
+            "<v Chris>Hello</v>",
+            "<b>bold</b> and <i>italic</i> and <c.loud>loud</c>",
+            "one <00:01:23.456> two",
+        )
+        self.assertEqual(
+            [s.text for s in result],
+            ["Hello", "bold and italic and loud", "one two"],
+        )
+
+    def test_entities_are_decoded_after_markup_is_stripped(self):
+        # "&lt;b&gt;" is a speaker saying "<b>", not styling. Unescaping first
+        # would turn it into markup and then delete it.
+        result = self._vtt("Ben &amp; Jerry&#39;s", "the &lt;b&gt; tag")
+        self.assertEqual([s.text for s in result], ["Ben & Jerry's", "the <b> tag"])
+
+    def test_a_cue_holding_only_markup_is_dropped(self):
+        # The Swift cue contract rejects empty text, so an emptied cue must not
+        # be forwarded.
+        result = self._vtt("<v Chris>", "real words")
+        self.assertEqual([s.text for s in result], ["real words"])
+
+    def test_a_transcript_of_nothing_but_markup_is_no_transcript(self):
+        self.assertIsNone(self._vtt("<v Chris>", "<v Angie>"))
+
+    def test_stripping_collapses_the_whitespace_it_leaves_behind(self):
+        result = self._vtt("well  <b>  </b>  then")
+        self.assertEqual([s.text for s in result], ["well then"])
+
+    def test_srt_cue_markup_is_stripped_too(self):
+        install_fake_wilted({"srt": [FakeSegment(0, 1, "<i>whispering</i>")]})
+        with redirect_stderr(io.StringIO()):
+            result = wp.parse_published_transcript("1\n", "application/x-subrip", "https://x.test/a.srt")
+        self.assertEqual([s.text for s in result], ["whispering"])
+
+    def test_a_json_transcript_keeps_its_angle_brackets(self):
+        # A Podcasting 2.0 body is plain text: "<" is a character somebody
+        # typed, and stripping it would delete their words.
+        install_fake_wilted({"podcast-json": [FakeSegment(0, 1, "the <html> element")]})
+        result = wp.parse_published_transcript("{}", "application/json", "https://x.test/a.json")
+        self.assertEqual([s.text for s in result], ["the <html> element"])
+
+    def test_stripping_is_reported(self):
+        segments = [FakeSegment(0, 1, "<v Chris>Hello"), FakeSegment(1, 2, "plain")]
+        install_fake_wilted({"vtt": segments})
+        errors = io.StringIO()
+        with redirect_stderr(errors):
+            wp.parse_published_transcript("WEBVTT", "text/vtt", "https://x.test/a.vtt")
+        self.assertIn("transcript.published.markup-stripped", errors.getvalue())
+        self.assertIn("1 cues", errors.getvalue())
+
+    def test_a_clean_transcript_reports_nothing(self):
+        install_fake_wilted({"vtt": [FakeSegment(0, 1, "plain words")]})
+        errors = io.StringIO()
+        with redirect_stderr(errors):
+            wp.parse_published_transcript("WEBVTT", "text/vtt", "https://x.test/a.vtt")
+        self.assertNotIn("markup-stripped", errors.getvalue())
+
 
 class ProseTests(unittest.TestCase):
     def _install_trafilatura(self, text):
