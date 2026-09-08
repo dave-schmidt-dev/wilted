@@ -2559,6 +2559,148 @@ class RunTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "audio-missing")
 
 
+class OutcomeContractTests(unittest.TestCase):
+    """Protocol-v2 removal is aligned-only and reports its effective outcome."""
+
+    def setUp(self):
+        self.audio = Path(REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py")
+
+    def test_v2_removal_rejects_no_local_stt_before_any_model_work(self):
+        transcribe = mock.Mock(side_effect=AssertionError("STT must not start"))
+        install_fake_wilted()
+        sys.modules["wilted.transcribe"].transcribe_audio = transcribe
+        with mock.patch.object(wp, "preflight_ad_removal") as preflight, self.assertRaises(wp.WorkerError) as raised:
+            wp.run({"protocolVersion": 2, "audioPath": str(self.audio), "outputPath": "/tmp/cut.mp3",
+                    "removeAds": True, "transcriptPolicy": "noLocalSTT"})
+        self.assertEqual(raised.exception.code, "aligned-stt-required")
+        preflight.assert_not_called()
+        transcribe.assert_not_called()
+
+    def test_v2_removal_rejects_an_output_path_that_aliases_input(self):
+        with self.assertRaises(wp.WorkerError) as raised:
+            wp.run({"protocolVersion": 2, "audioPath": str(self.audio), "outputPath": str(self.audio),
+                    "removeAds": True, "transcriptPolicy": "bestAvailable"})
+        self.assertEqual(raised.exception.code, "cut-output-alias")
+
+    def test_v2_no_ads_uses_the_required_aligned_pass_and_emits_a_report(self):
+        install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: [FakeSegment(0, 1, "programme")]})
+        install_fake_ads(FakeLLM())
+        with mock.patch.object(wp, "preflight_ad_removal"), \
+                mock.patch.object(wp, "prepare_ad_model_lock", return_value=wp.contextlib.nullcontext()), \
+                mock.patch.object(wp, "probe_duration", return_value=10.0), redirect_stderr(io.StringIO()):
+            result = wp.run({"protocolVersion": 2, "audioPath": str(self.audio), "outputPath": "/tmp/cut.mp3",
+                             "removeAds": True, "alignedTranscriptModel": wp.ALIGNED_STT_MODEL})
+        self.assertEqual(result["timing"], "aligned")
+        self.assertEqual(result["report"]["outcome"], "noAds")
+        self.assertEqual(result["report"]["rawNominations"], [])
+        # "Examined every window and found nothing" has to be distinguishable
+        # from "never reached the model", and only the audit does that.
+        audit = result["report"]["audit"]
+        self.assertGreater(audit["modelRequests"], 0)
+        self.assertEqual(audit["unresolvedIds"], [])
+        self.assertEqual(audit["experimentalRequests"], 0)
+        self.assertIsNone(audit["incompleteError"])
+
+    def test_aligned_timing_allows_only_the_declared_short_tail(self):
+        accepted = wp.validate_aligned_segments([FakeSegment(0, 12.5, "cached")], 10.0)
+        self.assertEqual(len(accepted), 1)
+        with self.assertRaises(wp.WorkerError) as raised:
+            wp.validate_aligned_segments([FakeSegment(0, 13.1, "drift")], 10.0)
+        self.assertEqual(raised.exception.code, "aligned-timing-invalid")
+
+    def test_effective_removed_intervals_are_the_exact_keep_complement(self):
+        keeps = wp.build_keep_map([(0, 3), (4, 4.2), (7, 10)])
+        self.assertEqual(wp.effective_removed_intervals(keeps, 10), [(3, 4), (4.2, 7)])
+
+    def test_aligned_timing_rejects_segments_that_are_not_in_time_order(self):
+        # The check used to sort its input first, which made it unable to fail.
+        with self.assertRaises(wp.WorkerError) as raised:
+            wp.validate_aligned_segments([FakeSegment(5, 6, "later"), FakeSegment(0, 1, "earlier")], 10.0)
+        self.assertEqual(raised.exception.code, "aligned-timing-invalid")
+        with self.assertRaises(wp.WorkerError) as beyond:
+            wp.validate_aligned_segments([FakeSegment(10.5, 11.0, "past the end")], 10.0)
+        self.assertEqual(beyond.exception.code, "aligned-timing-invalid")
+
+    def test_cut_map_preserves_a_short_interstitial_between_two_advertisements(self):
+        # The archive helper pads each nomination by half a second and merges
+        # across the second between them, taking the interstitial with them.
+        merged, keeps = wp.build_effective_cut_map(
+            [FakeSegment(10, 20, "ad"), FakeSegment(21, 30, "ad")], 60.0
+        )
+        self.assertEqual(merged, [(10, 20), (21, 30)])
+        self.assertEqual([(k.start_s, k.end_s) for k in keeps], [(0, 10), (20, 21), (30, 60)])
+        self.assertEqual([k.output_start_s for k in keeps], [0, 10, 11])
+
+    def test_cut_map_unions_overlapping_nominations_without_padding_them(self):
+        merged, keeps = wp.build_effective_cut_map(
+            [FakeSegment(15, 25, "ad"), FakeSegment(10, 20, "ad")], 60.0
+        )
+        self.assertEqual(merged, [(10, 25)])
+        self.assertEqual([(k.start_s, k.end_s) for k in keeps], [(0, 10), (25, 60)])
+
+    def test_cut_map_clamps_the_declared_tail_and_refuses_anything_past_it(self):
+        _, keeps = wp.build_effective_cut_map([FakeSegment(50, 61, "closing ad")], 60.0)
+        self.assertEqual([(k.start_s, k.end_s) for k in keeps], [(0, 50)])
+        for detection, reason in ((FakeSegment(55, 70, "way past"), "outside"),
+                                  (FakeSegment(61, 62, "starts past the end"), "outside"),
+                                  (FakeSegment(9, 9, "empty"), "invalid")):
+            with self.assertRaises(wp.WorkerError) as raised:
+                wp.build_effective_cut_map([detection], 60.0)
+            self.assertEqual(raised.exception.code, "cut-unsafe", reason)
+
+    def test_serialized_ad_segments_are_the_complement_of_the_serialized_keeps(self):
+        _, keeps = wp.build_effective_cut_map(
+            [FakeSegment(10, 20, "ad"), FakeSegment(21, 30, "ad")], 60.0
+        )
+        serialized = wp.serialize_keep_map(keeps)
+        removed = [(round(a, 3), round(b, 3)) for a, b in wp.effective_removed_intervals(keeps, 60.0)]
+        boundaries = []
+        cursor = 0.0
+        for keep in serialized:
+            if keep["startSeconds"] > cursor:
+                boundaries.append((cursor, keep["startSeconds"]))
+            cursor = keep["endSeconds"]
+        if cursor < 60.0:
+            boundaries.append((cursor, 60.0))
+        self.assertEqual(removed, boundaries)
+
+    def test_a_wedged_render_reports_progress_and_then_fails_on_its_bound(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(wp.WorkerError) as raised:
+            wp._run_render_with_progress(["sleep", "30"], timeout_s=0.4)
+        self.assertEqual(raised.exception.code, "cut-render-timeout")
+        self.assertIn("ads.cut.render.progress", stderr.getvalue())
+
+    def test_a_failing_render_reports_the_encoder_stderr(self):
+        with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised:
+            wp._run_render_with_progress(
+                ["sh", "-c", "echo 'no such filter' >&2; exit 3"], timeout_s=10.0
+            )
+        self.assertEqual(raised.exception.code, "cut-render-failed")
+        self.assertIn("no such filter", str(raised.exception))
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg is not installed")
+    def test_accurate_render_matches_the_declared_keep_map_for_mp3_and_aac(self):
+        scratch = REPO_ROOT / ".verify-tmp" / f"render-{os.getpid()}"
+        scratch.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        keeps = wp.build_keep_map([(0.0, 3.0), (7.5, 12.0)])
+        for suffix in (".mp3", ".m4a"):
+            source = scratch / f"source{suffix}"
+            subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+                 "-i", "sine=frequency=440:duration=12", str(source)],
+                check=True, capture_output=True,
+            )
+            output = scratch / f"cut{suffix}"
+            with redirect_stderr(io.StringIO()):
+                wp.render_keep_segments(source, output, keeps)
+            measured = wp.probe_duration(output)
+            self.assertAlmostEqual(measured, 7.5, delta=wp.RENDER_DURATION_TOLERANCE_S,
+                                   msg=f"{suffix} rendered {measured:.3f}s")
+            self.assertGreater(output.stat().st_size, 0)
+
+
 class AlignedSTTCacheTests(unittest.TestCase):
     """The detector transcript is reusable only for its exact model and bytes."""
 

@@ -20,7 +20,7 @@ struct PodcastPreparationPipelineTests {
         let fixture = try await Fixture(publishesTranscript: true)
         defer { fixture.remove() }
         let stub = WorkerStub(response: [
-            "ok": true, "timing": "published", "audioPath": fixture.audioURL.path, "audioChanged": false,
+            "ok": true, "timing": "aligned", "audioPath": fixture.audioURL.path, "audioChanged": false,
             "text": "Welcome back. Today we talk about latency.",
             "languageCode": "en",
             "cues": [["startSeconds": 0.0, "endSeconds": 2.5, "text": "Welcome back."],
@@ -31,10 +31,10 @@ struct PodcastPreparationPipelineTests {
 
         let requestData = try #require(await stub.lastRequest())
         let request = try #require(try JSONSerialization.jsonObject(with: requestData) as? [String: Any])
-        let published = try #require(request["publishedTranscript"] as? [String: Any])
-        #expect(published["mediaType"] as? String == "text/vtt")
-        #expect((published["body"] as? String)?.contains("WEBVTT") == true)
+        #expect(request["publishedTranscript"] == nil,
+                "removal forces aligned STT, so publisher cues are not fetched")
         #expect(request["audioPath"] as? String == fixture.audioURL.path)
+        #expect(request["protocolVersion"] as? Int == 2)
         #expect(request["sourceHash"] as? String == fixture.contentHash)
         #expect(request["alignedTranscriptModel"] as? String == PodcastPreparationPipeline.alignedTranscriptModel)
         #expect(request["transcriptPolicy"] as? String == "bestAvailable")
@@ -45,7 +45,7 @@ struct PodcastPreparationPipelineTests {
         // The show notes ride along as the worker's glossary.
         #expect(request["episodeNotes"] as? String == "Host: Leo Laporte (https://twit.tv/people/leo-laporte)")
         #expect(request["episodeTitle"] as? String == "Episode")
-        #expect(result.transcript.timing == .published)
+        #expect(result.transcript.timing == .aligned)
         #expect(result.transcript.cues?.count == 2)
         #expect(result.revision.revisionID == fixture.revisionID)
         #expect(result.audioWasCut == false)
@@ -85,7 +85,7 @@ struct PodcastPreparationPipelineTests {
         #expect(request["readableTranscript"] == nil)
         #expect(request["readableTranscriptModel"] == nil)
         #expect(request["allowSpeechToText"] as? Bool == expectedSTT)
-        #expect((request["publishedTranscript"] != nil) == (policy.transcriptPolicy != .alwaysTranscribe))
+        #expect((request["publishedTranscript"] != nil) == (!policy.removeAds && policy.transcriptPolicy != .alwaysTranscribe))
     }
 
     @Test func legacyPolicySnapshotDecodesWithoutRestoringTheSecondPass() throws {
@@ -109,7 +109,10 @@ struct PodcastPreparationPipelineTests {
         ])
         let statuses = StatusLog()
 
-        let result = try await fixture.pipeline(stub).prepare(episodeID: fixture.episodeID) { progress in
+        let result = try await fixture.pipeline(stub).prepare(
+            episodeID: fixture.episodeID,
+            policy: PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: false)
+        ) { progress in
             statuses.append(progress.stage)
         }
 
@@ -212,7 +215,9 @@ struct PodcastPreparationPipelineTests {
         // meant to be replacing, which the store refuses.
         let stub = WorkerStub(response: [
             "ok": true, "timing": "none", "audioChanged": true,
-            "keepIntervals": [["startSeconds": 0.0, "endSeconds": 12.0, "outputStartSeconds": 0.0]],
+            "adSegments": [["startSeconds": 3.0, "endSeconds": 7.5, "label": "host read", "confidence": 0.91]],
+            "keepIntervals": [["startSeconds": 0.0, "endSeconds": 3.0, "outputStartSeconds": 0.0],
+                              ["startSeconds": 7.5, "endSeconds": 12.0, "outputStartSeconds": 3.0]],
         ], writesCutAudio: Data("original-audio-bytes".utf8))
 
         await #expect(throws: LocalLibraryStoreError.self) {
@@ -257,11 +262,55 @@ struct PodcastPreparationPipelineTests {
         let stub = WorkerStub(response: [
             "ok": true, "timing": "none", "audioChanged": true,
             "audioPath": fixture.workDirectory.appendingPathComponent("absent.mp3").path,
+            "adSegments": [["startSeconds": 3.0, "endSeconds": 7.5, "label": "host read", "confidence": 0.91]],
+            "keepIntervals": [["startSeconds": 0.0, "endSeconds": 3.0, "outputStartSeconds": 0.0],
+                              ["startSeconds": 7.5, "endSeconds": 12.0, "outputStartSeconds": 3.0]],
         ])
         await #expect(throws: PodcastPreparationError.preparedAudioUnreadable) {
             _ = try await fixture.pipeline(stub).prepare(episodeID: fixture.episodeID)
         }
         #expect(FileManager.default.fileExists(atPath: fixture.audioURL.path))
+    }
+
+    /// The failure worth guarding is the one straight after a download
+    /// finalises: there is no older prepared revision to fall back to, so a
+    /// ready revision lost here is the episode lost.
+    @Test func keepsAFreshlyFinalizedDownloadWhenPreparationFails() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let before = try #require(try await fixture.store.readyRevision(for: fixture.episodeID))
+        let failing = WorkerStub(response: [
+            "ok": false, "code": "cut-render-timeout", "message": "ffmpeg exceeded its 7200s limit",
+        ])
+        await #expect(throws: PodcastPreparationError.workerFailed(code: "cut-render-timeout",
+                                                                  message: "ffmpeg exceeded its 7200s limit")) {
+            _ = try await fixture.pipeline(failing).prepare(episodeID: fixture.episodeID)
+        }
+        #expect(try await fixture.store.readyRevision(for: fixture.episodeID) == before)
+        #expect(try Data(contentsOf: fixture.audioURL) == Data("original-audio-bytes".utf8))
+    }
+
+    /// The same guarantee one revision later, where it costs more: the audio a
+    /// prepared episode plays from is the only copy left, the download it was
+    /// cut out of having been deleted along with its revision. A failed re-run
+    /// must leave that copy and its transcript exactly where they are.
+    @Test func keepsAnAlreadyPreparedRevisionWhenAReRunFails() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let prepared = try await fixture.pipeline(Fixture.cuttingStub()).prepare(episodeID: fixture.episodeID)
+        let before = try #require(try await fixture.store.readyRevision(for: fixture.episodeID))
+
+        let failing = WorkerStub(response: [
+            "ok": false, "code": "cut-render-timeout", "message": "ffmpeg exceeded its 7200s limit",
+        ])
+        await #expect(throws: PodcastPreparationError.workerFailed(code: "cut-render-timeout",
+                                                                  message: "ffmpeg exceeded its 7200s limit")) {
+            _ = try await fixture.pipeline(failing).prepare(episodeID: fixture.episodeID)
+        }
+        #expect(try await fixture.store.readyRevision(for: fixture.episodeID) == before)
+        #expect(try Data(contentsOf: prepared.mediaURL) == Fixture.cuttingAudio)
+        #expect(try await fixture.store.transcript(for: fixture.episodeID,
+                                                   revisionID: prepared.revision.revisionID) != nil)
     }
 
     /// A run that failed while the window was closed still has to leave
@@ -318,6 +367,77 @@ struct PodcastPreparationPipelineTests {
         // will not follow the audio learns it from the row.
         #expect(PodcastPreparationResult.summary(advertisements: 0, secondsRemoved: 0, timing: .none)
                 == "Ready · no ads found · transcript not synced")
+        #expect(PodcastPreparationResult.summary(advertisements: 0, secondsRemoved: 0, timing: .published,
+                                                 adRemovalOutcome: "disabled")
+                == "Ready · ad removal disabled · transcript synced from the feed")
+    }
+
+    @Test func rejectsLegacyAndIncompleteV2WorkerResponses() {
+        let legacy = Data(#"{"ok":true,"protocolVersion":1,"timing":"none","audioPath":"/tmp/a.mp3"}"#.utf8)
+        #expect(throws: PodcastPreparationError.malformedWorkerResponse("unsupported protocolVersion")) {
+            _ = try PodcastPreparationPipeline.decode(legacy)
+        }
+        let missingReport = Data(#"{"ok":true,"protocolVersion":2,"timing":"none","audioPath":"/tmp/a.mp3"}"#.utf8)
+        #expect(throws: PodcastPreparationError.malformedWorkerResponse("missing or invalid ad-removal report")) {
+            _ = try PodcastPreparationPipeline.decode(missingReport)
+        }
+        let malformedNomination = v2Response(report:
+            #"{"outcome":"noAds","rawNominations":[{"startSeconds":9.0,"endSeconds":1.0,"label":"x","confidence":0.5}],"# +
+            #""audit":\#(cleanAuditJSON)}"#)
+        #expect(throws: PodcastPreparationError.malformedWorkerResponse("missing or invalid ad-removal report")) {
+            _ = try PodcastPreparationPipeline.decode(malformedNomination)
+        }
+    }
+
+    /// `noAds` from a detector that examined every window and `noAds` from one
+    /// that never reached the model are the same sentence. Only the audit
+    /// separates them, so an outcome without it is not a clean result.
+    @Test func rejectsAnAdRemovalOutcomeThatCannotBeAudited() {
+        let noAudit = v2Response(report: #"{"outcome":"noAds","rawNominations":[]}"#)
+        #expect(throws: PodcastPreparationError.malformedWorkerResponse("missing or unresolved ad-removal audit")) {
+            _ = try PodcastPreparationPipeline.decode(noAudit)
+        }
+        let neverRan = v2Response(report:
+            #"{"outcome":"noAds","rawNominations":[],"audit":{"modelRequests":0,"modelFailures":0,"# +
+            #""experimentalRequests":0,"unresolvedIds":[],"incompleteError":null}}"#)
+        #expect(throws: PodcastPreparationError.malformedWorkerResponse("missing or unresolved ad-removal audit")) {
+            _ = try PodcastPreparationPipeline.decode(neverRan)
+        }
+        let unresolved = v2Response(report:
+            #"{"outcome":"noAds","rawNominations":[],"audit":{"modelRequests":4,"modelFailures":1,"# +
+            #""experimentalRequests":0,"unresolvedIds":[7],"incompleteError":null}}"#)
+        #expect(throws: PodcastPreparationError.malformedWorkerResponse("missing or unresolved ad-removal audit")) {
+            _ = try PodcastPreparationPipeline.decode(unresolved)
+        }
+        let incomplete = v2Response(report:
+            #"{"outcome":"noAds","rawNominations":[],"audit":{"modelRequests":4,"modelFailures":2,"# +
+            #""experimentalRequests":0,"unresolvedIds":[],"incompleteError":"budget exhausted"}}"#)
+        #expect(throws: PodcastPreparationError.malformedWorkerResponse("missing or unresolved ad-removal audit")) {
+            _ = try PodcastPreparationPipeline.decode(incomplete)
+        }
+    }
+
+    /// The outcome label is a claim about the delivered audio, so it has to
+    /// agree with the map that describes it.
+    @Test func rejectsAV2PayloadWhoseOutcomeContradictsItsTimeline() {
+        let cutWithoutACut = v2Response(report:
+            #"{"outcome":"cut","rawNominations":[],"audit":\#(cleanAuditJSON)}"#)
+        #expect(throws: PodcastPreparationError.malformedWorkerResponse("inconsistent ad-removal report")) {
+            _ = try PodcastPreparationPipeline.decode(cutWithoutACut)
+        }
+        let disabledWithEvidence = v2Response(report:
+            #"{"outcome":"disabled","rawNominations":[],"audit":\#(cleanAuditJSON)}"#)
+        #expect(throws: PodcastPreparationError.malformedWorkerResponse("disabled ad removal reported detector evidence")) {
+            _ = try PodcastPreparationPipeline.decode(disabledWithEvidence)
+        }
+    }
+
+    private var cleanAuditJSON: String {
+        #"{"modelRequests":3,"modelFailures":0,"experimentalRequests":0,"unresolvedIds":[],"incompleteError":null}"#
+    }
+
+    private func v2Response(report: String) -> Data {
+        Data(#"{"ok":true,"protocolVersion":2,"timing":"none","audioPath":"/tmp/a.mp3","audioChanged":false,"report":\#(report)}"#.utf8)
     }
 
     /// The journal is keyed by item, not attempt. Before it was cleared at the
@@ -592,6 +712,7 @@ struct PodcastPreparationPipelineTests {
             timing: .none, cues: [], text: text, languageCode: "en",
             audioPath: "/tmp/a.mp3", audioChanged: false, durationSeconds: nil,
             adSegments: [], removedSeconds: 0, keepIntervals: [],
+            adRemovalOutcome: "disabled",
             timeline: try! PreparationStatus.PreparationTimeline(removed: [], kept: [])
         )
     }
@@ -623,6 +744,15 @@ private actor WorkerStub: PodcastPipelineRunning {
         self.progress = progress
     }
 
+    /// A function, not a stored property: `[String: Any]` is not `Sendable`,
+    /// so a static constant of it is a concurrency error.
+    static func cleanAudit() -> [String: Any] {
+        ["classifierRequests": 3, "classifierValidRequests": 3, "classifierInvalidRequests": 0,
+         "exhaustedSingletonLineages": 0, "modelRequests": 3, "modelFailures": 0,
+         "experimentalRequests": 0, "unresolvedIds": [Int](), "candidates": [[String: Any]](),
+         "incompleteError": NSNull()]
+    }
+
     /// Returned as bytes: a decoded `[String: Any]` cannot cross the actor
     /// boundary, and the caller wants to inspect it anyway.
     func lastRequest() -> Data? { request }
@@ -635,6 +765,18 @@ private actor WorkerStub: PodcastPipelineRunning {
         request = payload
         progress.forEach(onProgress)
         var answer = response
+        answer["protocolVersion"] = decoded["protocolVersion"] as? Int ?? 2
+        if answer["ok"] as? Bool == true, answer["report"] == nil {
+            let changed = (answer["audioChanged"] as? Bool) ?? (writesCutAudio != nil)
+            let removeAds = decoded["removeAds"] as? Bool ?? true
+            let outcome = !removeAds ? "disabled" : (changed ? "cut" : "noAds")
+            var report: [String: Any] = ["outcome": outcome,
+                                         "rawNominations": answer["adSegments"] as? [[String: Any]] ?? []]
+            // A real worker cannot report that the detector ran without the
+            // evidence that it did, so neither can the stub.
+            if outcome != "disabled" { report["audit"] = WorkerStub.cleanAudit() }
+            answer["report"] = report
+        }
         if let body = writesCutAudio, let outputPath = decoded["outputPath"] as? String {
             try body.write(to: URL(fileURLWithPath: outputPath))
             answer["audioPath"] = outputPath

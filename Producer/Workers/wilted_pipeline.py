@@ -34,6 +34,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -43,7 +44,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 # Tools the audio cut shells out to. Checked before any work starts: a GUI app
 # launched from Finder inherits a PATH without Homebrew, and finding that out
@@ -340,6 +341,16 @@ GPU_LOCK_PROGRESS_INTERVAL_S = 1.0
 ALIGNED_STT_MODEL = "mlx-community/parakeet-tdt-1.1b"
 ALIGNED_STT_CACHE_SCHEMA_VERSION = 1
 ALIGNED_STT_CACHE_MAXIMUM_ENTRIES = 32
+# Waveform's accepted 1.1B cache reaches 2.5 seconds beyond ffprobe's rounded
+# duration.  This is a deliberately narrow cache/encoder rounding allowance,
+# not permission to aim cuts at a different rendition.
+ALIGNED_TIMING_TAIL_ALLOWANCE_S = 3.0
+RENDER_DURATION_TOLERANCE_S = 0.35
+# An accurate re-encode of a long episode is minutes of otherwise silent
+# ffmpeg work holding the shared admission slot. Heartbeat it, and bound it,
+# so a wedged encoder fails with a reason instead of waiting forever.
+RENDER_PROGRESS_INTERVAL_S = 1.0
+RENDER_TIMEOUT_S = 7_200.0
 
 # The broker acknowledges EVICT before its inference thread actually releases
 # a resident model. A following FIFO selftest is the completion barrier; keep
@@ -554,6 +565,205 @@ def serialize_keep_map(keeps: list[KeepInterval]) -> list[dict]:
         })
         output += end - start
     return serialized
+
+
+def effective_removed_intervals(keeps: list[KeepInterval], total_seconds: float) -> list[tuple[float, float]]:
+    """Return the exact complement of the rendered keep map."""
+    removed: list[tuple[float, float]] = []
+    cursor = 0.0
+    for keep in keeps:
+        if keep.start_s > cursor:
+            removed.append((cursor, keep.start_s))
+        cursor = keep.end_s
+    if cursor < total_seconds:
+        removed.append((cursor, total_seconds))
+    return removed
+
+
+def build_effective_cut_map(detections, total_seconds: float) -> tuple[list[tuple[float, float]], list[KeepInterval]]:
+    """Validate and union the exact nominated cuts, then return their complement.
+
+    The archive helper pads every nomination by half a second on each side and
+    then merges across whatever is left between two of them, so a short
+    programme interstitial that both neighbours were correctly nominated
+    *around* disappears with them. A v2 render owns its whole map instead:
+    overlapping nominations are unioned, every positive programme gap survives
+    at its true length, and the only slack allowed is the small tail overrun an
+    aligned transcript legitimately reports past the encoder's last frame.
+    """
+    if not (total_seconds > 0 and total_seconds < float("inf")):
+        raise WorkerError("cut-unsafe", "source duration is not finite and positive")
+    cuts: list[tuple[float, float]] = []
+    for ad in detections:
+        try:
+            start, end = float(ad.start_s), float(ad.end_s)
+        except (AttributeError, TypeError, ValueError) as error:
+            raise WorkerError("cut-unsafe", "ad analysis returned malformed timing") from error
+        if not (start >= 0 and start < end and start < float("inf") and end < float("inf")):
+            raise WorkerError("cut-unsafe", "ad analysis returned non-finite or invalid timing")
+        if start >= total_seconds or end > total_seconds + ALIGNED_TIMING_TAIL_ALLOWANCE_S:
+            raise WorkerError("cut-unsafe", "ad analysis returned timing outside the source audio")
+        cuts.append((start, min(end, total_seconds)))
+    cuts.sort()
+    merged: list[tuple[float, float]] = []
+    for start, end in cuts:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    keeps: list[tuple[float, float]] = []
+    cursor = 0.0
+    for start, end in merged:
+        if start > cursor:
+            keeps.append((cursor, start))
+        cursor = max(cursor, end)
+    if cursor < total_seconds:
+        keeps.append((cursor, total_seconds))
+    return merged, build_keep_map(keeps)
+
+
+def serialize_ad_audit(audit) -> dict:
+    """Publish the detector evidence a caller needs in order to trust a result.
+
+    Without it, "the detector examined every window and found no
+    advertisements" and "the detector never reached the model" serialise to the
+    same JSON. The request counts and unresolved identifiers below are what
+    tell those two apart, so they travel with every completed analysis.
+    """
+    return {
+        "classifierRequests": int(audit.classifier_requests),
+        "classifierValidRequests": int(audit.classifier_valid_requests),
+        "classifierInvalidRequests": int(audit.classifier_invalid_requests),
+        "exhaustedSingletonLineages": int(audit.exhausted_singleton_lineages),
+        "modelRequests": int(audit.model_requests),
+        "modelFailures": int(audit.model_failures),
+        "experimentalRequests": int(audit.experimental_requests),
+        "unresolvedIds": [int(value) for value in audit.unresolved_ids],
+        "candidates": [
+            {"kind": candidate.kind,
+             "ids": [int(value) for value in candidate.ids],
+             "detail": candidate.detail}
+            for candidate in audit.candidates
+        ],
+        "incompleteError": audit.incomplete_error,
+    }
+
+
+def validate_aligned_segments(segments, total_seconds: float) -> list:
+    """Fail closed when detector timing is not finite and audio-aligned."""
+    if not isinstance(total_seconds, (int, float)) or not float(total_seconds) > 0 or not float(total_seconds) < float("inf"):
+        raise WorkerError("aligned-timing-invalid", "audio duration is not finite and positive")
+    if not segments:
+        raise WorkerError("aligned-timing-unavailable", "aligned speech-to-text returned no timed segments")
+    # Deliberately not sorted. Sorting here would make the ordering check
+    # below vacuous, and the live path already hands over time-ordered
+    # segments; a cache that does not is corrupt, and quietly repairing it
+    # would aim real cuts using timing nothing has vouched for.
+    ordered = list(segments)
+    previous_start = -1.0
+    for segment in ordered:
+        try:
+            start, end = float(segment.start_s), float(segment.end_s)
+        except (AttributeError, TypeError, ValueError) as error:
+            raise WorkerError("aligned-timing-invalid", "aligned speech-to-text has malformed timestamps") from error
+        if not (start >= 0 and start < end and start < float("inf") and end < float("inf")):
+            raise WorkerError("aligned-timing-invalid", "aligned speech-to-text has non-finite or unordered timestamps")
+        if (start < previous_start or start >= total_seconds
+                or end > total_seconds + ALIGNED_TIMING_TAIL_ALLOWANCE_S):
+            raise WorkerError("aligned-timing-invalid", "aligned speech-to-text does not fit the downloaded audio")
+        previous_start = start
+    return ordered
+
+
+def _render_codec_arguments(output_path: Path) -> list[str]:
+    """Choose a compatible audio codec for the original MP3 or M4A/AAC container."""
+    suffix = output_path.suffix.lower()
+    if suffix == ".mp3":
+        return ["-c:a", "libmp3lame"]
+    if suffix in {".m4a", ".aac"}:
+        return ["-c:a", "aac"] + (["-movflags", "+faststart"] if suffix == ".m4a" else [])
+    raise WorkerError("cut-container-unsupported", f"accurate ad removal does not support {suffix or 'this audio container'}")
+
+
+def _terminate_render(process) -> None:
+    """Never leave an ffmpeg child running after its wait has ended."""
+    if process.poll() is not None:
+        return
+    for stop in (process.terminate, process.kill):
+        try:
+            stop()
+            process.wait(timeout=2)
+            return
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+
+
+def _run_render_with_progress(command: list[str], *, timeout_s: float) -> None:
+    """Wait for ffmpeg with a heartbeat and a bound instead of in silence.
+
+    A full episode re-encodes for minutes while the caller holds the shared
+    admission slot. `subprocess.run` reports none of that and would wait on a
+    wedged encoder indefinitely, so the wait is polled, reported every second,
+    and cut off once it exceeds its limit.
+    """
+    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    started = time.monotonic()
+    stderr = ""
+    try:
+        while True:
+            remaining = timeout_s - (time.monotonic() - started)
+            if remaining <= 0:
+                raise WorkerError("cut-render-timeout", f"ffmpeg exceeded its {timeout_s:.0f}s limit")
+            try:
+                _, stderr = process.communicate(timeout=min(RENDER_PROGRESS_INTERVAL_S, remaining))
+            except subprocess.TimeoutExpired:
+                progress("ads.cut.render.progress", f"ffmpeg running for {time.monotonic() - started:.0f}s")
+                continue
+            break
+    except BaseException:
+        _terminate_render(process)
+        raise
+    if process.returncode != 0:
+        raise WorkerError("cut-render-failed", f"ffmpeg exited {process.returncode}: {(stderr or '').strip()[-2048:]}")
+
+
+def render_keep_segments(audio_path: Path, output_path: Path, keeps: list[KeepInterval], *,
+                         timeout_s: float = RENDER_TIMEOUT_S) -> None:
+    """Accurately re-encode every keep interval into an atomic replacement."""
+    if audio_path.resolve() == output_path.resolve():
+        raise WorkerError("cut-output-alias", "prepared output must not replace its input in place")
+    if not keeps:
+        raise WorkerError("cut-unsafe", "no meaningful programme audio remains after ad detection")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_name(f".{output_path.stem}.rendering-{os.getpid()}{output_path.suffix}")
+    temporary.unlink(missing_ok=True)
+    filters = []
+    labels = []
+    for index, keep in enumerate(keeps):
+        if not (keep.start_s >= 0 and keep.end_s > keep.start_s):
+            raise WorkerError("cut-unsafe", "render map contains an empty or invalid keep interval")
+        label = f"k{index}"
+        filters.append(f"[0:a]atrim=start={keep.start_s:.6f}:end={keep.end_s:.6f},asetpts=PTS-STARTPTS[{label}]")
+        labels.append(f"[{label}]")
+    filters.append("".join(labels) + f"concat=n={len(labels)}:v=0:a=1[outa]")
+    command = ["ffmpeg", "-y", "-v", "error", "-i", str(audio_path), "-filter_complex", ";".join(filters),
+               "-map", "[outa]", *_render_codec_arguments(output_path), str(temporary)]
+    progress("ads.cut.render", f"accurately re-encoding {len(keeps)} kept intervals")
+    try:
+        _run_render_with_progress(command, timeout_s=timeout_s)
+        if not temporary.is_file() or temporary.stat().st_size == 0:
+            raise WorkerError("cut-output-empty", "ffmpeg produced no playable audio")
+        measured = probe_duration(temporary)
+        declared = sum(keep.duration_s for keep in keeps)
+        if not (measured > 0 and measured < float("inf") and abs(measured - declared) <= RENDER_DURATION_TOLERANCE_S):
+            raise WorkerError("cut-duration-mismatch", f"rendered {measured:.3f}s but keep map declares {declared:.3f}s")
+        os.replace(temporary, output_path)
+    except WorkerError:
+        raise
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        raise WorkerError("cut-render-failed", f"accurate ffmpeg render failed: {type(error).__name__}: {error}") from error
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def remap_cues(cues: list[dict], keeps: list[KeepInterval]) -> list[dict]:
@@ -2690,18 +2900,22 @@ def analyze_ad_detections(
     return AdAnalysis(tuple(detections), audit)
 
 
-def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, *, model_lock=None):
+def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, *, model_lock=None,
+                   with_report: bool = False):
     """Detect ads and rewrite the audio without them.
 
-    Returns `(output_path, ad_spans, keep_intervals)`. `output_path` is the
-    input path when nothing was cut, and `keep_intervals` is empty in that
-    case, which is the signal that cue timing still matches the file.
+    Returns `(output_path, ad_spans, keep_intervals)`, or the same three plus
+    `(raw_nominations, audit)` when `with_report`. `output_path` is the input
+    path when nothing was cut, and `keep_intervals` is empty in that case,
+    which is the signal that cue timing still matches the file.
     """
     from wilted import ads as ads_module
     from wilted import llm as llm_module
 
     if not segments:
-        return audio_path, [], []
+        # No audit exists because no analysis ran. Reporting one anyway is how
+        # "nothing was examined" would come to read as "nothing was found".
+        return (audio_path, [], [], [], None) if with_report else (audio_path, [], [])
 
     model = request.get("llmModel") or str(llm_module.DEFAULT_GGUF_MODEL)
     model_lock = model_lock or prepare_ad_model_lock(model, aligned_stt=False)
@@ -2742,9 +2956,11 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
     progress("ads.detect.calls", f"{counting.calls} requests, {counting.failures} failed")
     if not detections:
         progress("ads.detect.complete", "0 spans")
+        if with_report:
+            return audio_path, [], [], [], serialize_ad_audit(analysis.audit)
         return audio_path, [], []
 
-    ad_spans = [
+    raw_nominations = [
         {
             "startSeconds": round(float(ad.start_s), 3),
             "endSeconds": round(float(ad.end_s), 3),
@@ -2753,27 +2969,50 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
         }
         for ad in detections
     ]
-    progress("ads.detect.complete", f"{len(ad_spans)} spans")
-    if not detections:
-        return audio_path, [], []
+    progress("ads.detect.complete", f"{len(raw_nominations)} spans")
 
-    keep_segments = ads_module._compute_keep_segments(total, detections, 0.5)  # noqa: SLF001
-    if not keep_segments:
+    if with_report:
+        _, keeps = build_effective_cut_map(detections, total)
+        keep_segments = [(keep.start_s, keep.end_s) for keep in keeps]
+    else:
+        keep_segments = ads_module._compute_keep_segments(total, detections, 0.5)  # noqa: SLF001
+        keeps = build_keep_map(keep_segments)
+    if not keeps:
         # Everything was called an ad. Refusing to cut is the only safe
         # reading: an empty file is worse than an unedited one.
         progress("ads.cut.refused", "every span was classified as an advertisement")
-        return audio_path, ad_spans, []
+        if with_report:
+            raise WorkerError("cut-unsafe", "every span was classified as an advertisement")
+        return audio_path, raw_nominations, []
 
     output_path = Path(request["outputPath"])
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.resolve() == audio_path.resolve():
+        raise WorkerError("cut-output-alias", "prepared output must not replace its input in place")
     progress("ads.cut.start", f"{len(keep_segments)} keep spans")
-    ads_module.cut_ads(audio_path, detections, output_path)
+    # The three-value form is retained for the archive-adapter unit tests.
+    # Production always asks for the report and takes the accurate path below.
+    if not with_report:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        ads_module.cut_ads(audio_path, detections, output_path)
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            output_path.unlink(missing_ok=True)
+            return audio_path, raw_nominations, []
+        return output_path, raw_nominations, keeps
+    render_keep_segments(audio_path, output_path, keeps)
     if not output_path.exists() or output_path.stat().st_size == 0:
-        output_path.unlink(missing_ok=True)
-        progress("ads.cut.empty", "cut produced no audio; keeping the original")
-        return audio_path, ad_spans, []
+        raise WorkerError("cut-output-empty", "ffmpeg produced no playable audio")
+    effective = []
+    for start, end in effective_removed_intervals(keeps, total):
+        overlapping = [ad for ad in raw_nominations if ad["endSeconds"] > start and ad["startSeconds"] < end]
+        effective.append({
+            "startSeconds": round(start, 3), "endSeconds": round(end, 3),
+            "label": overlapping[0]["label"] if overlapping else "advertisement",
+            "confidence": max((ad["confidence"] for ad in overlapping), default=0.0),
+        })
     progress("ads.cut.complete", f"{output_path.stat().st_size} bytes")
-    return output_path, ad_spans, build_keep_map(keep_segments)
+    if with_report:
+        return output_path, effective, keeps, raw_nominations, serialize_ad_audit(analysis.audit)
+    return output_path, effective, keeps
 
 
 def probe_duration(audio_path: Path) -> float:
@@ -2796,6 +3035,9 @@ def run(request: dict) -> dict:
     audio_path = Path(request["audioPath"])
     if not audio_path.exists():
         raise WorkerError("audio-missing", f"no audio at {audio_path}")
+    requested_version = request.get("protocolVersion")
+    if requested_version is not None and requested_version != PROTOCOL_VERSION:
+        raise WorkerError("protocol-version-unsupported", f"expected protocolVersion {PROTOCOL_VERSION}")
 
     transcript_policy = request.get("transcriptPolicy")
     if transcript_policy is None:
@@ -2815,8 +3057,18 @@ def run(request: dict) -> dict:
     else:
         raise WorkerError("invalid-request", f"unknown transcriptPolicy: {transcript_policy}")
 
-    if request.get("removeAds", True):
+    remove_ads = request.get("removeAds", True)
+    strict_v2 = requested_version == PROTOCOL_VERSION
+    if strict_v2 and remove_ads and transcript_policy == "noLocalSTT":
+        raise WorkerError("aligned-stt-required", "ad removal requires audio-aligned Parakeet timing; noLocalSTT forbids it")
+    if remove_ads:
+        if strict_v2 and "outputPath" not in request:
+            raise WorkerError("cut-output-missing", "ad removal requires a distinct outputPath")
+        if strict_v2 and Path(request["outputPath"]).resolve() == audio_path.resolve():
+            raise WorkerError("cut-output-alias", "prepared output must not alias the downloaded audio")
         preflight_ad_removal(request)
+        if strict_v2 and request.get("alignedTranscriptModel", ALIGNED_STT_MODEL) != ALIGNED_STT_MODEL:
+            raise WorkerError("aligned-stt-model-required", f"ad removal requires {ALIGNED_STT_MODEL}")
 
     cues: list[dict] = []
     segments = None
@@ -2824,7 +3076,9 @@ def run(request: dict) -> dict:
     text: str | None = None
     language = request.get("language")
 
-    published = request.get("publishedTranscript") if allow_published_transcript else None
+    # A removal request must be timed from this exact downloaded audio. Do not
+    # fetch or parse publisher cues which are guaranteed not to drive it.
+    published = request.get("publishedTranscript") if allow_published_transcript and not (remove_ads and strict_v2) else None
     if published:
         progress("transcript.published.parse", published.get("mediaType", ""))
         # Sorted for the same reason speech-to-text is: a feed's own file is no
@@ -2845,21 +3099,29 @@ def run(request: dict) -> dict:
             language = published.get("languageCode") or language
             progress("transcript.published.accepted", f"{len(cues)} cues")
 
-    if not cues and allow_speech_to_text:
-        aligned_model = request.get("alignedTranscriptModel") or ALIGNED_STT_MODEL
+    if ((remove_ads and strict_v2) or not cues) and allow_speech_to_text:
+        aligned_model = (ALIGNED_STT_MODEL if remove_ads and strict_v2
+                         else (request.get("alignedTranscriptModel") or ALIGNED_STT_MODEL))
         source_hash = request.get("sourceHash")
         try:
+            audio_duration = probe_duration(audio_path) if remove_ads else None
             if isinstance(source_hash, str) and source_hash and isinstance(aligned_model, str) and aligned_model:
                 segments = _load_cached_aligned_segments(request, source_hash, aligned_model)
             if segments is None:
                 segments = transcribe_with_daemon(audio_path, aligned_model)
                 if isinstance(source_hash, str) and source_hash and isinstance(aligned_model, str) and aligned_model:
                     _store_cached_aligned_segments(request, source_hash, aligned_model, segments)
+            if remove_ads and strict_v2:
+                segments = validate_aligned_segments(segments, audio_duration)
             cues = segments_to_cues(segments)
             timing = "aligned"
         except Exception as error:  # noqa: BLE001 - a failed tier falls through
             segments = None
             progress("transcript.stt.failed", f"{type(error).__name__}: {error}")
+            if remove_ads and strict_v2:
+                if isinstance(error, WorkerError):
+                    raise
+                raise WorkerError("aligned-stt-unavailable", f"ad removal requires aligned speech-to-text: {type(error).__name__}: {error}") from error
     if not cues:
         page = request.get("episodePage")
         if page:
@@ -2871,19 +3133,29 @@ def run(request: dict) -> dict:
     if not cues and not text:
         progress("transcript.absent", "no published, aligned, or prose transcript")
 
-    output_path, ad_spans, keeps = audio_path, [], []
-    if request.get("removeAds", True) and segments:
-        from wilted import llm as llm_module
+    output_path, ad_spans, keeps, raw_nominations, ad_audit = audio_path, [], [], [], None
+    if remove_ads and (strict_v2 or segments):
+        if not segments or (strict_v2 and timing != "aligned"):
+            if strict_v2:
+                raise WorkerError("aligned-stt-required", "ad removal requires valid audio-aligned speech-to-text")
+            remove_ads = False
+        else:
+            from wilted import llm as llm_module
 
-        model = request.get("llmModel") or str(llm_module.DEFAULT_GGUF_MODEL)
-        model_lock = prepare_ad_model_lock(model, aligned_stt=timing == "aligned")
-        output_path, ad_spans, keeps = detect_and_cut(
-            request, audio_path, cues, segments, model_lock=model_lock
-        )
-        if keeps:
-            before = len(cues)
-            cues = remap_cues(cues, keeps)
-            progress("transcript.remap", f"{before} cues to {len(cues)} on the cut timeline")
+            model = request.get("llmModel") or str(llm_module.DEFAULT_GGUF_MODEL)
+            model_lock = prepare_ad_model_lock(model, aligned_stt=timing == "aligned")
+            if strict_v2:
+                output_path, ad_spans, keeps, raw_nominations, ad_audit = detect_and_cut(
+                    request, audio_path, cues, segments, model_lock=model_lock, with_report=True
+                )
+            else:
+                output_path, ad_spans, keeps = detect_and_cut(
+                    request, audio_path, cues, segments, model_lock=model_lock
+                )
+            if keeps:
+                before = len(cues)
+                cues = remap_cues(cues, keeps)
+                progress("transcript.remap", f"{before} cues to {len(cues)} on the cut timeline")
 
     if cues:
         cues = polish_with_notes(request, cues)
@@ -2899,6 +3171,11 @@ def run(request: dict) -> dict:
         duration = None
         progress("audio.probe.failed", f"{type(error).__name__}: {error}")
 
+    outcome = "disabled" if not remove_ads else ("cut" if keeps else "noAds")
+    if strict_v2 and remove_ads and (duration is None or not duration > 0 or not duration < float("inf")):
+        raise WorkerError("output-duration-invalid", "ad removal output has no finite measured duration")
+    if strict_v2 and remove_ads and ad_audit is None:
+        raise WorkerError("ads-audit-missing", "ad removal produced no auditable detector evidence")
     return {
         "ok": True,
         "protocolVersion": PROTOCOL_VERSION,
@@ -2915,6 +3192,14 @@ def run(request: dict) -> dict:
         # Empty means nothing was cut and every timestamp still matches.
         "keepIntervals": serialize_keep_map(keeps),
         "removedSeconds": round(sum(a["endSeconds"] - a["startSeconds"] for a in ad_spans), 3) if keeps else 0.0,
+        # Nominations and detector evidence stay here, out of `adSegments`:
+        # what was cut is the keep map's complement, and what was merely
+        # proposed is review material, not a claim about the delivered audio.
+        "report": {
+            "outcome": outcome,
+            "rawNominations": raw_nominations,
+            "audit": ad_audit,
+        },
     }
 
 

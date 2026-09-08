@@ -103,6 +103,7 @@ public struct PodcastPreparationResult: Sendable {
     public let transcript: Transcript
     public let adSegments: [PodcastAdSegment]
     public let removedSeconds: Double
+    public let adRemovalOutcome: String
     public var audioWasCut: Bool { removedSeconds > 0 }
 
     /// What the run did, for the row: "Ready · 5 ads removed (7:22) ·
@@ -112,14 +113,18 @@ public struct PodcastPreparationResult: Sendable {
     /// pipeline. Journalled as the run's terminal detail so the answer
     /// outlives the process that knew it.
     public var summary: String {
-        Self.summary(advertisements: adSegments.count, secondsRemoved: removedSeconds, timing: transcript.timing)
+        Self.summary(advertisements: adSegments.count, secondsRemoved: removedSeconds, timing: transcript.timing,
+                     adRemovalOutcome: adRemovalOutcome)
     }
 
     public static let readyLabel = "Ready"
 
-    public static func summary(advertisements: Int, secondsRemoved: Double, timing: TranscriptTiming) -> String {
+    public static func summary(advertisements: Int, secondsRemoved: Double, timing: TranscriptTiming,
+                               adRemovalOutcome: String? = nil) -> String {
         var parts: [String] = [readyLabel]
-        if advertisements > 0, secondsRemoved > 0 {
+        if adRemovalOutcome == "disabled" {
+            parts.append("ad removal disabled")
+        } else if advertisements > 0, secondsRemoved > 0 {
             let removed = clock(secondsRemoved)
             parts.append(advertisements == 1 ? "1 ad removed (\(removed))" : "\(advertisements) ads removed (\(removed))")
         } else {
@@ -525,7 +530,7 @@ public actor PodcastPreparationPipeline {
         report(PodcastPreparationProgress(stage: "pipeline.start", detail: episode.title))
         do {
             var request: [String: Any] = [
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "audioPath": audioURL.path,
                 "outputPath": preparedAudioURL(for: audioURL).path,
                 "workDir": workDirectory.path,
@@ -535,7 +540,7 @@ public actor PodcastPreparationPipeline {
                 "sourceHash": stored.revision.contentHash,
                 "alignedTranscriptModel": Self.alignedTranscriptModel,
             ]
-            if policy.transcriptPolicy != .alwaysTranscribe,
+            if !policy.removeAds, policy.transcriptPolicy != .alwaysTranscribe,
                let published = await fetchPublishedTranscript(for: episode, onStatus: report) {
                 request["publishedTranscript"] = published
             }
@@ -673,6 +678,7 @@ public actor PodcastPreparationPipeline {
         var adSegments: [PodcastAdSegment]
         var removedSeconds: Double
         var keepIntervals: [PodcastKeepInterval]
+        var adRemovalOutcome: String
         var timeline: PreparationStatus.PreparationTimeline
     }
 
@@ -683,6 +689,34 @@ public actor PodcastPreparationPipeline {
         if object["ok"] as? Bool != true {
             throw PodcastPreparationError.workerFailed(code: object["code"] as? String ?? "unknown",
                                                        message: object["message"] as? String ?? "no message")
+        }
+        guard object["protocolVersion"] as? Int == 2 else {
+            throw PodcastPreparationError.malformedWorkerResponse("unsupported protocolVersion")
+        }
+        guard let report = object["report"] as? [String: Any],
+              let outcome = report["outcome"] as? String,
+              ["disabled", "noAds", "cut"].contains(outcome),
+              let nominations = report["rawNominations"] as? [[String: Any]],
+              nominations.allSatisfy(isWellFormedNomination) else {
+            throw PodcastPreparationError.malformedWorkerResponse("missing or invalid ad-removal report")
+        }
+        // A detector that examined every window and found nothing, and one
+        // that never reached the model at all, both report `noAds`. Only the
+        // audit separates them, so an outcome that claims the detector ran is
+        // refused unless the evidence for that claim arrives with it.
+        if outcome == "disabled" {
+            guard !(report["audit"] is [String: Any]) else {
+                throw PodcastPreparationError.malformedWorkerResponse("disabled ad removal reported detector evidence")
+            }
+        } else {
+            guard let audit = report["audit"] as? [String: Any],
+                  let modelRequests = audit["modelRequests"] as? Int, modelRequests > 0,
+                  let modelFailures = audit["modelFailures"] as? Int, modelFailures >= 0,
+                  let experimentalRequests = audit["experimentalRequests"] as? Int, experimentalRequests == 0,
+                  let unresolvedIdentifiers = audit["unresolvedIds"] as? [Int], unresolvedIdentifiers.isEmpty,
+                  !(audit["incompleteError"] is String) else {
+                throw PodcastPreparationError.malformedWorkerResponse("missing or unresolved ad-removal audit")
+            }
         }
         guard let audioPath = object["audioPath"] as? String, !audioPath.isEmpty else {
             throw PodcastPreparationError.malformedWorkerResponse("no audioPath")
@@ -746,21 +780,58 @@ public actor PodcastPreparationPipeline {
         } else {
             durationSeconds = nil
         }
+        let changed = object["audioChanged"] as? Bool ?? false
+        let timelineMatchesMap = timelineMatchesKeepMap(removed: removed, kept: kept)
+        guard timelineMatchesMap,
+              (outcome == "disabled" && !changed && removed.isEmpty && kept.isEmpty)
+                || (outcome == "noAds" && !changed && removed.isEmpty && kept.isEmpty)
+                || (outcome == "cut" && changed && !removed.isEmpty && !kept.isEmpty) else {
+            throw PodcastPreparationError.malformedWorkerResponse("inconsistent ad-removal report")
+        }
         return WorkerPayload(
             timing: cues.isEmpty ? .none : timing,
             cues: cues,
             text: object["text"] as? String,
             languageCode: object["languageCode"] as? String,
             audioPath: audioPath,
-            audioChanged: object["audioChanged"] as? Bool ?? false,
+            audioChanged: changed,
             durationSeconds: durationSeconds,
             adSegments: removed.map { PodcastAdSegment(startSeconds: $0.originalStartSeconds, endSeconds: $0.originalEndSeconds,
                                                        label: $0.label, confidence: $0.confidence) },
             removedSeconds: removedSeconds,
             keepIntervals: kept.map { PodcastKeepInterval(startSeconds: $0.originalStartSeconds, endSeconds: $0.originalEndSeconds,
                                                           outputStartSeconds: $0.outputStartSeconds) },
+            adRemovalOutcome: outcome,
             timeline: timeline
         )
+    }
+
+    /// A nomination is review material, so it is type-checked rather than
+    /// trusted: a malformed one would be shown to a listener as evidence.
+    private static func isWellFormedNomination(_ raw: [String: Any]) -> Bool {
+        guard let start = raw["startSeconds"] as? Double, let end = raw["endSeconds"] as? Double,
+              raw["label"] is String, let confidence = raw["confidence"] as? Double else { return false }
+        return start.isFinite && end.isFinite && confidence.isFinite && start >= 0 && end > start
+    }
+
+    private static func timelineMatchesKeepMap(
+        removed: [PreparationStatus.PreparationTimeline.RemovedInterval],
+        kept: [PreparationStatus.PreparationTimeline.KeptInterval]
+    ) -> Bool {
+        guard !removed.isEmpty || !kept.isEmpty else { return true }
+        let orderedKept = kept.sorted { $0.originalStartSeconds < $1.originalStartSeconds }
+        let orderedRemoved = removed.sorted { $0.originalStartSeconds < $1.originalStartSeconds }
+        var expected: [(Double, Double)] = []
+        var cursor = 0.0
+        for keep in orderedKept {
+            if keep.originalStartSeconds > cursor { expected.append((cursor, keep.originalStartSeconds)) }
+            cursor = keep.originalEndSeconds
+        }
+        let end = max(cursor, orderedRemoved.last?.originalEndSeconds ?? 0)
+        if cursor < end { expected.append((cursor, end)) }
+        return expected.count == orderedRemoved.count && zip(expected, orderedRemoved).allSatisfy {
+            abs($0.0 - $1.originalStartSeconds) <= 0.001 && abs($0.1 - $1.originalEndSeconds) <= 0.001
+        }
     }
 
     private static func intervalObjects(named name: String, in object: [String: Any]) throws -> [[String: Any]] {
@@ -877,7 +948,8 @@ public actor PodcastPreparationPipeline {
             fraction: 1
         ))
         return PodcastPreparationResult(revision: revision, mediaURL: mediaURL, transcript: transcript,
-                                        adSegments: payload.adSegments, removedSeconds: payload.removedSeconds)
+                                        adSegments: payload.adSegments, removedSeconds: payload.removedSeconds,
+                                        adRemovalOutcome: payload.adRemovalOutcome)
     }
 
     private static func resultProgress(_ payload: WorkerPayload) -> PodcastPreparationProgress {
