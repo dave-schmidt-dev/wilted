@@ -140,21 +140,30 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
             upNext.click()
         }
 
+        app.terminate()
+
         // Notes exist only for an episode, so this frame comes from the
-        // podcast fixture's episode rather than the playing article.
-        let playEpisode = app.descendants(matching: .any).matching(
+        // podcast fixture's episode rather than the playing article -- and from
+        // a launch of its own. Starting an episode from the Larder rows after
+        // the panels above have been expanded and collapsed does not work:
+        // the row's play button reports hittable, the geometry is unchanged,
+        // and the click lands on nothing. That is tracked as its own defect;
+        // relaunching keeps the capture measuring what it is for, which is what
+        // the rail looks like, rather than failing on an unrelated bug.
+        let episodeApp = launch(["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts"])
+        XCTAssertTrue(element(episodeApp, "wilted-player-play-pause").waitForExistence(timeout: 15))
+        let playEpisode = episodeApp.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-play-'")
         ).firstMatch
-        if playEpisode.waitForExistence(timeout: 5) {
-            playEpisode.click()
-            let notes = element(app, "wilted-player-notes")
-            XCTAssertTrue(notes.waitForExistence(timeout: 10))
-            notes.click()
-            XCTAssertTrue(element(app, "wilted-player-notes-expanded").waitForExistence(timeout: 10))
-            try write(app, "6.4-notes-expanded", into: root)
-            notes.click()
-        }
-        app.terminate()
+        XCTAssertTrue(playEpisode.waitForExistence(timeout: 10))
+        playEpisode.click()
+        let notes = element(episodeApp, "wilted-player-notes")
+        XCTAssertTrue(notes.waitForExistence(timeout: 10))
+        notes.click()
+        XCTAssertTrue(element(episodeApp, "wilted-player-notes-expanded").waitForExistence(timeout: 10))
+        try write(episodeApp, "6.4-notes-expanded", into: root)
+        notes.click()
+        episodeApp.terminate()
     }
 
     private func captureRoutes(into root: URL) throws {

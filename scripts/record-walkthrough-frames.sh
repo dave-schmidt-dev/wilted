@@ -10,7 +10,7 @@ set -Eeuo pipefail
 # scripts/record-mac-snapshots.sh documents. Building from a $TMPDIR copy
 # avoids the TCC hang a test host hits against the in-repo project.
 #
-# This seizes the screen: the runner launches the app six times and drives it.
+# This seizes the screen: the runner launches the app seven times and drives it.
 # Do not run it alongside other work on this machine.
 #
 # Usage: scripts/record-walkthrough-frames.sh [output-dir]
