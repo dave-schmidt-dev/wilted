@@ -899,6 +899,37 @@ final class WiltedMacSmokeUITests: XCTestCase {
         return (own + children).joined(separator: " ")
     }
 
+    /// Walkthrough frame 6.4 has never captured. The model half of this path is
+    /// held down in WiltedMacModelTests; this is the view half, in the gate
+    /// where it can be iterated without seizing the screen for a full capture.
+    /// If this passes and the capture still fails, the fault is the harness.
+    /// Walkthrough frame 6.4 never captured, across eight attempts. The cause
+    /// was not the frame: the playing fixture launched already showing "Audio
+    /// route recovery failed.", because it opened an article and then toggled
+    /// playback, and the toggle beat the load. Frames 6.1 to 6.3 captured
+    /// anyway, so the walkthrough had been documenting a faulted player.
+    func testThePlayingFixtureComesUpWithoutAnAudioFault() {
+        let app = launch(arguments: ["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts"])
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-player-play-pause"]
+            .waitForExistence(timeout: 15))
+        let fault = app.descendants(matching: .any)["wilted-player-recoverable-error"]
+        XCTAssertFalse(fault.waitForExistence(timeout: 3),
+                       "a fixture that starts faulted documents a broken player")
+
+        // The rest of frame 6.4's path: an episode started while the article
+        // plays takes the rail over, which is what puts Notes in it.
+        let playEpisode = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-play-'"))
+            .firstMatch
+        XCTAssertTrue(playEpisode.waitForExistence(timeout: 10))
+        playEpisode.click()
+        let notes = app.descendants(matching: .any)["wilted-player-notes"]
+        XCTAssertTrue(notes.waitForExistence(timeout: 15))
+        notes.click()
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-player-notes-expanded"]
+            .waitForExistence(timeout: 10))
+    }
+
     private func launch(arguments: [String]) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"] + arguments

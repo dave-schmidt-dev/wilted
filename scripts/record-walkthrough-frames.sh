@@ -20,7 +20,19 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out_dir="${1:-$repo_root/.logs/walkthrough-captures}"
 development_team="${WILTED_DEVELOPMENT_TEAM:-4CJ49V6QHW}"
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-walkthrough.XXXXXX")"
-trap 'rm -rf "$tmp_root"' EXIT
+# A failed capture is diagnosed from the runner log, and the tail this script
+# prints is not enough -- the interesting part is which sections wrote frames
+# before the failure, which is thousands of lines earlier. Keeping the tree is
+# opt-in because it is large and a successful run has nothing to say.
+keep_tmp_root="${WILTED_CAPTURE_KEEP:-0}"
+cleanup_tmp_root() {
+  if [[ "$keep_tmp_root" == "1" ]]; then
+    status "capture.kept root=$tmp_root"
+    return
+  fi
+  rm -rf "$tmp_root"
+}
+trap cleanup_tmp_root EXIT
 
 status() { printf '%s\n' "$*" >&2; }
 

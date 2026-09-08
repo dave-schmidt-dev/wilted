@@ -1119,8 +1119,11 @@ final class WiltedMacModel {
                 syncLifecycle?.quarantineAccount()
             }
             if arguments.contains("--wilted-ui-fixture-playing"), let firstArticle = articles.first(where: { $0.isReady }) {
-                openNowPlaying(for: firstArticle)
-                togglePlayback()
+                // Not `openNowPlaying` followed by `togglePlayback()`: the
+                // load runs in a task, so the toggle used to arrive first and
+                // fault the rail with "Audio route recovery failed." before the
+                // window was even on screen.
+                openNowPlaying(for: firstArticle, autoplay: true)
             }
         }
 #else
@@ -2965,7 +2968,11 @@ final class WiltedMacModel {
 #endif
     }
 
-    func openNowPlaying(for article: WiltedMacArticle) {
+    /// `autoplay` starts the article once its revision is actually loaded.
+    /// Callers cannot do this themselves by following the call with a toggle:
+    /// the load runs in a task, so the toggle reaches a controller with nothing
+    /// loaded, throws, and is reported as an audio route fault.
+    func openNowPlaying(for article: WiltedMacArticle, autoplay: Bool = false) {
         guard article.isReady else { return }
         beginArticlePlaybackTransition(article)
 #if canImport(WiltedProducer)
@@ -2978,6 +2985,7 @@ final class WiltedMacModel {
                       let revision = try? await store.readyRevision(for: itemID) else { return }
                 do {
                     try await playback.load(revision)
+                    if autoplay { try playback.play() }
                     self.isPlaying = playback.isPlaying
                     self.refreshPlaybackReadout()
                     await self.loadTranscript(itemID: itemID, revisionID: revision.revision.revisionID)
@@ -2985,10 +2993,11 @@ final class WiltedMacModel {
             }
             return
         }
-        Task { [weak self] in
+        playbackOperationTask = Task { [weak self] in
             guard let self else { return }
             do {
                 try await playback.load(fixtureRevision)
+                if autoplay { try playback.play() }
                 self.isPlaying = playback.isPlaying
                 self.refreshPlaybackReadout()
                 if let itemID = try? ItemID(rawValue: article.id) {

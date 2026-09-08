@@ -673,6 +673,35 @@ final class WiltedMacModelTests: XCTestCase {
                        "asking to run a job that was never deferred does nothing")
     }
 
+    /// Walkthrough frame 6.4 -- an episode started while an article is playing --
+    /// has never captured successfully. This is the model half of that path,
+    /// held down so a future failure can be attributed to the view or the
+    /// capture harness rather than re-argued from scratch.
+    func testStartingAnEpisodeWhileAnArticlePlaysSwitchesCleanly() async throws {
+        let directory = temporaryDirectory("article-to-episode")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts"],
+            stateDirectoryOverride: directory,
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        try await settle(model)
+        XCTAssertNotNil(model.selectedArticleID, "the fixture starts with an article playing")
+
+        let episode = try XCTUnwrap(model.episodes.first)
+        model.playEpisode(episode)
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+
+        XCTAssertEqual(model.currentEpisode?.id, episode.id,
+                       "the episode takes over, which is what puts Notes in the rail")
+        XCTAssertNil(model.selectedArticleID, "and the article lets go")
+        XCTAssertNil(model.playbackError)
+        XCTAssertNil(model.playbackOperationStatus, "a rail left spinning never goes idle for XCUITest")
+    }
+
     func testOnlyNoLocalSpeechToTextWithRemovalOnBlocksAdRemoval() throws {
         // The pane offers the two controls side by side, so every pair a reader
         // can reach is checked, not only the one that fails.
