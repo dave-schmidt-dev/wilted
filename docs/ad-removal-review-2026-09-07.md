@@ -2,7 +2,7 @@
 
 **Review date:** 7 September 2026.
 **Review baseline:** `1112f05`, plus the imported detector in `wilted-old/src/wilted/ads.py`, which is read and wrapped rather than reimplemented.
-**Remediation accepted at:** `6ae4e1f` (audited detector adapter), `8250887` (timing, render and outcome enforcement), `ee8d5a9` (strict shared-path evaluation).
+**Remediation accepted at:** `6ae4e1f` (audited detector adapter), `8250887` (timing, render and outcome enforcement), `ee8d5a9` (strict shared-path evaluation). Measurements below were taken at `565b03f`, which differs from `ee8d5a9` only in the manifest's top-level provenance prose; no detector, worker or scoring code changed between them.
 
 This report exists because the honest answer to "how reliable is ad removal" was not written down anywhere. It states what the review found, what was corrected and with which test, what remains an open gap, and — most importantly — what the evidence supports. It does not claim general reliability, and nothing here should be read as owner acceptance.
 
@@ -12,11 +12,11 @@ Two episodes carry hand-labelled truth. Both were tuning inputs: the failures th
 
 - The worker can no longer report a successful ad-removal outcome without auditable evidence that the detector actually ran and resolved every segment it was given.
 - A destructive cut is refused unless its timing is audio-aligned, and the rendered file is measured against the map that produced it before it is published.
-- On the two labelled episodes, at `ee8d5a9`, the live detector removes every labelled advertisement and touches no labelled programme.
+- On the two labelled episodes, at `565b03f`, the live detector removes every labelled advertisement and touches no labelled programme.
 
-Not supported: any statement about an unlabelled episode, any statement about a show not in the corpus, and any statement that the current library is correct. As of `ee8d5a9` the saved library still scores **0 of 2** — the point of keeping the two scoring modes separate.
+Not supported: any statement about an unlabelled episode, any statement about a show not in the corpus, and any statement that the current library is correct. As of `565b03f` the saved library still scores **0 of 2** — the point of keeping the two scoring modes separate.
 
-## Current measurements at `ee8d5a9`
+## Current measurements at `565b03f`
 
 | Mode | Command | Result |
 |---|---|---|
@@ -115,8 +115,8 @@ Activation is therefore a future decision, and these are the criteria it should 
 2. **No advertisement left behind.** No labelled `must-cut` interval may finish with more than `CUT_REMNANT_TOLERANCE_SECONDS` remaining.
 3. **Programme loss bounded twice.** No `must-keep` interval may lose more than `KEEP_TOLERANCE_SECONDS`, and no episode more than `KEEP_LOSS_BUDGET_SECONDS` in total.
 4. **Nothing accepted in unmeasured time.** Unknown cut seconds may not increase against the same case with adaptation off.
-5. **Calls bounded and stated.** A per-episode maximum of additional model calls is declared in the request and enforced before spending; an exhausted budget yields no speculative cut rather than an unverified one.
-6. **Latency stated against baseline.** A wall-clock ceiling expressed as a multiple of the same episode's detection time with adaptation off, measured on the machine that will run it. No latency figure is claimed here, because none has been measured.
+5. **Calls bounded and stated.** A per-episode maximum of additional model calls is declared in the request and enforced before spending; an exhausted budget yields no speculative cut rather than an unverified one. Proposed ceiling: no more than 20% of the same run's own `modelRequests`, and never more than 8 additional calls on one episode.
+6. **Latency stated against baseline.** A wall-clock ceiling expressed as a multiple of the same episode's detection time with adaptation off, measured on the machine that will run it. Proposed ceiling: 1.25x. Stated as a ratio because no absolute latency has been measured here and none should be quoted as though it had.
 
 Unresolved mandatory experimental answers stay unresolved; they never become a cut.
 
