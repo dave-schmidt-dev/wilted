@@ -1538,10 +1538,11 @@ final class WiltedMacModelTests: XCTestCase {
     /// An episode the listener is finished with early has no other way to
     /// close out: progress is written from where the audio is, so it stays at
     /// the abandoned position for good and the Larder goes on offering it.
-    /// The press has to reach the durable record and come back to the row,
-    /// because a control whose only effect is a scrubber jumping to the end is
-    /// indistinguishable from one that did nothing.
-    func testMarkingTheCurrentEpisodeCompletedShowsOnItsRow() async throws {
+    /// The press has to reach the durable record and retire the row, the same
+    /// as playing the episode to its end does -- a control whose only effect
+    /// is a scrubber jumping to the end is indistinguishable from one that
+    /// did nothing.
+    func testMarkingTheCurrentEpisodeCompletedRetiresItFromTheLarder() async throws {
         let directory = temporaryDirectory("episode-mark-completed")
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1600,9 +1601,14 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertTrue(model.playbackCompleted, "the player has to stop offering to mark what it just marked")
         XCTAssertFalse(model.isPlaying, "marking an episode finished stops the audio")
 
-        let marked = try XCTUnwrap(model.episodes.first)
-        XCTAssertTrue(marked.isPlayed, "the row reads its played state from the record the player wrote")
-        XCTAssertEqual(marked.playbackSeconds, model.playbackDurationSeconds, accuracy: 0.01)
+        XCTAssertLessThan(model.playbackPositionSeconds, model.playbackDurationSeconds,
+                          "the playhead stays where the listener left it; only the completed flag is written")
+
+        XCTAssertFalse(model.episodes.contains { $0.id == episodeID.rawValue },
+                       "saying \"I am done with this\" retires the row, the same as playing it to the end")
+        XCTAssertTrue(model.dismissedEpisodes.contains { $0.id == episodeID.rawValue },
+                      "and durably, so the next feed refresh cannot put it back")
+        XCTAssertEqual(model.podcastOperationMessage, "Removed \(episode.title).")
     }
 
     /// Placement is the whole point: a cut is meaningless unless it sits where
@@ -2429,7 +2435,7 @@ final class WiltedMacModelTests: XCTestCase {
         try await settle(model)
         XCTAssertEqual(model.currentEpisode?.id, firstID.rawValue)
 
-        model.markCurrentPlaybackCompleted()
+        model.simulatePodcastPlaybackReachedEndForTesting()
         try await settle(model)
         model.simulatePodcastPlaybackFinishedForTesting()
         try await settle(model)
@@ -2500,7 +2506,7 @@ final class WiltedMacModelTests: XCTestCase {
         model.playEpisode(first)
         try await settle(model)
 
-        model.markCurrentPlaybackCompleted()
+        model.simulatePodcastPlaybackReachedEndForTesting()
         try await settle(model)
         model.simulatePodcastPlaybackFinishedForTesting()
         try await settle(model)
@@ -2551,7 +2557,7 @@ final class WiltedMacModelTests: XCTestCase {
         model.playEpisode(only)
         try await settle(model)
 
-        model.markCurrentPlaybackCompleted()
+        model.simulatePodcastPlaybackReachedEndForTesting()
         try await settle(model)
         model.simulatePodcastPlaybackFinishedForTesting()
         try await settle(model)

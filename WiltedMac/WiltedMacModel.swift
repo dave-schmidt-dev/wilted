@@ -3316,7 +3316,9 @@ final class WiltedMacModel {
     ///
     /// The library is reloaded rather than patched in memory, because the row
     /// reads its played state from the same durable record the player just
-    /// wrote, and the two disagreeing is worse than the reload costs.
+    /// wrote, and the two disagreeing is worse than the reload costs. A
+    /// finished podcast episode is then retired from the Larder, the same as
+    /// one that ran out on its own.
     func markCurrentPlaybackCompleted() {
 #if canImport(WiltedProducer)
         guard let playback else { return }
@@ -3327,10 +3329,36 @@ final class WiltedMacModel {
                 self.refreshPlaybackReadout()
                 await self.queueCurrentPlaybackCheckpoint()
                 await self.reloadLibraryRows()
+                await self.retireFinishedEpisode()
             } catch { self.playbackError = "This episode could not be marked completed." }
         }
 #endif
     }
+
+#if canImport(WiltedProducer)
+    /// Takes the episode the listener just finished with out of the Larder.
+    ///
+    /// Playing an episode to its end removes it, on the reasoning that leaving
+    /// it there makes the owner clear by hand what finishing it already said.
+    /// Saying "I am done with this" at 91% says exactly the same thing, and it
+    /// was leaving the row on the shelf: the two ways of finishing an episode
+    /// agreed about the durable record and disagreed about the one thing the
+    /// listener could see.
+    ///
+    /// Articles are untouched -- they have no Larder removal on finishing --
+    /// and nothing advances either way, because the press is about this
+    /// episode and not the next one.
+    private func retireFinishedEpisode() async {
+        guard isPodcastPlayback, let finished = currentEpisode else { return }
+        // Deliberate, so no Undo is offered; and an Undo left over from an
+        // earlier Skip must not attach itself to a different episode.
+        undoableRemoval = nil
+        hideEpisode(finished)
+        podcastOperationMessage = await dismissEpisode(finished)
+            ? "Removed \(finished.title)."
+            : "\(finished.title) could not be removed."
+    }
+#endif
 
     /// Records a playback fault and gives the backend one automatic chance to
     /// rebuild itself before exposing a manual retry.
@@ -3485,12 +3513,30 @@ final class WiltedMacModel {
     /// `playback?.playbackDidFinishHandler`, which the audio backend fires
     /// from its own completion callback -- not something a test can trigger
     /// without a real, timed audio file. Driving `playback.completed` to
-    /// `true` first (for example with `markCurrentPlaybackCompleted()`, the
-    /// same checkpoint natural completion writes) and then calling this
-    /// reaches the same guard and search logic natural completion does.
+    /// `true` first with `simulatePodcastPlaybackReachedEndForTesting()` and
+    /// then calling this reaches the same guard and search logic natural
+    /// completion does.
     func simulatePodcastPlaybackFinishedForTesting() {
 #if canImport(WiltedProducer)
         handlePodcastPlaybackFinished()
+#endif
+    }
+
+    /// Writes the terminal checkpoint that audio reaching the end writes, and
+    /// nothing else.
+    ///
+    /// `markCurrentPlaybackCompleted()` used to serve as this shim, but it now
+    /// also retires the row from the Larder, so using it here would take the
+    /// finished episode out before the handler under test ever saw it.
+    func simulatePodcastPlaybackReachedEndForTesting() {
+#if canImport(WiltedProducer)
+        guard let playback else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            try? await playback.markCompleted()
+            self.refreshPlaybackReadout()
+            await self.reloadLibraryRows()
+        }
 #endif
     }
 
