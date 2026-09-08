@@ -908,23 +908,36 @@ final class WiltedMacSmokeUITests: XCTestCase {
     /// route recovery failed.", because it opened an article and then toggled
     /// playback, and the toggle beat the load. Frames 6.1 to 6.3 captured
     /// anyway, so the walkthrough had been documenting a faulted player.
+    /// The walkthrough capture failed eight times at frame 6.4. The first of
+    /// two causes was not the frame: the playing fixture launched already
+    /// showing "Audio route recovery failed.", because it opened an article and
+    /// then toggled playback, and the toggle beat the load. Frames 6.1 to 6.3
+    /// captured anyway -- the rail draws with the fault banner present -- so the
+    /// walkthrough had been documenting a faulted player and only the last frame
+    /// said so.
+    ///
+    /// The second cause is separate and still open: after Transcript or Up Next
+    /// is expanded and collapsed, clicks on the Larder rows underneath stop
+    /// landing. That is tracked on its own, with this test's shape as the
+    /// reproduction.
     func testThePlayingFixtureComesUpWithoutAnAudioFault() {
         let app = launch(arguments: ["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts"])
         XCTAssertTrue(app.descendants(matching: .any)["wilted-player-play-pause"]
             .waitForExistence(timeout: 15))
-        let fault = app.descendants(matching: .any)["wilted-player-recoverable-error"]
-        XCTAssertFalse(fault.waitForExistence(timeout: 3),
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-player-recoverable-error"]
+            .waitForExistence(timeout: 3),
                        "a fixture that starts faulted documents a broken player")
 
-        // The rest of frame 6.4's path: an episode started while the article
-        // plays takes the rail over, which is what puts Notes in it.
+        // The handoff itself works, which is what separates the fault above
+        // from the click problem tracked separately.
         let playEpisode = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-play-'"))
             .firstMatch
         XCTAssertTrue(playEpisode.waitForExistence(timeout: 10))
         playEpisode.click()
         let notes = app.descendants(matching: .any)["wilted-player-notes"]
-        XCTAssertTrue(notes.waitForExistence(timeout: 15))
+        XCTAssertTrue(notes.waitForExistence(timeout: 15),
+                      "an episode started while an article plays takes the rail over")
         notes.click()
         XCTAssertTrue(app.descendants(matching: .any)["wilted-player-notes-expanded"]
             .waitForExistence(timeout: 10))
