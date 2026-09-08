@@ -68,8 +68,15 @@ These exist as settings today — **Immediately after download** (default), **Ma
 **Off-peak while open** with a local start/end time for processing; and **Best
 available** (default), **Always transcribe**, or **No local STT** for transcript
 acquisition, alongside the `removeAds` boolean (default on). They validate, persist, and
-are captured when preparation is admitted. When local speech-to-text is needed, one
-1.1B model pass supplies both the ad detector and the displayed transcript.
+are captured when preparation is admitted.
+
+Ad removal is not a preference the transcript policy can outvote: a removal run never
+fetches or parses the publisher's transcript, and one aligned `parakeet-tdt-1.1b` pass
+supplies both the ad detector and the displayed transcript. **No local STT** with
+`removeAds` still on is therefore a combination the Settings pane accepts and every
+preparation then refuses, typed as `aligned-stt-required` before any model work, leaving
+the downloaded audio untouched. On a transcript-only run (`removeAds` off) the published
+transcript is used when it describes the downloaded file.
 
 ## Claims: what stops the same episode transferring twice
 
