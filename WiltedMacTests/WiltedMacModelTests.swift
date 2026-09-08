@@ -824,7 +824,7 @@ final class WiltedMacModelTests: XCTestCase {
         model.startPlaybackCheckpointTicker()
         XCTAssertTrue(model.playbackCheckpointTickerIsRunning, "a repeated call is harmless")
 
-        model.checkpointForQuit()
+        model.checkpointForBackground()
         XCTAssertTrue(model.playbackCheckpointTickerIsRunning,
                       "hiding the app stops the automation tick, not this one")
 
@@ -879,12 +879,91 @@ final class WiltedMacModelTests: XCTestCase {
         model.startAutomationTicker()
         XCTAssertTrue(model.automationTickerIsRunning, "a repeated scene callback is harmless")
 
-        model.checkpointForQuit()
+        model.checkpointForBackground()
         XCTAssertFalse(model.automationTickerIsRunning, "hiding the app stops it")
 
         model.startAutomationTicker()
         XCTAssertTrue(model.automationTickerIsRunning, "and coming back starts it again")
         model.stopAutomationTicker()
+    }
+
+    /// Hiding the window, minimising it, or closing the last one must not stop
+    /// the audio. It did: the scene-phase handler called a method that paused,
+    /// because one call was serving both "not frontmost" and "quitting". David
+    /// found it with Cmd-H during Mac owner acceptance.
+    ///
+    /// The assertion has to defeat the fire-and-forget task the checkpoint runs
+    /// in. Calling the method and reading the flag immediately passes against
+    /// the *old* code too, because the pause has not landed yet.
+    func testHidingTheWindowCheckpointsWithoutStoppingTheAudio() async throws {
+        let model = try await playingModel("background-keeps-playing")
+        let before = try XCTUnwrap(model.playbackCheckpointStateForTesting())
+        XCTAssertTrue(before.isPlaying, "the fixture has to be playing for this to prove anything")
+
+        model.checkpointForBackground()
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+
+        let after = try XCTUnwrap(model.playbackCheckpointStateForTesting())
+        XCTAssertTrue(after.isPlaying, "hiding the app must not stop the episode")
+        XCTAssertGreaterThan(after.sequence, before.sequence,
+                             "and it still has to write the playhead down")
+        model.togglePlayback()
+    }
+
+    /// The other half of the split. Termination is the one moment stopping is
+    /// right: a Now Playing entry that still claims to be playing outlives the
+    /// process, which is the failure `WiltedMacApp.init` records against test
+    /// runs that left the machine's media keys pointed at a dead process.
+    func testQuittingStopsTheAudioAndCheckpoints() async throws {
+        let model = try await playingModel("quit-stops-playing")
+        let before = try XCTUnwrap(model.playbackCheckpointStateForTesting())
+        XCTAssertTrue(before.isPlaying)
+
+        model.pauseForQuit()
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+
+        let after = try XCTUnwrap(model.playbackCheckpointStateForTesting())
+        XCTAssertFalse(after.isPlaying, "quitting stops the audio")
+        XCTAssertGreaterThan(after.sequence, before.sequence, "and writes the playhead down")
+    }
+
+    /// A bootstrapped model with one ready episode already playing.
+    private func playingModel(_ name: String) async throws -> WiltedMacModel {
+        let directory = temporaryDirectory(name)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let feedURL = try XCTUnwrap(URL(string: "https://example.test/\(name).xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://example.test/\(name).mp3"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let episodeID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "\(name)-1", enclosureURL: enclosureURL
+        )
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Lifecycle", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    episodeID, guid: "\(name)-1", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: enclosureURL, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let episode = try XCTUnwrap(model.episodes.first)
+        model.playEpisode(episode)
+        try await settle(model)
+        return model
     }
 
     /// The scheduling timestamp is the only thing standing between an interval

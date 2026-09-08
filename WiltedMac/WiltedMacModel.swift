@@ -3442,11 +3442,37 @@ final class WiltedMacModel {
 #endif
     }
 
-    func checkpointForQuit() {
+    /// Hiding, minimising, or closing the last window. The playhead is written
+    /// down and the automation tick stops, but the audio keeps going: a podcast
+    /// the owner is listening to does not stop because the window went away.
+    ///
+    /// This used to call `handlePauseOrQuit`, which paused. That conflated "not
+    /// frontmost" with "quitting" and silenced Cmd-H, Cmd-M, and closing the
+    /// window. Nothing was gained by it -- `PlaybackState` persists the
+    /// position, not whether it was playing -- so the pause only ever cost the
+    /// owner their audio.
+    func checkpointForBackground() {
         stopAutomationTicker()
 #if canImport(WiltedProducer)
         guard let playback else { return }
-        Task { [weak self] in
+        playbackOperationTask = Task { [weak self] in
+            guard let self else { return }
+            try? await playback.manualCheckpoint()
+            await self.queueCurrentPlaybackCheckpoint()
+        }
+#endif
+    }
+
+    /// Actual termination, which is the one moment stopping is right. The
+    /// process is about to exit, and a Now Playing entry left claiming to be
+    /// playing outlives it -- the failure `WiltedMacApp.init` records against
+    /// test runs, where the machine's media keys ended up pointed at a process
+    /// that was gone.
+    func pauseForQuit() {
+        stopAutomationTicker()
+#if canImport(WiltedProducer)
+        guard let playback else { return }
+        playbackOperationTask = Task { [weak self] in
             guard let self else { return }
             try? await playback.handlePauseOrQuit()
             await self.queueCurrentPlaybackCheckpoint()
@@ -3478,6 +3504,20 @@ final class WiltedMacModel {
     func waitForPlaybackOperationForTesting() async {
 #if canImport(WiltedProducer)
         await playbackOperationTask?.value
+#endif
+    }
+
+    /// What the engine and the checkpoint counter each did, so a test can tell
+    /// "the playhead was written down" apart from "the audio stopped". Those
+    /// were one call until hiding the window was found to silence the episode,
+    /// and asserting on the model's own mirrored `isPlaying` would not catch a
+    /// regression: it lags the engine by an observation.
+    func playbackCheckpointStateForTesting() -> (isPlaying: Bool, sequence: Int64)? {
+#if canImport(WiltedProducer)
+        guard let playback else { return nil }
+        return (playback.liveIsPlaying, playback.sequence)
+#else
+        return nil
 #endif
     }
 

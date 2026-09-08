@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -38,6 +39,14 @@ struct WiltedMacApp: App {
                 .task {
                     model.reconcileSyncOnLaunchOrForeground()
                 }
+                // The only quit hook there is. Scene phase reports that the
+                // windows went away, which is not the same event and must not
+                // stop the audio, so termination is observed separately.
+                .onReceive(NotificationCenter.default.publisher(
+                    for: NSApplication.willTerminateNotification
+                )) { _ in
+                    model.pauseForQuit()
+                }
         }
         .commands {
             SidebarCommands()
@@ -45,15 +54,16 @@ struct WiltedMacApp: App {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 model.reconcileSyncOnLaunchOrForeground()
-                // Symmetric with the stop below. Hiding the app checkpoints and
-                // stops the ticker, and without this a window left open past the
-                // first focus dip would never tick again for the rest of the
-                // process, which is the one case the ticker exists for. It is
-                // idempotent and guarded on a loaded store, so an early .active
-                // before bootstrap does nothing and launch still starts it.
+                // Symmetric with the checkpoint below. Hiding the app
+                // checkpoints and stops the ticker, and without this a window
+                // left open past the first focus dip would never tick again for
+                // the rest of the process, which is the one case the ticker
+                // exists for. It is idempotent and guarded on a loaded store, so
+                // an early .active before bootstrap does nothing and launch
+                // still starts it.
                 model.startAutomationTicker()
             } else if phase == .background || phase == .inactive {
-                model.checkpointForQuit()
+                model.checkpointForBackground()
             }
         }
     }
