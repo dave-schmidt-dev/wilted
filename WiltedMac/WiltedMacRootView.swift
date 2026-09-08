@@ -1847,12 +1847,15 @@ private struct WiltedMacPlayerContent: View {
                 // Beside Restart because they are the same kind of decision
                 // about the whole episode rather than about the playhead: one
                 // says start over, the other says done with it. The label goes
-                // past tense once the record says so, which is the only thing
-                // on this row that changes, so the press is visible.
-                Button(model.playbackCompleted ? "Completed" : "Mark completed") {
+                // past tense once the press has nothing left to do, which is
+                // the only thing on this row that changes, so the press is
+                // visible. It follows the retirement rather than the written
+                // record: an episode marked finished but still on the shelf
+                // still has the half the listener can see left to do.
+                Button(model.playbackCompletionIsSettled ? "Completed" : "Mark completed") {
                     model.markCurrentPlaybackCompleted()
                 }
-                .disabled(!model.hasCurrentPlayback || model.playbackCompleted)
+                .disabled(!model.hasCurrentPlayback || model.playbackCompletionIsSettled)
                 .accessibilityIdentifier("wilted-player-mark-completed")
             }
             .accessibilityElement(children: .contain)

@@ -792,6 +792,16 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(source.contains("wilted-player-route-recovery"))
         XCTAssertTrue(source.contains("if model.audioRouteFault"))
 
+        // The finished-with-it control keys on the retirement rather than the
+        // written record. Keying it on `playbackCompleted` disabled the only
+        // control that could retire an episode whose completion was written
+        // without one, so the predicate is pinned here as well as tested.
+        XCTAssertTrue(source.contains(
+            "Button(model.playbackCompletionIsSettled ? \"Completed\" : \"Mark completed\")"))
+        XCTAssertTrue(source.contains(
+            ".disabled(!model.hasCurrentPlayback || model.playbackCompletionIsSettled)"))
+        XCTAssertFalse(source.contains(".disabled(!model.hasCurrentPlayback || model.playbackCompleted)"))
+
         let modelRoot = root.deletingLastPathComponent().appendingPathComponent("WiltedMacModel.swift")
         let modelSource = try String(contentsOf: modelRoot)
         XCTAssertTrue(modelSource.contains("guard !audioRouteRecoveryAttempted else { return }"))

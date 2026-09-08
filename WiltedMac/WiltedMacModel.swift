@@ -2760,6 +2760,25 @@ final class WiltedMacModel {
 
     var hasCurrentPlayback: Bool { currentArticle != nil || currentEpisode != nil }
 
+    /// Whether the finished-with-it press has nothing left to do.
+    ///
+    /// The written record is only half of what the press does: it also retires
+    /// the episode from the Larder, and the two come apart in ways the record
+    /// alone cannot see. A completion written before retirement existed, a
+    /// dismissal that failed after the completion stuck, and a completion
+    /// synced from iPhone all leave an episode marked finished and still on
+    /// the shelf. Disabling on the record alone turned the only control that
+    /// could finish the job into a dead end, so it takes both.
+    ///
+    /// Articles settle on the record: they have no Larder retirement to wait
+    /// for. An episode already gone from `episodes` has no `currentEpisode`
+    /// either, so the retired case reads as settled through the same guard.
+    var playbackCompletionIsSettled: Bool {
+        guard playbackCompleted else { return false }
+        guard isPodcastPlayback, let episode = currentEpisode else { return true }
+        return hiddenEpisodeIDs.contains(episode.id)
+    }
+
     var canSelectPreviousEpisode: Bool {
         guard isPodcastPlayback, let currentPodcastEpisodeID,
               let index = podcastQueueIDs.firstIndex(of: currentPodcastEpisodeID) else { return false }
@@ -3343,10 +3362,17 @@ final class WiltedMacModel {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await playback.markCompleted()
-                self.refreshPlaybackReadout()
-                await self.queueCurrentPlaybackCheckpoint()
-                await self.reloadLibraryRows()
+                // Idempotent by halves: a record that already says completed is
+                // not rewritten, but the retirement it never got runs anyway.
+                // Pressing this on an episode marked finished elsewhere -- an
+                // older build, a failed dismissal, another device -- has to
+                // mean "take it off the shelf" and not "do nothing".
+                if !self.playbackCompleted {
+                    try await playback.markCompleted()
+                    self.refreshPlaybackReadout()
+                    await self.queueCurrentPlaybackCheckpoint()
+                    await self.reloadLibraryRows()
+                }
                 await self.retireFinishedEpisode()
             } catch { self.playbackError = "This episode could not be marked completed." }
         }

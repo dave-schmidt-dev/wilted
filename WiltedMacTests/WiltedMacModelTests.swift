@@ -1657,6 +1657,94 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertTrue(model.dismissedEpisodes.contains { $0.id == episodeID.rawValue },
                       "and durably, so the next feed refresh cannot put it back")
         XCTAssertEqual(model.podcastOperationMessage, "Removed \(episode.title).")
+        XCTAssertTrue(model.playbackCompletionIsSettled,
+                      "both halves are done, so the control has nothing left to offer")
+    }
+
+    /// Reported 2026-09-07: an episode marked completed on a build that wrote
+    /// the record without retiring the row stayed in the Larder, and the
+    /// control that would have retired it read "Completed" and was disabled.
+    /// The record and the shelf can disagree for reasons that outlive that
+    /// build -- a dismissal that fails after the completion sticks, a
+    /// completion synced from iPhone that never runs this handler -- so the
+    /// press has to remain available until the row is actually gone, and it
+    /// has to finish the half that was skipped rather than repeat the half
+    /// that was not.
+    func testAnEpisodeAlreadyMarkedCompletedCanStillBeRetired() async throws {
+        let directory = temporaryDirectory("episode-completed-not-retired")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let audioURL = directory.appendingPathComponent("episode.m4a")
+
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/stranded.xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/stranded.mp3"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let episodeID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "stranded-1", enclosureURL: enclosureURL
+        )
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+
+        let model = WiltedMacModel(
+            arguments: [],
+            stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Stranded", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await store.save(episode: try PodcastEpisode(
+                    itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: "stranded-1",
+                    title: "Stranded episode", publishedTime: created, enclosureURL: enclosureURL,
+                    enclosureMediaType: "audio/mpeg", createdAt: created
+                ))
+                let assembled = try AudioAssembler().assemble(
+                    pcm: (0..<44_100).map { Float(0.2 * sin(2 * Double.pi * 220 * Double($0) / 44_100)) },
+                    itemID: episodeID, destinationURL: audioURL
+                )
+                try await store.finalizePodcastDownload(
+                    revision: assembled.revision, mediaURL: audioURL,
+                    download: try PodcastDownload(
+                        episodeID: episodeID, status: .completed,
+                        bytesReceived: assembled.revision.byteCount,
+                        expectedByteCount: assembled.revision.byteCount,
+                        localURL: audioURL, contentHash: assembled.revision.contentHash,
+                        updatedAt: created
+                    )
+                )
+                // The state the old build left behind: finished on the record,
+                // with no dismissal to take the row off the shelf.
+                try await store.save(playback: try PlaybackState(
+                    itemID: episodeID, revisionID: assembled.revision.revisionID,
+                    sessionID: "stranded-session", sequence: 3,
+                    positionSeconds: assembled.revision.durationSeconds,
+                    durationSeconds: assembled.revision.durationSeconds,
+                    completed: true, intent: .progress, deviceID: "stranded-device",
+                    updatedAt: created
+                ))
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let episode = try XCTUnwrap(model.episodes.first)
+        XCTAssertTrue(episode.isPlayed, "the record survived; only the retirement was missed")
+        model.playEpisode(episode)
+        try await settle(model)
+
+        XCTAssertTrue(model.playbackCompleted, "the loaded record still says finished")
+        XCTAssertFalse(model.playbackCompletionIsSettled,
+                       "the row is still on the shelf, so the press still has work to do")
+
+        model.markCurrentPlaybackCompleted()
+        try await settle(model)
+
+        XCTAssertFalse(model.episodes.contains { $0.id == episodeID.rawValue },
+                       "pressing it a second time has to retire the row the first press never did")
+        XCTAssertTrue(model.dismissedEpisodes.contains { $0.id == episodeID.rawValue })
+        XCTAssertTrue(model.playbackCompletionIsSettled,
+                      "and then stop offering, because there is nothing left to finish")
     }
 
     /// Placement is the whole point: a cut is meaningless unless it sits where
