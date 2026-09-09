@@ -217,6 +217,8 @@ class FakeLLM:
     boundary_starts_program: bool | None = None
     postroll_advertising_start_id: int | None = None
     tail_carries_program: bool | None = None
+    commercial_ad_ids: list[int] | None = None
+    commercial_programme_ids: list[int] | None = None
     # The closing review asks the same confirmation twice when the first answer
     # moves the boundary, so the double has to be able to answer it differently.
     program_id_answers: list = field(default_factory=list)
@@ -246,6 +248,36 @@ class FakeLLM:
                 return self.answer, 1
             return json.dumps({"carries_program": self.tail_carries_program}), 1
         field_name = (response_format or {}).get("field")
+        schema = (response_format or {}).get("schema", {})
+        properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+        for commercial_field, configured in (
+            ("ad_ids", self.commercial_ad_ids),
+            ("programme_ids", self.commercial_programme_ids),
+        ):
+            if commercial_field not in properties:
+                continue
+            permitted = properties[commercial_field]["items"]["enum"]
+            if commercial_field == "programme_ids":
+                proposed = user_content.partition("Proposed commercial IDs: ")[2].partition("\n")[0]
+                proposed_ids = [int(value.strip()) for value in proposed.split(",") if value.strip()]
+                programme = list(configured) if configured is not None else []
+                return json.dumps({
+                    commercial_field: [segment_id for segment_id in programme if segment_id in proposed_ids],
+                    "programme_before": (
+                        any(segment_id < proposed_ids[0] for segment_id in programme)
+                        if configured is not None else True
+                    ),
+                    "programme_after": (
+                        any(segment_id > proposed_ids[-1] for segment_id in programme)
+                        if configured is not None else True
+                    ),
+                }), 1
+            if configured is not None:
+                return json.dumps({commercial_field: configured}), 1
+            # Ordinary legacy tests do not exercise the new recovery.  When a
+            # focused test does, make the conservative default visible: only
+            # the outer supplied cues are programme, never an inferred cut.
+            return json.dumps({commercial_field: []}), 1
         if field_name == "program_id" and self.program_id_answers:
             return json.dumps({"program_id": self.program_id_answers.pop(0)}), 1
         for name, answer in (("program_start_id", self.preroll_program_start_id),
@@ -253,7 +285,9 @@ class FakeLLM:
                              ("program_id", self.preroll_program_id)):
             if field_name == name:
                 return (json.dumps({name: answer}) if answer is not None else self.answer), 1
-        if response_format and response_format.get("field") == "include":
+        if response_format and (
+            response_format.get("field") == "include" or "include" in properties
+        ):
             candidate_id = int(user_content.partition("candidate=")[2])
             if "edge=left" in user_content:
                 if self.left_boundary_answer is not None:
@@ -1621,7 +1655,7 @@ class ProportionalRenderBudgetTests(unittest.TestCase):
                 budgets = wp._proportional_render_budgets(lengths, budget)
                 self.assertEqual(len(budgets), len(lengths))
                 self.assertLessEqual(sum(budgets), budget)
-                for allocated, length in zip(budgets, lengths, strict=True):
+                for allocated, length in zip(budgets, lengths):
                     self.assertGreaterEqual(allocated, 0)
                 if sum(lengths) <= budget:
                     self.assertEqual(budgets, lengths, "a batch that fits is never truncated")
@@ -1856,15 +1890,15 @@ class ContextRecoveredBoundaryTests(unittest.TestCase):
         self.assertEqual(self.sparse_calls, [(183, 184, 182)])
 
 
-class ExplicitSponsorFallbackTests(unittest.TestCase):
+class ExplicitSponsorRecoveryTests(unittest.TestCase):
     def setUp(self):
         self.audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
         self.request = {"audioPath": str(self.audio), "outputPath": "/tmp/never-written.mp3"}
 
-    def detect(self, segments, detections, content_start_id=None, duration=5000.0):
+    def detect(self, segments, detections, content_start_id=None, duration=5000.0, **llm_kwargs):
         if content_start_id is None:
             content_start_id = max(1, len(segments) - 1)
-        llm = FakeLLM(boundary_content_start_id=content_start_id)
+        llm = FakeLLM(boundary_content_start_id=content_start_id, **llm_kwargs)
         self.last_llm = llm
         ads = install_fake_ads(llm)
         ads.detect_ads = lambda _segments, _backend: list(detections)
@@ -1900,7 +1934,52 @@ class ExplicitSponsorFallbackTests(unittest.TestCase):
         recovered = next(event for event in events if event["stage"] == "ads.detect.recovered")
         self.assertIn("1 spans", recovered["detail"])
         self.assertIn("3813.360-4139.880", recovered["detail"])
-        self.assertEqual(self.last_llm.requests[-1]["field"], "include")
+
+    def test_cue_by_cue_review_recovers_a_bounded_explicit_read(self):
+        segments = [
+            FakeSegment(0.0, 10.0, "we were discussing the episode topic"),
+            FakeSegment(10.0, 20.0, "the interview continues"),
+            FakeSegment(20.0, 30.0, "this episode is brought to you by acme"),
+            FakeSegment(30.0, 40.0, "visit acme dot com to get started today"),
+            FakeSegment(40.0, 50.0, "now back to the episode discussion"),
+            FakeSegment(50.0, 60.0, "the interview continues"),
+        ]
+        spans, _events = self.detect(
+            segments, [], content_start_id=4, duration=500.0,
+        )
+        self.assertEqual(
+            spans,
+            [{"startSeconds": 20.0, "endSeconds": 40.0,
+              "label": "sponsor_read", "confidence": 1.0}],
+        )
+
+    def test_cue_by_cue_review_preserves_an_interior_programme_cue(self):
+        segments = [
+            FakeSegment(0.0, 10.0, "programme before the read"),
+            FakeSegment(10.0, 20.0, "another programme cue before the read"),
+            FakeSegment(20.0, 30.0, "this episode is brought to you by acme"),
+            FakeSegment(30.0, 40.0, "the guest answers the editorial question"),
+            FakeSegment(40.0, 50.0, "visit acme dot com to get started today"),
+            FakeSegment(50.0, 60.0, "more programme after the read"),
+        ]
+        spans, events = self.detect(
+            segments, [], content_start_id=3, duration=500.0,
+        )
+        self.assertEqual(spans, [])
+        self.assertIn("found programme before evidence", " ".join(event["detail"] for event in events))
+
+    def test_transcript_start_anchor_also_preserves_an_interior_programme_cue(self):
+        segments = [
+            FakeSegment(0.0, 10.0, "this episode is brought to you by acme"),
+            FakeSegment(10.0, 20.0, "the guest answers the editorial question"),
+            FakeSegment(20.0, 30.0, "visit acme dot com to get started today"),
+            FakeSegment(30.0, 40.0, "more programme after the read"),
+        ]
+        spans, events = self.detect(
+            segments, [], content_start_id=1, duration=500.0,
+        )
+        self.assertEqual(spans, [])
+        self.assertIn("found programme before evidence", " ".join(event["detail"] for event in events))
 
     def test_generic_brought_to_you_without_cta_and_domain_does_not_cut(self):
         spans, events = self.detect(
@@ -2074,9 +2153,8 @@ class ExplicitSponsorFallbackTests(unittest.TestCase):
         spans, _events = self.detect(segments, [])
         self.assertEqual(
             spans,
-            # The cut ends where the read's own last cue ends, not where the
-            # program's first one begins: the pause between them is the show's.
-            [{"startSeconds": 3455.16, "endSeconds": 3517.76, "label": "sponsor_read", "confidence": 1.0}],
+            [{"startSeconds": 3455.16, "endSeconds": 3517.76,
+              "label": "sponsor_read", "confidence": 1.0}],
         )
 
     def test_a_recurring_name_without_a_call_to_action_does_not_cut(self):
@@ -2152,7 +2230,8 @@ class ExplicitSponsorFallbackTests(unittest.TestCase):
         spans, _events = self.detect(segments, [])
         self.assertEqual(
             spans,
-            [{"startSeconds": 1117.52, "endSeconds": 1186.92, "label": "sponsor_read", "confidence": 1.0}],
+            [{"startSeconds": 1117.52, "endSeconds": 1186.92,
+              "label": "sponsor_read", "confidence": 1.0}],
         )
 
     def test_a_business_partner_named_in_conversation_is_not_a_read(self):
@@ -2324,6 +2403,120 @@ class ExplicitSponsorFallbackTests(unittest.TestCase):
         ]
         self.assertEqual(wp.consecutive_preroll_start(ads, llm, segments, 1), 25.01)
         self.assertEqual(llm.requests, [])
+
+
+class CommercialEvidenceRecoveryTests(unittest.TestCase):
+    def analyze(self, segments, *, ad_ids, programme_ids):
+        llm = FakeLLM(commercial_ad_ids=ad_ids, commercial_programme_ids=programme_ids)
+        llm.load()
+        ads = install_fake_ads(llm)
+        ads.detect_ads = lambda _segments, _backend: []
+        with redirect_stderr(io.StringIO()):
+            analysis = wp.analyze_ad_detections(ads, llm, segments, 500.0)
+        return analysis, llm
+
+    def test_adjacent_cta_and_destination_recover_an_unanchored_read(self):
+        segments = [
+            FakeSegment(0.0, 10.0, "the programme discusses its topic"),
+            FakeSegment(10.0, 20.0, "visit acme dot com for the offer"),
+            FakeSegment(20.0, 30.0, "get started today with acme"),
+            FakeSegment(30.0, 40.0, "the programme interview resumes"),
+        ]
+        analysis, _llm = self.analyze(segments, ad_ids=[1, 2], programme_ids=[0, 3])
+        self.assertEqual(
+            [(ad.start_s, ad.end_s, ad.label) for ad in analysis.detections],
+            [(10.0, 30.0, "sponsor_read")],
+        )
+
+    def test_destination_split_across_cues_still_nominates_the_exact_window(self):
+        segments = [
+            FakeSegment(0.0, 10.0, "programme before"),
+            FakeSegment(10.0, 20.0, "visit acme dot"),
+            FakeSegment(20.0, 30.0, "com for thirty percent off"),
+            FakeSegment(30.0, 40.0, "programme after"),
+        ]
+        self.assertEqual(wp.commercial_evidence_seed_ids(segments, []), ((1, 2),))
+
+    def test_call_to_action_split_across_cues_still_nominates_the_exact_window(self):
+        segments = [
+            FakeSegment(0.0, 10.0, "programme before"),
+            FakeSegment(10.0, 20.0, "acme dot com can help you get"),
+            FakeSegment(20.0, 30.0, "started today"),
+            FakeSegment(30.0, 40.0, "programme after"),
+        ]
+        self.assertEqual(wp.commercial_evidence_seed_ids(segments, []), ((1, 2),))
+
+    def test_complete_oversized_cue_is_rejected_instead_of_truncated_for_review(self):
+        interior = "the guest explains the editorial result"
+        segments = [
+            FakeSegment(0.0, 10.0, "programme before"),
+            FakeSegment(
+                10.0,
+                20.0,
+                "visit acme dot com " + ("offer " * 1100) + interior
+                + ("details " * 900) + " get started today",
+            ),
+            FakeSegment(20.0, 30.0, "programme after"),
+        ]
+        analysis, llm = self.analyze(segments, ad_ids=[1], programme_ids=[0, 2])
+        self.assertEqual(analysis.detections, ())
+        self.assertFalse(
+            any(request.get("schema", {}).get("properties", {}).get("ad_ids")
+                for request in llm.requests)
+        )
+
+    def test_long_host_read_is_not_lost_to_the_context_id_bound(self):
+        segments = [FakeSegment(0.0, 2.0, "the programme discusses its topic")]
+        segments.extend(
+            FakeSegment(
+                float(segment_id * 2),
+                float(segment_id * 2 + 2),
+                "visit acme dot com and get started today with the sponsor",
+            )
+            for segment_id in range(1, 31)
+        )
+        segments.append(FakeSegment(62.0, 64.0, "the programme interview resumes"))
+        analysis, _llm = self.analyze(
+            segments,
+            ad_ids=list(range(1, 31)),
+            programme_ids=[0, 31],
+        )
+        self.assertEqual(
+            [(ad.start_s, ad.end_s, ad.label) for ad in analysis.detections],
+            [(2.0, 62.0, "sponsor_read")],
+        )
+
+    def test_noncontiguous_or_programme_intersecting_nominations_preserve_audio(self):
+        segments = [
+            FakeSegment(0.0, 10.0, "programme before"),
+            FakeSegment(10.0, 20.0, "visit acme dot com"),
+            FakeSegment(20.0, 30.0, "get started today"),
+            FakeSegment(30.0, 40.0, "programme after"),
+        ]
+        noncontiguous, _ = self.analyze(segments, ad_ids=[1, 3], programme_ids=[0, 3])
+        self.assertEqual(noncontiguous.detections, ())
+        intersecting, _ = self.analyze(segments, ad_ids=[1, 2], programme_ids=[0, 2, 3])
+        self.assertEqual(intersecting.detections, ())
+
+    def test_missing_programme_context_does_not_reach_commercial_inference(self):
+        segments = [
+            FakeSegment(0.0, 10.0, "visit acme dot com"),
+            FakeSegment(10.0, 20.0, "get started today"),
+            FakeSegment(20.0, 30.0, "programme resumes"),
+        ]
+        analysis, llm = self.analyze(segments, ad_ids=[0, 1], programme_ids=[2])
+        self.assertEqual(analysis.detections, ())
+        self.assertFalse(any(request.get("schema", {}).get("properties", {}).get("ad_ids") for request in llm.requests))
+
+    def test_overlapping_and_excess_evidence_seeds_are_bounded_before_inference(self):
+        segments = [FakeSegment(0.0, 1.0, "programme context")]
+        for index in range(1, 18):
+            text = "visit acme dot com get started today" if index % 2 else "get started today at acme dot com"
+            segments.append(FakeSegment(float(index), float(index + 1), text))
+        segments.append(FakeSegment(18.0, 19.0, "programme context"))
+        seeds = wp.commercial_evidence_seed_ids(segments, [])
+        self.assertLessEqual(len(seeds), wp.COMMERCIAL_RECOVERY_MAX_CANDIDATES)
+        self.assertTrue(all(right[-1] < left[0] for left, right in zip(seeds, seeds[1:])))
 
 
 def install_legacy_recovery_fixture(llm: FakeLLM):
@@ -3943,6 +4136,7 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
             mock.patch.object(wp, name, lambda _ads, _backend, _segments, detections, *_args: detections)
             for name in (
                 "recover_unclaimed_explicit_sponsor_reads",
+                "recover_commercial_evidence_reads",
                 "recover_transcript_start_preroll",
                 "recover_transcript_end_postroll",
                 "resize_oversized_ad_spans",
@@ -4117,7 +4311,8 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
         # the replay reach it only through this entry -- which is the point of
         # there being one entry.
         order = []
-        for name in ("recover_unclaimed_explicit_sponsor_reads", "recover_transcript_start_preroll",
+        for name in ("recover_unclaimed_explicit_sponsor_reads", "recover_commercial_evidence_reads",
+                     "recover_transcript_start_preroll",
                      "recover_transcript_end_postroll", "resize_oversized_ad_spans"):
             def record(*args, _name=name, **_kwargs):
                 order.append(_name)
@@ -4134,6 +4329,7 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
         self.assertEqual(order, [
             "detect_ads",
             "recover_unclaimed_explicit_sponsor_reads",
+            "recover_commercial_evidence_reads",
             "recover_transcript_start_preroll",
             "recover_transcript_end_postroll",
             "resize_oversized_ad_spans",
