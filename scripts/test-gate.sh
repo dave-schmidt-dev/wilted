@@ -489,10 +489,6 @@ assert_xctest_output() {
   if [[ "$native_self_test" == "1" ]]; then
     if is_forced_zero "$label"; then
       printf '%s\n' "Test Suite 'All tests' started." "Test Suite 'All tests' passed." >"$output_file"
-    else
-      printf '%s\n' "Test Case '-[SelfTest testOne]' passed (0.000 seconds)." \
-        "Test Case '-[SelfTest testTwo]' passed (0.000 seconds)." \
-        "\t Executed 2 tests, with 0 failures (0 unexpected) in 0.000 seconds" >"$output_file"
     fi
   fi
   [[ -s "$output_file" ]] || {
@@ -560,7 +556,23 @@ run_leg() {
     fi
     command_status=0
   elif [[ "$native_self_test" == "1" ]]; then
-    printf '%s\n' 'self_test_command_success' >"$output_file"
+    if [[ "$report_mode" == "xctest" ]]; then
+      # Distinct totals make the meta-test prove which capture is authoritative.
+      # Reverting run_leg to the package leg's inner tee reports two, not three.
+      printf '%s\n' \
+        "Test Case '-[SelfTest testOne]' passed (0.000 seconds)." \
+        "Test Case '-[SelfTest testTwo]' passed (0.000 seconds)." \
+        "Test Case '-[SelfTest testThree]' passed (0.000 seconds)." \
+        $'\t Executed 3 tests, with 0 failures (0 unexpected) in 0.000 seconds' \
+        >"$output_file"
+      printf '%s\n' \
+        "Test Case '-[SelfTest testOne]' passed (0.000 seconds)." \
+        "Test Case '-[SelfTest testTwo]' passed (0.000 seconds)." \
+        $'\t Executed 2 tests, with 0 failures (0 unexpected) in 0.000 seconds' \
+        >"$tmp_root/$name.xctest.log"
+    else
+      printf '%s\n' 'self_test_command_success' >"$output_file"
+    fi
     command_status=0
   else
     set +e
@@ -579,7 +591,12 @@ run_leg() {
     fi
   elif [[ "$command_status" -eq 0 && "$report_mode" == "xctest" ]]; then
     set +e
-    assert_xctest_output "$name" "$tmp_root/$name.xctest.log"
+    # Parse the runner-owned capture: it contains the complete leg stream,
+    # including the final aggregate that can arrive after a package leg's
+    # inner XCTest tee has closed. The inner log remains useful for the named
+    # case assertions inside each package leg, but is not authoritative for
+    # the reported total.
+    assert_xctest_output "$name" "$output_file"
     local xctest_status=$?
     set -e
     if [[ "$xctest_status" -ne 0 ]]; then

@@ -526,6 +526,9 @@ success_log="$tmp_dir/success.log"
 success_status="$(run_case success "$success_log" bash "$gate")"
 [[ "$success_status" -eq 0 ]] || { cat "$success_log" >&2; exit 1; }
 assert_contains 'native.passed count=9' "$success_log"
+for package_leg in wiltedkit-tests cloudsync-tests listener-tests wiltedproducer-tests; do
+  assert_contains "native.tests label=$package_leg reported=3 evidence=xctest" "$success_log"
+done
 
 forced_log="$tmp_dir/forced.log"
 forced_status="$(run_case forced "$forced_log" env NATIVE_FORCE_FAIL_LEG=macos-unit-tests bash "$gate")"

@@ -107,9 +107,9 @@ def install_fake_speech_stack(
     client.selftest = selftest
     client.status = status
     host = types.ModuleType("speech_stack.daemon.host")
-    lock_dir = Path(tempfile.gettempdir()) / f"wilted-pipeline-lock-{os.getpid()}"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    host.state_dir = lambda: lock_dir
+    host._test_state_dir = tempfile.TemporaryDirectory(prefix="wilted-pipeline-lock-")
+    unittest.addModuleCleanup(host._test_state_dir.cleanup)
+    host.state_dir = lambda: Path(host._test_state_dir.name)
 
     daemon = types.ModuleType("speech_stack.daemon")
     daemon.host = host

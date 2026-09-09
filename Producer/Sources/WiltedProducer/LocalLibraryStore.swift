@@ -2616,6 +2616,12 @@ public actor LocalLibraryStore {
         // Artwork is owned by the feed as well as by its episodes.
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>())
         where episodeIDs.contains(record.ownerID) || record.ownerID == feed { context.delete(record) }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
+        where episodeIDs.contains(record.itemID) { context.delete(record) }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
+        where episodeIDs.contains(record.itemID) { context.delete(record) }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
+        where episodeIDs.contains(record.itemID) { context.delete(record) }
         // Dismissals are records Wilted stored on the feed's behalf too, so
         // resubscribing starts clean rather than inheriting a blocklist the
         // listener can no longer see anywhere.

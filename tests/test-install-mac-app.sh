@@ -27,7 +27,142 @@ pass() { printf 'install-identity.ok %s\n' "$*" >&2; }
 source "$library"
 
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-install-identity.XXXXXX")"
-trap '[[ -d "$tmp_root" ]] && rm -rf "$tmp_root"' EXIT
+owner_pid=''
+cleanup() {
+    if [[ -n "$owner_pid" ]]; then
+        kill "$owner_pid" 2>/dev/null || true
+        wait "$owner_pid" 2>/dev/null || true
+    fi
+    [[ -d "$tmp_root" ]] && rm -rf "$tmp_root"
+}
+trap cleanup EXIT
+
+guard_bin="$tmp_root/bin"
+guard_destination="$tmp_root/guard-destination"
+journal="$tmp_root/library.sqlite"
+mkdir -p "$guard_bin" "$guard_destination"
+
+# By default an inactive guard invocation reaches generation, whose deliberate
+# status keeps the rest of the installer outside the test. The complete-build
+# mode plants a valid synthetic product and can activate the process signal
+# during that build to exercise the last-safe-point recheck.
+printf '%s\n' '#!/usr/bin/env bash' \
+    ': >"$WILTED_TEST_GENERATE_MARKER"' \
+    '[[ "${WILTED_TEST_COMPLETE_BUILD:-0}" == 1 ]] || exit 42' \
+    >"$guard_bin/xcodegen"
+printf '%s\n' '#!/usr/bin/env bash' \
+    'app="$WILTED_TEST_DERIVED/Build/Products/Debug/WiltedMac.app"' \
+    'mkdir -p "$app/Contents"' \
+    '/usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.zerodelta.wilted.mac" "$app/Contents/Info.plist" >/dev/null' \
+    '[[ "${WILTED_TEST_ACTIVATE_DURING_BUILD:-0}" == 1 ]] && : >"$WILTED_TEST_ACTIVE_MARKER"' \
+    >"$guard_bin/xcodebuild"
+printf '%s\n' '#!/usr/bin/env bash' \
+    '[[ "${WILTED_TEST_PIPELINE_RUNNING:-0}" == 1 || -e "$WILTED_TEST_ACTIVE_MARKER" ]]' \
+    >"$guard_bin/pgrep"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$guard_bin/codesign"
+printf '%s\n' '#!/usr/bin/env bash' ': >"$WILTED_TEST_REPLACE_MARKER"' 'exit 1' >"$guard_bin/ditto"
+printf '%s\n' '#!/usr/bin/env bash' ': >"$WILTED_TEST_QUIT_MARKER"' 'exit 0' >"$guard_bin/osascript"
+printf '%s\n' '#!/usr/bin/env bash' \
+    '[[ "${WILTED_TEST_APP_RUNNING:-0}" == 1 ]] && printf "%s %s\\n" "$WILTED_TEST_OWNER_PID" "$WILTED_TEST_OWNER_EXECUTABLE"' \
+    >"$guard_bin/ps"
+chmod +x "$guard_bin/xcodegen" "$guard_bin/xcodebuild" "$guard_bin/pgrep" \
+    "$guard_bin/codesign" "$guard_bin/ditto" "$guard_bin/osascript" "$guard_bin/ps"
+
+owner_app="$tmp_root/Owner.app"
+mkdir -p "$owner_app/Contents/MacOS"
+/usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $bundle_id" \
+    "$owner_app/Contents/Info.plist" >/dev/null
+owner_executable="$owner_app/Contents/MacOS/WiltedMac"
+/bin/sleep 60 &
+owner_pid=$!
+
+run_guard() {
+    local output_file="$1" pipeline_running="${2:-0}" app_running="${3:-0}"
+    local complete_build="${4:-0}" activate_during_build="${5:-0}"
+    PATH="$guard_bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+        WILTED_INSTALL_LIBRARY_URL="$journal" \
+        WILTED_INSTALL_DERIVED_DATA_PATH="$tmp_root/derived" \
+        WILTED_TEST_PIPELINE_RUNNING="$pipeline_running" \
+        WILTED_TEST_APP_RUNNING="$app_running" \
+        WILTED_TEST_OWNER_PID="$owner_pid" \
+        WILTED_TEST_OWNER_EXECUTABLE="$owner_executable" \
+        WILTED_TEST_COMPLETE_BUILD="$complete_build" \
+        WILTED_TEST_ACTIVATE_DURING_BUILD="$activate_during_build" \
+        WILTED_TEST_GENERATE_MARKER="$tmp_root/generated" \
+        WILTED_TEST_ACTIVE_MARKER="$tmp_root/active" \
+        WILTED_TEST_DERIVED="$tmp_root/derived" \
+        WILTED_TEST_QUIT_MARKER="$tmp_root/quit" \
+        WILTED_TEST_REPLACE_MARKER="$tmp_root/replaced" \
+        bash "$installer" "$guard_destination" >"$output_file" 2>&1
+}
+
+assert_guard_refuses() {
+    local output_file="$1" signal="$2" pipeline_running="${3:-0}" app_running="${4:-0}"
+    rm -f "$tmp_root/generated" "$tmp_root/active" "$tmp_root/replaced"
+    if run_guard "$output_file" "$pipeline_running" "$app_running"; then
+        fail "$signal did not stop installation"
+    elif ! grep -Fqx 'install.error preparation is active; wait for it to finish or stop it in Wilted, then retry' "$output_file"; then
+        fail "$signal did not produce the concise active-preparation message"
+    elif [[ -e "$tmp_root/generated" ]]; then
+        fail "$signal was detected only after installation work began"
+    else
+        pass "$signal stops installation before build or replacement"
+    fi
+}
+
+# A live worker is sufficient positive evidence even with no journal store.
+# The PATH-scoped pgrep stub avoids reading the host process list.
+assert_guard_refuses "$tmp_root/process-guard.out" 'live wilted_pipeline process' 1
+
+# A podcast journal with no terminalResult blocks only when a live app process
+# credibly owns it. Synthetic identifiers and status JSON stay inside tmp.
+sqlite3 "$journal" \
+    "CREATE TABLE ZPREPARATIONRECORD (ZREQUESTID TEXT, ZSTATUSDATA BLOB); INSERT INTO ZPREPARATIONRECORD VALUES ('podcast-prepare|fixture', '{\"detail\":\"working\"}');"
+assert_guard_refuses "$tmp_root/journal-owner-guard.out" 'non-terminal podcast journal with live owner' 0 1
+
+# The same unfinished row without a live owner may be crash residue. It must
+# not strand installation behind advice that cannot clear it.
+rm -f "$tmp_root/generated"
+if run_guard "$tmp_root/crashed-journal.out"; then
+    fail 'crashed journal unexpectedly completed the stubbed installer'
+elif [[ ! -e "$tmp_root/generated" ]]; then
+    fail 'crashed journal without live owner blocked installation'
+elif grep -Fq 'preparation is active' "$tmp_root/crashed-journal.out"; then
+    fail 'crashed journal without live owner was reported as active'
+else
+    pass 'crashed journal without live owner preserves install flow'
+fi
+
+# Adding a terminal row makes the same request inactive. The installer must
+# pass the guard and reach the deliberately stubbed project-generation step.
+sqlite3 "$journal" \
+    "INSERT INTO ZPREPARATIONRECORD VALUES ('podcast-prepare|fixture', '{\"terminalResult\":{\"outcome\":\"succeeded\"}}');"
+rm -f "$tmp_root/generated"
+if run_guard "$tmp_root/inactive-guard.out"; then
+    fail 'inactive guard unexpectedly completed the stubbed installer'
+elif [[ ! -e "$tmp_root/generated" ]]; then
+    fail 'inactive process and terminal journal did not pass the guard'
+elif grep -Fq 'preparation is active' "$tmp_root/inactive-guard.out"; then
+    fail 'terminal journal was reported as active'
+else
+    pass 'inactive process and terminal journal preserve install flow'
+fi
+
+# A preparation can start after the first check while xcodebuild runs. The
+# second check must observe it before any app quit or bundle replacement.
+rm -rf "$tmp_root/derived"
+rm -f "$tmp_root/generated" "$tmp_root/active" "$tmp_root/quit" "$tmp_root/replaced"
+if run_guard "$tmp_root/late-activation.out" 0 1 1 1; then
+    fail 'preparation activated during build did not stop installation'
+elif [[ ! -e "$tmp_root/active" ]]; then
+    fail 'late-activation fixture did not reach the synthetic build'
+elif ! grep -Fq 'preparation is active' "$tmp_root/late-activation.out"; then
+    fail 'late activation did not produce the active-preparation message'
+elif [[ -e "$tmp_root/quit" || -e "$tmp_root/replaced" ]]; then
+    fail 'late activation was detected only after app quit or bundle replacement began'
+else
+    pass 'preparation activated during build stops before quit or replacement'
+fi
 
 plant_bundle() {
     local path="$1" identifier="$2"

@@ -21,12 +21,46 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo_root/scripts/lib/app-identity.sh"
 destination_dir="${1:-/Applications}"
 bundle_id='com.zerodelta.wilted.mac'
-derived="$repo_root/.build/mac-install"
+derived="${WILTED_INSTALL_DERIVED_DATA_PATH:-$repo_root/.build/mac-install}"
 
 status() { printf '%s\n' "$*" >&2; }
 
+# Installation quits every running app copy before replacing its bundle. A
+# preparation belongs to that process, so interrupting it wastes the run and
+# leaves its journal without a terminal entry. These checks deliberately fail
+# only on positive evidence: an unavailable process tool, absent/unreadable
+# store, or an older store schema does not turn installation into a dead end.
+wilted_pipeline_is_running() {
+  command -v pgrep >/dev/null 2>&1 || return 1
+  pgrep -f '(^|/|[[:space:]])wilted_pipeline([.]py)?([[:space:]]|$)' >/dev/null 2>&1
+}
+
+wilted_podcast_preparation_is_journalled() {
+  local library_url="${WILTED_INSTALL_LIBRARY_URL:-${HOME:-}/Library/Application Support/Wilted/library.sqlite}"
+  local found
+  [[ -f "$library_url" ]] || return 1
+  command -v sqlite3 >/dev/null 2>&1 || return 1
+  found="$(sqlite3 -readonly "$library_url" \
+    "SELECT 1 FROM ZPREPARATIONRECORD AS run WHERE run.ZREQUESTID LIKE 'podcast-prepare|%' AND NOT EXISTS (SELECT 1 FROM ZPREPARATIONRECORD AS terminal WHERE terminal.ZREQUESTID = run.ZREQUESTID AND json_type(CAST(terminal.ZSTATUSDATA AS TEXT), '\$.terminalResult') IS NOT NULL) LIMIT 1;" \
+    2>/dev/null)" || return 1
+  [[ "$found" == '1' ]]
+}
+
+wilted_refuse_active_preparation() {
+  # A journal row alone may be the residue of a crash. Treat it as current only
+  # while a process running from this app's bundle still owns the preparation.
+  local app_is_running=false
+  [[ -n "$(wilted_running_bundle_pids "$bundle_id")" ]] && app_is_running=true
+  if wilted_pipeline_is_running || { "$app_is_running" && wilted_podcast_preparation_is_journalled; }; then
+    status 'install.error preparation is active; wait for it to finish or stop it in Wilted, then retry'
+    return 1
+  fi
+}
+
 [[ -d "$destination_dir" && -w "$destination_dir" ]] ||
   { status "install.error destination is not a writable directory: $destination_dir"; exit 1; }
+
+wilted_refuse_active_preparation || exit 1
 
 command -v xcodegen >/dev/null 2>&1 || { status 'install.error missing xcodegen'; exit 1; }
 command -v xcodebuild >/dev/null 2>&1 || { status 'install.error missing xcodebuild'; exit 1; }
@@ -94,6 +128,9 @@ fi
 # Every running copy, not just the one at the install path: on 2026-09-01 the
 # owner was running a stale gate build from build/quickcheck, which an install
 # keyed on $target would have left running and believing itself current.
+# Recheck at the last safe point: preparation may have started while the build
+# above was running.
+wilted_refuse_active_preparation || exit 1
 running=()
 while IFS= read -r pid; do
   [[ -n "$pid" ]] && running+=("$pid")

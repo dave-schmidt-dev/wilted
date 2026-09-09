@@ -1323,6 +1323,80 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertEqual(keptReady?.revision.revisionID, keptRevision.revisionID)
     }
 
+    /// Unsubscribing must clear every prepared episode's derived records, or a
+    /// later resubscribe can show a cut whose source subscription no longer
+    /// exists. Preparation journals and local media deliberately survive: they
+    /// record history and may be shared by another revision identity.
+    func testUnsubscribingPreparedEpisodesDoesNotResurrectTheirDerivedState() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/prepared-unsubscribe/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 2])
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+        try await store.savePodcastEpisodes(all, admission: .backfill)
+
+        var prepared: [(episode: PodcastEpisode, revision: AudioRevision, mediaURL: URL)] = []
+        for (index, episode) in all.enumerated() {
+            let revision = try AudioRevision(
+                itemID: episode.itemID, revisionID: RevisionID(rawValue: "rev-unsubscribe-\(index)"),
+                durationSeconds: 180, byteCount: 4_096,
+                contentHash: "sha256:\(String(repeating: String(index), count: 64))", mediaType: "audio/mp4",
+                createdAt: Timestamp(origin), schemaVersion: 1
+            )
+            let transcript = try Transcript(
+                itemID: episode.itemID, revisionID: revision.revisionID, availability: .available,
+                text: "Prepared transcript \(index).", updatedAt: Timestamp(origin)
+            )
+            let mediaURL = url.deletingLastPathComponent().appendingPathComponent("unsubscribe-\(index).m4a")
+            try Data([UInt8(index)]).write(to: mediaURL)
+            try await store.saveReadyRevision(revision, mediaURL: mediaURL, transcript: transcript)
+            try await store.save(playback: try PlaybackState(
+                itemID: episode.itemID, revisionID: revision.revisionID, sessionID: "session-\(index)", sequence: 1,
+                positionSeconds: 30, durationSeconds: revision.durationSeconds, completed: false, intent: .progress,
+                deviceID: "device-mac", updatedAt: Timestamp(origin)
+            ))
+            try await store.record(preparation: PreparationJournalEntry(
+                id: "prep-unsubscribe-\(index)", itemID: episode.itemID, requestID: "request-unsubscribe-\(index)",
+                status: try PreparationStatus(
+                    stage: .completed, detail: "ready", fraction: 1, cancellable: false,
+                    terminalResult: try PreparationTerminalResult(outcome: .succeeded, revisionID: revision.revisionID),
+                    emittedAt: Timestamp(origin)
+                )
+            ))
+            prepared.append((episode, revision, mediaURL))
+        }
+
+        let removedCount = try await store.unsubscribeFromPodcast(feedID: feed.itemID)
+        XCTAssertEqual(removedCount, all.count)
+        for entry in prepared {
+            let ready = try await store.readyRevision(for: entry.episode.itemID)
+            let revisions = try await store.revisions(for: entry.episode.itemID)
+            let transcript = try await store.transcript(for: entry.episode.itemID, revisionID: entry.revision.revisionID)
+            let playback = try await store.playbackState(for: entry.episode.itemID, revisionID: entry.revision.revisionID)
+            XCTAssertNil(ready)
+            XCTAssertTrue(revisions.isEmpty)
+            XCTAssertNil(transcript)
+            XCTAssertNil(playback)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: entry.mediaURL.path), "media reclamation is not part of unsubscribe")
+        }
+        let preparationRuns = try await store.preparationRuns()
+        XCTAssertEqual(preparationRuns.count, all.count, "preparation history survives unsubscribe")
+
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+        try await store.savePodcastEpisodes(all, admission: .backfill)
+        for entry in prepared {
+            let ready = try await store.readyRevision(for: entry.episode.itemID)
+            let transcript = try await store.transcript(for: entry.episode.itemID, revisionID: entry.revision.revisionID)
+            let playback = try await store.playbackState(for: entry.episode.itemID, revisionID: entry.revision.revisionID)
+            XCTAssertNil(ready, "resubscribing must not revive a stale revision")
+            XCTAssertNil(transcript)
+            XCTAssertNil(playback)
+        }
+    }
+
     /// Unsubscribing forgets the feed's dismissals too, so resubscribing does
     /// not inherit an invisible blocklist.
     func testUnsubscribingForgetsTheFeedsDismissals() async throws {
