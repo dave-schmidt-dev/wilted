@@ -1589,6 +1589,67 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(failed.larderLabel, WiltedMacModel.preparationFailedLabel)
     }
 
+    func testEpisodeLifecyclePresentationCoversPrecedenceAndAvailableDetails() {
+        let cases: [(
+            download: WiltedMacEpisodeDownloadState,
+            preparation: WiltedMacEpisodePreparationState,
+            expected: String,
+            failure: Bool
+        )] = [
+            (.notDownloaded, .prepared(summary: "Ready \u{00B7} transcript synced"), "Not downloaded", false),
+            (.queued, .failed("old failure"), "Download queued", false),
+            (.downloading(received: 2, expected: 10), .prepared(summary: "Ready"), "Downloading 20%", false),
+            (.downloading(received: 1, expected: nil), .notPrepared, "Downloading 1 byte", false),
+            (.downloading(received: 0, expected: nil), .notPrepared, "Downloading", false),
+            (.failed, .prepared(summary: "Ready"), "Download failed", true),
+            (.cancelled, .preparing(stage: "Finding advertisements\u{2026}"), "Download cancelled", false),
+            (.completed, .notPrepared, "Downloaded \u{00B7} Ready to prepare", false),
+            (.completed, .preparing(stage: "Queued"), "Preparing \u{00B7} Queued", false),
+            (.completed, .preparing(stage: "Preparing\u{2026}"), "Preparing", false),
+            (.completed, .prepared(summary: "Ready \u{00B7} 5 ads removed \u{00B7} transcript synced"),
+             "Prepared \u{00B7} 5 ads removed \u{00B7} transcript synced", false),
+            (.completed, .failed("Preparation failed. See Prep."), "Preparation failed \u{00B7} See Prep.", true),
+        ]
+
+        for value in cases {
+            let presentation = WiltedMacEpisodeLifecyclePresentation(
+                downloadState: value.download,
+                preparationState: value.preparation
+            )
+            XCTAssertEqual(presentation.label, value.expected)
+            XCTAssertEqual(presentation.isFailure, value.failure)
+        }
+    }
+
+    func testEpisodePlaybackIndicatorsKeepCurrentPlaybackOutOfUpNext() throws {
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        let current = try XCTUnwrap(model.episodes.first)
+        let queuedID = "queued-episode"
+
+        model.installPlaybackStateForTesting(
+            episode: current,
+            isPlaying: true,
+            position: 1,
+            duration: 10,
+            queue: [current.id, queuedID]
+        )
+        XCTAssertEqual(model.episodePlaybackIndicators(for: current.id), ["Playing"])
+        XCTAssertEqual(model.episodePlaybackIndicators(for: queuedID), ["Up Next"])
+
+        model.installPlaybackStateForTesting(
+            episode: current,
+            isPlaying: false,
+            position: 1,
+            duration: 10,
+            queue: [current.id, queuedID]
+        )
+        XCTAssertEqual(model.episodePlaybackIndicators(for: current.id), ["Now Playing"])
+        XCTAssertFalse(model.episodePlaybackIndicators(for: current.id).contains("Up Next"))
+    }
+
     func testLibraryProjectionDoesNotCapPreparationEvidenceAtThePrepDisplayLimit() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let source = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacModel.swift"))

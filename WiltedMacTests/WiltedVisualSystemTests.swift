@@ -91,6 +91,29 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertNotEqual(values[1], values[4])
     }
 
+    func testEpisodeRowsOwnOneDedicatedLifecycleLineAndKeepControlsActionOnly() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
+        let source = try String(contentsOf: root)
+        let rowStart = try XCTUnwrap(source.range(of: "private struct WiltedMacEpisodeRow")?.lowerBound)
+        let start = try XCTUnwrap(source.range(of: "@ViewBuilder private var downloadControl")?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "/// Preparation", range: start..<source.endIndex)?.lowerBound)
+        let row = source[rowStart..<start]
+        let control = source[start..<end]
+
+        XCTAssertTrue(row.contains("Text(episode.lifecyclePresentation.label)"))
+        XCTAssertTrue(row.contains("wilted-episode-lifecycle-\\(episode.id)"))
+        XCTAssertTrue(row.contains("model.episodePlaybackIndicators(for: episode.id)"))
+        XCTAssertTrue(row.contains("wilted-episode-playback-indicators-\\(episode.id)"))
+
+        XCTAssertTrue(control.contains("case .failed:"))
+        XCTAssertTrue(control.contains("case .cancelled:"))
+        XCTAssertEqual(control.components(separatedBy: "Button(\"Retry\")").count - 1, 2)
+        XCTAssertFalse(control.contains("Text(\"Download failed\")"))
+        XCTAssertFalse(control.contains("Text(\"Download cancelled\")"))
+        XCTAssertFalse(control.contains("accessibilityLabel(\"Available offline\")"))
+    }
+
     @MainActor
     func testPodcastPlaybackStaysOutOfArticleSyncWhileArticleQueuesOneCheckpoint() async throws {
         let podcastRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

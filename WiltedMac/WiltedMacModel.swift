@@ -457,6 +457,70 @@ enum WiltedMacEpisodePreparationState: Equatable, Sendable {
     }
 }
 
+/// The one primary lifecycle line shown by every episode row.
+///
+/// Download state owns the line until audio is safely present. This prevents a
+/// stale preparation journal from making a queued, failed, or cancelled
+/// download look ready to use.
+struct WiltedMacEpisodeLifecyclePresentation: Equatable, Sendable {
+    let label: String
+    let isFailure: Bool
+
+    init(
+        downloadState: WiltedMacEpisodeDownloadState,
+        preparationState: WiltedMacEpisodePreparationState
+    ) {
+        switch downloadState {
+        case .notDownloaded:
+            label = "Not downloaded"
+            isFailure = false
+        case .queued:
+            label = "Download queued"
+            isFailure = false
+        case let .downloading(received, expected):
+            if let expected, expected > 0 {
+                let percent = min(100, max(0, Int((Double(received) / Double(expected)) * 100)))
+                label = "Downloading \(percent)%"
+            } else if received > 0 {
+                label = "Downloading \(received) byte\(received == 1 ? "" : "s")"
+            } else {
+                label = "Downloading"
+            }
+            isFailure = false
+        case .failed:
+            label = "Download failed"
+            isFailure = true
+        case .cancelled:
+            label = "Download cancelled"
+            isFailure = false
+        case .completed:
+            switch preparationState {
+            case .notPrepared:
+                label = "Downloaded \u{00B7} Ready to prepare"
+                isFailure = false
+            case let .preparing(stage):
+                label = Self.label(primary: "Preparing", detail: stage, removing: "Preparing")
+                isFailure = false
+            case let .prepared(summary):
+                label = Self.label(primary: "Prepared", detail: summary, removing: "Ready")
+                isFailure = false
+            case let .failed(message):
+                label = Self.label(primary: "Preparation failed", detail: message, removing: "Preparation failed")
+                isFailure = true
+            }
+        }
+    }
+
+    private static func label(primary: String, detail: String, removing prefix: String) -> String {
+        var detail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        if detail.hasPrefix(prefix) {
+            detail.removeFirst(prefix.count)
+            detail = String(detail.drop(while: { " .:\u{00B7}\u{2026}\t\n".contains($0) }))
+        }
+        return detail.isEmpty ? primary : "\(primary) \u{00B7} \(detail)"
+    }
+}
+
 /// One row of the Feeds card: a podcast Wilted follows, and what following it
 /// currently yields.
 struct WiltedMacSubscription: Identifiable, Hashable, Sendable {
@@ -501,6 +565,13 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     var isPlayed: Bool = false
     var downloadState: WiltedMacEpisodeDownloadState
     var preparationState: WiltedMacEpisodePreparationState = .notPrepared
+
+    var lifecyclePresentation: WiltedMacEpisodeLifecyclePresentation {
+        WiltedMacEpisodeLifecyclePresentation(
+            downloadState: downloadState,
+            preparationState: preparationState
+        )
+    }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.id == rhs.id && lhs.title == rhs.title && lhs.feedTitle == rhs.feedTitle &&
@@ -2794,6 +2865,16 @@ final class WiltedMacModel {
     var currentEpisode: WiltedMacEpisode? {
         guard let currentPodcastEpisodeID else { return nil }
         return episodes.first(where: { $0.id == currentPodcastEpisodeID })
+    }
+
+    /// Compact context beside an episode's primary lifecycle line. Current
+    /// playback wins over queue membership because the current item is not an
+    /// upcoming item, even though the durable queue contains its identifier.
+    func episodePlaybackIndicators(for episodeID: String) -> [String] {
+        if currentPodcastEpisodeID == episodeID {
+            return [isPlaying ? "Playing" : "Now Playing"]
+        }
+        return podcastQueueIDs.contains(episodeID) ? ["Up Next"] : []
     }
 
     var hasCurrentPlayback: Bool { currentArticle != nil || currentEpisode != nil }

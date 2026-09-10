@@ -71,13 +71,25 @@ struct PodcastDownloadCoordinatorTests {
         )
     }
 
-    @Test func rejectsUnsupportedAndMismatchedMIMEAfterParameterNormalization() async throws {
+    @Test func normalizesMP3MIMEAliasesButRejectsOtherMismatches() async throws {
         let fixture = try await Fixture()
         defer { fixture.remove() }
         await expect(.unsupportedMediaType("video/mp4"), fixture: fixture, events: [
             .response(.init(url: fixture.enclosureURL, statusCode: 200,
                             mediaType: "Video/MP4; charset=binary", expectedByteCount: nil))
         ])
+
+        for (declaredType, responseType) in [("audio/mp3", "audio/mpeg"), ("audio/mpeg", "audio/mp3")] {
+            let aliasFixture = try await Fixture(mediaType: declaredType)
+            defer { aliasFixture.remove() }
+            let result = try await aliasFixture.coordinator(events: [
+                .response(.init(url: aliasFixture.enclosureURL, statusCode: 200,
+                                mediaType: responseType + "; charset=binary", expectedByteCount: nil)),
+                .data(Data(aliasFixture.body.prefix(3))), .data(Data(aliasFixture.body.suffix(3)))
+            ]).download(episodeID: aliasFixture.episodeID)
+            #expect(result.mediaURL.pathExtension == "mp3")
+        }
+
         await expect(.mediaTypeMismatch(expected: "audio/mpeg", actual: "audio/mp4"), fixture: fixture, events: [
             .response(.init(url: fixture.enclosureURL, statusCode: 200,
                             mediaType: "AUDIO/MP4; charset=binary", expectedByteCount: nil))

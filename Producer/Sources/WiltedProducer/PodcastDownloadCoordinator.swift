@@ -264,7 +264,7 @@ public actor PodcastDownloadCoordinator {
                     }
                     let actualType = try Self.validatedMediaType(response.mediaType)
                     let episodeType = storedMediaType
-                    guard actualType == episodeType else {
+                    guard Self.comparisonMediaType(actualType) == Self.comparisonMediaType(episodeType) else {
                         throw PodcastDownloadCoordinatorError.mediaTypeMismatch(expected: episodeType, actual: actualType)
                     }
                     responseMediaType = actualType
@@ -417,6 +417,15 @@ public actor PodcastDownloadCoordinator {
             throw PodcastDownloadCoordinatorError.unsupportedMediaType(normalized.isEmpty ? nil : normalized)
         }
         return normalized
+    }
+
+    /// Compares the two MP3 MIME aliases as one format while retaining exact
+    /// matching for every other supported media type.
+    private static func comparisonMediaType(_ mediaType: String) -> String {
+        switch mediaType {
+        case "audio/mp3", "audio/mpeg": "audio/mpeg"
+        default: mediaType
+        }
     }
 
     private static func fileExtension(for mediaType: String) -> String {

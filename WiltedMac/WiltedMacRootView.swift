@@ -1052,11 +1052,24 @@ private struct WiltedMacEpisodeRow: View {
                 Text(progressLabel)
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                if let preparation = episode.preparationState.larderLabel {
-                    Text(preparation)
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .accessibilityIdentifier("wilted-episode-preparation-\(episode.id)")
+                Text(episode.lifecyclePresentation.label)
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(
+                        episode.lifecyclePresentation.isFailure ? .error : .secondaryText,
+                        scheme: colorScheme
+                    ))
+                    .accessibilityIdentifier("wilted-episode-lifecycle-\(episode.id)")
+                let playbackIndicators = model.episodePlaybackIndicators(for: episode.id)
+                if !playbackIndicators.isEmpty {
+                    HStack(spacing: WiltedTheme.Spacing.small) {
+                        ForEach(playbackIndicators, id: \.self) { indicator in
+                            Text(indicator)
+                                .wiltedFont(.utility)
+                                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("wilted-episode-playback-indicators-\(episode.id)")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1203,9 +1216,11 @@ private struct WiltedMacEpisodeRow: View {
                 preparationControl
             }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("Available offline")
             .accessibilityIdentifier("wilted-episode-offline-\(episode.id)")
-        case .failed, .cancelled:
+        case .failed:
+            Button("Retry") { model.retryEpisodeDownload(episode) }
+                .accessibilityIdentifier("wilted-episode-retry-\(episode.id)")
+        case .cancelled:
             Button("Retry") { model.retryEpisodeDownload(episode) }
                 .accessibilityIdentifier("wilted-episode-retry-\(episode.id)")
         }
