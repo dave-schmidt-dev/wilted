@@ -5,6 +5,20 @@ import WiltedProducer
 @testable import WiltedMac
 
 final class WiltedVisualSystemTests: XCTestCase {
+    func testLarderRemainingHeaderIsGlobalAndAccessible() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
+        let source = try String(contentsOf: root)
+
+        XCTAssertTrue(source.contains("model.larderRemaining.label"))
+        XCTAssertTrue(source.contains("wilted-larder-remaining"))
+        XCTAssertTrue(source.contains("Text(\"Saved articles and episodes\")"))
+        XCTAssertLessThan(
+            try XCTUnwrap(source.range(of: "model.larderRemaining.label")?.lowerBound),
+            try XCTUnwrap(source.range(of: "if model.libraryItems.isEmpty")?.lowerBound)
+        )
+    }
+
     @MainActor
     func testStoredArticlesAndSubscribedEpisodesProduceStableMixedSearchOrderAndFilters() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)

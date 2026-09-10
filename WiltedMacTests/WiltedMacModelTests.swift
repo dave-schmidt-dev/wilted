@@ -1621,6 +1621,209 @@ final class WiltedMacModelTests: XCTestCase {
         }
     }
 
+    func testLarderRemainingUsesAllUnhiddenItemsAndClampsPlayback() {
+        let article = WiltedMacArticle(
+            id: "article", title: "Article", source: "Example",
+            url: URL(string: "https://example.test/article")!, isReady: true,
+            durationSeconds: 125, playbackSeconds: 65
+        )
+        let episode = WiltedMacEpisode(
+            id: "episode", title: "Episode", feedTitle: "Example",
+            summary: "", artworkURL: nil, releasedAt: .distantPast,
+            durationSeconds: 360, playbackSeconds: -20, downloadState: .completed
+        )
+        let finished = WiltedMacEpisode(
+            id: "finished", title: "Finished", feedTitle: "Example",
+            summary: "", artworkURL: nil, releasedAt: .distantPast,
+            durationSeconds: 900, playbackSeconds: 0, isPlayed: true,
+            downloadState: .completed
+        )
+        let unknown = WiltedMacArticle(
+            id: "unknown", title: "Unknown", source: "Example",
+            url: URL(string: "https://example.test/unknown")!, isReady: false,
+            durationSeconds: nil
+        )
+
+        let remaining = WiltedMacLarderRemaining(items: [
+            .article(article), .episode(episode), .episode(finished), .article(unknown)
+        ])
+        XCTAssertEqual(remaining.seconds, 420)
+        XCTAssertEqual(remaining.unknownCount, 1)
+        XCTAssertEqual(remaining.label, "Larder remaining: 7m · 1 unknown")
+    }
+
+    func testLarderRemainingRoundsAnyNonzeroTimeUpToAMinute() {
+        let episode = WiltedMacEpisode(
+            id: "episode", title: "Episode", feedTitle: "Example", summary: "",
+            artworkURL: nil, releasedAt: .distantPast, durationSeconds: 61,
+            playbackSeconds: 0, downloadState: .completed
+        )
+        XCTAssertEqual(WiltedMacLarderRemaining(items: [.episode(episode)]).label,
+                       "Larder remaining: 2m")
+        XCTAssertEqual(WiltedMacLarderRemaining(items: []).label, "Larder remaining: 0m")
+    }
+
+    func testLarderRemainingLoadsArticlePlaybackStateFromStore() async throws {
+        let directory = temporaryDirectory("article-larder-remaining")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let articleURL = try XCTUnwrap(URL(string: "https://example.test/article-progress"))
+        let itemID = try ItemID.derive(from: articleURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let article = try Article(
+            itemID: itemID, canonicalURL: articleURL, title: "Partly heard",
+            source: "Example", createdAt: created
+        )
+        let audioURL = directory.appendingPathComponent("article.m4a")
+        let assembled = try AudioAssembler().assemble(
+            pcm: (0..<(44_100 * 2)).map { Float(0.2 * sin(2 * Double.pi * 220 * Double($0) / 44_100)) },
+            itemID: itemID, destinationURL: audioURL
+        )
+        let playback = try PlaybackState(
+            itemID: itemID, revisionID: assembled.revision.revisionID,
+            sessionID: "article-progress", sequence: 1, positionSeconds: 0.75,
+            durationSeconds: assembled.revision.durationSeconds, completed: false,
+            intent: .progress, deviceID: "test-device", updatedAt: created
+        )
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(article: article)
+                try await store.save(revision: assembled.revision, mediaURL: audioURL)
+                try await store.save(playback: playback)
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let loaded = try XCTUnwrap(model.articles.first)
+        XCTAssertEqual(loaded.playbackSeconds, 0.75)
+        XCTAssertFalse(loaded.isPlayed)
+        XCTAssertEqual(model.larderRemaining.seconds, assembled.revision.durationSeconds - 0.75,
+                       accuracy: 0.001)
+    }
+
+    func testLarderRemainingTracksLivePlaybackWithoutWaitingForStoreReload() async throws {
+        let directory = temporaryDirectory("live-larder-remaining")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: directory,
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        let article = try XCTUnwrap(model.articles.first)
+        XCTAssertEqual(model.larderRemaining.seconds, 120)
+
+        model.openNowPlaying(for: article)
+        await model.waitForPlaybackOperationForTesting()
+        model.scrub(to: 60)
+        for _ in 0..<100 {
+            model.refreshPlaybackReadout()
+            if model.playbackPositionSeconds == 60 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertEqual(model.playbackPositionSeconds, 60)
+        XCTAssertEqual(model.larderRemaining.seconds, 60)
+    }
+
+    func testSwitchingPlaybackItemsRetainsOutgoingProgressInLarderRemaining() async throws {
+        let directory = temporaryDirectory("switch-larder-remaining")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: directory,
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        let first = try XCTUnwrap(model.articles.first)
+        let second = WiltedMacArticle(
+            id: "second-article", title: "Second", source: "Example",
+            url: URL(string: "https://example.test/second")!, isReady: true,
+            durationSeconds: 120
+        )
+        model.installArticleForTesting(second)
+        model.openNowPlaying(for: first)
+        await model.waitForPlaybackOperationForTesting()
+        model.scrub(to: 60)
+        for _ in 0..<100 {
+            model.refreshPlaybackReadout()
+            if model.playbackPositionSeconds == 60 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let beforeSwitch = model.larderRemaining.seconds
+        XCTAssertEqual(beforeSwitch, 180)
+
+        model.openNowPlaying(for: second)
+        await model.waitForPlaybackOperationForTesting()
+
+        XCTAssertEqual(model.articles.first(where: { $0.id == first.id })?.playbackSeconds, 60)
+        XCTAssertLessThanOrEqual(model.larderRemaining.seconds, beforeSwitch,
+                                 "moving the live overlay must not restore the outgoing article's old position")
+    }
+
+    func testFailedArticleSwitchDoesNotCopyOutgoingProgressIntoDestination() async throws {
+        let directory = temporaryDirectory("failed-switch-larder-remaining")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: directory,
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        let first = try XCTUnwrap(model.articles.first)
+        let second = WiltedMacArticle(
+            id: "failed-destination", title: "Failed destination", source: "Example",
+            url: URL(string: "https://example.test/failed-destination")!, isReady: true,
+            durationSeconds: 120
+        )
+        model.installArticleForTesting(second)
+        model.openNowPlaying(for: first)
+        await model.waitForPlaybackOperationForTesting()
+        model.scrub(to: 60)
+        for _ in 0..<100 {
+            model.refreshPlaybackReadout()
+            if model.playbackPositionSeconds == 60 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let beforeSwitch = model.larderRemaining.seconds
+
+        // Selection changes before an asynchronous load completes. Leaving
+        // the controller on the first item models the failure boundary.
+        model.beginArticlePlaybackTransitionForTesting(second)
+        model.refreshPlaybackReadout()
+
+        XCTAssertEqual(model.articles.first(where: { $0.id == first.id })?.playbackSeconds, 60)
+        XCTAssertEqual(model.articles.first(where: { $0.id == second.id })?.playbackSeconds, 0)
+        XCTAssertEqual(model.larderRemaining.seconds, beforeSwitch)
+    }
+
+    func testUnavailableTranscriptProjectsAudioReadyWithoutPreparedPrefix() throws {
+        let itemID = try ItemID(rawValue: "item-" + String(repeating: "9", count: 64))
+        let revisionID = try RevisionID(rawValue: "rev-" + String(repeating: "9", count: 64))
+        let when = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let run = PreparationRunSummary(
+            requestID: WiltedMacModel.podcastRequestPrefix + itemID.rawValue,
+            itemID: itemID, startedAt: when, updatedAt: when, stage: .completed,
+            detail: "Prepared · no ads found · transcript not synced", fraction: nil,
+            isTerminal: true, outcome: .succeeded, failure: nil,
+            entries: [PreparationJournalEntry(
+                id: "terminal", itemID: itemID,
+                requestID: WiltedMacModel.podcastRequestPrefix + itemID.rawValue,
+                status: try PreparationStatus(
+                    stage: .completed, detail: "Prepared · no ads found · transcript not synced",
+                    cancellable: false,
+                    terminalResult: PreparationTerminalResult(outcome: .succeeded, revisionID: revisionID),
+                    emittedAt: when
+                )
+            )]
+        )
+        let state = WiltedMacModel.preparationState(run: run, readyRevisionID: revisionID, transcript: nil)
+        XCTAssertEqual(state, .prepared(summary: "Audio ready · Transcript unavailable"))
+        XCTAssertEqual(
+            WiltedMacEpisodeLifecyclePresentation(downloadState: .completed, preparationState: state).label,
+            "Audio ready · Transcript unavailable"
+        )
+    }
+
     func testEpisodePlaybackIndicatorsKeepCurrentPlaybackOutOfUpNext() throws {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],

@@ -335,6 +335,31 @@ private struct WiltedMacLibraryView: View {
                 WiltedMacPreparationView(model: model, preparation: preparation)
             }
 
+            HStack(spacing: WiltedTheme.Spacing.medium) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Saved articles and episodes")
+                        .wiltedFont(.title)
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    Text(model.larderRemaining.label)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-larder-remaining")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if !model.dismissedEpisodes.isEmpty {
+                    removedButton
+                }
+                addArticleButton
+                if !model.libraryItems.isEmpty {
+                    Picker("Order", selection: $model.libraryOrder) {
+                        ForEach(WiltedMacLibraryOrder.allCases) { order in Text(order.rawValue).tag(order) }
+                    }
+                    .labelsHidden()
+                    .frame(width: 110)
+                    .accessibilityIdentifier("wilted-library-order")
+                }
+            }
+
             if model.libraryItems.isEmpty {
                 ContentUnavailableView {
                     Label(
@@ -350,38 +375,8 @@ private struct WiltedMacLibraryView: View {
                 }
                 .accessibilityIdentifier("wilted-mac-empty-state")
 
-                // An empty Larder still needs a way in and, when something
-                // was skipped or finished, a way back. The list header that
-                // normally carries both buttons does not exist in this
-                // branch, so they sit under the empty state instead.
-                HStack(spacing: WiltedTheme.Spacing.medium) {
-                    if !model.dismissedEpisodes.isEmpty {
-                        removedButton
-                    }
-                    addArticleButton
-                    Spacer()
-                }
             } else {
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-                    // The order control belongs to the list it orders. On its
-                    // own card it was a near-empty band of chrome between the
-                    // add box and the items.
-                    HStack(spacing: WiltedTheme.Spacing.medium) {
-                        Text("Saved articles and episodes")
-                            .wiltedFont(.title)
-                            .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        if !model.dismissedEpisodes.isEmpty {
-                            removedButton
-                        }
-                        addArticleButton
-                        Picker("Order", selection: $model.libraryOrder) {
-                            ForEach(WiltedMacLibraryOrder.allCases) { order in Text(order.rawValue).tag(order) }
-                        }
-                        .labelsHidden()
-                        .frame(width: 110)
-                        .accessibilityIdentifier("wilted-library-order")
-                    }
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(model.libraryItems.enumerated()), id: \.element.id) { index, item in
                             if index > 0 { Divider() }

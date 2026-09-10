@@ -22,6 +22,9 @@ struct WiltedMacArticle: Identifiable, Hashable, Sendable {
     /// takes to listen to, which is the one fact that decides whether to
     /// start it now, and it was the only list in the app that withheld it.
     let durationSeconds: TimeInterval?
+    var playbackSeconds: TimeInterval
+    /// Whether the durable record says this article is finished.
+    var isPlayed: Bool = false
     let createdAt: Date
 
     init(
@@ -31,6 +34,8 @@ struct WiltedMacArticle: Identifiable, Hashable, Sendable {
         url: URL,
         isReady: Bool,
         durationSeconds: TimeInterval?,
+        playbackSeconds: TimeInterval = 0,
+        isPlayed: Bool = false,
         createdAt: Date = .distantPast
     ) {
         self.id = id
@@ -39,7 +44,49 @@ struct WiltedMacArticle: Identifiable, Hashable, Sendable {
         self.url = url
         self.isReady = isReady
         self.durationSeconds = durationSeconds
+        self.playbackSeconds = playbackSeconds
+        self.isPlayed = isPlayed
         self.createdAt = createdAt
+    }
+}
+
+/// The listening time still outstanding in the complete, unhidden Larder.
+struct WiltedMacLarderRemaining: Equatable, Sendable {
+    let seconds: TimeInterval
+    let unknownCount: Int
+
+    init(
+        items: [WiltedMacLibraryItem],
+        liveItemID: String? = nil,
+        livePosition: TimeInterval = 0,
+        liveCompleted: Bool = false
+    ) {
+        var seconds = 0.0
+        var unknownCount = 0
+        for item in items {
+            let stored = item.progress
+            let isLive = item.id == liveItemID
+            let isPlayed = isLive ? liveCompleted : stored.isPlayed
+            if isPlayed { continue }
+            guard let duration = stored.duration, duration.isFinite, duration > 0 else {
+                unknownCount += 1
+                continue
+            }
+            let candidatePosition = isLive ? livePosition : stored.position
+            let position = candidatePosition.isFinite ? max(0, candidatePosition) : 0
+            seconds += max(0, duration - position)
+        }
+        self.seconds = seconds
+        self.unknownCount = unknownCount
+    }
+
+    var label: String {
+        var minutes = Int(ceil(max(0, seconds) / 60))
+        if seconds <= 0 { minutes = 0 }
+        let hours = minutes / 60
+        minutes %= 60
+        let duration = hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
+        return "Larder remaining: \(duration)" + (unknownCount == 0 ? "" : " · \(unknownCount) unknown")
     }
 }
 
@@ -502,7 +549,11 @@ struct WiltedMacEpisodeLifecyclePresentation: Equatable, Sendable {
                 label = Self.label(primary: "Preparing", detail: stage, removing: "Preparing")
                 isFailure = false
             case let .prepared(summary):
-                label = Self.label(primary: "Prepared", detail: summary, removing: "Ready")
+                if summary == "Audio ready · Transcript unavailable" {
+                    label = summary
+                } else {
+                    label = Self.label(primary: "Prepared", detail: summary, removing: "Ready")
+                }
                 isFailure = false
             case let .failed(message):
                 label = Self.label(primary: "Preparation failed", detail: message, removing: "Preparation failed")
@@ -555,7 +606,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     let artworkURL: URL?
     let releasedAt: Date
     let durationSeconds: TimeInterval?
-    let playbackSeconds: TimeInterval
+    var playbackSeconds: TimeInterval
     /// Whether the durable record says this episode is finished.
     ///
     /// Separate from `playbackSeconds` reaching the duration, because the two
@@ -614,10 +665,10 @@ enum WiltedMacLibraryItem: Identifiable, Hashable, Sendable {
         case .episode(let value): value.notes ?? value.summary
         }
     }
-    var progress: (position: TimeInterval, duration: TimeInterval?) {
+    var progress: (position: TimeInterval, duration: TimeInterval?, isPlayed: Bool) {
         switch self {
-        case .article(let value): (0, value.durationSeconds)
-        case .episode(let value): (value.playbackSeconds, value.durationSeconds)
+        case .article(let value): (value.playbackSeconds, value.durationSeconds, value.isPlayed)
+        case .episode(let value): (value.playbackSeconds, value.durationSeconds, value.isPlayed)
         }
     }
 }
@@ -1616,6 +1667,19 @@ final class WiltedMacModel {
         let query = librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty, transcriptSearchMatches.contains(item.id) else { return false }
         return !Self.matches(item, query: query)
+    }
+
+    /// The header total is intentionally independent of the current search,
+    /// filter, and order controls: those are views into the same backlog, not
+    /// changes to what remains to listen to.
+    var larderRemaining: WiltedMacLarderRemaining {
+        return WiltedMacLarderRemaining(
+            items: articles.map(WiltedMacLibraryItem.article)
+                + episodes.filter { !hiddenEpisodeIDs.contains($0.id) }.map(WiltedMacLibraryItem.episode),
+            liveItemID: isNowPlaying ? loadedPlaybackItemID : nil,
+            livePosition: playbackPositionSeconds,
+            liveCompleted: playbackCompleted
+        )
     }
 
     var libraryItems: [WiltedMacLibraryItem] {
@@ -3095,6 +3159,7 @@ final class WiltedMacModel {
     }
 
     private func beginArticlePlaybackTransition(_ article: WiltedMacArticle) {
+        if isNowPlaying { refreshPlaybackReadout() }
         selectedArticleID = article.id
         currentPodcastEpisodeID = nil
         isPodcastPlayback = false
@@ -3131,6 +3196,7 @@ final class WiltedMacModel {
             do {
                 await self.fixturePodcastInstallTask?.value
                 try await playback.addPodcastQueueEpisode(id)
+                self.refreshPlaybackReadout()
                 try await playback.selectPodcastQueueEpisode(id, autoplay: true)
                 self.selectedArticleID = nil
                 self.currentPodcastEpisodeID = episode.id
@@ -3241,9 +3307,35 @@ final class WiltedMacModel {
         playbackCompleted = playback.completed
         playbackRate = Double(playback.playbackRate)
 #endif
+        updateCurrentLibraryPlaybackProjection()
         // The one funnel every transport and the player's timer already goes
         // through, so the system readout cannot drift from the on-screen one.
         publishNowPlaying()
+    }
+
+    /// Keeps the outgoing row current when playback moves to another item.
+    /// The live total overlays the active playhead; this retained projection
+    /// prevents that progress from disappearing as soon as the overlay moves.
+    private func updateCurrentLibraryPlaybackProjection() {
+        guard isNowPlaying, let id = loadedPlaybackItemID else { return }
+        let position = min(max(0, playbackPositionSeconds), max(0, playbackDurationSeconds))
+        if let index = episodes.firstIndex(where: { $0.id == id }) {
+            episodes[index].playbackSeconds = position
+            episodes[index].isPlayed = playbackCompleted
+        } else if let index = articles.firstIndex(where: { $0.id == id }) {
+            articles[index].playbackSeconds = position
+            articles[index].isPlayed = playbackCompleted
+        }
+    }
+
+    /// The controller changes identity only after a load succeeds. Selection
+    /// changes earlier so the destination can render immediately, but it must
+    /// never receive the previous item's live position when that load fails.
+    private var loadedPlaybackItemID: String? {
+#if canImport(WiltedProducer)
+        if let id = playback?.itemID?.rawValue { return id }
+#endif
+        return isPodcastPlayback ? currentPodcastEpisodeID : selectedArticleID
     }
 
 #if canImport(WiltedProducer)
@@ -3705,6 +3797,11 @@ final class WiltedMacModel {
     func installEpisodeForTesting(_ episode: WiltedMacEpisode) {
         guard !episodes.contains(where: { $0.id == episode.id }) else { return }
         episodes.append(episode)
+    }
+
+    func installArticleForTesting(_ article: WiltedMacArticle) {
+        guard !articles.contains(where: { $0.id == article.id }) else { return }
+        articles.append(article)
     }
 
     func beginArticlePlaybackTransitionForTesting(_ article: WiltedMacArticle) {
@@ -4394,10 +4491,21 @@ final class WiltedMacModel {
         var articleValues: [WiltedMacArticle] = []
         for article in try await store.articles() where !article.isDeleted {
             let revision = try await store.readyRevision(for: article.itemID)
+            let playbackState: PlaybackState?
+            if let revision {
+                playbackState = try await store.playbackState(
+                    for: article.itemID, revisionID: revision.revision.revisionID
+                )
+            } else {
+                playbackState = nil
+            }
             articleValues.append(WiltedMacArticle(
                 id: article.itemID.rawValue, title: article.title, source: article.source,
                 url: article.canonicalURL, isReady: revision != nil,
-                durationSeconds: revision?.revision.durationSeconds, createdAt: article.createdAt.date
+                durationSeconds: revision?.revision.durationSeconds,
+                playbackSeconds: playbackState?.positionSeconds ?? 0,
+                isPlayed: playbackState?.completed ?? false,
+                createdAt: article.createdAt.date
             ))
         }
         let feeds = Dictionary(uniqueKeysWithValues: try await store.podcastFeeds().map { ($0.itemID, $0) })
@@ -4517,6 +4625,9 @@ final class WiltedMacModel {
               terminal.revisionID == readyRevisionID else { return .notPrepared }
 
         let ready = PodcastPreparationResult.readyLabel
+        if transcript == nil || transcript?.availability == .absent || transcript?.timing == TranscriptTiming.none {
+            return .prepared(summary: "Audio ready · Transcript unavailable")
+        }
         switch transcript?.timing {
         case .published:
             return .prepared(summary: recordedSummary(of: run)
