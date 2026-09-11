@@ -213,6 +213,8 @@ class FakeLLM:
     left_boundary_include: bool | None = None
     left_boundary_answer: str | None = None
     preroll_program_start_id: int | None = None
+    adjacent_program_start_id: int | None = None
+    adjacent_program_start_answer: str | None = None
     preroll_program_id: int | None = None
     boundary_starts_program: bool | None = None
     postroll_advertising_start_id: int | None = None
@@ -237,6 +239,12 @@ class FakeLLM:
             raise self.fail_generate
         if system_prompt in {"archive ad classifier", "archive ad classifier correction"}:
             return self.classifier_answer, 1
+        if system_prompt == wp.AD_POD_CONTINUATION_PROMPT:
+            if self.adjacent_program_start_answer is not None:
+                return self.adjacent_program_start_answer, 1
+            if self.adjacent_program_start_id is not None:
+                return json.dumps({"program_start_id": self.adjacent_program_start_id}), 1
+            return self.answer, 1
         # The boundary probe asks for free JSON like the coarse pass does, so the
         # system prompt is what tells them apart here as well as in the log.
         if "starts_program" in system_prompt:
@@ -2517,6 +2525,92 @@ class CommercialEvidenceRecoveryTests(unittest.TestCase):
         seeds = wp.commercial_evidence_seed_ids(segments, [])
         self.assertLessEqual(len(seeds), wp.COMMERCIAL_RECOVERY_MAX_CANDIDATES)
         self.assertTrue(all(right[-1] < left[0] for left, right in zip(seeds, seeds[1:])))
+
+
+class AdjacentAdPodContinuationTests(unittest.TestCase):
+    SEGMENTS = [
+        FakeSegment(6.720, 20.000, "verified Plaud commercial"),
+        FakeSegment(20.000, 35.000, "commercial details"),
+        FakeSegment(35.000, 50.000, "commercial details"),
+        FakeSegment(50.000, 65.000, "commercial details"),
+        FakeSegment(65.000, 78.000, "commercial details"),
+        FakeSegment(78.000, 88.800, "end of the verified commercial"),
+        FakeSegment(90.960, 105.000, "check us out and subscribe wherever you listen"),
+        FakeSegment(105.000, 121.880, "the Motley Fool Money podcast"),
+        FakeSegment(122.840, 140.000, "I'm Imran, and your Daily Crunch starts right now"),
+        FakeSegment(140.000, 160.000, "Apple debuts its most powerful chip ever"),
+    ]
+
+    def analyze(self, llm, segments=None):
+        llm.load()
+        ads = install_fake_ads(llm, detections=[FakeAd(6.720, 88.800, label="sponsor_read")])
+        with redirect_stderr(io.StringIO()):
+            return wp.analyze_ad_detections(ads, llm, segments or self.SEGMENTS, 300.0)
+
+    def test_verified_cut_extends_through_immediate_motley_fool_promotion(self):
+        analysis = self.analyze(FakeLLM(
+            preroll_program_start_id=0,
+            adjacent_program_start_id=8,
+        ))
+        self.assertEqual(
+            [(ad.start_s, ad.end_s, ad.label) for ad in analysis.detections],
+            [(6.720, 122.840, "sponsor_read")],
+        )
+
+    def test_immediate_programme_or_malformed_review_preserves_verified_cut(self):
+        cases = (
+            FakeLLM(preroll_program_start_id=0, adjacent_program_start_id=6),
+            FakeLLM(preroll_program_start_id=0, adjacent_program_start_answer="not json"),
+        )
+        for llm in cases:
+            with self.subTest(answer=llm.adjacent_program_start_answer or llm.adjacent_program_start_id):
+                analysis = self.analyze(llm)
+                self.assertEqual(
+                    [(ad.start_s, ad.end_s) for ad in analysis.detections],
+                    [(6.720, 88.800)],
+                )
+
+    def test_only_a_gap_at_or_below_the_three_second_boundary_is_reviewed(self):
+        just_inside = [*self.SEGMENTS]
+        just_inside[6] = FakeSegment(91.800, 105.000, just_inside[6].text)
+        inside = self.analyze(FakeLLM(preroll_program_start_id=0, adjacent_program_start_id=8), just_inside)
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in inside.detections], [(6.720, 122.840)])
+
+        just_outside = [*self.SEGMENTS]
+        just_outside[6] = FakeSegment(91.801, 105.000, just_outside[6].text)
+        llm = FakeLLM(preroll_program_start_id=0, adjacent_program_start_id=8)
+        outside = self.analyze(llm, just_outside)
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in outside.detections], [(6.720, 88.800)])
+        self.assertFalse(any(request.get("field") == "program_start_id" for request in llm.requests))
+
+    def test_out_of_window_or_over_budget_continuation_never_extends_the_cut(self):
+        too_many = [*self.SEGMENTS[:6]]
+        for index in range(13):
+            start = 90.960 + index * 5
+            too_many.append(FakeSegment(start, start + 5, f"promo cue {index}"))
+        llm = FakeLLM(preroll_program_start_id=0, adjacent_program_start_id=18)
+        analysis = self.analyze(llm, too_many)
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in analysis.detections], [(6.720, 88.800)])
+
+        oversized = [*self.SEGMENTS]
+        oversized[6] = FakeSegment(90.960, 105.000, "x" * (wp.COMMERCIAL_RECOVERY_CONTEXT_CHARS + 1))
+        llm = FakeLLM(preroll_program_start_id=0, adjacent_program_start_id=8)
+        analysis = self.analyze(llm, oversized)
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in analysis.detections], [(6.720, 88.800)])
+        self.assertFalse(any(request.get("field") == "program_start_id" for request in llm.requests))
+
+    def test_an_unverified_or_non_sponsor_detection_never_nominates_its_neighbour(self):
+        detection = FakeAd(6.720, 88.800, label="ad_break")
+        llm = FakeLLM(preroll_program_start_id=0, adjacent_program_start_id=8)
+        llm.load()
+        ads = install_fake_ads(llm, detections=[detection])
+        with redirect_stderr(io.StringIO()):
+            analysis = wp.analyze_ad_detections(ads, llm, self.SEGMENTS, 300.0)
+        self.assertEqual(
+            [(ad.start_s, ad.end_s, ad.label) for ad in analysis.detections],
+            [(6.720, 88.800, detection.label)],
+        )
+        self.assertFalse(any(request.get("field") == "program_start_id" for request in llm.requests))
 
 
 def install_legacy_recovery_fixture(llm: FakeLLM):

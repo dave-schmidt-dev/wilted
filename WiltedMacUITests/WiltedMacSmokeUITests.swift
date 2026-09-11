@@ -412,8 +412,10 @@ final class WiltedMacSmokeUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-row-'")
         ).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].exists,
-                      "A proven prepared row shows the completion summary recorded by its journal.")
+        XCTAssertTrue(app.staticTexts["Ready to play"].exists,
+                      "A proven prepared row shows one explicit listening-ready status.")
+        XCTAssertTrue(app.staticTexts["5 ads removed (7:22) · transcript synced"].exists,
+                      "Preparation outcomes remain explicit beside the stable status.")
         XCTAssertEqual(
             app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-prepare'")).count, 0,
             "A prepared row shows no preparation button; redoing lives in its menu."
@@ -443,8 +445,69 @@ final class WiltedMacSmokeUITests: XCTestCase {
             app.staticTexts["No preparation worker in fixture mode"].waitForExistence(timeout: 5),
             "Prepare again reaches the fixture's durable failed result."
         )
-        XCTAssertFalse(app.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].exists,
+        XCTAssertFalse(app.staticTexts["5 ads removed (7:22) · transcript synced"].exists,
                        "A new failed attempt replaces the earlier completed status.")
+    }
+
+    func testPrepSurfacesReadyEpisodesAndMenuAddsAllPrepared() {
+        let app = launch(arguments: [
+            "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"
+        ])
+        let prep = app.descendants(matching: .any)["wilted-navigation-processor"]
+        XCTAssertTrue(prep.waitForExistence(timeout: 5))
+        prep.click()
+
+        XCTAssertTrue(app.staticTexts["Ready to play"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-processor-ready-list"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-processor-ready-'")).firstMatch.exists)
+
+        let menu = app.descendants(matching: .any)["wilted-navigation-menu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 5))
+        menu.click()
+        let addAll = app.descendants(matching: .any)["wilted-menu-add-all-prepared"]
+        XCTAssertTrue(addAll.waitForExistence(timeout: 5))
+        XCTAssertTrue(addAll.isEnabled)
+        addAll.click()
+        XCTAssertTrue(app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-row-'"))
+            .firstMatch.waitForExistence(timeout: 8))
+    }
+
+    func testMenuBulkAddIsDisabledWithHonestEmptyState() {
+        let app = launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
+        let menu = app.descendants(matching: .any)["wilted-navigation-menu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 5))
+        menu.click()
+        let addAll = app.descendants(matching: .any)["wilted-menu-add-all-prepared"]
+        XCTAssertTrue(addAll.waitForExistence(timeout: 5))
+        XCTAssertFalse(addAll.isEnabled)
+        XCTAssertEqual(addAll.label, "No prepared episodes to add")
+    }
+
+    func testUnpreparedEpisodeHasNoListeningActionAndPrepOwnsItsPreparationAction() {
+        let app = launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
+        let episode = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-row-'")
+        ).firstMatch
+        XCTAssertTrue(episode.waitForExistence(timeout: 5))
+        XCTAssertTrue(episode.staticTexts["Downloaded"].exists)
+        XCTAssertTrue(episode.staticTexts["Ready to prepare"].exists)
+        XCTAssertEqual(
+            episode.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-play-'")).count, 0
+        )
+        XCTAssertEqual(
+            episode.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-add-menu-'")).count, 0
+        )
+
+        app.descendants(matching: .any)["wilted-navigation-processor"].click()
+        XCTAssertTrue(app.staticTexts["Preparing"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Queued"].exists)
+        XCTAssertTrue(app.staticTexts["Not queued"].exists)
+        XCTAssertTrue(app.buttons["wilted-processor-prepare-all"].isEnabled)
+        XCTAssertTrue(app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-processor-prepare-'")
+        ).firstMatch.exists)
     }
 
     /// Larder carries the successful run's concise recorded summary; Prep keeps
@@ -556,7 +619,9 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertEqual(forward.label, "Skip forward 30 seconds")
     }
     func testPodcastCompactPlayerPersistsAcrossLarderScrollAndExposesCompleteControls() {
-        let app = launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
+        let app = launch(arguments: [
+            "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"
+        ])
         let library = app.descendants(matching: .any)["wilted-mac-library-detail"]
         let playEpisode = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-play-'"))
@@ -572,7 +637,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         for identifier in [
             "wilted-player-speed", "wilted-player-rewind", "wilted-player-play-pause",
             "wilted-player-forward", "wilted-player-transcript",
-            "wilted-player-notes", "wilted-player-up-next", "wilted-player-volume",
+            "wilted-player-notes", "wilted-player-menu", "wilted-player-volume",
             "wilted-player-scrubber", "wilted-player-previous", "wilted-player-next",
             "wilted-player-restart", "wilted-player-keyboard-transports"
         ] {
@@ -680,54 +745,25 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertEqual(notes.value as? String, "Expanded")
         XCTAssertEqual(notes.label, "Hide Notes")
 
-        let upNext = app.descendants(matching: .any)["wilted-player-up-next"]
-        upNext.click()
+        let menuButton = app.descendants(matching: .any)["wilted-player-menu"]
+        menuButton.click()
         XCTAssertTrue(
             app.descendants(matching: .any)["wilted-player-notes-expanded"].waitForNonExistence(timeout: 5)
         )
-        XCTAssertTrue(
-            app.descendants(matching: .any)["wilted-player-up-next-expanded"]
-                .waitForExistence(timeout: 5)
-        )
-        XCTAssertTrue(fullWindow.waitForExistence(timeout: 5))
-        XCTAssertFalse(library.isHittable)
-        XCTAssertEqual(visibleText(of: itemTitle), itemTitleBeforeExpansion)
-        XCTAssertEqual("\(speed.value ?? "")", "\(speedBeforeExpansion ?? "")")
-        guard let scrubberInUpNext = Self.numericAXValue(of: scrubber) else {
-            return XCTFail("Playback scrubber must remain numeric in Up Next")
-        }
-        XCTAssertEqual(scrubberInUpNext, scrubberBeforeExpansion, accuracy: 0.5)
-
-        let remove = app.descendants(matching: .any).matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-player-up-next-remove-'")
-        ).firstMatch
-        let earlier = app.descendants(matching: .any).matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-player-up-next-move-earlier-'")
-        ).firstMatch
-        let later = app.descendants(matching: .any).matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-player-up-next-move-later-'")
-        ).firstMatch
-        XCTAssertTrue(remove.waitForExistence(timeout: 5))
-        XCTAssertFalse(remove.isEnabled)
-        XCTAssertEqual(remove.value as? String, "Unavailable for the current episode")
-        XCTAssertTrue(earlier.exists)
-        XCTAssertFalse(earlier.isEnabled)
-        XCTAssertTrue(later.exists)
-        XCTAssertFalse(later.isEnabled)
-
-        app.typeKey(.escape, modifierFlags: [])
-        XCTAssertTrue(
-            app.descendants(matching: .any)["wilted-player-up-next-expanded"]
-                .waitForNonExistence(timeout: 5)
-        )
+        let menu = app.descendants(matching: .any)["wilted-mac-menu-detail"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 5))
         XCTAssertTrue(fullWindow.waitForNonExistence(timeout: 5))
-        app.typeKey(.space, modifierFlags: [])
-        XCTAssertTrue(
-            app.descendants(matching: .any)["wilted-player-up-next-expanded"]
-                .waitForExistence(timeout: 5),
-            "Escape must restore keyboard focus to the Up Next toggle"
-        )
-        XCTAssertTrue(fullWindow.exists)
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-menu-empty"].exists)
+
+        let menuTranscript = app.descendants(matching: .any)["wilted-player-transcript"]
+        XCTAssertTrue(menuTranscript.waitForExistence(timeout: 5))
+        menuTranscript.click()
+        XCTAssertTrue(transcriptExpansion.waitForExistence(timeout: 5),
+                      "Transcript must open from Menu's bound Now Playing controls")
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(transcriptExpansion.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(menu.waitForExistence(timeout: 5))
+
         app.descendants(matching: .any)["wilted-navigation-settings"].click()
         XCTAssertTrue(fullWindow.waitForNonExistence(timeout: 5))
         let settings = app.descendants(matching: .any)["wilted-mac-settings"]
@@ -805,6 +841,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(add.waitForExistence(timeout: 5))
         add.click()
 
+        app.descendants(matching: .any)["wilted-navigation-processor"].click()
         let progress = app.descendants(matching: .any)["wilted-preparation-progress"]
         XCTAssertTrue(progress.waitForExistence(timeout: 5))
         let cancel = app.descendants(matching: .any)["wilted-cancel-preparation"]
@@ -812,11 +849,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
         cancel.click()
 
         let detail = app.descendants(matching: .any)["wilted-preparation-detail"]
-        XCTAssertTrue(detail.waitForExistence(timeout: 5))
-        let detailExpectation = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value CONTAINS[c] %@", "current work"), object: detail
-        )
-        XCTAssertEqual(XCTWaiter().wait(for: [detailExpectation], timeout: 5), .completed)
+        XCTAssertTrue(detail.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-processor-idle"].waitForExistence(timeout: 5))
     }
 
     /// Navigating away from the player must not stop playback, and getting back
@@ -923,7 +957,9 @@ final class WiltedMacSmokeUITests: XCTestCase {
     /// disabled, so the likeliest reading is that the capture never got back to
     /// Larder. Tracked on its own, with this test's shape as the starting point.
     func testThePlayingFixtureComesUpWithoutAnAudioFault() {
-        let app = launch(arguments: ["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts"])
+        let app = launch(arguments: [
+            "--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"
+        ])
         XCTAssertTrue(app.descendants(matching: .any)["wilted-player-play-pause"]
             .waitForExistence(timeout: 15))
         XCTAssertFalse(app.descendants(matching: .any)["wilted-player-recoverable-error"]
@@ -956,7 +992,9 @@ final class WiltedMacSmokeUITests: XCTestCase {
     /// which means the label is the only place a reader who cannot see the
     /// screen learns the voice changed -- and so it is the thing worth pinning.
     func testTheTranscriptNamesWhoIsSpeakingWhereTheVoiceChanges() {
-        let app = launch(arguments: ["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts"])
+        let app = launch(arguments: [
+            "--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"
+        ])
         let playEpisode = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-play-'"))
             .firstMatch

@@ -452,6 +452,89 @@ public struct PodcastPreparationPolicySnapshot: Codable, Equatable, Sendable {
 }
 
 public actor PodcastPreparationPipeline {
+    /// Manually bumped when the semantic preparation behavior changes. This is
+    /// deliberately independent of the app or UI build number so a launch can
+    /// identify old preparation results without invalidating unrelated work.
+    public static let semanticVersion = "podcast-preparation-v2"
+    /// The worker is part of the semantic pipeline even though it lives in a
+    /// separate Python source tree. Update this alongside the fingerprint when
+    /// that worker changes.
+    public static let workerSourceHash = "sha256:e630732bebf494651709e7b988ae00ac2e16380f04067e33b0631c96710a7bf4"
+    /// This file's own source hash is computed with this value normalized out;
+    /// it makes a semantic edit fail the coverage test until this fingerprint
+    /// block is deliberately updated.
+    public static let pipelineSourceHash = "sha256:c2362f768a09127d6c0d0427799685c5454775b3fe0c3cc7ad8d5517378adff4"
+
+    /// Includes the external Python packages imported by the worker. Those
+    /// sources remain outside this repository during the native migration, so
+    /// a constant-only fingerprint would miss a detector or transcription
+    /// change made between app builds.
+    public static let semanticFingerprintResolution = resolvedSemanticFingerprint()
+    public static let semanticFingerprint = semanticFingerprintResolution
+        ?? semanticVersion + "-unresolved"
+
+    public static func resolvedSemanticFingerprint(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String? {
+        let configuration = SubprocessPodcastPipelineRunner.Configuration.resolved(environment: environment)
+        var hasher = SHA256()
+        func include(_ value: String) {
+            hasher.update(data: Data(value.utf8))
+            hasher.update(data: Data([0]))
+        }
+        include(semanticVersion)
+        include(workerSourceHash)
+        include(pipelineSourceHash)
+        guard let workerData = try? Data(contentsOf: configuration.workerURL, options: .mappedIfSafe) else {
+            return nil
+        }
+        include("worker")
+        hasher.update(data: workerData)
+
+        guard let sourceRoot = configuration.pythonPath else { return nil }
+        let fileManager = FileManager.default
+        let speechSourceRoot = environment["WILTED_SPEECH_STACK_PYTHONPATH"]
+            .map { URL(fileURLWithPath: $0) }
+            ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Documents/Projects/speech-stack/src")
+        let packageRoots = [
+            (sourceRoot, sourceRoot.appendingPathComponent("wilted")),
+            (speechSourceRoot, speechSourceRoot.appendingPathComponent("speech_stack"))
+        ]
+        var sourceFiles: [URL] = []
+        for (_, root) in packageRoots {
+            var enumerationFailed = false
+            guard let enumerator = fileManager.enumerator(
+                at: root, includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants],
+                errorHandler: { _, _ in
+                    enumerationFailed = true
+                    return false
+                }
+            ) else { return nil }
+            var files: [URL] = []
+            for case let url as URL in enumerator where url.pathExtension == "py" {
+                do {
+                    if try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
+                        files.append(url)
+                    }
+                } catch {
+                    enumerationFailed = true
+                    break
+                }
+            }
+            guard !enumerationFailed, !files.isEmpty else { return nil }
+            sourceFiles.append(contentsOf: files)
+        }
+        sourceFiles.sort { $0.path < $1.path }
+        for url in sourceFiles {
+            let owningRoot = packageRoots.first { url.path.hasPrefix($0.0.path) }?.0 ?? sourceRoot
+            include(String(url.path.dropFirst(owningRoot.path.count)))
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+            hasher.update(data: data)
+        }
+        return "sha256:" + hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
     /// A published transcript larger than this is not a transcript.
     public static let maximumTranscriptDocumentBytes = 8 * 1_024 * 1_024
     /// The detector was tuned against this exact aligned STT output. This is
@@ -523,11 +606,17 @@ public actor PodcastPreparationPipeline {
               FileManager.default.fileExists(atPath: audioURL.path),
               let stored = try await store.readyRevision(for: episodeID) else {
             await journalTerminal(episodeID: episodeID, requestID: requestID,
-                                  error: PodcastPreparationError.episodeNotDownloaded, revisionID: nil)
+                                  error: PodcastPreparationError.episodeNotDownloaded, revisionID: nil,
+                                  fingerprint: Self.semanticFingerprint)
             throw PodcastPreparationError.episodeNotDownloaded
         }
 
-        report(PodcastPreparationProgress(stage: "pipeline.start", detail: episode.title))
+        let provenance = try? PreparationEvidence(kind: LocalLibraryStore.pipelineProvenanceEvidenceKind, fields: [
+            "fingerprint": Self.semanticFingerprint,
+            "sourceRevisionID": stored.revision.revisionID.rawValue,
+            "sourceHash": stored.revision.contentHash,
+        ])
+        report(PodcastPreparationProgress(stage: "pipeline.start", detail: episode.title, evidence: provenance))
         do {
             var request: [String: Any] = [
                 "protocolVersion": 2,
@@ -539,6 +628,7 @@ public actor PodcastPreparationPipeline {
                 "allowSpeechToText": policy.transcriptPolicy != .noLocalSTT,
                 "sourceHash": stored.revision.contentHash,
                 "alignedTranscriptModel": Self.alignedTranscriptModel,
+                "pipelineFingerprint": Self.semanticFingerprint,
             ]
             if !policy.removeAds, policy.transcriptPolicy != .alwaysTranscribe,
                let published = await fetchPublishedTranscript(for: episode, onStatus: report) {
@@ -561,11 +651,19 @@ public actor PodcastPreparationPipeline {
             await writes.drain()
             await journalTerminal(episodeID: episodeID, requestID: requestID, error: nil,
                                   revisionID: result.revision.revisionID, summary: result.summary,
+                                  fingerprint: Self.semanticFingerprint,
+                                  sourceRevisionID: stored.revision.revisionID,
+                                  sourceHash: stored.revision.contentHash,
+                                  sourceURL: audioURL,
                                   timeline: payload.timeline)
             return result
         } catch {
             await writes.drain()
-            await journalTerminal(episodeID: episodeID, requestID: requestID, error: error, revisionID: nil)
+            await journalTerminal(episodeID: episodeID, requestID: requestID, error: error, revisionID: nil,
+                                  fingerprint: Self.semanticFingerprint,
+                                  sourceRevisionID: stored.revision.revisionID,
+                                  sourceHash: stored.revision.contentHash,
+                                  sourceURL: audioURL)
             throw error
         }
     }
@@ -588,7 +686,9 @@ public actor PodcastPreparationPipeline {
 
     private func journalTerminal(
         episodeID: ItemID, requestID: String, error: (any Error)?, revisionID: RevisionID?,
-        summary: String? = nil, timeline: PreparationStatus.PreparationTimeline? = nil
+        summary: String? = nil, fingerprint: String? = nil,
+        sourceRevisionID: RevisionID? = nil, sourceHash: String? = nil, sourceURL: URL? = nil,
+        timeline: PreparationStatus.PreparationTimeline? = nil
     ) async {
         let outcome: PreparationOutcome
         let producerError: ProducerError?
@@ -605,6 +705,17 @@ public actor PodcastPreparationPipeline {
                                                message: String(message.prefix(1_024)), retryable: true,
                                                stage: "podcast-preparation")
         }
+        let evidence = fingerprint.flatMap({ value in
+            var fields = [
+                "fingerprint": value,
+                "sourceRevisionID": sourceRevisionID?.rawValue ?? "",
+                "sourceHash": sourceHash ?? "",
+            ]
+            if let sourceURL, sourceURL.absoluteString.count <= 256 {
+                fields["sourceURL"] = sourceURL.absoluteString
+            }
+            return try? PreparationEvidence(kind: LocalLibraryStore.pipelineProvenanceEvidenceKind, fields: fields)
+        })
         guard outcome != .failed || producerError != nil,
               let terminal = try? PreparationTerminalResult(outcome: outcome, revisionID: revisionID,
                                                             error: producerError),
@@ -612,6 +723,7 @@ public actor PodcastPreparationPipeline {
                 stage: outcome == .succeeded ? .completed : (outcome == .cancelled ? .cancelled : .failed),
                 detail: producerError?.message ?? (outcome == .succeeded ? (summary ?? "Prepared.") : "Cancelled."),
                 cancellable: false, terminalResult: terminal, emittedAt: Timestamp(now()),
+                evidence: evidence,
                 timeline: outcome == .succeeded ? timeline : nil
               ) else { return }
         try? await store.record(preparation: PreparationJournalEntry(

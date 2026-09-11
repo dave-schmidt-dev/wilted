@@ -272,6 +272,32 @@ struct PodcastDownloadCoordinatorTests {
         #expect(try stagingFiles(in: fixture.libraryDirectory).isEmpty)
     }
 
+    @Test func durablePipelineMarkerForcesAResumedCallerPastTheExistingFile() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let counter = CallCounter()
+        let coordinator = PodcastDownloadCoordinator(
+            store: fixture.store, libraryDirectory: fixture.libraryDirectory,
+            transport: EventTransport(fixture.successEvents, counter: counter),
+            mediaValidator: StubValidator(result: .success(12)), now: { Date(timeIntervalSince1970: 1_700_000_100) }
+        )
+        _ = try await coordinator.download(episodeID: fixture.episodeID)
+        #expect(await counter.value == 1)
+
+        let requestID = LocalLibraryStore.forcedRedownloadRequestPrefix + fixture.episodeID.rawValue
+        try await fixture.store.record(preparation: PreparationJournalEntry(
+            id: requestID + "|marker", itemID: fixture.episodeID, requestID: requestID,
+            status: try PreparationStatus(
+                stage: .preparing, detail: "pipeline changed", cancellable: false,
+                emittedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_101))
+            )
+        ))
+
+        _ = try await coordinator.download(episodeID: fixture.episodeID)
+        #expect(await counter.value == 2,
+                "a resumed automation caller has no force flag, so the durable marker must bypass cache admission")
+    }
+
     @Test func identicalPodcastBytesRemainBoundToTheirOwnEpisodes() async throws {
         let fixture = try await Fixture()
         defer { fixture.remove() }

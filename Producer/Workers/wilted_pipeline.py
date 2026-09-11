@@ -238,6 +238,21 @@ banter belong to the program. Return -1 when no supplied ID belongs to the progr
 supplied ID or -1.
 Return only the strict JSON object {"program_id": ID}, with no prose or Markdown."""
 
+# A verified commercial can be followed by another produced promotion without
+# enough standalone CTA/destination evidence to enter generic host-read
+# recovery. Review only the immediately adjacent passage; TechCrunch's Plaud
+# cut ends 2.16 seconds before a Motley Fool promo, then the programme resumes.
+AD_POD_CONTINUATION_MAX_GAP_SECONDS = 3.0
+AD_POD_CONTINUATION_MAX_SEGMENTS = 12
+AD_POD_CONTINUATION_MAX_SECONDS = 90.0
+AD_POD_CONTINUATION_PROMPT = """\
+The excerpt begins immediately after a verified commercial in a podcast. It may begin with a
+second produced advertisement or a promotion for another podcast. Find the first supplied ID at
+which this podcast's programme resumes. Its title, host introduction, reporting, discussion, or
+interview count as programme. A promotion for another podcast is not programme. Return -1 when no
+programme resumption is visible in the supplied excerpt. Use only a supplied ID or -1.
+Return only the strict JSON object {"program_start_id": ID}, with no prose or Markdown."""
+
 # How far back from the end a closing review may read, and the smallest thing it
 # is allowed to cut. The same shape as the opening review's bounds, because it is
 # the same question asked at the other edge of the file.
@@ -3291,6 +3306,108 @@ def reject_implausible_ad_spans(detections, total_seconds):
     return kept
 
 
+def recover_adjacent_ad_pod_continuations(
+    ads_module, backend, segments, detections, total_seconds
+):
+    """Extend a surviving cut through one immediately adjacent promo, or preserve it."""
+    if not detections or len(segments) < 2 or not 0 < total_seconds < float("inf"):
+        return detections
+    recovered = list(detections)
+    for index, ad in enumerate(tuple(recovered)):
+        # The neighbour is not standalone evidence.  It may be reviewed only
+        # after the archive has already produced the same sponsor-read
+        # classification as the demonstrated TechCrunch cut. The archive's
+        # calibrated sponsor-read confidence is not a proof tier, so the label
+        # (not a guessed numeric cutoff) is the stable safety boundary.
+        if ad.label != "sponsor_read":
+            continue
+        ad_end = float(ad.end_s)
+        first = next(
+            (segment_id for segment_id, segment in enumerate(segments)
+             if float(segment.start_s) >= ad_end),
+            None,
+        )
+        if first is None:
+            continue
+        gap = float(segments[first].start_s) - ad_end
+        if gap < 0 or gap > AD_POD_CONTINUATION_MAX_GAP_SECONDS:
+            continue
+        if any(
+            other is not ad
+            and float(other.start_s) < float(segments[first].end_s)
+            and float(other.end_s) > float(segments[first].start_s)
+            for other in recovered
+        ):
+            continue
+        window_ids = []
+        for segment_id in range(first, min(len(segments), first + AD_POD_CONTINUATION_MAX_SEGMENTS)):
+            if float(segments[segment_id].start_s) - ad_end > AD_POD_CONTINUATION_MAX_SECONDS:
+                break
+            window_ids.append(segment_id)
+        if len(window_ids) < 2:
+            continue
+        rendered = "\n".join(
+            ads_module._segment_prefix(segment_id, segments[segment_id])  # noqa: SLF001
+            + (segments[segment_id].text or "")
+            for segment_id in window_ids
+        )
+        if len(rendered) > COMMERCIAL_RECOVERY_CONTEXT_CHARS:
+            progress("ads.detect.pod-continuation.skipped", "complete adjacent passage exceeds the rendering budget")
+            continue
+        try:
+            response, _tokens = ads_module._generate_constrained_response(  # noqa: SLF001
+                backend,
+                AD_POD_CONTINUATION_PROMPT,
+                rendered,
+                ads_module._id_response_format(  # noqa: SLF001
+                    "program_start_id", [-1, *window_ids]
+                ),
+            )
+            parsed = json.loads(response)
+            if not isinstance(parsed, dict) or set(parsed) != {"program_start_id"}:
+                raise ValueError("program_start_id response must contain exactly program_start_id")
+            program_start_id = parsed["program_start_id"]
+            if (
+                isinstance(program_start_id, bool)
+                or not isinstance(program_start_id, int)
+                or program_start_id not in [-1, *window_ids]
+            ):
+                raise ValueError("program_start_id must be one of the supplied IDs")
+            if program_start_id in {-1, first}:
+                continue
+            extension_end = float(segments[program_start_id].start_s)
+            proposed_seconds = extension_end - float(ad.start_s)
+            total_removed = sum(float(item.end_s) - float(item.start_s) for item in recovered)
+            total_removed += extension_end - ad_end
+            if (
+                extension_end <= ad_end
+                or extension_end - ad_end > AD_POD_CONTINUATION_MAX_SECONDS
+                or any(
+                    other is not ad
+                    and float(other.start_s) < extension_end
+                    and float(other.end_s) > ad_end
+                    for other in recovered
+                )
+                or proposed_seconds / total_seconds > MAXIMUM_SINGLE_AD_SHARE
+                or total_removed / total_seconds > MAXIMUM_TOTAL_AD_SHARE
+            ):
+                raise ValueError("adjacent continuation is overly broad")
+        except Exception as error:  # noqa: BLE001 - incomplete review preserves the verified cut
+            progress(
+                "ads.detect.pod-continuation.skipped",
+                f"adjacent review preserved the existing cut: {type(error).__name__}: {error}",
+            )
+            continue
+        recovered[index] = ads_module.AdSegment(
+            float(ad.start_s), extension_end, float(ad.confidence), ad.label
+        )
+        progress(
+            "ads.detect.pod-continuation",
+            f"{ad_end:.3f}-{extension_end:.3f} extends the verified cut before programme ID {program_start_id}",
+        )
+    return recovered
+
+
 EXPERIMENTAL_CONTEXT_IDS = 9
 EXPERIMENTAL_CONTEXT_CHARS = 12_000
 EXPERIMENTAL_MAX_CANDIDATE_SECONDS = 600.0
@@ -3542,6 +3659,9 @@ def analyze_ad_detections(
     )
     proposed_detections = detections
     detections = reject_implausible_ad_spans(detections, total_seconds)
+    detections = recover_adjacent_ad_pod_continuations(
+        ads_module, auditing_backend, segments, detections, total_seconds
+    )
     opening_pattern = explicit_sponsor_opening_pattern(ads_module)
     dropped_anchor_ids = [
         anchor_id

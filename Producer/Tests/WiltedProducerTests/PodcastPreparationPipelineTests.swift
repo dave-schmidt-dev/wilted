@@ -14,6 +14,85 @@ struct PodcastPreparationPipelineTests {
         }
     }
 
+    @Test func recordsTheSemanticPipelineFingerprintWithEachAttempt() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let stub = WorkerStub(response: [
+            "ok": true, "timing": "none", "audioPath": fixture.audioURL.path, "audioChanged": false
+        ])
+        _ = try await fixture.pipeline(stub).prepare(episodeID: fixture.episodeID)
+
+        let request = try #require(await stub.lastRequest())
+        let object = try #require(try JSONSerialization.jsonObject(with: request) as? [String: Any])
+        #expect(object["pipelineFingerprint"] as? String == PodcastPreparationPipeline.semanticFingerprint)
+        let entries = try await fixture.store.preparationJournal(
+            for: PodcastPreparationPipeline.requestID(for: fixture.episodeID)
+        )
+        let provenance = entries.compactMap(\.status.evidence).first {
+            $0.kind == LocalLibraryStore.pipelineProvenanceEvidenceKind
+        }
+        #expect(provenance?.fields["fingerprint"] == PodcastPreparationPipeline.semanticFingerprint)
+        #expect(provenance?.fields["sourceHash"] == fixture.contentHash)
+    }
+
+    @Test func semanticFingerprintCoverageRequiresTheWorkerAndSwiftSourcesToBeBumped() throws {
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let worker = try Data(contentsOf: sourceRoot.appendingPathComponent("Producer/Workers/wilted_pipeline.py"))
+        let workerHash = "sha256:" + SHA256.hash(data: worker).map { String(format: "%02x", $0) }.joined()
+        #expect(workerHash == PodcastPreparationPipeline.workerSourceHash)
+
+        let pipelineURL = sourceRoot.appendingPathComponent("Producer/Sources/WiltedProducer/PodcastPreparationPipeline.swift")
+        var pipeline = try String(contentsOf: pipelineURL, encoding: .utf8)
+        let marker = "public static let pipelineSourceHash = \""
+        let markerRange = try #require(pipeline.range(of: marker))
+        let valueStart = markerRange.upperBound
+        let valueEnd = try #require(pipeline[valueStart...].firstIndex(of: "\""))
+        pipeline.replaceSubrange(valueStart..<valueEnd, with: "<normalized>")
+        let pipelineHash = "sha256:" + SHA256.hash(data: Data(pipeline.utf8)).map { String(format: "%02x", $0) }.joined()
+        #expect(pipelineHash == PodcastPreparationPipeline.pipelineSourceHash)
+    }
+
+    @Test func semanticFingerprintTracksExternalPythonDependencies() throws {
+        let root = try Fixture.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let package = root.appendingPathComponent("wilted", isDirectory: true)
+        let speechPackage = root.appendingPathComponent("speech_stack", isDirectory: true)
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: speechPackage, withIntermediateDirectories: true)
+        let dependency = package.appendingPathComponent("ads.py")
+        try Data("CLIENT = 1\n".utf8).write(to: speechPackage.appendingPathComponent("client.py"))
+        try Data("DETECTOR = 1\n".utf8).write(to: dependency)
+        let worker = root.appendingPathComponent("worker.py")
+        try Data("WORKER = 1\n".utf8).write(to: worker)
+        let environment = [
+            "WILTED_PIPELINE_PYTHONPATH": root.path,
+            "WILTED_SPEECH_STACK_PYTHONPATH": root.path,
+            "WILTED_PIPELINE_WORKER": worker.path
+        ]
+        let first = try #require(PodcastPreparationPipeline.resolvedSemanticFingerprint(environment: environment))
+
+        try Data("DETECTOR = 2\n".utf8).write(to: dependency)
+        let second = try #require(PodcastPreparationPipeline.resolvedSemanticFingerprint(environment: environment))
+        try Data("DETECTOR = 1\n".utf8).write(to: dependency)
+        try Data("WORKER = 2\n".utf8).write(to: worker)
+        let workerChanged = try #require(
+            PodcastPreparationPipeline.resolvedSemanticFingerprint(environment: environment)
+        )
+
+        #expect(first != second)
+        #expect(first != workerChanged)
+        try FileManager.default.removeItem(at: speechPackage)
+        #expect(PodcastPreparationPipeline.resolvedSemanticFingerprint(environment: environment) == nil)
+        try FileManager.default.createDirectory(at: speechPackage, withIntermediateDirectories: true)
+        try Data("CLIENT = 1\n".utf8).write(to: speechPackage.appendingPathComponent("client.py"))
+        let unreadable = speechPackage.appendingPathComponent("unreadable.py")
+        try Data("PRIVATE = 1\n".utf8).write(to: unreadable)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: unreadable.path)
+        #expect(PodcastPreparationPipeline.resolvedSemanticFingerprint(environment: environment) == nil)
+    }
+
     /// The transcript the feed publishes is preferred, arrives already timed,
     @Test func keepsTheSpeakerTheWorkerNamedOnEachCue() async throws {
         let fixture = try await Fixture(publishesTranscript: true)

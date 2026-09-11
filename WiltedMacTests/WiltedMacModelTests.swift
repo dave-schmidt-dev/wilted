@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import XCTest
 import WiltedDomain
@@ -57,6 +58,15 @@ private actor SuccessfulBootstrap {
 
 @MainActor
 final class WiltedMacModelTests: XCTestCase {
+    func testHostedTestAppNeverActivatesPipelineInvalidation() {
+        XCTAssertNil(WiltedMacApp.pipelineFingerprintForLaunch(
+            hostsTests: true, resolvedFingerprint: "live-pipeline"
+        ))
+        XCTAssertEqual(WiltedMacApp.pipelineFingerprintForLaunch(
+            hostsTests: false, resolvedFingerprint: "live-pipeline"
+        ), "live-pipeline")
+    }
+
     func testLoadingIsObservableUntilBootstrapAndInitialRefreshComplete() async throws {
         let directory = temporaryDirectory("loading")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -183,6 +193,112 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertTrue(model.fixtureMode)
         XCTAssertEqual(model.startupState, .ready)
         XCTAssertEqual(model.articles.map(\.title), ["Fixture article"])
+    }
+
+    func testStoreBootstrapReadmitsStaleKnownSourceFailureWithoutRedownloading() async throws {
+        let directory = temporaryDirectory("pipeline-invalidation-bootstrap")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let audioURL = directory.appendingPathComponent("source.mp3")
+        let sourceBytes = Data("source-audio".utf8)
+        try sourceBytes.write(to: audioURL)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/invalidation.xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/invalidation.mp3"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let episodeID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "legacy-failure", enclosureURL: enclosureURL
+        )
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let sourceHash = "sha256:" + SHA256.hash(data: sourceBytes).map { String(format: "%02x", $0) }.joined()
+        let preferences = WiltedMacTestPreferences.ephemeral()
+        let obsoleteWindow = try XCTUnwrap(WiltedAutomationOffPeakWindow(
+            start: try XCTUnwrap(WiltedAutomationLocalTime(hour: 1, minute: 0)),
+            end: try XCTUnwrap(WiltedAutomationLocalTime(hour: 2, minute: 0))
+        ))
+        WiltedMacModel.persistDeferredAutomaticPreparations([
+            WiltedMacModel.DeferredAutomaticPreparation(
+                episodeID: episodeID.rawValue,
+                processingPolicy: .offPeak(obsoleteWindow),
+                policySnapshot: PodcastPreparationPolicySnapshot(
+                    transcriptPolicy: .noLocalSTT, removeAds: false
+                )
+            )
+        ], to: preferences)
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Legacy feed", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await store.save(episode: try PodcastEpisode(
+                    itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: "legacy-failure",
+                    title: "Legacy failed episode", publishedTime: created, enclosureURL: enclosureURL,
+                    enclosureMediaType: "audio/mpeg", createdAt: created
+                ))
+                let revision = try AudioRevision(
+                    itemID: episodeID, revisionID: RevisionID(rawValue: "legacy-source"),
+                    durationSeconds: 12, byteCount: 12, contentHash: sourceHash,
+                    mediaType: "audio/mpeg", createdAt: created, schemaVersion: 3
+                )
+                try await store.finalizePodcastDownload(
+                    revision: revision, mediaURL: audioURL,
+                    download: try PodcastDownload(
+                        episodeID: episodeID, status: .completed, bytesReceived: 12,
+                        expectedByteCount: 12, localURL: audioURL, contentHash: sourceHash,
+                        updatedAt: created
+                    )
+                )
+                let requestID = PodcastPreparationPipeline.requestID(for: episodeID)
+                let failure = try ProducerError(
+                    code: .failed, message: "legacy pipeline failure", retryable: true,
+                    stage: "podcast-preparation"
+                )
+                let evidence = try PreparationEvidence(
+                    kind: LocalLibraryStore.pipelineProvenanceEvidenceKind,
+                    fields: [
+                        "fingerprint": "podcast-preparation-v1",
+                        "sourceRevisionID": revision.revisionID.rawValue,
+                        "sourceHash": sourceHash
+                    ]
+                )
+                try await store.record(preparation: PreparationJournalEntry(
+                    id: requestID + "|terminal", itemID: episodeID, requestID: requestID,
+                    status: try PreparationStatus(
+                        stage: .failed, detail: failure.message, cancellable: false,
+                        terminalResult: try PreparationTerminalResult(outcome: .failed, error: failure),
+                        emittedAt: created, evidence: evidence
+                    )
+                ))
+                return store
+            }, pipelineFingerprint: "test-current", preferences: preferences
+        )
+        let calendar = Calendar.current
+        let currentHour = calendar.component(.hour, from: Date())
+        let offPeakStart = try XCTUnwrap(WiltedAutomationLocalTime(hour: (currentHour + 2) % 24, minute: 0))
+        let offPeakEnd = try XCTUnwrap(WiltedAutomationLocalTime(hour: (currentHour + 3) % 24, minute: 0))
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual,
+            processingPolicy: .offPeak(try XCTUnwrap(WiltedAutomationOffPeakWindow(
+                start: offPeakStart, end: offPeakEnd
+            ))),
+            transcriptPolicy: .alwaysTranscribe, removeAds: true
+        ))
+
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        XCTAssertEqual(model.startupState, .ready)
+        let episode = try XCTUnwrap(model.episodes.first(where: { $0.id == episodeID.rawValue }))
+        XCTAssertEqual(episode.downloadState, .completed)
+        XCTAssertEqual(episode.preparationState, .preparing(stage: WiltedMacModel.preparationQueuedStage))
+        XCTAssertEqual(model.deferredAutomaticPreparations.map(\.episodeID), [episodeID.rawValue])
+        XCTAssertEqual(model.deferredAutomaticPreparations.first?.policySnapshot,
+                       PodcastPreparationPolicySnapshot(transcriptPolicy: .alwaysTranscribe, removeAds: true),
+                       "the current policy replaces the invalidated job's obsolete snapshot")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audioURL.path))
     }
 
     func testAudioRouteRecoveryAutomaticallyAttemptsOnceThenExposesManualRetry() async throws {
@@ -402,8 +518,11 @@ final class WiltedMacModelTests: XCTestCase {
             enclosureMediaType: "audio/mpeg", createdAt: created
         ))
         let audioURL = directory.appendingPathComponent("\(guid).m4a")
+        // Keep this well beyond the test's own scheduling window. A one-second
+        // file can genuinely finish under a loaded full-suite run before the
+        // deterministic completion seam below is asked to fire.
         let assembled = try AudioAssembler().assemble(
-            pcm: (0..<44_100).map { Float(0.2 * sin(2 * Double.pi * 220 * Double($0) / 44_100)) },
+            pcm: (0..<(44_100 * 10)).map { Float(0.2 * sin(2 * Double.pi * 220 * Double($0) / 44_100)) },
             itemID: episodeID, destinationURL: audioURL
         )
         // `AudioAssembler` derives its revision from the audio's content hash
@@ -1840,7 +1959,7 @@ final class WiltedMacModelTests: XCTestCase {
             queue: [current.id, queuedID]
         )
         XCTAssertEqual(model.episodePlaybackIndicators(for: current.id), ["Playing"])
-        XCTAssertEqual(model.episodePlaybackIndicators(for: queuedID), ["Up Next"])
+        XCTAssertEqual(model.episodePlaybackIndicators(for: queuedID), ["On Menu"])
 
         model.installPlaybackStateForTesting(
             episode: current,
@@ -1850,7 +1969,171 @@ final class WiltedMacModelTests: XCTestCase {
             queue: [current.id, queuedID]
         )
         XCTAssertEqual(model.episodePlaybackIndicators(for: current.id), ["Now Playing"])
-        XCTAssertFalse(model.episodePlaybackIndicators(for: current.id).contains("Up Next"))
+        XCTAssertFalse(model.episodePlaybackIndicators(for: current.id).contains("On Menu"))
+    }
+
+    func testPreparedLifecycleSeparatesStatusFromExplicitOutcomes() {
+        let presentation = WiltedMacEpisodeLifecyclePresentation(
+            downloadState: .completed,
+            preparationState: .prepared(summary: "Ready · 3 ads removed · transcript synced")
+        )
+
+        XCTAssertEqual(presentation.primaryLabel, "Prepared")
+        XCTAssertEqual(presentation.detailLabel, "3 ads removed · transcript synced")
+        XCTAssertEqual(presentation.label, "Prepared · 3 ads removed · transcript synced")
+    }
+
+    func testPlaybackAndMenuActionsRequireCompletedPreparation() {
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready"],
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        let base = WiltedMacEpisode(
+            id: "episode-state-contract", title: "State contract", feedTitle: "Fixtures",
+            summary: "Fixture", artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            durationSeconds: 600, playbackSeconds: 0, downloadState: .completed,
+            preparationState: .notPrepared
+        )
+
+        XCTAssertFalse(model.canPlayEpisode(base))
+        XCTAssertFalse(model.canAddEpisodeToMenu(base))
+        XCTAssertTrue(WiltedMacModel.isEligibleForPreparation(base))
+
+        var preparing = base
+        preparing.preparationState = .preparing(stage: "Transcribing")
+        XCTAssertFalse(model.canPlayEpisode(preparing))
+        XCTAssertFalse(model.canAddEpisodeToMenu(preparing))
+        XCTAssertFalse(WiltedMacModel.isEligibleForPreparation(preparing))
+
+        var prepared = base
+        prepared.preparationState = .prepared(summary: "Ready · no ads found · transcript synced")
+        XCTAssertTrue(model.canPlayEpisode(prepared))
+        XCTAssertTrue(model.canAddEpisodeToMenu(prepared))
+        XCTAssertFalse(WiltedMacModel.isEligibleForPreparation(prepared))
+    }
+
+    func testMenuUpcomingExcludesNowPlayingWithoutDroppingLaterEpisodes() {
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready"],
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        let current = WiltedMacEpisode(
+            id: "menu-current", title: "Current", feedTitle: "Fixtures", summary: "Fixture",
+            artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_000), durationSeconds: 600,
+            playbackSeconds: 0, downloadState: .completed,
+            preparationState: .prepared(summary: "Ready · no ads found · transcript synced")
+        )
+        model.installPlaybackStateForTesting(
+            episode: current, isPlaying: true, position: 12, duration: 600,
+            queue: ["menu-earlier", current.id, "menu-next", "menu-later"]
+        )
+
+        XCTAssertEqual(model.menuUpcomingEpisodeIDs, ["menu-next", "menu-later"])
+        XCTAssertEqual(model.episodePlaybackIndicators(for: current.id), ["Playing"])
+        XCTAssertEqual(model.episodePlaybackIndicators(for: "menu-next"), ["On Menu"])
+    }
+
+    func testPreparedMenuCandidatesFollowLarderOrderAndExcludeCurrentAndQueued() {
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready"],
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        func episode(_ id: String, releasedAt: TimeInterval, prepared: Bool = true) -> WiltedMacEpisode {
+            WiltedMacEpisode(
+                id: id, title: id, feedTitle: "Fixtures", summary: "Fixture", artworkURL: nil,
+                releasedAt: Date(timeIntervalSince1970: releasedAt), durationSeconds: 600,
+                playbackSeconds: 0, downloadState: .completed,
+                preparationState: prepared
+                    ? .prepared(summary: "Ready · transcript synced")
+                    : .notPrepared
+            )
+        }
+
+        let current = episode("menu-current", releasedAt: 100)
+        let queued = episode("menu-queued", releasedAt: 300)
+        let newest = episode("menu-newest", releasedAt: 400)
+        let unprepared = episode("menu-unprepared", releasedAt: 500, prepared: false)
+        model.installEpisodeForTesting(current)
+        model.installEpisodeForTesting(queued)
+        model.installEpisodeForTesting(newest)
+        model.installEpisodeForTesting(unprepared)
+        model.installPlaybackStateForTesting(
+            episode: current, isPlaying: true, position: 12, duration: 600,
+            queue: [current.id, queued.id]
+        )
+
+        XCTAssertEqual(model.readyToPlayEpisodes.map(\.id), [newest.id, queued.id, current.id])
+        XCTAssertEqual(model.preparedEpisodesReadyForMenu.map(\.id), [newest.id])
+
+        model.installPlaybackStateForTesting(
+            episode: current, isPlaying: true, position: 12, duration: 600,
+            queue: [current.id, queued.id, newest.id]
+        )
+        XCTAssertTrue(model.preparedEpisodesReadyForMenu.isEmpty)
+    }
+
+    func testAddAllPreparedEpisodesAppendsDurableQueueWithoutChangingCurrent() async throws {
+        let root = temporaryDirectory("bulk-menu")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let currentID = "item-" + String(repeating: "1", count: 64)
+        let preparedID = "item-" + String(repeating: "2", count: 64)
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: root,
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        let store = try LocalLibraryStore(url: root.appendingPathComponent("library.sqlite"))
+        try await store.addPodcastQueueEpisode(try ItemID(rawValue: currentID))
+        try await store.setCurrentPodcastQueueEpisode(try ItemID(rawValue: currentID))
+        let current = WiltedMacEpisode(
+            id: currentID, title: "Current", feedTitle: "Fixtures", summary: "Fixture",
+            artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 100), durationSeconds: 600,
+            playbackSeconds: 12, downloadState: .completed,
+            preparationState: .prepared(summary: "Ready · transcript synced")
+        )
+        let prepared = WiltedMacEpisode(
+            id: preparedID, title: "Prepared", feedTitle: "Fixtures", summary: "Fixture",
+            artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 200), durationSeconds: 600,
+            playbackSeconds: 0, downloadState: .completed,
+            preparationState: .prepared(summary: "Ready · transcript synced")
+        )
+        model.installEpisodeForTesting(current)
+        model.installEpisodeForTesting(prepared)
+        model.installPlaybackStateForTesting(
+            episode: current, isPlaying: true, position: 12, duration: 600, queue: [currentID]
+        )
+
+        model.addAllPreparedEpisodesToMenu()
+        await model.waitForPlaybackOperationForTesting()
+
+        let reopened = try LocalLibraryStore(url: root.appendingPathComponent("library.sqlite"))
+        let queue = try await reopened.podcastQueueState()
+        XCTAssertEqual(queue.episodeIDs.map(\.rawValue), [currentID, preparedID])
+        XCTAssertEqual(queue.currentEpisodeID?.rawValue, currentID)
+        XCTAssertEqual(model.currentPodcastEpisodeID, currentID)
+        XCTAssertTrue(model.isPlaying)
+    }
+
+    func testMenuDownwardBeforeMoveUsesPostRemovalIndexAndPersists() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let storeURL = root.appendingPathComponent("library.sqlite")
+        var store = try LocalLibraryStore(url: storeURL)
+        let first = try ItemID(rawValue: "item-" + String(repeating: "1", count: 64))
+        let second = try ItemID(rawValue: "item-" + String(repeating: "2", count: 64))
+        let third = try ItemID(rawValue: "item-" + String(repeating: "3", count: 64))
+        try await store.addPodcastQueueEpisode(first)
+        try await store.addPodcastQueueEpisode(second)
+        try await store.addPodcastQueueEpisode(third)
+
+        let insertion = WiltedMacModel.menuInsertionIndex(source: 0, destination: 2)
+        try await store.movePodcastQueueEpisode(from: 0, to: insertion)
+        store = try LocalLibraryStore(url: storeURL)
+        let reopenedState = try await store.podcastQueueState()
+
+        XCTAssertEqual(reopenedState.episodeIDs, [second, first, third])
     }
 
     func testLibraryProjectionDoesNotCapPreparationEvidenceAtThePrepDisplayLimit() throws {
@@ -3042,10 +3325,11 @@ final class WiltedMacModelTests: XCTestCase {
 
         let first = try XCTUnwrap(model.episodes.first { $0.id == firstID.rawValue })
         model.playEpisode(first)
+        await model.waitForPlaybackOperationForTesting()
         try await settle(model)
         XCTAssertEqual(model.currentEpisode?.id, firstID.rawValue)
 
-        model.simulatePodcastPlaybackReachedEndForTesting()
+        await model.simulatePodcastPlaybackReachedEndForTesting()
         try await settle(model)
         model.simulatePodcastPlaybackFinishedForTesting()
         try await settle(model)
@@ -3114,9 +3398,10 @@ final class WiltedMacModelTests: XCTestCase {
 
         let first = try XCTUnwrap(model.episodes.first { $0.id == firstID.rawValue })
         model.playEpisode(first)
+        await model.waitForPlaybackOperationForTesting()
         try await settle(model)
 
-        model.simulatePodcastPlaybackReachedEndForTesting()
+        await model.simulatePodcastPlaybackReachedEndForTesting()
         try await settle(model)
         model.simulatePodcastPlaybackFinishedForTesting()
         try await settle(model)
@@ -3165,9 +3450,10 @@ final class WiltedMacModelTests: XCTestCase {
 
         let only = try XCTUnwrap(model.episodes.first { $0.id == onlyID.rawValue })
         model.playEpisode(only)
+        await model.waitForPlaybackOperationForTesting()
         try await settle(model)
 
-        model.simulatePodcastPlaybackReachedEndForTesting()
+        await model.simulatePodcastPlaybackReachedEndForTesting()
         try await settle(model)
         model.simulatePodcastPlaybackFinishedForTesting()
         try await settle(model)

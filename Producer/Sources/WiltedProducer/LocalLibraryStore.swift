@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftData
 import WiltedDomain
@@ -307,6 +308,19 @@ public struct PreparationJournalEntry: Codable, Equatable, Sendable {
         self.itemID = itemID
         self.requestID = requestID
         self.status = status
+    }
+}
+
+/// The result of reconciling podcast preparation attempts against the current
+/// semantic pipeline. The store returns IDs rather than starting work so the
+/// app can admit redownloads only after its library rows are loaded.
+public struct PodcastPreparationInvalidationResult: Equatable, Sendable {
+    public let resetEpisodeIDs: [ItemID]
+    public let forcedRedownloadEpisodeIDs: [ItemID]
+
+    public init(resetEpisodeIDs: [ItemID] = [], forcedRedownloadEpisodeIDs: [ItemID] = []) {
+        self.resetEpisodeIDs = resetEpisodeIDs
+        self.forcedRedownloadEpisodeIDs = forcedRedownloadEpisodeIDs
     }
 }
 
@@ -1150,6 +1164,9 @@ private enum LocalLibraryV5MigrationPlan: SchemaMigrationPlan {
 
 /// Actor-isolated SwiftData adapter for the producer's local library.
 public actor LocalLibraryStore {
+    public static let pipelineProvenanceEvidenceKind = "podcast-pipeline-provenance"
+    public static let forcedRedownloadRequestPrefix = "podcast-invalidation|"
+    public static let resetPreparationRequestPrefix = "podcast-reset-preparation|"
     /// Current-item identity is encoded inside the existing V6 queue record
     /// shape so Task 2.3 does not silently mutate a released SwiftData schema.
     private static let podcastCurrentPositionOffset = 1_000_000_000
@@ -1664,6 +1681,206 @@ public actor LocalLibraryStore {
         return entries.sorted(by: preparationEntryPrecedes)
     }
 
+    /// Atomically clears podcast preparation results written by an older
+    /// semantic pipeline. The journal is the provenance record: the first
+    /// pipeline event names the source revision and hash, while the terminal
+    /// event names the successor revision when a cut was committed.
+    public func invalidateStalePodcastPreparations(
+        currentFingerprint: String
+    ) throws -> PodcastPreparationInvalidationResult {
+        let context = ModelContext(container)
+        let decoder = JSONDecoder()
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>())
+        let podcastRecords = records.filter { $0.requestID.hasPrefix("podcast-prepare|") }
+        let grouped = Dictionary(grouping: podcastRecords, by: \.requestID)
+        let downloads = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
+        let downloadByEpisode = Dictionary(uniqueKeysWithValues: downloads.map { ($0.episodeID, $0) })
+        var resetIDs = Set<ItemID>()
+        var forcedIDs = Set<ItemID>()
+        var currentIDs = Set<ItemID>()
+        var reconciledIDs = Set<ItemID>()
+        var mutated = false
+
+        for (_, rows) in grouped {
+            let entries = rows.compactMap { record -> PreparationJournalEntry? in
+                guard let status = try? decoder.decode(PreparationStatus.self, from: record.statusData),
+                      let itemID = try? ItemID(rawValue: record.itemID) else { return nil }
+                return PreparationJournalEntry(id: record.id, itemID: itemID, requestID: record.requestID, status: status)
+            }.sorted(by: preparationEntryPrecedes)
+            guard let itemID = entries.last?.itemID else { continue }
+            let provenance = entries.lazy.compactMap(\.status.evidence)
+                .first(where: { $0.kind == Self.pipelineProvenanceEvidenceKind })
+            guard provenance?.fields["fingerprint"] != currentFingerprint else {
+                currentIDs.insert(itemID)
+                continue
+            }
+
+            let terminal = entries.last(where: { $0.status.terminal })?.status.terminalResult
+            let sourceHash = provenance?.fields["sourceHash"].flatMap { $0.isEmpty ? nil : $0 }
+            let sourceRevisionID = provenance?.fields["sourceRevisionID"].flatMap { $0.isEmpty ? nil : $0 }
+            let download = downloadByEpisode[itemID.rawValue]
+            let sourceIntact: Bool
+            if download?.status == PodcastDownloadStatus.completed.rawValue,
+               let sourceHash,
+               download?.contentHash == sourceHash,
+               let sourceURL = download?.localURL.flatMap(URL.init) {
+                sourceIntact = Self.localFileContentHash(at: sourceURL) == sourceHash
+            } else {
+                sourceIntact = false
+            }
+            let preparedSuccess = terminal?.outcome == .succeeded
+            let successorReplacedSource = preparedSuccess
+                && (sourceHash == nil || download?.contentHash != sourceHash || sourceRevisionID != terminal?.revisionID?.rawValue)
+            let needsRedownload = !sourceIntact || successorReplacedSource
+
+            for record in rows { context.delete(record) }
+            for marker in records where marker.itemID == itemID.rawValue
+                && (marker.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix)
+                    || marker.requestID.hasPrefix(Self.resetPreparationRequestPrefix)) {
+                context.delete(marker)
+            }
+            reconciledIDs.insert(itemID)
+            mutated = true
+            if needsRedownload {
+                forcedIDs.insert(itemID)
+                let markerRequestID = Self.forcedRedownloadRequestPrefix + itemID.rawValue
+                let markerID = markerRequestID + "|marker"
+                let markerError = try ProducerError(
+                    code: .invalidRequest,
+                    message: "The preparation pipeline changed and this episode needs a fresh download.",
+                    retryable: true,
+                    stage: "pipeline-invalidation"
+                )
+                let markerEvidence = try PreparationEvidence(kind: "podcast-pipeline-invalidation", fields: [
+                    "fingerprint": currentFingerprint,
+                    "requiresRedownload": "true"
+                ])
+                let markerStatus = try PreparationStatus(
+                    stage: .failed,
+                    detail: markerError.message,
+                    cancellable: false,
+                    terminalResult: try PreparationTerminalResult(outcome: .failed, error: markerError),
+                    emittedAt: Timestamp(Date()),
+                    evidence: markerEvidence
+                )
+                context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(
+                    PreparationJournalEntry(id: markerID, itemID: itemID, requestID: markerRequestID, status: markerStatus)
+                ))
+            } else {
+                resetIDs.insert(itemID)
+                let markerRequestID = Self.resetPreparationRequestPrefix + itemID.rawValue
+                let markerID = markerRequestID + "|marker"
+                let markerEvidence = try PreparationEvidence(kind: "podcast-pipeline-invalidation", fields: [
+                    "fingerprint": currentFingerprint,
+                    "requiresRedownload": "false"
+                ])
+                let markerStatus = try PreparationStatus(
+                    stage: .preparing,
+                    detail: "The preparation pipeline changed; this episode will be prepared again.",
+                    cancellable: false,
+                    emittedAt: Timestamp(Date()),
+                    evidence: markerEvidence
+                )
+                context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(
+                    PreparationJournalEntry(id: markerID, itemID: itemID, requestID: markerRequestID, status: markerStatus)
+                ))
+            }
+        }
+
+        for marker in records where marker.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix) {
+            guard let itemID = try? ItemID(rawValue: marker.itemID) else { continue }
+            guard !reconciledIDs.contains(itemID) else { continue }
+            if currentIDs.contains(itemID) {
+                context.delete(marker)
+                mutated = true
+            } else {
+                forcedIDs.insert(itemID)
+            }
+        }
+        for marker in records where marker.requestID.hasPrefix(Self.resetPreparationRequestPrefix) {
+            guard let itemID = try? ItemID(rawValue: marker.itemID) else { continue }
+            guard !reconciledIDs.contains(itemID) else { continue }
+            if currentIDs.contains(itemID) {
+                context.delete(marker)
+                mutated = true
+            } else {
+                resetIDs.insert(itemID)
+            }
+        }
+        resetIDs.subtract(forcedIDs)
+        if mutated { try context.save() }
+        return PodcastPreparationInvalidationResult(
+            resetEpisodeIDs: resetIDs.sorted { $0.rawValue < $1.rawValue },
+            forcedRedownloadEpisodeIDs: forcedIDs.sorted { $0.rawValue < $1.rawValue }
+        )
+    }
+
+    /// Re-hashes the bytes instead of trusting two persisted copies of the
+    /// same download hash. A missing, unreadable, or changing file is not
+    /// positive evidence that stale preparation can safely reuse its source.
+    private static func localFileContentHash(at url: URL) -> String? {
+        guard url.isFileURL, let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        do {
+            while let chunk = try handle.read(upToCount: 1_024 * 1_024), !chunk.isEmpty {
+                hasher.update(data: chunk)
+            }
+        } catch {
+            return nil
+        }
+        return "sha256:" + hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// A forced download has replaced the ambiguous prepared bytes with a
+    /// fresh source. Convert its durable marker instead of clearing it: if the
+    /// app exits before preparation is admitted, the next launch still knows
+    /// to resume without downloading the same source again.
+    public func markForcedRedownloadCompleted(
+        for episodeID: ItemID,
+        currentFingerprint: String
+    ) throws {
+        let context = ModelContext(container)
+        let rows = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>())
+        let forcedRequestID = Self.forcedRedownloadRequestPrefix + episodeID.rawValue
+        guard rows.contains(where: { $0.requestID == forcedRequestID }) else { return }
+        for row in rows where row.itemID == episodeID.rawValue
+            && (row.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix)
+                || row.requestID.hasPrefix(Self.resetPreparationRequestPrefix)) {
+            context.delete(row)
+        }
+        let resetRequestID = Self.resetPreparationRequestPrefix + episodeID.rawValue
+        let evidence = try PreparationEvidence(kind: "podcast-pipeline-invalidation", fields: [
+            "fingerprint": currentFingerprint,
+            "requiresRedownload": "false"
+        ])
+        let status = try PreparationStatus(
+            stage: .preparing,
+            detail: "The fresh download will be prepared with the current pipeline.",
+            cancellable: false,
+            emittedAt: Timestamp(Date()),
+            evidence: evidence
+        )
+        context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(PreparationJournalEntry(
+            id: resetRequestID + "|marker", itemID: episodeID,
+            requestID: resetRequestID, status: status
+        )))
+        try context.save()
+    }
+
+    /// Whether pipeline invalidation still requires bytes from the publisher.
+    ///
+    /// This is queried at transfer time, not only during bootstrap. A queued
+    /// download claim can survive an app exit, and its automation resume must
+    /// retain the forced-download requirement instead of accepting the stale
+    /// file that caused the marker.
+    public func requiresForcedRedownload(for episodeID: ItemID) throws -> Bool {
+        let context = ModelContext(container)
+        let requestID = Self.forcedRedownloadRequestPrefix + episodeID.rawValue
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>())
+            .contains { $0.requestID == requestID }
+    }
+
     /// What the preparation that produced this revision removed.
     ///
     /// `preparationRuns()` decodes every journalled status in the library,
@@ -1718,6 +1935,12 @@ public actor LocalLibraryStore {
         let decoder = JSONDecoder()
         var byRequest: [String: [PreparationJournalEntry]] = [:]
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>()) {
+            // Pipeline invalidation markers are durable scheduling state, not
+            // preparation attempts. Keeping them out of run history also
+            // prevents bootstrap from closing a pending marker as an
+            // interrupted preparation and showing a phantom failed job.
+            guard !record.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix),
+                  !record.requestID.hasPrefix(Self.resetPreparationRequestPrefix) else { continue }
             guard let status = try? decoder.decode(PreparationStatus.self, from: record.statusData),
                   let itemID = try? ItemID(rawValue: record.itemID) else { continue }
             byRequest[record.requestID, default: []].append(

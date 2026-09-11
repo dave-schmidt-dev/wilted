@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import SwiftUI
+import WiltedProducer
 
 @main
 struct WiltedMacApp: App {
@@ -27,10 +28,27 @@ struct WiltedMacApp: App {
         let ownsSystemPlayback = !hostsTests && !WiltedMacModel.isFixtureLaunch(arguments: arguments)
         _model = State(initialValue: WiltedMacModel(
             arguments: arguments,
+            // Hosted XCTest launches this composition root against the
+            // owner's normal library. Tests inject a fingerprint into their
+            // own isolated model when exercising migration; the host must
+            // never rewrite that daily-driver store or start bulk recovery.
+            pipelineFingerprint: Self.pipelineFingerprintForLaunch(
+                hostsTests: hostsTests,
+                resolvedFingerprint: PodcastPreparationPipeline.semanticFingerprintResolution
+            ),
             nowPlayingSink: ownsSystemPlayback ? MediaPlayerNowPlayingSink() : nil,
             remoteCommandSource: ownsSystemPlayback ? MediaPlayerRemoteCommandSource() : nil,
             preferences: .standard
         ))
+    }
+
+    /// Hosted unit tests launch the real app bundle and therefore resolve its
+    /// normal library path. They must not activate a production migration.
+    static func pipelineFingerprintForLaunch(
+        hostsTests: Bool,
+        resolvedFingerprint: String?
+    ) -> String? {
+        hostsTests ? nil : resolvedFingerprint
     }
 
     var body: some Scene {

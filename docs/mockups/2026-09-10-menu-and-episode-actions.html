@@ -1,0 +1,649 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wilted UX mockup: Menu and episode actions</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --page: #0d110f;
+    --card: #151b17;
+    --card-strong: #1a221d;
+    --text: #ecf2ed;
+    --secondary: #92a398;
+    --leaf: #7fd48c;
+    --progress: #4fb477;
+    --steel: #26332c;
+    --error: #f08585;
+    --stale: #e8c468;
+    --sidebar: #101612;
+    --radius: 10px;
+    --shadow: 0 22px 70px rgba(0, 0, 0, .38);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    min-width: 920px;
+    background: #080b09;
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    display: grid;
+    place-items: center;
+  }
+
+  button { font: inherit; }
+  button:focus-visible { outline: 2px solid var(--leaf); outline-offset: 2px; }
+
+  .prototype-note {
+    position: fixed;
+    top: 14px;
+    right: 18px;
+    z-index: 10;
+    color: var(--secondary);
+    font: 600 11px/1.2 ui-monospace, "SFMono-Regular", monospace;
+    letter-spacing: .04em;
+  }
+
+  .window {
+    width: min(1240px, calc(100vw - 52px));
+    height: min(800px, calc(100vh - 52px));
+    min-height: 680px;
+    display: grid;
+    grid-template-rows: 38px 1fr;
+    overflow: hidden;
+    border: 1px solid #314039;
+    border-radius: 14px;
+    background: var(--page);
+    box-shadow: var(--shadow);
+  }
+
+  .titlebar {
+    display: grid;
+    grid-template-columns: 100px 1fr 100px;
+    align-items: center;
+    background: #111713;
+    border-bottom: 1px solid var(--steel);
+    user-select: none;
+  }
+
+  .traffic { display: flex; gap: 8px; padding-left: 14px; }
+  .traffic i { width: 12px; height: 12px; border-radius: 50%; background: #4b554f; }
+  .traffic i:first-child { background: #d7645d; }
+  .traffic i:nth-child(2) { background: #d4aa4e; }
+  .traffic i:nth-child(3) { background: #5baa68; }
+  .window-title { text-align: center; color: #cbd5ce; font-size: 13px; font-weight: 600; }
+  .mock-label { color: var(--secondary); text-align: right; padding-right: 14px; font: 10px ui-monospace, monospace; }
+
+  .shell {
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 204px 1fr;
+  }
+
+  aside {
+    min-height: 0;
+    padding: 22px 12px;
+    background: var(--sidebar);
+    border-right: 1px solid var(--steel);
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 10px 22px;
+    font-size: 19px;
+    font-weight: 700;
+  }
+
+  .brand-mark, .art {
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+    background: rgba(127, 212, 140, .15);
+    color: var(--leaf);
+    border: 1px solid rgba(127, 212, 140, .18);
+  }
+
+  .brand-mark { width: 31px; height: 31px; border-radius: 8px; }
+  .nav { display: grid; gap: 4px; }
+  .nav button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 10px 11px;
+    color: var(--secondary);
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+  }
+  .nav button:hover { color: var(--text); background: rgba(255,255,255,.035); }
+  .nav button.active { color: var(--text); background: rgba(127,212,140,.16); }
+  .nav-icon { width: 20px; color: var(--leaf); text-align: center; }
+
+  .workspace { min-width: 0; min-height: 0; display: grid; grid-template-rows: 1fr 86px; }
+  main { min-height: 0; overflow: auto; padding: 34px 40px 44px; }
+  .page { display: none; max-width: 920px; margin: 0 auto; }
+  .page.active { display: block; }
+
+  .eyebrow {
+    margin: 0 0 7px;
+    color: var(--leaf);
+    font: 700 11px/1.2 ui-monospace, "SFMono-Regular", monospace;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+  }
+  h1 { margin: 0; font-size: 30px; line-height: 1.15; letter-spacing: -.025em; }
+  .lede { margin: 8px 0 26px; color: var(--secondary); max-width: 660px; font-size: 14px; line-height: 1.5; }
+  h2 { margin: 0; font-size: 17px; }
+
+  .page-head, .section-head, .row, .transport, .menu-row { display: flex; align-items: center; }
+  .page-head { justify-content: space-between; gap: 18px; }
+  .section-head { justify-content: space-between; margin: 0 0 10px; }
+  .section-label { color: var(--secondary); font: 600 11px ui-monospace, monospace; }
+
+  .button {
+    min-height: 32px;
+    padding: 6px 12px;
+    border: 1px solid #3b4b42;
+    border-radius: 7px;
+    background: #202922;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .button:hover { border-color: #53665a; background: #263229; }
+  .button.primary { background: var(--leaf); border-color: var(--leaf); color: #0d150f; font-weight: 700; }
+  .button.quiet { background: transparent; color: var(--secondary); }
+  .button.danger { color: var(--error); }
+  .button.small { min-height: 28px; padding: 4px 9px; font-size: 12px; }
+  .button[disabled] { opacity: .45; cursor: default; }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 25px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: rgba(127,212,140,.11);
+    color: var(--leaf);
+    font: 600 11px ui-monospace, monospace;
+  }
+  .chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .chip.muted { background: rgba(146,163,152,.09); color: var(--secondary); }
+  .chip.amber { background: rgba(232,196,104,.10); color: var(--stale); }
+
+  .card { background: var(--card); border: 1px solid var(--steel); border-radius: var(--radius); }
+  .now-card {
+    display: grid;
+    grid-template-columns: 92px 1fr auto;
+    gap: 18px;
+    align-items: center;
+    padding: 20px;
+    margin-bottom: 28px;
+    border-color: #33483a;
+    background: var(--card-strong);
+  }
+  .art { width: 92px; height: 92px; border-radius: 9px; font-size: 38px; }
+  .art.small { width: 54px; height: 54px; border-radius: 8px; font-size: 24px; }
+  .art.blue { background: #18262a; color: #8ccad4; border-color: #263f45; }
+  .art.gold { background: #272419; color: #dcc26e; border-color: #413b25; }
+
+  .item-title { margin: 0 0 4px; font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+  .meta, .status { color: var(--secondary); font-size: 12px; line-height: 1.45; }
+  .status { margin-top: 5px; }
+  .progress { height: 5px; margin-top: 15px; overflow: hidden; border-radius: 999px; background: var(--steel); }
+  .progress span { display: block; height: 100%; width: 38%; background: var(--progress); border-radius: inherit; }
+  .time { display: flex; justify-content: space-between; margin-top: 6px; color: var(--secondary); font: 10px ui-monospace, monospace; }
+
+  .transport { gap: 8px; }
+  .round {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1px solid #3b4b42;
+    background: #202922;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .round.primary { width: 44px; height: 44px; background: var(--leaf); border-color: var(--leaf); color: #0d150f; font-weight: 900; }
+
+  .menu-list, .episode-list, .prep-list { display: grid; gap: 8px; }
+  .menu-row { gap: 14px; padding: 12px 14px; }
+  .order { width: 27px; color: var(--leaf); font: 700 12px ui-monospace, monospace; }
+  .grow { min-width: 0; flex: 1; }
+  .row-actions { display: flex; align-items: center; gap: 8px; }
+  .grip {
+    padding: 6px 8px;
+    color: #728279;
+    border: 0;
+    background: transparent;
+    font-size: 18px;
+    letter-spacing: -2px;
+    cursor: grab;
+    user-select: none;
+  }
+  .grip:active { cursor: grabbing; }
+  .menu-row.dragging { opacity: .42; }
+  .menu-row.drop-target { border-color: var(--leaf); }
+
+  .episode-list .row, .prep-list .row { gap: 14px; padding: 13px 14px; }
+  .episode-list .row + .row, .prep-list .row + .row { border-top: 1px solid var(--steel); }
+  .list-card { overflow: hidden; }
+  .lifecycle { margin-top: 4px; color: var(--leaf); font: 600 11px ui-monospace, monospace; }
+  .lifecycle.preparing { color: var(--stale); }
+  .lifecycle.idle { color: var(--secondary); }
+  .ready-highlight { background: color-mix(in srgb, var(--leaf) 10%, var(--surface)); box-shadow: inset 3px 0 0 var(--leaf); }
+  .ready-highlight .lifecycle { color: #c9efcf; }
+  .ready-callout { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 0 0 14px; padding: 11px 13px; border: 1px solid color-mix(in srgb, var(--leaf) 55%, var(--steel)); border-radius: 10px; background: color-mix(in srgb, var(--leaf) 9%, var(--surface)); }
+  .ready-callout strong { color: #d2f3d7; font-size: 13px; }
+
+  .prep-block { margin-bottom: 24px; }
+  .prep-list .row { min-height: 78px; }
+  .queue-position {
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--steel);
+    color: var(--secondary);
+    font: 700 12px ui-monospace, monospace;
+  }
+
+  .compact-player {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 18px;
+    background: var(--card);
+    border-top: 1px solid var(--steel);
+  }
+  .compact-art { width: 48px; height: 48px; font-size: 21px; }
+  .compact-player .progress { margin-top: 8px; }
+  .compact-actions { display: flex; gap: 8px; align-items: center; }
+
+  .empty {
+    padding: 38px;
+    text-align: center;
+    color: var(--secondary);
+  }
+  .empty strong { display: block; margin-bottom: 6px; color: var(--text); font-size: 16px; }
+
+  @media (max-height: 730px) {
+    .window { height: calc(100vh - 24px); }
+    main { padding-top: 24px; }
+    .lede { margin-bottom: 18px; }
+    .now-card { margin-bottom: 20px; }
+  }
+</style>
+</head>
+<body>
+<div class="prototype-note">CLICK LARDER · PREP · MENU</div>
+<section class="window" aria-label="Wilted Mac interface mockup">
+  <header class="titlebar">
+    <div class="traffic" aria-hidden="true"><i></i><i></i><i></i></div>
+    <div class="window-title">Wilted</div>
+    <div class="mock-label">UX MOCKUP</div>
+  </header>
+
+  <div class="shell">
+    <aside>
+      <div class="brand"><span class="brand-mark">♧</span> Wilted</div>
+      <nav class="nav" aria-label="Main navigation">
+        <button data-page="larder"><span class="nav-icon">▣</span>Larder</button>
+        <button data-page="feeds"><span class="nav-icon">♧</span>Podcast feeds</button>
+        <button data-page="prep"><span class="nav-icon">▱</span>Prep</button>
+        <button class="active" data-page="menu"><span class="nav-icon">☷</span>Menu <span style="margin-left:auto" class="chip muted">3</span></button>
+        <button data-page="settings"><span class="nav-icon">⚙︎</span>Settings</button>
+      </nav>
+    </aside>
+
+    <div class="workspace">
+      <main>
+        <section class="page" id="larder">
+          <div class="page-head">
+            <div><p class="eyebrow">Your library</p><h1>Larder</h1></div>
+            <span class="section-label">6 hr 42 min remaining</span>
+          </div>
+          <p class="lede">Listening controls live here. Preparation progress is visible, but preparation controls stay in Prep.</p>
+          <div class="card list-card episode-list">
+            <div class="row ready-highlight" data-episode-id="local-ai">
+              <div class="art small">🥬</div>
+              <div class="grow"><p class="item-title">The future of local AI</p><div class="meta">Mac Power Users · 1 hr 18 min</div><div class="lifecycle">Ready to play</div><div class="status">Transcript synced · 3 ads removed</div></div>
+              <span class="chip">Playing now</span>
+              <button class="button primary playback-toggle">Pause</button>
+            </div>
+            <div class="row ready-highlight" data-episode-id="daily-briefing">
+              <div class="art small gold">DB</div>
+              <div class="grow"><p class="item-title">The AI infrastructure briefing</p><div class="meta">Daily Briefing · 18 min</div><div class="lifecycle">Ready to play</div><div class="status">Transcript synced · No ads detected</div></div>
+              <button class="button">Play now</button>
+            </div>
+            <div class="row" data-episode-id="twit">
+              <div class="art small blue">◉</div>
+              <div class="grow"><p class="item-title">TWiT 1100</p><div class="meta">This Week in Tech · 2 hr 06 min</div><div class="lifecycle">Prepared</div><div class="status">Transcript synced · No ads detected</div></div>
+              <span class="chip">On Menu</span>
+              <button class="button">Play now</button>
+            </div>
+            <div class="row" data-episode-id="techcrunch">
+              <div class="art small gold">TC</div>
+              <div class="grow"><p class="item-title">AI browsers are everywhere</p><div class="meta">TechCrunch Daily · 9 min</div><div class="lifecycle preparing">Preparing · transcribing audio</div></div>
+            </div>
+            <div class="row" data-episode-id="waveform">
+              <div class="art small">W</div>
+              <div class="grow"><p class="item-title">The gadget repairability report</p><div class="meta">Waveform · 1 hr 02 min</div><div class="lifecycle">Prepared</div><div class="status">Transcript synced · 2 ads removed</div></div>
+              <span class="chip">On Menu</span>
+              <button class="button">Play now</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="page" id="feeds">
+          <p class="eyebrow">Sources</p><h1>Podcast feeds</h1>
+          <p class="lede">The existing feed-management page is unchanged in this proposal.</p>
+          <div class="card empty"><strong>No UX change proposed here</strong>Use Larder, Prep, and Menu to review this mockup.</div>
+        </section>
+
+        <section class="page" id="prep">
+          <div class="page-head">
+            <div><p class="eyebrow">Processing</p><h1>Prep</h1></div>
+            <button class="button primary" id="prepare-all">Prepare all <span id="eligible-count">2</span></button>
+          </div>
+          <p class="lede">Preparing is active now, Queued runs next, and Not queued is ready whenever you choose.</p>
+
+          <div class="prep-block">
+            <div class="section-head"><h2>Ready to play</h2><span class="section-label">1 prepared</span></div>
+            <div class="card prep-list" id="ready-list">
+              <div class="row ready-highlight" data-episode-id="local-ai" data-prep-state="ready">
+                <span class="queue-position">✓</span>
+                <div class="grow"><p class="item-title">The future of local AI</p><div class="meta">Mac Power Users</div><div class="lifecycle">Ready to play · transcript synced · 3 ads removed</div></div>
+                <div class="row-actions"><button class="button">Play now</button><button class="button quiet small add-ready-to-menu">Add to Menu</button></div>
+              </div>
+              <div class="row ready-highlight" data-episode-id="daily-briefing" data-prep-state="ready">
+                <span class="queue-position">✓</span>
+                <div class="grow"><p class="item-title">The AI infrastructure briefing</p><div class="meta">Daily Briefing</div><div class="lifecycle">Ready to play · transcript synced · No ads detected</div></div>
+                <div class="row-actions"><button class="button">Play now</button><button class="button quiet small add-ready-to-menu">Add to Menu</button></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="prep-block">
+            <div class="section-head"><h2>Preparing</h2><span class="section-label">1 active</span></div>
+            <div class="card prep-list">
+              <div class="row" data-prep-state="active">
+                <span class="queue-position">▶</span>
+                <div class="grow"><p class="item-title">AI browsers are everywhere</p><div class="meta">TechCrunch Daily</div><div class="lifecycle preparing">Transcribing audio · 42%</div><div class="progress"><span style="width:42%"></span></div></div>
+                <button class="button danger prep-action">Stop preparation</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="prep-block">
+            <div class="section-head"><h2>Queued</h2><span class="section-label">1 waiting</span></div>
+            <div class="card prep-list" id="waiting-list">
+              <div class="row" data-prep-state="queued">
+                <span class="queue-position">1</span>
+                <div class="grow"><p class="item-title">Passkeys revisited</p><div class="meta">Security Now</div><div class="lifecycle preparing">Queued · next</div></div>
+                <button class="button danger prep-action">Stop preparation</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="prep-block">
+            <div class="section-head"><h2>Not queued</h2><span class="section-label">2 ready</span></div>
+            <div class="card prep-list" id="eligible-list">
+              <div class="row" data-prep-state="idle">
+                <span class="queue-position">—</span>
+                <div class="grow"><p class="item-title">The week in accessibility</p><div class="meta">Accidental Tech Podcast</div><div class="lifecycle idle">Downloaded · not prepared</div></div>
+                <button class="button prep-action">Prepare</button>
+              </div>
+              <div class="row" data-prep-state="idle">
+                <span class="queue-position">—</span>
+                <div class="grow"><p class="item-title">Inside the new Mac Studio</p><div class="meta">Connected</div><div class="lifecycle idle">Downloaded · previous preparation failed</div></div>
+                <button class="button prep-action">Prepare</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="page active" id="menu">
+          <p class="eyebrow">Listening order</p>
+          <h1>Menu</h1>
+          <p class="lede">What is playing and what will play afterward. Adding an episode here never interrupts the current one.</p>
+
+          <div class="card now-card">
+            <div class="art">🥬</div>
+            <div>
+              <span class="chip">Now Playing</span>
+              <p class="item-title" style="font-size:20px;margin-top:10px">The future of local AI</p>
+              <div class="meta">Mac Power Users · 1 hr 18 min</div>
+              <div class="lifecycle">Prepared</div>
+              <div class="status">Transcript synced · 3 ads removed</div>
+              <div class="progress"><span></span></div>
+              <div class="time"><span>29:14</span><span>1:18:03</span></div>
+            </div>
+            <div class="transport">
+              <button class="round" aria-label="Back 15 seconds">↶</button>
+              <button class="round primary playback-toggle" aria-label="Pause">Ⅱ</button>
+              <button class="round" aria-label="Forward 30 seconds">↷</button>
+            </div>
+          </div>
+
+          <div class="ready-callout">
+            <div><strong><span id="bulk-ready-count">1</span> prepared episode is ready to add</strong><div class="meta">Adds only ready episodes not already on Menu. Current playback is unchanged.</div></div>
+            <button class="button" id="add-all-prepared">Add all prepared episodes <span id="bulk-ready-button-count">1</span></button>
+          </div>
+          <div class="section-head">
+            <h2>Coming up</h2>
+            <button class="button quiet small" id="clear-menu">Clear upcoming</button>
+          </div>
+          <div class="menu-list" id="menu-list">
+            <div class="card menu-row" data-episode-id="twit">
+              <span class="order">01</span><div class="art small blue">◉</div>
+              <div class="grow"><p class="item-title">TWiT 1100</p><div class="meta">This Week in Tech · 2 hr 06 min</div><div class="lifecycle">Prepared</div><div class="status">Transcript synced · No ads detected</div></div>
+              <button class="grip" draggable="true" aria-label="Drag TWiT 1100 to reorder" title="Drag to reorder">⠿</button><button class="button quiet small remove-item">Remove</button>
+            </div>
+            <div class="card menu-row" data-episode-id="waveform">
+              <span class="order">02</span><div class="art small">W</div>
+              <div class="grow"><p class="item-title">The gadget repairability report</p><div class="meta">Waveform · 1 hr 02 min</div><div class="lifecycle">Prepared</div><div class="status">Transcript synced · 2 ads removed</div></div>
+              <button class="grip" draggable="true" aria-label="Drag The gadget repairability report to reorder" title="Drag to reorder">⠿</button><button class="button quiet small remove-item">Remove</button>
+            </div>
+          </div>
+          <div class="card empty" id="menu-empty" hidden><strong>Nothing else is on the Menu</strong>Add an episode from Larder. It will play after the current one.</div>
+        </section>
+
+        <section class="page" id="settings">
+          <p class="eyebrow">Preferences</p><h1>Settings</h1>
+          <p class="lede">The existing settings page is unchanged in this proposal.</p>
+          <div class="card empty"><strong>No UX change proposed here</strong>Use Larder, Prep, and Menu to review this mockup.</div>
+        </section>
+      </main>
+
+      <footer class="compact-player">
+        <div class="brand-mark compact-art">🥬</div>
+        <div><div class="item-title">The future of local AI</div><div class="meta">29:14 of 1:18:03</div><div class="progress"><span></span></div></div>
+        <div class="compact-actions"><button class="round playback-toggle" aria-label="Pause">Ⅱ</button><button class="button" data-page-link="menu">Open Menu · <span id="menu-count">2</span></button></div>
+      </footer>
+    </div>
+  </div>
+</section>
+
+<script>
+  const navButtons = [...document.querySelectorAll('[data-page]')];
+  const pages = [...document.querySelectorAll('.page')];
+
+  function showPage(id) {
+    pages.forEach(page => page.classList.toggle('active', page.id === id));
+    navButtons.forEach(button => button.classList.toggle('active', button.dataset.page === id));
+    history.replaceState(null, '', `#${id}`);
+  }
+  navButtons.forEach(button => button.addEventListener('click', () => showPage(button.dataset.page)));
+  document.querySelector('[data-page-link="menu"]').addEventListener('click', () => showPage('menu'));
+  if (pages.some(page => page.id === location.hash.slice(1))) showPage(location.hash.slice(1));
+
+  let playing = true;
+  document.querySelectorAll('.playback-toggle').forEach(button => button.addEventListener('click', () => {
+    playing = !playing;
+    document.querySelectorAll('.playback-toggle').forEach(candidate => {
+      const compact = candidate.classList.contains('round');
+      candidate.textContent = playing ? (compact ? 'Ⅱ' : 'Pause') : (compact ? '▶' : 'Resume');
+      candidate.setAttribute('aria-label', playing ? 'Pause' : 'Resume');
+    });
+  }));
+
+  const fixtureEpisodes = {
+    'local-ai': { title: 'The future of local AI', meta: 'Mac Power Users · 1 hr 18 min', readiness: 'Ready to play', status: 'Transcript synced · 3 ads removed', current: true },
+    'daily-briefing': { title: 'The AI infrastructure briefing', meta: 'Daily Briefing · 18 min', readiness: 'Ready to play', status: 'Transcript synced · No ads detected', current: false },
+    twit: { title: 'TWiT 1100', meta: 'This Week in Tech · 2 hr 06 min', readiness: 'Ready to play', status: 'Transcript synced · No ads detected', current: false },
+    waveform: { title: 'The gadget repairability report', meta: 'Waveform · 1 hr 02 min', readiness: 'Ready to play', status: 'Transcript synced · 2 ads removed', current: false },
+    techcrunch: { title: 'AI browsers are everywhere', meta: 'TechCrunch Daily · 9 min', readiness: 'Preparing · transcribing audio', status: '', current: false }
+  };
+  function syncFixtureRows() {
+    document.querySelectorAll('[data-episode-id]').forEach(row => {
+      const episode = fixtureEpisodes[row.dataset.episodeId];
+      if (!episode) return;
+      row.querySelector('.item-title')?.replaceChildren(episode.title);
+      row.querySelector('.meta')?.replaceChildren(episode.meta);
+      const lifecycle = row.querySelector('.lifecycle');
+      if (lifecycle) {
+        lifecycle.replaceChildren(row.closest('#ready-list') ? `${episode.readiness} · ${episode.status}` : episode.readiness);
+        lifecycle.classList.toggle('preparing', episode.readiness.startsWith('Preparing'));
+        lifecycle.classList.toggle('idle', false);
+      }
+      row.classList.toggle('ready-highlight', episode.readiness === 'Ready to play');
+      row.querySelector('.status')?.replaceChildren(episode.status);
+      const add = row.querySelector('.add-ready-to-menu');
+      if (add && episode.current) { add.disabled = true; add.textContent = 'Playing now'; }
+    });
+  }
+  function eligiblePreparedRows() {
+    return [...document.querySelectorAll('#ready-list [data-prep-state="ready"]')]
+      .filter(row => !fixtureEpisodes[row.dataset.episodeId]?.current)
+      .filter(row => !document.querySelector(`#menu-list [data-episode-id="${row.dataset.episodeId}"]`));
+  }
+  function refreshMenu() {
+    const rows = [...document.querySelectorAll('#menu-list .menu-row')];
+    rows.forEach((row, index) => row.querySelector('.order').textContent = String(index + 1).padStart(2, '0'));
+    document.getElementById('menu-count').textContent = rows.length;
+    document.getElementById('menu-empty').hidden = rows.length !== 0;
+    document.getElementById('clear-menu').disabled = rows.length === 0;
+    const eligible = eligiblePreparedRows();
+    document.getElementById('bulk-ready-count').textContent = eligible.length;
+    document.getElementById('bulk-ready-button-count').textContent = eligible.length;
+    const bulk = document.getElementById('add-all-prepared');
+    bulk.disabled = eligible.length === 0;
+    bulk.textContent = eligible.length === 0 ? 'All prepared episodes are on Menu' : `Add all prepared episodes (${eligible.length})`;
+  }
+  document.getElementById('menu-list').addEventListener('click', event => {
+    const row = event.target.closest('.menu-row');
+    if (!row) return;
+    if (event.target.closest('.remove-item')) row.remove();
+    refreshMenu();
+  });
+  let draggedMenuRow = null;
+  document.getElementById('menu-list').addEventListener('dragstart', event => {
+    const grip = event.target.closest('.grip');
+    if (!grip) { event.preventDefault(); return; }
+    draggedMenuRow = grip.closest('.menu-row');
+    draggedMenuRow.classList.add('dragging');
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', draggedMenuRow.querySelector('.item-title').textContent);
+  });
+  document.getElementById('menu-list').addEventListener('dragover', event => {
+    if (!draggedMenuRow) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    const target = event.target.closest('.menu-row');
+    document.querySelectorAll('#menu-list .drop-target').forEach(row => row.classList.remove('drop-target'));
+    if (!target || target === draggedMenuRow) return;
+    target.classList.add('drop-target');
+    const midpoint = target.getBoundingClientRect().top + target.getBoundingClientRect().height / 2;
+    target.parentNode.insertBefore(draggedMenuRow, event.clientY < midpoint ? target : target.nextSibling);
+    refreshMenu();
+  });
+  document.getElementById('menu-list').addEventListener('drop', event => event.preventDefault());
+  document.getElementById('menu-list').addEventListener('dragend', () => {
+    draggedMenuRow?.classList.remove('dragging');
+    document.querySelectorAll('#menu-list .drop-target').forEach(row => row.classList.remove('drop-target'));
+    draggedMenuRow = null;
+    refreshMenu();
+  });
+  document.getElementById('clear-menu').addEventListener('click', () => {
+    document.getElementById('menu-list').replaceChildren();
+    refreshMenu();
+  });
+
+  function menuRowFromReady(readyRow) {
+    const title = readyRow.querySelector('.item-title').textContent;
+    const meta = readyRow.querySelector('.meta').textContent;
+    const status = readyRow.querySelector('.lifecycle').textContent.replace('Ready to play · ', '');
+    const row = document.createElement('div');
+    row.className = 'card menu-row ready-highlight';
+    row.dataset.episodeId = readyRow.dataset.episodeId;
+    row.innerHTML = `<span class="order"></span><div class="art small">🥬</div><div class="grow"><p class="item-title"></p><div class="meta"></div><div class="lifecycle">Ready to play</div><div class="status"></div></div><button class="grip" draggable="true" aria-label="Drag to reorder" title="Drag to reorder">⠿</button><button class="button quiet small remove-item">Remove</button>`;
+    row.querySelector('.item-title').textContent = title;
+    row.querySelector('.meta').textContent = meta;
+    row.querySelector('.status').textContent = status;
+    return row;
+  }
+  document.getElementById('add-all-prepared').addEventListener('click', () => {
+    eligiblePreparedRows()
+      .forEach(row => document.getElementById('menu-list').appendChild(menuRowFromReady(row)));
+    refreshMenu();
+  });
+  document.getElementById('ready-list').addEventListener('click', event => {
+    const row = event.target.closest('[data-prep-state="ready"]');
+    if (!row || !event.target.closest('.add-ready-to-menu')) return;
+    if (!document.querySelector(`#menu-list [data-episode-id="${row.dataset.episodeId}"]`)) {
+      document.getElementById('menu-list').appendChild(menuRowFromReady(row));
+    }
+    refreshMenu();
+  });
+  syncFixtureRows();
+  refreshMenu();
+
+  document.querySelectorAll('.add-menu').forEach(button => button.addEventListener('click', () => {
+    button.textContent = 'On Menu';
+    button.disabled = true;
+    button.classList.add('quiet');
+  }));
+
+  function queuePrepRow(row) {
+    row.dataset.prepState = 'queued';
+    row.querySelector('.lifecycle').textContent = 'Queued';
+    row.querySelector('.lifecycle').className = 'lifecycle preparing';
+    row.querySelector('.prep-action').textContent = 'Stop preparation';
+    row.querySelector('.prep-action').className = 'button danger prep-action';
+    document.getElementById('waiting-list').appendChild(row);
+    [...document.querySelectorAll('#waiting-list .row')].forEach((item, index) => item.querySelector('.queue-position').textContent = index + 1);
+    refreshEligible();
+  }
+  function refreshEligible() {
+    const count = document.querySelectorAll('#eligible-list [data-prep-state="idle"]').length;
+    document.getElementById('eligible-count').textContent = count;
+    document.getElementById('prepare-all').disabled = count === 0;
+  }
+  document.getElementById('eligible-list').addEventListener('click', event => {
+    const row = event.target.closest('[data-prep-state="idle"]');
+    if (row && event.target.closest('.prep-action')) queuePrepRow(row);
+  });
+  document.getElementById('prepare-all').addEventListener('click', () => {
+    [...document.querySelectorAll('#eligible-list [data-prep-state="idle"]')].forEach(queuePrepRow);
+  });
+  document.getElementById('waiting-list').addEventListener('click', event => {
+    const row = event.target.closest('[data-prep-state="queued"]');
+    if (!row || !event.target.closest('.prep-action')) return;
+    row.remove();
+    [...document.querySelectorAll('#waiting-list .row')].forEach((item, index) => item.querySelector('.queue-position').textContent = index + 1);
+  });
+</script>
+</body>
+</html>

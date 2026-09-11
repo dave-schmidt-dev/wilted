@@ -513,6 +513,18 @@ struct WiltedMacEpisodeLifecyclePresentation: Equatable, Sendable {
     let label: String
     let isFailure: Bool
 
+    /// The lifecycle is stable across screens; outcomes are supporting facts,
+    /// not a different status for otherwise identical prepared episodes.
+    var primaryLabel: String {
+        label.components(separatedBy: " · ").first ?? label
+    }
+
+    var detailLabel: String? {
+        let parts = label.components(separatedBy: " · ")
+        guard parts.count > 1 else { return nil }
+        return parts.dropFirst().joined(separator: " · ")
+    }
+
     init(
         downloadState: WiltedMacEpisodeDownloadState,
         preparationState: WiltedMacEpisodePreparationState
@@ -916,6 +928,7 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
     case library
     case feeds
     case processor
+    case menu
     case settings
 
     var id: Self { self }
@@ -925,6 +938,7 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
         case .library: WiltedScreenCopy.library
         case .feeds: WiltedScreenCopy.feeds
         case .processor: WiltedScreenCopy.processor
+        case .menu: "Menu"
         case .settings: WiltedScreenCopy.settings
         }
     }
@@ -934,6 +948,7 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
         case .library: WiltedSymbol.larder.rawValue
         case .feeds: WiltedSymbol.broccoli.rawValue
         case .processor: WiltedSymbol.prep.rawValue
+        case .menu: "list.number"
         case .settings: "gearshape"
         }
     }
@@ -1132,6 +1147,7 @@ final class WiltedMacModel {
     private let syncTransportFactory: WiltedMacSyncTransportFactory?
     private let assetResolver: LocalLibraryAssetResolver
     private let storeBootstrap: WiltedMacStoreBootstrap
+    private let pipelineFingerprint: String?
     private let retainedArtifactPresenter: (URL) -> Void
     private var startupAttemptCount = 0
     private var startupTask: Task<Void, Never>?
@@ -1194,6 +1210,7 @@ final class WiltedMacModel {
          assetResolver: @escaping LocalLibraryAssetResolver = { _, _ in nil },
          stateDirectoryOverride: URL? = nil,
          storeBootstrap: WiltedMacStoreBootstrap? = nil,
+         pipelineFingerprint: String? = nil,
          retainedArtifactPresenter: ((URL) -> Void)? = nil,
          podcastFeedClient: PodcastFeedClient = PodcastFeedClient(),
          pastedLinkClassifier: PastedLinkClassifier = PastedLinkClassifier(),
@@ -1220,6 +1237,7 @@ final class WiltedMacModel {
                 try LocalLibraryStore(url: url)
             }.value
         }
+        self.pipelineFingerprint = pipelineFingerprint
         self.retainedArtifactPresenter = retainedArtifactPresenter ?? { url in
             NSWorkspace.shared.activateFileViewerSelecting([url])
         }
@@ -2037,6 +2055,7 @@ final class WiltedMacModel {
                 }
             }
             do {
+                guard let store = self.store else { throw CancellationError() }
                 _ = try await coordinator.download(episodeID: itemID,
                                                    ignoringExisting: ignoringExisting) { progress in
                     Task { @MainActor [weak self] in
@@ -2048,8 +2067,23 @@ final class WiltedMacModel {
                         self?.podcastOperationMessage = "Downloading \(episode.title)…"
                     }
                 }
-                guard let store = self.store else { throw CancellationError() }
-                self.podcastOperationMessage = "\(episode.title) is available offline."
+                let recoveryCheckpointSaved: Bool
+                do {
+                    try await store.markForcedRedownloadCompleted(
+                        for: itemID,
+                        currentFingerprint: self.pipelineFingerprint
+                            ?? PodcastPreparationPipeline.semanticFingerprint
+                    )
+                    recoveryCheckpointSaved = true
+                } catch {
+                    // The verified download is still valid. Keeping the forced
+                    // marker is conservative and lets a later launch retry;
+                    // misreporting this as a failed transfer would be false.
+                    recoveryCheckpointSaved = false
+                }
+                self.podcastOperationMessage = recoveryCheckpointSaved
+                    ? "\(episode.title) is available offline."
+                    : "\(episode.title) downloaded, but its preparation recovery checkpoint could not be saved."
                 self.podcastDownloadTasks[episode.id] = nil
                 // Asked for before the library is reloaded, not after. The
                 // reload reads the whole library and three downloads landing
@@ -2938,7 +2972,65 @@ final class WiltedMacModel {
         if currentPodcastEpisodeID == episodeID {
             return [isPlaying ? "Playing" : "Now Playing"]
         }
-        return podcastQueueIDs.contains(episodeID) ? ["Up Next"] : []
+        return podcastQueueIDs.contains(episodeID) ? ["On Menu"] : []
+    }
+
+    var menuUpcomingEpisodeIDs: [String] {
+        guard let currentPodcastEpisodeID,
+              let currentIndex = podcastQueueIDs.firstIndex(of: currentPodcastEpisodeID) else {
+            return podcastQueueIDs
+        }
+        let nextIndex = podcastQueueIDs.index(after: currentIndex)
+        return nextIndex < podcastQueueIDs.endIndex
+            ? Array(podcastQueueIDs[nextIndex...])
+            : []
+    }
+
+    func canPlayEpisode(_ episode: WiltedMacEpisode) -> Bool {
+        episode.downloadState == .completed && episode.preparationState.isPrepared
+    }
+
+    func canAddEpisodeToMenu(_ episode: WiltedMacEpisode) -> Bool {
+        canPlayEpisode(episode) && currentPodcastEpisodeID != episode.id && !podcastQueueIDs.contains(episode.id)
+    }
+
+    /// Prepared podcast rows in the same newest/oldest order the Larder uses.
+    /// This is intentionally independent of the current search or scope: the
+    /// bulk Menu action is a queue operation over the whole Larder, not just
+    /// the rows currently visible through a filter.
+    var readyToPlayEpisodes: [WiltedMacEpisode] {
+        episodes
+            .filter { !hiddenEpisodeIDs.contains($0.id) && canPlayEpisode($0) }
+            .sorted {
+                if $0.releasedAt != $1.releasedAt {
+                    return libraryOrder == .newest ? $0.releasedAt > $1.releasedAt : $0.releasedAt < $1.releasedAt
+                }
+                return $0.id < $1.id
+            }
+    }
+
+    /// The exact set the Menu bulk action may append: prepared, not current,
+    /// and absent from the durable queue already. Keeping this predicate in
+    /// the model makes the disabled state and the mutation share one answer.
+    var preparedEpisodesReadyForMenu: [WiltedMacEpisode] {
+        readyToPlayEpisodes.filter(canAddEpisodeToMenu)
+    }
+
+    static func isEligibleForPreparation(_ episode: WiltedMacEpisode) -> Bool {
+        guard episode.downloadState == .completed else { return false }
+        switch episode.preparationState {
+        case .notPrepared, .failed: return true
+        case .preparing, .prepared: return false
+        }
+    }
+
+    var preparationEligibleEpisodes: [WiltedMacEpisode] {
+        episodes.filter { !hiddenEpisodeIDs.contains($0.id) && Self.isEligibleForPreparation($0) }
+    }
+
+    func prepareAllEligibleEpisodes() {
+        let eligible = preparationEligibleEpisodes
+        for episode in eligible { prepareEpisode(episode) }
     }
 
     var hasCurrentPlayback: Bool { currentArticle != nil || currentEpisode != nil }
@@ -3173,17 +3265,51 @@ final class WiltedMacModel {
     func addEpisodeToUpNext(_ episode: WiltedMacEpisode) {
 #if canImport(WiltedProducer)
         guard let playback, let id = try? ItemID(rawValue: episode.id) else { return }
-        playbackOperationStatus = "Adding \(episode.title) to Up Next…"
+        playbackOperationStatus = "Adding \(episode.title) to Menu…"
         Task { [weak self] in
             guard let self else { return }
             do {
                 await self.fixturePodcastInstallTask?.value
                 try await playback.addPodcastQueueEpisode(id)
                 await self.refreshPodcastQueueState()
-                self.playbackOperationStatus = "Added \(episode.title) to Up Next."
-            } catch { self.playbackOperationStatus = "Up Next could not be updated." }
+                self.playbackOperationStatus = "Added \(episode.title) to Menu."
+            } catch { self.playbackOperationStatus = "Menu could not be updated." }
         }
 #endif
+    }
+
+    /// Appends every currently eligible prepared episode in Larder order.
+    /// `addPodcastQueueEpisode` only mutates the durable queue; it never
+    /// selects or starts an episode, so the current playback is untouched.
+    func addAllPreparedEpisodesToMenu() {
+#if canImport(WiltedProducer)
+        let eligible = preparedEpisodesReadyForMenu
+        guard !eligible.isEmpty, let playback else { return }
+        playbackOperationStatus = "Adding \(eligible.count) prepared episodes to Menu…"
+        playbackOperationTask = Task { [weak self] in
+            guard let self else { return }
+            var addedCount = 0
+            do {
+                await self.fixturePodcastInstallTask?.value
+                for episode in eligible {
+                    guard let id = try? ItemID(rawValue: episode.id) else { continue }
+                    try await playback.addPodcastQueueEpisode(id)
+                    addedCount += 1
+                }
+                await self.refreshPodcastQueueState()
+                self.playbackOperationStatus = "Added \(addedCount) prepared episode\(addedCount == 1 ? "" : "s") to Menu."
+            } catch {
+                await self.refreshPodcastQueueState()
+                self.playbackOperationStatus = addedCount == 0
+                    ? "Menu could not be updated."
+                    : "Added \(addedCount) prepared episode\(addedCount == 1 ? "" : "s") to Menu."
+            }
+        }
+#endif
+    }
+
+    func openMenu() {
+        selectedNavigation = .menu
     }
 
     func playEpisode(_ episode: WiltedMacEpisode) {
@@ -3223,7 +3349,7 @@ final class WiltedMacModel {
     func removeEpisodeFromUpNext(_ episodeID: String) {
 #if canImport(WiltedProducer)
         guard let playback, let id = try? ItemID(rawValue: episodeID) else { return }
-        playbackOperationStatus = "Updating Up Next…"
+        playbackOperationStatus = "Updating Menu…"
         Task { [weak self] in
             try? await playback.removePodcastQueueEpisode(id)
             await self?.refreshPodcastQueueState()
@@ -3232,10 +3358,49 @@ final class WiltedMacModel {
 #endif
     }
 
+    func clearUpcomingMenu() {
+#if canImport(WiltedProducer)
+        guard let playback else { return }
+        let upcoming = menuUpcomingEpisodeIDs
+        guard !upcoming.isEmpty else { return }
+        playbackOperationStatus = "Clearing upcoming Menu…"
+        Task { [weak self] in
+            for episodeID in upcoming {
+                guard let id = try? ItemID(rawValue: episodeID) else { continue }
+                try? await playback.removePodcastQueueEpisode(id)
+            }
+            await self?.refreshPodcastQueueState()
+            self?.playbackOperationStatus = nil
+        }
+#endif
+    }
+
+    func moveMenuEpisode(_ episodeID: String, before destinationID: String) {
+        guard episodeID != destinationID,
+              let source = podcastQueueIDs.firstIndex(of: episodeID),
+              let destination = podcastQueueIDs.firstIndex(of: destinationID) else { return }
+        moveEpisodeInUpNext(
+            from: source,
+            to: Self.menuInsertionIndex(source: source, destination: destination)
+        )
+    }
+
+    static func menuInsertionIndex(source: Int, destination: Int) -> Int {
+        source < destination ? destination - 1 : destination
+    }
+
+    func moveMenuEpisode(_ episodeID: String, by offset: Int) {
+        guard let source = podcastQueueIDs.firstIndex(of: episodeID) else { return }
+        let destination = source + offset
+        guard podcastQueueIDs.indices.contains(destination),
+              podcastQueueIDs[destination] != currentPodcastEpisodeID else { return }
+        moveEpisodeInUpNext(from: source, to: destination)
+    }
+
     func moveEpisodeInUpNext(from source: Int, to destination: Int) {
 #if canImport(WiltedProducer)
         guard let playback else { return }
-        playbackOperationStatus = "Reordering Up Next…"
+        playbackOperationStatus = "Reordering Menu…"
         Task { [weak self] in
             try? await playback.movePodcastQueueEpisode(from: source, to: destination)
             await self?.refreshPodcastQueueState()
@@ -3835,15 +4000,12 @@ final class WiltedMacModel {
     /// `markCurrentPlaybackCompleted()` used to serve as this shim, but it now
     /// also retires the row from the Larder, so using it here would take the
     /// finished episode out before the handler under test ever saw it.
-    func simulatePodcastPlaybackReachedEndForTesting() {
+    func simulatePodcastPlaybackReachedEndForTesting() async {
 #if canImport(WiltedProducer)
         guard let playback else { return }
-        Task { [weak self] in
-            guard let self else { return }
-            try? await playback.markCompleted()
-            self.refreshPlaybackReadout()
-            await self.reloadLibraryRows()
-        }
+        try? await playback.markCompleted()
+        refreshPlaybackReadout()
+        await reloadLibraryRows()
 #endif
     }
 
@@ -4200,6 +4362,17 @@ final class WiltedMacModel {
         do {
             let configuredStore = try await storeBootstrap(libraryURL)
             configureStoreDependencies(configuredStore)
+            let invalidation: PodcastPreparationInvalidationResult
+            if let fingerprint = pipelineFingerprint {
+                invalidation = try await configuredStore.invalidateStalePodcastPreparations(
+                    currentFingerprint: fingerprint
+                )
+            } else {
+                // Missing or unreadable pipeline sources are not evidence of a
+                // semantic change. Preserve every preparation until a complete
+                // fingerprint can be resolved on a later launch.
+                invalidation = PodcastPreparationInvalidationResult()
+            }
             // The account-review gate is durable state, so restore it before
             // the ready surface can expose sync controls.
             syncLifecycle?.restoreAccountQuarantine()
@@ -4211,8 +4384,25 @@ final class WiltedMacModel {
             episodes = library.episodes
             subscriptions = library.subscriptions
             dismissedEpisodes = try await loadDismissedEpisodes(from: configuredStore)
-            await restorePodcastPlayback()
+            // A deferred job predating a forced redownload must never start on
+            // the stale prepared file while its replacement is being fetched.
+            for itemID in Set(invalidation.resetEpisodeIDs + invalidation.forcedRedownloadEpisodeIDs) {
+                removeDeferredAutomaticPreparation(itemID.rawValue)
+            }
+            // Pipeline invalidation is a library-wide migration, not a row-by-row
+            // recovery chore. Re-admit every intact source through the current
+            // processing policy; manual stays manual, while immediate and
+            // off-peak policies resume without the owner finding each episode.
             restoreDeferredAutomaticPreparations()
+            for itemID in invalidation.resetEpisodeIDs {
+                guard let episode = episodes.first(where: { $0.id == itemID.rawValue }) else { continue }
+                admitAutomaticPreparation(for: episode, at: Date())
+            }
+            for itemID in invalidation.forcedRedownloadEpisodeIDs {
+                guard let episode = episodes.first(where: { $0.id == itemID.rawValue }) else { continue }
+                downloadEpisode(episode, ignoringExisting: true)
+            }
+            await restorePodcastPlayback()
             startupState = .ready
             if pendingSyncReconciliation {
                 pendingSyncReconciliation = false
@@ -4339,7 +4529,7 @@ final class WiltedMacModel {
 
     private func restorePodcastPlayback() async {
         guard let playback else { return }
-        playbackOperationStatus = "Restoring Up Next…"
+        playbackOperationStatus = "Restoring Menu…"
         await playback.restorePodcastQueue()
         await refreshPodcastQueueState()
         if let itemID = playback.itemID,

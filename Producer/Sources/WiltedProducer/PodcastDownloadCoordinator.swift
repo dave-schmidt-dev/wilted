@@ -183,9 +183,14 @@ public actor PodcastDownloadCoordinator {
         guard let episode = try await store.podcastEpisode(for: episodeID) else {
             throw PodcastDownloadCoordinatorError.episodeNotFound
         }
+        // Pipeline invalidation is durable store state, so cache admission
+        // must honor it here. This also covers an automation claim resumed
+        // after relaunch, where the original caller's `ignoringExisting`
+        // argument no longer exists.
+        let requiresForcedRedownload = try await store.requiresForcedRedownload(for: episodeID)
         let existing: PodcastDownloadResult?
         do {
-            existing = ignoringExisting ? nil : try await completedResult(
+            existing = (ignoringExisting || requiresForcedRedownload) ? nil : try await completedResult(
                 for: episodeID, expectedContentHash: expectedContentHash, onStatus: onStatus
             )
         } catch is CancellationError {

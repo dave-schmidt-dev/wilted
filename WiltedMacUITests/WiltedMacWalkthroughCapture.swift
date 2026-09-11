@@ -132,12 +132,11 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
             transcript.click()
         }
 
-        let upNext = element(app, "wilted-player-up-next")
-        if upNext.exists {
-            upNext.click()
-            XCTAssertTrue(element(app, "wilted-player-up-next-expanded").waitForExistence(timeout: 10))
-            try write(app, "6.3-up-next-expanded", into: root)
-            upNext.click()
+        let menu = element(app, "wilted-player-menu")
+        if menu.exists {
+            menu.click()
+            XCTAssertTrue(element(app, "wilted-mac-menu-detail").waitForExistence(timeout: 10))
+            try write(app, "6.3-menu", into: root)
         }
 
         app.terminate()
@@ -146,14 +145,11 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         // podcast fixture's episode rather than the playing article -- and from
         // a launch of its own. Clicking a Larder row after the panels above
         // have been expanded and collapsed did not work: the play button
-        // reported hittable and the click landed on nothing. Frame 6.3 shows
-        // why that is probably this suite's fault rather than the app's --
-        // expanding Up Next replaces the whole pane with the full-window
-        // player, where the rows behind are correctly disabled -- so the
-        // second click may never have returned here at all. Relaunching keeps
-        // the capture measuring the rail either way; the open question is
-        // tracked separately.
-        let episodeApp = launch(["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts"])
+        // reported hittable and the click landed on nothing after a full-window
+        // pane transition. Relaunching keeps the episode capture independent.
+        let episodeApp = launch([
+            "--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"
+        ])
         XCTAssertTrue(element(episodeApp, "wilted-player-play-pause").waitForExistence(timeout: 15))
         let playEpisode = episodeApp.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-play-'")

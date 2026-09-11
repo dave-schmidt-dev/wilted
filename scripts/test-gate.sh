@@ -159,12 +159,11 @@ validate_pixel_snapshot_baselines() {
   for identifier in \
     wilted-compact-player wilted-player-speed wilted-player-rewind \
     wilted-player-play-pause wilted-player-forward \
-    wilted-player-transcript wilted-player-notes wilted-player-up-next wilted-player-route-recovery \
+    wilted-player-transcript wilted-player-notes wilted-player-menu wilted-player-route-recovery \
     wilted-player-volume wilted-player-scrubber wilted-player-previous \
     wilted-player-next wilted-player-restart wilted-player-keyboard-transports \
     wilted-player-status wilted-player-transcript-expanded \
-    wilted-player-up-next-expanded wilted-player-up-next-remove- \
-    wilted-player-up-next-move-earlier- wilted-player-up-next-move-later-; do
+    wilted-mac-menu-detail wilted-menu-clear-upcoming wilted-menu-remove- wilted-menu-row-; do
     grep -Fq "$identifier" \
       "$root/WiltedMac/WiltedMacRootView.swift" "$root/Shared/WiltedRootView.swift" ||
       fail "Mac compact player identifier is missing: $identifier"

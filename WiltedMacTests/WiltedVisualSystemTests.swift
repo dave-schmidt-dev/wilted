@@ -111,12 +111,15 @@ final class WiltedVisualSystemTests: XCTestCase {
         let source = try String(contentsOf: root)
         let rowStart = try XCTUnwrap(source.range(of: "private struct WiltedMacEpisodeRow")?.lowerBound)
         let start = try XCTUnwrap(source.range(of: "@ViewBuilder private var downloadControl")?.lowerBound)
-        let end = try XCTUnwrap(source.range(of: "/// Preparation", range: start..<source.endIndex)?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "private var relativeAge", range: start..<source.endIndex)?.lowerBound)
         let row = source[rowStart..<start]
         let control = source[start..<end]
 
-        XCTAssertTrue(row.contains("Text(episode.lifecyclePresentation.label)"))
+        XCTAssertTrue(row.contains("episode.preparationState.isPrepared"))
+        XCTAssertTrue(row.contains("\"Ready to play\""))
+        XCTAssertTrue(row.contains("episode.lifecyclePresentation.detailLabel"))
         XCTAssertTrue(row.contains("wilted-episode-lifecycle-\\(episode.id)"))
+        XCTAssertTrue(row.contains("wilted-episode-outcome-\\(episode.id)"))
         XCTAssertTrue(row.contains("model.episodePlaybackIndicators(for: episode.id)"))
         XCTAssertTrue(row.contains("wilted-episode-playback-indicators-\\(episode.id)"))
 
@@ -421,7 +424,7 @@ final class WiltedVisualSystemTests: XCTestCase {
 
         model.addEpisodeToUpNext(episode)
         for _ in 0..<100 {
-            if model.playbackOperationStatus == "Added \(episode.title) to Up Next." { break }
+            if model.playbackOperationStatus == "Added \(episode.title) to Menu." { break }
             try await Task.sleep(for: .milliseconds(10))
         }
 
@@ -457,28 +460,6 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(model.hasCurrentPlayback)
         XCTAssertTrue(model.isNowPlaying)
         XCTAssertTrue(model.isPlaying)
-    }
-
-    @MainActor
-    func testUpNextRemovalPresentationProtectsOnlyTheCurrentEpisode() {
-        XCTAssertFalse(
-            WiltedMacCompactPlayer.canRemoveFromUpNext(
-                episodeID: "current", currentEpisodeID: "current"
-            )
-        )
-        XCTAssertEqual(
-            WiltedMacCompactPlayer.upNextRemoveAccessibilityValue(canRemove: false),
-            "Unavailable for the current episode"
-        )
-        XCTAssertTrue(
-            WiltedMacCompactPlayer.canRemoveFromUpNext(
-                episodeID: "queued", currentEpisodeID: "current"
-            )
-        )
-        XCTAssertEqual(
-            WiltedMacCompactPlayer.upNextRemoveAccessibilityValue(canRemove: true),
-            "Available"
-        )
     }
 
     @MainActor
@@ -737,7 +718,7 @@ final class WiltedVisualSystemTests: XCTestCase {
 
     func testNativeInteractionContract() {
         XCTAssertEqual(WiltedNavigation.allCases.map(\.title), ["Larder", "Now Playing", "Downloads", "Settings"])
-        XCTAssertEqual(WiltedMacNavigation.allCases.map(\.title), ["Larder", "Podcast feeds", "Prep", "Settings"])
+        XCTAssertEqual(WiltedMacNavigation.allCases.map(\.title), ["Larder", "Podcast feeds", "Prep", "Menu", "Settings"])
         XCTAssertFalse(WiltedMacNavigation.allCases.map(\.rawValue).contains("nowPlaying"))
         XCTAssertEqual(WiltedScreenCopy.libraryEmpty, "Your larder is empty")
         XCTAssertEqual(WiltedScreenCopy.noArticles, "No articles yet")
@@ -811,7 +792,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(source.contains("wilted-processor-stop-\\(run.id)"))
         XCTAssertTrue(source.contains("wilted-processor-retry-\\(run.id)"))
 
-        let log = try section("private func eventLog", before: "// MARK: - Persistent Player")
+        let log = try section("private func eventLog", before: "// MARK: - Menu")
         XCTAssertTrue(log.contains("ScrollView(.vertical)"))
         XCTAssertTrue(log.contains("maxHeight: 176"))
         XCTAssertTrue(log.contains(".monospaced()"))
@@ -854,8 +835,7 @@ final class WiltedVisualSystemTests: XCTestCase {
             WiltedMacPlayerSection.allCases.map(\.expandedAccessibilityIdentifier),
             [
                 "wilted-player-transcript-expanded",
-                "wilted-player-notes-expanded",
-                "wilted-player-up-next-expanded"
+                "wilted-player-notes-expanded"
             ]
         )
 
@@ -876,6 +856,21 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(source.contains(".accessibilityHidden(playerPresentation != nil)"))
         XCTAssertTrue(source.contains(".disabled(playerPresentation != nil)"))
         XCTAssertTrue(source.contains("playerPresentation = nil\n                        playerFocusRequest = nil\n                        model.selectedNavigation = destination"))
+        XCTAssertTrue(source.contains("case .menu:"))
+        XCTAssertTrue(source.contains("WiltedMacMenuView("))
+        XCTAssertTrue(source.contains("presentation: $playerPresentation"))
+        XCTAssertTrue(source.contains("presentation: $presentation"))
+        XCTAssertTrue(source.contains("wilted-mac-menu-detail"))
+        XCTAssertTrue(source.contains(".draggable(episodeID)"))
+        XCTAssertTrue(source.contains(".dropDestination(for: String.self)"))
+        XCTAssertTrue(source.contains("Button(\"Prepare all (\\(model.preparationEligibleEpisodes.count))\")"))
+        XCTAssertTrue(source.contains("Text(\"Ready to play\")"))
+        XCTAssertTrue(source.contains("model.readyToPlayEpisodes"))
+        XCTAssertTrue(source.contains("model.preparedEpisodesReadyForMenu"))
+        XCTAssertTrue(source.contains("Button(readyCount == 0"))
+        XCTAssertTrue(source.contains("model.addAllPreparedEpisodesToMenu()"))
+        XCTAssertTrue(source.contains("wilted-menu-add-all-prepared"))
+        XCTAssertFalse(source.contains("expansionButton(\"Up Next\""))
     }
 
     func testAutomationSettingsPresentationFollowsThePipelineAndOnlyShowsLiveControls() throws {
@@ -1005,7 +1000,7 @@ final class WiltedVisualSystemTests: XCTestCase {
     /// the Mac baselines always render the player, never the empty state.
     func testProducerCopyNamesOnlyProducerDestinations() {
         let producerDestinations = WiltedMacNavigation.allCases
-        XCTAssertEqual(producerDestinations.map(\.title), ["Larder", "Podcast feeds", "Prep", "Settings"])
+        XCTAssertEqual(producerDestinations.map(\.title), ["Larder", "Podcast feeds", "Prep", "Menu", "Settings"])
 
         XCTAssertFalse(
             WiltedScreenCopy.nowPlayingEmptyDetailProducer.contains(WiltedScreenCopy.downloads),

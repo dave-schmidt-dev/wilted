@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 import WiltedDomain
 import WiltedSync
@@ -1705,6 +1706,226 @@ final class LocalLibraryStoreTests: XCTestCase {
 
         let blank = try await store.itemIDsWithTranscript(matching: "   ")
         XCTAssertEqual(blank, [], "a blank query selects nothing rather than everything")
+    }
+
+    func testPipelineInvalidationResetsStaleFailuresButPreservesTheSourceDownload() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let (_, episode) = try podcastValues()
+        let sourceURL = url.deletingLastPathComponent().appendingPathComponent("source.mp3")
+        let sourceBytes = Data("source".utf8)
+        try sourceBytes.write(to: sourceURL)
+        let hash = "sha256:" + SHA256.hash(data: sourceBytes).map { String(format: "%02x", $0) }.joined()
+        let revision = try AudioRevision(itemID: episode.itemID, revisionID: RevisionID(rawValue: "source-revision"),
+                                         durationSeconds: 12, byteCount: 6, contentHash: hash,
+                                         mediaType: "audio/mpeg", createdAt: Timestamp(Date()), schemaVersion: 3)
+        try await store.finalizePodcastDownload(
+            revision: revision, mediaURL: sourceURL,
+            download: try PodcastDownload(episodeID: episode.itemID, status: .completed,
+                                          bytesReceived: 6, expectedByteCount: 6, localURL: sourceURL,
+                                          contentHash: hash, updatedAt: Timestamp(Date()))
+        )
+        let evidence = try PreparationEvidence(kind: LocalLibraryStore.pipelineProvenanceEvidenceKind, fields: [
+            "fingerprint": "old", "sourceRevisionID": revision.revisionID.rawValue,
+            "sourceHash": hash, "sourceURL": sourceURL.absoluteString
+        ])
+        let failure = try PreparationStatus(
+            stage: .failed, detail: "old failure", cancellable: false,
+            terminalResult: try PreparationTerminalResult(
+                outcome: .failed,
+                error: try ProducerError(code: .failed, message: "old failure", retryable: true)
+            ), emittedAt: Timestamp(Date()), evidence: evidence
+        )
+        let requestID = PodcastPreparationPipeline.requestID(for: episode.itemID)
+        try await store.record(preparation: PreparationJournalEntry(
+            id: requestID + "|terminal", itemID: episode.itemID, requestID: requestID, status: failure
+        ))
+
+        let first = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        XCTAssertEqual(first.resetEpisodeIDs, [episode.itemID])
+        XCTAssertEqual(first.forcedRedownloadEpisodeIDs, [])
+        let journalAfterReset = try await store.preparationJournal(for: requestID)
+        XCTAssertTrue(journalAfterReset.isEmpty)
+        let preservedDownload = try await store.download(for: episode.itemID)
+        XCTAssertEqual(preservedDownload?.localURL, sourceURL)
+        XCTAssertEqual(preservedDownload?.contentHash, hash)
+
+        let second = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        XCTAssertEqual(second.resetEpisodeIDs, [episode.itemID],
+                       "the reset survives a relaunch before the app can admit it")
+        let visibleRunsAfterReset = try await store.preparationRuns()
+        XCTAssertTrue(visibleRunsAfterReset.isEmpty,
+                      "a durable scheduling marker is not a visible preparation run")
+        let currentEvidence = try PreparationEvidence(
+            kind: LocalLibraryStore.pipelineProvenanceEvidenceKind,
+            fields: ["fingerprint": "new", "sourceRevisionID": revision.revisionID.rawValue, "sourceHash": hash]
+        )
+        try await store.record(preparation: PreparationJournalEntry(
+            id: requestID + "|current", itemID: episode.itemID, requestID: requestID,
+            status: try PreparationStatus(
+                stage: .preparing, detail: "current attempt", cancellable: true,
+                emittedAt: Timestamp(Date()), evidence: currentEvidence
+            )
+        ))
+        let admitted = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        XCTAssertEqual(admitted, PodcastPreparationInvalidationResult(),
+                       "current provenance clears the durable reset marker")
+        let repeatedAfterAdmission = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        XCTAssertEqual(repeatedAfterAdmission, PodcastPreparationInvalidationResult())
+    }
+
+    func testPipelineInvalidationForcesRedownloadWhenLocalBytesDoNotMatchStoredHashes() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let (_, episode) = try podcastValues()
+        let sourceURL = url.deletingLastPathComponent().appendingPathComponent("corrupted-source.mp3")
+        let originalBytes = Data("original source".utf8)
+        try originalBytes.write(to: sourceURL)
+        let hash = "sha256:" + SHA256.hash(data: originalBytes).map { String(format: "%02x", $0) }.joined()
+        let revision = try AudioRevision(
+            itemID: episode.itemID, revisionID: RevisionID(rawValue: "corrupted-source-revision"),
+            durationSeconds: 12, byteCount: Int64(originalBytes.count), contentHash: hash,
+            mediaType: "audio/mpeg", createdAt: Timestamp(Date()), schemaVersion: 3
+        )
+        try await store.finalizePodcastDownload(
+            revision: revision, mediaURL: sourceURL,
+            download: try PodcastDownload(
+                episodeID: episode.itemID, status: .completed,
+                bytesReceived: Int64(originalBytes.count), expectedByteCount: Int64(originalBytes.count),
+                localURL: sourceURL, contentHash: hash, updatedAt: Timestamp(Date())
+            )
+        )
+        let evidence = try PreparationEvidence(
+            kind: LocalLibraryStore.pipelineProvenanceEvidenceKind,
+            fields: [
+                "fingerprint": "old", "sourceRevisionID": revision.revisionID.rawValue,
+                "sourceHash": hash
+            ]
+        )
+        let requestID = PodcastPreparationPipeline.requestID(for: episode.itemID)
+        try await store.record(preparation: PreparationJournalEntry(
+            id: requestID + "|terminal", itemID: episode.itemID, requestID: requestID,
+            status: try PreparationStatus(
+                stage: .failed, detail: "old failure", cancellable: false,
+                terminalResult: try PreparationTerminalResult(
+                    outcome: .failed,
+                    error: try ProducerError(code: .failed, message: "old failure", retryable: true)
+                ),
+                emittedAt: Timestamp(Date()), evidence: evidence
+            )
+        ))
+
+        try Data("replacement bytes".utf8).write(to: sourceURL)
+        let result = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+
+        XCTAssertEqual(result.resetEpisodeIDs, [])
+        XCTAssertEqual(result.forcedRedownloadEpisodeIDs, [episode.itemID],
+                       "persisted metadata cannot vouch for bytes that no longer match it")
+    }
+
+    func testPipelineInvalidationPersistsAForcedRedownloadForAStalePreparedSuccess() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let (_, episode) = try podcastValues()
+        let preparedURL = url.deletingLastPathComponent().appendingPathComponent("prepared.mp3")
+        try Data("prepared".utf8).write(to: preparedURL)
+        let preparedHash = "sha256:" + String(repeating: "c", count: 64)
+        try await store.save(download: try PodcastDownload(
+            episodeID: episode.itemID, status: .completed, bytesReceived: 8,
+            expectedByteCount: 8, localURL: preparedURL, contentHash: preparedHash, updatedAt: Timestamp(Date())
+        ))
+        let requestID = PodcastPreparationPipeline.requestID(for: episode.itemID)
+        let status = try PreparationStatus(
+            stage: .completed, detail: "old prepared", fraction: 1, cancellable: false,
+            terminalResult: try PreparationTerminalResult(outcome: .succeeded, revisionID: try RevisionID(rawValue: "prepared-revision")),
+            emittedAt: Timestamp(Date())
+        )
+        try await store.record(preparation: PreparationJournalEntry(
+            id: requestID + "|terminal", itemID: episode.itemID, requestID: requestID, status: status
+        ))
+        let preexistingForcedRequestID = LocalLibraryStore.forcedRedownloadRequestPrefix + episode.itemID.rawValue
+        try await store.record(preparation: PreparationJournalEntry(
+            id: preexistingForcedRequestID + "|old", itemID: episode.itemID,
+            requestID: preexistingForcedRequestID, status: status
+        ))
+
+        let result = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        XCTAssertEqual(result.resetEpisodeIDs, [])
+        XCTAssertEqual(result.forcedRedownloadEpisodeIDs, [episode.itemID])
+        let journalAfterReset = try await store.preparationJournal(for: requestID)
+        XCTAssertTrue(journalAfterReset.isEmpty)
+        let repeated = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        XCTAssertEqual(repeated.forcedRedownloadEpisodeIDs, [episode.itemID])
+        let requiresForcedRedownload = try await store.requiresForcedRedownload(for: episode.itemID)
+        XCTAssertTrue(requiresForcedRedownload)
+        let visibleRunsAfterForcedRedownload = try await store.preparationRuns()
+        XCTAssertTrue(visibleRunsAfterForcedRedownload.isEmpty,
+                      "a forced-download marker is not a visible failed preparation")
+        let oldResetRequestID = LocalLibraryStore.resetPreparationRequestPrefix + episode.itemID.rawValue
+        try await store.record(preparation: PreparationJournalEntry(
+            id: oldResetRequestID + "|old", itemID: episode.itemID,
+            requestID: oldResetRequestID, status: status
+        ))
+        let conflictingMarkers = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        XCTAssertEqual(conflictingMarkers.resetEpisodeIDs, [])
+        XCTAssertEqual(conflictingMarkers.forcedRedownloadEpisodeIDs, [episode.itemID],
+                       "forced redownload wins when two upgrades left both marker generations")
+        try await store.markForcedRedownloadCompleted(
+            for: episode.itemID, currentFingerprint: "new"
+        )
+        let stillRequiresForcedRedownload = try await store.requiresForcedRedownload(for: episode.itemID)
+        XCTAssertFalse(stillRequiresForcedRedownload)
+        let afterFreshDownload = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        XCTAssertEqual(afterFreshDownload.forcedRedownloadEpisodeIDs, [])
+        XCTAssertEqual(afterFreshDownload.resetEpisodeIDs, [episode.itemID],
+                       "a successful redownload becomes durable pending preparation")
+        let currentEvidence = try PreparationEvidence(kind: LocalLibraryStore.pipelineProvenanceEvidenceKind, fields: [
+            "fingerprint": "new", "sourceRevisionID": "fresh-source",
+            "sourceHash": "sha256:" + String(repeating: "e", count: 64)
+        ])
+        try await store.record(preparation: PreparationJournalEntry(
+            id: requestID + "|current", itemID: episode.itemID, requestID: requestID,
+            status: try PreparationStatus(
+                stage: .preparing, detail: "current attempt", cancellable: true,
+                emittedAt: Timestamp(Date()), evidence: currentEvidence
+            )
+        ))
+        let admitted = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        XCTAssertEqual(admitted, PodcastPreparationInvalidationResult(),
+                       "the pending marker clears only after a current preparation attempt is durable")
+    }
+
+    func testPipelineInvalidationLeavesMatchingAndNeverAttemptedEpisodesUntouched() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let (_, matchingEpisode) = try podcastValues()
+        let neverAttempted = try ItemID(rawValue: "never-" + String(repeating: "n", count: 58))
+        let requestID = PodcastPreparationPipeline.requestID(for: matchingEpisode.itemID)
+        let evidence = try PreparationEvidence(kind: LocalLibraryStore.pipelineProvenanceEvidenceKind, fields: [
+            "fingerprint": PodcastPreparationPipeline.semanticFingerprint,
+            "sourceRevisionID": "source", "sourceHash": "sha256:" + String(repeating: "d", count: 64)
+        ])
+        let status = try PreparationStatus(
+            stage: .failed, detail: "current failure", cancellable: false,
+            terminalResult: try PreparationTerminalResult(
+                outcome: .failed,
+                error: try ProducerError(code: .failed, message: "current failure", retryable: true)
+            ), emittedAt: Timestamp(Date()), evidence: evidence
+        )
+        try await store.record(preparation: PreparationJournalEntry(
+            id: requestID + "|terminal", itemID: matchingEpisode.itemID, requestID: requestID, status: status
+        ))
+        let before = try await store.preparationJournal(for: requestID)
+        let result = try await store.invalidateStalePodcastPreparations(
+            currentFingerprint: PodcastPreparationPipeline.semanticFingerprint
+        )
+        XCTAssertEqual(result, PodcastPreparationInvalidationResult())
+        let after = try await store.preparationJournal(for: requestID)
+        XCTAssertEqual(after, before)
+        let neverJournal = try await store.preparationJournal(
+            for: PodcastPreparationPipeline.requestID(for: neverAttempted)
+        )
+        XCTAssertTrue(neverJournal.isEmpty)
     }
 
     private func save(revision id: String, of itemID: ItemID, at second: TimeInterval,
