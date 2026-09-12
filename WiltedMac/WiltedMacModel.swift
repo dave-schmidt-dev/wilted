@@ -2021,40 +2021,6 @@ final class WiltedMacModel {
     /// the same episode transfers twice.
     func downloadEpisode(_ episode: WiltedMacEpisode, alreadyClaimed: Bool = false, ignoringExisting: Bool = false) {
 #if canImport(WiltedProducer)
-        if fixtureMode {
-            guard podcastDownloadTasks[episode.id] == nil else { return }
-            updateEpisode(episode.id) { $0.downloadState = .queued }
-            podcastOperationMessage = "Queued \(episode.title) for download."
-            podcastDownloadTasks[episode.id] = Task { [weak self] in
-                await Task.yield()
-                guard let self else { return }
-                guard !Task.isCancelled else {
-                    self.updateEpisode(episode.id) { $0.downloadState = .cancelled }
-                    self.podcastOperationMessage = "Download cancelled."
-                    self.podcastDownloadTasks[episode.id] = nil
-                    return
-                }
-                self.updateEpisode(episode.id) { $0.downloadState = .downloading(received: 3, expected: 6) }
-                self.podcastOperationMessage = "Downloading \(episode.title)…"
-                await Task.yield()
-                guard !Task.isCancelled else {
-                    self.updateEpisode(episode.id) { $0.downloadState = .cancelled }
-                    self.podcastOperationMessage = "Download cancelled."
-                    self.podcastDownloadTasks[episode.id] = nil
-                    return
-                }
-                if self.fixtureDownloadFailuresRemaining > 0 {
-                    self.fixtureDownloadFailuresRemaining -= 1
-                    self.updateEpisode(episode.id) { $0.downloadState = .failed }
-                    self.podcastOperationMessage = "Download failed. Retry when you are online."
-                } else {
-                    self.updateEpisode(episode.id) { $0.downloadState = .completed }
-                    self.podcastOperationMessage = "\(episode.title) is available offline."
-                }
-                self.podcastDownloadTasks[episode.id] = nil
-            }
-            return
-        }
         guard podcastDownloadTasks[episode.id] == nil,
               let coordinator = podcastDownloadCoordinator,
               let itemID = try? ItemID(rawValue: episode.id) else { return }
@@ -4513,8 +4479,27 @@ final class WiltedMacModel {
         playback?.playbackDidFinishHandler = { [weak self] in
             self?.handlePodcastPlaybackFinished()
         }
+        let resolvedPodcastDownloadTransportFactory: WiltedMacPodcastDownloadTransportFactory?
+        if let podcastDownloadTransportFactory {
+            resolvedPodcastDownloadTransportFactory = podcastDownloadTransportFactory
+        } else if fixtureMode {
+            let failuresRemaining = fixtureDownloadFailuresRemaining
+            resolvedPodcastDownloadTransportFactory = {
+                WiltedFixturePodcastDownloadTransport(failuresRemaining: failuresRemaining)
+            }
+        } else {
+            resolvedPodcastDownloadTransportFactory = nil
+        }
+        let resolvedPodcastMediaValidatorFactory: WiltedMacPodcastMediaValidatorFactory?
+        if let podcastMediaValidatorFactory {
+            resolvedPodcastMediaValidatorFactory = podcastMediaValidatorFactory
+        } else if fixtureMode {
+            resolvedPodcastMediaValidatorFactory = { WiltedFixturePodcastMediaValidator() }
+        } else {
+            resolvedPodcastMediaValidatorFactory = nil
+        }
         podcastDownloadCoordinator = configuredStore.map { store in
-            switch (podcastDownloadTransportFactory, podcastMediaValidatorFactory) {
+            switch (resolvedPodcastDownloadTransportFactory, resolvedPodcastMediaValidatorFactory) {
             case let (transportFactory?, validatorFactory?):
                 PodcastDownloadCoordinator(
                     store: store, libraryDirectory: mediaDirectory,
@@ -5305,5 +5290,43 @@ private final class WiltedSilentPlaybackBackend: PlaybackBackend {
     @discardableResult func play() -> Bool { inner.play() }
     func pause() { inner.pause() }
     func stop() { inner.stop() }
+}
+
+/// Feeds the real download coordinator scripted bytes so
+/// `--wilted-ui-fixture-download-failure` exercises production code instead
+/// of a separate in-memory simulation. Failing `failuresRemaining` times
+/// before succeeding reproduces what the deleted branch did by hand.
+private final class WiltedFixturePodcastDownloadTransport: PodcastDownloadTransporting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var failuresRemaining: Int
+
+    init(failuresRemaining: Int) {
+        self.failuresRemaining = failuresRemaining
+    }
+
+    func events(for url: URL) -> AsyncThrowingStream<PodcastDownloadEvent, Error> {
+        lock.lock()
+        let shouldFail = failuresRemaining > 0
+        if shouldFail { failuresRemaining -= 1 }
+        lock.unlock()
+        return AsyncThrowingStream { continuation in
+            continuation.yield(.response(PodcastDownloadHTTPResponse(
+                url: url, statusCode: 200, mediaType: "audio/mpeg", expectedByteCount: nil
+            )))
+            if shouldFail {
+                continuation.finish(throwing: PodcastDownloadCoordinatorError.transport("fixture"))
+                return
+            }
+            continuation.yield(.data(Data([0, 1, 2, 3, 4, 5])))
+            continuation.finish()
+        }
+    }
+}
+
+private struct WiltedFixturePodcastMediaValidator: PodcastMediaValidating {
+    func duration(of url: URL, onStatus: @escaping @Sendable (String) -> Void) async throws -> Double {
+        onStatus("stage=fixture-validation")
+        return 1_482
+    }
 }
 #endif
