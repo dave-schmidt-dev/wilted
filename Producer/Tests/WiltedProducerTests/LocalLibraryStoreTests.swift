@@ -918,15 +918,23 @@ final class LocalLibraryStoreTests: XCTestCase {
         return PreparationJournalEntry(id: requestID + "|marker", itemID: itemID, requestID: requestID, status: status)
     }
 
+    private func resetPreparationMarkerEntry(itemID: ItemID, at time: TimeInterval) throws -> PreparationJournalEntry {
+        let requestID = LocalLibraryStore.resetPreparationRequestPrefix + itemID.rawValue
+        let status = try PreparationStatus(stage: .preparing, detail: "will be prepared again", cancellable: false,
+                                           emittedAt: Timestamp(Date(timeIntervalSince1970: time)),
+                                           evidence: try PreparationEvidence(kind: "podcast-pipeline-invalidation", fields: ["fingerprint": "fp-new", "requiresRedownload": "false"]))
+        return PreparationJournalEntry(id: requestID + "|marker", itemID: itemID, requestID: requestID, status: status)
+    }
+
     /// The load-bearing compatibility promise: a V9 store whose only proof of
     /// preparation is a journal terminal success, and whose only proof of
     /// completion is a `PlaybackRecord`, must come out of `reconcilePodcastStateV10()`
-    /// still Prepared and still Finished. A legacy forced-redownload marker
-    /// must translate onto the matching outcome row when it is at least as
-    /// new as that row, must survive untouched when there is no outcome row
-    /// at all to annotate (so `requiresForcedRedownload` keeps returning
-    /// true), and must never overwrite a newer, good outcome with a stale
-    /// invalidation.
+    /// still Prepared and still Finished. A legacy forced-redownload or
+    /// reset-preparation marker must translate onto the matching outcome row
+    /// when it is at least as new as that row, must survive untouched when
+    /// there is no outcome row at all to annotate (so `requiresForcedRedownload`
+    /// and `resetEpisodeIDs` keep seeing it), and must never overwrite a
+    /// newer, good outcome with a stale invalidation.
     func testV9StoreBackfillsPreparationOutcomeListeningAndLegacyInvalidationMarkersIntoV10() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let feedURL = URL(string: "https://podcasts.example.test/v10-backfill/feed.xml")!
@@ -1000,6 +1008,14 @@ final class LocalLibraryStoreTests: XCTestCase {
                                                      requestID: "podcast-prepare|\(episode5.itemID.rawValue)",
                                                      fingerprint: nil, at: 1_700_000_550)
 
+        // Episode 6: only a legacy reset-preparation marker and nothing else --
+        // `invalidateStalePodcastPreparations` deletes the journal group for
+        // reset markers too, so this must survive reconcile the same way
+        // episode 3's forced marker does, or `resetEpisodeIDs` silently stops
+        // re-queuing it for preparation.
+        let episode6 = try makeEpisode("reset-preparation-without-outcome")
+        let marker6 = try resetPreparationMarkerEntry(itemID: episode6.itemID, at: 1_700_000_700)
+
         try LocalLibraryStore.createV9MigrationFixture(
             at: url, feed: feed, subscription: subscription,
             episodes: [
@@ -1020,6 +1036,7 @@ final class LocalLibraryStoreTests: XCTestCase {
                     episode: episode5, download: download5, revision: revision5, mediaURL: mediaURL5,
                     journalEntries: [journal5]
                 ),
+                LocalLibraryStore.PodcastEpisodeMigrationFixture(episode: episode6, journalEntries: [marker6]),
             ]
         )
 
@@ -1079,6 +1096,15 @@ final class LocalLibraryStoreTests: XCTestCase {
         )
         XCTAssertEqual(episode3Journal.count, 1, "the marker's PreparationRecord itself must still be present and decodable")
 
+        // Episode 6's reset-preparation marker has no outcome row to annotate
+        // either, and must survive the same way: `invalidateStalePodcastPreparations`
+        // rebuilds `resetEpisodeIDs` from surviving markers, not from the
+        // journal, so dropping this one would silently stop re-queuing it.
+        let episode6Journal = try await migrated.preparationJournal(
+            for: LocalLibraryStore.resetPreparationRequestPrefix + episode6.itemID.rawValue
+        )
+        XCTAssertEqual(episode6Journal.count, 1, "a reset-preparation marker with nothing to annotate must not be dropped")
+
         // Fix 2: episode 4's marker matched an outcome row but predates it,
         // so it must not overwrite that newer, good outcome -- it is simply
         // deleted since its information is superseded.
@@ -1114,6 +1140,10 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertFalse(episode2MarkerAfterSecondReconcile)
         XCTAssertTrue(episode3MarkerAfterSecondReconcile, "the surviving marker must remain after a second idempotent reconcile")
         XCTAssertFalse(episode4MarkerAfterSecondReconcile)
+        let episode6JournalAfterSecondReconcile = try await migrated.preparationJournal(
+            for: LocalLibraryStore.resetPreparationRequestPrefix + episode6.itemID.rawValue
+        )
+        XCTAssertEqual(episode6JournalAfterSecondReconcile.count, 1, "the surviving reset marker must remain after a second idempotent reconcile")
     }
 
     /// Round-trips every new V10 store method independent of migration: save

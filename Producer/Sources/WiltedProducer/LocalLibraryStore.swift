@@ -3470,18 +3470,18 @@ public actor LocalLibraryStore {
     /// and the marker is at least as new as it, and dropped once their
     /// information is applied or superseded.
     ///
-    /// A forced-redownload marker is the one exception to "always delete a
-    /// marker for an episode with no outcome row": `invalidateStalePodcastPreparations`
-    /// deletes the whole `podcast-prepare|` journal group the instant it
-    /// writes that marker, so a real legacy episode carrying one has, by
-    /// construction, no journal terminal success left for step 1 to have
-    /// built an outcome row from. Deleting the marker with nothing to carry
-    /// its "needs a fresh source" fact forward would make
-    /// `requiresForcedRedownload` wrongly start returning false and let the
-    /// next download reuse the exact stale file the marker exists to reject.
-    /// So a forced-redownload marker with no matching outcome row survives
-    /// reconcile untouched; a reset-preparation marker in the same situation
-    /// is still simply forgotten, since it never blocked a download.
+    /// `invalidateStalePodcastPreparations` deletes the whole `podcast-prepare|`
+    /// journal group the instant it writes either marker kind, so a real
+    /// legacy episode carrying one has, by construction, no journal terminal
+    /// success left for step 1 to have built an outcome row from. Deleting
+    /// such a marker with nothing to carry its fact forward would silently
+    /// drop it: for a forced-redownload marker that means
+    /// `requiresForcedRedownload` wrongly starts returning false and a stale
+    /// local file gets reused; for a reset-preparation marker it means
+    /// `invalidateStalePodcastPreparations`'s own marker-rebuild pass (which
+    /// re-derives `resetEpisodeIDs` from surviving markers, not from the
+    /// journal) stops re-queuing the episode for preparation. So a marker of
+    /// either kind with no matching outcome row survives reconcile untouched.
     private func translateLegacyInvalidationMarkersForV10Reconciliation(in context: ModelContext) throws {
         let markers = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>()).filter {
             $0.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix)
@@ -3500,7 +3500,6 @@ public actor LocalLibraryStore {
                   let outcome = outcomes.first(where: {
                       $0.episodeID == episodeID.rawValue && $0.revisionID == ready.revisionID.rawValue
                   }) else {
-                if !isForcedRedownload { context.delete(marker) }
                 continue
             }
             // A matching outcome row exists, so the marker's information is
