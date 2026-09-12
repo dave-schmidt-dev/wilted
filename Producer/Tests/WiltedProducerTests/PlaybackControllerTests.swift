@@ -669,8 +669,10 @@ final class PlaybackControllerTests: XCTestCase {
         var observedFault: PlaybackControllerError?
         var observedItem: ItemID?
         var finishCount = 0
+        var completionCalls: [ItemID] = []
         controller.podcastStateHandler = { item, fault in observedItem = item; observedFault = fault }
         controller.playbackDidFinishHandler = { finishCount += 1 }
+        controller.podcastCompletionHandler = { completionCalls.append($0) }
         await controller.restorePodcastQueue()
         backend.finish(successfully: true)
         await waitUntil { finishCount == 1 }
@@ -680,6 +682,8 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(observedFault, controller.recoverableFault)
         XCTAssertEqual(observedItem, first.revision.itemID,
                        "a next-media fault must retain the completed item's UI identity")
+        XCTAssertEqual(completionCalls, [first.revision.itemID],
+                       "a successor-load throw must not skip retirement of the item that actually finished")
         let retainedState = try await store.podcastQueueState()
         XCTAssertEqual(retainedState, state)
 
@@ -690,10 +694,12 @@ final class PlaybackControllerTests: XCTestCase {
         var corruptObservedItem: ItemID?
         var corruptObservedFault: PlaybackControllerError?
         var corruptFinishCount = 0
+        var corruptCompletionCalls: [ItemID] = []
         corruptController.playbackDidFinishHandler = { corruptFinishCount += 1 }
         corruptController.podcastStateHandler = { item, fault in
             corruptObservedItem = item; corruptObservedFault = fault
         }
+        corruptController.podcastCompletionHandler = { corruptCompletionCalls.append($0) }
         await corruptController.restorePodcastQueue()
         corruptBackend.finish(successfully: true)
         await waitUntil { corruptFinishCount == 1 }
@@ -702,6 +708,8 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(corruptController.recoverableFault, .podcastMediaUnreadable(missing.revision.itemID))
         XCTAssertEqual(corruptObservedItem, first.revision.itemID)
         XCTAssertEqual(corruptObservedFault, .podcastMediaUnreadable(missing.revision.itemID))
+        XCTAssertEqual(corruptCompletionCalls, [first.revision.itemID],
+                       "retirement must still fire on the second successor-load throw")
         let corruptRetainedState = try await store.podcastQueueState()
         XCTAssertEqual(corruptRetainedState, state)
     }
