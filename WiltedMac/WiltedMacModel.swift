@@ -626,6 +626,10 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     /// end and still be finished, and an episode marked finished by hand never
     /// reached the end at all.
     var isPlayed: Bool = false
+    /// When the store's `retiredAt` says this episode left the Larder on its
+    /// own, as opposed to a dismiss. `nil` for an episode still on the shelf,
+    /// or for one restored after a dismiss that cleared it.
+    var retiredAt: Date? = nil
     var downloadState: WiltedMacEpisodeDownloadState
     var preparationState: WiltedMacEpisodePreparationState = .notPrepared
 
@@ -640,7 +644,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         lhs.id == rhs.id && lhs.title == rhs.title && lhs.feedTitle == rhs.feedTitle &&
             lhs.summary == rhs.summary && lhs.notes == rhs.notes && lhs.artworkURL == rhs.artworkURL && lhs.releasedAt == rhs.releasedAt &&
             lhs.durationSeconds == rhs.durationSeconds && lhs.playbackSeconds == rhs.playbackSeconds &&
-            lhs.isPlayed == rhs.isPlayed &&
+            lhs.isPlayed == rhs.isPlayed && lhs.retiredAt == rhs.retiredAt &&
             lhs.downloadState == rhs.downloadState && lhs.preparationState == rhs.preparationState
     }
 
@@ -1740,7 +1744,7 @@ final class WiltedMacModel {
     var larderRemaining: WiltedMacLarderRemaining {
         return WiltedMacLarderRemaining(
             items: articles.map(WiltedMacLibraryItem.article)
-                + episodes.filter { !hiddenEpisodeIDs.contains($0.id) }.map(WiltedMacLibraryItem.episode),
+                + episodes.filter { !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil }.map(WiltedMacLibraryItem.episode),
             liveItemID: isNowPlaying ? loadedPlaybackItemID : nil,
             livePosition: playbackPositionSeconds,
             liveCompleted: playbackCompleted
@@ -1750,7 +1754,7 @@ final class WiltedMacModel {
     var libraryItems: [WiltedMacLibraryItem] {
         let query = librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let combined = articles.map(WiltedMacLibraryItem.article) +
-            episodes.filter { !hiddenEpisodeIDs.contains($0.id) }.map(WiltedMacLibraryItem.episode)
+            episodes.filter { !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil }.map(WiltedMacLibraryItem.episode)
         let filtered = combined.filter { item in
             let matchesQuery = Self.matches(item, query: query, transcriptMatches: transcriptSearchMatches)
             guard matchesQuery else { return false }
@@ -3034,7 +3038,7 @@ final class WiltedMacModel {
     /// the rows currently visible through a filter.
     var readyToPlayEpisodes: [WiltedMacEpisode] {
         episodes
-            .filter { !hiddenEpisodeIDs.contains($0.id) && canPlayEpisode($0) }
+            .filter { !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil && canPlayEpisode($0) }
             .sorted {
                 if $0.releasedAt != $1.releasedAt {
                     return libraryOrder == .newest ? $0.releasedAt > $1.releasedAt : $0.releasedAt < $1.releasedAt
@@ -3059,7 +3063,7 @@ final class WiltedMacModel {
     }
 
     var preparationEligibleEpisodes: [WiltedMacEpisode] {
-        episodes.filter { !hiddenEpisodeIDs.contains($0.id) && Self.isEligibleForPreparation($0) }
+        episodes.filter { !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil && Self.isEligibleForPreparation($0) }
     }
 
     func prepareAllEligibleEpisodes() {
@@ -3085,7 +3089,7 @@ final class WiltedMacModel {
     var playbackCompletionIsSettled: Bool {
         guard playbackCompleted else { return false }
         guard isPodcastPlayback, let episode = currentEpisode else { return true }
-        return hiddenEpisodeIDs.contains(episode.id)
+        return hiddenEpisodeIDs.contains(episode.id) || episode.retiredAt != nil
     }
 
     var canSelectPreviousEpisode: Bool {
@@ -3797,27 +3801,53 @@ final class WiltedMacModel {
     }
 
 #if canImport(WiltedProducer)
-    /// Takes the episode the listener just finished with out of the Larder.
+    /// Retires the episode the listener just finished with, taking it off
+    /// the Larder shelf without deleting it.
     ///
-    /// Playing an episode to its end removes it, on the reasoning that leaving
+    /// Playing an episode to its end retires it, on the reasoning that leaving
     /// it there makes the owner clear by hand what finishing it already said.
     /// Saying "I am done with this" at 91% says exactly the same thing, and it
     /// was leaving the row on the shelf: the two ways of finishing an episode
     /// agreed about the durable record and disagreed about the one thing the
     /// listener could see.
     ///
-    /// Articles are untouched -- they have no Larder removal on finishing --
+    /// Articles are untouched -- they have no Larder retirement on finishing --
     /// and nothing advances either way, because the press is about this
     /// episode and not the next one.
     private func retireFinishedEpisode() async {
-        guard isPodcastPlayback, let finished = currentEpisode else { return }
+        guard isPodcastPlayback, let finished = currentEpisode,
+              let id = try? ItemID(rawValue: finished.id) else { return }
         // Deliberate, so no Undo is offered; and an Undo left over from an
         // earlier Skip must not attach itself to a different episode.
         undoableRemoval = nil
-        hideEpisode(finished)
-        podcastOperationMessage = await dismissEpisode(finished)
-            ? "Removed \(finished.title)."
-            : "\(finished.title) could not be removed."
+        // Queue membership is this caller's own concern, not
+        // `completeAndRetire`'s: that method also runs from inside the
+        // controller's own completion sequence, mid-suspension before it
+        // re-reads queue state, and a queue mutation there would race that
+        // read.
+        if let playback {
+            try? await playback.removePodcastQueueEpisode(id)
+            await refreshPodcastQueueState()
+        }
+        podcastOperationMessage = await completeAndRetire(id)
+            ?? "\(finished.title) could not be marked finished."
+        await reloadLibraryRows()
+    }
+
+    /// Writes the durable "finished" fact and takes the episode off the
+    /// Larder shelf, without touching the podcast queue -- see the doc
+    /// comment on `podcastCompletionHandler`'s wiring below for why that is
+    /// split out to the callers that can safely do it.
+    @discardableResult
+    private func completeAndRetire(_ episodeID: ItemID) async -> String? {
+        guard let store, let episode = episodes.first(where: { $0.id == episodeID.rawValue }) else { return nil }
+        do {
+            try await store.retireEpisode(episodeID)
+            hideEpisode(episode)
+            return "Finished \(episode.title)."
+        } catch {
+            return "\(episode.title) could not be marked finished."
+        }
     }
 #endif
 
@@ -4401,6 +4431,11 @@ final class WiltedMacModel {
             // timestamp-ordering guard assumes it sees legacy markers before
             // this launch's invalidation pass writes new ones.
             try await configuredStore.reconcilePodcastStateV10()
+            // After reconcile, so this sees the listening rows step 2 just
+            // backfilled from legacy playback records, and before the
+            // library is read, so retirement is reflected in the first
+            // `loadLibrary` rather than appearing a moment later.
+            try await configuredStore.retireCompletedEpisodesMissingRetirement()
             let invalidation: PodcastPreparationInvalidationResult
             if let fingerprint = pipelineFingerprint {
                 invalidation = try await configuredStore.invalidateStalePodcastPreparations(
@@ -4544,6 +4579,19 @@ final class WiltedMacModel {
         playback?.defaultRate = Float(playbackRate)
         playback?.podcastStateHandler = { [weak self] itemID, fault in
             self?.applyPodcastPlaybackObservation(itemID: itemID, fault: fault)
+        }
+        // Fires for every podcast completion, including the auto-advance
+        // case that never reaches `handlePodcastPlaybackFinished` (that one
+        // only fires when nothing was queued behind it). Retirement alone,
+        // not queue removal: this runs mid-suspension inside the
+        // controller's own completion handling, before it re-reads queue
+        // state, and mutating the queue here would race that read.
+        playback?.podcastCompletionHandler = { [weak self] episodeID in
+            Task { [weak self] in
+                guard let self else { return }
+                _ = await self.completeAndRetire(episodeID)
+                await self.reloadLibraryRows()
+            }
         }
         // An episode that ends with nothing behind it stops the audio without
         // changing which item is loaded. The on-screen readout would catch up
@@ -4699,10 +4747,10 @@ final class WiltedMacModel {
     /// successfully prepared, rather than trading one stall for another with
     /// no one watching.
     ///
-    /// The episode that just finished is then removed, the same removal the
-    /// Skip button performs: a listened episode is done with, and leaving it
-    /// in the Larder means the owner clears by hand what playing it to the
-    /// end already said.
+    /// The episode that just finished is then retired -- taken off the
+    /// Larder shelf without deleting it, unlike the Skip button's dismissal --
+    /// because leaving it there means the owner clears by hand what playing
+    /// it to the end already said.
     private func handlePodcastPlaybackFinished() {
         refreshPlaybackReadout()
         guard isPodcastPlayback, let finishedID = currentPodcastEpisodeID,
@@ -4720,17 +4768,28 @@ final class WiltedMacModel {
             // and there is nothing to walk past once it has been taken out.
             let next = self.nextReadyEpisode(after: finishedID)
             var note: String?
-            if let finished {
+            if let finished, let id = try? ItemID(rawValue: finished.id) {
                 // Finishing is not an accident, so no Undo is offered; and an
                 // Undo left over from an earlier Skip must not attach itself
                 // to this sentence about a different episode.
                 self.undoableRemoval = nil
-                self.hideEpisode(finished)
-                note = await self.dismissEpisode(finished)
-                    ? "Removed \(finished.title)."
-                    : "\(finished.title) could not be removed."
+                // Queue membership is this caller's own concern; see the doc
+                // comment on `retireFinishedEpisode` for why `completeAndRetire`
+                // does not do this itself.
+                if let playback = self.playback {
+                    try? await playback.removePodcastQueueEpisode(id)
+                    await self.refreshPodcastQueueState()
+                }
+                note = await self.completeAndRetire(id)
+                    ?? "\(finished.title) could not be marked finished."
             }
             guard let next else {
+                // Retirement leaves the row in `episodes`, so nothing else
+                // clears the player the way a dismissal's deletion used to;
+                // without this the finished, retired episode would keep
+                // showing as current indefinitely.
+                await self.stopPlaybackForRemovedEpisode()
+                await self.reloadLibraryRows()
                 self.podcastOperationMessage = [note, "No other downloaded, prepared episode is ready to play next."]
                     .compactMap { $0 }.joined(separator: " ")
                 return
@@ -4744,13 +4803,16 @@ final class WiltedMacModel {
     /// shows them, whose audio is downloaded and whose preparation finished
     /// successfully.
     ///
-    /// Already-played rows are skipped so a shorter episode already listened
-    /// to does not loop back in; optimistically-hidden rows are skipped for
-    /// the same reason `libraryItems` skips them, because a removal the
-    /// store has not yet confirmed should not be handed back to the player.
+    /// The anchor lookup runs against the unfiltered list because by the time
+    /// this runs, `finishedID` itself may already be hidden or retired --
+    /// the controller's own completion handler retires the finished episode
+    /// before handing control back here. Only candidates after the anchor
+    /// are filtered: already-played rows are skipped so a shorter episode
+    /// already listened to does not loop back in, and optimistically-hidden
+    /// or retired rows are skipped because neither should be handed back to
+    /// the player.
     private func nextReadyEpisode(after finishedID: String) -> WiltedMacEpisode? {
         let ordered = episodes
-            .filter { !hiddenEpisodeIDs.contains($0.id) }
             .sorted {
                 if $0.releasedAt != $1.releasedAt {
                     return libraryOrder == .newest ? $0.releasedAt > $1.releasedAt : $0.releasedAt < $1.releasedAt
@@ -4759,7 +4821,10 @@ final class WiltedMacModel {
             }
         guard let index = ordered.firstIndex(where: { $0.id == finishedID }) else { return nil }
         return ordered[ordered.index(after: index)...]
-            .first { $0.downloadState == .completed && $0.preparationState.isPrepared && !$0.isPlayed }
+            .first {
+                !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil
+                    && $0.downloadState == .completed && $0.preparationState.isPrepared && !$0.isPlayed
+            }
     }
 
     /// Re-reads the rows the Library draws from the store.
@@ -4839,6 +4904,12 @@ final class WiltedMacModel {
                 transcript = nil
                 outcome = nil
             }
+            // The listening record, not `PlaybackRecord`, is the durable
+            // completion fact: `dismissPodcastEpisode` deletes every
+            // `PlaybackRecord` for an episode, so a dismiss-then-restore
+            // would otherwise forget that it was ever finished.
+            let listeningState = (try? await store.listeningState(for: episode.itemID)) ?? nil
+            let retiredAt = (try? await store.retiredAt(for: episode.itemID)) ?? nil
             let downloadState: WiltedMacEpisodeDownloadState
             switch downloads[episode.itemID]?.status {
             case .queued: downloadState = .queued
@@ -4858,7 +4929,7 @@ final class WiltedMacModel {
                 releasedAt: (episode.publishedTime ?? episode.createdAt).date,
                 durationSeconds: revision?.revision.durationSeconds ?? episode.durationSeconds,
                 playbackSeconds: playbackState?.positionSeconds ?? 0,
-                isPlayed: playbackState?.completed ?? false, downloadState: downloadState,
+                isPlayed: listeningState?.completedAt != nil, retiredAt: retiredAt?.date, downloadState: downloadState,
                 preparationState: Self.preparationState(
                     outcome: outcome,
                     run: runs[episode.itemID],

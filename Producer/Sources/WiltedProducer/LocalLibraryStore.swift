@@ -2268,6 +2268,35 @@ public actor LocalLibraryStore {
         try context.save()
     }
 
+    /// Writes the completed playback checkpoint and the "finished listening"
+    /// fact in one `ModelContext`/one save, so a crash between the two never
+    /// leaves the checkpoint durable without the listening record, or vice
+    /// versa.
+    public func save(playback: PlaybackState, listening: PodcastListeningState) throws {
+        let context = ModelContext(container)
+        let playbackRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
+        let playbackID = "\(playback.itemID.rawValue)|\(playback.revisionID.rawValue)"
+        if let existing = playbackRecords.first(where: { $0.id == playbackID }) {
+            existing.sessionID = playback.sessionID; existing.sequence = playback.sequence; existing.positionSeconds = playback.positionSeconds
+            existing.durationSeconds = playback.durationSeconds; existing.completed = playback.completed; existing.intent = playback.intent.rawValue
+            existing.deviceID = playback.deviceID
+            if let systemFields = playback.encodedCloudKitRecordSystemFields {
+                existing.encodedCloudKitRecordSystemFields = systemFields
+            }
+            existing.updatedAt = playback.updatedAt.date
+        } else { context.insert(LocalLibrarySchemaV3Models.PlaybackRecord(playback)) }
+
+        let listeningRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>())
+        if let existing = listeningRecords.first(where: { $0.id == listening.episodeID.rawValue }) {
+            existing.completedAt = listening.completedAt?.date
+            existing.lastRevisionID = listening.lastRevisionID?.rawValue
+            existing.updatedAt = listening.updatedAt.date
+        } else {
+            context.insert(LocalLibrarySchemaV10Models.PodcastListeningRecord(listening))
+        }
+        try context.save()
+    }
+
     public func playbackState(for itemID: ItemID, revisionID: RevisionID) throws -> PlaybackState? {
         let context = ModelContext(container)
         guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>()).first(where: { $0.itemID == itemID.rawValue && $0.revisionID == revisionID.rawValue }) else { return nil }
@@ -2928,6 +2957,16 @@ public actor LocalLibraryStore {
         admitted.append(offeredTarget)
         try upsertPodcastEpisodes(admitted, in: context)
         context.delete(dismissal)
+        // Clearing `lastRevisionID` (not `completedAt`) keeps "I listened to
+        // this" intact while defeating the bootstrap sweep's exact-revision
+        // match: a re-download that lands on the same content-addressed
+        // revision would otherwise get silently re-retired on next launch,
+        // undoing the restore the user just asked for.
+        if let listening = try context.fetch(
+            FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>()
+        ).first(where: { $0.id == identifier }) {
+            listening.lastRevisionID = nil
+        }
         try context.save()
         return PodcastEpisodeRestoreResult(
             restored: true,
@@ -3427,10 +3466,44 @@ public actor LocalLibraryStore {
         try context.save()
         try backfillListeningRecordsForV10Reconciliation(in: context)
         try context.save()
-        // Step 3: `retiredAt` is left `nil` for every existing row. Nothing is
-        // retroactively retired here; a no-op by construction.
+        // Step 3: `retiredAt` is left `nil` for every existing row here. A
+        // completed-but-unretired episode is a real, one-time retirement on
+        // first launch after Phase 5, not a no-op backfill, so it is handled
+        // by the separate `retireCompletedEpisodesMissingRetirement()` rather
+        // than folded into this function's idempotent-by-construction steps.
         try translateLegacyInvalidationMarkersForV10Reconciliation(in: context)
         try context.save()
+    }
+
+    /// Retires every episode whose listening record says the listener
+    /// reached the end of its current ready revision and whose episode row
+    /// has no `retiredAt` yet.
+    ///
+    /// Scoped to the *current* ready revision (not just any completed
+    /// listening fact) so a dismissed-then-restored episode, whose ready
+    /// revision was deleted and has not been re-downloaded, is left alone
+    /// rather than retired sight unseen. Separate from
+    /// `reconcilePodcastStateV10` because, unlike every step there, this is
+    /// not a no-op on repeat first launches: it is the completion flow's own
+    /// retirement, run once for every episode that finished before this
+    /// method existed. On first launch after this ships, every already-Played
+    /// episode with a matching ready revision leaves the Larder at once.
+    public func retireCompletedEpisodesMissingRetirement() throws {
+        let context = ModelContext(container)
+        let listeningRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>())
+            .filter { $0.completedAt != nil }
+        guard !listeningRecords.isEmpty else { return }
+        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
+        var changed = false
+        for listening in listeningRecords {
+            guard let episode = episodes.first(where: { $0.id == listening.id }), episode.retiredAt == nil,
+                  let episodeID = try? ItemID(rawValue: listening.id),
+                  let ready = try readyRevision(for: episodeID),
+                  listening.lastRevisionID == ready.revision.revisionID.rawValue else { continue }
+            episode.retiredAt = Date()
+            changed = true
+        }
+        if changed { try context.save() }
     }
 
     /// Step 1: an episode with a ready revision and no outcome row for it gets

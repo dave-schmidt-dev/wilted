@@ -157,11 +157,19 @@ public final class PlaybackController {
     /// `podcastStateHandler` carries queue advances and podcast faults; this
     /// handler also lets surfaces observe that playback stopped.
     @ObservationIgnored public var playbackDidFinishHandler: (@MainActor @Sendable () -> Void)?
+    /// Fired once the durable "finished" checkpoint for a podcast episode has
+    /// been written, before any queue-advance logic runs. Never fired for
+    /// articles. The caller must not touch the podcast queue from inside
+    /// this handler: it runs mid-suspension inside `handleBackendCompletion`,
+    /// before that function re-reads queue state, and a queue mutation here
+    /// would race that read.
+    @ObservationIgnored public var podcastCompletionHandler: (@MainActor @Sendable (ItemID) -> Void)?
 
     private var currentRevision: AudioRevision?
     private var checkpointTask: Task<Void, Never>?
     private var completionHandledGeneration: UInt64?
     private var loadedBackendGeneration: UInt64?
+    private var loadedIsPodcastEpisode = false
 
     public init(
         store: LocalLibraryStore,
@@ -190,7 +198,7 @@ public final class PlaybackController {
 
     @discardableResult
     private func loadRevision(
-        _ revision: AudioRevision, mediaURL: URL, expectedGeneration: UInt64? = nil
+        _ revision: AudioRevision, mediaURL: URL, expectedGeneration: UInt64? = nil, isPodcast: Bool = false
     ) async throws -> UInt64 {
         let persisted = try await store.playbackState(
             for: revision.itemID,
@@ -207,6 +215,7 @@ public final class PlaybackController {
         currentRevision = revision
         itemID = revision.itemID
         revisionID = revision.revisionID
+        loadedIsPodcastEpisode = isPodcast
         self.mediaURL = mediaURL
         durationSeconds = revision.durationSeconds
         if backend.duration > 0 { durationSeconds = backend.duration }
@@ -436,11 +445,15 @@ public final class PlaybackController {
         if successfully {
             backend.pause()
             isPlaying = false
+            let completedIsPodcastEpisode = loadedIsPodcastEpisode
             do { try await checkpointCompletedRevision() }
             catch {
                 guard generation == loadedBackendGeneration, itemID == completedItemID else { return }
                 playbackDidFinishHandler?()
                 return
+            }
+            if completedIsPodcastEpisode {
+                podcastCompletionHandler?(completedItemID)
             }
             guard generation == loadedBackendGeneration, itemID == completedItemID else { return }
             let state = try? await store.podcastQueueState()
@@ -509,7 +522,8 @@ public final class PlaybackController {
         positionSeconds = durationSeconds
         completed = true
         sequence = max(1, sequence + 1)
-        try await store.save(playback: PlaybackState(
+        let now = Timestamp(Date())
+        let playbackState = try PlaybackState(
             itemID: itemID,
             revisionID: revisionID,
             sessionID: sessionID,
@@ -519,8 +533,15 @@ public final class PlaybackController {
             completed: true,
             intent: intent,
             deviceID: deviceID,
-            updatedAt: Timestamp(Date())
-        ))
+            updatedAt: now
+        )
+        if loadedIsPodcastEpisode {
+            try await store.save(playback: playbackState, listening: PodcastListeningState(
+                episodeID: itemID, completedAt: now, lastRevisionID: revisionID, updatedAt: now
+            ))
+        } else {
+            try await store.save(playback: playbackState)
+        }
     }
 
     @discardableResult
@@ -543,7 +564,7 @@ public final class PlaybackController {
         let loadedGeneration: UInt64
         do {
             loadedGeneration = try await loadRevision(
-                stored.revision, mediaURL: stored.mediaURL, expectedGeneration: expectedGeneration
+                stored.revision, mediaURL: stored.mediaURL, expectedGeneration: expectedGeneration, isPodcast: true
             )
         } catch is CancellationError {
             throw CancellationError()

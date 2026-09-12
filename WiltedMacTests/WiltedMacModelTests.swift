@@ -32,6 +32,11 @@ private actor BootstrapGate {
     }
 }
 
+private actor StoreCapture {
+    private(set) var store: LocalLibraryStore?
+    func capture(_ store: LocalLibraryStore) { self.store = store }
+}
+
 private actor FailingBootstrap {
     private(set) var attempts = 0
 
@@ -2870,11 +2875,14 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertLessThan(model.playbackPositionSeconds, model.playbackDurationSeconds,
                           "the playhead stays where the listener left it; only the completed flag is written")
 
-        XCTAssertFalse(model.episodes.contains { $0.id == episodeID.rawValue },
-                       "saying \"I am done with this\" retires the row, the same as playing it to the end")
-        XCTAssertTrue(model.dismissedEpisodes.contains { $0.id == episodeID.rawValue },
-                      "and durably, so the next feed refresh cannot put it back")
-        XCTAssertEqual(model.podcastOperationMessage, "Removed \(episode.title).")
+        let retired = try XCTUnwrap(model.episodes.first { $0.id == episodeID.rawValue },
+                                    "retirement is not dismissal -- the row survives, just off the shelf")
+        XCTAssertNotNil(retired.retiredAt)
+        XCTAssertFalse(model.libraryItems.contains { $0.id == episodeID.rawValue },
+                       "saying \"I am done with this\" takes it off the shelf, the same as playing it to the end")
+        XCTAssertFalse(model.dismissedEpisodes.contains { $0.id == episodeID.rawValue },
+                       "retirement is not a dismissal -- nothing was deleted")
+        XCTAssertEqual(model.podcastOperationMessage, "Finished \(episode.title).")
         XCTAssertTrue(model.playbackCompletionIsSettled,
                       "both halves are done, so the control has nothing left to offer")
     }
@@ -2882,9 +2890,10 @@ final class WiltedMacModelTests: XCTestCase {
     /// Reported 2026-09-07: an episode marked completed on a build that wrote
     /// the record without retiring the row stayed in the Larder, and the
     /// control that would have retired it read "Completed" and was disabled.
-    /// The record and the shelf can disagree for reasons that outlive that
-    /// build -- a dismissal that fails after the completion sticks, a
-    /// completion synced from iPhone that never runs this handler -- so the
+    /// The record and the shelf can still disagree after Phase 5's bootstrap
+    /// sweep -- a completion synced from iPhone against a revision this
+    /// device has since re-downloaded, for instance, which the sweep
+    /// deliberately leaves alone rather than retiring sight unseen -- so the
     /// press has to remain available until the row is actually gone, and it
     /// has to finish the half that was skipped rather than repeat the half
     /// that was not.
@@ -2930,14 +2939,24 @@ final class WiltedMacModelTests: XCTestCase {
                         updatedAt: created
                     )
                 )
-                // The state the old build left behind: finished on the record,
-                // with no dismissal to take the row off the shelf.
+                // The state a sync from another device can leave behind:
+                // finished on the record, with no retirement to take the row
+                // off the shelf. The listening fact names a revision this
+                // device does not currently have ready -- e.g. synced before
+                // a local re-download -- so the bootstrap sweep in
+                // `startStoreBootstrap()` must not retire it, leaving the
+                // press with real work still to do.
                 try await store.save(playback: try PlaybackState(
                     itemID: episodeID, revisionID: assembled.revision.revisionID,
                     sessionID: "stranded-session", sequence: 3,
                     positionSeconds: assembled.revision.durationSeconds,
                     durationSeconds: assembled.revision.durationSeconds,
                     completed: true, intent: .progress, deviceID: "stranded-device",
+                    updatedAt: created
+                ))
+                try await store.saveListening(PodcastListeningState(
+                    episodeID: episodeID, completedAt: created,
+                    lastRevisionID: try RevisionID(rawValue: "stranded-superseded-revision"),
                     updatedAt: created
                 ))
                 return store
@@ -2958,9 +2977,11 @@ final class WiltedMacModelTests: XCTestCase {
         model.markCurrentPlaybackCompleted()
         try await settle(model)
 
-        XCTAssertFalse(model.episodes.contains { $0.id == episodeID.rawValue },
-                       "pressing it a second time has to retire the row the first press never did")
-        XCTAssertTrue(model.dismissedEpisodes.contains { $0.id == episodeID.rawValue })
+        let retired = try XCTUnwrap(model.episodes.first { $0.id == episodeID.rawValue },
+                                    "retirement is not dismissal -- the row survives, just off the shelf")
+        XCTAssertNotNil(retired.retiredAt, "pressing it a second time has to retire the row the first press never did")
+        XCTAssertFalse(model.libraryItems.contains { $0.id == episodeID.rawValue })
+        XCTAssertFalse(model.dismissedEpisodes.contains { $0.id == episodeID.rawValue })
         XCTAssertTrue(model.playbackCompletionIsSettled,
                       "and then stop offering, because there is nothing left to finish")
     }
@@ -3848,11 +3869,82 @@ final class WiltedMacModelTests: XCTestCase {
 
         XCTAssertEqual(model.currentEpisode?.id, secondID.rawValue,
                        "the next ready episode should start once the current one runs out with nothing queued")
-        XCTAssertFalse(model.episodes.contains { $0.id == firstID.rawValue },
-                       "the episode that was listened to all the way through is gone from the Larder")
-        XCTAssertTrue(model.dismissedEpisodes.contains { $0.id == firstID.rawValue },
-                      "and gone durably, so the next feed refresh cannot put it back")
-        XCTAssertEqual(model.podcastOperationMessage, "Removed \(first.title).")
+        let finished = try XCTUnwrap(model.episodes.first { $0.id == firstID.rawValue },
+                                     "retirement is not dismissal -- the row survives")
+        XCTAssertNotNil(finished.retiredAt,
+                         "the episode that was listened to all the way through is retired")
+        XCTAssertFalse(model.libraryItems.contains { $0.id == firstID.rawValue },
+                        "and off the Larder shelf")
+        XCTAssertFalse(model.dismissedEpisodes.contains { $0.id == firstID.rawValue })
+        XCTAssertEqual(model.podcastOperationMessage, "Finished \(first.title).")
+    }
+
+    /// In production, `PlaybackController`'s own `podcastCompletionHandler`
+    /// retires the finished episode before `handlePodcastPlaybackFinished`
+    /// ever runs its successor search -- the two fire from separate places in
+    /// `handleBackendCompletion`, and the retirement's single store hop wins
+    /// the race against the handler's own multi-hop reload. This test forces
+    /// that ordering directly (retiring the episode between "reached end" and
+    /// "finished") so the successor search has to find its anchor even though
+    /// the anchor is already hidden and retired by the time it looks.
+    func testFinishedEpisodeAdvancesEvenWhenItIsAlreadyRetiredBeforeTheSearchRuns() async throws {
+        let directory = temporaryDirectory("continue-race")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/continue-race.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let firstEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/continue-race-1.mp3"))
+        let secondEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/continue-race-2.mp3"))
+        let firstID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "continue-race-1", enclosureURL: firstEnclosure
+        )
+        let secondID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "continue-race-2", enclosureURL: secondEnclosure
+        )
+
+        let storeCapture = StoreCapture()
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Racing", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    firstID, guid: "continue-race-1", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: firstEnclosure, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                try await Self.addReadyEpisode(
+                    secondID, guid: "continue-race-2", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: secondEnclosure, publishedAt: created.date.addingTimeInterval(60),
+                    directory: directory, store: store, created: created
+                )
+                await storeCapture.capture(store)
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.libraryOrder = .oldest
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let first = try XCTUnwrap(model.episodes.first { $0.id == firstID.rawValue })
+        model.playEpisode(first)
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+
+        await model.simulatePodcastPlaybackReachedEndForTesting()
+        try await settle(model)
+        let capturedStore = await storeCapture.store
+        let store = try XCTUnwrap(capturedStore)
+        _ = try await store.retireEpisode(firstID)
+        model.simulatePodcastPlaybackFinishedForTesting()
+        try await settle(model)
+
+        XCTAssertEqual(model.currentEpisode?.id, secondID.rawValue,
+                       "the search has to find its own anchor even though retirement already ran first")
     }
 
     /// The undownloaded middle episode is never a candidate; the search has
@@ -3920,10 +4012,13 @@ final class WiltedMacModelTests: XCTestCase {
 
         XCTAssertEqual(model.currentEpisode?.id, thirdID.rawValue,
                        "an undownloaded episode in between has to be skipped, not offered")
-        XCTAssertFalse(model.episodes.contains { $0.id == firstID.rawValue },
-                       "the episode that finished is removed")
-        XCTAssertTrue(model.episodes.contains { $0.id == secondID.rawValue },
-                      "the one merely passed over is not -- it was never listened to")
+        let finished = try XCTUnwrap(model.episodes.first { $0.id == firstID.rawValue },
+                                     "retirement is not dismissal -- the finished episode's row survives")
+        XCTAssertNotNil(finished.retiredAt)
+        XCTAssertFalse(model.libraryItems.contains { $0.id == firstID.rawValue },
+                       "the episode that finished is taken off the shelf")
+        let skipped = try XCTUnwrap(model.episodes.first { $0.id == secondID.rawValue })
+        XCTAssertNil(skipped.retiredAt, "the one merely passed over is not -- it was never listened to")
     }
 
     /// Nothing else in the Larder is ready, so playback has to stop and the
@@ -3970,12 +4065,15 @@ final class WiltedMacModelTests: XCTestCase {
         model.simulatePodcastPlaybackFinishedForTesting()
         try await settle(model)
 
-        // Removing what was playing empties the player, exactly as removing it
-        // by hand from the Larder does; there is no episode left to show.
-        XCTAssertNil(model.currentEpisode, "the finished episode was removed and nothing replaced it")
-        XCTAssertFalse(model.episodes.contains { $0.id == onlyID.rawValue })
+        // Retiring what was playing empties the player, the same as taking it off
+        // the shelf by hand does; there is no episode left to show.
+        XCTAssertNil(model.currentEpisode, "the finished episode was retired and nothing replaced it")
+        let finished = try XCTUnwrap(model.episodes.first { $0.id == onlyID.rawValue },
+                                     "retirement is not dismissal -- the row survives")
+        XCTAssertNotNil(finished.retiredAt)
+        XCTAssertFalse(model.libraryItems.contains { $0.id == onlyID.rawValue })
         XCTAssertEqual(model.podcastOperationMessage,
-                       "Removed \(only.title). No other downloaded, prepared episode is ready to play next.")
+                       "Finished \(only.title). No other downloaded, prepared episode is ready to play next.")
     }
 
     /// The handler is podcast-specific; an article running out must not go

@@ -180,6 +180,8 @@ final class PlaybackControllerTests: XCTestCase {
         controller.podcastStateHandler = { observations.append(($0, $1)) }
         var finishCount = 0
         controller.playbackDidFinishHandler = { finishCount += 1 }
+        var completionCalls: [ItemID] = []
+        controller.podcastCompletionHandler = { completionCalls.append($0) }
         await controller.restorePodcastQueue()
         XCTAssertEqual(controller.itemID, first.revision.itemID)
         let firstGeneration = backend.loadedGeneration
@@ -205,6 +207,7 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(observations.last?.1, .playbackFailed(first.revision.itemID))
         XCTAssertEqual(finishCount, 1, "the failed callback must announce one stop observation")
         XCTAssertFalse(controller.completed, "a failed callback must not mark the revision complete")
+        XCTAssertTrue(completionCalls.isEmpty, "a failed callback must not write a listening completion either")
         let retainedQueueState = try await store.podcastQueueState()
         XCTAssertEqual(retainedQueueState.currentEpisodeID, first.revision.itemID,
                        "a failed callback must not advance the queue")
@@ -253,6 +256,13 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(completedState.positionSeconds, completedState.durationSeconds)
         XCTAssertEqual(observations.last?.0, second.revision.itemID)
         XCTAssertNil(observations.last?.1)
+        XCTAssertEqual(completionCalls, [first.revision.itemID],
+                       "the auto-advance path writes the listening completion exactly once, for the episode that finished")
+        let firstListening = try await store.listeningState(for: first.revision.itemID)
+        XCTAssertNotNil(firstListening?.completedAt)
+        XCTAssertEqual(firstListening?.lastRevisionID, first.revision.revisionID)
+        let firstRetiredAt = try await store.retiredAt(for: first.revision.itemID)
+        XCTAssertNil(firstRetiredAt, "the controller writes the listening fact only -- retirement is the model's job")
 
         backend.finish(generation: firstGeneration, successfully: true)
         try await Task.sleep(for: .milliseconds(20))
@@ -493,6 +503,8 @@ final class PlaybackControllerTests: XCTestCase {
         ))
         let backend = FakeBackend()
         let controller = PlaybackController(store: store, backend: backend)
+        var completionCalls: [ItemID] = []
+        controller.podcastCompletionHandler = { completionCalls.append($0) }
         await controller.restorePodcastQueue()
         XCTAssertEqual(controller.itemID, first.revision.itemID)
         backend.currentTime = 20
@@ -514,6 +526,12 @@ final class PlaybackControllerTests: XCTestCase {
         let stored = try XCTUnwrap(storedState)
         XCTAssertTrue(stored.completed)
         XCTAssertEqual(stored.positionSeconds, stored.durationSeconds)
+
+        let listening = try await store.listeningState(for: first.revision.itemID)
+        XCTAssertNotNil(listening?.completedAt, "the manual mark-completed path writes the listening fact too")
+        XCTAssertEqual(listening?.lastRevisionID, first.revision.revisionID)
+        XCTAssertTrue(completionCalls.isEmpty,
+                      "markCompleted() bypasses handleBackendCompletion, so retirement is the caller's job, not the controller's")
 
         backend.finish(successfully: true)
         try await Task.sleep(for: .milliseconds(20))
@@ -551,7 +569,9 @@ final class PlaybackControllerTests: XCTestCase {
         let articleBackend = FakeBackend()
         let articleController = PlaybackController(store: store, backend: articleBackend)
         var articleObservations: [ItemID?] = []
+        var articleCompletionCalls: [ItemID] = []
         articleController.podcastStateHandler = { itemID, _ in articleObservations.append(itemID) }
+        articleController.podcastCompletionHandler = { articleCompletionCalls.append($0) }
         try await articleController.load(
             revision: articleRevision, mediaURL: root.appendingPathComponent("article.m4a")
         )
@@ -561,6 +581,9 @@ final class PlaybackControllerTests: XCTestCase {
 
         XCTAssertTrue(articleObservations.isEmpty)
         XCTAssertTrue(articleController.completed)
+        XCTAssertTrue(articleCompletionCalls.isEmpty, "an article completion must never write a podcast listening fact")
+        let articleListening = try await store.listeningState(for: articleRevision.itemID)
+        XCTAssertNil(articleListening)
 
         let podcast = try await queueRevision(index: 9, root: root, store: store)
         try await store.replacePodcastQueue(try PodcastQueueState(
@@ -569,13 +592,19 @@ final class PlaybackControllerTests: XCTestCase {
         let podcastBackend = FakeBackend()
         let podcastController = PlaybackController(store: store, backend: podcastBackend)
         var podcastObservations: [ItemID?] = []
+        var podcastCompletionCalls: [ItemID] = []
         podcastController.podcastStateHandler = { itemID, _ in podcastObservations.append(itemID) }
+        podcastController.podcastCompletionHandler = { podcastCompletionCalls.append($0) }
         await podcastController.restorePodcastQueue()
 
         podcastBackend.finish(successfully: true)
         await waitUntil { podcastObservations.last == podcast.revision.itemID }
 
         XCTAssertEqual(podcastObservations, [podcast.revision.itemID])
+        XCTAssertEqual(podcastCompletionCalls, [podcast.revision.itemID],
+                       "a podcast completion with nothing behind it still writes the listening fact")
+        let podcastListening = try await store.listeningState(for: podcast.revision.itemID)
+        XCTAssertNotNil(podcastListening?.completedAt)
     }
 
     /// A surface that only watches `podcastStateHandler` never hears about the

@@ -74,6 +74,17 @@ final class WiltedVisualSystemTests: XCTestCase {
                     completed: index == 2, intent: .progress, deviceID: "mac-test",
                     updatedAt: Timestamp(Date(timeIntervalSince1970: 400))
                 ))
+                if index == 2 {
+                    // `lastRevisionID` stays nil so the bootstrap's retirement
+                    // sweep (which only retires an exact ready-revision match)
+                    // leaves this episode alone -- this test is about the
+                    // "finished" filter showing a completed episode, not about
+                    // retirement taking it off the shelf.
+                    try await store.saveListening(PodcastListeningState(
+                        episodeID: episodeID, completedAt: Timestamp(Date(timeIntervalSince1970: 400)),
+                        lastRevisionID: nil, updatedAt: Timestamp(Date(timeIntervalSince1970: 400))
+                    ))
+                }
             }
         }
 
