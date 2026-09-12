@@ -94,3 +94,9 @@ area: ["Shared/**", "WiltedMac/**", "WiltediOS/**"]
 gate_test: test-gate.sh
 threshold: 3
 rationale: Wilted preserves Zero Delta structure, status semantics, native typography, accessibility, and flat surfaces while limiting the lettuce motif to a restrained identity mark and accent. Navigation stays literal, color never carries state alone, and light/dark behavior is snapshot- and contrast-tested.
+
+### W-INV-011 — Episode state dimensions stay orthogonal and locally durable
+area: ["Producer/**"]
+gate_test: test-gate.sh
+threshold: 3
+rationale: Download progress, preparation outcome, listening completion, and retirement are independent, separately-persisted facts about a podcast episode; no single stored enum collapses them, and any user-facing lifecycle label is derived from the current combination at read time rather than written as its own column. Preparation outcomes are keyed by revision, so a superseded revision's outcome never masks the current one; listening completion is keyed by item, since a listener's "done with this episode" intent outlives any one revision's replacement. `LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord` and `PodcastListeningRecord` are local-only SwiftData rows with no `WiltedRecordType` counterpart; podcast sync (W-INV-007) is not implemented for them, and if it ever is, the item-scoped listening record needs its own last-writer-wins-by-`updatedAt` merge rule distinct from the revision-scoped merge rules the CloudKit contract already covers, because two devices can independently mark the same item complete against different revisions.

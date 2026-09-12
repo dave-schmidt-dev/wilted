@@ -16,8 +16,9 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     case v7 = 7
     case v8 = 8
     case v9 = 9
+    case v10 = 10
 
-    public static let current: LocalLibrarySchemaVersion = .v9
+    public static let current: LocalLibrarySchemaVersion = .v10
 }
 
 /// The local ownership state used by generation-based remote reconciliation.
@@ -185,6 +186,13 @@ public struct PodcastSubscription: Codable, Equatable, Sendable {
     }
 }
 
+/// How a terminal download failure should be treated by automatic retry.
+/// Classification itself is Phase 3's job; Phase 2 only carries the column.
+public enum PodcastDownloadFailureKind: String, Codable, Equatable, Sendable {
+    case retryable
+    case terminal
+}
+
 public struct PodcastDownload: Codable, Equatable, Sendable {
     public let episodeID: ItemID
     public let status: PodcastDownloadStatus
@@ -193,12 +201,14 @@ public struct PodcastDownload: Codable, Equatable, Sendable {
     public let localURL: URL?
     public let contentHash: String?
     public let updatedAt: Timestamp
+    public let failureKind: PodcastDownloadFailureKind?
 
     public var itemID: ItemID { episodeID }
 
     public init(episodeID: ItemID, status: PodcastDownloadStatus = .queued,
                 bytesReceived: Int64 = 0, expectedByteCount: Int64? = nil,
-                localURL: URL? = nil, contentHash: String? = nil, updatedAt: Timestamp) throws {
+                localURL: URL? = nil, contentHash: String? = nil, updatedAt: Timestamp,
+                failureKind: PodcastDownloadFailureKind? = nil) throws {
         guard bytesReceived >= 0, expectedByteCount == nil || expectedByteCount! > 0 else {
             throw LocalLibraryStoreError.invalidPodcastState("download byte counts")
         }
@@ -213,7 +223,61 @@ public struct PodcastDownload: Codable, Equatable, Sendable {
         }
         self.episodeID = episodeID; self.status = status; self.bytesReceived = bytesReceived
         self.expectedByteCount = expectedByteCount; self.localURL = localURL
-        self.contentHash = contentHash; self.updatedAt = updatedAt
+        self.contentHash = contentHash; self.updatedAt = updatedAt; self.failureKind = failureKind
+    }
+}
+
+/// Whether a preparation outcome's artifact still matches what the current
+/// pipeline would produce. Phase 2 only carries this column: every backfilled
+/// and newly-written row defaults to `.current` unless an explicit
+/// invalidation rule (Phase 7) says otherwise.
+public enum PodcastPreparationEligibility: String, Codable, Equatable, Sendable {
+    case current
+    case eligible
+    case invalid
+}
+
+/// One durable proof that preparation produced a playable artifact for one
+/// revision. Keyed by `(episodeID, revisionID)` rather than by episode alone:
+/// preparation replaces the revision, and a superseded revision's outcome is
+/// retained as history rather than overwritten.
+public struct PodcastPreparationOutcome: Codable, Equatable, Sendable {
+    public let episodeID: ItemID
+    public let revisionID: RevisionID
+    public let policyDigest: String
+    public let pipelineFingerprint: String?
+    public let semanticVersion: String
+    public let producedAt: Timestamp
+    public let eligibility: PodcastPreparationEligibility
+    public let invalidationRuleID: String?
+
+    public init(episodeID: ItemID, revisionID: RevisionID, policyDigest: String,
+                pipelineFingerprint: String?, semanticVersion: String, producedAt: Timestamp,
+                eligibility: PodcastPreparationEligibility = .current, invalidationRuleID: String? = nil) {
+        self.episodeID = episodeID; self.revisionID = revisionID; self.policyDigest = policyDigest
+        self.pipelineFingerprint = pipelineFingerprint; self.semanticVersion = semanticVersion
+        self.producedAt = producedAt; self.eligibility = eligibility; self.invalidationRuleID = invalidationRuleID
+    }
+
+    public var id: String { "\(episodeID.rawValue)|\(revisionID.rawValue)" }
+}
+
+/// One durable "the listener reached the end" fact. Item-scoped rather than
+/// revision-scoped, because both `replaceReadyRevision` and
+/// `dismissPodcastEpisode` delete revision-scoped rows and completion must
+/// outlive both. Named `PodcastListeningState`, not `PodcastListeningRecord`
+/// -- that name is reserved for the `@Model` SwiftData class describing the
+/// same dimension, exactly as `PodcastDownload`/`PodcastDownloadRecord` are
+/// already two names for one dimension elsewhere in this file.
+public struct PodcastListeningState: Codable, Equatable, Sendable {
+    public let episodeID: ItemID
+    public let completedAt: Timestamp?
+    public let lastRevisionID: RevisionID?
+    public let updatedAt: Timestamp
+
+    public init(episodeID: ItemID, completedAt: Timestamp?, lastRevisionID: RevisionID?, updatedAt: Timestamp) {
+        self.episodeID = episodeID; self.completedAt = completedAt
+        self.lastRevisionID = lastRevisionID; self.updatedAt = updatedAt
     }
 }
 
@@ -1131,11 +1195,144 @@ private enum LocalLibrarySchemaV9: VersionedSchema {
     }
 }
 
+private enum LocalLibrarySchemaV10Models {
+    /// The episode entity as of store version 10: version nine's columns plus
+    /// `retiredAt`. A separate class, as every prior version bump was, because
+    /// two schema versions may not describe one entity shape.
+    @Model final class PodcastEpisodeRecord {
+        @Attribute(.unique) var id: String
+        var feedID: String
+        var feedURL: String
+        var rssGUID: String?
+        var title: String
+        var author: String?
+        var publishedTime: Date?
+        var enclosureURL: String
+        var enclosureMediaType: String
+        var enclosureByteCount: Int64?
+        var durationSeconds: Double?
+        var artworkURL: String?
+        var transcriptSources: Data?
+        var notes: String?
+        var createdAt: Date
+        /// Nullable: a version-nine row migrates to "active", which is what was
+        /// true of it before retirement existed as a dimension. Lifecycle-owned
+        /// -- `apply(_:to:)` must never write this column from feed data.
+        var retiredAt: Date?
+
+        init(_ value: PodcastEpisode) throws {
+            id = value.itemID.rawValue; feedID = value.feedID.rawValue; feedURL = value.feedURL.absoluteString
+            rssGUID = value.rssGUID; title = value.title; author = value.author
+            publishedTime = value.publishedTime?.date; enclosureURL = value.enclosureURL.absoluteString
+            enclosureMediaType = value.enclosureMediaType; enclosureByteCount = value.enclosureByteCount
+            durationSeconds = value.durationSeconds; artworkURL = value.artworkURL?.absoluteString
+            transcriptSources = try Self.encode(value.transcriptSources)
+            notes = value.notes
+            createdAt = value.createdAt.date
+            retiredAt = nil
+        }
+
+        static func encode(_ sources: [PodcastTranscriptSource]) throws -> Data? {
+            try LocalLibrarySchemaV7Models.PodcastEpisodeRecord.encode(sources)
+        }
+
+        static func decode(_ payload: Data?) throws -> [PodcastTranscriptSource] {
+            try LocalLibrarySchemaV7Models.PodcastEpisodeRecord.decode(payload)
+        }
+    }
+
+    /// The download entity as of store version 10: version six's columns plus
+    /// `failureKind`. Nothing before Phase 3 classifies or reads it.
+    @Model final class PodcastDownloadRecord {
+        @Attribute(.unique) var episodeID: String
+        var status: String
+        var bytesReceived: Int64
+        var expectedByteCount: Int64?
+        var localURL: String?
+        var contentHash: String?
+        var updatedAt: Date
+        var failureKind: String?
+
+        init(_ value: PodcastDownload) {
+            episodeID = value.episodeID.rawValue; status = value.status.rawValue
+            bytesReceived = value.bytesReceived; expectedByteCount = value.expectedByteCount
+            localURL = value.localURL?.absoluteString; contentHash = value.contentHash; updatedAt = value.updatedAt.date
+            failureKind = value.failureKind?.rawValue
+        }
+    }
+
+    /// One durable proof that preparation produced a playable artifact for one
+    /// revision. Keyed by `episodeID + revisionID` rather than by episode alone,
+    /// because preparation replaces the revision and history for a superseded
+    /// revision is retained, not overwritten.
+    @Model final class PodcastPreparationOutcomeRecord {
+        @Attribute(.unique) var id: String
+        var episodeID: String
+        var revisionID: String
+        var policyDigest: String
+        var pipelineFingerprint: String?
+        var semanticVersion: String
+        var producedAt: Date
+        var eligibility: String
+        var invalidationRuleID: String?
+
+        init(_ value: PodcastPreparationOutcome) {
+            id = value.id
+            episodeID = value.episodeID.rawValue
+            revisionID = value.revisionID.rawValue
+            policyDigest = value.policyDigest
+            pipelineFingerprint = value.pipelineFingerprint
+            semanticVersion = value.semanticVersion
+            producedAt = value.producedAt.date
+            eligibility = value.eligibility.rawValue
+            invalidationRuleID = value.invalidationRuleID
+        }
+    }
+
+    /// One durable "the listener reached the end" fact, item-scoped rather than
+    /// revision-scoped because both `replaceReadyRevision` and
+    /// `dismissPodcastEpisode` delete revision-scoped rows and completion must
+    /// outlive both.
+    @Model final class PodcastListeningRecord {
+        @Attribute(.unique) var id: String
+        var completedAt: Date?
+        var lastRevisionID: String?
+        var updatedAt: Date
+
+        init(_ value: PodcastListeningState) {
+            id = value.episodeID.rawValue
+            completedAt = value.completedAt?.date
+            lastRevisionID = value.lastRevisionID?.rawValue
+            updatedAt = value.updatedAt.date
+        }
+    }
+}
+
+/// Version 10 adds `retiredAt` to the episode entity, `failureKind` to the
+/// download entity, and two new standalone entities for preparation outcome
+/// and listening completion. Lightweight: every addition is nullable or a new
+/// table, and no existing column changes shape.
+private enum LocalLibrarySchemaV10: VersionedSchema {
+    static let versionIdentifier = Schema.Version(10, 0, 0)
+    static var models: [any PersistentModel.Type] {
+        LocalLibrarySchemaV9.models.filter {
+            $0 != LocalLibrarySchemaV9Models.PodcastEpisodeRecord.self
+                && $0 != LocalLibrarySchemaV6Models.PodcastDownloadRecord.self
+        } + [
+            LocalLibrarySchemaV10Models.PodcastEpisodeRecord.self,
+            LocalLibrarySchemaV10Models.PodcastDownloadRecord.self,
+            LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord.self,
+            LocalLibrarySchemaV10Models.PodcastListeningRecord.self,
+        ]
+    }
+}
+
 private enum LocalLibraryMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
         [LocalLibrarySchemaV1.self, LocalLibrarySchemaV2.self, LocalLibrarySchemaV3.self,
          LocalLibrarySchemaV4.self, LocalLibrarySchemaV5.self, LocalLibrarySchemaV6.self,
-         LocalLibrarySchemaV7.self, LocalLibrarySchemaV8.self, LocalLibrarySchemaV9.self]
+         LocalLibrarySchemaV7.self, LocalLibrarySchemaV8.self, LocalLibrarySchemaV9.self,
+         LocalLibrarySchemaV10.self]
     }
     static var stages: [MigrationStage] {
         [.lightweight(fromVersion: LocalLibrarySchemaV1.self, toVersion: LocalLibrarySchemaV2.self),
@@ -1145,7 +1342,8 @@ private enum LocalLibraryMigrationPlan: SchemaMigrationPlan {
          .lightweight(fromVersion: LocalLibrarySchemaV5.self, toVersion: LocalLibrarySchemaV6.self),
          .lightweight(fromVersion: LocalLibrarySchemaV6.self, toVersion: LocalLibrarySchemaV7.self),
          .lightweight(fromVersion: LocalLibrarySchemaV7.self, toVersion: LocalLibrarySchemaV8.self),
-         .lightweight(fromVersion: LocalLibrarySchemaV8.self, toVersion: LocalLibrarySchemaV9.self)]
+         .lightweight(fromVersion: LocalLibrarySchemaV8.self, toVersion: LocalLibrarySchemaV9.self),
+         .lightweight(fromVersion: LocalLibrarySchemaV9.self, toVersion: LocalLibrarySchemaV10.self)]
     }
 }
 
@@ -1197,7 +1395,7 @@ public actor LocalLibraryStore {
             try migrationFailure?()
         }
         migrationBackupURL = retainedURL
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV9.self)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV10.self)
         let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         if migrate {
             container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
@@ -1219,7 +1417,7 @@ public actor LocalLibraryStore {
             retainedURL = try Self.migrationPreflight(at: url).retainedURL
         }
         migrationBackupURL = retainedURL
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV9.self)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV10.self)
         let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         if migrate {
             container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
@@ -1408,6 +1606,61 @@ public actor LocalLibraryStore {
                                   durationSeconds: playback.durationSeconds, byteCount: 1,
                                   contentHash: "sha256:" + String(repeating: "5", count: 64), mediaType: "audio/mp4",
                                   createdAt: playback.updatedAt, schemaVersion: 3)
+    }
+
+    /// One episode's inputs for `createV9MigrationFixture`, bundling only what
+    /// a V9 fixture needs: episode metadata, an optional completed download
+    /// plus ready revision (nil skips both -- the episode carries no proof to
+    /// backfill), an optional completed-playback state, and any preparation
+    /// journal entries to seed (terminal successes, forced-redownload/reset
+    /// markers, or both).
+    internal struct PodcastEpisodeMigrationFixture {
+        let episode: PodcastEpisode
+        let download: PodcastDownload?
+        let revision: AudioRevision?
+        let mediaURL: URL?
+        let playback: PlaybackState?
+        let journalEntries: [PreparationJournalEntry]
+
+        internal init(episode: PodcastEpisode, download: PodcastDownload? = nil, revision: AudioRevision? = nil,
+                      mediaURL: URL? = nil, playback: PlaybackState? = nil, journalEntries: [PreparationJournalEntry] = []) {
+            self.episode = episode; self.download = download; self.revision = revision
+            self.mediaURL = mediaURL; self.playback = playback; self.journalEntries = journalEntries
+        }
+    }
+
+    /// Builds a frozen V9 store exercising every `reconcilePodcastStateV10()`
+    /// backfill path: a journal-proved preparation outcome, a
+    /// completed-listening backfill, and legacy forced-redownload/reset
+    /// markers to translate onto an outcome row or drop outright.
+    nonisolated internal static func createV9MigrationFixture(
+        at url: URL, feed: PodcastFeed, subscription: PodcastSubscription,
+        episodes: [PodcastEpisodeMigrationFixture]
+    ) throws {
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV9.self)
+        let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
+        let container = try ModelContainer(for: schema, configurations: [configuration])
+        let context = ModelContext(container)
+        context.insert(LocalLibrarySchemaV6Models.PodcastFeedRecord(feed))
+        context.insert(LocalLibrarySchemaV6Models.PodcastSubscriptionRecord(subscription))
+        for fixture in episodes {
+            context.insert(try LocalLibrarySchemaV9Models.PodcastEpisodeRecord(fixture.episode))
+            if let download = fixture.download {
+                context.insert(LocalLibrarySchemaV6Models.PodcastDownloadRecord(download))
+            }
+            if let revision = fixture.revision, let mediaURL = fixture.mediaURL {
+                context.insert(LocalLibrarySchemaV3Models.RevisionRecord(revision, mediaURL: mediaURL))
+            }
+            if let playback = fixture.playback {
+                context.insert(LocalLibrarySchemaV3Models.PlaybackRecord(playback))
+            }
+            for entry in fixture.journalEntries {
+                context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(entry))
+            }
+        }
+        try context.save()
     }
 
     /// Corrupts repository metadata for deterministic decoder-failure tests.
@@ -1693,7 +1946,7 @@ public actor LocalLibraryStore {
         let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>())
         let podcastRecords = records.filter { $0.requestID.hasPrefix("podcast-prepare|") }
         let grouped = Dictionary(grouping: podcastRecords, by: \.requestID)
-        let downloads = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
+        let downloads = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
         let downloadByEpisode = Dictionary(uniqueKeysWithValues: downloads.map { ($0.episodeID, $0) })
         var resetIDs = Set<ItemID>()
         var forcedIDs = Set<ItemID>()
@@ -2326,10 +2579,10 @@ public actor LocalLibraryStore {
 
     public func save(episode: PodcastEpisode) throws {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
         if let existing = records.first(where: { $0.id == episode.itemID.rawValue }) {
             try Self.apply(episode, to: existing)
-        } else { context.insert(try LocalLibrarySchemaV9Models.PodcastEpisodeRecord(episode)) }
+        } else { context.insert(try LocalLibrarySchemaV10Models.PodcastEpisodeRecord(episode)) }
         try context.save()
     }
 
@@ -2337,7 +2590,7 @@ public actor LocalLibraryStore {
 
     public func podcastEpisode(for episodeID: ItemID) throws -> PodcastEpisode? {
         let context = ModelContext(container)
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>()).first(where: { $0.id == episodeID.rawValue }),
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>()).first(where: { $0.id == episodeID.rawValue }),
               let feedID = try? ItemID(rawValue: record.feedID), let feedURL = URL(string: record.feedURL),
               let enclosureURL = URL(string: record.enclosureURL) else { return nil }
         return try PodcastEpisode(itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: record.rssGUID,
@@ -2345,19 +2598,19 @@ public actor LocalLibraryStore {
                                   enclosureURL: enclosureURL, enclosureMediaType: record.enclosureMediaType,
                                   enclosureByteCount: record.enclosureByteCount, durationSeconds: record.durationSeconds,
                                   artworkURL: record.artworkURL.flatMap(URL.init),
-                                  transcriptSources: try LocalLibrarySchemaV9Models.PodcastEpisodeRecord.decode(record.transcriptSources),
+                                  transcriptSources: try LocalLibrarySchemaV10Models.PodcastEpisodeRecord.decode(record.transcriptSources),
                                   notes: record.notes, createdAt: Timestamp(record.createdAt))
     }
 
     public func podcastEpisodes(for feedID: ItemID? = nil) throws -> [PodcastEpisode] {
         let context = ModelContext(container)
-        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>()).filter { feedID == nil || $0.feedID == feedID!.rawValue }.sorted { ($0.publishedTime ?? $0.createdAt) > ($1.publishedTime ?? $1.createdAt) }.compactMap { record in
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>()).filter { feedID == nil || $0.feedID == feedID!.rawValue }.sorted { ($0.publishedTime ?? $0.createdAt) > ($1.publishedTime ?? $1.createdAt) }.compactMap { record in
             guard let id = try? ItemID(rawValue: record.id), let fid = try? ItemID(rawValue: record.feedID), let feedURL = URL(string: record.feedURL), let enclosureURL = URL(string: record.enclosureURL) else { return nil }
             return try? PodcastEpisode(itemID: id, feedID: fid, feedURL: feedURL, rssGUID: record.rssGUID, title: record.title,
                                        author: record.author, publishedTime: record.publishedTime.map(Timestamp.init), enclosureURL: enclosureURL,
                                        enclosureMediaType: record.enclosureMediaType, enclosureByteCount: record.enclosureByteCount,
                                        durationSeconds: record.durationSeconds, artworkURL: record.artworkURL.flatMap(URL.init),
-                                       transcriptSources: (try? LocalLibrarySchemaV9Models.PodcastEpisodeRecord.decode(record.transcriptSources)) ?? [],
+                                       transcriptSources: (try? LocalLibrarySchemaV10Models.PodcastEpisodeRecord.decode(record.transcriptSources)) ?? [],
                                        notes: record.notes, createdAt: Timestamp(record.createdAt))
         }
     }
@@ -2488,7 +2741,7 @@ public actor LocalLibraryStore {
         }
         let context = ModelContext(container)
         let existing = Set(
-            try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>()).map(\.id)
+            try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>()).map(\.id)
         )
         let admitted = try admittedPodcastEpisodes(episodes, admission: admission, in: context)
         try upsertPodcastEpisodes(admitted, in: context)
@@ -2499,7 +2752,7 @@ public actor LocalLibraryStore {
         // future caller cannot make it one by passing a limit.
         if limit > 0, admission == .incremental {
             let tracked = Set(
-                try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
+                try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
                     .map(\.episodeID)
             )
             // Newest first, so a capped policy takes the episodes a listener
@@ -2507,7 +2760,7 @@ public actor LocalLibraryStore {
             let eligible = Self.newestFirst(newlyAdmitted.filter { !tracked.contains($0.itemID.rawValue) })
             for episode in eligible.prefix(limit) {
                 let claim = try PodcastDownload(episodeID: episode.itemID, status: .queued, updatedAt: claimedAt)
-                context.insert(LocalLibrarySchemaV6Models.PodcastDownloadRecord(claim))
+                context.insert(LocalLibrarySchemaV10Models.PodcastDownloadRecord(claim))
                 claimed.append(episode.itemID)
             }
         }
@@ -2557,7 +2810,7 @@ public actor LocalLibraryStore {
         at claimedAt: Timestamp = Timestamp(Date())
     ) throws -> Bool {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
         let existing = records.first(where: { $0.episodeID == episodeID.rawValue })
         switch scope {
         case .untouched:
@@ -2575,8 +2828,9 @@ public actor LocalLibraryStore {
             existing.localURL = nil
             existing.contentHash = nil
             existing.updatedAt = claimedAt.date
+            existing.failureKind = nil
         } else {
-            context.insert(LocalLibrarySchemaV6Models.PodcastDownloadRecord(claim))
+            context.insert(LocalLibrarySchemaV10Models.PodcastDownloadRecord(claim))
         }
         try context.save()
         return true
@@ -2660,7 +2914,7 @@ public actor LocalLibraryStore {
             uniquingKeysWith: { first, _ in first }
         )
         let existing = Set(
-            try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>()).map(\.id)
+            try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>()).map(\.id)
         )
         var admitted: [PodcastEpisode] = []
         for (feedID, group) in Dictionary(grouping: candidates, by: \.feedID.rawValue) {
@@ -2687,13 +2941,13 @@ public actor LocalLibraryStore {
     private func upsertPodcastEpisodes(
         _ episodes: [PodcastEpisode], in context: ModelContext
     ) throws {
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
         var byID = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for episode in episodes {
             if let record = byID[episode.itemID.rawValue] {
                 try Self.apply(episode, to: record)
             } else {
-                let record = try LocalLibrarySchemaV9Models.PodcastEpisodeRecord(episode)
+                let record = try LocalLibrarySchemaV10Models.PodcastEpisodeRecord(episode)
                 context.insert(record)
                 byID[episode.itemID.rawValue] = record
             }
@@ -2762,7 +3016,7 @@ public actor LocalLibraryStore {
     public func dismissPodcastEpisode(_ episodeID: ItemID, at dismissedAt: Timestamp = Timestamp(Date())) throws -> Bool {
         let context = ModelContext(container)
         let identifier = episodeID.rawValue
-        let episode = try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>())
+        let episode = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
             .first { $0.id == identifier }
         let dismissals = try context.fetch(FetchDescriptor<LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord>())
         if let existing = dismissals.first(where: { $0.id == identifier }) {
@@ -2780,7 +3034,7 @@ public actor LocalLibraryStore {
         context.delete(episode)
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
         where record.episodeID == identifier { context.delete(record) }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
         where record.episodeID == identifier { context.delete(record) }
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastPlaybackSpeedRecord>())
         where record.itemID == identifier { context.delete(record) }
@@ -2826,13 +3080,13 @@ public actor LocalLibraryStore {
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastFeedRecord>())
         where record.id == feed { context.delete(record) }
 
-        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV9Models.PodcastEpisodeRecord>())
+        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
             .filter { $0.feedID == feed }
         let episodeIDs = Set(episodes.map(\.id))
         for record in episodes { context.delete(record) }
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
         where episodeIDs.contains(record.episodeID) { context.delete(record) }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
         where episodeIDs.contains(record.episodeID) { context.delete(record) }
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastPlaybackSpeedRecord>())
         where episodeIDs.contains(record.itemID) { context.delete(record) }
@@ -2856,7 +3110,7 @@ public actor LocalLibraryStore {
 
     private static func apply(
         _ episode: PodcastEpisode,
-        to record: LocalLibrarySchemaV9Models.PodcastEpisodeRecord
+        to record: LocalLibrarySchemaV10Models.PodcastEpisodeRecord
     ) throws {
         record.feedID = episode.feedID.rawValue
         record.feedURL = episode.feedURL.absoluteString
@@ -2869,18 +3123,19 @@ public actor LocalLibraryStore {
         record.enclosureByteCount = episode.enclosureByteCount
         record.durationSeconds = episode.durationSeconds
         record.artworkURL = episode.artworkURL?.absoluteString
-        record.transcriptSources = try LocalLibrarySchemaV9Models.PodcastEpisodeRecord.encode(episode.transcriptSources)
+        record.transcriptSources = try LocalLibrarySchemaV10Models.PodcastEpisodeRecord.encode(episode.transcriptSources)
         record.notes = episode.notes
         record.createdAt = episode.createdAt.date
     }
 
     public func save(download: PodcastDownload) throws {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
         if let existing = records.first(where: { $0.episodeID == download.episodeID.rawValue }) {
             existing.status = download.status.rawValue; existing.bytesReceived = download.bytesReceived; existing.expectedByteCount = download.expectedByteCount
             existing.localURL = download.localURL?.absoluteString; existing.contentHash = download.contentHash; existing.updatedAt = download.updatedAt.date
-        } else { context.insert(LocalLibrarySchemaV6Models.PodcastDownloadRecord(download)) }
+            existing.failureKind = download.failureKind?.rawValue
+        } else { context.insert(LocalLibrarySchemaV10Models.PodcastDownloadRecord(download)) }
         try context.save()
     }
 
@@ -2906,7 +3161,7 @@ public actor LocalLibraryStore {
         } else {
             context.insert(LocalLibrarySchemaV3Models.RevisionRecord(revision, mediaURL: mediaURL))
         }
-        let downloads = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
+        let downloads = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
         if let existing = downloads.first(where: { $0.episodeID == download.episodeID.rawValue }) {
             existing.status = download.status.rawValue
             existing.bytesReceived = download.bytesReceived
@@ -2914,8 +3169,9 @@ public actor LocalLibraryStore {
             existing.localURL = download.localURL?.absoluteString
             existing.contentHash = download.contentHash
             existing.updatedAt = download.updatedAt.date
+            existing.failureKind = download.failureKind?.rawValue
         } else {
-            context.insert(LocalLibrarySchemaV6Models.PodcastDownloadRecord(download))
+            context.insert(LocalLibrarySchemaV10Models.PodcastDownloadRecord(download))
         }
         try context.save()
     }
@@ -2982,7 +3238,7 @@ public actor LocalLibraryStore {
             context.insert(LocalLibrarySchemaV3Models.PlaybackRecord(playback))
         }
 
-        let downloads = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>())
+        let downloads = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
         if let existing = downloads.first(where: { $0.episodeID == download.episodeID.rawValue }) {
             existing.status = download.status.rawValue
             existing.bytesReceived = download.bytesReceived
@@ -2990,28 +3246,276 @@ public actor LocalLibraryStore {
             existing.localURL = download.localURL?.absoluteString
             existing.contentHash = download.contentHash
             existing.updatedAt = download.updatedAt.date
+            existing.failureKind = download.failureKind?.rawValue
         } else {
-            context.insert(LocalLibrarySchemaV6Models.PodcastDownloadRecord(download))
+            context.insert(LocalLibrarySchemaV10Models.PodcastDownloadRecord(download))
         }
         try context.save()
     }
 
     public func download(for episodeID: ItemID) throws -> PodcastDownload? {
         let context = ModelContext(container)
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>()).first(where: { $0.episodeID == episodeID.rawValue }),
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>()).first(where: { $0.episodeID == episodeID.rawValue }),
               let episodeID = try? ItemID(rawValue: record.episodeID), let status = PodcastDownloadStatus(rawValue: record.status) else { return nil }
         return try PodcastDownload(episodeID: episodeID, status: status, bytesReceived: record.bytesReceived,
                                    expectedByteCount: record.expectedByteCount, localURL: record.localURL.flatMap(URL.init),
-                                   contentHash: record.contentHash, updatedAt: Timestamp(record.updatedAt))
+                                   contentHash: record.contentHash, updatedAt: Timestamp(record.updatedAt),
+                                   failureKind: record.failureKind.flatMap(PodcastDownloadFailureKind.init(rawValue:)))
     }
 
     public func downloads() throws -> [PodcastDownload] {
         let context = ModelContext(container)
-        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastDownloadRecord>()).compactMap { record in
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>()).compactMap { record in
             guard let episodeID = try? ItemID(rawValue: record.episodeID), let status = PodcastDownloadStatus(rawValue: record.status) else { return nil }
             return try? PodcastDownload(episodeID: episodeID, status: status, bytesReceived: record.bytesReceived,
                                         expectedByteCount: record.expectedByteCount, localURL: record.localURL.flatMap(URL.init),
-                                        contentHash: record.contentHash, updatedAt: Timestamp(record.updatedAt))
+                                        contentHash: record.contentHash, updatedAt: Timestamp(record.updatedAt),
+                                        failureKind: record.failureKind.flatMap(PodcastDownloadFailureKind.init(rawValue:)))
+        }
+    }
+
+    // MARK: Preparation outcome, listening completion, and retirement (V10)
+
+    public func savePreparationOutcome(_ outcome: PodcastPreparationOutcome) throws {
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>())
+        if let existing = records.first(where: { $0.id == outcome.id }) {
+            existing.policyDigest = outcome.policyDigest
+            existing.pipelineFingerprint = outcome.pipelineFingerprint
+            existing.semanticVersion = outcome.semanticVersion
+            existing.producedAt = outcome.producedAt.date
+            existing.eligibility = outcome.eligibility.rawValue
+            existing.invalidationRuleID = outcome.invalidationRuleID
+        } else {
+            context.insert(LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord(outcome))
+        }
+        try context.save()
+    }
+
+    public func preparationOutcome(for episodeID: ItemID, revisionID: RevisionID) throws -> PodcastPreparationOutcome? {
+        let context = ModelContext(container)
+        let id = "\(episodeID.rawValue)|\(revisionID.rawValue)"
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>())
+            .first(where: { $0.id == id }),
+            let eligibility = PodcastPreparationEligibility(rawValue: record.eligibility) else { return nil }
+        return PodcastPreparationOutcome(
+            episodeID: episodeID, revisionID: revisionID, policyDigest: record.policyDigest,
+            pipelineFingerprint: record.pipelineFingerprint, semanticVersion: record.semanticVersion,
+            producedAt: Timestamp(record.producedAt), eligibility: eligibility,
+            invalidationRuleID: record.invalidationRuleID
+        )
+    }
+
+    public func saveListening(_ state: PodcastListeningState) throws {
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>())
+        if let existing = records.first(where: { $0.id == state.episodeID.rawValue }) {
+            existing.completedAt = state.completedAt?.date
+            existing.lastRevisionID = state.lastRevisionID?.rawValue
+            existing.updatedAt = state.updatedAt.date
+        } else {
+            context.insert(LocalLibrarySchemaV10Models.PodcastListeningRecord(state))
+        }
+        try context.save()
+    }
+
+    public func listeningState(for episodeID: ItemID) throws -> PodcastListeningState? {
+        let context = ModelContext(container)
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>())
+            .first(where: { $0.id == episodeID.rawValue }) else { return nil }
+        return PodcastListeningState(
+            episodeID: episodeID, completedAt: record.completedAt.map(Timestamp.init),
+            lastRevisionID: record.lastRevisionID.flatMap { try? RevisionID(rawValue: $0) },
+            updatedAt: Timestamp(record.updatedAt)
+        )
+    }
+
+    /// Idempotent: retiring an already-retired episode is a no-op returning `false`.
+    @discardableResult
+    public func retireEpisode(_ episodeID: ItemID, at retiredAt: Timestamp = Timestamp(Date())) throws -> Bool {
+        let context = ModelContext(container)
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
+            .first(where: { $0.id == episodeID.rawValue }), record.retiredAt == nil else { return false }
+        record.retiredAt = retiredAt.date
+        try context.save()
+        return true
+    }
+
+    public func retiredAt(for episodeID: ItemID) throws -> Timestamp? {
+        let context = ModelContext(container)
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
+            .first(where: { $0.id == episodeID.rawValue })?.retiredAt.map(Timestamp.init)
+    }
+
+    /// Stable identifiers recorded on an outcome row translated from a legacy
+    /// `podcast-invalidation|` or `podcast-reset-preparation|` marker by
+    /// `reconcilePodcastStateV10()`.
+    public static let legacyForcedRedownloadInvalidationRuleID = "legacy-forced-redownload"
+    public static let legacyResetPreparationInvalidationRuleID = "legacy-reset-preparation"
+
+    /// `semanticVersion` sentinel for a backfilled outcome row whose
+    /// `pipelineFingerprint` is `nil` -- genuinely unknown provenance, not
+    /// today's pipeline. Stamping today's version on such a row would be a
+    /// false durable claim about what produced it.
+    public static let legacyUnknownProvenanceSemanticVersion = "unknown-legacy"
+
+    /// Idempotent post-open backfill translating pre-V10 evidence into the new
+    /// durable outcome, listening, and retirement records.
+    ///
+    /// Each step only inserts where nothing already proves the fact, and step
+    /// 4 deletes every marker it translates or supersedes, so a second call
+    /// is a true no-op with respect to those: there is nothing left for it to
+    /// find. The one exception is a forced-redownload marker with no
+    /// matching outcome row, which step 4 deliberately leaves in place (see
+    /// its doc comment) -- a second call finds it again and, correctly,
+    /// leaves it again. Every step commits before the next reads, so a later
+    /// step's fetch always sees a fully persisted prior step rather than
+    /// racing an uncommitted `ModelContext`.
+    public func reconcilePodcastStateV10() throws {
+        let context = ModelContext(container)
+        try backfillPreparationOutcomesForV10Reconciliation(in: context)
+        try context.save()
+        try backfillListeningRecordsForV10Reconciliation(in: context)
+        try context.save()
+        // Step 3: `retiredAt` is left `nil` for every existing row. Nothing is
+        // retroactively retired here; a no-op by construction.
+        try translateLegacyInvalidationMarkersForV10Reconciliation(in: context)
+        try context.save()
+    }
+
+    /// Step 1: an episode with a ready revision and no outcome row for it gets
+    /// one manufactured from the newest matching journal success. A `nil`
+    /// `pipelineFingerprint` means "prepared by an unknown earlier pipeline"
+    /// and still evaluates to `.current` -- legacy artifacts must stay
+    /// playable.
+    private func backfillPreparationOutcomesForV10Reconciliation(in context: ModelContext) throws {
+        let decoder = JSONDecoder()
+        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
+        let existingOutcomeIDs = Set(
+            try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>()).map(\.id)
+        )
+        let journalRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>())
+        for episodeRecord in episodes {
+            guard let episodeID = try? ItemID(rawValue: episodeRecord.id),
+                  let ready = try readyRevision(for: episodeID) else { continue }
+            let outcomeID = "\(episodeID.rawValue)|\(ready.revisionID.rawValue)"
+            guard !existingOutcomeIDs.contains(outcomeID) else { continue }
+            let entries: [PreparationJournalEntry] = journalRecords
+                .filter {
+                    $0.itemID == episodeID.rawValue
+                        && !$0.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix)
+                        && !$0.requestID.hasPrefix(Self.resetPreparationRequestPrefix)
+                }
+                .compactMap { record in
+                    guard let status = try? decoder.decode(PreparationStatus.self, from: record.statusData) else { return nil }
+                    return PreparationJournalEntry(id: record.id, itemID: episodeID, requestID: record.requestID, status: status)
+                }
+                .sorted(by: preparationEntryPrecedes)
+            guard let match = entries.last(where: {
+                $0.status.terminal
+                    && $0.status.terminalResult?.outcome == .succeeded
+                    && $0.status.terminalResult?.revisionID == ready.revisionID
+            }) else { continue }
+            let fingerprint: String?
+            if let evidence = match.status.evidence, evidence.kind == Self.pipelineProvenanceEvidenceKind,
+               let value = evidence.fields["fingerprint"], !value.isEmpty {
+                fingerprint = value
+            } else {
+                fingerprint = nil
+            }
+            let outcome = PodcastPreparationOutcome(
+                episodeID: episodeID, revisionID: ready.revisionID,
+                // Cannot be reconstructed from history -- legacy rows carry no
+                // digest. A deliberate, documented default, not a bug.
+                policyDigest: "",
+                pipelineFingerprint: fingerprint,
+                // A nil fingerprint means no real provenance evidence was
+                // found -- stamping today's semantic version would falsely
+                // claim this artifact came from the current pipeline.
+                semanticVersion: fingerprint != nil
+                    ? PodcastPreparationPipeline.semanticVersion
+                    : Self.legacyUnknownProvenanceSemanticVersion,
+                producedAt: match.status.emittedAt, eligibility: .current, invalidationRuleID: nil
+            )
+            context.insert(LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord(outcome))
+        }
+    }
+
+    /// Step 2: an episode whose ready revision has a completed `PlaybackRecord`
+    /// and no listening row yet gets one, so "I finished this" survives the
+    /// migration that introduced the item-scoped fact.
+    private func backfillListeningRecordsForV10Reconciliation(in context: ModelContext) throws {
+        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
+        let existingListeningIDs = Set(
+            try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>()).map(\.id)
+        )
+        let playbackRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
+        for episodeRecord in episodes {
+            guard let episodeID = try? ItemID(rawValue: episodeRecord.id),
+                  !existingListeningIDs.contains(episodeID.rawValue),
+                  let ready = try readyRevision(for: episodeID) else { continue }
+            guard let playback = playbackRecords.first(where: {
+                $0.itemID == episodeID.rawValue && $0.revisionID == ready.revisionID.rawValue && $0.completed
+            }) else { continue }
+            let state = PodcastListeningState(
+                episodeID: episodeID, completedAt: Timestamp(playback.updatedAt),
+                lastRevisionID: ready.revisionID, updatedAt: Timestamp(playback.updatedAt)
+            )
+            context.insert(LocalLibrarySchemaV10Models.PodcastListeningRecord(state))
+        }
+    }
+
+    /// Step 4: legacy `podcast-invalidation|` / `podcast-reset-preparation|`
+    /// markers are translated onto the matching outcome row when one exists
+    /// and the marker is at least as new as it, and dropped once their
+    /// information is applied or superseded.
+    ///
+    /// A forced-redownload marker is the one exception to "always delete a
+    /// marker for an episode with no outcome row": `invalidateStalePodcastPreparations`
+    /// deletes the whole `podcast-prepare|` journal group the instant it
+    /// writes that marker, so a real legacy episode carrying one has, by
+    /// construction, no journal terminal success left for step 1 to have
+    /// built an outcome row from. Deleting the marker with nothing to carry
+    /// its "needs a fresh source" fact forward would make
+    /// `requiresForcedRedownload` wrongly start returning false and let the
+    /// next download reuse the exact stale file the marker exists to reject.
+    /// So a forced-redownload marker with no matching outcome row survives
+    /// reconcile untouched; a reset-preparation marker in the same situation
+    /// is still simply forgotten, since it never blocked a download.
+    private func translateLegacyInvalidationMarkersForV10Reconciliation(in context: ModelContext) throws {
+        let markers = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>()).filter {
+            $0.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix)
+                || $0.requestID.hasPrefix(Self.resetPreparationRequestPrefix)
+        }
+        guard !markers.isEmpty else { return }
+        let decoder = JSONDecoder()
+        let outcomes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>())
+        for marker in markers {
+            let isForcedRedownload = marker.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix)
+            let ruleID = isForcedRedownload
+                ? Self.legacyForcedRedownloadInvalidationRuleID
+                : Self.legacyResetPreparationInvalidationRuleID
+            guard let episodeID = try? ItemID(rawValue: marker.itemID),
+                  let ready = try readyRevision(for: episodeID),
+                  let outcome = outcomes.first(where: {
+                      $0.episodeID == episodeID.rawValue && $0.revisionID == ready.revisionID.rawValue
+                  }) else {
+                if !isForcedRedownload { context.delete(marker) }
+                continue
+            }
+            // A matching outcome row exists, so the marker's information is
+            // either applied below or superseded by a newer success -- either
+            // way the marker itself is spent and gets deleted.
+            context.delete(marker)
+            guard let markerStatus = try? decoder.decode(PreparationStatus.self, from: marker.statusData),
+                  markerStatus.emittedAt.date >= outcome.producedAt else {
+                // Undecodable, or genuinely older than the outcome it would
+                // invalidate: leave the outcome as `.current` rather than
+                // mislabel a newer, good artifact as invalid.
+                continue
+            }
+            outcome.eligibility = PodcastPreparationEligibility.invalid.rawValue
+            outcome.invalidationRuleID = ruleID
         }
     }
 
