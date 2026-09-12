@@ -330,6 +330,73 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertNil(model.playbackError)
     }
 
+    // MARK: - Real-wiring seams
+
+    /// Proves the model's injected transport/validator factories reach a real
+    /// `PodcastDownloadCoordinator` end to end -- store row, coordinator
+    /// validation, media file on disk -- rather than exercising a parallel
+    /// implementation that never touches the coordinator at all.
+    func testDownloadEpisodeDrivesTheRealCoordinatorThroughAnInjectedTransport() async throws {
+        let directory = temporaryDirectory("real-wiring-download")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/real-wiring.xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/real-wiring.mp3"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let episodeID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "real-wiring-1", enclosureURL: enclosureURL
+        )
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let body = Data("stub-audio-bytes".utf8)
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Real wiring feed", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await store.save(episode: try PodcastEpisode(
+                    itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: "real-wiring-1",
+                    title: "Real wiring episode", publishedTime: created, enclosureURL: enclosureURL,
+                    enclosureMediaType: "audio/mpeg", createdAt: created
+                ))
+                return store
+            },
+            podcastDownloadTransportFactory: {
+                StubPodcastDownloadTransport(events: [
+                    .response(.init(url: enclosureURL, statusCode: 200, mediaType: "audio/mpeg",
+                                     expectedByteCount: Int64(body.count))),
+                    .data(body)
+                ])
+            },
+            podcastMediaValidatorFactory: { StubPodcastMediaValidator(duration: 12) },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        XCTAssertEqual(model.startupState, .ready)
+
+        let episode = try XCTUnwrap(model.episodes.first(where: { $0.id == episodeID.rawValue }))
+        model.downloadEpisode(episode)
+
+        for _ in 0..<200 {
+            if model.episodes.first(where: { $0.id == episodeID.rawValue })?.downloadState == .completed { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let downloaded = try XCTUnwrap(model.episodes.first(where: { $0.id == episodeID.rawValue }))
+        XCTAssertEqual(downloaded.downloadState, .completed)
+
+        let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        let revisions = try await store.revisions(for: episodeID)
+        let revision = try XCTUnwrap(revisions.first)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: revision.mediaURL.path),
+                      "the injected transport's bytes must land on disk through the real coordinator, not a fixture stand-in")
+        XCTAssertEqual(try Data(contentsOf: revision.mediaURL), body)
+    }
+
     // MARK: - Feed management
 
     /// Builds a store-backed model whose library already holds `feeds`, each
@@ -3707,4 +3774,25 @@ private actor RoutingPodcastFeedLoader: PodcastFeedLoading {
     }
 
     func requestedURLs() -> [URL] { requests }
+}
+
+/// Replays a fixed event sequence instead of opening a real network connection.
+private struct StubPodcastDownloadTransport: PodcastDownloadTransporting {
+    let events: [PodcastDownloadEvent]
+    func events(for url: URL) -> AsyncThrowingStream<PodcastDownloadEvent, Error> {
+        AsyncThrowingStream { continuation in
+            for event in events { continuation.yield(event) }
+            continuation.finish()
+        }
+    }
+}
+
+/// Reports a fixed duration instead of decoding real audio, so a stub
+/// transport's placeholder bytes can pass validation.
+private struct StubPodcastMediaValidator: PodcastMediaValidating {
+    let duration: Double
+    func duration(of url: URL, onStatus: @escaping @Sendable (String) -> Void) async throws -> Double {
+        onStatus("stage=stub-validation")
+        return duration
+    }
 }

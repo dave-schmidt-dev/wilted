@@ -956,6 +956,9 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
 
 #if canImport(WiltedProducer)
 typealias WiltedMacStoreBootstrap = @Sendable (URL) async throws -> LocalLibraryStore
+typealias WiltedMacPodcastDownloadTransportFactory = @Sendable () -> any PodcastDownloadTransporting
+typealias WiltedMacPodcastMediaValidatorFactory = @Sendable () -> any PodcastMediaValidating
+typealias WiltedMacPodcastPipelineRunnerFactory = @Sendable () -> any PodcastPipelineRunning
 #endif
 
 struct WiltedMacStartupFailure: Equatable, Sendable {
@@ -1174,6 +1177,14 @@ final class WiltedMacModel {
     private var podcastDownloadTasks: [String: Task<Void, Never>] = [:]
     private var podcastDownloadCoordinator: PodcastDownloadCoordinator?
     private var podcastPreparationPipeline: PodcastPreparationPipeline?
+    /// Real-wiring seams for tests and fixtures: nil means "use the coordinator's
+    /// and pipeline's own network/subprocess defaults," which is every production
+    /// launch. A test or fixture that supplies one gets a real coordinator/pipeline
+    /// running a substitute transport, validator, or runner instead of a parallel
+    /// implementation that never touches them.
+    private let podcastDownloadTransportFactory: WiltedMacPodcastDownloadTransportFactory?
+    private let podcastMediaValidatorFactory: WiltedMacPodcastMediaValidatorFactory?
+    private let podcastPipelineRunnerFactory: WiltedMacPodcastPipelineRunnerFactory?
     private var podcastPreparationTasks: [String: Task<Void, Never>] = [:]
     /// Automatic work that was admitted while its off-peak window was closed.
     /// The snapshot belongs to the job rather than Settings, so changing a
@@ -1210,6 +1221,9 @@ final class WiltedMacModel {
          assetResolver: @escaping LocalLibraryAssetResolver = { _, _ in nil },
          stateDirectoryOverride: URL? = nil,
          storeBootstrap: WiltedMacStoreBootstrap? = nil,
+         podcastDownloadTransportFactory: WiltedMacPodcastDownloadTransportFactory? = nil,
+         podcastMediaValidatorFactory: WiltedMacPodcastMediaValidatorFactory? = nil,
+         podcastPipelineRunnerFactory: WiltedMacPodcastPipelineRunnerFactory? = nil,
          pipelineFingerprint: String? = nil,
          retainedArtifactPresenter: ((URL) -> Void)? = nil,
          podcastFeedClient: PodcastFeedClient = PodcastFeedClient(),
@@ -1237,6 +1251,9 @@ final class WiltedMacModel {
                 try LocalLibraryStore(url: url)
             }.value
         }
+        self.podcastDownloadTransportFactory = podcastDownloadTransportFactory
+        self.podcastMediaValidatorFactory = podcastMediaValidatorFactory
+        self.podcastPipelineRunnerFactory = podcastPipelineRunnerFactory
         self.pipelineFingerprint = pipelineFingerprint
         self.retainedArtifactPresenter = retainedArtifactPresenter ?? { url in
             NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -4496,12 +4513,32 @@ final class WiltedMacModel {
         playback?.playbackDidFinishHandler = { [weak self] in
             self?.handlePodcastPlaybackFinished()
         }
-        podcastDownloadCoordinator = configuredStore.map {
-            PodcastDownloadCoordinator(store: $0, libraryDirectory: mediaDirectory)
+        podcastDownloadCoordinator = configuredStore.map { store in
+            switch (podcastDownloadTransportFactory, podcastMediaValidatorFactory) {
+            case let (transportFactory?, validatorFactory?):
+                PodcastDownloadCoordinator(
+                    store: store, libraryDirectory: mediaDirectory,
+                    transport: transportFactory(), mediaValidator: validatorFactory()
+                )
+            case let (transportFactory?, nil):
+                PodcastDownloadCoordinator(store: store, libraryDirectory: mediaDirectory, transport: transportFactory())
+            case let (nil, validatorFactory?):
+                PodcastDownloadCoordinator(store: store, libraryDirectory: mediaDirectory, mediaValidator: validatorFactory())
+            case (nil, nil):
+                PodcastDownloadCoordinator(store: store, libraryDirectory: mediaDirectory)
+            }
         }
-        podcastPreparationPipeline = fixtureMode ? nil : configuredStore.map {
-            PodcastPreparationPipeline(
-                store: $0,
+        podcastPreparationPipeline = fixtureMode ? nil : configuredStore.map { store in
+            if let podcastPipelineRunnerFactory {
+                return PodcastPreparationPipeline(
+                    store: store,
+                    workDirectory: mediaDirectory.appendingPathComponent("preparation", isDirectory: true),
+                    runner: podcastPipelineRunnerFactory(),
+                    removeAds: removesAdvertisements
+                )
+            }
+            return PodcastPreparationPipeline(
+                store: store,
                 workDirectory: mediaDirectory.appendingPathComponent("preparation", isDirectory: true),
                 removeAds: removesAdvertisements
             )
