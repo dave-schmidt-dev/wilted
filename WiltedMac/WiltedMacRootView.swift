@@ -383,7 +383,7 @@ private struct WiltedMacLibraryView: View {
                         ForEach(Array(model.libraryItems.enumerated()), id: \.element.id) { index, item in
                             let isReadyEpisode: Bool = {
                                 guard case let .episode(episode) = item else { return false }
-                                return episode.preparationState.isPrepared
+                                return episode.preparationState.isPrepared && episode.isReadyMediaAvailable
                             }()
                             if index > 0 { Divider() }
                             VStack(alignment: .leading, spacing: 0) {
@@ -1055,7 +1055,7 @@ private struct WiltedMacEpisodeRow: View {
                 Text(progressLabel)
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                Text(episode.preparationState.isPrepared
+                Text(episode.preparationState.isPrepared && episode.isReadyMediaAvailable
                     ? "Ready to play"
                     : episode.lifecyclePresentation.primaryLabel)
                     .wiltedFont(.utility)
@@ -1107,7 +1107,7 @@ private struct WiltedMacEpisodeRow: View {
                     // again" read as two routes to the same result when the
                     // second can only ever re-cut the cut.
                     Button("Download again, then prepare") { model.redownloadEpisode(episode) }
-                    if case .prepared = episode.preparationState {
+                    if case .prepared = episode.preparationState, episode.isReadyMediaAvailable {
                         Button("Prepare this copy again") { model.prepareEpisode(episode) }
                     }
                     Divider()

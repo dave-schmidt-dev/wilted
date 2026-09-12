@@ -527,7 +527,8 @@ struct WiltedMacEpisodeLifecyclePresentation: Equatable, Sendable {
 
     init(
         downloadState: WiltedMacEpisodeDownloadState,
-        preparationState: WiltedMacEpisodePreparationState
+        preparationState: WiltedMacEpisodePreparationState,
+        isReadyMediaAvailable: Bool = true
     ) {
         switch downloadState {
         case .notDownloaded:
@@ -561,12 +562,16 @@ struct WiltedMacEpisodeLifecyclePresentation: Equatable, Sendable {
                 label = Self.label(primary: "Preparing", detail: stage, removing: "Preparing")
                 isFailure = false
             case let .prepared(summary):
-                if summary == "Audio ready · Transcript unavailable" {
+                if !isReadyMediaAvailable {
+                    label = "Prepared \u{00B7} Local audio missing — Download again"
+                    isFailure = true
+                } else if summary == "Audio ready · Transcript unavailable" {
                     label = summary
+                    isFailure = false
                 } else {
                     label = Self.label(primary: "Prepared", detail: summary, removing: "Ready")
+                    isFailure = false
                 }
-                isFailure = false
             case let .failed(message):
                 label = Self.label(primary: "Preparation failed", detail: message, removing: "Preparation failed")
                 isFailure = true
@@ -632,11 +637,19 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     var retiredAt: Date? = nil
     var downloadState: WiltedMacEpisodeDownloadState
     var preparationState: WiltedMacEpisodePreparationState = .notPrepared
+    /// Whether the ready revision's media file was found on disk the last
+    /// time the library loaded. Filesystem-authoritative and deliberately
+    /// undurable: no store column backs it, a snapshot just caches a `stat`.
+    /// `false` for an episode with no ready revision at all, though that case
+    /// never reaches the checks that gate on this flag since those already
+    /// require `preparationState.isPrepared`.
+    var isReadyMediaAvailable: Bool = true
 
     var lifecyclePresentation: WiltedMacEpisodeLifecyclePresentation {
         WiltedMacEpisodeLifecyclePresentation(
             downloadState: downloadState,
-            preparationState: preparationState
+            preparationState: preparationState,
+            isReadyMediaAvailable: isReadyMediaAvailable
         )
     }
 
@@ -645,7 +658,8 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
             lhs.summary == rhs.summary && lhs.notes == rhs.notes && lhs.artworkURL == rhs.artworkURL && lhs.releasedAt == rhs.releasedAt &&
             lhs.durationSeconds == rhs.durationSeconds && lhs.playbackSeconds == rhs.playbackSeconds &&
             lhs.isPlayed == rhs.isPlayed && lhs.retiredAt == rhs.retiredAt &&
-            lhs.downloadState == rhs.downloadState && lhs.preparationState == rhs.preparationState
+            lhs.downloadState == rhs.downloadState && lhs.preparationState == rhs.preparationState &&
+            lhs.isReadyMediaAvailable == rhs.isReadyMediaAvailable
     }
 
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
@@ -965,6 +979,16 @@ typealias WiltedMacPodcastMediaValidatorFactory = @Sendable () -> any PodcastMed
 typealias WiltedMacPodcastPipelineRunnerFactory = @Sendable () -> any PodcastPipelineRunning
 #endif
 
+/// Seam over the one filesystem call `loadLibrary` needs to know whether a
+/// ready revision's media is still on disk. Deliberately just `stat`, not a
+/// read: a test double can count calls to prove the snapshot never hashes or
+/// opens media it doesn't have to.
+protocol WiltedMacMediaAvailabilityChecking {
+    func fileExists(atPath path: String) -> Bool
+}
+
+extension FileManager: WiltedMacMediaAvailabilityChecking {}
+
 struct WiltedMacStartupFailure: Equatable, Sendable {
     let message: String
     let detail: String?
@@ -1209,6 +1233,7 @@ final class WiltedMacModel {
     /// prove a prepared row still offers a way to prepare again.
     private var fixtureEpisodeIsPrepared = false
     private let podcastFeedClient: PodcastFeedClient
+    private let mediaAvailabilityChecker: any WiltedMacMediaAvailabilityChecking
     private let pastedLinkClassifier: PastedLinkClassifier
     private var linkClassificationTask: Task<Void, Never>?
     private var podcastSubscriptionClassificationTask: Task<Void, Never>?
@@ -1231,6 +1256,7 @@ final class WiltedMacModel {
          pipelineFingerprint: String? = nil,
          retainedArtifactPresenter: ((URL) -> Void)? = nil,
          podcastFeedClient: PodcastFeedClient = PodcastFeedClient(),
+         mediaAvailabilityChecker: any WiltedMacMediaAvailabilityChecking = FileManager.default,
          pastedLinkClassifier: PastedLinkClassifier = PastedLinkClassifier(),
          nowPlayingSink: (any WiltedNowPlayingSink)? = nil,
          remoteCommandSource: (any WiltedRemoteCommandSource)? = nil,
@@ -1263,6 +1289,7 @@ final class WiltedMacModel {
             NSWorkspace.shared.activateFileViewerSelecting([url])
         }
         self.podcastFeedClient = podcastFeedClient
+        self.mediaAvailabilityChecker = mediaAvailabilityChecker
         self.pastedLinkClassifier = pastedLinkClassifier
         fixtureDownloadFailuresRemaining = arguments.contains("--wilted-ui-fixture-download-failure") ? 1 : 0
         fixtureEpisodeIsPrepared = arguments.contains("--wilted-ui-fixture-prepared")
@@ -3025,7 +3052,7 @@ final class WiltedMacModel {
     }
 
     func canPlayEpisode(_ episode: WiltedMacEpisode) -> Bool {
-        episode.downloadState == .completed && episode.preparationState.isPrepared
+        episode.downloadState == .completed && episode.preparationState.isPrepared && episode.isReadyMediaAvailable
     }
 
     func canAddEpisodeToMenu(_ episode: WiltedMacEpisode) -> Bool {
@@ -3101,7 +3128,13 @@ final class WiltedMacModel {
     var canSelectNextEpisode: Bool {
         guard isPodcastPlayback, let currentPodcastEpisodeID,
               let index = podcastQueueIDs.firstIndex(of: currentPodcastEpisodeID) else { return false }
-        return podcastQueueIDs.index(after: index) < podcastQueueIDs.endIndex
+        let nextIndex = podcastQueueIDs.index(after: index)
+        guard nextIndex < podcastQueueIDs.endIndex else { return false }
+        // An ID absent from the snapshot is unknown, not unavailable: preserve
+        // today's bounds-only answer rather than treating "not found" as "not
+        // playable."
+        guard let nextEpisode = episodes.first(where: { $0.id == podcastQueueIDs[nextIndex] }) else { return true }
+        return nextEpisode.isReadyMediaAvailable
     }
 
     var canCancelPreparation: Bool { preparation?.cancellable == true }
@@ -3376,6 +3409,12 @@ final class WiltedMacModel {
                 if !wasQueued {
                     try? await playback.removePodcastQueueEpisode(id)
                     await self.refreshPodcastQueueState()
+                }
+                // A manual play throws before `podcastStateHandler` ever runs,
+                // so this is the only place that repairs the flag for this path.
+                if case let PlaybackControllerError.podcastMediaUnavailable(unavailableID) = error,
+                   let index = self.episodes.firstIndex(where: { $0.id == unavailableID.rawValue }) {
+                    self.episodes[index].isReadyMediaAvailable = false
                 }
                 self.playbackError = "This episode's saved audio is unavailable."
                 self.playbackOperationStatus = nil
@@ -4716,6 +4755,16 @@ final class WiltedMacModel {
         case .some: "Podcast playback could not continue."
         case nil: nil
         }
+        // The fault names the episode that actually failed to load, which on
+        // the successor-load-throws path is not `itemID` (that stays the one
+        // that just finished). Repairing here, ahead of the next reload,
+        // closes the window between a file vanishing and the next snapshot
+        // noticing -- e.g. a second `canSelectNextEpisode` check right after
+        // this fault fires.
+        if case let .podcastMediaUnavailable(unavailableID) = fault,
+           let index = episodes.firstIndex(where: { $0.id == unavailableID.rawValue }) {
+            episodes[index].isReadyMediaAvailable = false
+        }
         playbackOperationStatus = nil
         refreshPlaybackReadout()
         // Continuous playback advances the queue without going through
@@ -4824,6 +4873,7 @@ final class WiltedMacModel {
             .first {
                 !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil
                     && $0.downloadState == .completed && $0.preparationState.isPrepared && !$0.isPlayed
+                    && $0.isReadyMediaAvailable
             }
     }
 
@@ -4922,6 +4972,12 @@ final class WiltedMacModel {
             case nil: downloadState = .notDownloaded
             }
             let feedTitle = feeds[episode.feedID]?.title ?? "Podcast"
+            // One `stat`, never a read: media availability has no durable
+            // record, so a missing file downgrades only this cached flag,
+            // never the outcome or listening rows that prove the work happened.
+            let isReadyMediaAvailable = revision.map {
+                mediaAvailabilityChecker.fileExists(atPath: $0.mediaURL.path)
+            } ?? false
             episodeValues.append(WiltedMacEpisode(
                 id: episode.itemID.rawValue, title: episode.title, feedTitle: feedTitle,
                 summary: Self.episodeSummary(notes: episode.notes, fallback: episode.author ?? feedTitle),
@@ -4935,7 +4991,8 @@ final class WiltedMacModel {
                     run: runs[episode.itemID],
                     readyRevisionID: revision?.revision.revisionID,
                     transcript: transcript
-                )
+                ),
+                isReadyMediaAvailable: isReadyMediaAvailable
             ))
         }
         return (articleValues, episodeValues, subscriptionValues)
@@ -5335,6 +5392,12 @@ final class WiltedMacModel {
                 self.playbackOperationStatus = nil
             } catch {
                 self.playbackOperationStatus = nil
+                // A manual skip throws before `podcastStateHandler` ever runs,
+                // so this is the only place that repairs the flag for this path.
+                if case let PlaybackControllerError.podcastMediaUnavailable(unavailableID) = error,
+                   let index = self.episodes.firstIndex(where: { $0.id == unavailableID.rawValue }) {
+                    self.episodes[index].isReadyMediaAvailable = false
+                }
                 self.playbackError = previous
                     ? "The previous episode is unavailable."
                     : "The next episode is unavailable."

@@ -3879,6 +3879,443 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(model.podcastOperationMessage, "Finished \(first.title).")
     }
 
+    /// Coverage-table row: "Prepared episode's media disappears" (Phase 6).
+    func testMediaMissingAfterPreparationDisablesPlaybackAndSurvivesDurableRecords() async throws {
+        let directory = temporaryDirectory("media-missing")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/media-missing.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/media-missing-1.mp3"))
+        let episodeID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "media-missing-1", enclosureURL: enclosureURL
+        )
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Missing", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    episodeID, guid: "media-missing-1", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: enclosureURL, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let prepared = try XCTUnwrap(model.episodes.first { $0.id == episodeID.rawValue })
+        XCTAssertTrue(model.canPlayEpisode(prepared))
+        model.playEpisode(prepared)
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+        await model.simulatePodcastPlaybackReachedEndForTesting()
+        try await settle(model)
+        model.simulatePodcastPlaybackFinishedForTesting()
+        try await settle(model)
+
+        let verifyStore = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        let readyRevision = try await verifyStore.readyRevision(for: episodeID)
+        let revisionID = try XCTUnwrap(readyRevision?.revision.revisionID)
+        let outcomeBefore = try await verifyStore.preparationOutcome(for: episodeID, revisionID: revisionID)
+        let listeningBefore = try await verifyStore.listeningState(for: episodeID)
+        XCTAssertNotNil(listeningBefore?.completedAt)
+
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("media-missing-1.m4a"))
+
+        // A fresh launch is what actually rebuilds the snapshot from the store
+        // and the filesystem together; nothing short of relaunch reaches
+        // `loadLibrary` again from test code.
+        let relaunched = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        relaunched.startStoreBootstrap()
+        await relaunched.waitForStoreBootstrap()
+
+        let afterDeletion = try XCTUnwrap(relaunched.episodes.first { $0.id == episodeID.rawValue })
+        XCTAssertFalse(afterDeletion.isReadyMediaAvailable)
+        XCTAssertFalse(relaunched.canPlayEpisode(afterDeletion))
+        XCTAssertEqual(
+            afterDeletion.lifecyclePresentation.label,
+            "Prepared \u{00B7} Local audio missing — Download again"
+        )
+        XCTAssertTrue(afterDeletion.lifecyclePresentation.isFailure)
+        XCTAssertTrue(afterDeletion.isPlayed, "the durable listening fact must survive the file's absence")
+        XCTAssertNotNil(afterDeletion.retiredAt,
+                        "natural completion still retired it before the file went missing")
+
+        let outcomeAfter = try await verifyStore.preparationOutcome(for: episodeID, revisionID: revisionID)
+        XCTAssertEqual(outcomeAfter, outcomeBefore, "a missing file must not touch the durable preparation outcome")
+        let listeningAfter = try await verifyStore.listeningState(for: episodeID)
+        XCTAssertEqual(listeningAfter, listeningBefore, "a missing file must not touch the durable listening record")
+    }
+
+    /// Plan gate: "a test asserting no hashing occurs during snapshot
+    /// construction (inject a counting file-manager seam)."
+    func testLoadingTheLibraryChecksMediaExistenceOnceExactlyPerReadyRevision() async throws {
+        let directory = temporaryDirectory("media-availability-seam")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/media-seam.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let firstEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/media-seam-1.mp3"))
+        let secondEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/media-seam-2.mp3"))
+        let firstID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "media-seam-1", enclosureURL: firstEnclosure
+        )
+        let secondID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "media-seam-2", enclosureURL: secondEnclosure
+        )
+        let checker = CountingMediaAvailabilityChecker()
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Seam", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    firstID, guid: "media-seam-1", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: firstEnclosure, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                // Never downloaded, so there is no ready revision -- proving
+                // the seam is not consulted once per episode, only once per
+                // ready revision.
+                try await store.save(episode: try PodcastEpisode(
+                    itemID: secondID, feedID: feedID, feedURL: feedURL, rssGUID: "media-seam-2",
+                    title: "Not ready", publishedTime: created, enclosureURL: secondEnclosure,
+                    enclosureMediaType: "audio/mpeg", createdAt: created
+                ))
+                return store
+            },
+            mediaAvailabilityChecker: checker,
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        XCTAssertEqual(model.episodes.count, 2)
+        XCTAssertEqual(checker.fileExistsCallCount, 1,
+                       "exactly one stat for the one ready revision, and none for the unprepared episode")
+    }
+
+    /// Repeats the Phase 5 HIGH-severity chain (auto-advance skipping the
+    /// finished item) for the media-availability gate added on top of it.
+    func testNaturalCompletionSkipsASuccessorWhoseMediaWentMissing() async throws {
+        let directory = temporaryDirectory("continue-media-missing")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/continue-media-missing.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let firstEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/continue-media-missing-1.mp3"))
+        let secondEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/continue-media-missing-2.mp3"))
+        let thirdEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/continue-media-missing-3.mp3"))
+        let firstID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "continue-media-missing-1", enclosureURL: firstEnclosure
+        )
+        let secondID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "continue-media-missing-2", enclosureURL: secondEnclosure
+        )
+        let thirdID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "continue-media-missing-3", enclosureURL: thirdEnclosure
+        )
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Missing Media", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    firstID, guid: "continue-media-missing-1", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: firstEnclosure, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                try await Self.addReadyEpisode(
+                    secondID, guid: "continue-media-missing-2", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: secondEnclosure, publishedAt: created.date.addingTimeInterval(60),
+                    directory: directory, store: store, created: created
+                )
+                try await Self.addReadyEpisode(
+                    thirdID, guid: "continue-media-missing-3", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: thirdEnclosure, publishedAt: created.date.addingTimeInterval(120),
+                    directory: directory, store: store, created: created
+                )
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.libraryOrder = .oldest
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        try FileManager.default.removeItem(
+            at: directory.appendingPathComponent("continue-media-missing-2.m4a")
+        )
+
+        let first = try XCTUnwrap(model.episodes.first { $0.id == firstID.rawValue })
+        model.playEpisode(first)
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+        XCTAssertEqual(model.currentEpisode?.id, firstID.rawValue)
+
+        await model.simulatePodcastPlaybackReachedEndForTesting()
+        try await settle(model)
+        model.simulatePodcastPlaybackFinishedForTesting()
+        try await settle(model)
+
+        XCTAssertEqual(model.currentEpisode?.id, thirdID.rawValue,
+                       "the successor with missing media must be skipped in favor of the next ready one")
+        let skipped = try XCTUnwrap(model.episodes.first { $0.id == secondID.rawValue })
+        XCTAssertFalse(skipped.isReadyMediaAvailable)
+        XCTAssertFalse(skipped.isPlayed, "skipping past it must not mark it finished")
+        XCTAssertNil(skipped.retiredAt, "skipping past it must not retire it")
+    }
+
+    /// The fault names the episode that failed to load, not the one that just
+    /// finished -- this is the same pair Phase 5's HIGH bug lived in. Uses two
+    /// distinct episodes so a repair keyed on `itemID` instead of the fault's
+    /// own associated value would fail this test: the just-finished episode
+    /// (`itemID`) must stay untouched while the successor named by `fault`
+    /// (`.podcastMediaUnavailable`) is the one that flips.
+    func testMediaUnavailableFaultImmediatelyDisablesPlaybackForTheSuccessorNotTheFinishedEpisode() async throws {
+        let directory = temporaryDirectory("fault-media-unavailable")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/fault-media.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let finishedEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/fault-media-finished.mp3"))
+        let successorEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/fault-media-successor.mp3"))
+        let finishedID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "fault-media-finished", enclosureURL: finishedEnclosure
+        )
+        let successorID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "fault-media-successor", enclosureURL: successorEnclosure
+        )
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Fault", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    finishedID, guid: "fault-media-finished", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: finishedEnclosure, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                try await Self.addReadyEpisode(
+                    successorID, guid: "fault-media-successor", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: successorEnclosure, publishedAt: created.date.addingTimeInterval(60),
+                    directory: directory, store: store, created: created
+                )
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let finished = try XCTUnwrap(model.episodes.first { $0.id == finishedID.rawValue })
+        let successor = try XCTUnwrap(model.episodes.first { $0.id == successorID.rawValue })
+        XCTAssertTrue(finished.isReadyMediaAvailable)
+        XCTAssertTrue(successor.isReadyMediaAvailable)
+
+        // Mirrors PlaybackController.handleBackendCompletion's successor-load-throws
+        // shape: `itemID` is the episode that just finished, `fault`'s associated
+        // value is the successor that actually failed to load.
+        model.applyPodcastPlaybackObservationForTesting(
+            itemID: finishedID, fault: .podcastMediaUnavailable(successorID)
+        )
+
+        let repairedSuccessor = try XCTUnwrap(model.episodes.first { $0.id == successorID.rawValue })
+        XCTAssertFalse(repairedSuccessor.isReadyMediaAvailable,
+                       "a media-unavailable fault must flip the flag immediately, without waiting for a reload")
+        XCTAssertFalse(model.canPlayEpisode(repairedSuccessor))
+
+        let untouchedFinished = try XCTUnwrap(model.episodes.first { $0.id == finishedID.rawValue })
+        XCTAssertTrue(untouchedFinished.isReadyMediaAvailable,
+                      "the episode named by itemID just finished playing fine and must not be flagged")
+        XCTAssertTrue(model.canPlayEpisode(untouchedFinished))
+    }
+
+    /// A manual "Play" throws out of `loadQueuedEpisode` before
+    /// `podcastStateHandler` ever runs, so the auto-advance fault repair never
+    /// fires on this path -- it needs its own repair in `playEpisode`'s catch.
+    func testManuallyPlayingAnEpisodeWithMissingMediaDisablesItImmediately() async throws {
+        let directory = temporaryDirectory("manual-play-media-missing")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/manual-play-missing.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/manual-play-missing-1.mp3"))
+        let episodeID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "manual-play-missing-1", enclosureURL: enclosureURL
+        )
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Manual Play", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    episodeID, guid: "manual-play-missing-1", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: enclosureURL, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        try FileManager.default.removeItem(
+            at: directory.appendingPathComponent("manual-play-missing-1.m4a")
+        )
+
+        let episode = try XCTUnwrap(model.episodes.first { $0.id == episodeID.rawValue })
+        model.playEpisode(episode)
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+
+        let repaired = try XCTUnwrap(model.episodes.first { $0.id == episodeID.rawValue })
+        XCTAssertFalse(repaired.isReadyMediaAvailable,
+                       "a manual play that throws podcastMediaUnavailable must flip the flag without a reload")
+        XCTAssertFalse(model.canPlayEpisode(repaired))
+        XCTAssertNotNil(model.playbackError)
+    }
+
+    /// Symmetric to the manual-play test above: pressing Next also throws out of
+    /// `loadQueuedEpisode` before `podcastStateHandler` ever runs, so
+    /// `navigatePodcastQueue`'s own catch block is the only place that can repair
+    /// the flag for this path.
+    func testManuallySkippingToAnEpisodeWithMissingMediaDisablesItImmediately() async throws {
+        let directory = temporaryDirectory("manual-skip-media-missing")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/manual-skip-missing.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let firstEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/manual-skip-missing-1.mp3"))
+        let secondEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/manual-skip-missing-2.mp3"))
+        let firstID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "manual-skip-missing-1", enclosureURL: firstEnclosure
+        )
+        let secondID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "manual-skip-missing-2", enclosureURL: secondEnclosure
+        )
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Manual Skip", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    firstID, guid: "manual-skip-missing-1", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: firstEnclosure, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                try await Self.addReadyEpisode(
+                    secondID, guid: "manual-skip-missing-2", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: secondEnclosure, publishedAt: created.date.addingTimeInterval(60),
+                    directory: directory, store: store, created: created
+                )
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.libraryOrder = .oldest
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let first = try XCTUnwrap(model.episodes.first { $0.id == firstID.rawValue })
+        model.playEpisode(first)
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+        XCTAssertEqual(model.currentEpisode?.id, firstID.rawValue)
+
+        // `playEpisode` only enqueues the episode it plays -- the controller's
+        // own queue, not the Larder-wide search `simulatePodcastPlaybackReachedEndForTesting`
+        // uses -- so `second` must be enqueued explicitly for `nextPlayback` to reach it.
+        let second = try XCTUnwrap(model.episodes.first { $0.id == secondID.rawValue })
+        model.addEpisodeToUpNext(second)
+        try await settle(model)
+        XCTAssertTrue(model.canSelectNextEpisode,
+                      "second's media is still on disk and queued, so Next must be enabled going in")
+
+        try FileManager.default.removeItem(
+            at: directory.appendingPathComponent("manual-skip-missing-2.m4a")
+        )
+
+        model.nextPlayback()
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+
+        let repaired = try XCTUnwrap(model.episodes.first { $0.id == secondID.rawValue })
+        XCTAssertFalse(repaired.isReadyMediaAvailable,
+                       "a manual skip that throws podcastMediaUnavailable must flip the flag without a reload")
+        XCTAssertFalse(model.canPlayEpisode(repaired))
+        XCTAssertNotNil(model.playbackError)
+    }
+
+    /// `canSelectNextEpisode`'s third gate, added alongside the other two media
+    /// availability checks in this phase, had no direct coverage: this puts a
+    /// missing-media episode at exactly the queue slot the property inspects.
+    func testCanSelectNextEpisodeIsFalseWhenTheQueuedSuccessorsMediaIsMissing() {
+        let root = temporaryDirectory("can-select-next-media-missing")
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let currentID = "item-" + String(repeating: "1", count: 64)
+        let missingID = "item-" + String(repeating: "2", count: 64)
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: root,
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        let current = WiltedMacEpisode(
+            id: currentID, title: "Current", feedTitle: "Fixtures", summary: "Fixture",
+            artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 100), durationSeconds: 600,
+            playbackSeconds: 12, downloadState: .completed,
+            preparationState: .prepared(summary: "Ready · transcript synced")
+        )
+        let missing = WiltedMacEpisode(
+            id: missingID, title: "Missing", feedTitle: "Fixtures", summary: "Fixture",
+            artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 200), durationSeconds: 600,
+            playbackSeconds: 0, downloadState: .completed,
+            preparationState: .prepared(summary: "Ready · transcript synced"),
+            isReadyMediaAvailable: false
+        )
+        model.installEpisodeForTesting(missing)
+        model.installPlaybackStateForTesting(
+            episode: current, isPlaying: true, position: 12, duration: 600,
+            queue: [currentID, missingID]
+        )
+
+        XCTAssertFalse(model.canSelectNextEpisode,
+                       "the queued successor's media is missing, so advancing to it must be disallowed")
+    }
+
     /// In production, `PlaybackController`'s own `podcastCompletionHandler`
     /// retires the finished episode before `handlePodcastPlaybackFinished`
     /// ever runs its successor search -- the two fire from separate places in
@@ -4460,6 +4897,17 @@ final class DownloadAttemptCounter: @unchecked Sendable {
     private var value = 0
     func increment() { lock.lock(); value += 1; lock.unlock() }
     var count: Int { lock.lock(); defer { lock.unlock() }; return value }
+}
+
+/// Counts calls made through the one method the seam exposes. Consulted only
+/// from `loadLibrary`, which runs on the model's own main actor, so this
+/// needs no locking of its own.
+private final class CountingMediaAvailabilityChecker: WiltedMacMediaAvailabilityChecking {
+    private(set) var fileExistsCallCount = 0
+    func fileExists(atPath path: String) -> Bool {
+        fileExistsCallCount += 1
+        return FileManager.default.fileExists(atPath: path)
+    }
 }
 
 private struct CountingFailingPodcastDownloadTransport: PodcastDownloadTransporting {
