@@ -1,5 +1,10 @@
 import Foundation
 
+/// An error `withRetries` must never retry and `drain` must not treat as the
+/// whole automation pass stopping -- only this one claim is done, for reasons
+/// bounded retry cannot fix (the user cancelled it, or it needs a person).
+protocol WiltedAutomationNonRetryable: Error {}
+
 /// What prompted an automation evaluation.
 ///
 /// Wilted automates only while it is open, so these are the two moments it can
@@ -52,10 +57,15 @@ enum WiltedAutomationStatus: Equatable, Sendable {
 }
 
 /// A fault automation raises rather than reporting work it did not do.
-enum WiltedAutomationFault: Error, Equatable {
+enum WiltedAutomationFault: Error, Equatable, WiltedAutomationNonRetryable {
     /// A durable claim whose episode is not in the loaded library. The claim
     /// stays, so a later launch can retry it once the library is whole.
     case claimedEpisodeMissing(String)
+    /// `downloadEpisode` guard-returned without inserting a task (coordinator
+    /// nil, or the episode ID failed to parse), so there is nothing to await.
+    /// Without this the claim would count as downloaded rather than as a
+    /// download automation never actually started.
+    case downloadNotStarted(String)
 }
 
 /// Policy evaluation, scheduling metadata, serialised admission, retry, and
@@ -325,6 +335,8 @@ actor WiltedAutomationCoordinator {
                 return try await work()
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let error as WiltedAutomationNonRetryable {
+                throw error
             } catch {
                 attempt += 1
                 guard attempt <= Self.maximumRetries, !Task.isCancelled else { throw error }

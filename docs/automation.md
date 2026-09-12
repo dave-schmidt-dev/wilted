@@ -125,6 +125,12 @@ transfer behind it. `LocalLibraryStore.unfinishedPodcastDownloads()` is how a fr
 finds those records; it is the only source of truth for which episodes are in that state,
 since automation keeps no separate bookkeeping of its own.
 
+Relaunch also resumes a `.failed` record whose `failureKind` is `.retryable`
+(`LocalLibraryStore.resumablePodcastDownloads()`) — see Failure and retry, below, for what
+earns that classification. `unfinishedAutomationClaims()` unions both sets before handing
+them to `reconcile()`, so a stranded in-flight claim and a resumable failure both drain
+through the same serial queue rather than one of them starting outside it.
+
 On launch, `WiltedMacModel.startAutomationOnLaunch()` calls the coordinator's
 `reconcile()` before it evaluates the launch trigger's own refresh-and-download pass.
 Both go through the same single-pass slot on the coordinator actor (`run` and `reconcile`
@@ -164,12 +170,28 @@ advances the timestamp for the whole pass, so one persistently broken feed sitti
 otherwise-healthy ones is not retried again until the next full interval elapses, not
 sooner.
 
-A download that starts and then genuinely fails (a network error mid-transfer, for
-example) settles to a terminal `.failed` `PodcastDownload` record, the same way a manual
-download failure does. That record is not `.queued` or `.downloading`, so it is outside
-what `unfinishedPodcastDownloads()` returns and relaunch reconciliation does not touch it;
-retrying it is a manual action from the Larder row, exactly as it is for a failure that
-originated from a manual download.
+A download that starts and then genuinely fails settles to a `.failed` `PodcastDownload`
+record carrying a `failureKind`, `PodcastDownloadCoordinatorError`'s own classification of
+what went wrong:
+
+- **`.retryable`** (`.transport`, `.invalidResponse`) — a transport hiccup or a bad-but-
+  plausible HTTP response. Worth trying again without asking anyone.
+- **`.terminal`** (everything else that can fail a transfer: oversized, wrong media type,
+  `.hashMismatch`, `.invalidAudio`, and the rest) — the bytes themselves are wrong or the
+  request can never succeed as sent. Another attempt would not fix it; it needs a person.
+- **`nil`** — `.cancelled` and `.episodeNotFound` are neither. A cancellation is a user
+  decision, not a transfer outcome, and a missing episode has no retryability question to
+  answer.
+
+`WiltedAutomationCoordinator.withRetries` only ever sees `.retryable` failures reach its
+bounded backoff; `startClaimedDownload` wraps anything else — a `.terminal` failure, a
+cancellation, or a lost claim — in an error conforming to `WiltedAutomationNonRetryable`
+before it gets there, so `withRetries` rethrows it on the first attempt and `drain` treats
+it as one claim done, not the whole pass stopping. A `.retryable` failure that survives all
+3 in-process retries settles `.failed` like any other and is picked up by
+`resumablePodcastDownloads()` at the next launch; a `.terminal` one is excluded from that
+set on purpose and stays a manual action from the Larder row, exactly as a cancellation
+does.
 
 Status through a pass — `idle`, `refreshing(feedsRemaining:)`,
 `downloading(episode:remaining:)`, `retrying(afterSeconds:attempt:)`, `failed`,
@@ -190,9 +212,16 @@ listener cannot act on directly.
 - **Manual preparation starts immediately.** Processing schedules govern automatically
   admitted work; choosing Prepare from an episode row remains an explicit request to run
   now.
-- **A download that fails after it starts requires a manual retry.** It settles to
-  `.failed`, which is a decision reconciliation treats as already made, not an unfinished
-  claim to resume.
+- **Only a `.terminal` failure requires a manual retry.** A `.retryable` one gets bounded
+  in-process backoff, then relaunch resume through `resumablePodcastDownloads()`; a
+  `.terminal` failure is a decision reconciliation treats as already made, not an
+  unfinished claim to resume.
+- **A permanently unreachable URL classified `.retryable` retries forever, once per
+  launch.** Nothing yet distinguishes "this will work if I wait" from "this will never
+  work" beyond the HTTP-status/transport-exception split `failureKind` already draws; a
+  dead host that still answers with a retryable-looking error keeps costing one bounded
+  retry sequence every time Wilted opens. Left for the batched-admission work already
+  planned for a later phase.
 - **Automation is Mac-local.** Settings live in `UserDefaults` on the Mac; there is no
   CloudKit sync of preferences and no background agent. Automation only ever runs inside
   a foreground, currently-open Wilted process on the machine where it was configured.

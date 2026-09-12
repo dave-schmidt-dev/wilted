@@ -1924,6 +1924,45 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertEqual(stillUnfinished.map(\.episodeID), admitted.claimed.filter { $0 != settled })
     }
 
+    /// `resumablePodcastDownloads()` is the relaunch-retry set: a real transfer
+    /// failure classified `.retryable`. It must not overlap with
+    /// `unfinishedPodcastDownloads()` (still in flight when the process died)
+    /// or with a `.terminal` failure (needs the user, not another attempt).
+    func testResumablePodcastDownloadsReturnsOnlyRetryableFailures() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/resumable/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 2, 3, 4, 5, 6])
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+        _ = try await store.admitPodcastEpisodes(all, admission: .incremental, claimingNewest: 6)
+
+        let queued = all[0].itemID
+        let downloading = all[1].itemID
+        let completed = all[2].itemID
+        let cancelled = all[3].itemID
+        let retryableFailure = all[4].itemID
+        let terminalFailure = all[5].itemID
+
+        try await store.save(download: PodcastDownload(episodeID: queued, status: .queued, updatedAt: Timestamp(origin)))
+        try await store.save(download: PodcastDownload(episodeID: downloading, status: .downloading,
+                                                        bytesReceived: 10, updatedAt: Timestamp(origin)))
+        try await store.save(download: try PodcastDownload(
+            episodeID: completed, status: .completed, bytesReceived: 1,
+            localURL: URL(fileURLWithPath: "/tmp/resumable-completed.mp3"),
+            contentHash: "sha256:" + String(repeating: "1", count: 64), updatedAt: Timestamp(origin)
+        ))
+        try await store.save(download: PodcastDownload(episodeID: cancelled, status: .cancelled, updatedAt: Timestamp(origin)))
+        try await store.save(download: PodcastDownload(episodeID: retryableFailure, status: .failed,
+                                                        updatedAt: Timestamp(origin), failureKind: .retryable))
+        try await store.save(download: PodcastDownload(episodeID: terminalFailure, status: .failed,
+                                                        updatedAt: Timestamp(origin), failureKind: .terminal))
+
+        let resumable = try await store.resumablePodcastDownloads()
+        XCTAssertEqual(resumable.map(\.episodeID), [retryableFailure])
+    }
+
     /// Manual and automatic entry points race for the same episode. Exactly one
     /// wins, and the loser is told rather than left to start a second transfer.
     func testOnlyTheFirstClaimOnAnEpisodeWins() async throws {

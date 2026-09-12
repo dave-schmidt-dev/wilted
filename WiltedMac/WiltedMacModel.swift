@@ -1174,7 +1174,7 @@ final class WiltedMacModel {
     private var automationTicker: Task<Void, Never>?
     private var playbackCheckpointTicker: Task<Void, Never>?
 #endif
-    private var podcastDownloadTasks: [String: Task<Void, Never>] = [:]
+    private var podcastDownloadTasks: [String: Task<PodcastDownloadResult, Error>] = [:]
     private var podcastDownloadCoordinator: PodcastDownloadCoordinator?
     private var podcastPreparationPipeline: PodcastPreparationPipeline?
     /// Real-wiring seams for tests and fixtures: nil means "use the coordinator's
@@ -1601,7 +1601,12 @@ final class WiltedMacModel {
 
     private func unfinishedAutomationClaims() async throws -> [String] {
         guard let store else { throw CancellationError() }
-        return try await store.unfinishedPodcastDownloads().map(\.episodeID.rawValue)
+        let unfinished = try await store.unfinishedPodcastDownloads().map(\.episodeID.rawValue)
+        // `.queued`/`.downloading` (unfinished) and `.failed`/`.retryable`
+        // (resumable) are disjoint statuses, but a `Set` costs nothing and
+        // means a future status change here can't silently double-claim.
+        let resumable = try await store.resumablePodcastDownloads().map(\.episodeID.rawValue)
+        return Array(Set(unfinished + resumable)).sorted()
     }
 
     /// Refreshes one feed and claims a bounded subset of the episodes that exact
@@ -1621,6 +1626,15 @@ final class WiltedMacModel {
         return result.claimed.map(\.rawValue)
     }
 
+    /// Wraps a terminal (or cancelled/not-found) download failure so
+    /// `withRetries` never retries it and `drain` treats it as one claim
+    /// done, not the automation pass stopping. `underlying` is kept for
+    /// whatever wants the original reason; nothing on the automation path
+    /// currently reads it.
+    private struct WiltedAutomationNonRetryableDownloadFailure: Error, WiltedAutomationNonRetryable {
+        let underlying: PodcastDownloadCoordinatorError
+    }
+
     /// Starts one already-claimed episode and waits for it to settle.
     ///
     /// Waiting is what makes the coordinator's queue serial. The claim is
@@ -1636,7 +1650,23 @@ final class WiltedMacModel {
             throw WiltedAutomationFault.claimedEpisodeMissing(episodeID)
         }
         downloadEpisode(episode, alreadyClaimed: true)
-        await podcastDownloadTasks[episodeID]?.value
+        // `downloadEpisode` guard-returns without inserting a task when the
+        // coordinator is nil or the episode ID fails to parse. `nil?.value`
+        // would turn that into a silent success; a claim with no task behind
+        // it is the same "work not actually done" fault as a missing episode.
+        guard let task = podcastDownloadTasks[episodeID] else {
+            throw WiltedAutomationFault.downloadNotStarted(episodeID)
+        }
+        do {
+            _ = try await task.value
+        } catch let error as PodcastDownloadCoordinatorError where error.failureKind != .retryable {
+            // Terminal failures (bad hash, bad audio) and `.cancelled`/
+            // `.episodeNotFound` (failureKind `nil`) all need a person or a
+            // user decision, not bounded in-process retry. `.retryable`
+            // errors fall through this catch and rethrow raw, which is what
+            // lets `withRetries` retry them normally.
+            throw WiltedAutomationNonRetryableDownloadFailure(underlying: error)
+        }
     }
 #endif
 
@@ -2011,6 +2041,11 @@ final class WiltedMacModel {
         podcastOperationMessage = "Podcast refresh cancelled."
     }
 
+    /// Distinguishes "someone else already holds this download's claim" from
+    /// genuine cancellation, so `withRetries`/`drain` skip just this episode
+    /// instead of reading it as the whole automation pass stopping.
+    private struct PodcastClaimAlreadyHeld: Error, WiltedAutomationNonRetryable {}
+
     /// Starts one episode's download.
     ///
     /// `alreadyClaimed` is automation saying it holds the store claim already.
@@ -2027,20 +2062,28 @@ final class WiltedMacModel {
         updateEpisode(episode.id) { $0.downloadState = .queued }
         podcastOperationMessage = "Queued \(episode.title) for download."
         podcastDownloadTasks[episode.id] = Task { [weak self] in
-            guard let self else { return }
+            guard let self else { throw CancellationError() }
+            // One place to clear the task-table entry, run on every exit
+            // (return or throw) rather than duplicated in each branch below.
+            defer { self.podcastDownloadTasks[episode.id] = nil }
             if !alreadyClaimed {
                 let won = await self.claimDownload(itemID)
                 guard won else {
                     self.podcastOperationMessage = "\(episode.title) is already downloading."
                     self.updateEpisode(episode.id) { $0.downloadState = .notDownloaded }
-                    self.podcastDownloadTasks[episode.id] = nil
-                    return
+                    // Someone else holds this episode; that is not a transfer
+                    // failure, so `waitForPodcastOperations`'s `try?` swallow
+                    // is the right place for this to disappear. It also must
+                    // not read as `CancellationError`, which `drain` treats as
+                    // the whole automation pass stopping rather than one claim
+                    // being skipped.
+                    throw PodcastClaimAlreadyHeld()
                 }
             }
             do {
                 guard let store = self.store else { throw CancellationError() }
-                _ = try await coordinator.download(episodeID: itemID,
-                                                   ignoringExisting: ignoringExisting) { progress in
+                let result = try await coordinator.download(episodeID: itemID,
+                                                             ignoringExisting: ignoringExisting) { progress in
                     Task { @MainActor [weak self] in
                         guard self?.updateActiveEpisodeDownload(
                             episode.id,
@@ -2067,7 +2110,6 @@ final class WiltedMacModel {
                 self.podcastOperationMessage = recoveryCheckpointSaved
                     ? "\(episode.title) is available offline."
                     : "\(episode.title) downloaded, but its preparation recovery checkpoint could not be saved."
-                self.podcastDownloadTasks[episode.id] = nil
                 // Asked for before the library is reloaded, not after. The
                 // reload reads the whole library and three downloads landing
                 // together each run one, so preparation used to be requested
@@ -2087,15 +2129,16 @@ final class WiltedMacModel {
                     self.subscriptions = values.subscriptions
                     self.dismissedEpisodes = try await self.loadDismissedEpisodes(from: store)
                 } catch {}
-                return
+                return result
             } catch PodcastDownloadCoordinatorError.cancelled {
                 self.updateEpisode(episode.id) { $0.downloadState = .cancelled }
                 self.podcastOperationMessage = "Download cancelled."
+                throw PodcastDownloadCoordinatorError.cancelled
             } catch {
                 self.updateEpisode(episode.id) { $0.downloadState = .failed }
                 self.podcastOperationMessage = "Download failed. Retry when you are online."
+                throw error
             }
-            self.podcastDownloadTasks[episode.id] = nil
         }
 #endif
     }
@@ -2540,7 +2583,7 @@ final class WiltedMacModel {
         let downloads = Array(podcastDownloadTasks.values)
         let restores = Array(podcastRestoreTasks.values)
         await refresh?.value
-        for task in downloads { await task.value }
+        for task in downloads { _ = try? await task.value }
         for task in restores { await task.value }
     }
 
@@ -4345,6 +4388,11 @@ final class WiltedMacModel {
         do {
             let configuredStore = try await storeBootstrap(libraryURL)
             configureStoreDependencies(configuredStore)
+            // Must run before any V10-aware read path below, and specifically
+            // before `invalidateStalePodcastPreparations`: reconcile's own
+            // timestamp-ordering guard assumes it sees legacy markers before
+            // this launch's invalidation pass writes new ones.
+            try await configuredStore.reconcilePodcastStateV10()
             let invalidation: PodcastPreparationInvalidationResult
             if let fingerprint = pipelineFingerprint {
                 invalidation = try await configuredStore.invalidateStalePodcastPreparations(
@@ -4385,6 +4433,14 @@ final class WiltedMacModel {
                 guard let episode = episodes.first(where: { $0.id == itemID.rawValue }) else { continue }
                 downloadEpisode(episode, ignoringExisting: true)
             }
+            // `.retryable` failures resume through the coordinator's own
+            // cache/resume logic, not a forced fresh fetch -- the failure was
+            // a transport hiccup, not evidence the prior bytes are wrong.
+            // Queued through `unfinishedAutomationClaims` below (via
+            // `startAutomationOnLaunch`'s reconcile) rather than started here
+            // directly: bootstrap starting N of these concurrently would
+            // contradict the serial, one-at-a-time queue automation is meant
+            // to be the only path through.
             await restorePodcastPlayback()
             startupState = .ready
             if pendingSyncReconciliation {

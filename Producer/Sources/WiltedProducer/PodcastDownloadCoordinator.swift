@@ -41,6 +41,23 @@ public enum PodcastDownloadCoordinatorError: Error, Equatable, LocalizedError, S
         case .transport: "Wilted could not download the podcast enclosure."
         }
     }
+
+    /// The adopted default from the episode state model plan's owner-decision
+    /// list: transport hiccups and bad-but-plausible responses are worth a
+    /// retry, everything else (bad content, oversized, mismatched hash) needs
+    /// a person, not another attempt. `.cancelled` is neither -- it is a user
+    /// decision, not a transfer outcome -- and `.episodeNotFound` needs no
+    /// retryability decision at all, so both are `nil`.
+    public var failureKind: PodcastDownloadFailureKind? {
+        switch self {
+        case .transport, .invalidResponse: .retryable
+        case .cancelled, .episodeNotFound: nil
+        case .invalidURL, .insecureRedirect, .unsupportedMediaType, .mediaTypeMismatch,
+             .declaredSizeTooLarge, .streamedSizeTooLarge, .declaredSizeMismatch, .invalidExpectedHash,
+             .hashMismatch, .invalidAudio, .destinationExists:
+            .terminal
+        }
+    }
 }
 
 public struct PodcastDownloadHTTPResponse: Equatable, Sendable {
@@ -223,7 +240,8 @@ public actor PodcastDownloadCoordinator {
         } catch let error as PodcastDownloadCoordinatorError {
             try? await store.save(download: PodcastDownload(
                 episodeID: episodeID, status: .failed, bytesReceived: 0,
-                expectedByteCount: expected, updatedAt: Timestamp(now())
+                expectedByteCount: expected, updatedAt: Timestamp(now()),
+                failureKind: error.failureKind
             ))
             throw error
         }
@@ -241,7 +259,8 @@ public actor PodcastDownloadCoordinator {
         } catch {
             try? await store.save(download: PodcastDownload(
                 episodeID: episodeID, status: .failed, bytesReceived: 0,
-                expectedByteCount: expected, updatedAt: Timestamp(now())
+                expectedByteCount: expected, updatedAt: Timestamp(now()),
+                failureKind: .retryable
             ))
             throw PodcastDownloadCoordinatorError.transport(String(describing: error))
         }
@@ -376,13 +395,16 @@ public actor PodcastDownloadCoordinator {
             let cancelled = error is CancellationError || Task.isCancelled ||
                 (error as? PodcastDownloadCoordinatorError) == .cancelled
             let status: PodcastDownloadStatus = cancelled ? .cancelled : .failed
+            let typedError = (error as? PodcastDownloadCoordinatorError)
+                ?? .transport(String(describing: error))
+            let failureKind = cancelled ? nil : typedError.failureKind
             try? await store.save(download: PodcastDownload(
                 episodeID: episodeID, status: status, bytesReceived: received,
-                expectedByteCount: expected.map { max($0, received) }, updatedAt: Timestamp(now())
+                expectedByteCount: expected.map { max($0, received) }, updatedAt: Timestamp(now()),
+                failureKind: failureKind
             ))
             if cancelled { throw PodcastDownloadCoordinatorError.cancelled }
-            if let typed = error as? PodcastDownloadCoordinatorError { throw typed }
-            throw PodcastDownloadCoordinatorError.transport(String(describing: error))
+            throw typedError
         }
     }
 

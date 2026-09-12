@@ -25,6 +25,20 @@ struct PodcastDownloadCoordinatorTests {
                             mediaType: "audio/mpeg", expectedByteCount: 3))
         ])
         #expect(try await fixture.store.revisions(for: fixture.episodeID).isEmpty)
+        #expect(try await fixture.store.download(for: fixture.episodeID)?.failureKind == .retryable)
+    }
+
+    @Test func classifiesADirectTransportFailureAsRetryable() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+
+        let transportFailure = PodcastDownloadCoordinator(
+            store: fixture.store, libraryDirectory: fixture.libraryDirectory,
+            transport: FailingTransport(.transport("boom")), mediaValidator: StubValidator(result: .success(12))
+        )
+        do { _ = try await transportFailure.download(episodeID: fixture.episodeID); Issue.record("expected transport failure") }
+        catch { #expect(error as? PodcastDownloadCoordinatorError == .transport("boom")) }
+        #expect(try await fixture.store.download(for: fixture.episodeID)?.failureKind == .retryable)
     }
 
     @Test func enforcesDeclaredAndStreamedBounds() async throws {
@@ -118,6 +132,7 @@ struct PodcastDownloadCoordinatorTests {
             #expect(actual == contentHash(fixture.body))
         } catch { Issue.record("unexpected error: \(error)") }
         #expect(try stagingFiles(in: fixture.libraryDirectory).isEmpty)
+        #expect(try await fixture.store.download(for: fixture.episodeID)?.failureKind == .terminal)
     }
 
     @Test func reportsKnownAndUnknownExpectedSizeProgress() async throws {

@@ -17,16 +17,31 @@ private actor AutomationSpy {
     /// Feeds that fail before succeeding, so backoff has something to retry.
     var transientFailures: [String: Int] = [:]
     var downloadFailures: Set<String> = []
+    /// Downloads that fail a bounded number of times before succeeding, so a
+    /// test can distinguish "retried and recovered" from "retried forever."
+    var transientDownloadFailures: [String: Int] = [:]
+    var downloadAttempts: [String: Int] = [:]
+    /// Episodes that fail with a `WiltedAutomationNonRetryable` error every
+    /// time -- the shape a claim-lost or user-cancel outcome takes once it
+    /// reaches `startClaimedDownload`. `withRetries` must never retry these.
+    var nonRetryableDownloadFailures: Set<String> = []
 
     init(claimsByFeed: [String: [String]] = [:], unfinished: [String] = [],
-         transientFailures: [String: Int] = [:], downloadFailures: Set<String> = []) {
+         transientFailures: [String: Int] = [:], downloadFailures: Set<String> = [],
+         transientDownloadFailures: [String: Int] = [:], nonRetryableDownloadFailures: Set<String> = []) {
         self.claimsByFeed = claimsByFeed
         self.unfinished = unfinished
         self.transientFailures = transientFailures
         self.downloadFailures = downloadFailures
+        self.transientDownloadFailures = transientDownloadFailures
+        self.nonRetryableDownloadFailures = nonRetryableDownloadFailures
     }
 
     struct Transient: Error {}
+    /// Stands in for a claim-lost (`PodcastClaimAlreadyHeld`) or user-cancel
+    /// (`WiltedAutomationNonRetryableDownloadFailure`) outcome without needing
+    /// the real download coordinator to produce one.
+    struct NonRetryable: Error, WiltedAutomationNonRetryable {}
 
     func refreshFeed(_ url: URL, limit: Int) throws -> [String] {
         let host = url.host ?? url.absoluteString
@@ -39,11 +54,18 @@ private actor AutomationSpy {
     }
 
     func startDownload(_ episodeID: String) throws {
+        downloadAttempts[episodeID, default: 0] += 1
+        if nonRetryableDownloadFailures.contains(episodeID) { throw NonRetryable() }
         if downloadFailures.contains(episodeID) { throw Transient() }
+        if let remaining = transientDownloadFailures[episodeID], remaining > 0 {
+            transientDownloadFailures[episodeID] = remaining - 1
+            throw Transient()
+        }
         startedDownloads.append(episodeID)
     }
 
     func unfinishedClaims() -> [String] { unfinished }
+    func attempts(for episodeID: String) -> Int { downloadAttempts[episodeID] ?? 0 }
     func record(_ status: WiltedAutomationStatus) { statuses.append(status) }
     func record(sleep seconds: TimeInterval) { sleeps.append(seconds) }
     func record(success date: Date) { recordedSuccesses.append(date) }
@@ -302,6 +324,62 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
                        "the ceiling holds; the feed is left alone until the next trigger")
         let neverStarted = await exhausted.startedDownloads
         XCTAssertTrue(neverStarted.isEmpty)
+    }
+
+    /// `drain`'s `withRetries` around `startDownload` is the same bounded
+    /// exponential backoff as `refreshFeed`'s, exercised here directly rather
+    /// than assumed from the feed-refresh coverage above: a download that
+    /// recovers retries exactly as many times as it failed, and one that
+    /// never recovers stops at the ceiling rather than looping forever.
+    func testDownloadFailuresRetryWithBoundedBackoffThenGiveUpAtTheCeiling() async {
+        let spy = AutomationSpy(claimsByFeed: ["one.example.test": ["a"]],
+                                transientDownloadFailures: ["a": 2])
+        let subject = coordinator(spy: spy, settings: settings(refresh: .onLaunch, download: .newestOnePerEnabledFeed))
+        await subject.run(trigger: .launch)
+
+        let sleeps = await spy.sleeps
+        XCTAssertEqual(sleeps, [2, 4], "two failures, two growing waits, then success")
+        let started = await spy.startedDownloads
+        XCTAssertEqual(started, ["a"])
+        let attempts = await spy.attempts(for: "a")
+        XCTAssertEqual(attempts, 3, "two failed attempts plus the one that succeeded")
+
+        let exhausted = AutomationSpy(claimsByFeed: ["one.example.test": ["a"]],
+                                      transientDownloadFailures: ["a": 99])
+        let giveUp = coordinator(spy: exhausted, settings: settings(refresh: .onLaunch, download: .newestOnePerEnabledFeed))
+        await giveUp.run(trigger: .launch)
+        let boundedSleeps = await exhausted.sleeps
+        XCTAssertEqual(boundedSleeps.count, WiltedAutomationCoordinator.maximumRetries,
+                       "the ceiling holds; the claim is left for the next launch to reconcile")
+        let neverStarted = await exhausted.startedDownloads
+        XCTAssertTrue(neverStarted.isEmpty)
+        let exhaustedAttempts = await exhausted.attempts(for: "a")
+        XCTAssertEqual(exhaustedAttempts, WiltedAutomationCoordinator.maximumRetries + 1,
+                       "one initial attempt plus every bounded retry")
+    }
+
+    /// A claim-lost or user-cancel outcome (`WiltedAutomationNonRetryable`)
+    /// must not be treated like the whole pass being cancelled: `withRetries`
+    /// never retries it, and `drain` moves on to the next claim in the same
+    /// pass rather than stopping. This is the regression the Phase 3 bug fix
+    /// closes -- previously both outcomes threw `CancellationError`, which
+    /// `drain`'s `catch is CancellationError` reads as "the whole automation
+    /// pass stopped," abandoning every claim after the one that failed.
+    func testNonRetryableDownloadFailureSkipsOnlyItsClaimAndDrainContinues() async {
+        let spy = AutomationSpy(claimsByFeed: ["one.example.test": ["a", "b"]],
+                                nonRetryableDownloadFailures: ["a"])
+        let subject = coordinator(spy: spy, settings: settings(refresh: .onLaunch, download: .newestThreePerEnabledFeed))
+        await subject.run(trigger: .launch)
+
+        let started = await spy.startedDownloads
+        XCTAssertEqual(started, ["b"], "the failed claim is skipped, not retried, and the pass moves on to the next")
+        let attemptsForA = await spy.attempts(for: "a")
+        XCTAssertEqual(attemptsForA, 1, "exactly one attempt -- withRetries must never retry a non-retryable failure")
+        let sleeps = await spy.sleeps
+        XCTAssertTrue(sleeps.isEmpty, "no backoff for a non-retryable failure")
+        let statuses = await spy.statuses
+        XCTAssertEqual(statuses.last, .finished(refreshed: 3, downloaded: 1),
+                       "the pass finished rather than reading the failure as its own cancellation")
     }
 
     /// One feed being unreachable is not a reason to abandon the others, and a

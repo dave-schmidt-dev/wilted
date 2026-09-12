@@ -2846,6 +2846,16 @@ public actor LocalLibraryStore {
         try downloads().filter { $0.status == .queued || $0.status == .downloading }
     }
 
+    /// Failures a relaunch should retry without asking the user.
+    ///
+    /// Distinct from `unfinishedPodcastDownloads()`: those rows never reached
+    /// a terminal state, these did and were classified `.retryable` by the
+    /// coordinator's final catch. A `.terminal` failure is excluded on
+    /// purpose — it needs user action, not another automatic attempt.
+    public func resumablePodcastDownloads() throws -> [PodcastDownload] {
+        try downloads().filter { $0.status == .failed && $0.failureKind == .retryable }
+    }
+
     /// Creates a subscription once without moving its original admission horizon.
     ///
     /// Equivalent canonical feed URLs derive the same feed ID, so repeated manual
