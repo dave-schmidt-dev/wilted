@@ -5185,9 +5185,19 @@ final class WiltedMacModel {
             // not coming back, and a fixture launch that is still running is at
             // most minutes old.
             sweepStaleFixtureDirectories(in: temporaryDirectory)
+            // Suffixed per instance, not just per process: a single xctest
+            // process constructs many fixture-mode models across unrelated
+            // test methods, and now that fixture downloads write real store
+            // rows (Phase 1b), a PID-only path let one model's completed
+            // download satisfy another's `completedResult` cache lookup and
+            // silently skip its cancellation/failure simulation. Tests that
+            // want two instances to share state (relaunch simulation) already
+            // pass an explicit `stateDirectoryOverride` rather than relying on
+            // this default.
             return temporaryDirectory
                 .appendingPathComponent(
-                    "wilted-ui-fixture-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true
+                    "wilted-ui-fixture-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)",
+                    isDirectory: true
                 )
         }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
