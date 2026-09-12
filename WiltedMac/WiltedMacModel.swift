@@ -2392,12 +2392,20 @@ final class WiltedMacModel {
                     self.articles = values.articles
                     self.applyEpisodes(values.episodes)
                     self.subscriptions = values.subscriptions
+                    // The reload derives preparation state from the durable
+                    // outcome row this run just wrote, with this run's own
+                    // journalled detail (already carrying the ad count) as the
+                    // label. But `applyEpisodes` carries this episode's *prior*
+                    // in-memory `.preparing` back onto the reloaded row, because
+                    // this task is still tracked as running until the outer
+                    // `defer` clears it once this closure returns -- so the
+                    // freshly derived state has to be re-applied for this one
+                    // episode now, rather than left for `applyingRunningPreparations`
+                    // to overwrite.
+                    if let derived = values.episodes.first(where: { $0.id == episode.id })?.preparationState {
+                        self.updateEpisode(episode.id) { $0.preparationState = derived }
+                    }
                 }
-                // Applied after the reload, not before. The reload derives
-                // preparation state from what the library can prove, and how
-                // many advertisements a run cut is not stored, so it would
-                // otherwise replace this run's summary with a generic one.
-                self.updateEpisode(episode.id) { $0.preparationState = .prepared(summary: summary) }
                 await self.reloadPreparedPlayback(episode.id, itemID: itemID)
                 self.refreshProcessorRuns()
             } catch is CancellationError {
@@ -4483,6 +4491,18 @@ final class WiltedMacModel {
     private func closeInterruptedPreparationRuns(in store: LocalLibraryStore) async {
         guard let runs = try? await store.preparationRuns() else { return }
         for run in runs where !run.isTerminal {
+            // An outcome durable for this episode's ready revision and dated
+            // at or after this run's own start is proof this run itself
+            // finished and saved before the process died -- only the
+            // terminal journal write was interrupted. Stamping `.failed` over
+            // that would hide a proven artifact behind a false failure. An
+            // outcome from an older run (dated before this one started)
+            // proves nothing about this run, which is left to close normally.
+            if let readyRevisionID = try? await store.readyRevision(for: run.itemID)?.revision.revisionID,
+               let outcome = try? await store.preparationOutcome(for: run.itemID, revisionID: readyRevisionID),
+               outcome.producedAt >= run.startedAt {
+                continue
+            }
             guard let entry = Self.interruptedPreparationEntry(for: run, at: Timestamp(Date())) else { continue }
             try? await store.record(preparation: entry)
         }
@@ -4809,11 +4829,15 @@ final class WiltedMacModel {
                 playbackState = nil
             }
             let transcript: Transcript?
+            let outcome: PodcastPreparationOutcome?
             if let revision {
                 transcript = try? await store.transcript(for: episode.itemID,
                                                          revisionID: revision.revision.revisionID)
+                outcome = try? await store.preparationOutcome(for: episode.itemID,
+                                                              revisionID: revision.revision.revisionID)
             } else {
                 transcript = nil
+                outcome = nil
             }
             let downloadState: WiltedMacEpisodeDownloadState
             switch downloads[episode.itemID]?.status {
@@ -4836,6 +4860,7 @@ final class WiltedMacModel {
                 playbackSeconds: playbackState?.positionSeconds ?? 0,
                 isPlayed: playbackState?.completed ?? false, downloadState: downloadState,
                 preparationState: Self.preparationState(
+                    outcome: outcome,
                     run: runs[episode.itemID],
                     readyRevisionID: revision?.revision.revisionID,
                     transcript: transcript
@@ -4879,18 +4904,28 @@ final class WiltedMacModel {
 
     /// What the library already knows about an episode's preparation.
     ///
-    /// A successful terminal journal is the durable proof that preparation
-    /// completed. Its revision must be the audio revision currently ready to
-    /// play; transcript timing alone cannot prove that advertisements were cut.
+    /// The outcome row is the durable proof that preparation completed: it
+    /// must exist for the audio revision currently ready to play, and it must
+    /// not be marked invalid by a later policy or pipeline change. That proof
+    /// is checked before the run's own terminality, not after: a run that
+    /// committed its outcome and then died before its terminal journal write
+    /// is still proven, and must not read as stuck in `.preparing` forever
+    /// just because its journal never closed. The journal is evidence, not
+    /// proof -- it supplies the label's ad-count detail via
+    /// `recordedSummary(of:)` and, only when no outcome exists, whether a run
+    /// is still in flight or has failed. Once an outcome exists, a later
+    /// run's own failure (a re-preparation that did not change anything)
+    /// never demotes the still-current, proven state.
     nonisolated static func preparationState(
-        run: PreparationRunSummary?, readyRevisionID: RevisionID?, transcript: Transcript?
+        outcome: PodcastPreparationOutcome?, run: PreparationRunSummary?,
+        readyRevisionID: RevisionID?, transcript: Transcript?
     ) -> WiltedMacEpisodePreparationState {
-        if let run, !run.isTerminal { return .preparing(stage: "Preparing…") }
-        if let run, run.outcome == .failed { return .failed(preparationFailedLabel) }
-        guard let readyRevisionID,
-              let terminal = run?.entries.last(where: { $0.status.terminal })?.status.terminalResult,
-              terminal.outcome == .succeeded,
-              terminal.revisionID == readyRevisionID else { return .notPrepared }
+        guard let readyRevisionID, let outcome,
+              outcome.revisionID == readyRevisionID, outcome.eligibility != .invalid else {
+            if let run, !run.isTerminal { return .preparing(stage: "Preparing…") }
+            if let run, run.outcome == .failed { return .failed(preparationFailedLabel) }
+            return .notPrepared
+        }
 
         let ready = PodcastPreparationResult.readyLabel
         if transcript == nil || transcript?.availability == .absent || transcript?.timing == TranscriptTiming.none {
@@ -5125,6 +5160,16 @@ final class WiltedMacModel {
             // A prepared fixture episode has a history for Prep to read, in
             // the worker's own vocabulary, so the detailed log is exercised
             // through the same journal the real pipeline writes.
+            if fixtureEpisodeIsPrepared, let revision {
+                // `preparationState` reads the outcome row as its proof, not
+                // the journal below -- without this the fixture's "prepared"
+                // episode would read as not-prepared on any reload.
+                try? await store.savePreparationOutcome(PodcastPreparationOutcome(
+                    episodeID: episodeID, revisionID: revision.revisionID, policyDigest: "fixture-policy",
+                    pipelineFingerprint: "fixture-fingerprint", semanticVersion: "fixture-semantic-version",
+                    producedAt: Timestamp(Date(timeIntervalSince1970: 1_699_830_300))
+                ))
+            }
             if fixtureEpisodeIsPrepared {
                 let requestID = Self.podcastRequestPrefix + episodeID.rawValue
                 let started = Date(timeIntervalSince1970: 1_699_830_000)

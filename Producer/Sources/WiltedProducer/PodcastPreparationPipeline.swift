@@ -463,7 +463,7 @@ public actor PodcastPreparationPipeline {
     /// This file's own source hash is computed with this value normalized out;
     /// it makes a semantic edit fail the coverage test until this fingerprint
     /// block is deliberately updated.
-    public static let pipelineSourceHash = "sha256:c2362f768a09127d6c0d0427799685c5454775b3fe0c3cc7ad8d5517378adff4"
+    public static let pipelineSourceHash = "sha256:f068c87874f53212d8181ccb8f77ad2fd152414c2944bcd7f7ccc84fd46a90e4"
 
     /// Includes the external Python packages imported by the worker. Those
     /// sources remain outside this repository during the native migration, so
@@ -647,7 +647,8 @@ public actor PodcastPreparationPipeline {
             report(Self.resultProgress(payload))
             for (index, ad) in payload.adSegments.enumerated() { report(Self.adProgress(ad, ordinal: index + 1)) }
             let result = try await commit(payload, episode: episode, download: download,
-                                          downloadedRevision: stored.revision, audioURL: audioURL, onStatus: report)
+                                          downloadedRevision: stored.revision, audioURL: audioURL,
+                                          policy: policy, onStatus: report)
             await writes.drain()
             await journalTerminal(episodeID: episodeID, requestID: requestID, error: nil,
                                   revisionID: result.revision.revisionID, summary: result.summary,
@@ -970,13 +971,20 @@ public actor PodcastPreparationPipeline {
         download: PodcastDownload,
         downloadedRevision: AudioRevision,
         audioURL: URL,
+        policy: PodcastPreparationPolicySnapshot,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> PodcastPreparationResult {
         guard payload.audioChanged else {
             let transcript = try Self.transcript(from: payload, itemID: episode.itemID,
                                                  revisionID: downloadedRevision.revisionID,
                                                  updatedAt: Timestamp(now()))
-            try await store.saveReadyRevision(downloadedRevision, mediaURL: audioURL, transcript: transcript)
+            let outcome = PodcastPreparationOutcome(
+                episodeID: episode.itemID, revisionID: downloadedRevision.revisionID,
+                policyDigest: Self.policyDigest(policy), pipelineFingerprint: Self.semanticFingerprint,
+                semanticVersion: Self.semanticVersion, producedAt: Timestamp(now())
+            )
+            try await store.saveReadyRevision(downloadedRevision, mediaURL: audioURL, transcript: transcript,
+                                              outcome: outcome)
             return finish(payload, revision: downloadedRevision, mediaURL: audioURL,
                           transcript: transcript, onStatus: onStatus)
         }
@@ -1022,16 +1030,35 @@ public actor PodcastPreparationPipeline {
                                              updatedAt: Timestamp(now()))
         let carried = try await carriedPlayback(from: downloadedRevision, to: revision,
                                                 keeps: payload.keepIntervals, duration: duration)
+        let outcome = PodcastPreparationOutcome(
+            episodeID: episode.itemID, revisionID: revisionID,
+            policyDigest: Self.policyDigest(policy), pipelineFingerprint: Self.semanticFingerprint,
+            semanticVersion: Self.semanticVersion, producedAt: Timestamp(now())
+        )
 
         try await store.replaceReadyRevision(revision, mediaURL: finalURL, transcript: transcript,
                                              download: prepared, superseding: downloadedRevision.revisionID,
-                                             carrying: carried)
-        // Only now is the original safe to remove. The store no longer refers
-        // to it, and until that save committed a failure here would have left
-        // an episode whose audio was deleted and unrecoverable without
-        // downloading it again.
-        if audioURL != finalURL { try? FileManager.default.removeItem(at: audioURL) }
+                                             outcome: outcome, carrying: carried)
+        // Only now is the outcome durable, so only now is the original safe to
+        // reclaim: a crash before this point leaves it in place for a retry to
+        // find again, and a crash after it leaves an idempotent no-op.
+        reclaimSupersededPodcastAudio(at: audioURL, keeping: finalURL)
         return finish(payload, revision: revision, mediaURL: finalURL, transcript: transcript, onStatus: onStatus)
+    }
+
+    /// Deletes a superseded episode's source audio once its replacement is
+    /// durable. Safe to call more than once, and safe to call when the file
+    /// was already removed by an earlier, interrupted attempt.
+    private func reclaimSupersededPodcastAudio(at audioURL: URL, keeping finalURL: URL) {
+        guard audioURL != finalURL, FileManager.default.fileExists(atPath: audioURL.path) else { return }
+        try? FileManager.default.removeItem(at: audioURL)
+    }
+
+    private static func policyDigest(_ policy: PodcastPreparationPolicySnapshot) -> String {
+        var hasher = SHA256()
+        hasher.update(data: Data(policy.transcriptPolicy.rawValue.utf8))
+        hasher.update(data: Data([0, policy.removeAds ? 1 : 0]))
+        return "sha256:" + hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     /// Moves a saved listening position onto the prepared audio.

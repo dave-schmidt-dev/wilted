@@ -1847,10 +1847,15 @@ final class WiltedMacModelTests: XCTestCase {
                 detail: terminal, fraction: nil, isTerminal: true, outcome: .succeeded, failure: nil, entries: entries
             )
         }
+        func outcome(for revisionID: RevisionID) -> PodcastPreparationOutcome {
+            PodcastPreparationOutcome(episodeID: itemID, revisionID: revisionID, policyDigest: "d",
+                                      pipelineFingerprint: "f", semanticVersion: "v", producedAt: when)
+        }
 
         // A current build journals the summary itself as the terminal row.
         XCTAssertEqual(
-            WiltedMacModel.preparationState(run: try run(terminal: "Ready · 5 ads removed (7:22) · transcript synced",
+            WiltedMacModel.preparationState(outcome: outcome(for: revisionID),
+                                            run: try run(terminal: "Ready · 5 ads removed (7:22) · transcript synced",
                                                          completion: "5 advertisements, 1307 cues",
                                                          terminalRevisionID: revisionID),
                                             readyRevisionID: revisionID, transcript: transcript),
@@ -1860,22 +1865,26 @@ final class WiltedMacModelTests: XCTestCase {
         // earlier; zero there is the honest state of an episode the broken
         // detector build marked prepared.
         XCTAssertEqual(
-            WiltedMacModel.preparationState(run: try run(terminal: "Prepared.", completion: "0 advertisements, 1345 cues",
+            WiltedMacModel.preparationState(outcome: outcome(for: revisionID),
+                                            run: try run(terminal: "Prepared.", completion: "0 advertisements, 1345 cues",
                                                          terminalRevisionID: revisionID),
                                             readyRevisionID: revisionID, transcript: transcript),
             .prepared(summary: "Ready · no ads found · transcript synced")
         )
         XCTAssertEqual(
-            WiltedMacModel.preparationState(run: try run(terminal: "Prepared.", completion: "3 advertisements, 900 cues",
+            WiltedMacModel.preparationState(outcome: outcome(for: revisionID),
+                                            run: try run(terminal: "Prepared.", completion: "3 advertisements, 900 cues",
                                                          terminalRevisionID: revisionID),
                                             readyRevisionID: revisionID, transcript: transcript),
             .prepared(summary: "Ready · 3 ads removed · transcript synced")
         )
         // Transcript timing alone cannot prove that preparation completed.
-        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, readyRevisionID: revisionID, transcript: transcript),
+        XCTAssertEqual(WiltedMacModel.preparationState(outcome: nil, run: nil, readyRevisionID: revisionID,
+                                                       transcript: transcript),
                        .notPrepared)
         XCTAssertEqual(
-            WiltedMacModel.preparationState(run: try run(terminal: "Prepared.", completion: nil,
+            WiltedMacModel.preparationState(outcome: outcome(for: revisionID),
+                                            run: try run(terminal: "Prepared.", completion: nil,
                                                          terminalRevisionID: revisionID),
                                             readyRevisionID: revisionID, transcript: transcript),
             .prepared(summary: "Ready · transcript synced")
@@ -1883,13 +1892,120 @@ final class WiltedMacModelTests: XCTestCase {
         let staleRevisionID = try RevisionID(rawValue: "rev-" + String(repeating: "8", count: 64))
         XCTAssertEqual(
             WiltedMacModel.preparationState(
+                outcome: outcome(for: staleRevisionID),
                 run: try run(terminal: "Ready · transcript synced", completion: nil,
                              terminalRevisionID: staleRevisionID),
                 readyRevisionID: revisionID,
                 transcript: transcript
             ),
             .notPrepared,
-            "A successful journal for an older audio revision cannot label the current download prepared."
+            "An outcome proven for an older audio revision cannot label the current download prepared."
+        )
+    }
+
+    /// Phase 4 gate: relaunch must reconstruct the right state from durable
+    /// facts alone for every journal state a preparation run can be in --
+    /// queued, running, cancelled, failed, or completed -- plus the case
+    /// where a run's own terminal result names a revision the outcome row
+    /// has since moved past.
+    func testRefreshAcrossEveryPreparationStateReconstructsFromDurableFactsAlone() throws {
+        let itemID = try ItemID(rawValue: "item-" + String(repeating: "7", count: 64))
+        let requestID = WiltedMacModel.podcastRequestPrefix + itemID.rawValue
+        let revisionID = try RevisionID(rawValue: "rev-" + String(repeating: "7", count: 64))
+        let supersededRevisionID = try RevisionID(rawValue: "rev-" + String(repeating: "9", count: 64))
+        let when = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+
+        func nonTerminalRun(stage: PreparationStage) -> PreparationRunSummary {
+            PreparationRunSummary(
+                requestID: requestID, itemID: itemID, startedAt: when, updatedAt: when, stage: stage,
+                detail: "Working…", fraction: nil, isTerminal: false, outcome: nil, failure: nil, entries: []
+            )
+        }
+        func terminalRun(outcome: PreparationOutcome, terminalRevisionID: RevisionID?) throws -> PreparationRunSummary {
+            var entries: [PreparationJournalEntry] = []
+            if let terminalRevisionID {
+                entries = [PreparationJournalEntry(
+                    id: requestID + "|terminal", itemID: itemID, requestID: requestID,
+                    status: try PreparationStatus(
+                        stage: .completed, detail: "Prepared.", cancellable: false,
+                        terminalResult: PreparationTerminalResult(outcome: .succeeded, revisionID: terminalRevisionID),
+                        emittedAt: when
+                    )
+                )]
+            }
+            return PreparationRunSummary(
+                requestID: requestID, itemID: itemID, startedAt: when, updatedAt: when, stage: .completed,
+                detail: "Prepared.", fraction: nil, isTerminal: true, outcome: outcome, failure: nil, entries: entries
+            )
+        }
+        func outcome(for revisionID: RevisionID) -> PodcastPreparationOutcome {
+            PodcastPreparationOutcome(episodeID: itemID, revisionID: revisionID, policyDigest: "d",
+                                      pipelineFingerprint: "f", semanticVersion: "v", producedAt: when)
+        }
+
+        // Queued: not yet terminal, no outcome yet. `PreparationStage` has no
+        // dedicated `queued` case; `.preparing` is the stage a freshly
+        // admitted, not-yet-started run carries.
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(outcome: nil, run: nonTerminalRun(stage: .preparing),
+                                            readyRevisionID: revisionID, transcript: nil),
+            .preparing(stage: "Preparing…")
+        )
+        // Running: also not yet terminal, no outcome yet.
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(outcome: nil, run: nonTerminalRun(stage: .extracting),
+                                            readyRevisionID: revisionID, transcript: nil),
+            .preparing(stage: "Preparing…")
+        )
+        // Cancelled: terminal, but cancellation is not failure and not proof.
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(outcome: nil, run: try terminalRun(outcome: .cancelled, terminalRevisionID: nil),
+                                            readyRevisionID: revisionID, transcript: nil),
+            .notPrepared
+        )
+        // Failed: terminal, no outcome -- the row says it failed.
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(outcome: nil, run: try terminalRun(outcome: .failed, terminalRevisionID: nil),
+                                            readyRevisionID: revisionID, transcript: nil),
+            .failed(WiltedMacModel.preparationFailedLabel)
+        )
+        // Completed: terminal, succeeded, outcome present and matching.
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(
+                outcome: outcome(for: revisionID),
+                run: try terminalRun(outcome: .succeeded, terminalRevisionID: revisionID),
+                readyRevisionID: revisionID, transcript: nil
+            ),
+            .prepared(summary: "Audio ready · Transcript unavailable")
+        )
+        // Completed but superseded: this run's own terminal result names an
+        // older revision the ready revision has since moved past, but the
+        // outcome row proves the *current* ready revision is prepared. The
+        // stale run must not derail that proof.
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(
+                outcome: outcome(for: revisionID),
+                run: try terminalRun(outcome: .succeeded, terminalRevisionID: supersededRevisionID),
+                readyRevisionID: revisionID, transcript: nil
+            ),
+            .prepared(summary: "Audio ready · Transcript unavailable"),
+            "A proven outcome for the current ready revision must not be demoted by an older run's own result."
+        )
+        // Committed, died before the terminal write: the run is still open
+        // (its own terminal journal entry never landed), but a matching,
+        // non-invalid outcome for the current ready revision proves it
+        // finished. The outcome guard must win before `!run.isTerminal` is
+        // ever consulted -- pinning this ordering so a refactor that hoists
+        // the run-terminal check cannot silently regress it back to
+        // "Preparing…" forever over a proven artifact.
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(
+                outcome: outcome(for: revisionID),
+                run: nonTerminalRun(stage: .saving),
+                readyRevisionID: revisionID, transcript: nil
+            ),
+            .prepared(summary: "Audio ready · Transcript unavailable"),
+            "A durable outcome for the current ready revision must win even while its own run is still open."
         )
     }
 
@@ -2033,12 +2149,13 @@ final class WiltedMacModelTests: XCTestCase {
             )
         }
 
-        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, readyRevisionID: revisionID, transcript: nil), .notPrepared)
-        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, readyRevisionID: revisionID,
+        XCTAssertEqual(WiltedMacModel.preparationState(outcome: nil, run: nil, readyRevisionID: revisionID,
+                                                       transcript: nil), .notPrepared)
+        XCTAssertEqual(WiltedMacModel.preparationState(outcome: nil, run: nil, readyRevisionID: revisionID,
                                                        transcript: try transcript(.published)), .notPrepared)
-        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, readyRevisionID: revisionID,
+        XCTAssertEqual(WiltedMacModel.preparationState(outcome: nil, run: nil, readyRevisionID: revisionID,
                                                        transcript: try transcript(.aligned)), .notPrepared)
-        XCTAssertEqual(WiltedMacModel.preparationState(run: nil, readyRevisionID: revisionID,
+        XCTAssertEqual(WiltedMacModel.preparationState(outcome: nil, run: nil, readyRevisionID: revisionID,
                                                        transcript: try transcript(.none)), .notPrepared)
 
         let failed = PreparationRunSummary(
@@ -2047,9 +2164,10 @@ final class WiltedMacModelTests: XCTestCase {
             fraction: nil, isTerminal: true, outcome: .failed, failure: nil
         )
         // The row says only that it failed; the reason and the log are on Prep.
-        XCTAssertEqual(WiltedMacModel.preparationState(run: failed, readyRevisionID: revisionID, transcript: nil),
+        XCTAssertEqual(WiltedMacModel.preparationState(outcome: nil, run: failed, readyRevisionID: revisionID,
+                                                       transcript: nil),
                        .failed(WiltedMacModel.preparationFailedLabel))
-        XCTAssertEqual(WiltedMacModel.preparationState(run: failed, readyRevisionID: revisionID,
+        XCTAssertEqual(WiltedMacModel.preparationState(outcome: nil, run: failed, readyRevisionID: revisionID,
                                                        transcript: try transcript(.aligned)),
                        .failed(WiltedMacModel.preparationFailedLabel))
 
@@ -2058,9 +2176,28 @@ final class WiltedMacModelTests: XCTestCase {
             stage: .extracting, detail: "Transcribing", fraction: nil, isTerminal: false,
             outcome: nil, failure: nil
         )
-        XCTAssertEqual(WiltedMacModel.preparationState(run: running, readyRevisionID: revisionID,
+        XCTAssertEqual(WiltedMacModel.preparationState(outcome: nil, run: running, readyRevisionID: revisionID,
                                                        transcript: try transcript(.aligned)),
                        .preparing(stage: "Preparing…"))
+
+        // A proven outcome is not demoted by a later run's own failure -- a
+        // re-preparation that changed nothing must not un-prepare the episode.
+        let outcome = PodcastPreparationOutcome(episodeID: itemID, revisionID: revisionID, policyDigest: "d",
+                                                pipelineFingerprint: "f", semanticVersion: "v", producedAt: when)
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(outcome: outcome, run: failed, readyRevisionID: revisionID,
+                                            transcript: try transcript(.aligned)),
+            .prepared(summary: "\(PodcastPreparationResult.readyLabel) · \(PodcastPreparationResult.transcriptStep(.aligned))")
+        )
+        // A legacy-invalidated outcome is not proof, even for the ready revision.
+        let invalidated = PodcastPreparationOutcome(episodeID: itemID, revisionID: revisionID, policyDigest: "d",
+                                                    pipelineFingerprint: "f", semanticVersion: "v", producedAt: when,
+                                                    eligibility: .invalid)
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(outcome: invalidated, run: nil, readyRevisionID: revisionID,
+                                            transcript: try transcript(.aligned)),
+            .notPrepared
+        )
     }
 
     func testEpisodePreparationStateLarderLabelsShowOnlyProvenCompletedSummary() {
@@ -2307,7 +2444,10 @@ final class WiltedMacModelTests: XCTestCase {
                 )
             )]
         )
-        let state = WiltedMacModel.preparationState(run: run, readyRevisionID: revisionID, transcript: nil)
+        let outcome = PodcastPreparationOutcome(episodeID: itemID, revisionID: revisionID, policyDigest: "d",
+                                                pipelineFingerprint: "f", semanticVersion: "v", producedAt: when)
+        let state = WiltedMacModel.preparationState(outcome: outcome, run: run, readyRevisionID: revisionID,
+                                                    transcript: nil)
         XCTAssertEqual(state, .prepared(summary: "Audio ready · Transcript unavailable"))
         XCTAssertEqual(
             WiltedMacEpisodeLifecyclePresentation(downloadState: .completed, preparationState: state).label,
@@ -4023,6 +4163,103 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(entry.status.terminalResult?.outcome, .failed)
         XCTAssertEqual(entry.status.terminalResult?.error?.retryable, true)
         XCTAssertEqual(entry.status.detail, WiltedMacModel.preparationInterruptedMessage)
+    }
+
+    /// Phase 4 gate: `closeInterruptedPreparationRuns` must not stamp a
+    /// false `.failed` over a run whose own outcome already proves it
+    /// finished before the process died -- only a genuinely stuck run (no
+    /// outcome, or one that predates this run) gets closed.
+    func testBootstrapDoesNotCloseALiveRunAnOutcomeAlreadyProves() async throws {
+        let directory = temporaryDirectory("interrupted-run-proven")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let feedURL = URL(string: "https://podcasts.example.test/proven.xml")!
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        try await store.save(feed: try PodcastFeed(itemID: feedID, canonicalURL: feedURL, title: "Waveform", createdAt: created))
+        try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+
+        func episode(_ guid: String) async throws -> ItemID {
+            let enclosure = URL(string: "https://cdn.example.test/\(guid).mp3")!
+            let id = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: guid, enclosureURL: enclosure)
+            try await store.save(episode: try PodcastEpisode(
+                itemID: id, feedID: feedID, feedURL: feedURL, rssGUID: guid, title: "Episode \(guid)",
+                publishedTime: created, enclosureURL: enclosure, enclosureMediaType: "audio/mpeg", createdAt: created
+            ))
+            return id
+        }
+        func makeReadyRevision(for id: ItemID, suffix: String) async throws -> RevisionID {
+            let revisionID = try RevisionID(rawValue: "rev-" + String(repeating: suffix, count: 64))
+            let hash = "sha256:" + String(repeating: suffix, count: 64)
+            let url = directory.appendingPathComponent("\(suffix).mp3")
+            try Data("audio-\(suffix)".utf8).write(to: url)
+            try await store.finalizePodcastDownload(
+                revision: try AudioRevision(itemID: id, revisionID: revisionID, durationSeconds: 12, byteCount: 12,
+                                            contentHash: hash, mediaType: "audio/mpeg", createdAt: created, schemaVersion: 3),
+                mediaURL: url,
+                download: try PodcastDownload(episodeID: id, status: .completed, bytesReceived: 12,
+                                              expectedByteCount: 12, localURL: url, contentHash: hash, updatedAt: created)
+            )
+            return revisionID
+        }
+        func nonTerminalEntry(for id: ItemID) throws -> PreparationJournalEntry {
+            let requestID = WiltedMacModel.podcastRequestPrefix + id.rawValue
+            return try PreparationJournalEntry(
+                id: requestID + "|pipeline.start#1", itemID: id, requestID: requestID,
+                status: try PreparationStatus(stage: .preparing, detail: "in flight", cancellable: true, emittedAt: created)
+            )
+        }
+
+        // Proven: this run's own outcome landed (dated at the run's own
+        // start) before the process died mid-journal-write.
+        let proven = try await episode("proven")
+        let provenRevisionID = try await makeReadyRevision(for: proven, suffix: "1")
+        try await store.savePreparationOutcome(PodcastPreparationOutcome(
+            episodeID: proven, revisionID: provenRevisionID, policyDigest: "d", pipelineFingerprint: "f",
+            semanticVersion: "v", producedAt: created
+        ))
+        try await store.record(preparation: nonTerminalEntry(for: proven))
+
+        // Stuck: no outcome at all -- a genuinely interrupted run.
+        let stuck = try await episode("stuck")
+        _ = try await makeReadyRevision(for: stuck, suffix: "2")
+        try await store.record(preparation: nonTerminalEntry(for: stuck))
+
+        // Stale: an outcome exists, but it predates this run's own start, so
+        // it proves nothing about whether *this* run finished.
+        let stale = try await episode("stale")
+        let staleRevisionID = try await makeReadyRevision(for: stale, suffix: "3")
+        try await store.savePreparationOutcome(PodcastPreparationOutcome(
+            episodeID: stale, revisionID: staleRevisionID, policyDigest: "d", pipelineFingerprint: "f",
+            semanticVersion: "v", producedAt: Timestamp(created.date.addingTimeInterval(-60))
+        ))
+        try await store.record(preparation: nonTerminalEntry(for: stale))
+
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory,
+                                   preferences: WiltedMacTestPreferences.ephemeral())
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let runs = Dictionary(uniqueKeysWithValues: try await store.preparationRuns().map { ($0.requestID, $0) })
+        let provenRun = try XCTUnwrap(runs[WiltedMacModel.podcastRequestPrefix + proven.rawValue])
+        XCTAssertFalse(provenRun.isTerminal,
+                       "an outcome the run itself produced must not be overwritten with a false failure")
+        XCTAssertEqual(provenRun.entries.count, 1, "no interrupted-closing entry should be added")
+
+        let stuckRun = try XCTUnwrap(runs[WiltedMacModel.podcastRequestPrefix + stuck.rawValue])
+        XCTAssertTrue(stuckRun.isTerminal, "a run with no outcome proving it finished is genuinely stuck")
+        XCTAssertEqual(stuckRun.outcome, .failed)
+        XCTAssertEqual(stuckRun.failure?.message, WiltedMacModel.preparationInterruptedMessage)
+
+        let staleRun = try XCTUnwrap(runs[WiltedMacModel.podcastRequestPrefix + stale.rawValue])
+        XCTAssertTrue(staleRun.isTerminal, "an outcome from before this run started proves nothing about it")
+        XCTAssertEqual(staleRun.outcome, .failed)
+
+        let provenEpisode = try XCTUnwrap(model.episodes.first { $0.id == proven.rawValue })
+        XCTAssertTrue(provenEpisode.preparationState.isPrepared,
+                      "the proven episode must read as prepared even though its journal entry is still open")
+        let stuckEpisode = try XCTUnwrap(model.episodes.first { $0.id == stuck.rawValue })
+        XCTAssertEqual(stuckEpisode.preparationState, .failed(WiltedMacModel.preparationFailedLabel))
     }
 }
 

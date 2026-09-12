@@ -413,6 +413,40 @@ struct PodcastPreparationPipelineTests {
                                                    revisionID: prepared.revision.revisionID) != nil)
     }
 
+    /// Phase 4 gate: `commit(...)` writes the outcome row inside
+    /// `replaceReadyRevision`'s save, strictly before `prepare()` ever calls
+    /// `journalTerminal` -- whose own store write is best-effort (`try?`) and
+    /// is documented as never allowed to be the thing that fails a
+    /// preparation. So the outcome's durability cannot depend on that later
+    /// write succeeding, and it must read back identically across repeated
+    /// store reopens (no oscillation).
+    @Test func commitPersistsTheOutcomeIndependentlyOfTheJournalAndSurvivesRepeatedReopens() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let result = try await fixture.pipeline(Fixture.cuttingStub()).prepare(episodeID: fixture.episodeID)
+
+        let outcome = try #require(
+            try await fixture.store.preparationOutcome(for: fixture.episodeID, revisionID: result.revision.revisionID)
+        )
+        #expect(outcome.episodeID == fixture.episodeID)
+        #expect(outcome.revisionID == result.revision.revisionID)
+        #expect(outcome.eligibility == .current)
+
+        let storeURL = fixture.root.appendingPathComponent("library.sqlite")
+        let firstReopen = try LocalLibraryStore(url: storeURL)
+        let firstOutcome = try await firstReopen.preparationOutcome(
+            for: fixture.episodeID, revisionID: result.revision.revisionID
+        )
+        #expect(firstOutcome == outcome)
+
+        let secondReopen = try LocalLibraryStore(url: storeURL)
+        let secondOutcome = try await secondReopen.preparationOutcome(
+            for: fixture.episodeID, revisionID: result.revision.revisionID
+        )
+        #expect(secondOutcome == outcome, "the outcome must not oscillate across repeated reopens")
+        #expect(firstOutcome == secondOutcome)
+    }
+
     /// A run that failed while the window was closed still has to leave
     /// evidence, so every status is journalled as well as reported.
     @Test func journalsTheRunSoItsOutcomeOutlivesTheWindow() async throws {

@@ -390,7 +390,10 @@ final class LocalLibraryStoreTests: XCTestCase {
         do {
             try await store.replaceReadyRevision(prepared, mediaURL: preparedURL, transcript: preparedTranscript,
                                                  download: try download(originalHash, preparedURL, bytes: 80),
-                                                 superseding: originalID)
+                                                 superseding: originalID,
+                                                 outcome: PodcastPreparationOutcome(
+                                                    episodeID: episodeID, revisionID: preparedID, policyDigest: "d",
+                                                    pipelineFingerprint: "f", semanticVersion: "v", producedAt: when))
             XCTFail("expected the store to refuse a mismatched download")
         } catch LocalLibraryStoreError.invalidPodcastState { }
         let untouched = try await store.revisions(for: episodeID)
@@ -399,6 +402,9 @@ final class LocalLibraryStoreTests: XCTestCase {
         try await store.replaceReadyRevision(prepared, mediaURL: preparedURL, transcript: preparedTranscript,
                                              download: try download(preparedHash, preparedURL, bytes: 80),
                                              superseding: originalID,
+                                             outcome: PodcastPreparationOutcome(
+                                                episodeID: episodeID, revisionID: preparedID, policyDigest: "d",
+                                                pipelineFingerprint: "f", semanticVersion: "v", producedAt: when),
                                              carrying: try PlaybackState(itemID: episodeID, revisionID: preparedID,
                                                                          sessionID: "s", sequence: 2, positionSeconds: 24,
                                                                          durationSeconds: 48, completed: false,
@@ -419,6 +425,47 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertNil(oldPlayback)
         XCTAssertEqual(newPlayback?.positionSeconds, 24)
         XCTAssertEqual(finalDownload?.localURL, preparedURL)
+    }
+
+    /// Phase 4 gate, literal form: the outcome row alone -- with no journal
+    /// entry ever written -- is durable proof of readiness across a relaunch.
+    /// This is the no-audio-change success path (`saveReadyRevision`), which
+    /// never touches the journal at all.
+    func testSaveReadyRevisionOutcomeSurvivesRelaunchWithNoJournalEntryAtAll() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/no-journal.xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://cdn.example.test/no-journal.mp3"))
+        let episodeID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "nj1", enclosureURL: enclosureURL)
+        let revisionID = try RevisionID(rawValue: "rev-" + String(repeating: "d", count: 64))
+        let mediaURL = URL(fileURLWithPath: "/tmp/no-journal/audio.mp3")
+        let hash = "sha256:" + String(repeating: "d", count: 64)
+        let when = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+
+        let revision = try AudioRevision(itemID: episodeID, revisionID: revisionID, durationSeconds: 30, byteCount: 40,
+                                         contentHash: hash, mediaType: "audio/mpeg", createdAt: when, schemaVersion: 3)
+        try await store.finalizePodcastDownload(
+            revision: revision, mediaURL: mediaURL,
+            download: try PodcastDownload(episodeID: episodeID, status: .completed, bytesReceived: 40,
+                                          expectedByteCount: 40, localURL: mediaURL, contentHash: hash, updatedAt: when)
+        )
+        let transcript = try Transcript(itemID: episodeID, revisionID: revisionID, availability: .available,
+                                        text: "No ads to cut.", updatedAt: when)
+        let outcome = PodcastPreparationOutcome(episodeID: episodeID, revisionID: revisionID, policyDigest: "d",
+                                                pipelineFingerprint: "f", semanticVersion: "v", producedAt: when)
+
+        try await store.saveReadyRevision(revision, mediaURL: mediaURL, transcript: transcript, outcome: outcome)
+        let journal = try await store.preparationJournal(for: PodcastPreparationPipeline.requestID(for: episodeID))
+        XCTAssertTrue(journal.isEmpty, "the outcome must prove readiness without any journal entry at all")
+
+        let firstReopen = try LocalLibraryStore(url: url)
+        let firstOutcome = try await firstReopen.preparationOutcome(for: episodeID, revisionID: revisionID)
+        XCTAssertEqual(firstOutcome, outcome)
+
+        let secondReopen = try LocalLibraryStore(url: url)
+        let secondOutcome = try await secondReopen.preparationOutcome(for: episodeID, revisionID: revisionID)
+        XCTAssertEqual(secondOutcome, outcome, "the outcome row must not oscillate across repeated reopens")
+        XCTAssertEqual(firstOutcome, secondOutcome)
     }
 
     func testTimedTranscriptPersistsCuesAndProvenanceAcrossRelaunch() async throws {

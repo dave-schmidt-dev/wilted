@@ -1748,6 +1748,34 @@ public actor LocalLibraryStore {
         try context.save()
     }
 
+    /// The no-audio-change preparation success path: the ready revision and
+    /// its outcome are inserted in the same save, so nothing can observe one
+    /// durable without the other.
+    public func saveReadyRevision(
+        _ revision: AudioRevision, mediaURL: URL, transcript: Transcript, outcome: PodcastPreparationOutcome
+    ) throws {
+        guard transcript.itemID == revision.itemID, transcript.revisionID == revision.revisionID else {
+            throw LocalLibraryStoreError.revisionBelongsToDifferentItem
+        }
+        guard outcome.episodeID == revision.itemID, outcome.revisionID == revision.revisionID else {
+            throw LocalLibraryStoreError.revisionBelongsToDifferentItem
+        }
+        let context = ModelContext(container)
+        let revisionRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
+        if let existing = revisionRecords.first(where: { $0.id == revision.revisionID.rawValue }) {
+            guard existing.itemID == revision.itemID.rawValue,
+                  existing.contentHash == revision.contentHash,
+                  existing.mediaURL == mediaURL.absoluteString else {
+                throw LocalLibraryStoreError.immutableRevision(revision.revisionID)
+            }
+        } else {
+            context.insert(LocalLibrarySchemaV3Models.RevisionRecord(revision, mediaURL: mediaURL))
+        }
+        try upsert(transcript, in: context)
+        try upsertPreparationOutcome(outcome, in: context)
+        try context.save()
+    }
+
     /// Saves one versioned transcript without changing its item or revision identity.
     public func save(transcript: Transcript) throws {
         let context = ModelContext(container)
@@ -3204,9 +3232,13 @@ public actor LocalLibraryStore {
         transcript: Transcript,
         download: PodcastDownload,
         superseding superseded: RevisionID,
+        outcome: PodcastPreparationOutcome,
         carrying playback: PlaybackState? = nil
     ) throws {
         guard transcript.itemID == revision.itemID, transcript.revisionID == revision.revisionID else {
+            throw LocalLibraryStoreError.revisionBelongsToDifferentItem
+        }
+        guard outcome.episodeID == revision.itemID, outcome.revisionID == revision.revisionID else {
             throw LocalLibraryStoreError.revisionBelongsToDifferentItem
         }
         guard revision.itemID == download.episodeID, download.status == .completed,
@@ -3260,6 +3292,7 @@ public actor LocalLibraryStore {
         } else {
             context.insert(LocalLibrarySchemaV10Models.PodcastDownloadRecord(download))
         }
+        try upsertPreparationOutcome(outcome, in: context)
         try context.save()
     }
 
@@ -3288,6 +3321,14 @@ public actor LocalLibraryStore {
 
     public func savePreparationOutcome(_ outcome: PodcastPreparationOutcome) throws {
         let context = ModelContext(container)
+        try upsertPreparationOutcome(outcome, in: context)
+        try context.save()
+    }
+
+    /// Inserts or updates one outcome row without saving, so a caller can
+    /// combine it with other writes (the revision it proves, the download it
+    /// closes out) in a single atomic `context.save()`.
+    private func upsertPreparationOutcome(_ outcome: PodcastPreparationOutcome, in context: ModelContext) throws {
         let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>())
         if let existing = records.first(where: { $0.id == outcome.id }) {
             existing.policyDigest = outcome.policyDigest
@@ -3299,7 +3340,6 @@ public actor LocalLibraryStore {
         } else {
             context.insert(LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord(outcome))
         }
-        try context.save()
     }
 
     public func preparationOutcome(for episodeID: ItemID, revisionID: RevisionID) throws -> PodcastPreparationOutcome? {
