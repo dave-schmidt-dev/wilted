@@ -463,7 +463,7 @@ public actor PodcastPreparationPipeline {
     /// This file's own source hash is computed with this value normalized out;
     /// it makes a semantic edit fail the coverage test until this fingerprint
     /// block is deliberately updated.
-    public static let pipelineSourceHash = "sha256:f068c87874f53212d8181ccb8f77ad2fd152414c2944bcd7f7ccc84fd46a90e4"
+    public static let pipelineSourceHash = "sha256:c5b2b9f934d3cbba4d92b1c1c88accc1c78d1751842794ab5edd8131600d62ee"
 
     /// Includes the external Python packages imported by the worker. Those
     /// sources remain outside this repository during the native migration, so
@@ -472,6 +472,14 @@ public actor PodcastPreparationPipeline {
     public static let semanticFingerprintResolution = resolvedSemanticFingerprint()
     public static let semanticFingerprint = semanticFingerprintResolution
         ?? semanticVersion + "-unresolved"
+
+    /// Reprocessing-eligibility rules for `invalidateStalePodcastPreparations`.
+    /// Starts empty: a fingerprint drift with no rule here invalidates
+    /// nothing, so unrelated pipeline edits (comments, logging, a refactor
+    /// with no output effect) never force a redownload or re-preparation.
+    /// Add a rule only when a specific pipeline change actually makes prior
+    /// output wrong.
+    public static let invalidationRules: [PodcastPreparationInvalidationRule] = []
 
     public static func resolvedSemanticFingerprint(
         environment: [String: String] = ProcessInfo.processInfo.environment

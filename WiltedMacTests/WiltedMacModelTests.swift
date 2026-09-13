@@ -278,7 +278,11 @@ final class WiltedMacModelTests: XCTestCase {
                     )
                 ))
                 return store
-            }, pipelineFingerprint: "test-current", preferences: preferences
+            }, pipelineFingerprint: "test-current",
+            invalidationRules: [PodcastPreparationInvalidationRule(
+                id: "test.blanket-drift", consequence: .resetPreparation, applies: { _ in true }
+            )],
+            preferences: preferences
         )
         let calendar = Calendar.current
         let currentHour = calendar.component(.hour, from: Date())
@@ -400,6 +404,94 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: revision.mediaURL.path),
                       "the injected transport's bytes must land on disk through the real coordinator, not a fixture stand-in")
         XCTAssertEqual(try Data(contentsOf: revision.mediaURL), body)
+    }
+
+    /// Phase 7's bounded-admission gate: bootstrap recovery must serialize
+    /// forced-redownload episodes rather than firing one download task per
+    /// episode the instant they are discovered. Two episodes both carry a
+    /// durable forced-redownload marker as if a prior launch's invalidation
+    /// pass had already scheduled them; this proves this launch admits them
+    /// one at a time.
+    func testBootstrapRecoveryDownloadsAreSerializedNotFiredAllAtOnce() async throws {
+        let directory = temporaryDirectory("bootstrap-recovery-serialized")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/bootstrap-recovery.xml"))
+        let firstEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/bootstrap-recovery-1.mp3"))
+        let secondEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/bootstrap-recovery-2.mp3"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let firstID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "recovery-1", enclosureURL: firstEnclosure)
+        let secondID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "recovery-2", enclosureURL: secondEnclosure)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let firstBody = Data("first-body".utf8)
+        let secondBody = Data("second-body".utf8)
+
+        @Sendable func forcedMarker(for episodeID: ItemID) throws -> PreparationJournalEntry {
+            let requestID = LocalLibraryStore.forcedRedownloadRequestPrefix + episodeID.rawValue
+            let error = try ProducerError(code: .invalidRequest, message: "needs a fresh download",
+                                          retryable: true, stage: "pipeline-invalidation")
+            let evidence = try PreparationEvidence(kind: "podcast-pipeline-invalidation", fields: [
+                "fingerprint": "old", "requiresRedownload": "true", "ruleID": "test-seeded-rule"
+            ])
+            let status = try PreparationStatus(
+                stage: .failed, detail: error.message, cancellable: false,
+                terminalResult: try PreparationTerminalResult(outcome: .failed, error: error),
+                emittedAt: Timestamp(Date()), evidence: evidence
+            )
+            return PreparationJournalEntry(id: requestID + "|marker", itemID: episodeID, requestID: requestID, status: status)
+        }
+
+        let transport = ConcurrencyTrackingPodcastDownloadTransport(eventsByURL: [
+            firstEnclosure: [
+                .response(.init(url: firstEnclosure, statusCode: 200, mediaType: "audio/mpeg",
+                                 expectedByteCount: Int64(firstBody.count))),
+                .data(firstBody)
+            ],
+            secondEnclosure: [
+                .response(.init(url: secondEnclosure, statusCode: 200, mediaType: "audio/mpeg",
+                                 expectedByteCount: Int64(secondBody.count))),
+                .data(secondBody)
+            ]
+        ])
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Recovery feed", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await store.save(episode: try PodcastEpisode(
+                    itemID: firstID, feedID: feedID, feedURL: feedURL, rssGUID: "recovery-1",
+                    title: "Recovery episode 1", publishedTime: created, enclosureURL: firstEnclosure,
+                    enclosureMediaType: "audio/mpeg", createdAt: created
+                ))
+                try await store.save(episode: try PodcastEpisode(
+                    itemID: secondID, feedID: feedID, feedURL: feedURL, rssGUID: "recovery-2",
+                    title: "Recovery episode 2", publishedTime: Timestamp(created.date.addingTimeInterval(60)),
+                    enclosureURL: secondEnclosure, enclosureMediaType: "audio/mpeg", createdAt: created
+                ))
+                try await store.record(preparation: forcedMarker(for: firstID))
+                try await store.record(preparation: forcedMarker(for: secondID))
+                return store
+            },
+            podcastDownloadTransportFactory: { transport },
+            podcastMediaValidatorFactory: { StubPodcastMediaValidator(duration: 12) },
+            pipelineFingerprint: "current-fp",
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        await model.waitForPodcastOperations()
+
+        let observedInFlight = await transport.maxObservedInFlight
+        XCTAssertEqual(observedInFlight, 1,
+                       "bootstrap recovery must admit forced-redownload episodes one at a time, not task-per-ID")
+        let first = try XCTUnwrap(model.episodes.first(where: { $0.id == firstID.rawValue }))
+        let second = try XCTUnwrap(model.episodes.first(where: { $0.id == secondID.rawValue }))
+        XCTAssertEqual(first.downloadState, .completed)
+        XCTAssertEqual(second.downloadState, .completed)
     }
 
     /// A real transfer failure through `downloadEpisode` must reach
@@ -4936,6 +5028,41 @@ private struct CountingPodcastDownloadTransport: PodcastDownloadTransporting {
         return AsyncThrowingStream { continuation in
             for event in events { continuation.yield(event) }
             continuation.finish()
+        }
+    }
+}
+
+private actor ConcurrencyTracker {
+    private var inFlight = 0
+    private(set) var peak = 0
+    func enter() { inFlight += 1; peak = max(peak, inFlight) }
+    func leave() { inFlight -= 1 }
+}
+
+/// Delays every response briefly and tracks the peak number of transfers in
+/// flight at once, so a test can prove bootstrap recovery serializes
+/// downloads instead of firing one task per forced-redownload episode. The
+/// delay gives an incorrectly-unbounded caller room to start a second
+/// transfer before the first finishes.
+private final class ConcurrencyTrackingPodcastDownloadTransport: PodcastDownloadTransporting, Sendable {
+    private let tracker = ConcurrencyTracker()
+    let eventsByURL: [URL: [PodcastDownloadEvent]]
+
+    init(eventsByURL: [URL: [PodcastDownloadEvent]]) { self.eventsByURL = eventsByURL }
+
+    var maxObservedInFlight: Int {
+        get async { await tracker.peak }
+    }
+
+    func events(for url: URL) -> AsyncThrowingStream<PodcastDownloadEvent, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                await self.tracker.enter()
+                try? await Task.sleep(for: .milliseconds(50))
+                for event in self.eventsByURL[url] ?? [] { continuation.yield(event) }
+                continuation.finish()
+                await self.tracker.leave()
+            }
         }
     }
 }

@@ -1179,6 +1179,7 @@ final class WiltedMacModel {
     private let assetResolver: LocalLibraryAssetResolver
     private let storeBootstrap: WiltedMacStoreBootstrap
     private let pipelineFingerprint: String?
+    private let invalidationRules: [PodcastPreparationInvalidationRule]
     private let retainedArtifactPresenter: (URL) -> Void
     private var startupAttemptCount = 0
     private var startupTask: Task<Void, Never>?
@@ -1187,6 +1188,7 @@ final class WiltedMacModel {
     private var preparationTask: Task<Void, Never>?
     private var syncReconciliationTask: Task<Void, Never>?
     private var podcastRefreshTask: Task<Void, Never>?
+    private var bootstrapRecoveryTask: Task<Void, Never>?
     /// The system's media widget, and the media keys that drive it. Both are
     /// injected and both are optional: they are process-global system state, so
     /// a unit test or a UI fixture that built them for real would repoint the
@@ -1254,6 +1256,7 @@ final class WiltedMacModel {
          podcastMediaValidatorFactory: WiltedMacPodcastMediaValidatorFactory? = nil,
          podcastPipelineRunnerFactory: WiltedMacPodcastPipelineRunnerFactory? = nil,
          pipelineFingerprint: String? = nil,
+         invalidationRules: [PodcastPreparationInvalidationRule] = PodcastPreparationPipeline.invalidationRules,
          retainedArtifactPresenter: ((URL) -> Void)? = nil,
          podcastFeedClient: PodcastFeedClient = PodcastFeedClient(),
          mediaAvailabilityChecker: any WiltedMacMediaAvailabilityChecking = FileManager.default,
@@ -1285,6 +1288,7 @@ final class WiltedMacModel {
         self.podcastMediaValidatorFactory = podcastMediaValidatorFactory
         self.podcastPipelineRunnerFactory = podcastPipelineRunnerFactory
         self.pipelineFingerprint = pipelineFingerprint
+        self.invalidationRules = invalidationRules
         self.retainedArtifactPresenter = retainedArtifactPresenter ?? { url in
             NSWorkspace.shared.activateFileViewerSelecting([url])
         }
@@ -2618,6 +2622,7 @@ final class WiltedMacModel {
     func waitForPodcastOperations() async {
         await linkClassificationTask?.value
         await podcastSubscriptionClassificationTask?.value
+        await bootstrapRecoveryTask?.value
         let refresh = podcastRefreshTask
         let downloads = Array(podcastDownloadTasks.values)
         let restores = Array(podcastRestoreTasks.values)
@@ -4478,7 +4483,7 @@ final class WiltedMacModel {
             let invalidation: PodcastPreparationInvalidationResult
             if let fingerprint = pipelineFingerprint {
                 invalidation = try await configuredStore.invalidateStalePodcastPreparations(
-                    currentFingerprint: fingerprint
+                    currentFingerprint: fingerprint, rules: invalidationRules
                 )
             } else {
                 // Missing or unreadable pipeline sources are not evidence of a
@@ -4511,9 +4516,25 @@ final class WiltedMacModel {
                 guard let episode = episodes.first(where: { $0.id == itemID.rawValue }) else { continue }
                 admitAutomaticPreparation(for: episode, at: Date())
             }
-            for itemID in invalidation.forcedRedownloadEpisodeIDs {
-                guard let episode = episodes.first(where: { $0.id == itemID.rawValue }) else { continue }
-                downloadEpisode(episode, ignoringExisting: true)
+            // Bootstrap recovery is a burst of redownloads discovered at once,
+            // not one the owner asked for -- admitted one at a time so a
+            // library-wide pipeline migration cannot open N simultaneous
+            // transfers. A deliberate download from the row is unaffected;
+            // this task only serializes the automatic recovery batch. It runs
+            // detached from startup so a migration with many stale episodes
+            // cannot hold the app in a non-ready state for the whole burst.
+            let forcedRedownloadEpisodeIDs = invalidation.forcedRedownloadEpisodeIDs
+            if !forcedRedownloadEpisodeIDs.isEmpty {
+                bootstrapRecoveryTask = Task { [weak self] in
+                    guard let self else { return }
+                    for itemID in forcedRedownloadEpisodeIDs {
+                        guard let episode = self.episodes.first(where: { $0.id == itemID.rawValue }) else { continue }
+                        self.downloadEpisode(episode, ignoringExisting: true)
+                        if let task = self.podcastDownloadTasks[episode.id] {
+                            _ = try? await task.value
+                        }
+                    }
+                }
             }
             // `.retryable` failures resume through the coordinator's own
             // cache/resume logic, not a forced fresh fetch -- the failure was

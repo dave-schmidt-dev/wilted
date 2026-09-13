@@ -237,6 +237,47 @@ public enum PodcastPreparationEligibility: String, Codable, Equatable, Sendable 
     case invalid
 }
 
+/// What an episode's prior preparation is compared against when deciding
+/// whether a `PodcastPreparationInvalidationRule` condemns it.
+public struct PodcastPreparationInvalidationSubject: Sendable {
+    public let episodeID: ItemID
+    public let semanticVersion: String?
+    public let pipelineFingerprint: String?
+
+    public init(episodeID: ItemID, semanticVersion: String?, pipelineFingerprint: String?) {
+        self.episodeID = episodeID; self.semanticVersion = semanticVersion
+        self.pipelineFingerprint = pipelineFingerprint
+    }
+}
+
+/// What happens to an episode whose preparation a rule condemns.
+public enum PodcastPreparationInvalidationConsequence: Sendable {
+    /// Re-run preparation against the existing source; still escalates to a
+    /// forced redownload on its own if the source bytes no longer match what
+    /// preparation used, or if preparation replaced the source outright.
+    case resetPreparation
+    /// Re-fetch the source before preparing again, regardless of whether the
+    /// local bytes still check out.
+    case forceRedownload
+}
+
+/// One named, injectable reason a prior preparation should no longer be
+/// trusted. The production table starts empty (`PodcastPreparationPipeline
+/// .invalidationRules`) so that a bare fingerprint drift -- the pipeline's
+/// hash changing for a reason that does not affect existing output, such as
+/// a comment or log-message edit -- invalidates nothing until a rule says it
+/// actually matters.
+public struct PodcastPreparationInvalidationRule: Sendable {
+    public let id: String
+    public let consequence: PodcastPreparationInvalidationConsequence
+    public let applies: @Sendable (PodcastPreparationInvalidationSubject) -> Bool
+
+    public init(id: String, consequence: PodcastPreparationInvalidationConsequence,
+                applies: @escaping @Sendable (PodcastPreparationInvalidationSubject) -> Bool) {
+        self.id = id; self.consequence = consequence; self.applies = applies
+    }
+}
+
 /// One durable proof that preparation produced a playable artifact for one
 /// revision. Keyed by `(episodeID, revisionID)` rather than by episode alone:
 /// preparation replaces the revision, and a superseded revision's outcome is
@@ -1962,12 +2003,79 @@ public actor LocalLibraryStore {
         return entries.sorted(by: preparationEntryPrecedes)
     }
 
-    /// Atomically clears podcast preparation results written by an older
-    /// semantic pipeline. The journal is the provenance record: the first
-    /// pipeline event names the source revision and hash, while the terminal
-    /// event names the successor revision when a cut was committed.
+    /// Deletes any earlier recovery markers for this episode and writes a
+    /// fresh durable marker naming the rule that condemned it, so a launch
+    /// that dies before admitting the recovery still finds it on the next
+    /// one -- see `resetEpisodeIDs`/`forcedRedownloadEpisodeIDs` on
+    /// `PodcastPreparationInvalidationResult`.
+    private func writeInvalidationMarker(
+        for itemID: ItemID, ruleID: String, needsRedownload: Bool, currentFingerprint: String,
+        existingMarkers: [LocalLibrarySchemaV3Models.PreparationRecord], in context: ModelContext
+    ) throws {
+        for marker in existingMarkers where marker.itemID == itemID.rawValue
+            && (marker.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix)
+                || marker.requestID.hasPrefix(Self.resetPreparationRequestPrefix)) {
+            context.delete(marker)
+        }
+        if needsRedownload {
+            let markerRequestID = Self.forcedRedownloadRequestPrefix + itemID.rawValue
+            let markerID = markerRequestID + "|marker"
+            let markerError = try ProducerError(
+                code: .invalidRequest,
+                message: "The preparation pipeline changed and this episode needs a fresh download.",
+                retryable: true,
+                stage: "pipeline-invalidation"
+            )
+            let markerEvidence = try PreparationEvidence(kind: "podcast-pipeline-invalidation", fields: [
+                "fingerprint": currentFingerprint,
+                "requiresRedownload": "true",
+                "ruleID": ruleID
+            ])
+            let markerStatus = try PreparationStatus(
+                stage: .failed,
+                detail: markerError.message,
+                cancellable: false,
+                terminalResult: try PreparationTerminalResult(outcome: .failed, error: markerError),
+                emittedAt: Timestamp(Date()),
+                evidence: markerEvidence
+            )
+            context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(
+                PreparationJournalEntry(id: markerID, itemID: itemID, requestID: markerRequestID, status: markerStatus)
+            ))
+        } else {
+            let markerRequestID = Self.resetPreparationRequestPrefix + itemID.rawValue
+            let markerID = markerRequestID + "|marker"
+            let markerEvidence = try PreparationEvidence(kind: "podcast-pipeline-invalidation", fields: [
+                "fingerprint": currentFingerprint,
+                "requiresRedownload": "false",
+                "ruleID": ruleID
+            ])
+            let markerStatus = try PreparationStatus(
+                stage: .preparing,
+                detail: "The preparation pipeline changed; this episode will be prepared again.",
+                cancellable: false,
+                emittedAt: Timestamp(Date()),
+                evidence: markerEvidence
+            )
+            context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(
+                PreparationJournalEntry(id: markerID, itemID: itemID, requestID: markerRequestID, status: markerStatus)
+            ))
+        }
+    }
+
+    /// Atomically clears podcast preparation results an explicit rule
+    /// condemns. The journal is the provenance record: the first pipeline
+    /// event names the source revision and hash, while the terminal event
+    /// names the successor revision when a cut was committed.
+    ///
+    /// A fingerprint drift with no rule that applies to it is left untouched
+    /// -- neither the journal nor any durable outcome row is disturbed --
+    /// because most pipeline-hash changes (a log message, a comment, a
+    /// refactor with no output effect) do not make an existing artifact
+    /// wrong. `rules` has no default: every caller must say, explicitly,
+    /// what it considers incompatible.
     public func invalidateStalePodcastPreparations(
-        currentFingerprint: String
+        currentFingerprint: String, rules: [PodcastPreparationInvalidationRule]
     ) throws -> PodcastPreparationInvalidationResult {
         let context = ModelContext(container)
         let decoder = JSONDecoder()
@@ -1976,6 +2084,7 @@ public actor LocalLibraryStore {
         let grouped = Dictionary(grouping: podcastRecords, by: \.requestID)
         let downloads = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
         let downloadByEpisode = Dictionary(uniqueKeysWithValues: downloads.map { ($0.episodeID, $0) })
+        let outcomes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>())
         var resetIDs = Set<ItemID>()
         var forcedIDs = Set<ItemID>()
         var currentIDs = Set<ItemID>()
@@ -1996,6 +2105,23 @@ public actor LocalLibraryStore {
                 continue
             }
 
+            let readyRevisionID = (try? readyRevision(for: itemID))?.revisionID.rawValue
+            let outcomeRecord = readyRevisionID.flatMap { revisionID in
+                outcomes.first { $0.episodeID == itemID.rawValue && $0.revisionID == revisionID }
+            }
+            let subject = PodcastPreparationInvalidationSubject(
+                episodeID: itemID,
+                semanticVersion: outcomeRecord?.semanticVersion,
+                pipelineFingerprint: outcomeRecord?.pipelineFingerprint ?? provenance?.fields["fingerprint"]
+            )
+            guard let rule = rules.first(where: { $0.applies(subject) }) else {
+                // No rule condemns this drift: leave the journal and any
+                // surviving recovery markers alone rather than treating a
+                // harmless fingerprint change as a reason to re-prepare or
+                // re-download.
+                continue
+            }
+
             let terminal = entries.last(where: { $0.status.terminal })?.status.terminalResult
             let sourceHash = provenance?.fields["sourceHash"].flatMap { $0.isEmpty ? nil : $0 }
             let sourceRevisionID = provenance?.fields["sourceRevisionID"].flatMap { $0.isEmpty ? nil : $0 }
@@ -2012,7 +2138,7 @@ public actor LocalLibraryStore {
             let preparedSuccess = terminal?.outcome == .succeeded
             let successorReplacedSource = preparedSuccess
                 && (sourceHash == nil || download?.contentHash != sourceHash || sourceRevisionID != terminal?.revisionID?.rawValue)
-            let needsRedownload = !sourceIntact || successorReplacedSource
+            let needsRedownload = rule.consequence == .forceRedownload || !sourceIntact || successorReplacedSource
 
             for record in rows { context.delete(record) }
             for marker in records where marker.itemID == itemID.rawValue
@@ -2022,50 +2148,52 @@ public actor LocalLibraryStore {
             }
             reconciledIDs.insert(itemID)
             mutated = true
-            if needsRedownload {
-                forcedIDs.insert(itemID)
-                let markerRequestID = Self.forcedRedownloadRequestPrefix + itemID.rawValue
-                let markerID = markerRequestID + "|marker"
-                let markerError = try ProducerError(
-                    code: .invalidRequest,
-                    message: "The preparation pipeline changed and this episode needs a fresh download.",
-                    retryable: true,
-                    stage: "pipeline-invalidation"
-                )
-                let markerEvidence = try PreparationEvidence(kind: "podcast-pipeline-invalidation", fields: [
-                    "fingerprint": currentFingerprint,
-                    "requiresRedownload": "true"
-                ])
-                let markerStatus = try PreparationStatus(
-                    stage: .failed,
-                    detail: markerError.message,
-                    cancellable: false,
-                    terminalResult: try PreparationTerminalResult(outcome: .failed, error: markerError),
-                    emittedAt: Timestamp(Date()),
-                    evidence: markerEvidence
-                )
-                context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(
-                    PreparationJournalEntry(id: markerID, itemID: itemID, requestID: markerRequestID, status: markerStatus)
-                ))
-            } else {
-                resetIDs.insert(itemID)
-                let markerRequestID = Self.resetPreparationRequestPrefix + itemID.rawValue
-                let markerID = markerRequestID + "|marker"
-                let markerEvidence = try PreparationEvidence(kind: "podcast-pipeline-invalidation", fields: [
-                    "fingerprint": currentFingerprint,
-                    "requiresRedownload": "false"
-                ])
-                let markerStatus = try PreparationStatus(
-                    stage: .preparing,
-                    detail: "The preparation pipeline changed; this episode will be prepared again.",
-                    cancellable: false,
-                    emittedAt: Timestamp(Date()),
-                    evidence: markerEvidence
-                )
-                context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(
-                    PreparationJournalEntry(id: markerID, itemID: itemID, requestID: markerRequestID, status: markerStatus)
-                ))
+            if let outcomeRecord {
+                outcomeRecord.eligibility = PodcastPreparationEligibility.invalid.rawValue
+                outcomeRecord.invalidationRuleID = rule.id
             }
+            try writeInvalidationMarker(
+                for: itemID, ruleID: rule.id, needsRedownload: needsRedownload,
+                currentFingerprint: currentFingerprint, existingMarkers: records, in: context
+            )
+            if needsRedownload { forcedIDs.insert(itemID) } else { resetIDs.insert(itemID) }
+        }
+
+        // A successful preparation that made no audio change records only an
+        // outcome row (`saveReadyRevision` -- see its doc comment: "the
+        // outcome must prove readiness without any journal entry at all"),
+        // so the loop above, which walks journal groups, never visits it.
+        // Without this pass those episodes could never become eligible for
+        // reprocessing no matter what a rule says.
+        let visitedIDs = reconciledIDs.union(currentIDs)
+        for outcomeRecord in outcomes where outcomeRecord.eligibility == PodcastPreparationEligibility.current.rawValue {
+            guard let itemID = try? ItemID(rawValue: outcomeRecord.episodeID), !visitedIDs.contains(itemID),
+                  let ready = try? readyRevision(for: itemID), ready.revisionID.rawValue == outcomeRecord.revisionID,
+                  outcomeRecord.pipelineFingerprint != currentFingerprint else { continue }
+            let subject = PodcastPreparationInvalidationSubject(
+                episodeID: itemID, semanticVersion: outcomeRecord.semanticVersion,
+                pipelineFingerprint: outcomeRecord.pipelineFingerprint
+            )
+            guard let rule = rules.first(where: { $0.applies(subject) }) else { continue }
+            let download = downloadByEpisode[itemID.rawValue]
+            let sourceIntact: Bool
+            if download?.status == PodcastDownloadStatus.completed.rawValue,
+               let contentHash = download?.contentHash,
+               let sourceURL = download?.localURL.flatMap(URL.init) {
+                sourceIntact = Self.localFileContentHash(at: sourceURL) == contentHash
+            } else {
+                sourceIntact = false
+            }
+            let needsRedownload = rule.consequence == .forceRedownload || !sourceIntact
+            outcomeRecord.eligibility = PodcastPreparationEligibility.invalid.rawValue
+            outcomeRecord.invalidationRuleID = rule.id
+            mutated = true
+            reconciledIDs.insert(itemID)
+            try writeInvalidationMarker(
+                for: itemID, ruleID: rule.id, needsRedownload: needsRedownload,
+                currentFingerprint: currentFingerprint, existingMarkers: records, in: context
+            )
+            if needsRedownload { forcedIDs.insert(itemID) } else { resetIDs.insert(itemID) }
         }
 
         for marker in records where marker.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix) {

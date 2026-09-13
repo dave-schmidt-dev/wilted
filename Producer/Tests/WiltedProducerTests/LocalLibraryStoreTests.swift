@@ -5,6 +5,14 @@ import WiltedSync
 @testable import WiltedProducer
 
 final class LocalLibraryStoreTests: XCTestCase {
+    /// Reproduces the pre-Phase-7 blanket behavior for tests written before
+    /// rules existed: any fingerprint drift is treated as incompatible. Real
+    /// callers use `PodcastPreparationPipeline.invalidationRules`, which
+    /// starts empty -- see `LocalLibraryStoreInvalidationRuleTests`.
+    private static let blanketDriftRule = PodcastPreparationInvalidationRule(
+        id: "test.blanket-drift", consequence: .resetPreparation, applies: { _ in true }
+    )
+
     func testPodcastQueueMutationsNormalizeAndRestoreOrderAndCurrentIdentity() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let first = try ItemID(rawValue: "item-" + String(repeating: "1", count: 64))
@@ -2342,7 +2350,7 @@ final class LocalLibraryStoreTests: XCTestCase {
             id: requestID + "|terminal", itemID: episode.itemID, requestID: requestID, status: failure
         ))
 
-        let first = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        let first = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new", rules: [Self.blanketDriftRule])
         XCTAssertEqual(first.resetEpisodeIDs, [episode.itemID])
         XCTAssertEqual(first.forcedRedownloadEpisodeIDs, [])
         let journalAfterReset = try await store.preparationJournal(for: requestID)
@@ -2351,7 +2359,7 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertEqual(preservedDownload?.localURL, sourceURL)
         XCTAssertEqual(preservedDownload?.contentHash, hash)
 
-        let second = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        let second = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new", rules: [Self.blanketDriftRule])
         XCTAssertEqual(second.resetEpisodeIDs, [episode.itemID],
                        "the reset survives a relaunch before the app can admit it")
         let visibleRunsAfterReset = try await store.preparationRuns()
@@ -2368,10 +2376,10 @@ final class LocalLibraryStoreTests: XCTestCase {
                 emittedAt: Timestamp(Date()), evidence: currentEvidence
             )
         ))
-        let admitted = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        let admitted = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new", rules: [Self.blanketDriftRule])
         XCTAssertEqual(admitted, PodcastPreparationInvalidationResult(),
                        "current provenance clears the durable reset marker")
-        let repeatedAfterAdmission = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        let repeatedAfterAdmission = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new", rules: [Self.blanketDriftRule])
         XCTAssertEqual(repeatedAfterAdmission, PodcastPreparationInvalidationResult())
     }
 
@@ -2417,7 +2425,7 @@ final class LocalLibraryStoreTests: XCTestCase {
         ))
 
         try Data("replacement bytes".utf8).write(to: sourceURL)
-        let result = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        let result = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new", rules: [Self.blanketDriftRule])
 
         XCTAssertEqual(result.resetEpisodeIDs, [])
         XCTAssertEqual(result.forcedRedownloadEpisodeIDs, [episode.itemID],
@@ -2450,12 +2458,12 @@ final class LocalLibraryStoreTests: XCTestCase {
             requestID: preexistingForcedRequestID, status: status
         ))
 
-        let result = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        let result = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new", rules: [Self.blanketDriftRule])
         XCTAssertEqual(result.resetEpisodeIDs, [])
         XCTAssertEqual(result.forcedRedownloadEpisodeIDs, [episode.itemID])
         let journalAfterReset = try await store.preparationJournal(for: requestID)
         XCTAssertTrue(journalAfterReset.isEmpty)
-        let repeated = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        let repeated = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new", rules: [Self.blanketDriftRule])
         XCTAssertEqual(repeated.forcedRedownloadEpisodeIDs, [episode.itemID])
         let requiresForcedRedownload = try await store.requiresForcedRedownload(for: episode.itemID)
         XCTAssertTrue(requiresForcedRedownload)
@@ -2467,7 +2475,7 @@ final class LocalLibraryStoreTests: XCTestCase {
             id: oldResetRequestID + "|old", itemID: episode.itemID,
             requestID: oldResetRequestID, status: status
         ))
-        let conflictingMarkers = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        let conflictingMarkers = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new", rules: [Self.blanketDriftRule])
         XCTAssertEqual(conflictingMarkers.resetEpisodeIDs, [])
         XCTAssertEqual(conflictingMarkers.forcedRedownloadEpisodeIDs, [episode.itemID],
                        "forced redownload wins when two upgrades left both marker generations")
@@ -2476,7 +2484,7 @@ final class LocalLibraryStoreTests: XCTestCase {
         )
         let stillRequiresForcedRedownload = try await store.requiresForcedRedownload(for: episode.itemID)
         XCTAssertFalse(stillRequiresForcedRedownload)
-        let afterFreshDownload = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        let afterFreshDownload = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new", rules: [Self.blanketDriftRule])
         XCTAssertEqual(afterFreshDownload.forcedRedownloadEpisodeIDs, [])
         XCTAssertEqual(afterFreshDownload.resetEpisodeIDs, [episode.itemID],
                        "a successful redownload becomes durable pending preparation")
@@ -2491,7 +2499,7 @@ final class LocalLibraryStoreTests: XCTestCase {
                 emittedAt: Timestamp(Date()), evidence: currentEvidence
             )
         ))
-        let admitted = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new")
+        let admitted = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new", rules: [Self.blanketDriftRule])
         XCTAssertEqual(admitted, PodcastPreparationInvalidationResult(),
                        "the pending marker clears only after a current preparation attempt is durable")
     }
@@ -2518,7 +2526,7 @@ final class LocalLibraryStoreTests: XCTestCase {
         ))
         let before = try await store.preparationJournal(for: requestID)
         let result = try await store.invalidateStalePodcastPreparations(
-            currentFingerprint: PodcastPreparationPipeline.semanticFingerprint
+            currentFingerprint: PodcastPreparationPipeline.semanticFingerprint, rules: [Self.blanketDriftRule]
         )
         XCTAssertEqual(result, PodcastPreparationInvalidationResult())
         let after = try await store.preparationJournal(for: requestID)
@@ -2527,6 +2535,124 @@ final class LocalLibraryStoreTests: XCTestCase {
             for: PodcastPreparationPipeline.requestID(for: neverAttempted)
         )
         XCTAssertTrue(neverJournal.isEmpty)
+    }
+
+    func testFingerprintDriftWithAnEmptyRuleTableInvalidatesNothing() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let (_, episode) = try podcastValues()
+        let requestID = PodcastPreparationPipeline.requestID(for: episode.itemID)
+        let evidence = try PreparationEvidence(kind: LocalLibraryStore.pipelineProvenanceEvidenceKind, fields: [
+            "fingerprint": "old", "sourceRevisionID": "source", "sourceHash": "sha256:" + String(repeating: "d", count: 64)
+        ])
+        let status = try PreparationStatus(
+            stage: .failed, detail: "old failure", cancellable: false,
+            terminalResult: try PreparationTerminalResult(
+                outcome: .failed, error: try ProducerError(code: .failed, message: "old failure", retryable: true)
+            ), emittedAt: Timestamp(Date()), evidence: evidence
+        )
+        try await store.record(preparation: PreparationJournalEntry(
+            id: requestID + "|terminal", itemID: episode.itemID, requestID: requestID, status: status
+        ))
+
+        let result = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new", rules: [])
+        XCTAssertEqual(result, PodcastPreparationInvalidationResult(),
+                       "a bare fingerprint mismatch with no rule must invalidate nothing")
+        let journalAfter = try await store.preparationJournal(for: requestID)
+        XCTAssertEqual(journalAfter.count, 1, "the journal group survives untouched, not just its effects")
+        let requiresForcedRedownload = try await store.requiresForcedRedownload(for: episode.itemID)
+        XCTAssertFalse(requiresForcedRedownload, "no marker should be written when no rule fires")
+    }
+
+    func testSeededInvalidationRuleInvalidatesTheOutcomeRowAndSchedulesRecovery() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/seeded-rule.xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://cdn.example.test/seeded-rule.mp3"))
+        let episodeID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "sr1", enclosureURL: enclosureURL)
+        let revisionID = try RevisionID(rawValue: "rev-" + String(repeating: "a", count: 64))
+        let mediaURL = url.deletingLastPathComponent().appendingPathComponent("seeded-rule-audio.mp3")
+        let bytes = Data("seeded rule audio".utf8)
+        try bytes.write(to: mediaURL)
+        let hash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let when = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+
+        // A preparation that made no audio change records only an outcome
+        // row (`saveReadyRevision`'s no-journal overload) -- this is the real
+        // production shape the rule table must still reach.
+        let revision = try AudioRevision(itemID: episodeID, revisionID: revisionID, durationSeconds: 30,
+                                         byteCount: Int64(bytes.count), contentHash: hash,
+                                         mediaType: "audio/mpeg", createdAt: when, schemaVersion: 3)
+        try await store.finalizePodcastDownload(
+            revision: revision, mediaURL: mediaURL,
+            download: try PodcastDownload(episodeID: episodeID, status: .completed, bytesReceived: Int64(bytes.count),
+                                          expectedByteCount: Int64(bytes.count), localURL: mediaURL,
+                                          contentHash: hash, updatedAt: when)
+        )
+        let transcript = try Transcript(itemID: episodeID, revisionID: revisionID, availability: .available,
+                                        text: "No ads to cut.", updatedAt: when)
+        let outcome = PodcastPreparationOutcome(episodeID: episodeID, revisionID: revisionID, policyDigest: "d",
+                                                pipelineFingerprint: "old", semanticVersion: "v1", producedAt: when)
+        try await store.saveReadyRevision(revision, mediaURL: mediaURL, transcript: transcript, outcome: outcome)
+
+        let knownBadRule = PodcastPreparationInvalidationRule(
+            id: "known-bad-v1", consequence: .resetPreparation,
+            applies: { $0.pipelineFingerprint == "old" }
+        )
+        let irrelevantRule = PodcastPreparationInvalidationRule(
+            id: "irrelevant", consequence: .resetPreparation, applies: { _ in false }
+        )
+
+        let result = try await store.invalidateStalePodcastPreparations(
+            currentFingerprint: "new", rules: [irrelevantRule, knownBadRule]
+        )
+        XCTAssertEqual(result.resetEpisodeIDs, [episodeID], "the seeded rule must schedule recovery")
+        XCTAssertEqual(result.forcedRedownloadEpisodeIDs, [],
+                       "the source bytes still match, so a reset -- not a redownload -- is the escalation-free outcome")
+
+        let invalidated = try await store.preparationOutcome(for: episodeID, revisionID: revisionID)
+        XCTAssertEqual(invalidated?.eligibility, .invalid)
+        XCTAssertEqual(invalidated?.invalidationRuleID, "known-bad-v1",
+                       "the marked rule must be the one that actually fired, not any rule in the table")
+
+        // Idempotent: a relaunch before the app admits the recovery must not
+        // re-derive a different verdict or duplicate the marker.
+        let repeated = try await store.invalidateStalePodcastPreparations(
+            currentFingerprint: "new", rules: [irrelevantRule, knownBadRule]
+        )
+        XCTAssertEqual(repeated.resetEpisodeIDs, [episodeID])
+    }
+
+    func testUnrelatedFingerprintDriftIsUntouchedWhileASeededRuleInvalidatesItsOwnTarget() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let (_, matchingEpisode) = try podcastValues()
+        let requestID = PodcastPreparationPipeline.requestID(for: matchingEpisode.itemID)
+        let evidence = try PreparationEvidence(kind: LocalLibraryStore.pipelineProvenanceEvidenceKind, fields: [
+            "fingerprint": "harmless-drift", "sourceRevisionID": "source",
+            "sourceHash": "sha256:" + String(repeating: "d", count: 64)
+        ])
+        let status = try PreparationStatus(
+            stage: .failed, detail: "old failure", cancellable: false,
+            terminalResult: try PreparationTerminalResult(
+                outcome: .failed, error: try ProducerError(code: .failed, message: "old failure", retryable: true)
+            ), emittedAt: Timestamp(Date()), evidence: evidence
+        )
+        try await store.record(preparation: PreparationJournalEntry(
+            id: requestID + "|terminal", itemID: matchingEpisode.itemID, requestID: requestID, status: status
+        ))
+
+        let onlyMatchesKnownBad = PodcastPreparationInvalidationRule(
+            id: "known-bad-v1", consequence: .resetPreparation,
+            applies: { $0.pipelineFingerprint == "known-bad-fingerprint" }
+        )
+        let result = try await store.invalidateStalePodcastPreparations(
+            currentFingerprint: "new", rules: [onlyMatchesKnownBad]
+        )
+        XCTAssertEqual(result, PodcastPreparationInvalidationResult(),
+                       "a rule table that names other fingerprints must not condemn an uninvolved drift")
+        let journalAfter = try await store.preparationJournal(for: requestID)
+        XCTAssertEqual(journalAfter.count, 1)
     }
 
     private func save(revision id: String, of itemID: ItemID, at second: TimeInterval,
