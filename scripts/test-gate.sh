@@ -502,10 +502,11 @@ assert_xctest_output() {
   printf 'native.tests label=%s reported=%s evidence=xctest\n' "$label" "$reported"
 }
 
-retain_macos_ui_failure_bundle() {
-  local result_bundle="$1"
-  local retained_bundle="$macos_ui_failure_diagnostics_dir/macos-ui-tests.xcresult"
-  local staging_bundle="$macos_ui_failure_diagnostics_dir/.macos-ui-tests.xcresult.$$"
+retain_ui_failure_bundle() {
+  local leg_name="$1"
+  local result_bundle="$2"
+  local retained_bundle="$macos_ui_failure_diagnostics_dir/$leg_name.xcresult"
+  local staging_bundle="$macos_ui_failure_diagnostics_dir/.$leg_name.xcresult.$$"
 
   [[ -d "$result_bundle" ]] || return 0
   mkdir -p "$macos_ui_failure_diagnostics_dir"
@@ -513,15 +514,16 @@ retain_macos_ui_failure_bundle() {
   cp -R "$result_bundle" "$staging_bundle"
   rm -rf "$retained_bundle"
   mv "$staging_bundle" "$retained_bundle"
-  status "native.macos-ui.failure-bundle path=$retained_bundle"
+  status "native.ui-leg.failure-bundle leg=$leg_name path=$retained_bundle"
 }
 
-clear_macos_ui_failure_bundle() {
-  local retained_bundle="$macos_ui_failure_diagnostics_dir/macos-ui-tests.xcresult"
+clear_ui_failure_bundle() {
+  local leg_name="$1"
+  local retained_bundle="$macos_ui_failure_diagnostics_dir/$leg_name.xcresult"
 
   [[ -e "$retained_bundle" || -L "$retained_bundle" ]] || return 0
   rm -rf "$retained_bundle"
-  status "native.macos-ui.failure-bundle-cleared path=$retained_bundle"
+  status "native.ui-leg.failure-bundle-cleared leg=$leg_name path=$retained_bundle"
 }
 
 run_leg() {
@@ -603,11 +605,11 @@ run_leg() {
     fi
   fi
 
-  if [[ "$name" == "macos-ui-tests" ]]; then
+  if [[ "$name" == "macos-ui-tests" || "$name" == "ios-pixel-snapshot-tests" ]]; then
     if [[ "$command_status" -ne 0 ]]; then
-      retain_macos_ui_failure_bundle "$result_bundle"
+      retain_ui_failure_bundle "$name" "$result_bundle"
     else
-      clear_macos_ui_failure_bundle
+      clear_ui_failure_bundle "$name"
     fi
   fi
 
