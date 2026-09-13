@@ -2745,10 +2745,75 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(reopenedState.episodeIDs, [second, first, third])
     }
 
-    func testLibraryProjectionDoesNotCapPreparationEvidenceAtThePrepDisplayLimit() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacModel.swift"))
-        XCTAssertTrue(source.contains("store.preparationRuns(limit: Int.max)"))
+    /// Larder projects every subscribed episode's preparation evidence, so it
+    /// cannot use Prep's display-oriented 200-run cap: this seeds a
+    /// non-terminal run for one subscribed episode, then 200 newer terminal
+    /// runs for other episodes that push it out of that cap, and requires
+    /// the Larder row to still show it while Prep's own capped display list
+    /// still excludes it.
+    func testLibraryProjectionIncludesPreparationEvidenceBeyondThePrepDisplayLimit() async throws {
+        let directory = temporaryDirectory("prep-evidence-beyond-cap")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let feedURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/beyond-cap-feed.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let enclosureURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/beyond-cap-episode.mp3"))
+        let episodeID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "beyond-cap-episode", enclosureURL: enclosureURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_600_000_000))
+
+        let storeCapture = StoreCapture()
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Beyond Cap Show", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await store.save(episode: try PodcastEpisode(
+                    itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: "beyond-cap-episode",
+                    title: "Beyond Cap Episode", publishedTime: created, enclosureURL: enclosureURL,
+                    enclosureMediaType: "audio/mpeg", createdAt: created
+                ))
+                // The target run: old, non-terminal, must survive being
+                // pushed out of Prep's 200-newest cap.
+                try await store.record(preparation: PreparationJournalEntry(
+                    id: "beyond-cap|preparing", itemID: episodeID,
+                    requestID: WiltedMacModel.podcastRequestPrefix + episodeID.rawValue,
+                    status: try PreparationStatus(
+                        stage: .preparing, detail: "Preparing…", fraction: 0.1, cancellable: true, emittedAt: created
+                    )
+                ))
+                // 200 newer requests to push the target out of the default 200-run display cap.
+                for i in 0..<200 {
+                    let fillerID = try ItemID(rawValue: "filler-episode-\(i)")
+                    try await store.record(preparation: PreparationJournalEntry(
+                        id: "filler-\(i)|terminal", itemID: fillerID, requestID: "podcast-prepare|filler-\(i)",
+                        status: try PreparationStatus(
+                            stage: .cancelled, detail: "cancelled", fraction: nil, cancellable: false,
+                            terminalResult: try PreparationTerminalResult(outcome: .cancelled),
+                            emittedAt: Timestamp(created.date.addingTimeInterval(Double(i) + 1))
+                        )
+                    ))
+                }
+                await storeCapture.capture(store)
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        XCTAssertEqual(model.startupState, .ready)
+
+        let projected = model.episodes.first(where: { $0.id == episodeID.rawValue })
+        guard case .preparing = projected?.preparationState else {
+            return XCTFail("Larder must show preparation evidence even when 200 newer podcast-prepare runs exist to push it out of Prep's display cap")
+        }
+
+        let capturedStore = await storeCapture.store
+        let store = try XCTUnwrap(capturedStore)
+        let displayRuns = try await store.preparationRuns()
+        XCTAssertEqual(displayRuns.count, 200, "Prep's own display list keeps its 200-run cap")
+        XCTAssertFalse(displayRuns.contains(where: { $0.itemID == episodeID }),
+                       "the target run should have been pushed out of Prep's cap by the 200 newer filler runs")
     }
 
 

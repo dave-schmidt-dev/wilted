@@ -2740,4 +2740,50 @@ final class LocalLibraryStoreTests: XCTestCase {
         )
         try await store.saveReadyRevision(revision, mediaURL: mediaURL, transcript: transcript)
     }
+
+    /// `loadLibrary` used to call `readyRevision(for:)`,
+    /// `playbackState(for:revisionID:)`, `transcript(for:revisionID:)`,
+    /// `preparationOutcome(for:revisionID:)`, `listeningState(for:)`, and
+    /// `retiredAt(for:)` once per episode, each doing its own unfiltered
+    /// full-table fetch -- read cost scaled with episode count.
+    /// `podcastLibrarySnapshot()` exists to fetch each table exactly once
+    /// regardless of how many episodes are in the library; this proves it by
+    /// seeding 3 episodes and then 27 more (30 total) and requiring the
+    /// second snapshot cost exactly what the first did.
+    func testPodcastLibrarySnapshotFetchCountDoesNotScaleWithEpisodeCount() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let feedURL = URL(string: "https://podcasts.example.test/scale-feed.xml")!
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let feed = try PodcastFeed(itemID: feedID, canonicalURL: feedURL, title: "Scale Show", author: "Wilted",
+                                   artworkURL: nil, createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_100)))
+        try await store.save(feed: feed)
+        try await store.save(feedSubscription: PodcastSubscription(feedID: feedID, subscribedAt: feed.createdAt, enabled: true))
+
+        func addEpisodes(_ range: Range<Int>) async throws {
+            for i in range {
+                let enclosureURL = URL(string: "https://podcasts.example.test/scale-audio-\(i).mp3")!
+                let episodeID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "scale-episode-\(i)", enclosureURL: enclosureURL)
+                let episode = try PodcastEpisode(
+                    itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: "scale-episode-\(i)",
+                    title: "Episode \(i)", author: "Wilted", publishedTime: feed.createdAt,
+                    enclosureURL: enclosureURL, enclosureMediaType: "audio/mpeg", enclosureByteCount: 1000,
+                    durationSeconds: 120, artworkURL: nil, createdAt: feed.createdAt
+                )
+                try await store.save(episode: episode)
+            }
+        }
+
+        try await addEpisodes(0..<3)
+        _ = try await store.podcastLibrarySnapshot()
+        let costAt3 = await store.podcastLibrarySnapshotFetchCount
+
+        try await addEpisodes(3..<30)
+        _ = try await store.podcastLibrarySnapshot()
+        let costAt30 = await store.podcastLibrarySnapshotFetchCount
+
+        XCTAssertGreaterThan(costAt3, 0)
+        XCTAssertEqual(costAt30 - costAt3, costAt3,
+                       "a 10x increase in episode count must not change the snapshot's fetch count")
+    }
 }

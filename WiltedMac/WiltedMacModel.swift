@@ -4914,14 +4914,14 @@ final class WiltedMacModel {
 
     private func loadLibrary(from store: LocalLibraryStore) async throws
         -> (articles: [WiltedMacArticle], episodes: [WiltedMacEpisode], subscriptions: [WiltedMacSubscription]) {
+        let snapshot = try await store.podcastLibrarySnapshot()
+
         var articleValues: [WiltedMacArticle] = []
-        for article in try await store.articles() where !article.isDeleted {
-            let revision = try await store.readyRevision(for: article.itemID)
+        for article in snapshot.articles where !article.isDeleted {
+            let revision = snapshot.readyRevisions[article.itemID]
             let playbackState: PlaybackState?
             if let revision {
-                playbackState = try await store.playbackState(
-                    for: article.itemID, revisionID: revision.revision.revisionID
-                )
+                playbackState = snapshot.playbackStates["\(article.itemID.rawValue)|\(revision.revision.revisionID.rawValue)"]
             } else {
                 playbackState = nil
             }
@@ -4934,11 +4934,11 @@ final class WiltedMacModel {
                 createdAt: article.createdAt.date
             ))
         }
-        let feeds = Dictionary(uniqueKeysWithValues: try await store.podcastFeeds().map { ($0.itemID, $0) })
-        let allSubscriptions = try await store.subscriptions()
+        let feeds = snapshot.feeds
+        let allSubscriptions = snapshot.subscriptions
         let subscribed = Set(allSubscriptions.filter(\.enabled).map(\.feedID))
         var episodeCounts: [ItemID: Int] = [:]
-        for episode in try await store.podcastEpisodes() { episodeCounts[episode.feedID, default: 0] += 1 }
+        for episode in snapshot.episodes { episodeCounts[episode.feedID, default: 0] += 1 }
         let subscriptionValues = allSubscriptions.compactMap { subscription -> WiltedMacSubscription? in
             guard let feed = feeds[subscription.feedID] else { return nil }
             return WiltedMacSubscription(
@@ -4947,32 +4947,29 @@ final class WiltedMacModel {
                 subscribedAt: subscription.subscribedAt.date, enabled: subscription.enabled
             )
         }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-        let downloads = Dictionary(uniqueKeysWithValues: try await store.downloads().map { ($0.episodeID, $0) })
+        let downloads = snapshot.downloads
         var episodeValues: [WiltedMacEpisode] = []
+        // Larder projects every subscribed episode, so its preparation
+        // evidence cannot use Prep's display-oriented 200-run default --
+        // `snapshot.preparationRuns` is already uncapped.
         let runs = Dictionary(
-            // Larder projects every subscribed episode, so its preparation
-            // evidence cannot use Prep's display-oriented 200-run default.
-            uniqueKeysWithValues: ((try? await store.preparationRuns(limit: Int.max)) ?? [])
+            uniqueKeysWithValues: snapshot.preparationRuns
                 .filter { $0.requestID.hasPrefix(Self.podcastRequestPrefix) }
                 .map { ($0.itemID, $0) }
         )
-        for episode in try await store.podcastEpisodes() where subscribed.contains(episode.feedID) {
-            let revision = try await store.readyRevision(for: episode.itemID)
+        for episode in snapshot.episodes where subscribed.contains(episode.feedID) {
+            let revision = snapshot.readyRevisions[episode.itemID]
             let playbackState: PlaybackState?
             if let revision {
-                playbackState = try await store.playbackState(
-                    for: episode.itemID, revisionID: revision.revision.revisionID
-                )
+                playbackState = snapshot.playbackStates["\(episode.itemID.rawValue)|\(revision.revision.revisionID.rawValue)"]
             } else {
                 playbackState = nil
             }
             let transcript: Transcript?
             let outcome: PodcastPreparationOutcome?
             if let revision {
-                transcript = try? await store.transcript(for: episode.itemID,
-                                                         revisionID: revision.revision.revisionID)
-                outcome = try? await store.preparationOutcome(for: episode.itemID,
-                                                              revisionID: revision.revision.revisionID)
+                transcript = snapshot.transcripts["\(episode.itemID.rawValue)|\(revision.revision.revisionID.rawValue)"]
+                outcome = snapshot.preparationOutcomes["\(episode.itemID.rawValue)|\(revision.revision.revisionID.rawValue)"]
             } else {
                 transcript = nil
                 outcome = nil
@@ -4981,8 +4978,8 @@ final class WiltedMacModel {
             // completion fact: `dismissPodcastEpisode` deletes every
             // `PlaybackRecord` for an episode, so a dismiss-then-restore
             // would otherwise forget that it was ever finished.
-            let listeningState = (try? await store.listeningState(for: episode.itemID)) ?? nil
-            let retiredAt = (try? await store.retiredAt(for: episode.itemID)) ?? nil
+            let listeningState = snapshot.listeningStates[episode.itemID]
+            let retiredAt = snapshot.retiredAtByEpisode[episode.itemID]
             let downloadState: WiltedMacEpisodeDownloadState
             switch downloads[episode.itemID]?.status {
             case .queued: downloadState = .queued
