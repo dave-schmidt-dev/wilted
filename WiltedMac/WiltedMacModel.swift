@@ -4525,9 +4525,11 @@ final class WiltedMacModel {
             // cannot hold the app in a non-ready state for the whole burst.
             let forcedRedownloadEpisodeIDs = invalidation.forcedRedownloadEpisodeIDs
             if !forcedRedownloadEpisodeIDs.isEmpty {
+                bootstrapRecoveryTask?.cancel()
                 bootstrapRecoveryTask = Task { [weak self] in
                     guard let self else { return }
                     for itemID in forcedRedownloadEpisodeIDs {
+                        guard !Task.isCancelled else { return }
                         guard let episode = self.episodes.first(where: { $0.id == itemID.rawValue }) else { continue }
                         self.downloadEpisode(episode, ignoringExisting: true)
                         if let task = self.podcastDownloadTasks[episode.id] {

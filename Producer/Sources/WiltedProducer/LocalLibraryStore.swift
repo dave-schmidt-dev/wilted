@@ -2159,12 +2159,23 @@ public actor LocalLibraryStore {
             if needsRedownload { forcedIDs.insert(itemID) } else { resetIDs.insert(itemID) }
         }
 
-        // A successful preparation that made no audio change records only an
-        // outcome row (`saveReadyRevision` -- see its doc comment: "the
-        // outcome must prove readiness without any journal entry at all"),
-        // so the loop above, which walks journal groups, never visits it.
-        // Without this pass those episodes could never become eligible for
-        // reprocessing no matter what a rule says.
+        // Pass 2 covers preparation outcomes left `.current` with no journal
+        // group for the loop above to walk. That is not "no audio change,
+        // so no journal was ever written" -- `PodcastPreparationPipeline.
+        // prepare()` calls `journalTerminal` on both the success and catch
+        // paths, cut or not -- it is a journal that was cleared or never
+        // completed for this ready revision, e.g. a second run's
+        // `clearPreparationJournal` wiping the
+        // first run's entry before the second run itself finished. Either
+        // way the provenance a redownload decision needs -- the source hash
+        // recorded at download time, before any cut -- is gone with the
+        // journal. `sourceIntact` cannot be reconstructed here: the download
+        // record's `contentHash` is the CURRENT file's hash, so comparing it
+        // against a fresh re-hash of that same file is always true, even
+        // when the file is already-cut output. Resetting in place on that
+        // false signal would re-run the pipeline over already-cut audio.
+        // Always force a redownload instead -- it costs bandwidth, never
+        // correctness.
         let visitedIDs = reconciledIDs.union(currentIDs)
         for outcomeRecord in outcomes where outcomeRecord.eligibility == PodcastPreparationEligibility.current.rawValue {
             guard let itemID = try? ItemID(rawValue: outcomeRecord.episodeID), !visitedIDs.contains(itemID),
@@ -2175,16 +2186,7 @@ public actor LocalLibraryStore {
                 pipelineFingerprint: outcomeRecord.pipelineFingerprint
             )
             guard let rule = rules.first(where: { $0.applies(subject) }) else { continue }
-            let download = downloadByEpisode[itemID.rawValue]
-            let sourceIntact: Bool
-            if download?.status == PodcastDownloadStatus.completed.rawValue,
-               let contentHash = download?.contentHash,
-               let sourceURL = download?.localURL.flatMap(URL.init) {
-                sourceIntact = Self.localFileContentHash(at: sourceURL) == contentHash
-            } else {
-                sourceIntact = false
-            }
-            let needsRedownload = rule.consequence == .forceRedownload || !sourceIntact
+            let needsRedownload = true
             outcomeRecord.eligibility = PodcastPreparationEligibility.invalid.rawValue
             outcomeRecord.invalidationRuleID = rule.id
             mutated = true
@@ -3717,22 +3719,26 @@ public actor LocalLibraryStore {
     }
 
     /// Step 4: legacy `podcast-invalidation|` / `podcast-reset-preparation|`
-    /// markers are translated onto the matching outcome row when one exists
-    /// and the marker is at least as new as it, and dropped once their
-    /// information is applied or superseded.
+    /// markers -- ones written before the rule table in
+    /// `invalidateStalePodcastPreparations` existed -- are translated onto
+    /// the matching `.current` outcome row when one exists and the marker is
+    /// at least as new as it, and dropped once their information is applied
+    /// or superseded.
     ///
-    /// `invalidateStalePodcastPreparations` deletes the whole `podcast-prepare|`
-    /// journal group the instant it writes either marker kind, so a real
-    /// legacy episode carrying one has, by construction, no journal terminal
-    /// success left for step 1 to have built an outcome row from. Deleting
-    /// such a marker with nothing to carry its fact forward would silently
-    /// drop it: for a forced-redownload marker that means
-    /// `requiresForcedRedownload` wrongly starts returning false and a stale
-    /// local file gets reused; for a reset-preparation marker it means
-    /// `invalidateStalePodcastPreparations`'s own marker-rebuild pass (which
-    /// re-derives `resetEpisodeIDs` from surviving markers, not from the
-    /// journal) stops re-queuing the episode for preparation. So a marker of
-    /// either kind with no matching outcome row survives reconcile untouched.
+    /// A matching outcome row no longer proves a marker is legacy debt:
+    /// `invalidateStalePodcastPreparations` itself writes a marker in the
+    /// same transaction it sets an outcome's `eligibility` to `.invalid`,
+    /// for episodes that DO have an outcome row (its pass 2 specifically
+    /// targets those). Deleting that marker here unconditionally destroys
+    /// the only durable record of a scheduled forced-redownload or reset
+    /// before it is ever admitted, permanently: `requiresForcedRedownload`
+    /// and the marker-rebuild pass in `invalidateStalePodcastPreparations`
+    /// both derive solely from marker survival, not from `eligibility`.
+    /// `.invalid` + a marker is therefore live scheduling state, not legacy
+    /// debt, and must be left alone. Only a `.current` outcome is the true
+    /// legacy case this step exists for: no rule has fired through the new
+    /// mechanism for that episode, so a surviving marker can only be a
+    /// leftover pre-V10 write.
     private func translateLegacyInvalidationMarkersForV10Reconciliation(in context: ModelContext) throws {
         let markers = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>()).filter {
             $0.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix)
@@ -3750,12 +3756,15 @@ public actor LocalLibraryStore {
                   let ready = try readyRevision(for: episodeID),
                   let outcome = outcomes.first(where: {
                       $0.episodeID == episodeID.rawValue && $0.revisionID == ready.revisionID.rawValue
-                  }) else {
+                  }),
+                  outcome.eligibility == PodcastPreparationEligibility.current.rawValue else {
                 continue
             }
-            // A matching outcome row exists, so the marker's information is
-            // either applied below or superseded by a newer success -- either
-            // way the marker itself is spent and gets deleted.
+            // A matching `.current` outcome row exists with no invalidation
+            // rule having fired for it, so this is the true legacy case: the
+            // marker's information is either applied below or superseded by
+            // a newer success -- either way the marker itself is spent and
+            // gets deleted.
             context.delete(marker)
             guard let markerStatus = try? decoder.decode(PreparationStatus.self, from: marker.statusData),
                   markerStatus.emittedAt.date >= outcome.producedAt else {

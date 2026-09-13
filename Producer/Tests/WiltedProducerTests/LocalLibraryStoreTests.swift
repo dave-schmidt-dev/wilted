@@ -2577,9 +2577,8 @@ final class LocalLibraryStoreTests: XCTestCase {
         let hash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
         let when = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
 
-        // A preparation that made no audio change records only an outcome
-        // row (`saveReadyRevision`'s no-journal overload) -- this is the real
-        // production shape the rule table must still reach.
+        // Outcome row with no journal -- the shape a cleared or unfinished
+        // journal leaves behind.
         let revision = try AudioRevision(itemID: episodeID, revisionID: revisionID, durationSeconds: 30,
                                          byteCount: Int64(bytes.count), contentHash: hash,
                                          mediaType: "audio/mpeg", createdAt: when, schemaVersion: 3)
@@ -2606,9 +2605,11 @@ final class LocalLibraryStoreTests: XCTestCase {
         let result = try await store.invalidateStalePodcastPreparations(
             currentFingerprint: "new", rules: [irrelevantRule, knownBadRule]
         )
-        XCTAssertEqual(result.resetEpisodeIDs, [episodeID], "the seeded rule must schedule recovery")
-        XCTAssertEqual(result.forcedRedownloadEpisodeIDs, [],
-                       "the source bytes still match, so a reset -- not a redownload -- is the escalation-free outcome")
+        XCTAssertEqual(result.forcedRedownloadEpisodeIDs, [episodeID],
+                       "no journal survives an outcome-only preparation, so pass 2 has no pre-cut provenance to " +
+                       "trust a reset against -- it must always force a fresh download")
+        XCTAssertEqual(result.resetEpisodeIDs, [],
+                       "an outcome-only preparation can never safely resolve to a reset")
 
         let invalidated = try await store.preparationOutcome(for: episodeID, revisionID: revisionID)
         XCTAssertEqual(invalidated?.eligibility, .invalid)
@@ -2620,7 +2621,75 @@ final class LocalLibraryStoreTests: XCTestCase {
         let repeated = try await store.invalidateStalePodcastPreparations(
             currentFingerprint: "new", rules: [irrelevantRule, knownBadRule]
         )
-        XCTAssertEqual(repeated.resetEpisodeIDs, [episodeID])
+        XCTAssertEqual(repeated.forcedRedownloadEpisodeIDs, [episodeID])
+    }
+
+    /// Regression for a data-loss bug: reconcile's step 4 used to delete any
+    /// forced-redownload/reset marker with a matching outcome row
+    /// unconditionally, which included every marker pass 2 above ever
+    /// writes (pass 2's population is defined as "has a matching outcome
+    /// row"). That destroyed the recovery marker before the app ever got a
+    /// chance to admit it -- on the very next launch, before the download it
+    /// names could even start. The fix gates step 4's translate-and-delete on
+    /// `eligibility == .current`: an `.invalid` outcome with a marker is live
+    /// scheduling state from the rule table, not legacy debt, and must
+    /// survive reconcile.
+    func testReconcileDoesNotDestroyALiveForcedRedownloadMarkerWithAMatchingInvalidOutcome() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/reconcile-step4.xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://cdn.example.test/reconcile-step4.mp3"))
+        let episodeID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "rc4", enclosureURL: enclosureURL)
+        let revisionID = try RevisionID(rawValue: "rev-" + String(repeating: "b", count: 64))
+        let mediaURL = url.deletingLastPathComponent().appendingPathComponent("reconcile-step4-audio.mp3")
+        let bytes = Data("reconcile step 4 audio".utf8)
+        try bytes.write(to: mediaURL)
+        let hash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let when = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+
+        let revision = try AudioRevision(itemID: episodeID, revisionID: revisionID, durationSeconds: 30,
+                                         byteCount: Int64(bytes.count), contentHash: hash,
+                                         mediaType: "audio/mpeg", createdAt: when, schemaVersion: 3)
+        try await store.finalizePodcastDownload(
+            revision: revision, mediaURL: mediaURL,
+            download: try PodcastDownload(episodeID: episodeID, status: .completed, bytesReceived: Int64(bytes.count),
+                                          expectedByteCount: Int64(bytes.count), localURL: mediaURL,
+                                          contentHash: hash, updatedAt: when)
+        )
+        let transcript = try Transcript(itemID: episodeID, revisionID: revisionID, availability: .available,
+                                        text: "No ads to cut.", updatedAt: when)
+        let outcome = PodcastPreparationOutcome(episodeID: episodeID, revisionID: revisionID, policyDigest: "d",
+                                                pipelineFingerprint: "old", semanticVersion: "v1", producedAt: when)
+        try await store.saveReadyRevision(revision, mediaURL: mediaURL, transcript: transcript, outcome: outcome)
+
+        let knownBadRule = PodcastPreparationInvalidationRule(
+            id: "known-bad-v1", consequence: .resetPreparation,
+            applies: { $0.pipelineFingerprint == "old" }
+        )
+
+        // First launch: pass 2 condemns the outcome-only preparation and
+        // writes a durable forced-redownload marker.
+        let firstLaunch = try await store.invalidateStalePodcastPreparations(
+            currentFingerprint: "new", rules: [knownBadRule]
+        )
+        XCTAssertEqual(firstLaunch.forcedRedownloadEpisodeIDs, [episodeID])
+
+        // Second launch, before the app ever admitted the recovery: V10
+        // reconcile's step 4 runs first, exactly as it does in production.
+        try await store.reconcilePodcastStateV10()
+
+        // Only after reconcile does the app re-run invalidation. Without the
+        // fix, step 4 would already have deleted the marker, so this call's
+        // marker-rebuild pass would find nothing and silently drop recovery.
+        let secondLaunch = try await store.invalidateStalePodcastPreparations(
+            currentFingerprint: "new", rules: [knownBadRule]
+        )
+        XCTAssertEqual(secondLaunch.forcedRedownloadEpisodeIDs, [episodeID],
+                       "a live recovery marker must survive V10 reconcile, not be treated as legacy debt")
+
+        let survived = try await store.preparationOutcome(for: episodeID, revisionID: revisionID)
+        XCTAssertEqual(survived?.eligibility, .invalid)
+        XCTAssertEqual(survived?.invalidationRuleID, "known-bad-v1")
     }
 
     func testUnrelatedFingerprintDriftIsUntouchedWhileASeededRuleInvalidatesItsOwnTarget() async throws {
