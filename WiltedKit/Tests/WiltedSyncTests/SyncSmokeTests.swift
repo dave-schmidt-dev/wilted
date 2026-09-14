@@ -225,6 +225,18 @@ private actor CountingBatchTransport: SyncTransport {
     }
 }
 
+private actor TransportRebuildProbe {
+    private let replacement: any SyncTransport
+    private(set) var stateInputs: [Data?] = []
+
+    init(replacement: any SyncTransport) { self.replacement = replacement }
+
+    func makeTransport(stateData: Data?) -> any SyncTransport {
+        stateInputs.append(stateData)
+        return replacement
+    }
+}
+
 private func changingPendingUpdates(for record: WiltedRecordEnvelope, count: Int) throws -> [SyncPendingChange] {
     try (1...count).map { sequence in
         let changedRecord = try WiltedRecordEnvelope(
@@ -514,6 +526,74 @@ func coordinatorFailsAfterStaleStagedBatchRetryExhaustion() async throws {
     #expect(await repository.commitCalls == SyncCoordinator.maximumStaleStageAttempts)
     #expect(await transport.fetchCalls == 1)
     #expect((await repository.state()).pendingChanges == [concurrentChanges.last!])
+}
+
+@Test("next synchronization rebuilds transport after stale-stage exhaustion")
+func coordinatorRebuildsAfterStaleStageExhaustion() async throws {
+    let (article, revisionID, _) = try fixtureArticle()
+    let record = try WiltedRecordCodec().encode(article: article, currentRevisionID: revisionID)
+    let concurrentChanges = try changingPendingUpdates(
+        for: record,
+        count: SyncCoordinator.maximumStaleStageAttempts
+    )
+    let initialState = SyncRepositoryState(engineState: Data([7]))
+    let repository = StaleCommitRepository(state: initialState, concurrentChanges: concurrentChanges)
+    let batch = try SyncFetchBatch(generationID: "recovered-stale", records: [record], engineState: Data([8]))
+    let failedTransport = CountingBatchTransport(batch: batch)
+    let replacement = CountingBatchTransport(batch: batch)
+    let probe = TransportRebuildProbe(replacement: replacement)
+    let coordinator = SyncCoordinator(
+        transport: failedTransport,
+        repository: repository,
+        transportFactory: { stateData in await probe.makeTransport(stateData: stateData) }
+    )
+
+    guard case .failure = await coordinator.synchronize() else {
+        Issue.record("expected stale-stage exhaustion before recovery")
+        return
+    }
+    guard case .success = await coordinator.synchronize() else {
+        Issue.record("expected rebuilt transport to recover")
+        return
+    }
+
+    #expect(await probe.stateInputs == [Data([7])])
+    #expect(await failedTransport.fetchCalls == 1)
+    #expect(await replacement.fetchCalls == 1)
+    let state = await repository.state()
+    #expect(state.records == [record])
+    #expect(state.engineState == Data([8]))
+    #expect(state.pendingChanges == [concurrentChanges.last!])
+}
+
+@Test("next synchronization rebuilds transport after terminal fetch failure")
+func coordinatorRebuildsAfterTerminalFetchFailure() async throws {
+    let persistedState = SyncRepositoryState(engineState: Data([3]))
+    let repository = FakeSyncRepository(state: persistedState)
+    let batch = try SyncFetchBatch(generationID: "recovered-fetch", records: [])
+    let failedTransport = FakeSyncTransport(
+        batch: batch,
+        failure: WiltedSyncError.transport("offline")
+    )
+    let replacement = CountingBatchTransport(batch: batch)
+    let probe = TransportRebuildProbe(replacement: replacement)
+    let coordinator = SyncCoordinator(
+        transport: failedTransport,
+        repository: repository,
+        transportFactory: { stateData in await probe.makeTransport(stateData: stateData) }
+    )
+
+    guard case .failure = await coordinator.synchronize() else {
+        Issue.record("expected initial fetch failure")
+        return
+    }
+    guard case .success = await coordinator.synchronize() else {
+        Issue.record("expected one rebuilt retry")
+        return
+    }
+
+    #expect(await probe.stateInputs == [Data([3])])
+    #expect(await replacement.fetchCalls == 1)
 }
 
 @Test("coordinator forwards the exact send batch to acknowledgement")

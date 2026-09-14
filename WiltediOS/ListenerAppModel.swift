@@ -158,6 +158,7 @@ public final class WiltedListenerAppModel: ObservableObject {
     private var audioChunkLoader: ListenerAudioChunkLoader?
     private let sessionFactory: ListenerSyncSessionFactory?
     private var session: (any ListenerSyncSession)?
+    private var rebuildSessionBeforeNextRefresh = false
     /// Published so the listener can offer account review the way the producer
     /// does. While this was private the quarantined status was non-retryable
     /// and no control was drawn, which left the shipping listener with no way
@@ -177,6 +178,7 @@ public final class WiltedListenerAppModel: ObservableObject {
     private var didStart = false
     private var cancellationRequested = false
     private var statusTasks: [Task<Void, Never>] = []
+    private var sessionStatusTask: Task<Void, Never>?
     private var decodeHadErrors = false
 
     public init(
@@ -340,6 +342,18 @@ public final class WiltedListenerAppModel: ObservableObject {
             return
         }
 
+        if rebuildSessionBeforeNextRefresh {
+            await session?.cancel()
+            guard isCurrent(operation) else { return }
+            session = nil
+            transport = nil
+            assetLoader = nil
+            audioChunkLoader = nil
+            sessionStatusTask?.cancel()
+            sessionStatusTask = nil
+            rebuildSessionBeforeNextRefresh = false
+        }
+
         if transport == nil, let sessionFactory {
             do {
                 let state = await repository.state()
@@ -349,9 +363,10 @@ public final class WiltedListenerAppModel: ObservableObject {
                 transport = createdSession.transport
                 assetLoader = createdSession.assetLoader
                 audioChunkLoader = createdSession.audioChunkLoader
-                observe(createdSession.accountChanges)
+                observeSession(createdSession.accountChanges)
             } catch {
                 guard isCurrent(operation) else { return }
+                rebuildSessionBeforeNextRefresh = true
                 status = .failed("Sync unavailable: \(error.localizedDescription)", retryable: true)
                 return
             }
@@ -388,6 +403,9 @@ public final class WiltedListenerAppModel: ObservableObject {
                 return
             } catch {
                 guard isCurrent(operation) else { return }
+                if sessionFactory != nil {
+                    rebuildSessionBeforeNextRefresh = true
+                }
                 if let listenerRepository = repository as? ListenerRepository {
                     try? await listenerRepository.recordFetchFailure(error.localizedDescription)
                 }
@@ -1014,11 +1032,9 @@ public final class WiltedListenerAppModel: ObservableObject {
     private static func makeLiveSession(root: URL, stateData: Data?, repository: any SyncRepository) async throws -> any ListenerSyncSession {
         let stager = try FileCloudKitAssetStager(rootURL: root.appendingPathComponent("CloudAssets", isDirectory: true))
         let mapper = try CloudKitRecordMapper(stager: stager)
-        let stateSerialization = try stateData.map { try JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: $0) }
         let container = CKContainer(identifier: "iCloud.com.zerodelta.wilted")
-        let driver = LiveCloudKitEngineDriver(
+        let driverFactory = LiveCloudKitEngineDriver.makeFactory(
             database: container.privateCloudDatabase,
-            stateSerialization: stateSerialization,
             automaticallySync: false,
             recordProvider: { recordID in
                 let state = await repository.state()
@@ -1031,10 +1047,11 @@ public final class WiltedListenerAppModel: ObservableObject {
         // Read once: the recorded owner is what lets the adapter tell a first sign-in apart
         // from an account switch that happened while engine state was missing.
         let repositoryState = await repository.state()
-        let transport = try CloudKitSyncTransport(driver: driver, role: .iphone, mapper: mapper,
-                                                  stateData: stateData,
-                                                  pendingChanges: repositoryState.pendingChanges,
-                                                  knownOwnerToken: repositoryState.accountOwnerToken)
+        let transport = try CloudKitSyncTransport(
+            driver: try driverFactory(stateData), role: .iphone, mapper: mapper,
+            stateData: stateData, pendingChanges: repositoryState.pendingChanges,
+            knownOwnerToken: repositoryState.accountOwnerToken
+        )
         return LiveListenerSyncSession(transport: transport, mapper: mapper)
     }
 
@@ -1096,8 +1113,13 @@ public final class WiltedListenerAppModel: ObservableObject {
         })
     }
 
-    private func observe(_ stream: AsyncStream<ListenerAccountChange>) {
-        statusTasks.append(Task { [weak self] in
+    private func observeSession(_ stream: AsyncStream<ListenerAccountChange>) {
+        sessionStatusTask?.cancel()
+        sessionStatusTask = makeAccountObserver(stream)
+    }
+
+    private func makeAccountObserver(_ stream: AsyncStream<ListenerAccountChange>) -> Task<Void, Never> {
+        Task { [weak self] in
             for await event in stream {
                 guard let self else { return }
                 switch event {
@@ -1117,7 +1139,7 @@ public final class WiltedListenerAppModel: ObservableObject {
                     }
                 }
             }
-        })
+        }
     }
 
     private func receive(_ event: SyncStatus) {

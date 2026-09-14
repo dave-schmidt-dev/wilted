@@ -123,6 +123,9 @@ public protocol CloudKitEngineDriver: Sendable {
     nonisolated func isValidStateData(_ data: Data) -> Bool
 }
 
+/// Reconstructs an engine from the last committed serialization.
+public typealias CloudKitEngineDriverFactory = @Sendable (Data?) throws -> any CloudKitEngineDriver
+
 public extension CloudKitEngineDriver {
     func ensureZone() async throws {}
     func resetZoneBootstrap() async {}
@@ -154,6 +157,35 @@ public actor LiveCloudKitEngineDriver: CloudKitEngineDriver {
         configuration.automaticallySync = automaticallySync
         self.engine = CKSyncEngine(configuration)
         self.zoneBootstrap = zoneBootstrap ?? LiveCloudKitZoneBootstrap(database: database)
+    }
+
+    /// The production recovery constructor. Each call creates a new delegate,
+    /// event stream, zone bootstrap, and CKSyncEngine from committed state.
+    public nonisolated static func makeFactory(
+        database: CKDatabase,
+        automaticallySync: Bool = false,
+        recordProvider: @escaping @Sendable (CKRecord.ID) async -> CKRecord? = { _ in nil }
+    ) -> CloudKitEngineDriverFactory {
+        { stateData in
+            let serialization: CKSyncEngine.State.Serialization?
+            if let stateData {
+                guard let decoded = try? JSONDecoder().decode(
+                    CKSyncEngine.State.Serialization.self,
+                    from: stateData
+                ) else {
+                    throw CloudKitSyncError.stateCorrupt
+                }
+                serialization = decoded
+            } else {
+                serialization = nil
+            }
+            return LiveCloudKitEngineDriver(
+                database: database,
+                stateSerialization: serialization,
+                automaticallySync: automaticallySync,
+                recordProvider: recordProvider
+            )
+        }
     }
 
     public var events: AsyncStream<CloudKitEngineEvent> { get async { delegate.events } }

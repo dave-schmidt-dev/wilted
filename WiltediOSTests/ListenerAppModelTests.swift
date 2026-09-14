@@ -138,6 +138,50 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertEqual(state.pendingChanges, [concurrentChanges.last!])
     }
 
+    func testNextRefreshRebuildsFailedSessionFromPersistedStateOnce() async throws {
+        let (records, pendingChanges) = try listenerStaleStageFixture(changeCount: 1)
+        let persistedEngineState = Data([1])
+        let repository = StaticSyncRepository(state: SyncRepositoryState(
+            records: records,
+            engineState: persistedEngineState,
+            pendingChanges: pendingChanges
+        ))
+        let failedTransport = RecordingSyncTransport(fetchError: TestSyncError.network)
+        let recoveredTransport = RecordingSyncTransport()
+        let cancelProbe = SessionCancelProbe()
+        let factory = SessionSequenceProbe(
+            transports: [failedTransport, recoveredTransport],
+            firstCancelProbe: cancelProbe
+        )
+        let model = WiltedListenerAppModel(
+            repository: repository,
+            sessionFactory: { stateData in
+                try await factory.makeSession(stateData: stateData)
+            }
+        )
+
+        await model.refresh()
+        guard case .failed(_, retryable: true) = model.status else {
+            return XCTFail("Expected the initial transport to fail")
+        }
+        XCTAssertEqual(model.items.count, 1, "the committed local catalog remains visible")
+
+        await model.refresh()
+
+        XCTAssertEqual(model.status, .ready)
+        let stateInputs = await factory.stateInputs()
+        let firstSessionWasCancelled = await cancelProbe.wasCalled
+        let failedFetchCount = await failedTransport.fetchCountValue()
+        let recoveredFetchCount = await recoveredTransport.fetchCountValue()
+        XCTAssertEqual(stateInputs, [persistedEngineState, persistedEngineState])
+        XCTAssertTrue(firstSessionWasCancelled)
+        XCTAssertEqual(failedFetchCount, 1)
+        XCTAssertEqual(recoveredFetchCount, 1)
+        let recoveredState = await repository.state()
+        XCTAssertEqual(recoveredState.records, records)
+        XCTAssertEqual(recoveredState.pendingChanges, pendingChanges)
+    }
+
     func testPixelFixturesAreAccountFreeAndExposeTheirIntendedTerminalStates() {
         let library = WiltedListenerAppModel.makePixelFixture()
         XCTAssertEqual(library.status, .ready)
@@ -800,6 +844,34 @@ private actor BlockingChunkLoader {
 private actor SessionCancelProbe {
     private(set) var wasCalled = false
     func record() { wasCalled = true }
+}
+
+private actor SessionSequenceProbe {
+    private var transports: [any SyncTransport]
+    private let firstCancelProbe: SessionCancelProbe
+    private var inputs: [Data?] = []
+    private var creationCount = 0
+
+    init(transports: [any SyncTransport], firstCancelProbe: SessionCancelProbe) {
+        self.transports = transports
+        self.firstCancelProbe = firstCancelProbe
+    }
+
+    func makeSession(stateData: Data?) async throws -> any ListenerSyncSession {
+        inputs.append(stateData)
+        guard !transports.isEmpty else { throw TestSyncError.network }
+        let transport = transports.removeFirst()
+        let isFirst = creationCount == 0
+        creationCount += 1
+        return TestSyncSession(
+            transport: transport,
+            cancelAction: { [firstCancelProbe] in
+                if isFirst { await firstCancelProbe.record() }
+            }
+        )
+    }
+
+    func stateInputs() -> [Data?] { inputs }
 }
 
 private func listenerStaleStageFixture(changeCount: Int) throws -> ([WiltedRecordEnvelope], [SyncPendingChange]) {

@@ -5,13 +5,21 @@ public actor SyncCoordinator {
     /// Maximum stage/commit attempts for one fetched batch after local mutation races.
     public static let maximumStaleStageAttempts = 3
 
-    private let transport: any SyncTransport
+    private var transport: any SyncTransport
+    private let transportFactory: (@Sendable (Data?) async throws -> any SyncTransport)?
     private let repository: any SyncRepository
+    private var rebuildTransportBeforeNextSynchronization = false
     private var continuation: AsyncStream<SyncStatus>.Continuation?
     public let statuses: AsyncStream<SyncStatus>
 
-    public init(transport: any SyncTransport, repository: any SyncRepository) {
-        self.transport = transport; self.repository = repository
+    public init(
+        transport: any SyncTransport,
+        repository: any SyncRepository,
+        transportFactory: (@Sendable (Data?) async throws -> any SyncTransport)? = nil
+    ) {
+        self.transport = transport
+        self.transportFactory = transportFactory
+        self.repository = repository
         let (stream, continuation) = AsyncStream<SyncStatus>.makeStream()
         statuses = stream
         self.continuation = continuation
@@ -21,6 +29,11 @@ public actor SyncCoordinator {
     public func synchronize() async -> Result<SyncFetchBatch, Error> {
         emit(.init(phase: .fetching, message: "Fetching changes"))
         do {
+            if rebuildTransportBeforeNextSynchronization, let transportFactory {
+                let state = await repository.state()
+                transport = try await transportFactory(state.engineState)
+                rebuildTransportBeforeNextSynchronization = false
+            }
             let operationGeneration = await transport.operationGeneration()
             let batch = try await transport.fetchChanges()
             for attempt in 1...Self.maximumStaleStageAttempts {
@@ -38,6 +51,9 @@ public actor SyncCoordinator {
             }
             throw WiltedSyncError.staleStagedBatch
         } catch {
+            if transportFactory != nil {
+                rebuildTransportBeforeNextSynchronization = true
+            }
             emit(.init(phase: .failed, message: String(describing: error)))
             return .failure(error)
         }

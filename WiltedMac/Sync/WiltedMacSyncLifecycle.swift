@@ -393,18 +393,48 @@ final class WiltedMacSyncLifecycle {
             throw WiltedMacSyncLifecycleError.unavailable
         }
         let repository = try await openRepository()
-        let coordinator = SyncCoordinator(transport: handle.transport, repository: repository)
+        installTransportHandle(handle)
+        let coordinator = SyncCoordinator(
+            transport: handle.transport,
+            repository: repository,
+            transportFactory: { [weak self] _ in
+                guard let self else { throw WiltedMacSyncLifecycleError.unavailable }
+                return try await self.rebuildTransport()
+            }
+        )
         self.coordinator = coordinator
-        cancelTransport = handle.cancel
-        resetTransport = handle.reset
-        statusTask = Task { [weak self, statuses = handle.transport.statuses] in
+        let coordinatorStatuses = await coordinator.statuses
+        coordinatorStatusTask = Task { [weak self, statuses = coordinatorStatuses] in
             for await event in statuses {
                 guard let self else { return }
                 self.apply(event)
             }
         }
-        let coordinatorStatuses = await coordinator.statuses
-        coordinatorStatusTask = Task { [weak self, statuses = coordinatorStatuses] in
+        return coordinator
+    }
+
+    private func rebuildTransport() async throws -> any SyncTransport {
+        guard !quarantined, let transportFactory else {
+            throw quarantined
+                ? WiltedMacSyncLifecycleError.accountQuarantined
+                : WiltedMacSyncLifecycleError.unavailable
+        }
+        await cancelTransport?()
+        guard !quarantined, let handle = try await transportFactory() else {
+            throw quarantined
+                ? WiltedMacSyncLifecycleError.accountQuarantined
+                : WiltedMacSyncLifecycleError.unavailable
+        }
+        installTransportHandle(handle)
+        return handle.transport
+    }
+
+    private func installTransportHandle(_ handle: WiltedMacSyncTransportHandle) {
+        statusTask?.cancel()
+        accountTask?.cancel()
+        cancelTransport = handle.cancel
+        resetTransport = handle.reset
+        statusTask = Task { [weak self, statuses = handle.transport.statuses] in
             for await event in statuses {
                 guard let self else { return }
                 self.apply(event)
@@ -416,7 +446,6 @@ final class WiltedMacSyncLifecycle {
                 await self.handleAccountSignal(signal)
             }
         }
-        return coordinator
     }
 
     private func openRepository() async throws -> LocalLibrarySyncRepository {
@@ -604,7 +633,9 @@ private actor WiltedMacLiveStateBox {
 
     func take(defaultData: Data?) -> Data? {
         guard !explicitlyReset else { return nil }
-        return WiltedMacSyncEngineState.normalized(data ?? defaultData)
+        let selected = data ?? defaultData
+        data = nil
+        return WiltedMacSyncEngineState.normalized(selected)
     }
 
     func clear() { data = nil; explicitlyReset = true }
@@ -621,18 +652,8 @@ func makeWiltedMacLiveSyncTransportFactory(
         let stateData = await stateBox.take(defaultData: persistedState?.engineState)
         let stager = try FileCloudKitAssetStager(rootURL: configuration.assetRootURL)
         let mapper = try CloudKitRecordMapper(stager: stager)
-        let serialization: CKSyncEngine.State.Serialization?
-        if let stateData {
-            guard let decoded = try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: stateData) else {
-                throw CloudKitSyncError.stateCorrupt
-            }
-            serialization = decoded
-        } else {
-            serialization = nil
-        }
-        let driver = LiveCloudKitEngineDriver(
+        let driverFactory = LiveCloudKitEngineDriver.makeFactory(
             database: configuration.database,
-            stateSerialization: serialization,
             automaticallySync: false,
             recordProvider: { recordID in
                 let currentState = try? await configuration.store.syncRepositoryState()
@@ -683,6 +704,7 @@ func makeWiltedMacLiveSyncTransportFactory(
                 return try? mapper.encode(envelope, assetURLs: assets)
             }
         )
+        let driver = try driverFactory(stateData)
         // Read once: the recorded owner is what lets the adapter tell a first sign-in
         // apart from an account switch that happened while engine state was missing.
         let repositoryState = try? await configuration.store.syncRepositoryState()

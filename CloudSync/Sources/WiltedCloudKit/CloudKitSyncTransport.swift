@@ -3,6 +3,9 @@ import Foundation
 import WiltedDomain
 import WiltedSync
 
+/// Reconstructs a transport and its engine from one committed repository snapshot.
+public typealias CloudKitSyncTransportFactory = @Sendable (SyncRepositoryState) throws -> CloudKitSyncTransport
+
 /// Actor-isolated CloudKit transport. The real engine and tests use the same event seam.
 public actor CloudKitSyncTransport: SyncTransport {
     public nonisolated let statuses: AsyncStream<SyncStatus>
@@ -67,6 +70,24 @@ public actor CloudKitSyncTransport: SyncTransport {
         Task { [weak self, driver] in
             let events = await driver.events
             for await event in events { await self?.handleEngineEvent(event) }
+        }
+    }
+
+    /// Builds a fresh transport and driver for cold-launch-equivalent recovery.
+    public nonisolated static func makeFactory(
+        role: SyncDeviceRole,
+        mapper: CloudKitRecordMapper,
+        driverFactory: @escaping CloudKitEngineDriverFactory
+    ) -> CloudKitSyncTransportFactory {
+        { state in
+            try CloudKitSyncTransport(
+                driver: try driverFactory(state.engineState),
+                role: role,
+                mapper: mapper,
+                stateData: state.engineState,
+                pendingChanges: state.pendingChanges,
+                knownOwnerToken: state.accountOwnerToken
+            )
         }
     }
 

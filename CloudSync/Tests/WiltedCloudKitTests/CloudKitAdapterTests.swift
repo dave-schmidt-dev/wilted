@@ -209,6 +209,28 @@ private actor FakeEngineDriver: CloudKitEngineDriver {
     }
 }
 
+private final class DriverFactoryProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var drivers: [FakeEngineDriver]
+    private var inputs: [Data?] = []
+
+    init(drivers: [FakeEngineDriver]) { self.drivers = drivers }
+
+    func make(stateData: Data?) throws -> any CloudKitEngineDriver {
+        lock.lock()
+        defer { lock.unlock() }
+        inputs.append(stateData)
+        guard !drivers.isEmpty else { throw CloudKitSyncError.operationInProgress }
+        return drivers.removeFirst()
+    }
+
+    func stateInputs() -> [Data?] {
+        lock.lock()
+        defer { lock.unlock() }
+        return inputs
+    }
+}
+
 @Test("all CloudKit field types map round trip through a valid article")
 func allFieldTypesRoundTrip() throws {
     let mapper = try mapper()
@@ -319,6 +341,34 @@ func initialEmptyFetchWithoutStateUpdate() async throws {
     #expect(batch.records.isEmpty)
     #expect(batch.deletedRecordIDs.isEmpty)
     #expect(batch.engineState == nil)
+}
+
+@Test("rebuilt CloudKit transport creates a fresh driver and fetches immediately")
+func rebuiltTransportUsesFreshDriverForFirstFetch() async throws {
+    let firstDriver = FakeEngineDriver()
+    let secondDriver = FakeEngineDriver()
+    let probe = DriverFactoryProbe(drivers: [firstDriver, secondDriver])
+    let factory = CloudKitSyncTransport.makeFactory(
+        role: .mac,
+        mapper: try mapper(),
+        driverFactory: { try probe.make(stateData: $0) }
+    )
+    let persisted = SyncRepositoryState(engineState: Data("{}".utf8))
+
+    _ = try factory(persisted)
+    let rebuilt = try factory(persisted)
+    let fetch = Task { try await rebuilt.fetchChanges() }
+    guard await secondDriver.waitForFetchCall() else {
+        await rebuilt.cancel()
+        Issue.record("rebuilt driver did not receive the first fetch")
+        return
+    }
+    await secondDriver.emit(.fetchCompleted)
+    _ = try await fetch.value
+
+    #expect(probe.stateInputs() == [Data("{}".utf8), Data("{}".utf8)])
+    #expect(await firstDriver.fetchCalls == 0)
+    #expect(await secondDriver.fetchCalls == 1)
 }
 
 @Test("first-run empty send completes without an engine state update")
