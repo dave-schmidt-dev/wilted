@@ -129,6 +129,87 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertEqual(model.transcriptsByItem[itemID], current)
     }
 
+    func testCatalogSelectsTheArticleDeclaredRevisionOverLaterSupersededRecord() async throws {
+        let url = URL(string: "https://example.test/current-revision")!
+        let itemID = try ItemID.derive(from: url)
+        let currentRevisionID = try RevisionID(rawValue: "revision-current")
+        let supersededRevisionID = try RevisionID(rawValue: "revision-superseded-z")
+        let currentAsset = try WiltedAsset(assetID: "current-audio",
+                                           contentHash: "sha256:" + String(repeating: "a", count: 64))
+        let supersededAsset = try WiltedAsset(assetID: "superseded-audio",
+                                              contentHash: "sha256:" + String(repeating: "b", count: 64))
+        let article = try Article(itemID: itemID, canonicalURL: url, title: "Current revision",
+                                  source: "Test", createdAt: Timestamp(Date()))
+        let current = try AudioRevision(itemID: itemID, revisionID: currentRevisionID,
+                                        durationSeconds: 30, byteCount: 1, contentHash: currentAsset.contentHash,
+                                        mediaType: "audio/m4a", createdAt: Timestamp(Date()), schemaVersion: 1)
+        let superseded = try AudioRevision(itemID: itemID, revisionID: supersededRevisionID,
+                                            durationSeconds: 90, byteCount: 1, contentHash: supersededAsset.contentHash,
+                                            mediaType: "audio/m4a", createdAt: Timestamp(Date()), schemaVersion: 1)
+        let codec = WiltedRecordCodec()
+        let repository = StaticSyncRepository(state: SyncRepositoryState(records: [
+            try codec.encode(article: article, currentRevisionID: currentRevisionID),
+            try codec.encode(revision: current, audioAsset: currentAsset),
+            try codec.encode(revision: superseded, audioAsset: supersededAsset),
+        ]))
+        let model = WiltedListenerAppModel(repository: repository)
+
+        await model.refresh()
+
+        XCTAssertEqual(model.items.first?.revisionID, currentRevisionID)
+        XCTAssertEqual(model.items.first?.durationSeconds, current.durationSeconds)
+    }
+
+    func testPlayStartsCurrentRevisionWhenCachedPlaybackHasAnotherRevision() async throws {
+        let staleRevisionID = try RevisionID(rawValue: "revision-stale")
+        let harness = try await PlaybackHarness.make(cachedPlaybackRevisionID: staleRevisionID)
+
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+
+        let selected = try XCTUnwrap(harness.model.selectedPlayback)
+        XCTAssertEqual(selected.revisionID, harness.model.items.first?.revisionID)
+        XCTAssertEqual(selected.positionSeconds, 0)
+    }
+
+    func testRebuildMergesPlaybackCausallyInsteadOfUsingRecordOrder() async throws {
+        let url = URL(string: "https://example.test/causal-playback")!
+        let itemID = try ItemID.derive(from: url)
+        let revisionID = try RevisionID(rawValue: "revision-causal-playback")
+        let asset = try WiltedAsset(assetID: "causal-audio",
+                                    contentHash: "sha256:" + String(repeating: "c", count: 64))
+        let article = try Article(itemID: itemID, canonicalURL: url, title: "Causal playback",
+                                  source: "Test", createdAt: Timestamp(Date()))
+        let revision = try AudioRevision(itemID: itemID, revisionID: revisionID,
+                                         durationSeconds: 30, byteCount: 1, contentHash: asset.contentHash,
+                                         mediaType: "audio/m4a", createdAt: Timestamp(Date()), schemaVersion: 1)
+        let first = try PlaybackState(itemID: itemID, revisionID: revisionID, sessionID: "causal-session",
+                                      sequence: 1, positionSeconds: 4, durationSeconds: 30, completed: false,
+                                      intent: .progress, deviceID: "iphone", updatedAt: Timestamp(Date()))
+        let latest = try PlaybackState(itemID: itemID, revisionID: revisionID, sessionID: "causal-session",
+                                       sequence: 2, positionSeconds: 11, durationSeconds: 30, completed: false,
+                                       intent: .progress, deviceID: "iphone", updatedAt: Timestamp(Date()))
+        let staleTag = try PlaybackState(itemID: itemID, revisionID: revisionID, sessionID: "causal-session",
+                                         sequence: 3, positionSeconds: 18, durationSeconds: 30, completed: false,
+                                         intent: .progress, deviceID: "iphone", updatedAt: Timestamp(Date()))
+        let codec = WiltedRecordCodec()
+        let playbackID = try WiltedRecordID.playback(itemID, revisionID)
+        let repository = StaticSyncRepository(state: SyncRepositoryState(records: [
+            try codec.encode(article: article, currentRevisionID: revisionID),
+            try codec.encode(revision: revision, audioAsset: asset),
+            try codec.encode(playback: latest, sidecar: WiltedOpaqueSidecar(changeTag: "tag-current")),
+            try codec.encode(playback: first, sidecar: WiltedOpaqueSidecar(changeTag: "tag-current")),
+            try codec.encode(playback: staleTag, sidecar: WiltedOpaqueSidecar(changeTag: "tag-stale")),
+        ]))
+        let model = WiltedListenerAppModel(repository: repository,
+                                           metadataLoader: { ListenerMetadata(lastPlayedRecordID: playbackID) })
+
+        await model.refresh()
+
+        XCTAssertEqual(model.selectedPlayback?.sequence, latest.sequence)
+        XCTAssertEqual(model.selectedPlayback?.positionSeconds, latest.positionSeconds)
+    }
+
     func testSettingsFactsLoadPersistedFetchAndCacheStatistics() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("WiltedSettingsFacts-\(UUID().uuidString)", isDirectory: true)
@@ -808,7 +889,7 @@ private struct PlaybackHarness {
     let engine: FakeAudioEngine
     let metadataCapture: MetadataCapture
 
-    static func make() async throws -> PlaybackHarness {
+    static func make(cachedPlaybackRevisionID: RevisionID? = nil) async throws -> PlaybackHarness {
         let url = URL(string: "https://example.test/first-play")!
         let itemID = try ItemID.derive(from: url)
         let revisionID = try RevisionID(rawValue: "revision-first-play")
@@ -829,9 +910,16 @@ private struct PlaybackHarness {
         let controller = ListenerPlaybackController(cache: cache, engine: engine,
                                                     session: FakeAudioSession(), nowPlaying: FakeNowPlaying())
         let metadataCapture = MetadataCapture()
+        let cachedPlayback = try cachedPlaybackRevisionID.map {
+            try PlaybackState(itemID: itemID, revisionID: $0, sessionID: "stale-session", sequence: 7,
+                              positionSeconds: 12, durationSeconds: 30, completed: false,
+                              intent: .progress, deviceID: "iphone", updatedAt: Timestamp(Date()))
+        }
+        var records = [try codec.encode(article: article, currentRevisionID: revisionID),
+                       try codec.encode(revision: revision, audioAsset: asset)]
+        if let cachedPlayback { records.append(try codec.encode(playback: cachedPlayback)) }
         let repository = StaticSyncRepository(state: SyncRepositoryState(
-            records: [try codec.encode(article: article, currentRevisionID: revisionID),
-                      try codec.encode(revision: revision, audioAsset: asset)],
+            records: records,
             engineState: Data([1])))
         return PlaybackHarness(model: WiltedListenerAppModel(
             repository: repository,

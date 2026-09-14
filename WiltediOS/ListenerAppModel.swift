@@ -161,6 +161,7 @@ public final class WiltedListenerAppModel: ObservableObject {
     private let metadataLoader: (@Sendable () async -> ListenerMetadata?)?
     private let metadataSaver: (@Sendable (ListenerMetadata?) async throws -> Void)?
     private var playbackByItem: [ItemID: PlaybackState] = [:]
+    private var playbackChangeTagByItem: [ItemID: String] = [:]
     private var revisionByItem: [ItemID: AudioRevision] = [:]
     private var assetByItem: [ItemID: WiltedAsset] = [:]
     private var manifestByItem: [ItemID: AudioChunkManifest] = [:]
@@ -500,7 +501,7 @@ public final class WiltedListenerAppModel: ObservableObject {
             return
         }
         let state: PlaybackState
-        if let existing = playbackByItem[itemID] {
+        if let existing = playbackByItem[itemID], existing.revisionID == revision.revisionID {
             state = existing
         } else if let initial = makeInitialPlayback(for: item, revision: revision) {
             state = initial
@@ -658,6 +659,7 @@ public final class WiltedListenerAppModel: ObservableObject {
         assetByItem = [item.itemID: asset]
         manifestByItem = [:]
         playbackByItem = [:]
+        playbackChangeTagByItem = [:]
         transcriptsByItem = transcript.map { [item.itemID: $0] } ?? [:]
         downloadStatistics = ListenerDownloadStatistics()
         status = .ready
@@ -728,11 +730,13 @@ public final class WiltedListenerAppModel: ObservableObject {
         decodeHadErrors = false
         let previousItems = Dictionary(uniqueKeysWithValues: items.map { ($0.itemID, $0) })
         var articles: [(Article, WiltedRecordEnvelope)] = []
-        var revisions: [ItemID: (AudioRevision, WiltedAsset?, AudioChunkManifest?)] = [:]
+        var revisions: [ItemID: [RevisionID: (AudioRevision, WiltedAsset?, AudioChunkManifest?)]] = [:]
         revisionByItem = [:]
         assetByItem = [:]
         manifestByItem = [:]
         playbackByItem = [:]
+        playbackChangeTagByItem = [:]
+        var playbackCandidates: [ItemID: [PlaybackCandidate]] = [:]
         var transcriptRecords: [WiltedRecordID: Transcript] = [:]
         for envelope in state.records {
             switch envelope.id.recordType {
@@ -759,10 +763,8 @@ public final class WiltedListenerAppModel: ObservableObject {
                         assetID: "audio:\(decoded.value.revisionID.rawValue)",
                         contentHash: decoded.value.contentHash
                     ))
-                    revisions[decoded.value.itemID] = (decoded.value, asset, manifest)
-                    revisionByItem[decoded.value.itemID] = decoded.value
-                    if let asset { assetByItem[decoded.value.itemID] = asset }
-                    if let manifest { manifestByItem[decoded.value.itemID] = manifest }
+                    revisions[decoded.value.itemID, default: [:]][decoded.value.revisionID] =
+                        (decoded.value, asset, manifest)
                 } catch { decodeHadErrors = true }
             case .revisionChunk:
                 // Chunk records are fetched only after a user selects their revision;
@@ -772,19 +774,45 @@ public final class WiltedListenerAppModel: ObservableObject {
                 do { transcriptRecords[envelope.id] = try codec.decodeTranscript(envelope) }
                 catch { decodeHadErrors = true }
             case .playbackState:
-                do { let decoded = try codec.decodePlayback(envelope); playbackByItem[decoded.itemID] = decoded }
+                do {
+                    let decoded = try codec.decodePlaybackRecord(envelope)
+                    playbackCandidates[decoded.value.itemID, default: []].append(
+                        PlaybackCandidate(state: decoded.value, changeTag: envelope.sidecar?.changeTag)
+                    )
+                }
                 catch { decodeHadErrors = true }
             }
         }
-        var rebuilt = articles.map { article, envelope in
+        var rebuilt: [ListenerLibraryItem] = []
+        for (article, envelope) in articles {
             let revisionID = (try? RevisionID(rawValue: envelope.fields["currentRevisionID"].flatMap { value in
                 if case let .string(id) = value { return id }; return nil
             } ?? ""))
-            let match = revisionID.flatMap { revisions[article.itemID]?.0.revisionID == $0 ? revisions[article.itemID] : nil }
+            let match: (AudioRevision, WiltedAsset?, AudioChunkManifest?)?
+            if let revisionID, let itemRevisions = revisions[article.itemID] {
+                match = itemRevisions[revisionID]
+            } else {
+                match = nil
+            }
+            if let match {
+                revisionByItem[article.itemID] = match.0
+                if let asset = match.1 { assetByItem[article.itemID] = asset }
+                if let manifest = match.2 { manifestByItem[article.itemID] = manifest }
+            }
             let state: ListenerItemState = article.isDeleted ? .deleted : match == nil ? .incompatibleRevision : .metadataOnly
-            return ListenerLibraryItem(itemID: article.itemID, title: article.title, source: article.source,
-                                       revisionID: match?.0.revisionID ?? revisionID, durationSeconds: match?.0.durationSeconds,
-                                       asset: match?.1, state: state)
+            rebuilt.append(ListenerLibraryItem(itemID: article.itemID, title: article.title, source: article.source,
+                                                revisionID: match?.0.revisionID ?? revisionID, durationSeconds: match?.0.durationSeconds,
+                                                asset: match?.1, state: state))
+            guard !article.isDeleted, let selectedRevisionID = match?.0.revisionID,
+                  let selected = latestPlayback(
+                      playbackCandidates[article.itemID, default: []].filter {
+                          $0.state.revisionID == selectedRevisionID
+                      }
+                  ) else { continue }
+            playbackByItem[article.itemID] = selected.state
+            if let changeTag = selected.changeTag {
+                playbackChangeTagByItem[article.itemID] = changeTag
+            }
         }
         let rebuiltIDs = Set(rebuilt.map(\.itemID))
         rebuilt.append(contentsOf: previousItems.values.filter { !rebuiltIDs.contains($0.itemID) }.map {
@@ -800,6 +828,49 @@ public final class WiltedListenerAppModel: ObservableObject {
             return (item.itemID, transcript)
         })
         selectedPlayback = selectedItemID.flatMap { playbackByItem[$0] }
+    }
+
+    private struct PlaybackCandidate: Equatable, Sendable {
+        let state: PlaybackState
+        let changeTag: String?
+    }
+
+    /// Chooses a unique causally latest candidate. An incomparable set is rejected rather
+    /// than resolved by record identity or the order in which records happened to arrive.
+    private func latestPlayback(_ candidates: [PlaybackCandidate]) -> PlaybackCandidate? {
+        var unique: [PlaybackCandidate] = []
+        for candidate in candidates where !unique.contains(candidate) {
+            unique.append(candidate)
+        }
+        guard !unique.isEmpty else { return nil }
+        let maximal = unique.filter { candidate in
+            !unique.contains { other in
+                guard candidate != other else { return false }
+                let result = mergePlayback(
+                    current: candidate.state,
+                    incoming: other.state,
+                    changeTagMatches: candidate.changeTag == other.changeTag
+                )
+                return result.acceptedStateIsIncoming
+            }
+        }
+        guard !maximal.isEmpty else { return nil }
+        let ranked = maximal.map { candidate in
+            let wins = unique.reduce(into: 0) { count, other in
+                guard candidate != other else { return }
+                let result = mergePlayback(
+                    current: other.state,
+                    incoming: candidate.state,
+                    changeTagMatches: other.changeTag == candidate.changeTag
+                )
+                if result.acceptedStateIsIncoming { count += 1 }
+            }
+            return (candidate, wins)
+        }
+        let highest = ranked.map { $0.1 }.max() ?? 0
+        let winners = ranked.filter { $0.1 == highest }
+        guard winners.count == 1 else { return nil }
+        return winners[0].0
     }
 
     private func refreshPresentationFacts() async {
@@ -884,7 +955,11 @@ public final class WiltedListenerAppModel: ObservableObject {
         // enqueues the same durable change immediately below.
         playbackByItem[state.itemID] = state
         guard let repository else { return }
-        let envelope = try WiltedRecordCodec().encode(playback: state)
+        let sidecar = WiltedOpaqueSidecar(
+            changeTag: playbackChangeTagByItem[state.itemID],
+            encodedSystemFields: state.encodedCloudKitRecordSystemFields
+        )
+        let envelope = try WiltedRecordCodec().encode(playback: state, sidecar: sidecar)
         let change = try SyncPendingChange(operation: .update, recordID: envelope.id, record: envelope)
         try await repository.enqueue(change)
         try await metadataSaver?(ListenerMetadata(lastPlayedRecordID: envelope.id, lastPositionSeconds: state.positionSeconds))
