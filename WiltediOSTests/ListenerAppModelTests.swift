@@ -80,6 +80,53 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertTrue(retryable)
     }
 
+    func testRefreshRetriesAStaleStageWithoutDiscardingTheFetchedBatch() async throws {
+        let (record, concurrentChanges) = try listenerStaleStageFixture(changeCount: 1)
+        let batch = try SyncFetchBatch(generationID: "listener-stale-retry", records: [record], engineState: Data([4]))
+        let repository = StaleStageListenerRepository(concurrentChanges: concurrentChanges)
+        let transport = SingleBatchSyncTransport(batch: batch)
+        let model = WiltedListenerAppModel(repository: repository, transport: transport)
+
+        await model.refresh()
+
+        XCTAssertEqual(model.status, .ready)
+        let stageCalls = await repository.stageCalls
+        let commitCalls = await repository.commitCalls
+        let fetchCalls = await transport.fetchCalls
+        let state = await repository.state()
+        XCTAssertEqual(stageCalls, 2)
+        XCTAssertEqual(commitCalls, 2)
+        XCTAssertEqual(fetchCalls, 1)
+        XCTAssertEqual(state.records, [record])
+        XCTAssertEqual(state.pendingChanges, concurrentChanges)
+    }
+
+    func testRefreshFailsAfterBoundedStaleStageRetries() async throws {
+        let (record, concurrentChanges) = try listenerStaleStageFixture(
+            changeCount: SyncCoordinator.maximumStaleStageAttempts
+        )
+        let batch = try SyncFetchBatch(generationID: "listener-stale-exhaustion", records: [record], engineState: Data([5]))
+        let repository = StaleStageListenerRepository(concurrentChanges: concurrentChanges)
+        let transport = SingleBatchSyncTransport(batch: batch)
+        let model = WiltedListenerAppModel(repository: repository, transport: transport)
+
+        await model.refresh()
+
+        guard case let .failed(message, retryable) = model.status else {
+            return XCTFail("Expected stale retry exhaustion, got \(model.status)")
+        }
+        XCTAssertTrue(message.contains("The staged sync batch is stale"))
+        XCTAssertTrue(retryable)
+        let stageCalls = await repository.stageCalls
+        let commitCalls = await repository.commitCalls
+        let fetchCalls = await transport.fetchCalls
+        let state = await repository.state()
+        XCTAssertEqual(stageCalls, SyncCoordinator.maximumStaleStageAttempts)
+        XCTAssertEqual(commitCalls, SyncCoordinator.maximumStaleStageAttempts)
+        XCTAssertEqual(fetchCalls, 1)
+        XCTAssertEqual(state.pendingChanges, [concurrentChanges.last!])
+    }
+
     func testPixelFixturesAreAccountFreeAndExposeTheirIntendedTerminalStates() {
         let library = WiltedListenerAppModel.makePixelFixture()
         XCTAssertEqual(library.status, .ready)
@@ -744,6 +791,25 @@ private actor SessionCancelProbe {
     func record() { wasCalled = true }
 }
 
+private func listenerStaleStageFixture(changeCount: Int) throws -> (WiltedRecordEnvelope, [SyncPendingChange]) {
+    let url = URL(string: "https://example.test/listener-stale-stage")!
+    let itemID = try ItemID.derive(from: url)
+    let revisionID = try RevisionID(rawValue: "listener-stale-stage")
+    let article = try Article(itemID: itemID, canonicalURL: url, title: "Stale stage",
+                              source: "Test", createdAt: Timestamp(Date()))
+    let record = try WiltedRecordCodec().encode(article: article, currentRevisionID: revisionID)
+    let changes = try (1...changeCount).map { sequence in
+        let changedRecord = try WiltedRecordEnvelope(
+            id: record.id,
+            schemaVersion: record.schemaVersion,
+            fields: record.fields,
+            sidecar: WiltedOpaqueSidecar(changeTag: "local-\(sequence)")
+        )
+        return try SyncPendingChange(operation: .update, recordID: record.id, record: changedRecord)
+    }
+    return (record, changes)
+}
+
 private actor StaticSyncRepository: SyncRepository {
     let statuses: AsyncStream<SyncStatus>
     private var snapshot: SyncRepositoryState
@@ -775,6 +841,61 @@ private actor StaticSyncRepository: SyncRepository {
     func enqueue(_ change: SyncPendingChange) async throws {}
     func acknowledge(_ result: SyncSendResult, sent: [SyncPendingChange]) async throws { acknowledgements.append(sent) }
     func acknowledgedBatches() -> [[SyncPendingChange]] { acknowledgements }
+}
+
+private actor StaleStageListenerRepository: SyncRepository {
+    nonisolated let statuses = AsyncStream<SyncStatus> { _ in }
+    private var snapshot: SyncRepositoryState
+    private var concurrentChanges: [SyncPendingChange]
+    private(set) var stageCalls = 0
+    private(set) var commitCalls = 0
+
+    init(state: SyncRepositoryState = .init(), concurrentChanges: [SyncPendingChange]) {
+        self.snapshot = state
+        self.concurrentChanges = concurrentChanges
+    }
+
+    func state() async -> SyncRepositoryState { snapshot }
+
+    func stage(_ batch: SyncFetchBatch) async throws -> StagedSyncBatch {
+        stageCalls += 1
+        return StagedSyncBatch(batch: batch, priorState: snapshot)
+    }
+
+    func commit(_ staged: StagedSyncBatch) async throws {
+        commitCalls += 1
+        if !concurrentChanges.isEmpty {
+            try await enqueue(concurrentChanges.removeFirst())
+        }
+        guard staged.priorState == snapshot else { throw ListenerError.staleStage }
+        snapshot = SyncRepositoryState(records: staged.batch.records,
+                                       engineState: staged.batch.engineState,
+                                       pendingChanges: snapshot.pendingChanges)
+    }
+
+    func enqueue(_ change: SyncPendingChange) async throws {
+        snapshot = SyncRepositoryState(records: snapshot.records, engineState: snapshot.engineState,
+                                       pendingChanges: snapshot.pendingChanges.filter { $0.recordID != change.recordID } + [change])
+    }
+
+    func acknowledge(_ result: SyncSendResult, sent: [SyncPendingChange]) async throws {}
+}
+
+private actor SingleBatchSyncTransport: SyncTransport {
+    nonisolated let statuses = AsyncStream<SyncStatus> { _ in }
+    private let batch: SyncFetchBatch
+    private(set) var fetchCalls = 0
+
+    init(batch: SyncFetchBatch) { self.batch = batch }
+
+    func fetchChanges() async throws -> SyncFetchBatch {
+        fetchCalls += 1
+        return batch
+    }
+
+    func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {
+        try SyncSendResult(engineState: Data([3]))
+    }
 }
 
 private actor RecordingSyncTransport: SyncTransport {

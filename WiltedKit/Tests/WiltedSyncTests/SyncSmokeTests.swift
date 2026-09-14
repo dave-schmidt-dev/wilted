@@ -170,6 +170,73 @@ private actor EpochGuardRepository: SyncRepository {
     }
 }
 
+private actor StaleCommitRepository: SyncRepository {
+    nonisolated let statuses = AsyncStream<SyncStatus> { _ in }
+    private var storedState: SyncRepositoryState
+    private var concurrentChanges: [SyncPendingChange]
+    private(set) var stageCalls = 0
+    private(set) var commitCalls = 0
+
+    init(state: SyncRepositoryState = .init(), concurrentChanges: [SyncPendingChange]) {
+        self.storedState = state
+        self.concurrentChanges = concurrentChanges
+    }
+
+    func state() async -> SyncRepositoryState { storedState }
+
+    func stage(_ batch: SyncFetchBatch) async throws -> StagedSyncBatch {
+        stageCalls += 1
+        return StagedSyncBatch(batch: batch, priorState: storedState)
+    }
+
+    func commit(_ staged: StagedSyncBatch) async throws {
+        commitCalls += 1
+        if !concurrentChanges.isEmpty {
+            try await enqueue(concurrentChanges.removeFirst())
+        }
+        guard staged.priorState == storedState else { throw WiltedSyncError.staleStagedBatch }
+        storedState = SyncRepositoryState(records: staged.batch.records,
+                                          engineState: staged.batch.engineState,
+                                          pendingChanges: storedState.pendingChanges)
+    }
+
+    func enqueue(_ change: SyncPendingChange) async throws {
+        storedState = SyncRepositoryState(records: storedState.records, engineState: storedState.engineState,
+                                          pendingChanges: storedState.pendingChanges.filter { $0.recordID != change.recordID } + [change])
+    }
+
+    func acknowledge(_ result: SyncSendResult, sent: [SyncPendingChange]) async throws {}
+}
+
+private actor CountingBatchTransport: SyncTransport {
+    nonisolated let statuses = AsyncStream<SyncStatus> { _ in }
+    private let batch: SyncFetchBatch
+    private(set) var fetchCalls = 0
+
+    init(batch: SyncFetchBatch) { self.batch = batch }
+
+    func fetchChanges() async throws -> SyncFetchBatch {
+        fetchCalls += 1
+        return batch
+    }
+
+    func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {
+        try SyncSendResult(engineState: Data([6]))
+    }
+}
+
+private func changingPendingUpdates(for record: WiltedRecordEnvelope, count: Int) throws -> [SyncPendingChange] {
+    try (1...count).map { sequence in
+        let changedRecord = try WiltedRecordEnvelope(
+            id: record.id,
+            schemaVersion: record.schemaVersion,
+            fields: record.fields,
+            sidecar: WiltedOpaqueSidecar(changeTag: "local-\(sequence)")
+        )
+        return try SyncPendingChange(operation: .update, recordID: record.id, record: changedRecord)
+    }
+}
+
 @Test("codec round trips validated records and rejects identity mismatch")
 func codecRoundTripAndIdentity() throws {
     let (article, revisionID, _) = try fixtureArticle()
@@ -404,6 +471,49 @@ func successfulCommitPreservesPending() async throws {
     #expect(state.records == [record])
     #expect(state.engineState == Data([9]))
     #expect(state.pendingChanges == [pending])
+}
+
+@Test("coordinator retries a stale staged batch without discarding fetched changes")
+func coordinatorRetriesStaleStagedBatch() async throws {
+    let (article, revisionID, _) = try fixtureArticle()
+    let record = try WiltedRecordCodec().encode(article: article, currentRevisionID: revisionID)
+    let concurrentChanges = try changingPendingUpdates(for: record, count: 1)
+    let batch = try SyncFetchBatch(generationID: "stale-retry", records: [record], engineState: Data([4]))
+    let repository = StaleCommitRepository(concurrentChanges: concurrentChanges)
+    let transport = CountingBatchTransport(batch: batch)
+
+    let result = await SyncCoordinator(transport: transport, repository: repository).synchronize()
+
+    guard case let .success(committed) = result else { Issue.record("expected stale batch retry to commit"); return }
+    #expect(committed == batch)
+    #expect(await repository.stageCalls == 2)
+    #expect(await repository.commitCalls == 2)
+    #expect(await transport.fetchCalls == 1)
+    let state = await repository.state()
+    #expect(state.records == [record])
+    #expect(state.pendingChanges == concurrentChanges)
+}
+
+@Test("coordinator fails after bounded stale staged batch retries")
+func coordinatorFailsAfterStaleStagedBatchRetryExhaustion() async throws {
+    let (article, revisionID, _) = try fixtureArticle()
+    let record = try WiltedRecordCodec().encode(article: article, currentRevisionID: revisionID)
+    let concurrentChanges = try changingPendingUpdates(
+        for: record,
+        count: SyncCoordinator.maximumStaleStageAttempts
+    )
+    let batch = try SyncFetchBatch(generationID: "stale-exhaustion", records: [record], engineState: Data([5]))
+    let repository = StaleCommitRepository(concurrentChanges: concurrentChanges)
+    let transport = CountingBatchTransport(batch: batch)
+
+    let result = await SyncCoordinator(transport: transport, repository: repository).synchronize()
+
+    guard case let .failure(error) = result else { Issue.record("expected stale retry exhaustion"); return }
+    #expect(error as? WiltedSyncError == .staleStagedBatch)
+    #expect(await repository.stageCalls == SyncCoordinator.maximumStaleStageAttempts)
+    #expect(await repository.commitCalls == SyncCoordinator.maximumStaleStageAttempts)
+    #expect(await transport.fetchCalls == 1)
+    #expect((await repository.state()).pendingChanges == [concurrentChanges.last!])
 }
 
 @Test("coordinator forwards the exact send batch to acknowledgement")

@@ -2,6 +2,9 @@ import Foundation
 
 /// Coordinates fetch, staging, and atomic commit without inspecting opaque engine bytes.
 public actor SyncCoordinator {
+    /// Maximum stage/commit attempts for one fetched batch after local mutation races.
+    public static let maximumStaleStageAttempts = 3
+
     private let transport: any SyncTransport
     private let repository: any SyncRepository
     private var continuation: AsyncStream<SyncStatus>.Continuation?
@@ -20,13 +23,20 @@ public actor SyncCoordinator {
         do {
             let operationGeneration = await transport.operationGeneration()
             let batch = try await transport.fetchChanges()
-            emit(.init(phase: .staging, message: "Staging fetched changes", generationID: batch.generationID))
-            let staged = try await repository.stage(batch)
-            try await ensureCurrent(operationGeneration)
-            emit(.init(phase: .committing, message: "Committing fetched changes", generationID: batch.generationID))
-            try await repository.commit(staged)
-            emit(.init(phase: .completed, message: "Sync completed", generationID: batch.generationID))
-            return .success(batch)
+            for attempt in 1...Self.maximumStaleStageAttempts {
+                emit(.init(phase: .staging, message: "Staging fetched changes", generationID: batch.generationID))
+                let staged = try await repository.stage(batch)
+                try await ensureCurrent(operationGeneration)
+                emit(.init(phase: .committing, message: "Committing fetched changes", generationID: batch.generationID))
+                do {
+                    try await repository.commit(staged)
+                    emit(.init(phase: .completed, message: "Sync completed", generationID: batch.generationID))
+                    return .success(batch)
+                } catch let error as WiltedSyncError where error == .staleStagedBatch {
+                    guard attempt < Self.maximumStaleStageAttempts else { throw error }
+                }
+            }
+            throw WiltedSyncError.staleStagedBatch
         } catch {
             emit(.init(phase: .failed, message: String(describing: error)))
             return .failure(error)

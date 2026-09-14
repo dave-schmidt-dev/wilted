@@ -350,10 +350,7 @@ public final class WiltedListenerAppModel: ObservableObject {
             do {
                 let batch = try await transport.fetchChanges()
                 guard isCurrent(operation) else { return }
-                let staged = try await repository.stage(batch)
-                guard isCurrent(operation) else { return }
-                try await repository.commit(staged)
-                guard isCurrent(operation) else { return }
+                guard try await stageAndCommit(batch, repository: repository, operation: operation) else { return }
                 if let listenerRepository = repository as? ListenerRepository {
                     try? await listenerRepository.recordSuccessfulFetch()
                 }
@@ -389,6 +386,25 @@ public final class WiltedListenerAppModel: ObservableObject {
         }
 
         await loadLocal(repository: repository, fallback: "Offline mode")
+    }
+
+    /// Re-stages one fetched batch when a concurrent local enqueue invalidates its snapshot.
+    private func stageAndCommit(
+        _ batch: SyncFetchBatch,
+        repository: any SyncRepository,
+        operation: UInt64
+    ) async throws -> Bool {
+        for attempt in 1...SyncCoordinator.maximumStaleStageAttempts {
+            let staged = try await repository.stage(batch)
+            guard isCurrent(operation) else { return false }
+            do {
+                try await repository.commit(staged)
+                return isCurrent(operation)
+            } catch let error as ListenerError where error == .staleStage {
+                guard attempt < SyncCoordinator.maximumStaleStageAttempts else { throw error }
+            }
+        }
+        throw ListenerError.staleStage
     }
 
     public func sendPending() async {
