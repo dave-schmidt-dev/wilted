@@ -373,6 +373,127 @@ final class LocalLibrarySyncRepositoryTests: XCTestCase {
         XCTAssertEqual(persisted?.title, "Newer local title")
     }
 
+    func testIncomingProtectedCatalogRecordsDoNotOverwriteLocalStateOrStore() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let pendingArticle = try article("protected-item")
+        let unprotectedArticle = try article("unprotected-item")
+        let revisionID = try RevisionID(rawValue: "rev-protected-catalog")
+        let localMedia = Data("protected-local-media".utf8)
+        let localMediaURL = url.deletingLastPathComponent().appendingPathComponent("protected-local.m4a")
+        try FileManager.default.createDirectory(at: localMediaURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try localMedia.write(to: localMediaURL)
+        let localHash = "sha256:" + SHA256.hash(data: localMedia).map { String(format: "%02x", $0) }.joined()
+        let localRevision = try AudioRevision(
+            itemID: pendingArticle.itemID, revisionID: revisionID, durationSeconds: 10,
+            byteCount: Int64(localMedia.count), contentHash: localHash, mediaType: "audio/mp4",
+            createdAt: pendingArticle.createdAt, schemaVersion: 1)
+        let localTranscript = try Transcript(
+            itemID: pendingArticle.itemID, revisionID: revisionID, availability: .available,
+            text: "Local transcript", updatedAt: pendingArticle.createdAt)
+        let codec = WiltedRecordCodec()
+        let pendingRecord = try codec.encode(article: pendingArticle, currentRevisionID: revisionID)
+        let unprotectedRecord = try record(for: unprotectedArticle)
+        let localRevisionRecord = try codec.encode(
+            revision: localRevision,
+            audioAsset: WiltedAsset(assetID: "protected-local", contentHash: localHash))
+        let localTranscriptRecord = try codec.encode(transcript: localTranscript)
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(article: pendingArticle)
+        try await store.save(article: unprotectedArticle)
+        try await store.saveReadyRevision(localRevision, mediaURL: localMediaURL, transcript: localTranscript)
+        let initial = SyncRepositoryState(
+            records: [pendingRecord, unprotectedRecord, localRevisionRecord, localTranscriptRecord],
+            engineState: Data([1]),
+            remoteAcknowledgedRecordIDs: [unprotectedRecord.id],
+            protectedRecordIDs: [localRevisionRecord.id, localTranscriptRecord.id])
+        let repository = try await LocalLibrarySyncRepository(store: store, initialState: initial)
+        let pending = try SyncPendingChange(operation: .update, recordID: pendingRecord.id, record: pendingRecord)
+        try await repository.enqueue(pending)
+
+        let remotePendingArticle = try Article(
+            itemID: pendingArticle.itemID, canonicalURL: pendingArticle.canonicalURL,
+            title: "Remote protected title", source: pendingArticle.source,
+            createdAt: pendingArticle.createdAt)
+        let remoteUnprotectedArticle = try Article(
+            itemID: unprotectedArticle.itemID, canonicalURL: unprotectedArticle.canonicalURL,
+            title: "Remote accepted title", source: unprotectedArticle.source,
+            createdAt: unprotectedArticle.createdAt)
+        let remoteMedia = Data("protected-remote-media".utf8)
+        let remoteHash = "sha256:" + SHA256.hash(data: remoteMedia).map { String(format: "%02x", $0) }.joined()
+        let remoteRevision = try AudioRevision(
+            itemID: pendingArticle.itemID, revisionID: revisionID, durationSeconds: 99,
+            byteCount: Int64(remoteMedia.count), contentHash: remoteHash, mediaType: "audio/mp4",
+            createdAt: pendingArticle.createdAt, schemaVersion: 1)
+        let remoteTranscript = try Transcript(
+            itemID: pendingArticle.itemID, revisionID: revisionID, availability: .available,
+            text: "Remote transcript", updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_100)))
+        let remotePendingRecord = try codec.encode(article: remotePendingArticle, currentRevisionID: revisionID)
+        let remoteUnprotectedRecord = try record(for: remoteUnprotectedArticle)
+        let remoteRevisionRecord = try codec.encode(
+            revision: remoteRevision,
+            audioAsset: WiltedAsset(assetID: "protected-remote", contentHash: remoteHash))
+        let remoteTranscriptRecord = try codec.encode(transcript: remoteTranscript)
+        let batch = try SyncFetchBatch(
+            generationID: "protected-catalog-fetch",
+            records: [remotePendingRecord, remoteUnprotectedRecord, remoteRevisionRecord, remoteTranscriptRecord],
+            engineState: Data([2]))
+
+        try await repository.commit(try await repository.stage(batch))
+
+        let state = await repository.state()
+        XCTAssertEqual(state.records.first(where: { $0.id == pendingRecord.id }), pendingRecord)
+        XCTAssertEqual(state.records.first(where: { $0.id == localRevisionRecord.id }), localRevisionRecord)
+        XCTAssertEqual(state.records.first(where: { $0.id == localTranscriptRecord.id }), localTranscriptRecord)
+        XCTAssertEqual(state.records.first(where: { $0.id == unprotectedRecord.id }), remoteUnprotectedRecord)
+        let savedPendingArticle = try await store.article(for: pendingArticle.itemID)
+        let savedUnprotectedArticle = try await store.article(for: unprotectedArticle.itemID)
+        let savedRevision = try await store.readyRevision(for: pendingArticle.itemID, revisionID: revisionID)
+        let savedTranscript = try await store.transcript(for: pendingArticle.itemID, revisionID: revisionID)
+        XCTAssertEqual(savedPendingArticle?.title, pendingArticle.title)
+        XCTAssertEqual(savedUnprotectedArticle?.title, "Remote accepted title")
+        XCTAssertEqual(savedRevision?.revision.revisionID, localRevision.revisionID)
+        XCTAssertEqual(savedRevision?.revision.durationSeconds, localRevision.durationSeconds)
+        XCTAssertEqual(savedRevision?.revision.contentHash, localRevision.contentHash)
+        XCTAssertEqual(savedTranscript, localTranscript)
+    }
+
+    func testAcknowledgedUpdateSupersededByDeleteRetainsOnlyTheDelete() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let original = try article("acknowledged-update-then-delete")
+        let local = try Article(
+            itemID: original.itemID, canonicalURL: original.canonicalURL,
+            title: "Local update", source: original.source, createdAt: original.createdAt)
+        let server = try Article(
+            itemID: original.itemID, canonicalURL: original.canonicalURL,
+            title: "Server acknowledgement", source: original.source, createdAt: original.createdAt)
+        let originalRecord = try record(for: original)
+        let localRecord = try record(for: local)
+        let serverRecord = try record(for: server)
+        let store = try LocalLibraryStore(url: url)
+        let repository = try await LocalLibrarySyncRepository(store: store)
+        try await repository.commit(try await repository.stage(try SyncFetchBatch(
+            generationID: "update-delete-seed", records: [originalRecord], engineState: Data([1]))))
+        let sentUpdate = try SyncPendingChange(operation: .update, recordID: localRecord.id, record: localRecord)
+        try await repository.enqueue(sentUpdate)
+        let tombstone = SyncTombstone(
+            itemID: original.itemID, generationID: "delete-after-send",
+            requestedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_101)))
+        let pendingDelete = try SyncPendingChange(operation: .delete, recordID: localRecord.id, tombstone: tombstone)
+        try await repository.enqueue(pendingDelete)
+
+        try await repository.acknowledge(
+            try SyncSendResult(
+                engineState: Data([2]), acknowledgedRecordIDs: [localRecord.id], serverEnvelopes: [serverRecord]),
+            sent: [sentUpdate])
+
+        let state = await repository.state()
+        XCTAssertEqual(state.pendingChanges, [pendingDelete])
+        XCTAssertEqual(state.protectedRecordIDs, [localRecord.id])
+        XCTAssertFalse(state.records.contains(where: { $0.id == localRecord.id }))
+        let savedArticle = try await store.article(for: original.itemID)
+        XCTAssertEqual(savedArticle?.title, "Local update")
+    }
+
     func testRetryableAndTerminalFailuresRemainPendingWithDistinctStatuses() async throws {
         let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let retry = try article("retryable"); let terminal = try article("terminal")

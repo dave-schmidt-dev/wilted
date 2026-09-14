@@ -153,7 +153,7 @@ public actor LocalLibrarySyncRepository: SyncRepository {
                (!batch.records.isEmpty || !batch.deletedRecordIDs.isEmpty || batch.kind == .fullSnapshot) {
                 throw WiltedSyncError.missingEngineState
             }
-            let prepared = try await prepare(batch.records)
+            let prepared = try await prepare(applicableIncomingRecords(batch.records, prior: storedState))
             guard Set(batch.records.map(\.id)).count == batch.records.count else { throw WiltedSyncError.invalidRecordIdentity }
             staged[batch.generationID] = prepared
             return StagedSyncBatch(batch: batch, priorState: storedState)
@@ -269,6 +269,13 @@ public actor LocalLibrarySyncRepository: SyncRepository {
 
             let applicableIDs = Set(sentByID.compactMap { id, change in pendingByID[id] == change ? id : nil })
             let acknowledged = reportedAcknowledged.intersection(applicableIDs)
+            let supersededAcknowledged = reportedAcknowledged.filter { recordID in
+                guard let sentChange = sentByID[recordID],
+                      storedState.pendingChanges.contains(sentChange) else { return false }
+                return storedState.pendingChanges.contains {
+                    $0.recordID == recordID && $0 != sentChange
+                }
+            }
             let failures = result.failures.filter { applicableIDs.contains($0.recordID) }
 
             let prepared = try await prepare(result.serverEnvelopes.filter { acknowledged.contains($0.id) })
@@ -281,6 +288,15 @@ public actor LocalLibrarySyncRepository: SyncRepository {
             var conflictServerRecords = storedState.conflictServerRecords
             var deletions: [WiltedRecordID] = []
             var statusUpdates: [LocalLibrarySyncCommit.StatusApply] = []
+
+            for recordID in supersededAcknowledged {
+                guard let sentChange = sentByID[recordID] else { continue }
+                pending.removeAll { $0 == sentChange }
+                if sentChange.operation != .delete,
+                   pending.contains(where: { $0.recordID == recordID && $0.operation == .delete }) {
+                    records.removeAll { $0.id == recordID }
+                }
+            }
 
             for recordID in acknowledged {
                 let change = storedState.pendingChanges.first(where: { $0.recordID == recordID })
@@ -409,6 +425,22 @@ public actor LocalLibrarySyncRepository: SyncRepository {
         return PreparedBatch(articles: articles, revisions: revisions, transcripts: transcripts, playbacks: playbacks)
     }
 
+    private func applicableIncomingRecords(
+        _ records: [WiltedRecordEnvelope],
+        prior: SyncRepositoryState
+    ) -> [WiltedRecordEnvelope] {
+        let protectedCatalogIDs = Set(prior.pendingChanges.map(\.recordID))
+            .union(prior.protectedRecordIDs)
+        return records.filter { record in
+            switch record.id.recordType {
+            case .item, .revision, .transcript:
+                return !protectedCatalogIDs.contains(record.id)
+            case .revisionChunk, .playbackState:
+                return true
+            }
+        }
+    }
+
     private func validateMedia(_ url: URL, contentHash: String) throws {
         guard url.isFileURL, FileManager.default.fileExists(atPath: url.path) else {
             throw WiltedSyncError.invalidValue(field: "validatedLocalMedia")
@@ -421,7 +453,8 @@ public actor LocalLibrarySyncRepository: SyncRepository {
         var records = prior.records
         var acknowledged = prior.remoteAcknowledgedRecordIDs
         var conflicted = prior.conflictedRecordIDs
-        let fetchedIDs = Set(batch.records.map(\.id))
+        let incomingRecords = applicableIncomingRecords(batch.records, prior: prior)
+        let fetchedIDs = Set(incomingRecords.map(\.id))
         var deletions: [WiltedRecordID] = []
         if batch.kind == .fullSnapshot {
             let pendingIDs = Set(prior.pendingChanges.map(\.recordID))
@@ -474,7 +507,7 @@ public actor LocalLibrarySyncRepository: SyncRepository {
             }
             deletions.append(contentsOf: explicitRemovable)
         }
-        for fetched in batch.records {
+        for fetched in incomingRecords {
             records.removeAll { $0.id == fetched.id }
             records.append(fetched)
         }
