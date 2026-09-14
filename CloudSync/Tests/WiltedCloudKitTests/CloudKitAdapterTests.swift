@@ -383,6 +383,7 @@ func initialEmptySendWithoutStateUpdate() async throws {
 private final class TestStager: CloudKitAssetStaging {
     let root: URL
     private(set) var stageCalls = 0
+    private(set) var commitCalls = 0
     init() throws { root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true) }
     func stage(asset: CKAsset, assetID: String, contentHash: String) throws -> URL {
         stageCalls += 1
@@ -391,7 +392,10 @@ private final class TestStager: CloudKitAssetStaging {
         try FileManager.default.copyItem(at: source, to: destination)
         return destination
     }
-    func commit(stagedURL: URL, assetID: String) throws -> CloudKitAssetCommit { CloudKitAssetCommit(url: stagedURL, created: true) }
+    func commit(stagedURL: URL, assetID: String) throws -> CloudKitAssetCommit {
+        commitCalls += 1
+        return CloudKitAssetCommit(url: stagedURL, created: true)
+    }
     func removeStagedAsset(at url: URL) { try? FileManager.default.removeItem(at: url) }
     func resolve(assetID: String) -> URL? { nil }
     deinit { try? FileManager.default.removeItem(at: root) }
@@ -436,6 +440,216 @@ func metadataOnlyDecodeDoesNotStageAudio() throws {
     #expect(stager.stageCalls == 0)
     #expect(decoded.envelope.fields["audioAsset"] == .asset(
         try WiltedAsset(assetID: "\(record.recordID.recordName)#audioAsset", contentHash: contentHash)))
+}
+
+@Test("legacy revision asset is fetched directly by record identity")
+func legacyRevisionAssetFetchesByRecordIdentity() async throws {
+    let stager = try TestStager()
+    let mapper = try mapper(stager: stager)
+    let bytes = Data("legacy-single-asset".utf8)
+    let source = stager.root.appendingPathComponent("legacy.m4a")
+    try bytes.write(to: source)
+    let contentHash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    let item = try article("legacy-asset").0.itemID
+    let revision = try AudioRevision(
+        itemID: item,
+        revisionID: RevisionID(rawValue: "rev-legacy-asset"),
+        durationSeconds: 1,
+        byteCount: Int64(bytes.count),
+        contentHash: contentHash,
+        mediaType: "audio/mp4",
+        createdAt: Timestamp(iso8601: "2026-08-17T12:00:00Z"),
+        schemaVersion: 1
+    )
+    let envelope = try WiltedRecordCodec().encode(
+        revision: revision,
+        audioAsset: WiltedAsset(assetID: "legacy-write-shape", contentHash: contentHash)
+    )
+    let record = try mapper.encode(envelope, assetURLs: ["legacy-write-shape": source])
+    let metadata = try mapper.decodeMetadataOnly(record)
+    guard case let .asset(expectedAsset)? = metadata.envelope.fields["audioAsset"] else {
+        Issue.record("legacy metadata did not retain its asset descriptor")
+        return
+    }
+    let driver = FakeEngineDriver()
+    await driver.setExplicitRecords([record])
+    let transport = try CloudKitSyncTransport(driver: driver, role: .iphone, mapper: mapper)
+
+    let downloaded = try await transport.fetchLegacyRevisionAsset(
+        recordID: envelope.id,
+        expectedAsset: expectedAsset
+    )
+
+    #expect(try Data(contentsOf: downloaded) == bytes)
+    #expect(await driver.recordFetchCalls == 1)
+    #expect(stager.commitCalls == 1)
+}
+
+@Test("missing legacy revision record maps to asset unavailable")
+func missingLegacyRevisionRecordIsUnavailable() async throws {
+    let fixture = try legacyAssetFixture("missing")
+    let transport = try CloudKitSyncTransport(
+        driver: FakeEngineDriver(), role: .iphone, mapper: fixture.mapper
+    )
+
+    do {
+        _ = try await transport.fetchLegacyRevisionAsset(
+            recordID: fixture.envelope.id,
+            expectedAsset: fixture.expectedAsset
+        )
+        Issue.record("expected missing legacy asset failure")
+    } catch let error as CloudKitSyncError {
+        #expect(error == .assetUnavailable(fixture.expectedAsset.assetID))
+    }
+    #expect(fixture.stager.stageCalls == 0)
+    #expect(fixture.stager.commitCalls == 0)
+}
+
+@Test("account quarantine during legacy record fetch cannot publish audio")
+func legacyRevisionAccountQuarantineCannotPublish() async throws {
+    let fixture = try legacyAssetFixture("quarantine")
+    let driver = FakeEngineDriver(holdRecordFetch: true)
+    await driver.setExplicitRecords([fixture.record])
+    let transport = try CloudKitSyncTransport(driver: driver, role: .iphone, mapper: fixture.mapper)
+    let recordID = fixture.envelope.id
+    let expectedAsset = fixture.expectedAsset
+    let fetch = Task {
+        try await transport.fetchLegacyRevisionAsset(
+            recordID: recordID,
+            expectedAsset: expectedAsset
+        )
+    }
+    guard await driver.waitForRecordFetch() else {
+        await transport.cancel()
+        Issue.record("legacy record fetch did not start")
+        return
+    }
+
+    await driver.emit(.accountChanged(.switchAccounts))
+    for _ in 0..<100 {
+        if await transport.isQuarantined() { break }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(await transport.isQuarantined())
+    await driver.releaseRecordFetch()
+    do { _ = try await fetch.value; Issue.record("expected account-change failure") }
+    catch let error as CloudKitSyncError { #expect(error == .accountChanged) }
+    #expect(fixture.stager.stageCalls == 0)
+    #expect(fixture.stager.commitCalls == 0)
+}
+
+@Test("cancellation during legacy record fetch cannot publish audio")
+func legacyRevisionCancellationCannotPublish() async throws {
+    let fixture = try legacyAssetFixture("cancel")
+    let driver = FakeEngineDriver(holdRecordFetch: true)
+    await driver.setExplicitRecords([fixture.record])
+    let transport = try CloudKitSyncTransport(driver: driver, role: .iphone, mapper: fixture.mapper)
+    let recordID = fixture.envelope.id
+    let expectedAsset = fixture.expectedAsset
+    let fetch = Task {
+        try await transport.fetchLegacyRevisionAsset(
+            recordID: recordID,
+            expectedAsset: expectedAsset
+        )
+    }
+    guard await driver.waitForRecordFetch() else {
+        await transport.cancel()
+        Issue.record("legacy record fetch did not start")
+        return
+    }
+
+    await transport.cancel()
+    await driver.releaseRecordFetch()
+    do { _ = try await fetch.value; Issue.record("expected cancellation failure") }
+    catch let error as CloudKitSyncError { #expect(error == .cancelled) }
+    #expect(fixture.stager.stageCalls == 0)
+    #expect(fixture.stager.commitCalls == 0)
+}
+
+@Test("cancellation during legacy zone bootstrap remains cancelled and cannot publish audio")
+func legacyRevisionZoneBootstrapCancellationCannotPublish() async throws {
+    let fixture = try legacyAssetFixture("zone-cancel")
+    let driver = FakeEngineDriver(holdZoneBootstrap: true)
+    await driver.setExplicitRecords([fixture.record])
+    let transport = try CloudKitSyncTransport(driver: driver, role: .iphone, mapper: fixture.mapper)
+    let recordID = fixture.envelope.id
+    let expectedAsset = fixture.expectedAsset
+    let fetch = Task {
+        try await transport.fetchLegacyRevisionAsset(recordID: recordID, expectedAsset: expectedAsset)
+    }
+    guard await driver.waitForEnsureCall() else {
+        await transport.cancel()
+        Issue.record("legacy zone bootstrap did not start")
+        return
+    }
+
+    await transport.cancel()
+    await driver.releaseZoneBootstrap()
+    do { _ = try await fetch.value; Issue.record("expected cancellation failure") }
+    catch let error as CloudKitSyncError { #expect(error == .cancelled) }
+    #expect(fixture.stager.stageCalls == 0)
+    #expect(fixture.stager.commitCalls == 0)
+}
+
+@Test("legacy record identity mismatch is rejected before staging or publication")
+func legacyRevisionIdentityMismatchCannotPublish() async throws {
+    let fixture = try legacyAssetFixture("identity-mismatch")
+    let mismatched = CKRecord(
+        recordType: WiltedRecordType.item.rawValue,
+        recordID: fixture.record.recordID
+    )
+    for key in fixture.record.allKeys() { mismatched[key] = fixture.record[key] }
+    let driver = FakeEngineDriver()
+    await driver.setExplicitRecords([mismatched])
+    let transport = try CloudKitSyncTransport(driver: driver, role: .iphone, mapper: fixture.mapper)
+
+    do {
+        _ = try await transport.fetchLegacyRevisionAsset(
+            recordID: fixture.envelope.id,
+            expectedAsset: fixture.expectedAsset
+        )
+        Issue.record("expected invalid record identity")
+    } catch let error as CloudKitSyncError {
+        #expect(error == .invalidRecordIdentity)
+    }
+    #expect(fixture.stager.stageCalls == 0)
+    #expect(fixture.stager.commitCalls == 0)
+}
+
+private func legacyAssetFixture(_ suffix: String) throws -> (
+    stager: TestStager,
+    mapper: CloudKitRecordMapper,
+    record: CKRecord,
+    envelope: WiltedRecordEnvelope,
+    expectedAsset: WiltedAsset
+) {
+    let stager = try TestStager()
+    let mapper = try mapper(stager: stager)
+    let bytes = Data("legacy-\(suffix)".utf8)
+    let source = stager.root.appendingPathComponent("legacy-\(suffix).m4a")
+    try bytes.write(to: source)
+    let contentHash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    let item = try article("legacy-\(suffix)").0.itemID
+    let revision = try AudioRevision(
+        itemID: item,
+        revisionID: RevisionID(rawValue: "rev-legacy-\(suffix)"),
+        durationSeconds: 1,
+        byteCount: Int64(bytes.count),
+        contentHash: contentHash,
+        mediaType: "audio/mp4",
+        createdAt: Timestamp(iso8601: "2026-08-17T12:00:00Z"),
+        schemaVersion: 1
+    )
+    let envelope = try WiltedRecordCodec().encode(
+        revision: revision,
+        audioAsset: WiltedAsset(assetID: "legacy-write-\(suffix)", contentHash: contentHash)
+    )
+    let record = try mapper.encode(envelope, assetURLs: ["legacy-write-\(suffix)": source])
+    let metadata = try mapper.decodeMetadataOnly(record)
+    guard case let .asset(expectedAsset)? = metadata.envelope.fields["audioAsset"] else {
+        throw CloudKitSyncError.missingField("audioAsset")
+    }
+    return (stager, mapper, record, envelope, expectedAsset)
 }
 
 @Test("chunk records have deterministic identities and explicit retrieval validates bytes")

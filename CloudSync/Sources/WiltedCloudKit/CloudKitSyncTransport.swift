@@ -189,13 +189,12 @@ public actor CloudKitSyncTransport: SyncTransport {
         emit(.init(phase: .fetching, message: "Fetching selected audio chunks"))
         do { try await driver.ensureZone() }
         catch {
-            throw quarantined || operationGeneration != operationGenerationValue
-                ? .accountChanged
-                : CloudKitSyncError.map(error)
+            if quarantined { throw CloudKitSyncError.accountChanged }
+            if operationGeneration != operationGenerationValue { throw CloudKitSyncError.cancelled }
+            throw CloudKitSyncError.map(error)
         }
-        guard !quarantined, operationGeneration == operationGenerationValue else {
-            throw CloudKitSyncError.accountChanged
-        }
+        guard !quarantined else { throw CloudKitSyncError.accountChanged }
+        guard operationGeneration == operationGenerationValue else { throw CloudKitSyncError.cancelled }
         let records: [CKRecord]
         do { records = try await driver.fetchRecords(ids) }
         catch {
@@ -221,6 +220,49 @@ public actor CloudKitSyncTransport: SyncTransport {
         catch let error as AudioChunkError { throw CloudKitSyncError.invalidField(error.localizedDescription) }
     }
 
+    /// Fetches the single CKAsset stored on a pre-chunking revision record.
+    /// New writes never use this shape; this is read-only compatibility for
+    /// libraries created before chunk manifests existed.
+    public func fetchLegacyRevisionAsset(
+        recordID: WiltedRecordID,
+        expectedAsset: WiltedAsset
+    ) async throws -> URL {
+        let operationGeneration = operationGenerationValue
+        guard recordID.recordType == .revision else { throw CloudKitSyncError.invalidRecordIdentity }
+        guard !quarantined else { throw CloudKitSyncError.quarantined }
+        emit(.init(phase: .fetching, message: "Fetching legacy revision audio"))
+        do { try await driver.ensureZone() }
+        catch {
+            if quarantined { throw CloudKitSyncError.accountChanged }
+            if operationGeneration != operationGenerationValue { throw CloudKitSyncError.cancelled }
+            throw CloudKitSyncError.map(error)
+        }
+        guard !quarantined else { throw CloudKitSyncError.accountChanged }
+        guard operationGeneration == operationGenerationValue else { throw CloudKitSyncError.cancelled }
+        let cloudID = CKRecord.ID(recordName: recordID.recordName, zoneID: mapper.zoneID)
+        let records: [CKRecord]
+        do { records = try await driver.fetchRecords([cloudID]) }
+        catch {
+            if quarantined { throw CloudKitSyncError.accountChanged }
+            if operationGeneration != operationGenerationValue { throw CloudKitSyncError.cancelled }
+            throw CloudKitSyncError.map(error)
+        }
+        guard !quarantined else { throw CloudKitSyncError.accountChanged }
+        guard operationGeneration == operationGenerationValue else { throw CloudKitSyncError.cancelled }
+        guard let record = records.first(where: { $0.recordID == cloudID }) else {
+            throw CloudKitSyncError.assetUnavailable(expectedAsset.assetID)
+        }
+        let metadata = try mapper.decodeMetadataOnly(record)
+        guard metadata.envelope.id == recordID else { throw CloudKitSyncError.invalidRecordIdentity }
+        let published = try mapper.publish(mapper.decode(record))
+        guard case let .asset(actualAsset)? = published.envelope.fields["audioAsset"],
+              actualAsset == expectedAsset,
+              let url = published.stagedAssets["audioAsset"] else {
+            throw CloudKitSyncError.invalidField("audioAsset")
+        }
+        return url
+    }
+
     /// Reconstructs into a destination only after complete validation. The
     /// shared contract's atomic write prevents corrupt partial cache files.
     public func fetchAudioChunks(itemID: ItemID, revisionID: RevisionID,
@@ -231,6 +273,7 @@ public actor CloudKitSyncTransport: SyncTransport {
     }
 
     public func cancel() async {
+        operationGenerationValue &+= 1
         await driver.cancelOperations()
         finishFetch(with: .failure(CloudKitSyncError.cancelled))
         finishSend(with: .failure(CloudKitSyncError.cancelled))

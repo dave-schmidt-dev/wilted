@@ -4,6 +4,8 @@ import XCTest
 import WiltedDomain
 import WiltedListener
 import WiltedSync
+import CloudKit
+import WiltedCloudKit
 
 @MainActor
 final class ListenerAppModelTests: XCTestCase {
@@ -608,6 +610,143 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertNotNil(cachedURL)
     }
 
+    func testLegacyRevisionDownloadsThroughDirectRecordFetch() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wilted-legacy-download-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cloudRoot = root.appendingPathComponent("CloudAssets", isDirectory: true)
+        let cache = try ListenerAudioCache(rootURL: root.appendingPathComponent("Audio", isDirectory: true))
+        let stager = try FileCloudKitAssetStager(rootURL: cloudRoot)
+        let mapper = try CloudKitRecordMapper(stager: stager)
+        let bytes = Data("legacy-listener-audio".utf8)
+        let source = root.appendingPathComponent("legacy-source.m4a")
+        try bytes.write(to: source)
+        let contentHash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let itemID = try ItemID.derive(from: URL(string: "https://example.test/legacy-listener")!)
+        let revisionID = try RevisionID(rawValue: "revision-legacy-listener")
+        let article = try Article(
+            itemID: itemID,
+            canonicalURL: URL(string: "https://example.test/legacy-listener")!,
+            title: "Legacy listener",
+            source: "Test",
+            createdAt: Timestamp(Date())
+        )
+        let revision = try AudioRevision(
+            itemID: itemID,
+            revisionID: revisionID,
+            durationSeconds: 12,
+            byteCount: Int64(bytes.count),
+            contentHash: contentHash,
+            mediaType: "audio/mp4",
+            createdAt: Timestamp(Date()),
+            schemaVersion: 1
+        )
+        let codec = WiltedRecordCodec()
+        let legacyEnvelope = try codec.encode(
+            revision: revision,
+            audioAsset: WiltedAsset(assetID: "legacy-write-fixture", contentHash: contentHash)
+        )
+        let cloudRecord = try mapper.encode(legacyEnvelope, assetURLs: ["legacy-write-fixture": source])
+        let metadataEnvelope = try mapper.decodeMetadataOnly(cloudRecord).envelope
+        let repository = StaticSyncRepository(state: SyncRepositoryState(records: [
+            try codec.encode(article: article, currentRevisionID: revisionID),
+            metadataEnvelope,
+        ]))
+        let driver = LegacyAssetEngineDriver(record: cloudRecord)
+        let transport = try CloudKitSyncTransport(driver: driver, role: .iphone, mapper: mapper)
+        let model = WiltedListenerAppModel(
+            repository: repository,
+            cache: cache,
+            assetLoader: { recordID, asset in
+                try await transport.fetchLegacyRevisionAsset(recordID: recordID, expectedAsset: asset)
+            }
+        )
+
+        await model.refresh()
+        await model.download(itemID: itemID)
+
+        let cached = await cache.url(for: try XCTUnwrap(model.items.first?.asset))
+        let requestedRecordNames = await driver.requestedRecordNames()
+        XCTAssertEqual(model.items.first?.state, .downloaded)
+        XCTAssertEqual(try cached.map { try Data(contentsOf: $0) }, bytes)
+        XCTAssertEqual(requestedRecordNames, [legacyEnvelope.id.recordName])
+    }
+
+    func testQuarantinedLegacyRevisionDownloadLeavesMetadataOnlyAndNoCache() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wilted-legacy-quarantine-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = try ListenerAudioCache(rootURL: root.appendingPathComponent("Audio", isDirectory: true))
+        let stager = try FileCloudKitAssetStager(
+            rootURL: root.appendingPathComponent("CloudAssets", isDirectory: true)
+        )
+        let mapper = try CloudKitRecordMapper(stager: stager)
+        let bytes = Data("legacy-quarantined-audio".utf8)
+        let source = root.appendingPathComponent("legacy-source.m4a")
+        try bytes.write(to: source)
+        let contentHash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let itemID = try ItemID.derive(from: URL(string: "https://example.test/legacy-quarantine")!)
+        let revisionID = try RevisionID(rawValue: "revision-legacy-quarantine")
+        let article = try Article(
+            itemID: itemID,
+            canonicalURL: URL(string: "https://example.test/legacy-quarantine")!,
+            title: "Legacy quarantine",
+            source: "Test",
+            createdAt: Timestamp(Date())
+        )
+        let revision = try AudioRevision(
+            itemID: itemID,
+            revisionID: revisionID,
+            durationSeconds: 12,
+            byteCount: Int64(bytes.count),
+            contentHash: contentHash,
+            mediaType: "audio/mp4",
+            createdAt: Timestamp(Date()),
+            schemaVersion: 1
+        )
+        let codec = WiltedRecordCodec()
+        let legacyEnvelope = try codec.encode(
+            revision: revision,
+            audioAsset: WiltedAsset(assetID: "legacy-quarantine-fixture", contentHash: contentHash)
+        )
+        let cloudRecord = try mapper.encode(
+            legacyEnvelope,
+            assetURLs: ["legacy-quarantine-fixture": source]
+        )
+        let metadataEnvelope = try mapper.decodeMetadataOnly(cloudRecord).envelope
+        let repository = StaticSyncRepository(state: SyncRepositoryState(records: [
+            try codec.encode(article: article, currentRevisionID: revisionID),
+            metadataEnvelope,
+        ]))
+        let driver = LegacyAssetEngineDriver(record: cloudRecord, holdRecordFetch: true)
+        let transport = try CloudKitSyncTransport(driver: driver, role: .iphone, mapper: mapper)
+        let model = WiltedListenerAppModel(
+            repository: repository,
+            cache: cache,
+            assetLoader: { recordID, asset in
+                try await transport.fetchLegacyRevisionAsset(recordID: recordID, expectedAsset: asset)
+            }
+        )
+
+        await model.refresh()
+        let download = Task { await model.download(itemID: itemID) }
+        let fetchStarted = await driver.waitForRecordFetch()
+        XCTAssertTrue(fetchStarted)
+        await driver.emit(.accountChanged(.switchAccounts))
+        for _ in 0..<100 {
+            if await transport.isQuarantined() { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        let quarantined = await transport.isQuarantined()
+        XCTAssertTrue(quarantined)
+        await driver.releaseRecordFetch()
+        await download.value
+
+        let cached = await cache.url(for: try XCTUnwrap(model.items.first?.asset))
+        XCTAssertEqual(model.items.first?.state, .metadataOnly)
+        XCTAssertNil(cached)
+    }
+
     func testCorruptChunkDownloadLeavesMetadataOnlyAndNoCache() async throws {
         let fixture = try makeChunkedCatalogFixture()
         let model = WiltedListenerAppModel(repository: fixture.repository, transport: RecordingSyncTransport(),
@@ -1012,6 +1151,52 @@ private actor RecordingSyncTransport: SyncTransport {
 
     func savedChanges() -> [[SyncPendingChange]] { sent }
     func fetchCountValue() -> Int { fetchCount }
+}
+
+private actor LegacyAssetEngineDriver: CloudKitEngineDriver {
+    nonisolated let events: AsyncStream<CloudKitEngineEvent>
+    private let continuation: AsyncStream<CloudKitEngineEvent>.Continuation
+    private let record: CKRecord
+    private let holdRecordFetch: Bool
+    private let recordFetchRelease: AsyncStream<Void>.Continuation
+    private let recordFetchReleaseStream: AsyncStream<Void>
+    private var requestedNames: [String] = []
+
+    init(record: CKRecord, holdRecordFetch: Bool = false) {
+        let (events, continuation) = AsyncStream<CloudKitEngineEvent>.makeStream()
+        let (releaseStream, release) = AsyncStream<Void>.makeStream()
+        self.events = events
+        self.continuation = continuation
+        self.record = record
+        self.holdRecordFetch = holdRecordFetch
+        self.recordFetchRelease = release
+        self.recordFetchReleaseStream = releaseStream
+    }
+
+    func fetchChanges() async throws {}
+    func fetchRecords(_ ids: [CKRecord.ID]) async throws -> [CKRecord] {
+        requestedNames.append(contentsOf: ids.map(\.recordName))
+        if holdRecordFetch {
+            for await _ in recordFetchReleaseStream { break }
+        }
+        return ids.contains(record.recordID) ? [record] : []
+    }
+    func sendChanges() async throws {}
+    func cancelOperations() async {}
+    func addPendingRecordZoneChanges(_ changes: [CKSyncEngine.PendingRecordZoneChange]) async {}
+    nonisolated func isValidStateData(_ data: Data) -> Bool { true }
+    func requestedRecordNames() -> [String] { requestedNames }
+    func emit(_ event: CloudKitEngineEvent) { continuation.yield(event) }
+    func releaseRecordFetch() { recordFetchRelease.yield(()) }
+    func waitForRecordFetch() async -> Bool {
+        let clock = ContinuousClock()
+        let end = clock.now + .seconds(5)
+        while clock.now < end {
+            if !requestedNames.isEmpty { return true }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        return !requestedNames.isEmpty
+    }
 }
 
 private actor BlockingSyncTransport: SyncTransport {

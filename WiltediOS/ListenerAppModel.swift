@@ -1029,6 +1029,20 @@ public final class WiltedListenerAppModel: ObservableObject {
     }
 
 #if WILTED_CLOUDKIT_LIVE
+    nonisolated static func makeLiveAssetLoader(
+        transport: CloudKitSyncTransport,
+        mapper: CloudKitRecordMapper
+    ) -> ListenerAssetLoader {
+        { recordID, asset in
+            if let url = await transport.assetHandoff()[recordID]?["audioAsset"] { return url }
+            if let url = mapper.resolvedAssetURL(for: asset) { return url }
+            return try await transport.fetchLegacyRevisionAsset(
+                recordID: recordID,
+                expectedAsset: asset
+            )
+        }
+    }
+
     private static func makeLiveSession(root: URL, stateData: Data?, repository: any SyncRepository) async throws -> any ListenerSyncSession {
         let stager = try FileCloudKitAssetStager(rootURL: root.appendingPathComponent("CloudAssets", isDirectory: true))
         let mapper = try CloudKitRecordMapper(stager: stager)
@@ -1066,11 +1080,10 @@ public final class WiltedListenerAppModel: ObservableObject {
         init(transport: CloudKitSyncTransport, mapper: CloudKitRecordMapper) {
             self.transport = transport
             self.cloudTransport = transport
-            self.assetLoader = { recordID, asset in
-                if let url = await transport.assetHandoff()[recordID]?.first?.value { return url }
-                if let url = mapper.resolvedAssetURL(for: asset) { return url }
-                throw ListenerError.cacheUnavailable(asset.assetID)
-            }
+            self.assetLoader = WiltedListenerAppModel.makeLiveAssetLoader(
+                transport: transport,
+                mapper: mapper
+            )
             self.audioChunkLoader = { itemID, revisionID, manifest in
                 try await transport.fetchAudioChunks(itemID: itemID, revisionID: revisionID, manifest: manifest)
             }
