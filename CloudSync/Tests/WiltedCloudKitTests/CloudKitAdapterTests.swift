@@ -22,6 +22,13 @@ private func validEnvelope(_ suffix: String = "alpha", opaque: [String: WiltedFi
 
 private func mapper(stager: CloudKitAssetStaging? = nil) throws -> CloudKitRecordMapper { try CloudKitRecordMapper(stager: stager) }
 
+private func recordWithUnknownReference(_ mapper: CloudKitRecordMapper, suffix: String) throws -> CKRecord {
+    let record = try mapper.encode(validEnvelope(suffix))
+    let id = CKRecord.ID(recordName: "future-family:\(suffix)", zoneID: mapper.zoneID)
+    record["futureReference"] = CKRecord.Reference(recordID: id, action: .none)
+    return record
+}
+
 @Test("transcript records map through CloudKit without contacting a database")
 func transcriptCloudKitMappingRoundTrip() throws {
     let (item, revisionID) = try article("transcript")
@@ -227,6 +234,58 @@ func identityAndZoneAreRejected() throws {
     #expect(throws: CloudKitSyncError.invalidZone(mapper.zoneID.zoneName)) { try mapper.decode(wrongOwnerRecord) }
     let wrongName = CKRecord(recordType: WiltedRecordType.item.rawValue, recordID: CKRecord.ID(recordName: "revision:item-x:rev-a", zoneID: mapper.zoneID))
     #expect(throws: CloudKitSyncError.invalidRecordIdentity) { try mapper.decode(wrongName) }
+}
+
+@Test("accumulator skips unsupported catalog families but retains known records")
+func accumulatorSkipsUnsupportedCatalogFamilies() async throws {
+    let mapper = try mapper()
+    let accumulator = CloudKitChangeAccumulator(mapper: mapper)
+    let known = try mapper.encode(validEnvelope("accumulator-known"))
+    let unknown = CKRecord(recordType: "FutureCatalogFamily",
+                           recordID: CKRecord.ID(recordName: "future:accumulator", zoneID: mapper.zoneID))
+    unknown["schemaVersion"] = 999
+    let unknownReference = try recordWithUnknownReference(mapper, suffix: "accumulator-reference")
+
+    await accumulator.begin()
+    #expect(try await accumulator.append(modified: known) == .appended)
+    #expect(try await accumulator.append(modified: unknown) ==
+            .skipped("Skipped unsupported CloudKit record type: FutureCatalogFamily"))
+    #expect(try await accumulator.append(modified: unknownReference) ==
+            .skipped("Skipped CloudKit record with unsupported reference family: future-family:accumulator-reference"))
+    #expect(try await accumulator.append(deleted: CKRecord.ID(recordName: "future:deleted", zoneID: mapper.zoneID),
+                                         recordType: "FutureCatalogFamily") ==
+            .skipped("Skipped unsupported CloudKit record type deletion: FutureCatalogFamily"))
+    await accumulator.updateState(Data("{\"state\":1}".utf8))
+    let batch = try await accumulator.finish(requireFreshState: true)
+    #expect(batch.records.map(\.id) == [try validEnvelope("accumulator-known").id])
+    #expect(batch.deletedRecordIDs.isEmpty)
+}
+
+@Test("known malformed identities and cross-zone references still fail a batch")
+func accumulatorRejectsKnownMalformedCatalogRecords() async throws {
+    let mapper = try mapper()
+    let malformed = CKRecord(recordType: WiltedRecordType.item.rawValue,
+                             recordID: CKRecord.ID(recordName: "revision:item:bad:rev", zoneID: mapper.zoneID))
+    let malformedAccumulator = CloudKitChangeAccumulator(mapper: mapper)
+    await malformedAccumulator.begin()
+    do {
+        _ = try await malformedAccumulator.append(modified: malformed)
+        Issue.record("expected malformed known identity to fail")
+    } catch let error as CloudKitSyncError {
+        #expect(error == .invalidRecordIdentity)
+    }
+
+    let crossZone = try mapper.encode(validEnvelope("cross-zone-reference"))
+    let otherZone = CKRecordZone.ID(zoneName: "OtherZone", ownerName: CKCurrentUserDefaultName)
+    crossZone["futureReference"] = CKRecord.Reference(recordID: CKRecord.ID(recordName: "future:outside", zoneID: otherZone), action: .none)
+    let crossZoneAccumulator = CloudKitChangeAccumulator(mapper: mapper)
+    await crossZoneAccumulator.begin()
+    do {
+        _ = try await crossZoneAccumulator.append(modified: crossZone)
+        Issue.record("expected cross-zone reference to fail")
+    } catch let error as CloudKitSyncError {
+        #expect(error == .invalidZone("OtherZone"))
+    }
 }
 
 @Test("system fields round trip and corruption fails closed")
@@ -538,6 +597,41 @@ func transportFetch() async throws {
     #expect(await driver.fetchCalls == 1)
     #expect(await driver.ensureCalls == 1)
     #expect(await driver.ensureCallsAtFetch == 1)
+}
+
+@Test("transport keeps a mixed fetch batch usable after later unknown catalog families")
+func transportSkipsUnknownCatalogFamilies() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver()
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper, stateData: Data("{}".utf8))
+    let knownEnvelope = try validEnvelope("mixed-known")
+    let known = try mapper.encode(knownEnvelope)
+    let unknown = CKRecord(recordType: "FutureCatalogFamily",
+                           recordID: CKRecord.ID(recordName: "future:mixed", zoneID: mapper.zoneID))
+    unknown["schemaVersion"] = 999
+    let unknownReference = try recordWithUnknownReference(mapper, suffix: "mixed-reference")
+    let skippedStatuses = Task { await skippedStatusMessages(transport.statuses, minimum: 3) }
+    let fetch = Task { try await transport.fetchChanges() }
+    guard await driver.waitForFetchCall() else {
+        await transport.cancel()
+        Issue.record("fake driver did not receive fetchChanges")
+        return
+    }
+    await driver.emit(.fetched(
+        modifications: [known, unknown, unknownReference],
+        deletions: [CloudKitRecordDeletion(recordID: CKRecord.ID(recordName: "future:mixed-deleted", zoneID: mapper.zoneID),
+                                           recordType: "FutureCatalogFamily")]
+    ))
+    await driver.emit(.stateUpdated(Data("{\"state\":1}".utf8)))
+    await driver.emit(.fetchCompleted)
+    let batch = try await fetch.value
+    #expect(batch.records.map(\.id) == [knownEnvelope.id])
+    #expect(batch.deletedRecordIDs.isEmpty)
+    #expect(await skippedStatuses.value == [
+        "Skipped unsupported CloudKit record type: FutureCatalogFamily",
+        "Skipped CloudKit record with unsupported reference family: future-family:mixed-reference",
+        "Skipped unsupported CloudKit record type deletion: FutureCatalogFamily",
+    ])
 }
 
 @Test("transport send returns partial acknowledgement and server conflict envelope")
@@ -1060,6 +1154,26 @@ private func boundedStatusCount(_ stream: AsyncStream<SyncStatus>, minimum: Int)
             return 0
         }
         let result = await group.next() ?? 0
+        group.cancelAll()
+        return result
+    }
+}
+
+private func skippedStatusMessages(_ stream: AsyncStream<SyncStatus>, minimum: Int) async -> [String] {
+    await withTaskGroup(of: [String].self) { group in
+        group.addTask {
+            var iterator = stream.makeAsyncIterator()
+            var messages: [String] = []
+            while messages.count < minimum, let status = await iterator.next() {
+                if status.message.hasPrefix("Skipped ") { messages.append(status.message) }
+            }
+            return messages
+        }
+        group.addTask {
+            try? await Task.sleep(for: .milliseconds(100))
+            return []
+        }
+        let result = await group.next() ?? []
         group.cancelAll()
         return result
     }

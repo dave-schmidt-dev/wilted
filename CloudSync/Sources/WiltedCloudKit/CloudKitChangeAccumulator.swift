@@ -2,6 +2,12 @@ import CloudKit
 import Foundation
 import WiltedSync
 
+/// The result of attempting to add one CloudKit catalog change to a fetch batch.
+public enum CloudKitFetchChangeDisposition: Equatable, Sendable {
+    case appended
+    case skipped(String)
+}
+
 /// Collects fetched modifications/deletions and publishes only complete generations.
 public actor CloudKitChangeAccumulator {
     private let mapper: CloudKitRecordMapper
@@ -24,11 +30,20 @@ public actor CloudKitChangeAccumulator {
         remoteChangeSequence = 0; stateSequence = 0
     }
 
-    public func append(modified record: CKRecord) throws {
+    public func append(modified record: CKRecord) throws -> CloudKitFetchChangeDisposition {
         // Chunk records are immutable transport rows. They are fetched by
         // explicit selection, never as part of metadata/catalog discovery.
-        guard record.recordType != WiltedRecordType.revisionChunk.rawValue else { return }
-        let decoded = try mapper.decodeMetadataOnly(record)
+        guard record.recordType != WiltedRecordType.revisionChunk.rawValue else { return .appended }
+        let decoded: CloudKitDecodedRecord
+        do {
+            decoded = try mapper.decodeMetadataOnly(record)
+        } catch let error as CloudKitSyncError {
+            guard case let .unsupportedRecordType(recordType) = error else { throw error }
+            return .skipped("Skipped unsupported CloudKit record type: \(recordType)")
+        } catch let error as CloudKitRecordMapperError {
+            guard case let .unsupportedReferenceRecordFamily(recordName) = error else { throw error }
+            return .skipped("Skipped CloudKit record with unsupported reference family: \(recordName)")
+        }
         guard !deletedRecordIDs.contains(decoded.envelope.id) else { throw CloudKitSyncError.invalidRecordIdentity }
         if let previous = decodedRecords.first(where: { $0.envelope.id == decoded.envelope.id }) {
             for url in previous.stagedAssets.values {
@@ -42,19 +57,25 @@ public actor CloudKitChangeAccumulator {
         stagedAssetURLs.append(contentsOf: decoded.stagedAssets.values)
         decodedRecords.removeAll { $0.envelope.id == decoded.envelope.id }
         decodedRecords.append(decoded)
+        return .appended
     }
 
-    public func append(deleted id: CKRecord.ID, recordType: String) throws {
-        guard recordType != WiltedRecordType.revisionChunk.rawValue else { return }
+    public func append(deleted id: CKRecord.ID, recordType: String) throws -> CloudKitFetchChangeDisposition {
+        guard recordType != WiltedRecordType.revisionChunk.rawValue else { return .appended }
         guard id.zoneID.zoneName == mapper.zoneID.zoneName,
-              id.zoneID.ownerName == mapper.zoneID.ownerName,
-              let type = WiltedRecordType(rawValue: recordType) else { throw CloudKitSyncError.invalidRecordIdentity }
+              id.zoneID.ownerName == mapper.zoneID.ownerName else {
+            throw CloudKitSyncError.invalidZone(id.zoneID.zoneName)
+        }
+        guard let type = WiltedRecordType(rawValue: recordType) else {
+            return .skipped("Skipped unsupported CloudKit record type deletion: \(recordType)")
+        }
         let neutral: WiltedRecordID
         do { neutral = try WiltedRecordID(recordType: type, recordName: id.recordName, zoneName: mapper.zoneID.zoneName) }
         catch { throw CloudKitSyncError.invalidRecordIdentity }
         guard !records.contains(where: { $0.id == neutral }) else { throw CloudKitSyncError.invalidRecordIdentity }
         if !deletedRecordIDs.contains(neutral) { deletedRecordIDs.append(neutral) }
         remoteChangeSequence += 1
+        return .appended
     }
 
     public func updateState(_ serialization: CKSyncEngine.State.Serialization) throws {

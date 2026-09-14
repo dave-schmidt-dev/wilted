@@ -256,8 +256,16 @@ public actor CloudKitSyncTransport: SyncTransport {
             emit(.init(phase: .fetching, message: "CloudKit fetch started"))
         case let .fetched(modifications, deletions):
             do {
-                for record in modifications { try await accumulator.append(modified: record) }
-                for deletion in deletions { try await accumulator.append(deleted: deletion.recordID, recordType: deletion.recordType) }
+                for record in modifications {
+                    if case let .skipped(message) = try await accumulator.append(modified: record) {
+                        emit(.init(phase: .staging, message: message))
+                    }
+                }
+                for deletion in deletions {
+                    if case let .skipped(message) = try await accumulator.append(deleted: deletion.recordID, recordType: deletion.recordType) {
+                        emit(.init(phase: .staging, message: message))
+                    }
+                }
                 emit(.init(phase: .staging, message: "Staged CloudKit record changes"))
             } catch { await failFetch(error) }
         case .didFetchRecordZoneChanges:

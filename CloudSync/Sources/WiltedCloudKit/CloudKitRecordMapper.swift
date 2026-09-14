@@ -97,6 +97,13 @@ public struct CloudKitDecodedChunk: Sendable {
     }
 }
 
+/// A reference to a record family this client has not learned how to decode.
+/// This is deliberately distinct from a malformed identity for a known family:
+/// catalog fetches may skip the former, but must fail closed for the latter.
+public enum CloudKitRecordMapperError: Error, Equatable, Sendable {
+    case unsupportedReferenceRecordFamily(String)
+}
+
 /// Strictly translates CloudKit records to and from the CloudKit-neutral contract.
 public final class CloudKitRecordMapper: @unchecked Sendable {
     public let zoneID: CKRecordZone.ID
@@ -407,6 +414,6 @@ public final class CloudKitRecordMapper: @unchecked Sendable {
         if name.hasPrefix("revision:") { return .revision }
         if name.hasPrefix("transcript:") { return .transcript }
         if name.hasPrefix("playback:") { return .playbackState }
-        throw CloudKitSyncError.invalidRecordIdentity
+        throw CloudKitRecordMapperError.unsupportedReferenceRecordFamily(name)
     }
 }
