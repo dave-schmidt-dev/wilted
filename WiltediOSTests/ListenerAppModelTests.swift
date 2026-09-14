@@ -7,6 +7,17 @@ import WiltedSync
 
 @MainActor
 final class ListenerAppModelTests: XCTestCase {
+    func testDefaultConstructionKeepsXCTestLocalWithoutDisablingLiveCloudKit() {
+        XCTAssertEqual(WiltedListenerAppModel.defaultSessionMode(), .localOnly)
+        XCTAssertEqual(
+            WiltedListenerAppModel.defaultSessionMode(
+                environment: ["XCTestConfigurationFilePath": "/tmp/wilted-tests.xctestconfiguration"]
+            ),
+            .localOnly
+        )
+        XCTAssertEqual(WiltedListenerAppModel.defaultSessionMode(environment: [:]), .liveCloudKit)
+    }
+
     func testDebugModelDoesNotContactTransportAndReportsLocalFailure() async {
         let model = WiltedListenerAppModel()
         await model.refresh()
@@ -81,8 +92,8 @@ final class ListenerAppModelTests: XCTestCase {
     }
 
     func testRefreshRetriesAStaleStageWithoutDiscardingTheFetchedBatch() async throws {
-        let (record, concurrentChanges) = try listenerStaleStageFixture(changeCount: 1)
-        let batch = try SyncFetchBatch(generationID: "listener-stale-retry", records: [record], engineState: Data([4]))
+        let (records, concurrentChanges) = try listenerStaleStageFixture(changeCount: 1)
+        let batch = try SyncFetchBatch(generationID: "listener-stale-retry", records: records, engineState: Data([4]))
         let repository = StaleStageListenerRepository(concurrentChanges: concurrentChanges)
         let transport = SingleBatchSyncTransport(batch: batch)
         let model = WiltedListenerAppModel(repository: repository, transport: transport)
@@ -97,15 +108,15 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertEqual(stageCalls, 2)
         XCTAssertEqual(commitCalls, 2)
         XCTAssertEqual(fetchCalls, 1)
-        XCTAssertEqual(state.records, [record])
+        XCTAssertEqual(state.records, records)
         XCTAssertEqual(state.pendingChanges, concurrentChanges)
     }
 
     func testRefreshFailsAfterBoundedStaleStageRetries() async throws {
-        let (record, concurrentChanges) = try listenerStaleStageFixture(
+        let (records, concurrentChanges) = try listenerStaleStageFixture(
             changeCount: SyncCoordinator.maximumStaleStageAttempts
         )
-        let batch = try SyncFetchBatch(generationID: "listener-stale-exhaustion", records: [record], engineState: Data([5]))
+        let batch = try SyncFetchBatch(generationID: "listener-stale-exhaustion", records: records, engineState: Data([5]))
         let repository = StaleStageListenerRepository(concurrentChanges: concurrentChanges)
         let transport = SingleBatchSyncTransport(batch: batch)
         let model = WiltedListenerAppModel(repository: repository, transport: transport)
@@ -791,13 +802,20 @@ private actor SessionCancelProbe {
     func record() { wasCalled = true }
 }
 
-private func listenerStaleStageFixture(changeCount: Int) throws -> (WiltedRecordEnvelope, [SyncPendingChange]) {
+private func listenerStaleStageFixture(changeCount: Int) throws -> ([WiltedRecordEnvelope], [SyncPendingChange]) {
     let url = URL(string: "https://example.test/listener-stale-stage")!
     let itemID = try ItemID.derive(from: url)
     let revisionID = try RevisionID(rawValue: "listener-stale-stage")
+    let hash = "sha256:" + String(repeating: "a", count: 64)
+    let asset = try WiltedAsset(assetID: "listener-stale-stage", contentHash: hash)
     let article = try Article(itemID: itemID, canonicalURL: url, title: "Stale stage",
                               source: "Test", createdAt: Timestamp(Date()))
-    let record = try WiltedRecordCodec().encode(article: article, currentRevisionID: revisionID)
+    let revision = try AudioRevision(itemID: itemID, revisionID: revisionID,
+                                     durationSeconds: 30, byteCount: 1, contentHash: hash,
+                                     mediaType: "audio/m4a", createdAt: Timestamp(Date()), schemaVersion: 1)
+    let codec = WiltedRecordCodec()
+    let record = try codec.encode(article: article, currentRevisionID: revisionID)
+    let records = [record, try codec.encode(revision: revision, audioAsset: asset)]
     let changes = try (1...changeCount).map { sequence in
         let changedRecord = try WiltedRecordEnvelope(
             id: record.id,
@@ -807,7 +825,7 @@ private func listenerStaleStageFixture(changeCount: Int) throws -> (WiltedRecord
         )
         return try SyncPendingChange(operation: .update, recordID: record.id, record: changedRecord)
     }
-    return (record, changes)
+    return (records, changes)
 }
 
 private actor StaticSyncRepository: SyncRepository {

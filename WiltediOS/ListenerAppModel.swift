@@ -130,6 +130,11 @@ public protocol ListenerSyncSession: Sendable {
 
 public typealias ListenerSyncSessionFactory = @Sendable (Data?) async throws -> any ListenerSyncSession
 
+enum ListenerDefaultSessionMode: Equatable {
+    case localOnly
+    case liveCloudKit
+}
+
 /// Main-actor presentation model for the iPhone listener.
 ///
 /// The default initializer has no transport and therefore cannot construct or
@@ -212,28 +217,39 @@ public final class WiltedListenerAppModel: ObservableObject {
             let cache = try ListenerAudioCache(rootURL: root.appendingPathComponent("Audio", isDirectory: true))
             let playback = ListenerPlaybackController(cache: cache, engine: AVFoundationAudioEngine())
 #if WILTED_CLOUDKIT_LIVE
-            return WiltedListenerAppModel(
-                repository: repository,
-                sessionFactory: { stateData in
-                    try await Self.makeLiveSession(root: root, stateData: stateData, repository: repository)
-                },
-                cache: cache,
-                playback: playback,
-                metadataLoader: { await repository.loadMetadata() },
-                metadataSaver: { metadata in try await repository.saveMetadata(metadata) }
-            )
-#else
-            return WiltedListenerAppModel(
-                repository: repository,
-                cache: cache,
-                playback: playback,
-                metadataLoader: { await repository.loadMetadata() },
-                metadataSaver: { metadata in try await repository.saveMetadata(metadata) }
-            )
+            if defaultSessionMode() == .liveCloudKit {
+                return WiltedListenerAppModel(
+                    repository: repository,
+                    sessionFactory: { stateData in
+                        try await Self.makeLiveSession(root: root, stateData: stateData, repository: repository)
+                    },
+                    cache: cache,
+                    playback: playback,
+                    metadataLoader: { await repository.loadMetadata() },
+                    metadataSaver: { metadata in try await repository.saveMetadata(metadata) }
+                )
+            }
 #endif
+            return WiltedListenerAppModel(
+                repository: repository,
+                cache: cache,
+                playback: playback,
+                metadataLoader: { await repository.loadMetadata() },
+                metadataSaver: { metadata in try await repository.saveMetadata(metadata) }
+            )
         } catch {
             return WiltedListenerAppModel(unavailableMessage: "Local larder unavailable: \(error.localizedDescription)")
         }
+    }
+
+    static func defaultSessionMode(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> ListenerDefaultSessionMode {
+#if WILTED_CLOUDKIT_LIVE
+        environment["XCTestConfigurationFilePath"] == nil ? .liveCloudKit : .localOnly
+#else
+        .localOnly
+#endif
     }
 
     /// Deterministic shipping-view data for iOS pixel tests. This intentionally
