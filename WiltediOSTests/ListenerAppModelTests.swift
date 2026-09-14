@@ -254,6 +254,41 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertTrue(retryable)
     }
 
+    func testPlaybackSendForwardsTheExactEligibleChangesToAcknowledgement() async throws {
+        let url = URL(string: "https://example.test/forwarded-playback")!
+        let itemID = try ItemID.derive(from: url)
+        let revisionID = try RevisionID(rawValue: "revision-forwarded-playback")
+        let asset = try WiltedAsset(assetID: "audio-forwarded-playback",
+                                    contentHash: "sha256:" + String(repeating: "c", count: 64))
+        let codec = WiltedRecordCodec()
+        let article = try Article(itemID: itemID, canonicalURL: url, title: "Forwarded playback",
+                                  source: "Test", createdAt: Timestamp(Date()))
+        let revision = try AudioRevision(itemID: itemID, revisionID: revisionID, durationSeconds: 30,
+                                         byteCount: 1, contentHash: asset.contentHash,
+                                         mediaType: "audio/mpeg", createdAt: Timestamp(Date()), schemaVersion: 1)
+        let playback = try PlaybackState(itemID: itemID, revisionID: revisionID, sessionID: "forwarded",
+                                         sequence: 1, positionSeconds: 5, durationSeconds: 30,
+                                         completed: false, intent: .progress, deviceID: "iphone",
+                                         updatedAt: Timestamp(Date()))
+        let itemRecord = try codec.encode(article: article, currentRevisionID: revisionID)
+        let revisionRecord = try codec.encode(revision: revision, audioAsset: asset)
+        let playbackRecord = try codec.encode(playback: playback)
+        let change = try SyncPendingChange(operation: .update, recordID: playbackRecord.id, record: playbackRecord)
+        let repository = StaticSyncRepository(state: SyncRepositoryState(
+            records: [itemRecord, revisionRecord, playbackRecord], engineState: Data([1]), pendingChanges: [change]
+        ))
+        let transport = RecordingSyncTransport()
+        let model = WiltedListenerAppModel(repository: repository, transport: transport)
+
+        await model.refresh()
+        await model.sendPending()
+
+        let saved = await transport.savedChanges()
+        let acknowledged = await repository.acknowledgedBatches()
+        XCTAssertEqual(saved, [[change]])
+        XCTAssertEqual(acknowledged, [[change]])
+    }
+
     func testAFirstEverPlayStartsPlaybackInsteadOfFailingTheSequenceFloor() async throws {
         let harness = try await PlaybackHarness.make()
 
@@ -631,6 +666,7 @@ private actor SessionCancelProbe {
 private actor StaticSyncRepository: SyncRepository {
     let statuses: AsyncStream<SyncStatus>
     private var snapshot: SyncRepositoryState
+    private var acknowledgements: [[SyncPendingChange]] = []
 
     init(state: SyncRepositoryState) {
         self.snapshot = state
@@ -656,7 +692,8 @@ private actor StaticSyncRepository: SyncRepository {
     }
 
     func enqueue(_ change: SyncPendingChange) async throws {}
-    func acknowledge(_ result: SyncSendResult) async throws {}
+    func acknowledge(_ result: SyncSendResult, sent: [SyncPendingChange]) async throws { acknowledgements.append(sent) }
+    func acknowledgedBatches() -> [[SyncPendingChange]] { acknowledgements }
 }
 
 private actor RecordingSyncTransport: SyncTransport {

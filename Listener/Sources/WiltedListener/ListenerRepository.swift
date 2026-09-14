@@ -137,7 +137,15 @@ public actor ListenerRepository: SyncRepository {
                 records = retained
             }
         }
-        for record in catalogRecords { records[record.id] = record }
+        for record in catalogRecords {
+            let preservesLocalCatalogRecord = switch record.id.recordType {
+            case .item, .revision, .transcript:
+                pendingIDs.contains(record.id) || current.protectedRecordIDs.contains(record.id)
+            case .playbackState, .revisionChunk:
+                false
+            }
+            if !preservesLocalCatalogRecord { records[record.id] = record }
+        }
         let next = SyncRepositoryState(records: Array(records.values).sorted { $0.id.description < $1.id.description },
                                        engineState: effectiveEngineState, pendingChanges: pending,
                                        tombstones: tombstones, remoteAcknowledgedRecordIDs: current.remoteAcknowledgedRecordIDs.union(acknowledgedDeletes).union(fetchedIDs),
@@ -211,22 +219,28 @@ public actor ListenerRepository: SyncRepository {
         emit(.init(phase: .failed, message: "Listener work quarantined after account change"))
     }
 
-    public func acknowledge(_ result: SyncSendResult) async throws {
+    public func acknowledge(_ result: SyncSendResult, sent: [SyncPendingChange]) async throws {
         emit(.init(phase: .committing, message: "Applying listener acknowledgement"))
-        let acknowledged = Set(result.acknowledgedRecordIDs)
-        let failures = Set(result.failures.map(\.recordID))
-        let terminalFailures = Set(result.failures.filter { $0.disposition == .terminal }.map(\.recordID))
+        let sentByID = Dictionary(sent.map { ($0.recordID, $0) }, uniquingKeysWith: { first, _ in first })
+        guard sentByID.count == sent.count else {
+            throw WiltedSyncError.invalidValue(field: "acknowledgement sent changes")
+        }
+        let outcomeIDs = Set(result.acknowledgedRecordIDs).union(result.failures.map(\.recordID))
+        guard outcomeIDs.isSubset(of: Set(sentByID.keys)) else {
+            throw WiltedSyncError.invalidValue(field: "acknowledgement sent IDs")
+        }
+        let currentByID = Dictionary(current.pendingChanges.map { ($0.recordID, $0) }, uniquingKeysWith: { first, _ in first })
+        let applicableIDs = Set(sentByID.compactMap { id, change in currentByID[id] == change ? id : nil })
+        let acknowledged = Set(result.acknowledgedRecordIDs).intersection(applicableIDs)
+        let failures = result.failures.filter { applicableIDs.contains($0.recordID) }
+        let terminalFailures = Set(failures.filter { $0.disposition == .terminal }.map(\.recordID))
         let effectiveEngineState = result.engineState ?? current.engineState
         guard acknowledged.isEmpty && failures.isEmpty || effectiveEngineState != nil else {
             throw WiltedSyncError.missingEngineState
         }
-        let pendingIDs = Set(current.pendingChanges.map(\.recordID))
-        guard acknowledged.isSubset(of: pendingIDs), failures.isSubset(of: pendingIDs) else {
-            throw WiltedSyncError.invalidValue(field: "acknowledgement IDs")
-        }
         let envelopesByID = Dictionary(uniqueKeysWithValues: result.serverEnvelopes.map { ($0.id, $0) })
-        for id in acknowledged {
-            guard let change = current.pendingChanges.first(where: { $0.recordID == id }) else { continue }
+        for id in result.acknowledgedRecordIDs {
+            guard let change = sentByID[id] else { continue }
             if change.operation != .delete {
                 guard let envelope = envelopesByID[id], envelope.sidecar?.encodedSystemFields != nil,
                       envelope.sidecar?.changeTag != nil else {
@@ -236,11 +250,11 @@ public actor ListenerRepository: SyncRepository {
         }
         let pending = current.pendingChanges.filter { !acknowledged.contains($0.recordID) && !terminalFailures.contains($0.recordID) }
         var records = Dictionary(uniqueKeysWithValues: current.records.map { ($0.id, $0) })
-        for envelope in result.serverEnvelopes { records[envelope.id] = envelope }
+        for envelope in result.serverEnvelopes where acknowledged.contains(envelope.id) { records[envelope.id] = envelope }
         var conflicts = current.conflictedRecordIDs
         var conflictRecords = current.conflictServerRecords
         conflicts.formUnion(terminalFailures)
-        for failure in result.failures {
+        for failure in failures {
             if failure.disposition == .conflict {
                 conflicts.insert(failure.recordID)
                 if let server = failure.serverRecord { conflictRecords[failure.recordID] = server }
@@ -256,7 +270,7 @@ public actor ListenerRepository: SyncRepository {
                                        accountOwnerToken: current.accountOwnerToken)
         try persist(next)
         current = next
-        emit(.init(phase: result.failures.isEmpty ? .completed : .failed, message: "Listener acknowledgement applied"))
+        emit(.init(phase: failures.isEmpty ? .completed : .failed, message: "Listener acknowledgement applied"))
     }
 
     public func saveMetadata(_ metadata: ListenerMetadata?) throws {

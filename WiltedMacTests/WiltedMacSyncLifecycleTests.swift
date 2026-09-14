@@ -667,9 +667,10 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
         try await repository.enqueue(try SyncPendingChange(operation: .create, recordID: record.id, record: record))
         // A server rejection records the server version; that conflict is not an account
         // review gate and must not make a relaunch look quarantined.
+        let sent = await repository.state().pendingChanges
         try await repository.acknowledge(try SyncSendResult(
             engineState: Data([7]),
-            failures: [SyncSendFailure(recordID: record.id, disposition: .conflict, serverRecord: record)]))
+            failures: [SyncSendFailure(recordID: record.id, disposition: .conflict, serverRecord: record)]), sent: sent)
 
         let batch = try SyncFetchBatch(generationID: "remote-conflict", records: [], engineState: Data([3]))
         let relaunched = lifecycle(try LocalLibraryStore(url: url), transport: LifecycleFakeTransport(batch: batch))
@@ -693,9 +694,10 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
         let repository = try await LocalLibrarySyncRepository(store: store)
         try await repository.enqueue(try SyncPendingChange(operation: .create, recordID: heldRecord.id, record: heldRecord))
         try await repository.enqueue(try SyncPendingChange(operation: .create, recordID: cleanRecord.id, record: cleanRecord))
+        let sent = await repository.state().pendingChanges
         try await repository.acknowledge(try SyncSendResult(
             engineState: Data([7]),
-            failures: [SyncSendFailure(recordID: heldRecord.id, disposition: .conflict, serverRecord: heldRecord)]))
+            failures: [SyncSendFailure(recordID: heldRecord.id, disposition: .conflict, serverRecord: heldRecord)]), sent: sent)
 
         let batch = try SyncFetchBatch(generationID: "partly-blocked", records: [], engineState: Data([3]))
         let relaunched = lifecycle(try LocalLibraryStore(url: url), transport: LifecycleFakeTransport(batch: batch))

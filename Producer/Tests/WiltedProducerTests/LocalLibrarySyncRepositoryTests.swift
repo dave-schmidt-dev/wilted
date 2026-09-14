@@ -310,7 +310,7 @@ final class LocalLibrarySyncRepositoryTests: XCTestCase {
             acknowledgedRecordIDs: [firstRecord.id],
             serverEnvelopes: [firstRecord],
             failures: [SyncSendFailure(recordID: secondRecord.id, disposition: .conflict, serverRecord: secondRecord)])
-        try await repository.acknowledge(outcome)
+        try await repository.acknowledge(outcome, sent: [update, conflict])
         let state = await repository.state()
         XCTAssertEqual(state.engineState, Data([4]))
         XCTAssertFalse(state.pendingChanges.contains(where: { $0.recordID == firstRecord.id }))
@@ -336,12 +336,41 @@ final class LocalLibrarySyncRepositoryTests: XCTestCase {
         let tombstone = SyncTombstone(itemID: item.itemID, generationID: "delete-send", requestedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_010)))
         let pending = try SyncPendingChange(operation: .delete, recordID: itemRecord.id, tombstone: tombstone)
         try await repository.enqueue(pending)
-        try await repository.acknowledge(try SyncSendResult(engineState: Data([2]), acknowledgedRecordIDs: [itemRecord.id]))
+        try await repository.acknowledge(try SyncSendResult(engineState: Data([2]), acknowledgedRecordIDs: [itemRecord.id]), sent: [pending])
         let state = await repository.state()
         XCTAssertTrue(state.pendingChanges.isEmpty)
         XCTAssertEqual(state.tombstones.first?.remoteAcknowledged, true)
         let savedArticle = try await store.article(for: item.itemID)
         XCTAssertNil(savedArticle)
+    }
+
+    func testAcknowledgementRetainsANewerMutationForTheSameRecordID() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let original = try article("acknowledgement-race")
+        let newer = try Article(itemID: original.itemID, canonicalURL: original.canonicalURL,
+                                title: "Newer local title", source: original.source,
+                                author: original.author, publishedTime: original.publishedTime,
+                                createdAt: original.createdAt)
+        let sentRecord = try record(for: original)
+        let newerRecord = try record(for: newer)
+        let sent = try SyncPendingChange(operation: .update, recordID: sentRecord.id, record: sentRecord)
+        let replacement = try SyncPendingChange(operation: .update, recordID: newerRecord.id, record: newerRecord)
+        let store = try LocalLibraryStore(url: url)
+        let repository = try await LocalLibrarySyncRepository(store: store)
+        try await repository.enqueue(sent)
+        try await repository.enqueue(replacement)
+
+        try await repository.acknowledge(
+            try SyncSendResult(engineState: Data([4]), acknowledgedRecordIDs: [sentRecord.id], serverEnvelopes: [sentRecord]),
+            sent: [sent]
+        )
+
+        let state = await repository.state()
+        XCTAssertEqual(state.pendingChanges, [replacement])
+        XCTAssertTrue(state.protectedRecordIDs.contains(newerRecord.id))
+        XCTAssertEqual(state.records.first(where: { $0.id == newerRecord.id }), newerRecord)
+        let persisted = try await store.article(for: original.itemID)
+        XCTAssertEqual(persisted?.title, "Newer local title")
     }
 
     func testRetryableAndTerminalFailuresRemainPendingWithDistinctStatuses() async throws {
@@ -351,13 +380,15 @@ final class LocalLibrarySyncRepositoryTests: XCTestCase {
         let store = try LocalLibraryStore(url: url)
         let repository = try await LocalLibrarySyncRepository(store: store)
         try await repository.commit(try await repository.stage(try SyncFetchBatch(generationID: "failure-fetch", records: [retryRecord, terminalRecord], engineState: Data([1]))))
-        try await repository.enqueue(try SyncPendingChange(operation: .update, recordID: retryRecord.id, record: retryRecord))
-        try await repository.enqueue(try SyncPendingChange(operation: .update, recordID: terminalRecord.id, record: terminalRecord))
+        let retryChange = try SyncPendingChange(operation: .update, recordID: retryRecord.id, record: retryRecord)
+        let terminalChange = try SyncPendingChange(operation: .update, recordID: terminalRecord.id, record: terminalRecord)
+        try await repository.enqueue(retryChange)
+        try await repository.enqueue(terminalChange)
         let result = try SyncSendResult(engineState: Data([2]), failures: [
             SyncSendFailure(recordID: retryRecord.id, disposition: .retryable),
             SyncSendFailure(recordID: terminalRecord.id, disposition: .terminal)
         ])
-        try await repository.acknowledge(result)
+        try await repository.acknowledge(result, sent: [retryChange, terminalChange])
         let state = await repository.state()
         XCTAssertEqual(state.pendingChanges.count, 2)
         let retryStatus = try await store.syncStatus(for: retry.itemID)
@@ -373,14 +404,15 @@ final class LocalLibrarySyncRepositoryTests: XCTestCase {
         let repository = try await LocalLibrarySyncRepository(store: try LocalLibraryStore(url: url))
         try await repository.commit(try await repository.stage(try SyncFetchBatch(generationID: "ack-validation-fetch", records: [itemRecord], engineState: Data([1]))))
         do {
-            try await repository.acknowledge(try SyncSendResult(engineState: Data([2]), acknowledgedRecordIDs: [unknown.id], serverEnvelopes: [unknown]))
+            try await repository.acknowledge(try SyncSendResult(engineState: Data([2]), acknowledgedRecordIDs: [unknown.id], serverEnvelopes: [unknown]), sent: [])
             XCTFail("Expected unknown acknowledgement rejection")
         } catch let error as WiltedSyncError {
-            XCTAssertEqual(error, .invalidValue(field: "send result pendingRecordID"))
+            XCTAssertEqual(error, .invalidValue(field: "send result sentRecordID"))
         }
-        try await repository.enqueue(try SyncPendingChange(operation: .update, recordID: itemRecord.id, record: itemRecord))
+        let pending = try SyncPendingChange(operation: .update, recordID: itemRecord.id, record: itemRecord)
+        try await repository.enqueue(pending)
         do {
-            try await repository.acknowledge(try SyncSendResult(engineState: Data([3]), acknowledgedRecordIDs: [itemRecord.id]))
+            try await repository.acknowledge(try SyncSendResult(engineState: Data([3]), acknowledgedRecordIDs: [itemRecord.id]), sent: [pending])
             XCTFail("Expected missing server envelope rejection")
         } catch let error as WiltedSyncError {
             XCTAssertEqual(error, .invalidValue(field: "send result serverEnvelope"))
@@ -457,7 +489,7 @@ final class LocalLibrarySyncRepositoryTests: XCTestCase {
         let stateAfterFetch = await repository.state()
         XCTAssertEqual(stateAfterFetch.engineState, priorState)
 
-        try await repository.acknowledge(try SyncSendResult())
+        try await repository.acknowledge(try SyncSendResult(), sent: [])
         let stateAfterSend = await repository.state()
         XCTAssertEqual(stateAfterSend.engineState, priorState)
     }
@@ -569,7 +601,7 @@ final class LocalLibrarySyncRepositoryTests: XCTestCase {
         let serverRecord = try record(for: item)
         try await repository.acknowledge(try SyncSendResult(
             engineState: Data([9]),
-            failures: [SyncSendFailure(recordID: itemRecord.id, disposition: .conflict, serverRecord: serverRecord)]))
+            failures: [SyncSendFailure(recordID: itemRecord.id, disposition: .conflict, serverRecord: serverRecord)]), sent: [pending])
         try await repository.quarantineAfterAccountChange()
 
         try await repository.resumeAfterAccountReview()
@@ -656,12 +688,13 @@ final class LocalLibrarySyncRepositoryTests: XCTestCase {
         let store = try LocalLibraryStore(url: url)
         let repository = try await LocalLibrarySyncRepository(store: store)
         try await repository.commit(try await repository.stage(try SyncFetchBatch(generationID: "ack-failure-fetch", records: [itemRecord], engineState: Data([1]))))
-        try await repository.enqueue(try SyncPendingChange(operation: .update, recordID: itemRecord.id, record: itemRecord))
+        let pending = try SyncPendingChange(operation: .update, recordID: itemRecord.id, record: itemRecord)
+        try await repository.enqueue(pending)
         let before = await repository.state()
         let failing = try await LocalLibrarySyncRepository(store: store, beforeCommit: { throw WiltedSyncError.injectedFailure("ack") })
         do {
             let result = try SyncSendResult(engineState: Data([9]), acknowledgedRecordIDs: [itemRecord.id], serverEnvelopes: [itemRecord])
-            try await failing.acknowledge(result)
+            try await failing.acknowledge(result, sent: [pending])
             XCTFail("Expected injected acknowledgement failure")
         } catch let error as WiltedSyncError {
             XCTAssertEqual(error, .injectedFailure("ack"))

@@ -429,7 +429,7 @@ public final class WiltedListenerAppModel: ObservableObject {
             }
             let result = try await transport.save(changes: sendableChanges, role: .iphone)
             guard isCurrent(operation) else { return }
-            try await repository.acknowledge(result)
+            try await repository.acknowledge(result, sent: sendableChanges)
             guard isCurrent(operation) else { return }
             rebuild(from: await repository.state())
             guard isCurrent(operation) else { return }

@@ -241,27 +241,35 @@ public actor LocalLibrarySyncRepository: SyncRepository {
 
     /// Applies a partial send outcome atomically, retaining retryable work and
     /// recording conflict server versions for the next reconciliation pass.
-    public func acknowledge(_ result: SyncSendResult) async throws {
+    public func acknowledge(_ result: SyncSendResult, sent: [SyncPendingChange]) async throws {
         emit(.init(phase: .committing, message: "Applying send acknowledgement"))
         do {
-            let acknowledged = Set(result.acknowledgedRecordIDs)
-            let failed = result.failures.map(\.recordID)
-            guard Set(failed).count == failed.count, acknowledged.isDisjoint(with: failed) else {
+            let sentByID = Dictionary(sent.map { ($0.recordID, $0) }, uniquingKeysWith: { first, _ in first })
+            guard sentByID.count == sent.count else {
+                throw WiltedSyncError.invalidValue(field: "send result sentChanges")
+            }
+            let reportedAcknowledged = Set(result.acknowledgedRecordIDs)
+            let reportedFailed = result.failures.map(\.recordID)
+            guard Set(reportedFailed).count == reportedFailed.count, reportedAcknowledged.isDisjoint(with: reportedFailed) else {
                 throw WiltedSyncError.invalidValue(field: "send result identities")
             }
 
-            let outcomeIDs = acknowledged.union(failed)
+            let outcomeIDs = reportedAcknowledged.union(reportedFailed)
+            guard outcomeIDs.isSubset(of: Set(sentByID.keys)) else {
+                throw WiltedSyncError.invalidValue(field: "send result sentRecordID")
+            }
             var pendingByID: [WiltedRecordID: SyncPendingChange] = [:]
             for pending in storedState.pendingChanges { pendingByID[pending.recordID] = pending }
-            guard outcomeIDs.allSatisfy({ pendingByID[$0] != nil }) else {
-                throw WiltedSyncError.invalidValue(field: "send result pendingRecordID")
-            }
             let serverIDs = Set(result.serverEnvelopes.map(\.id))
-            let expectedSaveIDs = Set(acknowledged.filter { pendingByID[$0]?.operation != .delete })
+            let expectedSaveIDs = Set(reportedAcknowledged.filter { sentByID[$0]?.operation != .delete })
             guard serverIDs == expectedSaveIDs,
-                  acknowledged.allSatisfy({ pendingByID[$0]?.operation == .delete ? !serverIDs.contains($0) : serverIDs.contains($0) }) else {
+                  reportedAcknowledged.allSatisfy({ sentByID[$0]?.operation == .delete ? !serverIDs.contains($0) : serverIDs.contains($0) }) else {
                 throw WiltedSyncError.invalidValue(field: "send result serverEnvelope")
             }
+
+            let applicableIDs = Set(sentByID.compactMap { id, change in pendingByID[id] == change ? id : nil })
+            let acknowledged = reportedAcknowledged.intersection(applicableIDs)
+            let failures = result.failures.filter { applicableIDs.contains($0.recordID) }
 
             let prepared = try await prepare(result.serverEnvelopes.filter { acknowledged.contains($0.id) })
             var records = storedState.records
@@ -302,7 +310,7 @@ public actor LocalLibrarySyncRepository: SyncRepository {
             for envelope in result.serverEnvelopes where acknowledged.contains(envelope.id) {
                 records.append(envelope)
             }
-            for failure in result.failures {
+            for failure in failures {
                 protected.insert(failure.recordID)
                 if failure.disposition == .conflict {
                     conflicted.insert(failure.recordID)

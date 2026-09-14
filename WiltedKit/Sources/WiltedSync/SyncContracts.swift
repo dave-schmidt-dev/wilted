@@ -279,5 +279,10 @@ public protocol SyncRepository: SyncStatusReporting {
     func stage(_ batch: SyncFetchBatch) async throws -> StagedSyncBatch
     func commit(_ staged: StagedSyncBatch) async throws
     func enqueue(_ change: SyncPendingChange) async throws
-    func acknowledge(_ result: SyncSendResult) async throws
+    /// Applies a send outcome only to the exact mutations that were sent.
+    ///
+    /// A local update can replace a queued mutation while its earlier send is in flight.
+    /// The repository must retain that newer mutation rather than treating the older
+    /// result as an acknowledgement of the shared record ID.
+    func acknowledge(_ result: SyncSendResult, sent: [SyncPendingChange]) async throws
 }

@@ -97,6 +97,23 @@ func repositoryCommitAndRelaunch() async throws {
     #expect((await reopened.state()).engineState == Data([1]))
 }
 
+@Test("a clean listener install accepts its first remote catalog batch")
+func cleanInstallAcceptsFirstRemoteCatalogBatch() async throws {
+    let repository = try ListenerRepository(
+        directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    let remote = try itemEnvelope()
+
+    try await repository.commit(try await repository.stage(
+        try SyncFetchBatch(generationID: "first-install", records: [remote], engineState: Data([1]))
+    ))
+
+    let state = await repository.state()
+    #expect(state.records == [remote])
+    #expect(state.pendingChanges.isEmpty)
+    #expect(state.protectedRecordIDs.isEmpty)
+}
+
 @Test("revision chunk records remain transport-only")
 func revisionChunksDoNotEnterListenerState() async throws {
     let repository = try ListenerRepository(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
@@ -161,6 +178,44 @@ func fullSnapshotFamilyProtection() async throws {
     let snapshot = try SyncFetchBatch(generationID: "g2", records: [], engineState: Data([2]), kind: .fullSnapshot)
     try await repository.commit(try await repository.stage(snapshot))
     #expect(Set((await repository.state()).records.map(\.id)) == Set([item.id, playback.id]))
+}
+
+@Test("incoming catalog records do not overwrite protected local work, but playback remains remote-authoritative")
+func protectedCatalogRecordsRemainLocalWhilePlaybackUpdates() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let item = try itemEnvelope()
+    let transcript = try transcriptEnvelope()
+    let (itemID, revisionID) = try ids()
+    let revisionAsset = try asset(Data("revision".utf8))
+    let revision = try AudioRevision(itemID: itemID, revisionID: revisionID, durationSeconds: 30,
+                                     byteCount: 8, contentHash: revisionAsset.contentHash,
+                                     mediaType: "audio/mpeg", createdAt: Timestamp(Date()), schemaVersion: 1)
+    let codec = WiltedRecordCodec()
+    let revisionRecord = try codec.encode(revision: revision, audioAsset: revisionAsset)
+    let playback = try playbackEnvelope(try playbackState(position: 2))
+    let local = [item, revisionRecord, transcript, playback]
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try JSONEncoder().encode(SyncRepositoryState(records: local, engineState: Data([1]),
+                                                  protectedRecordIDs: Set(local.map(\.id)))).write(
+        to: directory.appendingPathComponent("listener-state.json")
+    )
+    let repository = try ListenerRepository(directoryURL: directory)
+    let remote = try local.map { envelope -> WiltedRecordEnvelope in
+        var fields = envelope.fields
+        fields["remoteMarker"] = .string("incoming")
+        return try WiltedRecordEnvelope(id: envelope.id, schemaVersion: envelope.schemaVersion,
+                                        fields: fields, sidecar: envelope.sidecar)
+    }
+
+    try await repository.commit(try await repository.stage(
+        try SyncFetchBatch(generationID: "protected-incoming", records: remote, engineState: Data([2]))
+    ))
+
+    let final = await repository.state()
+    for localRecord in local where localRecord.id.recordType != .playbackState {
+        #expect(final.records.first(where: { $0.id == localRecord.id })?.fields["remoteMarker"] == nil)
+    }
+    #expect(final.records.first(where: { $0.id == playback.id })?.fields["remoteMarker"] == .string("incoming"))
 }
 
 @Test("repository applies remote deletion and quarantines pending playback")
@@ -230,10 +285,10 @@ func acknowledgementValidation() async throws {
     #expect((await repository.state()).protectedRecordIDs.contains(change.recordID))
     let unknown = try WiltedRecordID.item(try ids().0)
     let invalid = try SyncSendResult(engineState: Data([1]), acknowledgedRecordIDs: [unknown])
-    do { try await repository.acknowledge(invalid); Issue.record("expected unknown acknowledgement rejection") }
-    catch let error as WiltedSyncError { #expect(error == .invalidValue(field: "acknowledgement IDs")) }
+    do { try await repository.acknowledge(invalid, sent: [change]); Issue.record("expected unknown acknowledgement rejection") }
+    catch let error as WiltedSyncError { #expect(error == .invalidValue(field: "acknowledgement sent IDs")) }
     let retry = try SyncSendResult(engineState: Data([2]), failures: [SyncSendFailure(recordID: id, disposition: .retryable)])
-    try await repository.acknowledge(retry)
+    try await repository.acknowledge(retry, sent: [change])
     #expect((await repository.state()).pendingChanges == [change])
 }
 
@@ -245,12 +300,13 @@ func savedAcknowledgementValidation() async throws {
     let local = try playbackEnvelope(state)
     try await repository.enqueue(try SyncPendingChange(operation: .update, recordID: id, record: local))
     let missing = try SyncSendResult(engineState: Data([1]), acknowledgedRecordIDs: [id])
-    do { try await repository.acknowledge(missing); Issue.record("expected server envelope requirement") }
+    let change = try SyncPendingChange(operation: .update, recordID: id, record: local)
+    do { try await repository.acknowledge(missing, sent: [change]); Issue.record("expected server envelope requirement") }
     catch let error as WiltedSyncError { #expect(error == .invalidValue(field: "acknowledgement server envelope")) }
     let server = try WiltedRecordEnvelope(id: local.id, schemaVersion: local.schemaVersion, fields: local.fields,
                                           sidecar: WiltedOpaqueSidecar(changeTag: "tag-1", encodedSystemFields: Data([9])))
     let valid = try SyncSendResult(engineState: Data([2]), acknowledgedRecordIDs: [id], serverEnvelopes: [server])
-    try await repository.acknowledge(valid)
+    try await repository.acknowledge(valid, sent: [change])
     let final = await repository.state()
     #expect(final.pendingChanges.isEmpty)
     #expect(!final.protectedRecordIDs.contains(id))

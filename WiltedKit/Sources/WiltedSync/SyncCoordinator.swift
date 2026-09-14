@@ -151,7 +151,7 @@ public actor SyncCoordinator {
         let operationGeneration = await transport.operationGeneration()
         let result = try await transport.save(changes: changes, role: role)
         try await ensureCurrent(operationGeneration)
-        try await repository.acknowledge(result)
+        try await repository.acknowledge(result, sent: changes)
         return result
     }
 

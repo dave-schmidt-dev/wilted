@@ -128,6 +128,7 @@ private actor EpochGuardRepository: SyncRepository {
     private let stageReleaseContinuation: AsyncStream<Void>.Continuation
     private(set) var commitCalls = 0
     private(set) var acknowledgeCalls = 0
+    private(set) var acknowledgedBatches: [[SyncPendingChange]] = []
 
     init(state: SyncRepositoryState = .init()) {
         storedState = state
@@ -163,7 +164,10 @@ private actor EpochGuardRepository: SyncRepository {
                                           pendingChanges: storedState.pendingChanges + [change])
     }
 
-    func acknowledge(_ result: SyncSendResult) async throws { acknowledgeCalls += 1 }
+    func acknowledge(_ result: SyncSendResult, sent: [SyncPendingChange]) async throws {
+        acknowledgeCalls += 1
+        acknowledgedBatches.append(sent)
+    }
 }
 
 @Test("codec round trips validated records and rejects identity mismatch")
@@ -400,6 +404,19 @@ func successfulCommitPreservesPending() async throws {
     #expect(state.records == [record])
     #expect(state.engineState == Data([9]))
     #expect(state.pendingChanges == [pending])
+}
+
+@Test("coordinator forwards the exact send batch to acknowledgement")
+func coordinatorForwardsExactSentChanges() async throws {
+    let (article, revisionID, _) = try fixtureArticle()
+    let record = try WiltedRecordCodec().encode(article: article, currentRevisionID: revisionID)
+    let change = try SyncPendingChange(operation: .create, recordID: record.id, record: record)
+    let repository = EpochGuardRepository(state: SyncRepositoryState(pendingChanges: [change]))
+    let transport = FakeSyncTransport(batch: try SyncFetchBatch(generationID: "no-op", records: []))
+
+    _ = await SyncCoordinator(transport: transport, repository: repository).sendPending(role: .mac)
+
+    #expect(await repository.acknowledgedBatches == [[change]])
 }
 
 @Test("coordinator excludes conflicted records from automatic sends")
@@ -642,7 +659,7 @@ func partialSendAcknowledgement() async throws {
     ])
     let initial = SyncRepositoryState(records: [item, other, playback, conflict], pendingChanges: [itemChange, deleteChange, retryChange, conflictChange], tombstones: [deleteTombstone, itemTombstone])
     let repository = FakeSyncRepository(state: initial)
-    try await repository.acknowledge(result)
+    try await repository.acknowledge(result, sent: [itemChange, deleteChange, retryChange, conflictChange])
     let state = await repository.state()
     #expect(state.pendingChanges.map(\.recordID) == [playbackID, conflictID])
     #expect(state.tombstones.count == 2)
@@ -656,7 +673,7 @@ func partialSendAcknowledgement() async throws {
     #expect(reopened == state)
     #expect(state.engineState == Data([8, 8]))
     do {
-        try await repository.acknowledge(try SyncSendResult(engineState: Data([9]), acknowledgedRecordIDs: [try .item(try ItemID(rawValue: "item-unknown"))]))
+        try await repository.acknowledge(try SyncSendResult(engineState: Data([9]), acknowledgedRecordIDs: [try .item(try ItemID(rawValue: "item-unknown"))]), sent: [itemChange, deleteChange, retryChange, conflictChange])
         Issue.record("expected unknown acknowledgement rejection")
     } catch let error as WiltedSyncError {
         #expect(error == .invalidValue(field: "acknowledgement"))

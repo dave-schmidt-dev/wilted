@@ -131,11 +131,15 @@ public actor FakeSyncRepository: SyncRepository {
                                           conflictServerRecords: storedState.conflictServerRecords, accountOwnerToken: storedState.accountOwnerToken)
     }
 
-    public func acknowledge(_ result: SyncSendResult) async throws {
-        let acknowledged = Set(result.acknowledgedRecordIDs)
+    public func acknowledge(_ result: SyncSendResult, sent: [SyncPendingChange]) async throws {
+        let sentByID = Dictionary(sent.map { ($0.recordID, $0) }, uniquingKeysWith: { first, _ in first })
+        guard sentByID.count == sent.count else { throw WiltedSyncError.invalidValue(field: "acknowledgement sent changes") }
+        let outcomeIDs = Set(result.acknowledgedRecordIDs).union(result.failures.map(\.recordID))
+        guard outcomeIDs.isSubset(of: Set(sentByID.keys)) else { throw WiltedSyncError.invalidValue(field: "acknowledgement") }
         let pendingByID = Dictionary(storedState.pendingChanges.map { ($0.recordID, $0) }, uniquingKeysWith: { first, _ in first })
-        let outcomeIDs = acknowledged.union(result.failures.map(\.recordID))
-        guard outcomeIDs.isSubset(of: pendingByID.keys) else { throw WiltedSyncError.invalidValue(field: "acknowledgement") }
+        let applicableIDs = Set(sentByID.compactMap { id, change in pendingByID[id] == change ? id : nil })
+        let acknowledged = Set(result.acknowledgedRecordIDs).intersection(applicableIDs)
+        let failures = result.failures.filter { applicableIDs.contains($0.recordID) }
         var records = storedState.records
         for envelope in result.serverEnvelopes where acknowledged.contains(envelope.id) {
             records.removeAll { $0.id == envelope.id }
@@ -154,7 +158,7 @@ public actor FakeSyncRepository: SyncRepository {
         }
         var conflicts = storedState.conflictedRecordIDs
         var conflictServers = storedState.conflictServerRecords
-        for failure in result.failures where failure.disposition == .conflict {
+        for failure in failures where failure.disposition == .conflict {
             conflicts.insert(failure.recordID)
             if let serverRecord = failure.serverRecord { conflictServers[failure.recordID] = serverRecord }
         }
