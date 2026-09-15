@@ -158,6 +158,7 @@ public final class WiltedListenerAppModel: ObservableObject {
     private var transport: (any SyncTransport)?
     private let cache: ListenerAudioCache?
     private let playback: ListenerPlaybackController?
+    private var installedRemoteCommands: (any ListenerRemoteCommands)?
     private var assetLoader: ListenerAssetLoader?
     private var audioChunkLoader: ListenerAudioChunkLoader?
     private let sessionFactory: ListenerSyncSessionFactory?
@@ -226,6 +227,7 @@ public final class WiltedListenerAppModel: ObservableObject {
         if let playback {
             observePlayback(playback.statuses)
             observePlaybackCheckpoints(playback.durableCheckpoints)
+            observeRemoteCommandResults(playback.remoteCommandResults)
         }
     }
 
@@ -767,8 +769,22 @@ public final class WiltedListenerAppModel: ObservableObject {
 #endif
 
     public func install(remoteCommands: any ListenerRemoteCommands) async {
+        installedRemoteCommands = remoteCommands
         await playback?.install(remoteCommands: remoteCommands)
     }
+
+    public func installSystemRemoteCommands() async {
+        if installedRemoteCommands is MediaPlayerRemoteCommands { return }
+        let remoteCommands = MediaPlayerRemoteCommands()
+        installedRemoteCommands = remoteCommands
+        await playback?.install(remoteCommands: remoteCommands)
+    }
+
+#if DEBUG
+    var installedSystemRemoteCommandsForTesting: MediaPlayerRemoteCommands? {
+        installedRemoteCommands as? MediaPlayerRemoteCommands
+    }
+#endif
 
     private func loadLocal(repository: any SyncRepository, fallback: String) async {
         let state = await repository.state()
@@ -1226,6 +1242,35 @@ public final class WiltedListenerAppModel: ObservableObject {
                 }
             }
         })
+    }
+
+    private func observeRemoteCommandResults(_ stream: AsyncStream<ListenerRemoteCommandResult>) {
+        statusTasks.append(Task { [weak self] in
+            for await result in stream {
+                guard let self else { return }
+                do {
+                    try await recordPlayback(result.state)
+                    guard let playback, await playback.current() == result.state else { continue }
+                    selectedItemID = result.state.itemID
+                    selectedPlayback = result.state
+                    status = result.isPlaying ? .playing : .paused
+                    reconcileBackgroundCheckpointing(isPlaying: result.isPlaying)
+                } catch {
+                    status = .failed("Remote playback persistence failed: \(error.localizedDescription)", retryable: true)
+                }
+            }
+        })
+    }
+
+    private func reconcileBackgroundCheckpointing(isPlaying: Bool) {
+        guard isBackgrounded else { return }
+        if isPlaying {
+            guard backgroundCheckpointTask == nil else { return }
+            scheduleBackgroundCheckpoints(generation: backgroundCheckpointGeneration)
+        } else {
+            backgroundCheckpointTask?.cancel()
+            backgroundCheckpointTask = nil
+        }
     }
 
     private func observeSession(_ stream: AsyncStream<ListenerAccountChange>) {

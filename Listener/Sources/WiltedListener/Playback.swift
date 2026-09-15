@@ -103,36 +103,97 @@ public struct MediaPlayerNowPlaying: ListenerNowPlaying {
     public func clear() { MPNowPlayingInfoCenter.default().nowPlayingInfo = nil }
 }
 
-public enum ListenerRemoteCommand: Sendable { case play, pause, rewind, restart }
+public enum ListenerRemoteCommand: Equatable, Sendable { case play, pause, rewind, restart }
+
+public struct ListenerRemoteCommandResult: Equatable, Sendable {
+    public let command: ListenerRemoteCommand
+    public let state: PlaybackState
+    public let isPlaying: Bool
+
+    public init(command: ListenerRemoteCommand, state: PlaybackState, isPlaying: Bool) {
+        self.command = command
+        self.state = state
+        self.isPlaying = isPlaying
+    }
+}
 
 public protocol ListenerRemoteCommands: Sendable {
     func install(handler: @escaping @Sendable (ListenerRemoteCommand) async -> Void)
 }
 
 /// Bridges system remote commands into an injected async handler.
-public final class MediaPlayerRemoteCommands: ListenerRemoteCommands, @unchecked Sendable {
+public final class MediaPlayerRemoteCommands: NSObject, ListenerRemoteCommands, @unchecked Sendable {
     private let center: MPRemoteCommandCenter
+    private let handlerLock = NSLock()
     private var handler: (@Sendable (ListenerRemoteCommand) async -> Void)?
-    public init(center: MPRemoteCommandCenter = .shared()) { self.center = center }
-    public func install(handler: @escaping @Sendable (ListenerRemoteCommand) async -> Void) {
-        self.handler = handler
-        center.playCommand.addTarget { [weak self] _ in self?.dispatch(.play); return .success }
-        center.pauseCommand.addTarget { [weak self] _ in self?.dispatch(.pause); return .success }
-        center.skipBackwardCommand.addTarget { [weak self] _ in self?.dispatch(.rewind); return .success }
-        center.nextTrackCommand.addTarget { [weak self] _ in self?.dispatch(.restart); return .success }
+    private var deliveryTail: Task<Void, Never>?
+    private var installedTargets = false
+    public init(center: MPRemoteCommandCenter = .shared()) {
+        self.center = center
+        super.init()
     }
-    private func dispatch(_ command: ListenerRemoteCommand) { if let handler { Task { await handler(command) } } }
+    public func install(handler: @escaping @Sendable (ListenerRemoteCommand) async -> Void) {
+        let shouldInstallTargets = handlerLock.withLock {
+            self.handler = handler
+            guard !installedTargets else { return false }
+            installedTargets = true
+            return true
+        }
+        guard shouldInstallTargets else { return }
+        center.playCommand.addTarget(self, action: #selector(receivePlay(_:)))
+        center.pauseCommand.addTarget(self, action: #selector(receivePause(_:)))
+        center.skipBackwardCommand.addTarget(self, action: #selector(receiveRewind(_:)))
+        center.nextTrackCommand.addTarget(self, action: #selector(receiveRestart(_:)))
+    }
+
+    deinit {
+        center.playCommand.removeTarget(self)
+        center.pauseCommand.removeTarget(self)
+        center.skipBackwardCommand.removeTarget(self)
+        center.nextTrackCommand.removeTarget(self)
+    }
+
+    @objc func receivePlay(_ event: MPRemoteCommandEvent?) -> MPRemoteCommandHandlerStatus {
+        enqueue(.play)
+    }
+
+    @objc func receivePause(_ event: MPRemoteCommandEvent?) -> MPRemoteCommandHandlerStatus {
+        enqueue(.pause)
+    }
+
+    @objc func receiveRewind(_ event: MPRemoteCommandEvent?) -> MPRemoteCommandHandlerStatus {
+        enqueue(.rewind)
+    }
+
+    @objc func receiveRestart(_ event: MPRemoteCommandEvent?) -> MPRemoteCommandHandlerStatus {
+        enqueue(.restart)
+    }
+
+    private func enqueue(_ command: ListenerRemoteCommand) -> MPRemoteCommandHandlerStatus {
+        handlerLock.withLock {
+            guard let handler else { return .noActionableNowPlayingItem }
+            let preceding = deliveryTail
+            deliveryTail = Task {
+                await preceding?.value
+                await handler(command)
+            }
+            return .success
+        }
+    }
 }
 
 public actor ListenerPlaybackController {
     public nonisolated let statuses: AsyncStream<SyncStatus>
     public nonisolated let durableCheckpoints: AsyncStream<PlaybackState>
+    public nonisolated let remoteCommandResults: AsyncStream<ListenerRemoteCommandResult>
     private let statusContinuation: AsyncStream<SyncStatus>.Continuation
     private let checkpointContinuation: AsyncStream<PlaybackState>.Continuation
+    private let remoteCommandContinuation: AsyncStream<ListenerRemoteCommandResult>.Continuation
     private let cache: ListenerAudioCache
     private let engine: any ListenerAudioEngine
     private let session: any ListenerAudioSession
     private let nowPlaying: any ListenerNowPlaying
+    private var installedRemoteCommands: (any ListenerRemoteCommands)?
     private var currentState: PlaybackState?
     private var title = "Wilted"
     private var playbackGeneration: UInt64 = 0
@@ -146,6 +207,9 @@ public actor ListenerPlaybackController {
         let (checkpoints, checkpointContinuation) = AsyncStream<PlaybackState>.makeStream()
         self.durableCheckpoints = checkpoints
         self.checkpointContinuation = checkpointContinuation
+        let (remoteCommands, remoteCommandContinuation) = AsyncStream<ListenerRemoteCommandResult>.makeStream()
+        self.remoteCommandResults = remoteCommands
+        self.remoteCommandContinuation = remoteCommandContinuation
         engine.installCompletionHandler { [weak self] generation in
             Task { await self?.completeNaturally(generation: generation) }
         }
@@ -257,25 +321,35 @@ public actor ListenerPlaybackController {
     }
 
     public func install(remoteCommands: any ListenerRemoteCommands) {
+        installedRemoteCommands = remoteCommands
         remoteCommands.install { [weak self] command in
             await self?.handleRemote(command)
         }
     }
 
     private func handleRemote(_ command: ListenerRemoteCommand) async {
+        let updated: PlaybackState?
         switch command {
         case .pause:
             engine.pause()
-            _ = try? advanceRemote(position: engine.currentTime, intent: .progress, newSession: false, rate: 0)
+            updated = try? advanceRemote(position: engine.currentTime, intent: .progress, newSession: false, rate: 0)
         case .play:
-            _ = engine.play()
-            _ = try? advanceRemote(position: engine.currentTime, intent: .progress, newSession: false, rate: 1)
+            guard engine.play() else {
+                emit(.init(phase: .failed, message: ListenerError.playbackUnavailable("audio engine refused playback").localizedDescription))
+                return
+            }
+            updated = try? advanceRemote(position: engine.currentTime, intent: .progress, newSession: false, rate: 1)
         case .rewind:
             engine.currentTime = max(0, engine.currentTime - 15)
-            _ = try? advanceRemote(position: engine.currentTime, intent: .rewind, newSession: true, rate: 1)
+            updated = try? advanceRemote(position: engine.currentTime, intent: .rewind, newSession: true,
+                                         rate: engine.isPlaying ? 1 : 0)
         case .restart:
             engine.currentTime = 0
-            _ = try? advanceRemote(position: 0, intent: .restart, newSession: true, rate: 1)
+            updated = try? advanceRemote(position: 0, intent: .restart, newSession: true,
+                                         rate: engine.isPlaying ? 1 : 0)
+        }
+        if let updated {
+            remoteCommandContinuation.yield(.init(command: command, state: updated, isPlaying: engine.isPlaying))
         }
     }
 

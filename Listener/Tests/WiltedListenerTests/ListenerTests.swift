@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import Testing
 import WiltedDomain
-import WiltedListener
+@testable import WiltedListener
 import WiltedSync
 
 private func ids() throws -> (ItemID, RevisionID) {
@@ -60,6 +60,7 @@ private final class MemoryEngine: ListenerAudioEngine, @unchecked Sendable {
     var currentTime = 0.0
     var loadedURL: URL?
     var playing = false
+    var allowsPlay = true
     var completionGeneration: UInt64 = 0
     var completionHandler: (@Sendable (UInt64) -> Void)?
     var isPlaying: Bool { playing }
@@ -68,7 +69,7 @@ private final class MemoryEngine: ListenerAudioEngine, @unchecked Sendable {
         loadedURL = url
         self.completionGeneration = completionGeneration
     }
-    func play() -> Bool { playing = true; return true }
+    func play() -> Bool { playing = allowsPlay; return allowsPlay }
     func pause() { playing = false }
     func installCompletionHandler(_ handler: @escaping @Sendable (UInt64) -> Void) { completionHandler = handler }
     func finishNaturally() { playing = false; completionHandler?(completionGeneration) }
@@ -83,7 +84,11 @@ private struct TestSession: ListenerAudioSession {
 
 private final class TestNowPlaying: ListenerNowPlaying, @unchecked Sendable {
     var updates = 0
-    func update(title: String, duration: Double, position: Double, rate: Double) { updates += 1 }
+    var lastRate: Double?
+    func update(title: String, duration: Double, position: Double, rate: Double) {
+        updates += 1
+        lastRate = rate
+    }
     func clear() {}
 }
 
@@ -91,6 +96,29 @@ private final class TestRemoteCommands: ListenerRemoteCommands, @unchecked Senda
     var handler: (@Sendable (ListenerRemoteCommand) async -> Void)?
     func install(handler: @escaping @Sendable (ListenerRemoteCommand) async -> Void) { self.handler = handler }
     func send(_ command: ListenerRemoteCommand) async { await handler?(command) }
+}
+
+private final class WeakReference<Object: AnyObject> {
+    weak var object: Object?
+    init(_ object: Object?) { self.object = object }
+}
+
+private actor OrderedRemoteRecorder {
+    private var commands: [ListenerRemoteCommand] = []
+
+    func receive(_ command: ListenerRemoteCommand) async {
+        if command == .rewind { try? await Task.sleep(for: .milliseconds(20)) }
+        commands.append(command)
+    }
+
+    func waitForCount(_ count: Int) async -> [ListenerRemoteCommand] {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(2)
+        while commands.count < count, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        return commands
+    }
 }
 
 @Test("repository commits a batch and reloads durable state")
@@ -477,26 +505,37 @@ func backgroundAndRemoteCommands() async throws {
     _ = try await cache.store(data: bytes, asset: audio)
     let engine = MemoryEngine()
     let nowPlaying = TestNowPlaying()
-    let remote = TestRemoteCommands()
+    var remote: TestRemoteCommands? = TestRemoteCommands()
+    let installedRemote = WeakReference(remote)
     let controller = ListenerPlaybackController(cache: cache, engine: engine, nowPlaying: nowPlaying)
-    await controller.install(remoteCommands: remote)
+    await controller.install(remoteCommands: remote!)
+    remote = nil
+    #expect(installedRemote.object != nil, "the controller must retain its installed command bridge")
     _ = try await controller.play(asset: audio, title: "Remote", state: try playbackState())
     engine.currentTime = 12
     let backgrounded = try await controller.enterBackground()
     let started = await controller.current()
     #expect(started?.sequence == 3)
     #expect(backgrounded?.positionSeconds == 12)
-    await remote.send(.pause)
+    let pauseResult = Task<ListenerRemoteCommandResult?, Never> {
+        for await result in controller.remoteCommandResults { return result }
+        return nil
+    }
+    await installedRemote.object?.send(.pause)
+    let durablePause = await pauseResult.value
+    #expect(durablePause?.command == .pause)
+    #expect(durablePause?.state.sequence == 4)
+    #expect(durablePause?.isPlaying == false)
     #expect((await controller.current())?.intent == .progress)
     #expect((await controller.current())?.sequence == 4)
-    await remote.send(.play)
+    await installedRemote.object?.send(.play)
     #expect((await controller.current())?.sequence == 5)
-    await remote.send(.rewind)
+    await installedRemote.object?.send(.rewind)
     let rewound = await controller.current()
     #expect(rewound?.intent == .rewind)
     #expect(rewound?.sequence == 6)
     #expect(rewound?.sessionID == "remote-6")
-    await remote.send(.restart)
+    await installedRemote.object?.send(.restart)
     let restarted = await controller.current()
     #expect(restarted?.intent == .restart)
     #expect(restarted?.sequence == 7)
@@ -504,6 +543,75 @@ func backgroundAndRemoteCommands() async throws {
     #expect(engine.playing == true)
     #expect(nowPlaying.updates >= 6)
     await controller.cancel()
+}
+
+@Test("system remote target actions serialize rapid commands in FIFO order")
+func mediaPlayerRemoteCommandsSerializeDeliveryFIFO() async {
+    let recorder = OrderedRemoteRecorder()
+    let remote = MediaPlayerRemoteCommands()
+    remote.install { command in await recorder.receive(command) }
+
+    #expect(remote.receiveRewind(nil) == .success)
+    #expect(remote.receivePause(nil) == .success)
+
+    let commands = await recorder.waitForCount(2)
+    #expect(commands == [.rewind, .pause])
+}
+
+@Test("remote rewind and restart preserve the paused engine state and Now Playing rate")
+func inactiveRewindAndRestartKeepPausedRateAndState() async throws {
+    let bytes = Data("audio".utf8)
+    let cache = try ListenerAudioCache(
+        rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    let audio = try asset(bytes)
+    _ = try await cache.store(data: bytes, asset: audio)
+    let engine = MemoryEngine()
+    let nowPlaying = TestNowPlaying()
+    let remote = TestRemoteCommands()
+    let controller = ListenerPlaybackController(cache: cache, engine: engine, nowPlaying: nowPlaying)
+    await controller.install(remoteCommands: remote)
+    _ = try await controller.play(asset: audio, title: "Remote", state: try playbackState())
+    _ = try await controller.pause()
+
+    engine.currentTime = 20
+    var results = controller.remoteCommandResults.makeAsyncIterator()
+    await remote.send(.rewind)
+    let rewind = await results.next()
+    #expect(rewind?.command == .rewind)
+    #expect(rewind?.isPlaying == false)
+    #expect(engine.isPlaying == false)
+    #expect(nowPlaying.lastRate == 0)
+
+    await remote.send(.restart)
+    let restart = await results.next()
+    #expect(restart?.command == .restart)
+    #expect(restart?.isPlaying == false)
+    #expect(engine.isPlaying == false)
+    #expect(nowPlaying.lastRate == 0)
+}
+
+@Test("a refused remote play does not publish an active playback transition")
+func remotePlayFailureDoesNotAdvanceState() async throws {
+    let bytes = Data("audio".utf8)
+    let cache = try ListenerAudioCache(
+        rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    let audio = try asset(bytes)
+    _ = try await cache.store(data: bytes, asset: audio)
+    let engine = MemoryEngine()
+    let remote = TestRemoteCommands()
+    let controller = ListenerPlaybackController(cache: cache, engine: engine)
+    await controller.install(remoteCommands: remote)
+    _ = try await controller.play(asset: audio, title: "Remote", state: try playbackState())
+    _ = try await controller.pause()
+    let before = await controller.current()
+    engine.allowsPlay = false
+
+    await remote.send(.play)
+
+    #expect(await controller.current() == before)
+    #expect(engine.isPlaying == false)
 }
 
 @Test("live readout follows the active engine without changing durable sequence")

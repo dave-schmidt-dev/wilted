@@ -7,6 +7,11 @@ struct WiltediOSApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model: WiltedListenerAppModel
 
+#if DEBUG
+    /// Weak by design: the hosted test reaches the actual model retained by the app scene.
+    @MainActor static weak var launchedModelForTesting: WiltedListenerAppModel?
+#endif
+
     init() {
         let arguments = ProcessInfo.processInfo.arguments
         let pixelFixtureState = arguments
@@ -99,7 +104,12 @@ struct WiltediOSApp: App {
 #else
                 guard !pixelFixtureMode, !smokeFixtureMode else { return }
 #endif
-                Task { await model.install(remoteCommands: MediaPlayerRemoteCommands()) }
+                Task {
+                    await model.installSystemRemoteCommands()
+#if DEBUG
+                    Self.launchedModelForTesting = model
+#endif
+                }
             }
             .task {
 #if DEBUG

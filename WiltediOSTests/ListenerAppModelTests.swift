@@ -1,14 +1,171 @@
 import CryptoKit
+import MediaPlayer
 import XCTest
 @testable import WiltediOS
 import WiltedDomain
-import WiltedListener
+@testable import WiltedListener
 import WiltedSync
 import CloudKit
 import WiltedCloudKit
 
 @MainActor
 final class ListenerAppModelTests: XCTestCase {
+    func testProductionLaunchRetainsRealRemoteCommandHandlerAndHandlesPause() async throws {
+        var launchedModel: WiltedListenerAppModel?
+        for _ in 0..<200 {
+            if let model = WiltediOSApp.launchedModelForTesting {
+                launchedModel = model
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+
+        let model = try XCTUnwrap(
+            launchedModel,
+            "the hosted test must reach the actual model retained by the app scene"
+        )
+        let commands = try XCTUnwrap(
+            model.installedSystemRemoteCommandsForTesting,
+            "the actual launched model must retain its one production command bridge"
+        )
+        XCTAssertEqual(commands.receivePause(nil), .success,
+                       "the real production target action must still own its installed pause handler")
+    }
+
+    func testSystemRemoteCommandInstallIsIdempotentUnderModelOwnership() async throws {
+        let harness = try await PlaybackHarness.make()
+
+        await harness.model.installSystemRemoteCommands()
+        let first = try XCTUnwrap(harness.model.installedSystemRemoteCommandsForTesting)
+        await harness.model.installSystemRemoteCommands()
+        let second = try XCTUnwrap(harness.model.installedSystemRemoteCommandsForTesting)
+
+        XCTAssertTrue(first === second,
+                      "repeated SwiftUI lifecycle delivery must not register a second system command target")
+    }
+
+    func testRealRemoteRewindAndPausePublishAndEnqueueDurablePlayback() async throws {
+        let harness = try await PlaybackHarness.make()
+        let remoteCommands = MediaPlayerRemoteCommands()
+        await harness.model.install(remoteCommands: remoteCommands)
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+
+        harness.engine.currentTime = 20
+        let rewindHandled = remoteCommands.receiveRewind(nil)
+        var changes = await waitForEnqueuedChanges(harness.repository, count: 2)
+        XCTAssertEqual(rewindHandled, .success)
+        XCTAssertEqual(changes.count, 2)
+        let rewindEnvelope = try XCTUnwrap(changes.last?.record)
+        let rewind = try WiltedRecordCodec().decodePlaybackRecord(rewindEnvelope).value
+        XCTAssertEqual(rewind.intent, .rewind)
+        XCTAssertEqual(rewind.positionSeconds, 5)
+        XCTAssertEqual(harness.model.selectedPlayback, rewind)
+        XCTAssertEqual(harness.model.status, .playing)
+
+        harness.engine.currentTime = 9
+        let pauseHandled = remoteCommands.receivePause(nil)
+        changes = await waitForEnqueuedChanges(harness.repository, count: 3)
+        XCTAssertEqual(pauseHandled, .success)
+        XCTAssertEqual(changes.count, 3)
+        let pauseEnvelope = try XCTUnwrap(changes.last?.record)
+        let pause = try WiltedRecordCodec().decodePlaybackRecord(pauseEnvelope).value
+        XCTAssertEqual(pause.intent, .progress)
+        XCTAssertEqual(pause.positionSeconds, 9)
+        XCTAssertEqual(harness.model.selectedPlayback, pause)
+        XCTAssertEqual(harness.model.status, .paused)
+    }
+
+    func testRemotePlayWhileBackgroundedRestartsBoundedPersistence() async throws {
+        let sleeper = BackgroundCheckpointSleeper()
+        let harness = try await PlaybackHarness.make(
+            backgroundSleeper: { duration in try await sleeper.sleep(for: duration) }
+        )
+        let remoteCommands = MediaPlayerRemoteCommands()
+        await harness.model.install(remoteCommands: remoteCommands)
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        await harness.model.enterBackground()
+        let initialInterval = await sleeper.waitUntilSleeping()
+        XCTAssertEqual(initialInterval, .seconds(15))
+
+        XCTAssertEqual(remoteCommands.receivePause(nil), .success)
+        _ = await waitForEnqueuedChanges(harness.repository, count: 3)
+        XCTAssertEqual(harness.model.status, .paused)
+
+        XCTAssertEqual(remoteCommands.receivePlay(nil), .success)
+        let changes = await waitForEnqueuedChanges(harness.repository, count: 4)
+        XCTAssertEqual(changes.count, 4)
+        XCTAssertEqual(harness.model.status, .playing)
+        for _ in 0..<100 {
+            if await sleeper.sleepCount() == 2 { break }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        let sleepCount = await sleeper.sleepCount()
+        XCTAssertEqual(sleepCount, 2,
+                       "remote resume in the background must restart the bounded checkpoint loop")
+    }
+
+    func testRemotePlayFailureDoesNotPublishOrEnqueueActiveState() async throws {
+        let harness = try await PlaybackHarness.make()
+        let remoteCommands = MediaPlayerRemoteCommands()
+        await harness.model.install(remoteCommands: remoteCommands)
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        harness.engine.currentTime = 8
+        await harness.model.pause()
+        let selectedBefore = harness.model.selectedPlayback
+        let writesBefore = await harness.repository.enqueuedChanges()
+        harness.engine.allowsPlayback = false
+
+        XCTAssertEqual(remoteCommands.receivePlay(nil), .success)
+        for _ in 0..<100 { await Task.yield() }
+
+        let writesAfter = await harness.repository.enqueuedChanges()
+        XCTAssertEqual(writesAfter, writesBefore)
+        XCTAssertEqual(harness.model.selectedPlayback, selectedBefore)
+        XCTAssertEqual(harness.model.status, .paused)
+        XCTAssertFalse(harness.engine.isPlaying)
+    }
+
+    func testStaleRemoteResultCannotDivergeSelectedSuccessorStatus() async throws {
+        let harness = try await PlaybackHarness.make(includeSecondItem: true)
+        let successor = try XCTUnwrap(harness.secondItemID)
+        let remoteCommands = MediaPlayerRemoteCommands()
+        await harness.model.install(remoteCommands: remoteCommands)
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        harness.engine.currentTime = 20
+        let delayedRemotePersistence = AsyncEnqueueGate()
+        await harness.repository.holdNextEnqueue(on: delayedRemotePersistence)
+
+        XCTAssertEqual(remoteCommands.receiveRewind(nil), .success)
+        let remotePersistenceStarted = await delayedRemotePersistence.waitUntilStarted()
+        XCTAssertTrue(remotePersistenceStarted)
+        await harness.model.play(itemID: successor)
+        XCTAssertEqual(harness.model.status, .playing)
+
+        await delayedRemotePersistence.release()
+        for _ in 0..<100 { await Task.yield() }
+
+        XCTAssertEqual(harness.model.selectedItemID, successor)
+        XCTAssertEqual(harness.model.selectedPlayback?.itemID, successor)
+        XCTAssertEqual(harness.model.status, .playing,
+                       "a delayed outgoing remote result must not overwrite the active successor")
+    }
+
+    private func waitForEnqueuedChanges(
+        _ repository: StaticSyncRepository,
+        count: Int
+    ) async -> [SyncPendingChange] {
+        for _ in 0..<100 {
+            let changes = await repository.enqueuedChanges()
+            if changes.count == count { return changes }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        return await repository.enqueuedChanges()
+    }
+
     func testDefaultConstructionKeepsXCTestLocalWithoutDisablingLiveCloudKit() {
         XCTAssertEqual(WiltedListenerAppModel.defaultSessionMode(), .localOnly)
         XCTAssertEqual(
@@ -1637,6 +1794,7 @@ private final class FakeAudioEngine: ListenerAudioEngine, @unchecked Sendable {
     let duration: Double
     var currentTime: Double = 0
     private(set) var playing = false
+    var allowsPlayback = true
     private let loadGateLock = NSLock()
     private var nextLoadGate: LoadGate?
     private(set) var completionGeneration: UInt64 = 0
@@ -1660,7 +1818,7 @@ private final class FakeAudioEngine: ListenerAudioEngine, @unchecked Sendable {
         try load(url: url)
         self.completionGeneration = completionGeneration
     }
-    func play() -> Bool { playing = true; return true }
+    func play() -> Bool { playing = allowsPlayback; return allowsPlayback }
     func pause() { playing = false }
     func installCompletionHandler(_ handler: @escaping @Sendable (UInt64) -> Void) { completionHandler = handler }
     func finishNaturally() {
