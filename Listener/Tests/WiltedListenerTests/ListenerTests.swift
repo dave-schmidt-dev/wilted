@@ -60,10 +60,19 @@ private final class MemoryEngine: ListenerAudioEngine, @unchecked Sendable {
     var currentTime = 0.0
     var loadedURL: URL?
     var playing = false
+    var completionGeneration: UInt64 = 0
+    var completionHandler: (@Sendable (UInt64) -> Void)?
     var isPlaying: Bool { playing }
     func load(url: URL) throws { loadedURL = url }
+    func load(url: URL, completionGeneration: UInt64) throws {
+        loadedURL = url
+        self.completionGeneration = completionGeneration
+    }
     func play() -> Bool { playing = true; return true }
     func pause() { playing = false }
+    func installCompletionHandler(_ handler: @escaping @Sendable (UInt64) -> Void) { completionHandler = handler }
+    func finishNaturally() { playing = false; completionHandler?(completionGeneration) }
+    func fireCompletion(generation: UInt64) { completionHandler?(generation) }
 }
 
 private struct TestSession: ListenerAudioSession {
@@ -392,6 +401,57 @@ func offlinePlaybackControls() async throws {
     try await controller.handle(interruptionBegan: true)
     await controller.handleRouteChange()
     #expect(nowPlaying.updates >= 3)
+}
+
+@Test("natural engine completion emits a completed durable checkpoint")
+func naturalCompletionEmitsDurableCheckpoint() async throws {
+    let bytes = Data("completed-audio".utf8)
+    let cache = try ListenerAudioCache(
+        rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    let audio = try asset(bytes)
+    _ = try await cache.store(data: bytes, asset: audio)
+    let engine = MemoryEngine()
+    let controller = ListenerPlaybackController(cache: cache, engine: engine)
+    _ = try await controller.play(asset: audio, title: "Complete", state: try playbackState(position: 4))
+    let completion = Task<PlaybackState?, Never> {
+        for await checkpoint in controller.durableCheckpoints { return checkpoint }
+        return nil
+    }
+
+    engine.finishNaturally()
+    let checkpoint = await completion.value
+
+    #expect(checkpoint?.completed == true)
+    #expect(checkpoint?.positionSeconds == checkpoint?.durationSeconds)
+    #expect(checkpoint?.sequence == 3)
+    #expect((await controller.current()) == checkpoint)
+}
+
+@Test("delayed completion from a superseded playback generation is ignored")
+func supersededCompletionGenerationIsIgnored() async throws {
+    let bytes = Data("generation-audio".utf8)
+    let cache = try ListenerAudioCache(
+        rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    let audio = try asset(bytes)
+    _ = try await cache.store(data: bytes, asset: audio)
+    let engine = MemoryEngine()
+    let controller = ListenerPlaybackController(cache: cache, engine: engine)
+    _ = try await controller.play(asset: audio, title: "First", state: try playbackState(position: 4))
+    let supersededGeneration = engine.completionGeneration
+    _ = try await controller.play(
+        asset: audio,
+        title: "Restarted",
+        state: try playbackState(sequence: 3, intent: .restart, position: 0, sessionID: "new-session")
+    )
+
+    engine.fireCompletion(generation: supersededGeneration)
+    for _ in 0..<100 { await Task.yield() }
+
+    let current = await controller.current()
+    #expect(current?.completed == false)
+    #expect(current?.sessionID == "new-session")
 }
 
 @Test("playback merge accepts explicit restart and rejects stale progress")

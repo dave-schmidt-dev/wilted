@@ -585,6 +585,261 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertEqual(harness.model.selectedPlayback?.positionSeconds, 11)
         let persisted = await harness.metadataCapture.last
         XCTAssertEqual(persisted?.lastPositionSeconds, 0)
+        let writes = await harness.repository.enqueuedChanges()
+        XCTAssertEqual(writes.count, 1, "the live readout must not add a durable write")
+    }
+
+    func testNaturalCompletionReachesRepositoryEnqueueAsCompletedCheckpoint() async throws {
+        let harness = try await PlaybackHarness.make()
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+
+        harness.engine.finishNaturally()
+        var changes: [SyncPendingChange] = []
+        for _ in 0..<100 {
+            changes = await harness.repository.enqueuedChanges()
+            if changes.count == 2 { break }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+
+        XCTAssertEqual(changes.count, 2)
+        let completedEnvelope = try XCTUnwrap(changes.last?.record)
+        let completed = try WiltedRecordCodec().decodePlaybackRecord(completedEnvelope).value
+        XCTAssertTrue(completed.completed)
+        XCTAssertEqual(completed.positionSeconds, completed.durationSeconds)
+        XCTAssertEqual(harness.model.selectedPlayback, completed)
+    }
+
+    func testBackgroundAfterNaturalCompletionKeepsCompletedCheckpointWithoutDuplicateWrite() async throws {
+        let harness = try await PlaybackHarness.make()
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+
+        harness.engine.finishNaturally()
+        for _ in 0..<100 {
+            if (await harness.repository.enqueuedChanges()).count == 2 { break }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+
+        await harness.model.enterBackground()
+        for _ in 0..<100 { await Task.yield() }
+
+        let changes = await harness.repository.enqueuedChanges()
+        XCTAssertEqual(changes.count, 2)
+        let finalEnvelope = try XCTUnwrap(changes.last?.record)
+        let final = try WiltedRecordCodec().decodePlaybackRecord(finalEnvelope).value
+        XCTAssertTrue(final.completed)
+        XCTAssertEqual(harness.model.selectedPlayback, final)
+    }
+
+    func testPausedBackgroundTransitionCreatesNoDuplicateDurableWrite() async throws {
+        let harness = try await PlaybackHarness.make()
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        harness.engine.currentTime = 7
+        await harness.model.pause()
+        let beforeBackground = await harness.repository.enqueuedChanges()
+
+        await harness.model.enterBackground()
+        for _ in 0..<100 { await Task.yield() }
+
+        let afterBackground = await harness.repository.enqueuedChanges()
+        XCTAssertEqual(beforeBackground.count, 2)
+        XCTAssertEqual(afterBackground, beforeBackground)
+        XCTAssertEqual(harness.model.selectedPlayback?.positionSeconds, 7)
+        XCTAssertFalse(harness.model.selectedPlayback?.completed ?? true)
+    }
+
+    func testItemSwitchPersistsOutgoingLivePositionBeforeSelectingSuccessor() async throws {
+        let harness = try await PlaybackHarness.make(includeSecondItem: true)
+        let successor = try XCTUnwrap(harness.secondItemID)
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        let supersededGeneration = harness.engine.completionGeneration
+        harness.engine.currentTime = 9
+
+        await harness.model.play(itemID: successor)
+
+        let changes = await harness.repository.enqueuedChanges()
+        XCTAssertEqual(changes.count, 3)
+        let outgoingEnvelope = try XCTUnwrap(changes.dropFirst().first?.record)
+        let outgoing = try WiltedRecordCodec().decodePlaybackRecord(outgoingEnvelope).value
+        XCTAssertEqual(outgoing.itemID, harness.itemID)
+        XCTAssertEqual(outgoing.positionSeconds, 9)
+        XCTAssertEqual(harness.model.selectedItemID, successor)
+        XCTAssertEqual(changes.last?.recordID,
+                       try WiltedRecordID.playback(successor, try XCTUnwrap(harness.model.selectedPlayback?.revisionID)))
+
+        harness.engine.fireCompletion(generation: supersededGeneration)
+        for _ in 0..<100 { await Task.yield() }
+        let changesAfterDelayedCompletion = await harness.repository.enqueuedChanges()
+        XCTAssertEqual(changesAfterDelayedCompletion.count, 3)
+        XCTAssertEqual(harness.model.selectedItemID, successor)
+        XCTAssertFalse(harness.model.selectedPlayback?.completed ?? true)
+    }
+
+    func testDelayedOutgoingCompletionCannotPauseSelectedSuccessor() async throws {
+        let harness = try await PlaybackHarness.make(includeSecondItem: true)
+        let successor = try XCTUnwrap(harness.secondItemID)
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        let completionPersistence = AsyncEnqueueGate()
+        await harness.repository.holdNextEnqueue(on: completionPersistence)
+
+        harness.engine.finishNaturally()
+        let completionStarted = await completionPersistence.waitUntilStarted()
+        XCTAssertTrue(completionStarted)
+        await harness.model.play(itemID: successor)
+        XCTAssertEqual(harness.model.status, .playing)
+
+        await completionPersistence.release()
+        for _ in 0..<100 {
+            if (await harness.repository.enqueuedChanges()).count == 3 { break }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+
+        XCTAssertEqual(harness.model.selectedItemID, successor)
+        XCTAssertEqual(harness.model.status, .playing)
+        XCTAssertFalse(harness.model.selectedPlayback?.completed ?? true)
+    }
+
+    func testFastForegroundResumeInvalidatesPendingBackgroundEntry() async throws {
+        let sleeper = BackgroundCheckpointSleeper()
+        let harness = try await PlaybackHarness.make(
+            backgroundSleeper: { duration in try await sleeper.sleep(for: duration) }
+        )
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        let loadGate = harness.engine.holdNextLoad()
+        let restart = Task { await harness.model.restart() }
+        let loadStarted = await loadGate.waitUntilStarted()
+        XCTAssertTrue(loadStarted)
+
+        let background = Task { await harness.model.enterBackground() }
+        for _ in 0..<100 { await Task.yield() }
+        let foreground = Task { await harness.model.resumeForeground() }
+        for _ in 0..<100 { await Task.yield() }
+        loadGate.release.signal()
+
+        await restart.value
+        await background.value
+        await foreground.value
+        for _ in 0..<100 { await Task.yield() }
+
+        let scheduledSleeps = await sleeper.sleepCount()
+        XCTAssertEqual(scheduledSleeps, 0, "a superseded background entry must not persist or schedule checkpoints")
+    }
+
+    func testResumeCancelsBackgroundTimerBeforePersistingOneForegroundCheckpoint() async throws {
+        let sleeper = BackgroundCheckpointSleeper()
+        let harness = try await PlaybackHarness.make(
+            backgroundSleeper: { duration in try await sleeper.sleep(for: duration) }
+        )
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        harness.engine.currentTime = 2
+        await harness.model.enterBackground()
+        let interval = await sleeper.waitUntilSleeping()
+        XCTAssertEqual(interval, .seconds(15))
+
+        harness.engine.currentTime = 18
+        await sleeper.releaseOne()
+        await harness.model.resumeForeground()
+        for _ in 0..<100 { await Task.yield() }
+
+        let changes = await harness.repository.enqueuedChanges()
+        XCTAssertEqual(changes.count, 3, "resume and the cancelled timer must produce only one final checkpoint")
+        let finalEnvelope = try XCTUnwrap(changes.last?.record)
+        let final = try WiltedRecordCodec().decodePlaybackRecord(finalEnvelope).value
+        XCTAssertEqual(final.positionSeconds, 18)
+        XCTAssertFalse(final.completed)
+    }
+
+    func testBackgroundCheckpointLoopStopsAfterNaturalCompletion() async throws {
+        let sleeper = BackgroundCheckpointSleeper()
+        let harness = try await PlaybackHarness.make(
+            backgroundSleeper: { duration in try await sleeper.sleep(for: duration) }
+        )
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        harness.engine.currentTime = 2
+        await harness.model.enterBackground()
+        let interval = await sleeper.waitUntilSleeping()
+        XCTAssertEqual(interval, .seconds(15))
+
+        harness.engine.finishNaturally()
+        for _ in 0..<100 {
+            if (await harness.repository.enqueuedChanges()).count == 3 { break }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        await sleeper.releaseOne()
+        for _ in 0..<100 { await Task.yield() }
+
+        let changes = await harness.repository.enqueuedChanges()
+        let sleepCount = await sleeper.sleepCount()
+        XCTAssertEqual(changes.count, 3)
+        XCTAssertEqual(sleepCount, 1, "completed playback must terminate the checkpoint loop")
+    }
+
+    func testActiveBackgroundBeyondFifteenSecondCheckpointIntervalRestoresAfterSimulatedRelaunch() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wilted-background-checkpoint-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = try ListenerRepository(directoryURL: root)
+        let cache = try ListenerAudioCache(rootURL: root.appendingPathComponent("Audio", isDirectory: true))
+        let url = URL(string: "https://example.test/background-checkpoint")!
+        let itemID = try ItemID.derive(from: url)
+        let revisionID = try RevisionID(rawValue: "revision-background-checkpoint")
+        let bytes = Data("background-checkpoint-audio".utf8)
+        let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let asset = try WiltedAsset(assetID: "background-checkpoint-audio", contentHash: "sha256:\(digest)")
+        let article = try Article(itemID: itemID, canonicalURL: url, title: "Background checkpoint",
+                                  source: "Test", createdAt: Timestamp(Date()))
+        let revision = try AudioRevision(itemID: itemID, revisionID: revisionID, durationSeconds: 60,
+                                         byteCount: Int64(bytes.count), contentHash: asset.contentHash,
+                                         mediaType: "audio/mp4", createdAt: Timestamp(Date()), schemaVersion: 1)
+        let codec = WiltedRecordCodec()
+        let records = [try codec.encode(article: article, currentRevisionID: revisionID),
+                       try codec.encode(revision: revision, audioAsset: asset)]
+        try await repository.commit(try await repository.stage(
+            try SyncFetchBatch(generationID: "background-seed", records: records, engineState: Data([1]))
+        ))
+        _ = try await cache.store(data: bytes, asset: asset)
+        let engine = FakeAudioEngine(duration: 60)
+        let controller = ListenerPlaybackController(cache: cache, engine: engine,
+                                                    session: FakeAudioSession(), nowPlaying: FakeNowPlaying())
+        let sleeper = BackgroundCheckpointSleeper()
+        let model = WiltedListenerAppModel(
+            repository: repository,
+            cache: cache,
+            playback: controller,
+            metadataLoader: { await repository.loadMetadata() },
+            metadataSaver: { metadata in try await repository.saveMetadata(metadata) },
+            backgroundSleeper: { duration in try await sleeper.sleep(for: duration) }
+        )
+        await model.refresh()
+        await model.play(itemID: itemID)
+        engine.currentTime = 2
+        await model.enterBackground()
+        let interval = await sleeper.waitUntilSleeping()
+        XCTAssertEqual(interval, .seconds(15), "the durable background cadence is fifteen seconds, not per-second")
+
+        engine.currentTime = 18
+        await sleeper.releaseOne()
+        var persistedPosition: Double?
+        for _ in 0..<100 {
+            let state = await repository.state()
+            persistedPosition = state.records.compactMap { try? codec.decodePlaybackRecord($0).value.positionSeconds }.first
+            if persistedPosition == 18 { break }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        XCTAssertEqual(persistedPosition, 18)
+
+        let reopened = try ListenerRepository(directoryURL: root)
+        let relaunched = WiltedListenerAppModel(repository: reopened,
+                                                metadataLoader: { await reopened.loadMetadata() })
+        await relaunched.refresh()
+        XCTAssertEqual(relaunched.selectedPlayback?.positionSeconds, 18)
     }
 
     func testChunkedCatalogRefreshDefersAudioRetrievalUntilDownload() async throws {
@@ -1043,6 +1298,8 @@ private actor StaticSyncRepository: SyncRepository {
     let statuses: AsyncStream<SyncStatus>
     private var snapshot: SyncRepositoryState
     private var acknowledgements: [[SyncPendingChange]] = []
+    private var enqueued: [SyncPendingChange] = []
+    private var nextEnqueueGate: AsyncEnqueueGate?
 
     init(state: SyncRepositoryState) {
         self.snapshot = state
@@ -1067,9 +1324,30 @@ private actor StaticSyncRepository: SyncRepository {
             conflictServerRecords: snapshot.conflictServerRecords)
     }
 
-    func enqueue(_ change: SyncPendingChange) async throws {}
+    func enqueue(_ change: SyncPendingChange) async throws {
+        if let gate = nextEnqueueGate {
+            nextEnqueueGate = nil
+            await gate.suspend()
+        }
+        enqueued.append(change)
+        var records = snapshot.records.filter { $0.id != change.recordID }
+        if let record = change.record { records.append(record) }
+        let pending = snapshot.pendingChanges.filter { $0.recordID != change.recordID } + [change]
+        snapshot = SyncRepositoryState(
+            records: records,
+            engineState: snapshot.engineState,
+            pendingChanges: pending,
+            tombstones: snapshot.tombstones,
+            remoteAcknowledgedRecordIDs: snapshot.remoteAcknowledgedRecordIDs,
+            protectedRecordIDs: snapshot.protectedRecordIDs,
+            conflictedRecordIDs: snapshot.conflictedRecordIDs,
+            conflictServerRecords: snapshot.conflictServerRecords
+        )
+    }
     func acknowledge(_ result: SyncSendResult, sent: [SyncPendingChange]) async throws { acknowledgements.append(sent) }
     func acknowledgedBatches() -> [[SyncPendingChange]] { acknowledgements }
+    func enqueuedChanges() -> [SyncPendingChange] { enqueued }
+    func holdNextEnqueue(on gate: AsyncEnqueueGate) { nextEnqueueGate = gate }
 }
 
 private actor StaleStageListenerRepository: SyncRepository {
@@ -1284,8 +1562,16 @@ private struct PlaybackHarness {
     let itemID: ItemID
     let engine: FakeAudioEngine
     let metadataCapture: MetadataCapture
+    let repository: StaticSyncRepository
+    let secondItemID: ItemID?
 
-    static func make(cachedPlaybackRevisionID: RevisionID? = nil) async throws -> PlaybackHarness {
+    static func make(
+        cachedPlaybackRevisionID: RevisionID? = nil,
+        includeSecondItem: Bool = false,
+        backgroundSleeper: @escaping @Sendable (Duration) async throws -> Void = { duration in
+            try await Task.sleep(for: duration)
+        }
+    ) async throws -> PlaybackHarness {
         let url = URL(string: "https://example.test/first-play")!
         let itemID = try ItemID.derive(from: url)
         let revisionID = try RevisionID(rawValue: "revision-first-play")
@@ -1313,6 +1599,25 @@ private struct PlaybackHarness {
         }
         var records = [try codec.encode(article: article, currentRevisionID: revisionID),
                        try codec.encode(revision: revision, audioAsset: asset)]
+        var secondItemID: ItemID?
+        if includeSecondItem {
+            let secondURL = URL(string: "https://example.test/second-play")!
+            let secondID = try ItemID.derive(from: secondURL)
+            let secondRevisionID = try RevisionID(rawValue: "revision-second-play")
+            let secondBytes = Data("wilted-second-play-audio".utf8)
+            let secondHash = "sha256:" + SHA256.hash(data: secondBytes).map { String(format: "%02x", $0) }.joined()
+            let secondAsset = try WiltedAsset(assetID: "audio-second-play", contentHash: secondHash)
+            let secondArticle = try Article(itemID: secondID, canonicalURL: secondURL, title: "Second play",
+                                            source: "Test", createdAt: Timestamp(Date()))
+            let secondRevision = try AudioRevision(itemID: secondID, revisionID: secondRevisionID,
+                                                   durationSeconds: 30, byteCount: Int64(secondBytes.count),
+                                                   contentHash: secondHash, mediaType: "audio/mp4",
+                                                   createdAt: Timestamp(Date()), schemaVersion: 1)
+            _ = try await cache.store(data: secondBytes, asset: secondAsset)
+            records.append(try codec.encode(article: secondArticle, currentRevisionID: secondRevisionID))
+            records.append(try codec.encode(revision: secondRevision, audioAsset: secondAsset))
+            secondItemID = secondID
+        }
         if let cachedPlayback { records.append(try codec.encode(playback: cachedPlayback)) }
         let repository = StaticSyncRepository(state: SyncRepositoryState(
             records: records,
@@ -1321,8 +1626,10 @@ private struct PlaybackHarness {
             repository: repository,
             cache: cache,
             playback: controller,
-            metadataSaver: { metadata in await metadataCapture.save(metadata) }
-        ), itemID: itemID, engine: engine, metadataCapture: metadataCapture)
+            metadataSaver: { metadata in await metadataCapture.save(metadata) },
+            backgroundSleeper: backgroundSleeper
+        ), itemID: itemID, engine: engine, metadataCapture: metadataCapture,
+        repository: repository, secondItemID: secondItemID)
     }
 }
 
@@ -1332,6 +1639,8 @@ private final class FakeAudioEngine: ListenerAudioEngine, @unchecked Sendable {
     private(set) var playing = false
     private let loadGateLock = NSLock()
     private var nextLoadGate: LoadGate?
+    private(set) var completionGeneration: UInt64 = 0
+    private var completionHandler: (@Sendable (UInt64) -> Void)?
     var isPlaying: Bool { playing }
     init(duration: Double) { self.duration = duration }
     func holdNextLoad() -> LoadGate {
@@ -1347,8 +1656,71 @@ private final class FakeAudioEngine: ListenerAudioEngine, @unchecked Sendable {
         gate?.started.signal()
         gate?.release.wait()
     }
+    func load(url: URL, completionGeneration: UInt64) throws {
+        try load(url: url)
+        self.completionGeneration = completionGeneration
+    }
     func play() -> Bool { playing = true; return true }
     func pause() { playing = false }
+    func installCompletionHandler(_ handler: @escaping @Sendable (UInt64) -> Void) { completionHandler = handler }
+    func finishNaturally() {
+        playing = false
+        currentTime = duration
+        completionHandler?(completionGeneration)
+    }
+    func fireCompletion(generation: UInt64) { completionHandler?(generation) }
+}
+
+private actor BackgroundCheckpointSleeper {
+    private var recorded: [Duration] = []
+    private var waiters: [CheckedContinuation<Void, Error>] = []
+
+    func sleep(for duration: Duration) async throws {
+        recorded.append(duration)
+        try await withCheckedThrowingContinuation { continuation in waiters.append(continuation) }
+    }
+
+    func waitUntilSleeping() async -> Duration? {
+        let clock = ContinuousClock()
+        let end = clock.now + .seconds(2)
+        while clock.now < end {
+            if let duration = recorded.last { return duration }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        return recorded.last
+    }
+
+    func releaseOne() {
+        guard !waiters.isEmpty else { return }
+        waiters.removeFirst().resume()
+    }
+
+    func sleepCount() -> Int { recorded.count }
+}
+
+private actor AsyncEnqueueGate {
+    private var started = false
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func suspend() async {
+        started = true
+        await withCheckedContinuation { releaseContinuation = $0 }
+    }
+
+    func waitUntilStarted() async -> Bool {
+        let clock = ContinuousClock()
+        let end = clock.now + .seconds(2)
+        while clock.now < end {
+            if started { return true }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        return started
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
 }
 
 private final class LoadGate: @unchecked Sendable {

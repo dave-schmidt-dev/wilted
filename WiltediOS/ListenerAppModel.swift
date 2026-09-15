@@ -142,6 +142,10 @@ enum ListenerDefaultSessionMode: Equatable {
 /// by the attended live build composition.
 @MainActor
 public final class WiltedListenerAppModel: ObservableObject {
+    /// Active background playback is durably checkpointed at this bounded cadence.
+    /// The one-second UI readout remains memory-only.
+    public static let durableBackgroundCheckpointInterval: Duration = .seconds(15)
+
     @Published public private(set) var items: [ListenerLibraryItem] = []
     @Published public private(set) var status: ListenerAppStatus = .idle
     @Published public private(set) var selectedItemID: ItemID?
@@ -179,6 +183,11 @@ public final class WiltedListenerAppModel: ObservableObject {
     private var cancellationRequested = false
     private var statusTasks: [Task<Void, Never>] = []
     private var sessionStatusTask: Task<Void, Never>?
+    private var backgroundCheckpointTask: Task<Void, Never>?
+    private var isBackgrounded = false
+    private var backgroundCheckpointGeneration: UInt64 = 0
+    private let backgroundCheckpointInterval: Duration
+    private let backgroundSleeper: @Sendable (Duration) async throws -> Void
     private var decodeHadErrors = false
 
     public init(
@@ -191,6 +200,10 @@ public final class WiltedListenerAppModel: ObservableObject {
         audioChunkLoader: ListenerAudioChunkLoader? = nil,
         metadataLoader: (@Sendable () async -> ListenerMetadata?)? = nil,
         metadataSaver: (@Sendable (ListenerMetadata?) async throws -> Void)? = nil,
+        backgroundCheckpointInterval: Duration = WiltedListenerAppModel.durableBackgroundCheckpointInterval,
+        backgroundSleeper: @escaping @Sendable (Duration) async throws -> Void = { duration in
+            try await Task.sleep(for: duration)
+        },
         unavailableMessage: String? = nil
     ) {
         self.repository = repository
@@ -202,13 +215,18 @@ public final class WiltedListenerAppModel: ObservableObject {
         self.audioChunkLoader = audioChunkLoader
         self.metadataLoader = metadataLoader
         self.metadataSaver = metadataSaver
+        self.backgroundCheckpointInterval = backgroundCheckpointInterval
+        self.backgroundSleeper = backgroundSleeper
         if let unavailableMessage { status = .failed(unavailableMessage, retryable: false) }
         if let repository { observe(repository.statuses) }
         if let transport { observe(transport.statuses) }
         if let cache { observe(cache.statuses) }
         // Playback commands set their final presentation state directly. Their status stream
         // is still consumed, but never used to overwrite those command results later.
-        if let playback { observePlayback(playback.statuses) }
+        if let playback {
+            observePlayback(playback.statuses)
+            observePlaybackCheckpoints(playback.durableCheckpoints)
+        }
     }
 
     public static func makeDefault() -> WiltedListenerAppModel {
@@ -561,6 +579,11 @@ public final class WiltedListenerAppModel: ObservableObject {
         }
         status = .refreshing("Preparing offline audio")
         do {
+            if selectedItemID != nil, selectedItemID != itemID,
+               let outgoing = try await playback.liveCheckpoint() {
+                try await recordPlayback(outgoing)
+                selectedPlayback = outgoing
+            }
             let updated = try await playback.play(asset: asset, title: item.title, state: state)
             try await recordPlayback(updated)
             selectedItemID = itemID
@@ -611,16 +634,20 @@ public final class WiltedListenerAppModel: ObservableObject {
     }
 
     public func enterBackground() async {
+        isBackgrounded = true
+        backgroundCheckpointGeneration &+= 1
+        let generation = backgroundCheckpointGeneration
+        backgroundCheckpointTask?.cancel()
         guard let playback else {
-            await persistSelectedMetadata()
             return
         }
         do {
             if let updated = try await playback.enterBackground() {
+                guard isBackgrounded, backgroundCheckpointGeneration == generation else { return }
                 try await recordPlayback(updated)
+                guard isBackgrounded, backgroundCheckpointGeneration == generation else { return }
                 selectedPlayback = updated
-            } else {
-                await persistSelectedMetadata()
+                scheduleBackgroundCheckpoints(generation: generation)
             }
         } catch {
             status = .failed("Background persistence failed: \(error.localizedDescription)", retryable: true)
@@ -640,6 +667,14 @@ public final class WiltedListenerAppModel: ObservableObject {
     }
 
     public func resumeForeground() async {
+        let shouldPersistActivePosition = isBackgrounded
+        isBackgrounded = false
+        backgroundCheckpointGeneration &+= 1
+        let cancelledCheckpointTask = backgroundCheckpointTask
+        cancelledCheckpointTask?.cancel()
+        backgroundCheckpointTask = nil
+        await cancelledCheckpointTask?.value
+        if shouldPersistActivePosition { await persistActivePlaybackCheckpoint() }
         // Scene activation can race the view's initial task. Treat the first
         // foreground as launch so that pair produces one catalog fetch.
         if !didStart { await start() } else { await refresh() }
@@ -1015,9 +1050,59 @@ public final class WiltedListenerAppModel: ObservableObject {
         try await metadataSaver?(ListenerMetadata(lastPlayedRecordID: envelope.id, lastPositionSeconds: state.positionSeconds))
     }
 
-    private func persistSelectedMetadata() async {
-        guard let state = selectedPlayback, let envelope = try? WiltedRecordCodec().encode(playback: state) else { return }
-        try? await metadataSaver?(ListenerMetadata(lastPlayedRecordID: envelope.id, lastPositionSeconds: state.positionSeconds))
+    private func scheduleBackgroundCheckpoints(generation: UInt64) {
+        let interval = backgroundCheckpointInterval
+        let sleeper = backgroundSleeper
+        backgroundCheckpointTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await sleeper(interval) }
+                catch { return }
+                guard let self, self.isBackgrounded,
+                      self.backgroundCheckpointGeneration == generation,
+                      !Task.isCancelled else { return }
+                guard await self.persistBoundedBackgroundCheckpoint(generation: generation) else {
+                    if self.backgroundCheckpointGeneration == generation {
+                        self.backgroundCheckpointTask = nil
+                    }
+                    return
+                }
+            }
+        }
+    }
+
+    private func persistBoundedBackgroundCheckpoint(generation: UInt64) async -> Bool {
+        guard isBackgrounded, backgroundCheckpointGeneration == generation,
+              let playback else { return false }
+        do {
+            guard let updated = try await playback.liveCheckpoint() else { return false }
+            guard isBackgrounded, backgroundCheckpointGeneration == generation,
+                  !Task.isCancelled else { return false }
+            try await recordPlayback(updated)
+            if selectedItemID == updated.itemID { selectedPlayback = updated }
+            return true
+        } catch {
+            status = .failed("Background persistence failed: \(error.localizedDescription)", retryable: true)
+            return false
+        }
+    }
+
+    private func persistActivePlaybackCheckpoint() async {
+        guard let playback else { return }
+        do {
+            if let readout = try await playback.liveReadout(),
+               let persisted = playbackByItem[readout.itemID],
+               persisted.revisionID == readout.revisionID,
+               persisted.sessionID == readout.sessionID,
+               persisted.positionSeconds == readout.positionSeconds,
+               persisted.completed == readout.completed {
+                return
+            }
+            guard let updated = try await playback.liveCheckpoint() else { return }
+            try await recordPlayback(updated)
+            if selectedItemID == updated.itemID { selectedPlayback = updated }
+        } catch {
+            status = .failed("Background persistence failed: \(error.localizedDescription)", retryable: true)
+        }
     }
 
     private func updateItemState(itemID: ItemID, state: ListenerItemState) {
@@ -1123,6 +1208,23 @@ public final class WiltedListenerAppModel: ObservableObject {
     private func observePlayback(_ stream: AsyncStream<SyncStatus>) {
         statusTasks.append(Task {
             for await _ in stream {}
+        })
+    }
+
+    private func observePlaybackCheckpoints(_ stream: AsyncStream<PlaybackState>) {
+        statusTasks.append(Task { [weak self] in
+            for await checkpoint in stream {
+                guard let self else { return }
+                do {
+                    try await recordPlayback(checkpoint)
+                    if selectedItemID == checkpoint.itemID {
+                        selectedPlayback = checkpoint
+                        if checkpoint.completed { status = .paused }
+                    }
+                } catch {
+                    status = .failed("Playback persistence failed: \(error.localizedDescription)", retryable: true)
+                }
+            }
         })
     }
 

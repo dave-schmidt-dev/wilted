@@ -11,20 +11,55 @@ public protocol ListenerAudioEngine: AnyObject, Sendable {
     func load(url: URL) throws
     func play() -> Bool
     func pause()
+    func load(url: URL, completionGeneration: UInt64) throws
+    func installCompletionHandler(_ handler: @escaping @Sendable (UInt64) -> Void)
 }
 
-public final class AVFoundationAudioEngine: ListenerAudioEngine, @unchecked Sendable {
+public extension ListenerAudioEngine {
+    /// Compatibility bridge for engines that do not expose natural completion.
+    func load(url: URL, completionGeneration: UInt64) throws { try load(url: url) }
+    func installCompletionHandler(_ handler: @escaping @Sendable (UInt64) -> Void) {}
+}
+
+public final class AVFoundationAudioEngine: NSObject, ListenerAudioEngine, AVAudioPlayerDelegate, @unchecked Sendable {
     private var player: AVAudioPlayer?
-    public init() {}
+    private let completionLock = NSLock()
+    private var playerGeneration: [ObjectIdentifier: UInt64] = [:]
+    private var completionHandler: (@Sendable (UInt64) -> Void)?
+    public override init() { super.init() }
     public var duration: Double { player?.duration ?? 0 }
     public var currentTime: Double {
         get { player?.currentTime ?? 0 }
         set { player?.currentTime = newValue }
     }
     public var isPlaying: Bool { player?.isPlaying ?? false }
-    public func load(url: URL) throws { player = try AVAudioPlayer(contentsOf: url); player?.prepareToPlay() }
+    public func load(url: URL) throws {
+        try load(url: url, completionGeneration: 0)
+    }
+    public func load(url: URL, completionGeneration: UInt64) throws {
+        let loadedPlayer = try AVAudioPlayer(contentsOf: url)
+        loadedPlayer.delegate = self
+        loadedPlayer.prepareToPlay()
+        completionLock.withLock {
+            if let player { playerGeneration.removeValue(forKey: ObjectIdentifier(player)) }
+            player = loadedPlayer
+            playerGeneration[ObjectIdentifier(loadedPlayer)] = completionGeneration
+        }
+    }
     public func play() -> Bool { player?.play() ?? false }
     public func pause() { player?.pause() }
+    public func installCompletionHandler(_ handler: @escaping @Sendable (UInt64) -> Void) {
+        completionLock.withLock { completionHandler = handler }
+    }
+    public func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        guard flag else { return }
+        let completion: (UInt64, (@Sendable (UInt64) -> Void)?)? = completionLock.withLock {
+            guard let generation = playerGeneration.removeValue(forKey: ObjectIdentifier(player)) else { return nil }
+            return (generation, completionHandler)
+        }
+        guard let (generation, handler) = completion else { return }
+        handler?(generation)
+    }
 }
 
 public protocol ListenerAudioSession: Sendable {
@@ -91,13 +126,16 @@ public final class MediaPlayerRemoteCommands: ListenerRemoteCommands, @unchecked
 
 public actor ListenerPlaybackController {
     public nonisolated let statuses: AsyncStream<SyncStatus>
+    public nonisolated let durableCheckpoints: AsyncStream<PlaybackState>
     private let statusContinuation: AsyncStream<SyncStatus>.Continuation
+    private let checkpointContinuation: AsyncStream<PlaybackState>.Continuation
     private let cache: ListenerAudioCache
     private let engine: any ListenerAudioEngine
     private let session: any ListenerAudioSession
     private let nowPlaying: any ListenerNowPlaying
     private var currentState: PlaybackState?
     private var title = "Wilted"
+    private var playbackGeneration: UInt64 = 0
 
     public init(cache: ListenerAudioCache, engine: any ListenerAudioEngine,
                 session: any ListenerAudioSession = AVAudioSessionController(),
@@ -105,13 +143,21 @@ public actor ListenerPlaybackController {
         self.cache = cache; self.engine = engine; self.session = session; self.nowPlaying = nowPlaying
         let (stream, continuation) = AsyncStream<SyncStatus>.makeStream()
         self.statuses = stream; self.statusContinuation = continuation
+        let (checkpoints, checkpointContinuation) = AsyncStream<PlaybackState>.makeStream()
+        self.durableCheckpoints = checkpoints
+        self.checkpointContinuation = checkpointContinuation
+        engine.installCompletionHandler { [weak self] generation in
+            Task { await self?.completeNaturally(generation: generation) }
+        }
     }
 
     public func play(asset: WiltedAsset, title: String, state: PlaybackState) async throws -> PlaybackState {
         emit(.init(phase: .staging, message: "Preparing offline audio"))
         guard let url = await cache.url(for: asset) else { throw ListenerError.cacheUnavailable(asset.assetID) }
         try session.activate()
-        try engine.load(url: url)
+        playbackGeneration &+= 1
+        let generation = playbackGeneration
+        try engine.load(url: url, completionGeneration: generation)
         self.title = title
         let start: Double
         switch state.intent {
@@ -190,13 +236,23 @@ public actor ListenerPlaybackController {
     public func enterBackground() throws -> PlaybackState? {
         let position = engine.currentTime
         nowPlaying.update(title: title, duration: engine.duration, position: position, rate: engine.isPlaying ? 1 : 0)
-        guard let state = currentState else {
+        guard engine.isPlaying, let state = currentState, !state.completed else {
             emit(.init(phase: .idle, message: "Playback background state published"))
             return nil
         }
         let updated = try nextState(from: state, position: position, intent: .progress, completed: false)
         currentState = updated
         emit(.init(phase: .idle, message: "Playback background state published"))
+        return updated
+    }
+
+    /// Captures an actively playing engine position without pausing or changing the readout.
+    /// Callers use this only at durable lifecycle boundaries such as item switches and the
+    /// bounded background interval.
+    public func liveCheckpoint() throws -> PlaybackState? {
+        guard engine.isPlaying, let state = currentState, !state.completed else { return nil }
+        let updated = try nextState(from: state, position: engine.currentTime, intent: .progress, completed: false)
+        currentState = updated
         return updated
     }
 
@@ -221,6 +277,25 @@ public actor ListenerPlaybackController {
             engine.currentTime = 0
             _ = try? advanceRemote(position: 0, intent: .restart, newSession: true, rate: 1)
         }
+    }
+
+    private func completeNaturally(generation: UInt64) {
+        guard generation == playbackGeneration, let state = currentState, !state.completed,
+              let completed = try? nextState(
+                  from: state,
+                  position: state.durationSeconds,
+                  intent: .progress,
+                  completed: true
+              ) else { return }
+        currentState = completed
+        nowPlaying.update(
+            title: title,
+            duration: engine.duration,
+            position: completed.positionSeconds,
+            rate: 0
+        )
+        checkpointContinuation.yield(completed)
+        emit(.init(phase: .completed, message: "Playback completed"))
     }
 
     @discardableResult
