@@ -5,6 +5,23 @@ import WiltedProducer
 @testable import WiltedMac
 
 final class WiltedVisualSystemTests: XCTestCase {
+    func testMacSettingsExposeThisMacLifetimeStatisticsWithStableIdentifiers() throws {
+        let sourceRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(
+            contentsOf: sourceRoot.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("WiltedScreenCopy.lifetimeStatisticsScope"))
+        for identifierName in [
+            "WiltedScreenCopy.audioProcessedIdentifier",
+            "WiltedScreenCopy.speechGeneratedIdentifier",
+            "WiltedScreenCopy.confirmedAdTimeRemovedIdentifier",
+            "WiltedScreenCopy.fasterPlaybackTimeSavedIdentifier",
+        ] {
+            XCTAssertTrue(source.contains(identifierName))
+        }
+    }
+
     func testLarderRemainingHeaderIsGlobalAndAccessible() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")

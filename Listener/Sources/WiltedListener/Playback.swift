@@ -248,6 +248,39 @@ public actor ListenerPlaybackController {
         return updated
     }
 
+    /// Moves a loaded, paused item without starting playback again.
+    ///
+    /// A backward seek establishes a fresh causal session, while a forward seek
+    /// continues the current session. The caller supplies that sync intent so
+    /// this transport operation does not alter codec or merge behavior.
+    public func seek(position: Double, intent: PlaybackIntent, newSession: Bool) throws -> PlaybackState? {
+        guard let state = currentState else { return nil }
+        let boundedPosition = min(max(0, position), min(state.durationSeconds, engine.duration))
+        engine.currentTime = boundedPosition
+        let updated = try PlaybackState(
+            itemID: state.itemID,
+            revisionID: state.revisionID,
+            sessionID: newSession ? UUID().uuidString : state.sessionID,
+            sequence: newSession ? 1 : state.sequence + 1,
+            positionSeconds: boundedPosition,
+            durationSeconds: state.durationSeconds,
+            completed: false,
+            intent: intent,
+            deviceID: state.deviceID,
+            encodedCloudKitRecordSystemFields: state.encodedCloudKitRecordSystemFields,
+            updatedAt: Timestamp(Date())
+        )
+        currentState = updated
+        nowPlaying.update(
+            title: title,
+            duration: engine.duration,
+            position: boundedPosition,
+            rate: engine.isPlaying ? 1 : 0
+        )
+        emit(.init(phase: .completed, message: "Playback seek applied"))
+        return updated
+    }
+
     public func handle(interruptionBegan: Bool) throws {
         if interruptionBegan { engine.pause(); emit(.init(phase: .idle, message: "Playback interrupted")) }
         else { emit(.init(phase: .idle, message: "Playback interruption ended")) }

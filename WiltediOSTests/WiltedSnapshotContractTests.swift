@@ -27,4 +27,9 @@ final class WiltedSnapshotContractTests: XCTestCase {
             targetedVariantIDs.count
         )
     }
+
+    func testDownloadBusyStateSharesTheRefreshContract() {
+        XCTAssertTrue(ListenerAppStatus.refreshing("Downloading fixture…").isBusy)
+        XCTAssertTrue(ListenerAppStatus.refreshing("Refreshing larder…").isBusy)
+    }
 }

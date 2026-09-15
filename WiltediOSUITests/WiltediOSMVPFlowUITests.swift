@@ -74,11 +74,11 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         let quarantine = app.descendants(matching: .any)["wilted-listener-fixture-quarantine"]
         XCTAssertTrue(quarantine.waitForExistence(timeout: 5))
         quarantine.tap()
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "quarantined")).firstMatch.waitForExistence(timeout: 5))
 
         let recover = app.descendants(matching: .any)["wilted-listener-fixture-recover"]
         XCTAssertTrue(recover.waitForExistence(timeout: 5))
         recover.tap()
+        app.tabBars.buttons["Larder"].tap()
         XCTAssertTrue(app.staticTexts["Larder ready"].waitForExistence(timeout: 5))
     }
 

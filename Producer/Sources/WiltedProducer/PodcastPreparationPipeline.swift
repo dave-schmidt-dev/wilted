@@ -463,7 +463,7 @@ public actor PodcastPreparationPipeline {
     /// This file's own source hash is computed with this value normalized out;
     /// it makes a semantic edit fail the coverage test until this fingerprint
     /// block is deliberately updated.
-    public static let pipelineSourceHash = "sha256:c5b2b9f934d3cbba4d92b1c1c88accc1c78d1751842794ab5edd8131600d62ee"
+    public static let pipelineSourceHash = "sha256:7b451cf9734df61b9adb2a3f903182453497438b68b318a6e443c86e1e3d46e5"
 
     /// Includes the external Python packages imported by the worker. Those
     /// sources remain outside this repository during the native migration, so
@@ -982,6 +982,13 @@ public actor PodcastPreparationPipeline {
         policy: PodcastPreparationPolicySnapshot,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> PodcastPreparationResult {
+        let sourceContribution = LifetimeStatisticContribution(
+            id: LifetimeStatisticEventID.podcastAudioProcessed(
+                sourceRevisionID: downloadedRevision.revisionID
+            ),
+            kind: .audioProcessed,
+            seconds: downloadedRevision.durationSeconds
+        )
         guard payload.audioChanged else {
             let transcript = try Self.transcript(from: payload, itemID: episode.itemID,
                                                  revisionID: downloadedRevision.revisionID,
@@ -992,7 +999,7 @@ public actor PodcastPreparationPipeline {
                 semanticVersion: Self.semanticVersion, producedAt: Timestamp(now())
             )
             try await store.saveReadyRevision(downloadedRevision, mediaURL: audioURL, transcript: transcript,
-                                              outcome: outcome)
+                                              outcome: outcome, lifetimeStatistics: [sourceContribution])
             return finish(payload, revision: downloadedRevision, mediaURL: audioURL,
                           transcript: transcript, onStatus: onStatus)
         }
@@ -1044,9 +1051,25 @@ public actor PodcastPreparationPipeline {
             semanticVersion: Self.semanticVersion, producedAt: Timestamp(now())
         )
 
-        try await store.replaceReadyRevision(revision, mediaURL: finalURL, transcript: transcript,
-                                             download: prepared, superseding: downloadedRevision.revisionID,
-                                             outcome: outcome, carrying: carried)
+        var lifetimeStatistics = [sourceContribution]
+        if payload.adRemovalOutcome == "cut", payload.audioChanged,
+           payload.removedSeconds.isFinite, payload.removedSeconds > 0 {
+            lifetimeStatistics.append(LifetimeStatisticContribution(
+                id: LifetimeStatisticEventID.podcastAdRemoved(revisionID: revision.revisionID),
+                kind: .confirmedAdTimeRemoved,
+                seconds: payload.removedSeconds
+            ))
+        }
+        try await store.replaceReadyRevision(
+            revision,
+            mediaURL: finalURL,
+            transcript: transcript,
+            download: prepared,
+            superseding: downloadedRevision.revisionID,
+            outcome: outcome,
+            carrying: carried,
+            lifetimeStatistics: lifetimeStatistics
+        )
         // Only now is the outcome durable, so only now is the original safe to
         // reclaim: a crash before this point leaves it in place for a retry to
         // find again, and a crash after it leaves an idempotent no-op.

@@ -10,6 +10,30 @@ import WiltedCloudKit
 
 @MainActor
 final class ListenerAppModelTests: XCTestCase {
+    func testListenerLifetimeStatisticsAreExplicitlyUnavailableBecauseTheyAreMacLocal() throws {
+        let model = WiltedListenerAppModel()
+        XCTAssertEqual(
+            model.lifetimeStatisticsUnavailableReason,
+            "These lifetime statistics are stored only on the Mac that produces and plays audio."
+        )
+
+        let sourceRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(
+            contentsOf: sourceRoot.appendingPathComponent("WiltediOS/ListenerAppView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("value: \"Unavailable\""))
+        XCTAssertFalse(source.contains("model.lifetimeStatistics."))
+        for identifierName in [
+            "WiltedScreenCopy.audioProcessedIdentifier",
+            "WiltedScreenCopy.speechGeneratedIdentifier",
+            "WiltedScreenCopy.confirmedAdTimeRemovedIdentifier",
+            "WiltedScreenCopy.fasterPlaybackTimeSavedIdentifier",
+        ] {
+            XCTAssertTrue(source.contains(identifierName))
+        }
+    }
+
     func testProductionLaunchRetainsRealRemoteCommandHandlerAndHandlesPause() async throws {
         var launchedModel: WiltedListenerAppModel?
         for _ in 0..<200 {
@@ -174,7 +198,21 @@ final class ListenerAppModelTests: XCTestCase {
             ),
             .localOnly
         )
-        XCTAssertEqual(WiltedListenerAppModel.defaultSessionMode(environment: [:]), .liveCloudKit)
+        XCTAssertEqual(
+            WiltedListenerAppModel.defaultSessionMode(environment: [:], isXCTestRuntime: true),
+            .localOnly
+        )
+#if WILTED_CLOUDKIT_LIVE
+        XCTAssertEqual(
+            WiltedListenerAppModel.defaultSessionMode(environment: [:], isXCTestRuntime: false),
+            .liveCloudKit
+        )
+#else
+        XCTAssertEqual(
+            WiltedListenerAppModel.defaultSessionMode(environment: [:], isXCTestRuntime: false),
+            .localOnly
+        )
+#endif
     }
 
     func testColdLaunchSessionConstructionFailureKeepsLocalCatalogAndDownloadedAudio() async throws {
@@ -227,6 +265,100 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertTrue(ListenerAppStatus.refreshing("Waiting for sync").isBusy)
         XCTAssertTrue(ListenerAppStatus.sending("Sending playback").isBusy)
         XCTAssertFalse(ListenerAppStatus.offline("Offline").isBusy)
+    }
+
+    func testRetryDownloadRepeatsTheFailedDownloadWithoutRefreshing() async throws {
+        let fixture = try makeChunkedCatalogFixture()
+        let loader = FailOnceChunkLoader(data: fixture.bytes)
+        let transport = RecordingSyncTransport()
+        let model = WiltedListenerAppModel(
+            repository: fixture.repository,
+            transport: transport,
+            cache: fixture.cache,
+            audioChunkLoader: { itemID, revisionID, manifest in
+                try await loader.load(itemID: itemID, revisionID: revisionID, manifest: manifest)
+            }
+        )
+
+        await model.refresh()
+        let refreshesBeforeRetry = await transport.fetchCountValue()
+        await model.download(itemID: fixture.itemID)
+        XCTAssertEqual(model.syncPhase, .failed("Download failed: network unavailable", retryable: true))
+
+        await model.retrySyncOperation()
+
+        let attempts = await loader.attemptCount()
+        let refreshesAfterRetry = await transport.fetchCountValue()
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(refreshesAfterRetry, refreshesBeforeRetry,
+                       "retrying a download must not refresh the catalog")
+        XCTAssertEqual(model.items.first?.state, .downloaded)
+        XCTAssertEqual(model.syncPhase, .ready)
+    }
+
+    func testRetrySendRepeatsTheFailedSendWithoutRefreshing() async throws {
+        let transport = RecordingSyncTransport(saveErrors: [.network])
+        let harness = try await PlaybackHarness.make(transport: transport)
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        let refreshesBeforeRetry = await transport.fetchCountValue()
+
+        await harness.model.sendPending()
+        XCTAssertEqual(harness.model.syncPhase, .failed("Send failed: network unavailable", retryable: true))
+
+        await harness.model.retrySyncOperation()
+
+        let saves = await transport.saveCountValue()
+        let refreshesAfterRetry = await transport.fetchCountValue()
+        XCTAssertEqual(saves, 2)
+        XCTAssertEqual(refreshesAfterRetry, refreshesBeforeRetry,
+                       "retrying a send must not refresh the catalog")
+        XCTAssertEqual(harness.model.syncPhase, .ready)
+    }
+
+    func testRetryPlaybackRepeatsTheFailedPlayWithoutRefreshing() async throws {
+        let transport = RecordingSyncTransport()
+        let harness = try await PlaybackHarness.make(transport: transport)
+        await harness.model.refresh()
+        let refreshesBeforeRetry = await transport.fetchCountValue()
+        harness.engine.allowsPlayback = false
+
+        await harness.model.play(itemID: harness.itemID)
+        guard case .failed(_, retryable: true) = harness.model.playbackPhase else {
+            return XCTFail("Expected a retryable playback failure")
+        }
+
+        harness.engine.allowsPlayback = true
+        await harness.model.retryPlaybackOperation()
+
+        let refreshesAfterRetry = await transport.fetchCountValue()
+        XCTAssertEqual(refreshesAfterRetry, refreshesBeforeRetry,
+                       "retrying playback must not refresh the catalog")
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
+        XCTAssertTrue(harness.engine.isPlaying)
+    }
+
+    func testRetrySeekRepeatsTheFailedSeekWithoutRefreshing() async throws {
+        let transport = RecordingSyncTransport()
+        let harness = try await PlaybackHarness.make(transport: transport)
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        let refreshesBeforeRetry = await transport.fetchCountValue()
+        harness.engine.allowsPlayback = false
+
+        await harness.model.seek(to: 12)
+        guard case .failed(_, retryable: true) = harness.model.playbackPhase else {
+            return XCTFail("Expected a retryable seek failure")
+        }
+
+        harness.engine.allowsPlayback = true
+        await harness.model.retryPlaybackOperation()
+
+        let refreshesAfterRetry = await transport.fetchCountValue()
+        XCTAssertEqual(refreshesAfterRetry, refreshesBeforeRetry,
+                       "retrying a seek must not refresh the catalog")
+        XCTAssertEqual(harness.model.selectedPlayback?.positionSeconds, 12)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
     }
 
     func testStartDiscoversCatalogOnceAndForegroundRefreshesItAgain() async {
@@ -1080,6 +1212,47 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertEqual(harness.model.playbackPhase, .paused)
     }
 
+    func testPausedBackwardAndForwardSeekPersistIntentWithoutRestartingAudio() async throws {
+        let harness = try await PlaybackHarness.make()
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        harness.engine.currentTime = 20
+        await harness.model.pause()
+        let paused = try XCTUnwrap(harness.model.selectedPlayback)
+        let playCallsBeforeSeek = harness.engine.playCallCount
+        let loadCallsBeforeSeek = harness.engine.loadCallCount
+
+        await harness.model.seekBackward()
+
+        let rewind = try XCTUnwrap(harness.model.selectedPlayback)
+        XCTAssertEqual(harness.model.playbackPhase, .paused)
+        XCTAssertEqual(rewind.intent, .rewind)
+        XCTAssertEqual(rewind.positionSeconds, 5)
+        XCTAssertNotEqual(rewind.sessionID, paused.sessionID)
+        XCTAssertEqual(rewind.sequence, 1)
+        XCTAssertFalse(harness.engine.isPlaying)
+        XCTAssertEqual(harness.engine.playCallCount, playCallsBeforeSeek)
+        XCTAssertEqual(harness.engine.loadCallCount, loadCallsBeforeSeek)
+
+        await harness.model.seekForward()
+
+        let progress = try XCTUnwrap(harness.model.selectedPlayback)
+        XCTAssertEqual(harness.model.playbackPhase, .paused)
+        XCTAssertEqual(progress.intent, .progress)
+        XCTAssertEqual(progress.positionSeconds, 30)
+        XCTAssertEqual(progress.sessionID, rewind.sessionID)
+        XCTAssertEqual(progress.sequence, rewind.sequence + 1)
+        XCTAssertFalse(harness.engine.isPlaying)
+        XCTAssertEqual(harness.engine.playCallCount, playCallsBeforeSeek)
+        XCTAssertEqual(harness.engine.loadCallCount, loadCallsBeforeSeek)
+        let changes = await harness.repository.enqueuedChanges()
+        XCTAssertEqual(changes.count, 4)
+        let rewindEnvelope = try XCTUnwrap(changes[2].record)
+        let progressEnvelope = try XCTUnwrap(changes[3].record)
+        XCTAssertEqual(try WiltedRecordCodec().decodePlaybackRecord(rewindEnvelope).value, rewind)
+        XCTAssertEqual(try WiltedRecordCodec().decodePlaybackRecord(progressEnvelope).value, progress)
+    }
+
     func testRestartOpensANewSessionInsteadOfFailingTheSequenceFloor() async throws {
         let harness = try await PlaybackHarness.make()
         await harness.model.refresh()
@@ -1592,7 +1765,7 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertEqual(model.syncPhase, .failed("Download failed: network unavailable", retryable: true))
     }
 
-    func testDuplicateChunkDownloadsAreSuppressedWhileOneIsInFlight() async throws {
+    func testDownloadReportsBusyStateAndRejectsADuplicateRequest() async throws {
         let fixture = try makeChunkedCatalogFixture()
         let loader = BlockingChunkLoader(data: fixture.bytes)
         let model = WiltedListenerAppModel(repository: fixture.repository, transport: RecordingSyncTransport(),
@@ -1607,11 +1780,17 @@ final class ListenerAppModelTests: XCTestCase {
             if await loader.count > 0 { break }
             await Task.yield()
         }
+
+        XCTAssertEqual(model.downloadingItemID, fixture.itemID)
+        XCTAssertTrue(model.syncPhase.isBusy)
         await model.download(itemID: fixture.itemID)
         let loadCount = await loader.count
         XCTAssertEqual(loadCount, 1)
+        XCTAssertEqual(model.downloadRequestFeedback, "Download already in progress.")
         await loader.release()
         await first.value
+        XCTAssertNil(model.downloadingItemID)
+        XCTAssertNil(model.downloadRequestFeedback)
         XCTAssertEqual(model.items.first?.state, .downloaded)
     }
 
@@ -2004,11 +2183,14 @@ private actor RecordingSyncTransport: SyncTransport {
     let statuses: AsyncStream<SyncStatus>
     private var sent: [[SyncPendingChange]] = []
     private var fetchCount = 0
+    private var saveCount = 0
     private let fetchError: TestSyncError?
+    private var saveErrors: [TestSyncError]
 
-    init(fetchError: TestSyncError? = nil) {
+    init(fetchError: TestSyncError? = nil, saveErrors: [TestSyncError] = []) {
         statuses = AsyncStream { _ in }
         self.fetchError = fetchError
+        self.saveErrors = saveErrors
     }
 
     func fetchChanges() async throws -> SyncFetchBatch {
@@ -2018,12 +2200,15 @@ private actor RecordingSyncTransport: SyncTransport {
     }
 
     func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {
+        saveCount += 1
         sent.append(changes)
+        if !saveErrors.isEmpty { throw saveErrors.removeFirst() }
         return try SyncSendResult(engineState: Data([3]))
     }
 
     func savedChanges() -> [[SyncPendingChange]] { sent }
     func fetchCountValue() -> Int { fetchCount }
+    func saveCountValue() -> Int { saveCount }
 }
 
 private actor LegacyAssetEngineDriver: CloudKitEngineDriver {
@@ -2177,6 +2362,21 @@ private enum TestSyncError: Error, LocalizedError, Sendable {
     var errorDescription: String? { "network unavailable" }
 }
 
+private actor FailOnceChunkLoader {
+    private let data: Data
+    private var attempts = 0
+
+    init(data: Data) { self.data = data }
+
+    func load(itemID _: ItemID, revisionID _: RevisionID, manifest _: AudioChunkManifest) throws -> Data {
+        attempts += 1
+        guard attempts > 1 else { throw TestSyncError.network }
+        return data
+    }
+
+    func attemptCount() -> Int { attempts }
+}
+
 private final class AccountSignalSource: @unchecked Sendable {
     let stream: AsyncStream<ListenerAccountChange>
     private let continuation: AsyncStream<ListenerAccountChange>.Continuation
@@ -2314,6 +2514,8 @@ private final class FakeAudioEngine: ListenerAudioEngine, @unchecked Sendable {
     var currentTime: Double = 0
     private(set) var playing = false
     var allowsPlayback = true
+    private(set) var loadCallCount = 0
+    private(set) var playCallCount = 0
     private let loadGateLock = NSLock()
     private var nextLoadGate: LoadGate?
     private(set) var completionGeneration: UInt64 = 0
@@ -2326,6 +2528,7 @@ private final class FakeAudioEngine: ListenerAudioEngine, @unchecked Sendable {
         return gate
     }
     func load(url: URL) throws {
+        loadCallCount += 1
         let gate = loadGateLock.withLock {
             defer { nextLoadGate = nil }
             return nextLoadGate
@@ -2337,7 +2540,7 @@ private final class FakeAudioEngine: ListenerAudioEngine, @unchecked Sendable {
         try load(url: url)
         self.completionGeneration = completionGeneration
     }
-    func play() -> Bool { playing = allowsPlayback; return allowsPlayback }
+    func play() -> Bool { playCallCount += 1; playing = allowsPlayback; return allowsPlayback }
     func pause() { playing = false }
     func installCompletionHandler(_ handler: @escaping @Sendable (UInt64) -> Void) { completionHandler = handler }
     func finishNaturally() {

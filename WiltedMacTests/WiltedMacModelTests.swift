@@ -63,6 +63,34 @@ private actor SuccessfulBootstrap {
 
 @MainActor
 final class WiltedMacModelTests: XCTestCase {
+    func testBootstrapPublishesOnlyDeviceLocalLedgerTotals() async throws {
+        let directory = temporaryDirectory("lifetime-statistics")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: [],
+            stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                _ = try await store.recordLifetimeStatistic(
+                    id: "audio-one", kind: .audioProcessed, seconds: 120
+                )
+                _ = try await store.recordLifetimeStatistic(
+                    id: "speech-one", kind: .speechGenerated, seconds: 45
+                )
+                return store
+            },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        XCTAssertEqual(model.lifetimeStatistics, LifetimeStatistics(
+            audioProcessedSeconds: 120,
+            speechGeneratedSeconds: 45
+        ))
+    }
+
     func testHostedTestAppNeverActivatesPipelineInvalidation() {
         XCTAssertNil(WiltedMacApp.pipelineFingerprintForLaunch(
             hostsTests: true, resolvedFingerprint: "live-pipeline"

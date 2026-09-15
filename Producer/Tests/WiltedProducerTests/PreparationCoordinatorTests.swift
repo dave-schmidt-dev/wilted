@@ -57,7 +57,7 @@ struct PreparationCoordinatorTests {
                 try Data("candidate".utf8).write(to: destination)
                 return try assemblyResult(itemID: itemID, mediaURL: destination)
             },
-            save: { _, _ in throw TestPreparationError.saveFailed }
+            save: { _, _, _ in throw TestPreparationError.saveFailed }
         )
 
         let run = await coordinator.start(url: fixture.articleURL)
@@ -83,6 +83,31 @@ struct PreparationCoordinatorTests {
         let transcript = try await fixture.store.transcript(for: itemID, revisionID: RevisionID(rawValue: "rev-test"))
         #expect(transcript?.availability == .available)
         #expect(transcript?.text == "Fixture article body.")
+        #expect(try await fixture.store.lifetimeStatistics().speechGeneratedSeconds == 3.0 / 24_000.0)
+    }
+
+    @Test func customSaveReceivesTheAtomicSpeechStatisticContribution() async throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        let captured = CapturedLifetimeStatistics()
+        let coordinator = fixture.coordinator(
+            assembly: { _, itemID, destination, _ in
+                try Data("candidate".utf8).write(to: destination)
+                return try assemblyResult(itemID: itemID, mediaURL: destination)
+            },
+            save: { _, _, lifetimeStatistics in
+                await captured.record(lifetimeStatistics)
+            }
+        )
+
+        let statuses = await collect((await coordinator.start(url: fixture.articleURL)).statuses)
+
+        #expect(statuses.last?.stage == .completed)
+        #expect(await captured.value() == [LifetimeStatisticContribution(
+            id: "article-speech|rev-test",
+            kind: .speechGenerated,
+            seconds: 3.0 / 24_000.0
+        )])
     }
 
     @Test func oversized_transcript_preserves_ready_audio() async throws {
@@ -141,6 +166,13 @@ struct PreparationCoordinatorTests {
 }
 
 private enum TestPreparationError: Error { case saveFailed, timedOut }
+
+private actor CapturedLifetimeStatistics {
+    private var contributions: [LifetimeStatisticContribution] = []
+
+    func record(_ value: [LifetimeStatisticContribution]) { contributions = value }
+    func value() -> [LifetimeStatisticContribution] { contributions }
+}
 
 private struct CoordinatorFixture {
     let directory: URL

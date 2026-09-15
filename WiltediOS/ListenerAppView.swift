@@ -61,6 +61,13 @@ public struct WiltedListenerLibraryView: View {
                     .foregroundStyle(model.syncPhase.tone.color(colorScheme))
                     .accessibilityIdentifier("wilted-listener-status")
 
+                if let feedback = model.downloadRequestFeedback {
+                    Text(feedback)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedStatusTone.caution.color(colorScheme))
+                        .accessibilityIdentifier("wilted-listener-download-feedback")
+                }
+
                 if model.syncPhase.isBusy {
                     Button("Cancel") { model.cancel() }
                         .buttonStyle(.bordered)
@@ -69,10 +76,17 @@ public struct WiltedListenerLibraryView: View {
                 }
 
                 if case .failed(_, retryable: true) = model.syncPhase {
-                    Button("Retry") { Task { await model.refresh() } }
+                    Button("Retry") { Task { await model.retrySyncOperation() } }
                         .buttonStyle(.borderedProminent)
                         .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
                         .accessibilityIdentifier("wilted-listener-retry")
+                }
+
+                if case .failed(_, retryable: true) = model.playbackPhase {
+                    Button("Retry Playback") { Task { await model.retryPlaybackOperation() } }
+                        .buttonStyle(.bordered)
+                        .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+                        .accessibilityIdentifier("wilted-listener-playback-retry")
                 }
 
                 // A quarantined listener previously showed only a red line.
@@ -173,8 +187,13 @@ public struct WiltedListenerLibraryView: View {
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("wilted-listener-play-\(item.itemID.rawValue)")
             } else if item.state == .metadataOnly {
-                Button("Download") { Task { await model.download(itemID: item.itemID) } }
+                let isDownloading = model.downloadingItemID == item.itemID
+                Button(isDownloading ? "Downloading…" : "Download") {
+                    Task { await model.download(itemID: item.itemID) }
+                }
                     .buttonStyle(.bordered)
+                    .disabled(model.syncPhase.isBusy)
+                    .accessibilityHint(isDownloading ? "Download already in progress." : "")
                     .accessibilityIdentifier("wilted-listener-download-action-\(item.itemID.rawValue)")
             }
 
@@ -286,6 +305,13 @@ public struct WiltedListenerNowPlayingView: View {
                     .wiltedFont(.utility)
                     .foregroundStyle(model.playbackPhase.tone.color(colorScheme))
                     .accessibilityIdentifier("wilted-now-playing-status")
+
+                if case .failed(_, retryable: true) = model.playbackPhase {
+                    Button("Retry Playback") { Task { await model.retryPlaybackOperation() } }
+                        .buttonStyle(.bordered)
+                        .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+                        .accessibilityIdentifier("wilted-now-playing-retry")
+                }
 
                 HStack(spacing: WiltedTheme.Spacing.medium) {
                     transportButton(
@@ -464,6 +490,35 @@ public struct WiltedListenerSettingsView: View {
                     WiltedSettingsRow("Storage used", value: storageLabel, identifier: "wilted-settings-download-bytes")
                 }
 
+                WiltedSettingsCard(title: WiltedScreenCopy.lifetimeStatistics) {
+                    Text(model.lifetimeStatisticsUnavailableReason)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier(WiltedScreenCopy.lifetimeStatisticsReasonIdentifier)
+                    Divider()
+                    unavailableLifetimeStatistic(
+                        WiltedScreenCopy.audioProcessed,
+                        identifier: WiltedScreenCopy.audioProcessedIdentifier
+                    )
+                    Divider()
+                    unavailableLifetimeStatistic(
+                        WiltedScreenCopy.speechGenerated,
+                        identifier: WiltedScreenCopy.speechGeneratedIdentifier
+                    )
+                    Divider()
+                    unavailableLifetimeStatistic(
+                        WiltedScreenCopy.confirmedAdTimeRemoved,
+                        identifier: WiltedScreenCopy.confirmedAdTimeRemovedIdentifier
+                    )
+                    Divider()
+                    unavailableLifetimeStatistic(
+                        WiltedScreenCopy.fasterPlaybackTimeSaved,
+                        identifier: WiltedScreenCopy.fasterPlaybackTimeSavedIdentifier
+                    )
+                }
+                .accessibilityIdentifier("wilted-lifetime-statistics")
+
                 // A bare mark here only repeated the brand. Paired with the
                 // build it identifies, it answers the question an alpha
                 // tester actually has about the screen they are looking at.
@@ -488,6 +543,10 @@ public struct WiltedListenerSettingsView: View {
 
     private var lastSyncLabel: String {
         model.syncObservability.lastSuccessfulFetchAt?.formatted(date: .abbreviated, time: .shortened) ?? "Never"
+    }
+
+    private func unavailableLifetimeStatistic(_ label: String, identifier: String) -> some View {
+        WiltedSettingsRow(label, value: "Unavailable", identifier: identifier)
     }
 
     private var downloadCountLabel: String {

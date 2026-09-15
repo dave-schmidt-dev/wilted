@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Wilted — lifetime statistics mockup</title>
+  <style>
+    :root { color-scheme: dark; --page: #0b0f0d; --side: #101612; --panel: #151c17; --raised: #202b23; --line: #2d3d32; --text: #edf3ee; --muted: #9baa9f; --leaf: #8ecb86; --amber: #e8c468; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; min-height: 100vh; display: grid; place-items: center; background: #060806; color: var(--text); font: 15px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+    button { font: inherit; cursor: pointer; }
+    .prototype { position: fixed; top: 14px; right: 18px; color: var(--muted); font: 11px ui-monospace, monospace; }
+    .window { width: min(1200px, calc(100vw - 48px)); min-height: min(760px, calc(100vh - 48px)); display: grid; grid-template-columns: 210px 1fr; overflow: hidden; border: 1px solid #344239; border-radius: 16px; background: var(--page); box-shadow: 0 24px 80px #000a; }
+    aside { padding: 28px 12px; background: var(--side); border-right: 1px solid var(--line); }
+    .brand { margin: 0 10px 26px; font-size: 19px; font-weight: 750; }.brand span { color: var(--leaf); }
+    nav { display: grid; gap: 5px; } nav button { border: 0; border-radius: 8px; padding: 10px 12px; background: transparent; color: var(--muted); text-align: left; } nav button.active { background: #294834; color: var(--text); }
+    main { padding: 42px clamp(24px, 5vw, 72px); } .page { display: none; max-width: 760px; } .page.active { display: block; }
+    h1 { margin: 0; font-size: 33px; letter-spacing: -.035em; } .lede { margin: 8px 0 28px; color: var(--muted); line-height: 1.5; }
+    .scope { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 20px; padding: 13px 15px; border: 1px solid #426147; border-radius: 10px; background: #122016; }.scope strong { display: block; color: #c8ebc8; }.scope p { margin: 3px 0 0; color: var(--muted); font-size: 13px; }.scope .mark { color: var(--leaf); font-size: 18px; line-height: 1; }
+    .section-heading { margin: 27px 0 10px; font-size: 13px; font-weight: 700; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; }
+    .stats { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }.stat { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; padding: 18px; border-bottom: 1px solid var(--line); }.stat:last-child { border: 0; }.label { font-weight: 650; }.detail { margin-top: 3px; color: var(--muted); font-size: 13px; }.value { font-size: 20px; font-weight: 720; font-variant-numeric: tabular-nums; }.unavailable { color: var(--amber); font-size: 15px; }
+    .note { margin-top: 16px; color: var(--muted); font-size: 13px; line-height: 1.5; }.refresh { margin-top: 22px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); color: var(--text); }.refresh:focus-visible, nav button:focus-visible { outline: 2px solid var(--leaf); outline-offset: 2px; }
+    @media (max-width: 700px) { body { display: block; }.prototype { position: static; display: block; padding: 12px 16px; text-align: right; }.window { width: 100%; min-height: calc(100vh - 38px); grid-template-columns: 1fr; border-right: 0; border-left: 0; border-radius: 0; } aside { padding: 16px; border-right: 0; border-bottom: 1px solid var(--line); }.brand { margin-bottom: 14px; } nav { grid-template-columns: repeat(2, 1fr); } main { padding: 28px 18px; }.stat { grid-template-columns: 1fr; gap: 6px; }.value { font-size: 19px; } }
+  </style>
+</head>
+<body>
+  <div class="prototype">INTERACTIVE UX MOCKUP · not installed behavior</div>
+  <section class="window">
+    <aside>
+      <div class="brand"><span>✦</span> wilted</div>
+      <nav id="nav" aria-label="Prototype surfaces"></nav>
+    </aside>
+    <main id="pages"></main>
+  </section>
+  <script>
+    // The same canonical fixture is read by both surfaces. No listener value is inferred from the Mac fixture.
+    const model = {
+      activePage: 'mac-settings',
+      pages: [
+        { id: 'mac-settings', label: '▣  Mac Settings', title: 'Settings', lede: 'Listening and production totals recorded by this Mac.' },
+        { id: 'listener-settings', label: '▣  iPhone Settings', title: 'Settings', lede: 'Statistics available to the listener.' }
+      ],
+      mac: {
+        scopeTitle: 'This Mac',
+        scopeDetail: 'Totals are recorded only on this Mac. They are not synced to your iPhone.',
+        stats: [
+          { id: 'audio-processed', label: 'Audio processed', detail: 'Accepted source audio from completed podcast preparation.', value: '42 hr 18 min' },
+          { id: 'speech-generated', label: 'Speech generated', detail: 'Final audio created from article text.', value: '6 hr 42 min' },
+          { id: 'ad-time-removed', label: 'Confirmed ad time removed', detail: 'Only cuts confirmed in committed prepared audio.', value: '3 hr 14 min' },
+          { id: 'speed-time-saved', label: 'Time saved at faster speeds', detail: 'Forward listening above 1×, counted once per program interval.', value: '5 hr 9 min' }
+        ]
+      },
+      listener: {
+        scopeTitle: 'Not available on this iPhone',
+        scopeDetail: 'These totals belong to your Mac. Wilted does not merge or estimate them across devices.',
+        stats: [
+          { id: 'audio-processed', label: 'Audio processed' },
+          { id: 'speech-generated', label: 'Speech generated' },
+          { id: 'ad-time-removed', label: 'Confirmed ad time removed' },
+          { id: 'speed-time-saved', label: 'Time saved at faster speeds' }
+        ]
+      }
+    };
+
+    const escapeHTML = value => String(value).replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
+
+    function statRow(stat, available) {
+      const value = available ? escapeHTML(stat.value) : 'Not available';
+      const detail = available ? escapeHTML(stat.detail) : 'Recorded on your Mac; cross-device totals are not shown.';
+      return `<div class="stat" data-stat-id="${escapeHTML(stat.id)}"><div><div class="label">${escapeHTML(stat.label)}</div><div class="detail">${detail}</div></div><div class="value ${available ? '' : 'unavailable'}">${value}</div></div>`;
+    }
+
+    function pageHTML(page) {
+      const available = page.id === 'mac-settings';
+      const surface = available ? model.mac : model.listener;
+      return `<section class="page ${page.id === model.activePage ? 'active' : ''}" id="${page.id}">
+        <h1>${escapeHTML(page.title)}</h1><p class="lede">${escapeHTML(page.lede)}</p>
+        <div class="scope"><span class="mark">${available ? '●' : '○'}</span><div><strong>${escapeHTML(surface.scopeTitle)}</strong><p>${escapeHTML(surface.scopeDetail)}</p></div></div>
+        <div class="section-heading">Lifetime statistics</div>
+        <div class="stats">${surface.stats.map(stat => statRow(stat, available)).join('')}</div>
+        <p class="note">${available ? 'Totals start when Wilted records a confirmed event. Existing library items are not estimated or backfilled.' : 'The listener does not display local zeroes for Mac-owned work.'}</p>
+        ${available ? '<button class="refresh" id="refresh-preview">Preview new recorded activity</button>' : ''}
+      </section>`;
+    }
+
+    function render() {
+      document.getElementById('nav').innerHTML = model.pages.map(page => `<button data-page="${page.id}" class="${page.id === model.activePage ? 'active' : ''}">${escapeHTML(page.label)}</button>`).join('');
+      document.getElementById('pages').innerHTML = model.pages.map(pageHTML).join('');
+      document.getElementById('refresh-preview')?.addEventListener('click', () => {
+        model.mac.stats[3].value = '5 hr 12 min';
+        render();
+      });
+    }
+
+    document.addEventListener('click', event => {
+      const pageButton = event.target.closest('[data-page]');
+      if (!pageButton) return;
+      model.activePage = pageButton.dataset.page;
+      history.replaceState(null, '', `#${model.activePage}`);
+      render();
+    });
+    const requestedPage = location.hash.slice(1);
+    if (model.pages.some(page => page.id === requestedPage)) model.activePage = requestedPage;
+    render();
+  </script>
+</body>
+</html>

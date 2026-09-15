@@ -17,8 +17,9 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     case v8 = 8
     case v9 = 9
     case v10 = 10
+    case v11 = 11
 
-    public static let current: LocalLibrarySchemaVersion = .v10
+    public static let current: LocalLibrarySchemaVersion = .v11
 }
 
 /// The local ownership state used by generation-based remote reconciliation.
@@ -1368,12 +1369,52 @@ private enum LocalLibrarySchemaV10: VersionedSchema {
     }
 }
 
+private enum LocalLibrarySchemaV11Models {
+    /// One immutable contribution to a device-local lifetime total. Duplicate
+    /// IDs are ignored, and existing rows are never updated or removed.
+    @Model final class LifetimeStatisticEventRecord {
+        @Attribute(.unique) var id: String
+        var kind: String
+        var seconds: Double
+
+        init(id: String, kind: LifetimeStatisticKind, seconds: Double) {
+            self.id = id
+            self.kind = kind.rawValue
+            self.seconds = seconds
+        }
+    }
+
+    /// The greatest program position already considered for speed savings.
+    /// It is deliberately separate from the append-only event ledger.
+    @Model final class PlaybackStatisticHighWaterRecord {
+        @Attribute(.unique) var revisionID: String
+        var positionSeconds: Double
+
+        init(revisionID: RevisionID, positionSeconds: Double) {
+            self.revisionID = revisionID.rawValue
+            self.positionSeconds = positionSeconds
+        }
+    }
+}
+
+/// Version 11 adds device-local statistics only. Neither entity participates
+/// in CloudKit, because this store's configuration remains `.none`.
+private enum LocalLibrarySchemaV11: VersionedSchema {
+    static let versionIdentifier = Schema.Version(11, 0, 0)
+    static var models: [any PersistentModel.Type] {
+        LocalLibrarySchemaV10.models + [
+            LocalLibrarySchemaV11Models.LifetimeStatisticEventRecord.self,
+            LocalLibrarySchemaV11Models.PlaybackStatisticHighWaterRecord.self,
+        ]
+    }
+}
+
 private enum LocalLibraryMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
         [LocalLibrarySchemaV1.self, LocalLibrarySchemaV2.self, LocalLibrarySchemaV3.self,
          LocalLibrarySchemaV4.self, LocalLibrarySchemaV5.self, LocalLibrarySchemaV6.self,
          LocalLibrarySchemaV7.self, LocalLibrarySchemaV8.self, LocalLibrarySchemaV9.self,
-         LocalLibrarySchemaV10.self]
+         LocalLibrarySchemaV10.self, LocalLibrarySchemaV11.self]
     }
     static var stages: [MigrationStage] {
         [.lightweight(fromVersion: LocalLibrarySchemaV1.self, toVersion: LocalLibrarySchemaV2.self),
@@ -1384,7 +1425,8 @@ private enum LocalLibraryMigrationPlan: SchemaMigrationPlan {
          .lightweight(fromVersion: LocalLibrarySchemaV6.self, toVersion: LocalLibrarySchemaV7.self),
          .lightweight(fromVersion: LocalLibrarySchemaV7.self, toVersion: LocalLibrarySchemaV8.self),
          .lightweight(fromVersion: LocalLibrarySchemaV8.self, toVersion: LocalLibrarySchemaV9.self),
-         .lightweight(fromVersion: LocalLibrarySchemaV9.self, toVersion: LocalLibrarySchemaV10.self)]
+         .lightweight(fromVersion: LocalLibrarySchemaV9.self, toVersion: LocalLibrarySchemaV10.self),
+         .lightweight(fromVersion: LocalLibrarySchemaV10.self, toVersion: LocalLibrarySchemaV11.self)]
     }
 }
 
@@ -1441,7 +1483,7 @@ public actor LocalLibraryStore {
             try migrationFailure?()
         }
         migrationBackupURL = retainedURL
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV10.self)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV11.self)
         let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         if migrate {
             container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
@@ -1463,7 +1505,7 @@ public actor LocalLibraryStore {
             retainedURL = try Self.migrationPreflight(at: url).retainedURL
         }
         migrationBackupURL = retainedURL
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV10.self)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV11.self)
         let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         if migrate {
             container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
@@ -1473,6 +1515,128 @@ public actor LocalLibraryStore {
         }
     }
     #endif
+
+    /// Appends one validated lifetime contribution. An existing deterministic
+    /// ID wins unchanged, making retries and relaunches idempotent.
+    @discardableResult
+    public func recordLifetimeStatistic(
+        id: String,
+        kind: LifetimeStatisticKind,
+        seconds: Double
+    ) throws -> Bool {
+        guard !id.isEmpty, seconds.isFinite, seconds >= 0 else { return false }
+        let context = ModelContext(container)
+        let inserted = try appendLifetimeStatistics([
+            LifetimeStatisticContribution(id: id, kind: kind, seconds: seconds)
+        ], in: context)
+        guard inserted else { return false }
+        try context.save()
+        return true
+    }
+
+    /// Inserts new deterministic event IDs into an existing transaction.
+    @discardableResult
+    private func appendLifetimeStatistics(
+        _ contributions: [LifetimeStatisticContribution],
+        in context: ModelContext
+    ) throws -> Bool {
+        let existingIDs = Set(try context.fetch(
+            FetchDescriptor<LocalLibrarySchemaV11Models.LifetimeStatisticEventRecord>()
+        ).map(\.id))
+        var admittedIDs = existingIDs
+        var inserted = false
+        for contribution in contributions
+        where !contribution.id.isEmpty && contribution.seconds.isFinite && contribution.seconds >= 0
+            && admittedIDs.insert(contribution.id).inserted {
+            context.insert(LocalLibrarySchemaV11Models.LifetimeStatisticEventRecord(
+                id: contribution.id, kind: contribution.kind, seconds: contribution.seconds
+            ))
+            inserted = true
+        }
+        return inserted
+    }
+
+    /// Totals the immutable ledger and ignores any corrupt legacy value rather
+    /// than allowing NaN, infinity, or a negative value to poison a total.
+    public func lifetimeStatistics() throws -> LifetimeStatistics {
+        let context = ModelContext(container)
+        let records = try context.fetch(
+            FetchDescriptor<LocalLibrarySchemaV11Models.LifetimeStatisticEventRecord>()
+        )
+        var totals = LifetimeStatistics()
+        for record in records where record.seconds.isFinite && record.seconds >= 0 {
+            guard let kind = LifetimeStatisticKind(rawValue: record.kind) else { continue }
+            switch kind {
+            case .audioProcessed:
+                let value = totals.audioProcessedSeconds + record.seconds
+                if value.isFinite { totals.audioProcessedSeconds = value }
+            case .speechGenerated:
+                let value = totals.speechGeneratedSeconds + record.seconds
+                if value.isFinite { totals.speechGeneratedSeconds = value }
+            case .confirmedAdTimeRemoved:
+                let value = totals.confirmedAdTimeRemovedSeconds + record.seconds
+                if value.isFinite { totals.confirmedAdTimeRemovedSeconds = value }
+            case .fasterPlaybackTimeSaved:
+                let value = totals.fasterPlaybackTimeSavedSeconds + record.seconds
+                if value.isFinite { totals.fasterPlaybackTimeSavedSeconds = value }
+            }
+        }
+        return totals
+    }
+
+    /// Advances one revision's durable high-water mark on every checkpoint.
+    /// Only the newly crossed program interval can contribute savings, and a
+    /// rate at or below 1x still advances the mark so it cannot be counted by
+    /// a later faster checkpoint.
+    @discardableResult
+    public func recordPlaybackSpeedCheckpoint(
+        revisionID: RevisionID,
+        from startSeconds: Double,
+        to endSeconds: Double,
+        rate: Double
+    ) throws -> Double {
+        guard startSeconds.isFinite, endSeconds.isFinite,
+              startSeconds >= 0, endSeconds >= 0 else { return 0 }
+        let context = ModelContext(container)
+        let records = try context.fetch(
+            FetchDescriptor<LocalLibrarySchemaV11Models.PlaybackStatisticHighWaterRecord>()
+        )
+        let existing = records.first { $0.revisionID == revisionID.rawValue }
+        let lowerBound = max(existing?.positionSeconds ?? startSeconds, startSeconds)
+        let upperBound = max(lowerBound, endSeconds)
+        guard upperBound > lowerBound else { return 0 }
+
+        if let existing {
+            existing.positionSeconds = upperBound
+        } else {
+            context.insert(LocalLibrarySchemaV11Models.PlaybackStatisticHighWaterRecord(
+                revisionID: revisionID, positionSeconds: upperBound
+            ))
+        }
+
+        var savedSeconds = 0.0
+        if rate.isFinite, rate > 1 {
+            let programSeconds = upperBound - lowerBound
+            savedSeconds = programSeconds - programSeconds / rate
+            if savedSeconds.isFinite, savedSeconds > 0 {
+                let eventID = "playback-speed|\(revisionID.rawValue)|\(lowerBound.bitPattern)|\(upperBound.bitPattern)"
+                let events = try context.fetch(
+                    FetchDescriptor<LocalLibrarySchemaV11Models.LifetimeStatisticEventRecord>()
+                )
+                if !events.contains(where: { $0.id == eventID }) {
+                    context.insert(LocalLibrarySchemaV11Models.LifetimeStatisticEventRecord(
+                        id: eventID, kind: .fasterPlaybackTimeSaved, seconds: savedSeconds
+                    ))
+                } else {
+                    savedSeconds = 0
+                }
+            } else {
+                savedSeconds = 0
+            }
+        }
+        try context.save()
+        return savedSeconds
+    }
 
     /// Checkpoints the source WAL and verifies a complete V5 rollback copy before
     /// the live V6 migration is allowed to open the source database.
@@ -1775,7 +1939,12 @@ public actor LocalLibraryStore {
 
     /// Atomically saves immutable audio metadata and the transcript produced from the
     /// same extracted text. Identity mismatch fails before either value is committed.
-    public func saveReadyRevision(_ revision: AudioRevision, mediaURL: URL, transcript: Transcript) throws {
+    public func saveReadyRevision(
+        _ revision: AudioRevision,
+        mediaURL: URL,
+        transcript: Transcript,
+        lifetimeStatistics: [LifetimeStatisticContribution] = []
+    ) throws {
         guard transcript.itemID == revision.itemID, transcript.revisionID == revision.revisionID else {
             throw LocalLibraryStoreError.revisionBelongsToDifferentItem
         }
@@ -1791,6 +1960,7 @@ public actor LocalLibraryStore {
             context.insert(LocalLibrarySchemaV3Models.RevisionRecord(revision, mediaURL: mediaURL))
         }
         try upsert(transcript, in: context)
+        try appendLifetimeStatistics(lifetimeStatistics, in: context)
         try context.save()
     }
 
@@ -1798,7 +1968,11 @@ public actor LocalLibraryStore {
     /// its outcome are inserted in the same save, so nothing can observe one
     /// durable without the other.
     public func saveReadyRevision(
-        _ revision: AudioRevision, mediaURL: URL, transcript: Transcript, outcome: PodcastPreparationOutcome
+        _ revision: AudioRevision,
+        mediaURL: URL,
+        transcript: Transcript,
+        outcome: PodcastPreparationOutcome,
+        lifetimeStatistics: [LifetimeStatisticContribution] = []
     ) throws {
         guard transcript.itemID == revision.itemID, transcript.revisionID == revision.revisionID else {
             throw LocalLibraryStoreError.revisionBelongsToDifferentItem
@@ -1819,6 +1993,7 @@ public actor LocalLibraryStore {
         }
         try upsert(transcript, in: context)
         try upsertPreparationOutcome(outcome, in: context)
+        try appendLifetimeStatistics(lifetimeStatistics, in: context)
         try context.save()
     }
 
@@ -3570,7 +3745,8 @@ public actor LocalLibraryStore {
         download: PodcastDownload,
         superseding superseded: RevisionID,
         outcome: PodcastPreparationOutcome,
-        carrying playback: PlaybackState? = nil
+        carrying playback: PlaybackState? = nil,
+        lifetimeStatistics: [LifetimeStatisticContribution] = []
     ) throws {
         guard transcript.itemID == revision.itemID, transcript.revisionID == revision.revisionID else {
             throw LocalLibraryStoreError.revisionBelongsToDifferentItem
@@ -3630,6 +3806,7 @@ public actor LocalLibraryStore {
             context.insert(LocalLibrarySchemaV10Models.PodcastDownloadRecord(download))
         }
         try upsertPreparationOutcome(outcome, in: context)
+        try appendLifetimeStatistics(lifetimeStatistics, in: context)
         try context.save()
     }
 

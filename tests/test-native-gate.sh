@@ -201,6 +201,9 @@ assert_capability_source_contract() {
   assert_target_config WiltedMac "$mac_block" Debug 'CODE_SIGN_ENTITLEMENTS: ""'
   assert_target_config WiltedMac "$mac_block" Debug 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"'
   assert_target_config WiltedMac "$mac_block" Development 'CODE_SIGN_ENTITLEMENTS: WiltedMac/WiltedMac.entitlements'
+  assert_target_config WiltedMac "$mac_block" Development 'CODE_SIGN_STYLE: Automatic'
+  assert_target_config WiltedMac "$mac_block" Development 'CODE_SIGN_IDENTITY: "Apple Development"'
+  assert_target_config WiltedMac "$mac_block" Development 'DEVELOPMENT_TEAM: 4CJ49V6QHW'
   assert_target_config WiltedMac "$mac_block" Development 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"'
   assert_target_config WiltedMac "$mac_block" Release 'CODE_SIGN_ENTITLEMENTS: WiltedMac/WiltedMacProduction.entitlements'
   assert_target_config WiltedMac "$mac_block" Release 'CODE_SIGN_IDENTITY: "Developer ID Application"'
@@ -613,8 +616,8 @@ assert_deferred_mac_ui_contract() {
   assert_contains 'deferred_leg_names' "$gate"
   assert_contains 'WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR' "$gate"
   assert_contains '$repo_root/.logs/native-gate-diagnostics' "$gate"
-  assert_contains 'retain_macos_ui_failure_bundle' "$gate"
-  assert_contains 'clear_macos_ui_failure_bundle' "$gate"
+  assert_contains 'retain_ui_failure_bundle' "$gate"
+  assert_contains 'clear_ui_failure_bundle' "$gate"
   # The Makefile must keep an opt-in route, or the leg becomes unreachable
   # rather than deferred.
   assert_contains 'WILTED_MAC_UI=1 caffeinate -disu bash scripts/test-gate.sh' "$repo_root/Makefile"
@@ -678,7 +681,7 @@ mac_ui_failure_status="$(run_case mac-ui-failure "$mac_ui_failure_log" \
   WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR="$mac_ui_failure_diagnostics" bash "$gate")"
 [[ "$mac_ui_failure_status" -ne 0 ]] || { cat "$mac_ui_failure_log" >&2; exit 1; }
 assert_contains 'native.failed count=1' "$mac_ui_failure_log"
-assert_contains 'native.macos-ui.failure-bundle path=' "$mac_ui_failure_log"
+assert_contains 'native.ui-leg.failure-bundle leg=macos-ui-tests path=' "$mac_ui_failure_log"
 [[ -f "$mac_ui_failure_diagnostics/macos-ui-tests.xcresult/self-test-evidence" ]] || {
   printf '%s\n' 'assertion failed: failed Mac UI run did not retain its result bundle' >&2
   exit 1
@@ -695,7 +698,7 @@ mac_ui_zero_status="$(run_case mac-ui-zero "$mac_ui_zero_log" \
   WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR="$mac_ui_zero_diagnostics" bash "$gate")"
 [[ "$mac_ui_zero_status" -ne 0 ]] || { cat "$mac_ui_zero_log" >&2; exit 1; }
 assert_contains 'native.zero-tests label=macos-ui-tests' "$mac_ui_zero_log"
-assert_contains 'native.macos-ui.failure-bundle path=' "$mac_ui_zero_log"
+assert_contains 'native.ui-leg.failure-bundle leg=macos-ui-tests path=' "$mac_ui_zero_log"
 assert_contains 'self_test_macos_ui_zero_test_evidence' \
   "$mac_ui_zero_diagnostics/macos-ui-tests.xcresult/self-test-evidence"
 

@@ -1154,6 +1154,8 @@ final class WiltedMacModel {
     private(set) var playbackRate: Double = WiltedMacModel.initialPlaybackRate
     private(set) var playbackVolume: Double = 1
     private(set) var playbackOperationStatus: String?
+    /// Device-local totals derived only from the append-only event ledger.
+    private(set) var lifetimeStatistics = LifetimeStatistics()
     private(set) var articlePublicationCount = 0
     private(set) var articlePlaybackCheckpointCount = 0
     /// Set only after the one automatic route recovery attempt fails. The
@@ -1548,7 +1550,10 @@ final class WiltedMacModel {
     func checkpointPlaybackIfAdvancing() async {
 #if canImport(WiltedProducer)
         guard let playback, playback.liveIsPlaying else { return }
-        try? await playback.checkpoint()
+        do {
+            try await playback.checkpoint()
+            await refreshLifetimeStatistics()
+        } catch { /* a later checkpoint remains available */ }
 #endif
     }
 
@@ -2442,6 +2447,7 @@ final class WiltedMacModel {
                     }
                 }
                 await self.reloadPreparedPlayback(episode.id, itemID: itemID)
+                await self.refreshLifetimeStatistics()
                 self.refreshProcessorRuns()
             } catch is CancellationError {
                 self?.updateEpisode(episode.id) { $0.preparationState = .notPrepared }
@@ -3260,6 +3266,7 @@ final class WiltedMacModel {
                 if status.terminal { break }
             }
             if self.preparation?.phase == .completed {
+                await self.refreshLifetimeStatistics()
                 if await self.queuePreparedPublication(itemID: preparedItemID) {
                     self.syncLifecycle?.startAutomaticUpload()
                 }
@@ -4186,6 +4193,7 @@ final class WiltedMacModel {
     }
 
     private func queueCurrentPlaybackCheckpoint() async {
+        await refreshLifetimeStatistics()
         guard let store, let syncLifecycle, let playbackItemID = playback?.itemID,
               selectedArticleID == playbackItemID.rawValue,
               articles.contains(where: { $0.id == playbackItemID.rawValue }),
@@ -4501,6 +4509,7 @@ final class WiltedMacModel {
             articles = library.articles
             episodes = library.episodes
             subscriptions = library.subscriptions
+            lifetimeStatistics = try await configuredStore.lifetimeStatistics()
             dismissedEpisodes = try await loadDismissedEpisodes(from: configuredStore)
             // A deferred job predating a forced redownload must never start on
             // the stale prepared file while its replacement is being fetched.
@@ -4910,6 +4919,12 @@ final class WiltedMacModel {
         articles = values.articles
         applyEpisodes(values.episodes)
         subscriptions = values.subscriptions
+    }
+
+    /// Re-reads the local ledger without touching sync or mutable library rows.
+    private func refreshLifetimeStatistics() async {
+        guard let store, let totals = try? await store.lifetimeStatistics() else { return }
+        lifetimeStatistics = totals
     }
 
     private func loadLibrary(from store: LocalLibraryStore) async throws

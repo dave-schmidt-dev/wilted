@@ -170,6 +170,16 @@ public final class PlaybackController {
     private var completionHandledGeneration: UInt64?
     private var loadedBackendGeneration: UInt64?
     private var loadedIsPodcastEpisode = false
+    private struct PendingSpeedInterval {
+        let startSeconds: TimeInterval
+        let endSeconds: TimeInterval
+        let rate: Double
+    }
+    private var pendingSpeedIntervals: [PendingSpeedInterval] = []
+    /// Program position at the last accounting boundary. Forward seeks reset
+    /// this baseline before persistence, so skipped audio is never playback.
+    private var speedSavingsBaselineSeconds: TimeInterval = 0
+    private var speedSavingsRate = 1.0
 
     public init(
         store: LocalLibraryStore,
@@ -209,6 +219,7 @@ public final class PlaybackController {
         }
         try backend.load(url: mediaURL)
         checkpointTask?.cancel()
+        pendingSpeedIntervals.removeAll()
         loadedBackendGeneration = backend.loadedGeneration
         setRate(defaultRate)
 
@@ -234,6 +245,8 @@ public final class PlaybackController {
             positionSeconds = 0
         }
         backend.currentTime = positionSeconds
+        speedSavingsBaselineSeconds = positionSeconds
+        speedSavingsRate = Double(backend.rate)
         isPlaying = false
         recoverableFault = nil
         completionHandledGeneration = nil
@@ -293,7 +306,12 @@ public final class PlaybackController {
     }
 
     public func setRate(_ value: Float) {
-        backend.rate = Self.clampRate(value)
+        if currentRevision != nil {
+            stageSpeedInterval(endingAt: livePositionSeconds)
+        }
+        let rate = Self.clampRate(value)
+        backend.rate = rate
+        speedSavingsRate = Double(rate)
     }
 
     private static func clampRate(_ value: Float) -> Float {
@@ -347,11 +365,13 @@ public final class PlaybackController {
         guard value.isFinite else { throw PlaybackControllerError.invalidSeek(value) }
         let current = livePositionSeconds
         let target = clamp(value)
+        stageSpeedInterval(endingAt: current)
         if target < current {
             try await beginNewSession(intent: .rewind, position: target, reloadBackend: true)
         } else {
             backend.currentTime = target
             positionSeconds = target
+            speedSavingsBaselineSeconds = target
             completed = target >= durationSeconds
             intent = .progress
             try await checkpoint()
@@ -389,7 +409,7 @@ public final class PlaybackController {
         isPlaying = false
         completionHandledGeneration = loadedBackendGeneration
         recoverableFault = nil
-        try await checkpointCompletedRevision()
+        try await checkpointCompletedRevision(accountPlaybackToEnd: false)
     }
 
     public func checkpoint() async throws {
@@ -415,6 +435,8 @@ public final class PlaybackController {
             updatedAt: Timestamp(Date())
         )
         try await store.save(playback: state)
+        stageSpeedInterval(endingAt: positionSeconds)
+        try await persistPendingSpeedIntervals(revisionID: revisionID)
     }
 
     public func manualCheckpoint() async throws { try await checkpoint() }
@@ -446,7 +468,7 @@ public final class PlaybackController {
             backend.pause()
             isPlaying = false
             let completedIsPodcastEpisode = loadedIsPodcastEpisode
-            do { try await checkpointCompletedRevision() }
+            do { try await checkpointCompletedRevision(accountPlaybackToEnd: true) }
             catch {
                 guard generation == loadedBackendGeneration, itemID == completedItemID else { return }
                 playbackDidFinishHandler?()
@@ -514,10 +536,11 @@ public final class PlaybackController {
         }
     }
 
-    private func checkpointCompletedRevision() async throws {
+    private func checkpointCompletedRevision(accountPlaybackToEnd: Bool) async throws {
         guard let revision = currentRevision, let itemID, let revisionID, let sessionID else {
             throw PlaybackControllerError.noLoadedRevision
         }
+        let accountingEnd = accountPlaybackToEnd ? durationSeconds : clamp(backend.currentTime)
         backend.currentTime = durationSeconds
         positionSeconds = durationSeconds
         completed = true
@@ -542,6 +565,9 @@ public final class PlaybackController {
         } else {
             try await store.save(playback: playbackState)
         }
+        stageSpeedInterval(endingAt: accountingEnd)
+        try await persistPendingSpeedIntervals(revisionID: revisionID)
+        speedSavingsBaselineSeconds = durationSeconds
     }
 
     @discardableResult
@@ -606,6 +632,7 @@ public final class PlaybackController {
         reloadBackend: Bool = false
     ) async throws {
         guard currentRevision != nil else { throw PlaybackControllerError.noLoadedRevision }
+        stageSpeedInterval(endingAt: livePositionSeconds)
         let wasPlaying = backend.isPlaying || isPlaying
         if reloadBackend {
             guard let mediaURL else { throw PlaybackControllerError.noLoadedRevision }
@@ -622,12 +649,38 @@ public final class PlaybackController {
         let target = clamp(position)
         backend.currentTime = target
         positionSeconds = target
+        speedSavingsBaselineSeconds = target
         isPlaying = wasPlaying && backend.play()
         try await checkpoint()
     }
 
     private func clamp(_ value: TimeInterval) -> TimeInterval {
         min(max(value.isFinite ? value : 0, 0), max(durationSeconds, 0))
+    }
+
+    private func stageSpeedInterval(endingAt position: TimeInterval) {
+        let end = clamp(position)
+        guard end > speedSavingsBaselineSeconds else { return }
+        pendingSpeedIntervals.append(PendingSpeedInterval(
+            startSeconds: speedSavingsBaselineSeconds,
+            endSeconds: end,
+            rate: speedSavingsRate
+        ))
+        speedSavingsBaselineSeconds = end
+    }
+
+    private func persistPendingSpeedIntervals(revisionID: RevisionID) async throws {
+        let intervals = pendingSpeedIntervals
+        guard !intervals.isEmpty else { return }
+        for interval in intervals {
+            try await store.recordPlaybackSpeedCheckpoint(
+                revisionID: revisionID,
+                from: interval.startSeconds,
+                to: interval.endSeconds,
+                rate: interval.rate
+            )
+        }
+        pendingSpeedIntervals.removeFirst(min(intervals.count, pendingSpeedIntervals.count))
     }
 
     private static func newSessionID() -> String {

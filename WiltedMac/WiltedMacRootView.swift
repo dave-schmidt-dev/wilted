@@ -2541,9 +2541,45 @@ private struct WiltedMacSettingsView: View {
     var body: some View {
         WiltedMacDestination(title: WiltedScreenCopy.settings, identifier: "wilted-mac-settings") {
             appearanceCard
+            lifetimeStatisticsCard
             automationCard
             syncCard
         }
+    }
+
+    private var lifetimeStatisticsCard: some View {
+        WiltedSettingsCard(title: WiltedScreenCopy.lifetimeStatistics) {
+            Text(WiltedScreenCopy.lifetimeStatisticsScope)
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .accessibilityIdentifier(WiltedScreenCopy.lifetimeStatisticsScopeIdentifier)
+            Divider()
+            WiltedSettingsRow(
+                WiltedScreenCopy.audioProcessed,
+                value: WiltedDuration.spoken(model.lifetimeStatistics.audioProcessedSeconds),
+                identifier: WiltedScreenCopy.audioProcessedIdentifier
+            )
+            Divider()
+            WiltedSettingsRow(
+                WiltedScreenCopy.speechGenerated,
+                value: WiltedDuration.spoken(model.lifetimeStatistics.speechGeneratedSeconds),
+                identifier: WiltedScreenCopy.speechGeneratedIdentifier
+            )
+            Divider()
+            WiltedSettingsRow(
+                WiltedScreenCopy.confirmedAdTimeRemoved,
+                value: WiltedDuration.spoken(model.lifetimeStatistics.confirmedAdTimeRemovedSeconds),
+                identifier: WiltedScreenCopy.confirmedAdTimeRemovedIdentifier
+            )
+            Divider()
+            WiltedSettingsRow(
+                WiltedScreenCopy.fasterPlaybackTimeSaved,
+                value: WiltedDuration.spoken(model.lifetimeStatistics.fasterPlaybackTimeSavedSeconds),
+                identifier: WiltedScreenCopy.fasterPlaybackTimeSavedIdentifier
+            )
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-lifetime-statistics")
     }
 
     /// The Mac inherits no text size from the system the way iPhone does, so

@@ -18,6 +18,6 @@
     "14-schema-version-mismatch.json": "fd4acbeca623aac944353e624303c9aafe1279811cd8b6b7a34d8f28228878e3",
     "15-partial-preparation-failure.json": "1c51085f67f869b511cca6fa70435957557be612349db0a0c11e0725903ce95a",
     "16-timeout-terminal-error.json": "7d05b9fe1f2fcbf7e5c7aa327cca116c25b53392b253782c4c68d0d149e26fce",
-    "17-stale-change-tag.json": "632ebe51f895d9cebbcb35967634e61e148f086da3b5da8b15c6b3855a642c88"
+    "17-stale-change-tag.json": "af03d4878570065bb864470e9097b3082f3dd74625fa60d76f55f752d90c2882"
   }
 }

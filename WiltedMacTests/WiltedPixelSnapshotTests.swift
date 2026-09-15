@@ -213,6 +213,11 @@ final class WiltedPixelSnapshotTests: XCTestCase {
 
     func testMacNavigationSelectionPixelBaselines() {
         for appearance in WiltedAppearance.allCases {
+            let model = WiltedMacModel(
+                arguments: ["--wilted-ui-fixture-ready"],
+                preferences: WiltedMacTestPreferences.ephemeral()
+            )
+            model.selectedNavigation = .settings
             let variant = WiltedVisualVariant(
                 appearance: appearance,
                 dynamicType: .standard,
@@ -220,12 +225,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
             )
             assertSnapshot(
                 render(
-                    // Settings, not Downloads: Downloads is listener-only and
-                    // is no longer offered as a Mac destination.
-                    WiltedRootView(
-                        initialSelection: .settings,
-                        fixture: WiltedPreviewFixture(state: .ready)
-                    ),
+                    WiltedMacRootView(model: model),
                     variant: variant,
                     size: windowCanvas
                 ),

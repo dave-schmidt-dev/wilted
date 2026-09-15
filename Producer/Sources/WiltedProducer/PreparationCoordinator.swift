@@ -19,7 +19,7 @@ public actor PreparationCoordinator {
     typealias ExtractionOperation = @Sendable (URL) async throws -> ExtractedArticle
     typealias SynthesisOperation = @Sendable (String) async throws -> SpeechSynthesisResult
     typealias AssemblyOperation = @Sendable ([Float], ItemID, URL, String) async throws -> AudioAssemblyResult
-    typealias SaveOperation = @Sendable (AudioAssemblyResult, Transcript) async throws -> Void
+    typealias SaveOperation = @Sendable (AudioAssemblyResult, Transcript, [LifetimeStatisticContribution]) async throws -> Void
 
     public static let defaultSocketURL = FileManager.default.homeDirectoryForCurrentUser
         .appending(path: "Documents/Projects/speech-stack/.state/speechd.sock")
@@ -202,10 +202,25 @@ public actor PreparationCoordinator {
                     updatedAt: result.revision.createdAt
                 )
             }
-            if let saveOperation {
-                try await saveOperation(result, transcript)
+            let lifetimeStatistics: [LifetimeStatisticContribution]
+            if speech.sampleRate > 0 {
+                lifetimeStatistics = [LifetimeStatisticContribution(
+                    id: LifetimeStatisticEventID.articleSpeech(revisionID: result.revision.revisionID),
+                    kind: .speechGenerated,
+                    seconds: Double(speech.samples.count) / Double(speech.sampleRate)
+                )]
             } else {
-                try await store.saveReadyRevision(result.revision, mediaURL: result.mediaURL, transcript: transcript)
+                lifetimeStatistics = []
+            }
+            if let saveOperation {
+                try await saveOperation(result, transcript, lifetimeStatistics)
+            } else {
+                try await store.saveReadyRevision(
+                    result.revision,
+                    mediaURL: result.mediaURL,
+                    transcript: transcript,
+                    lifetimeStatistics: lifetimeStatistics
+                )
             }
             candidateCommitted = true
             let terminal = try PreparationTerminalResult(outcome: .succeeded, revisionID: result.revision.revisionID)

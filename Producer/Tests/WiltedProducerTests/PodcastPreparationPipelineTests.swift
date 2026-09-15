@@ -6,6 +6,34 @@ import WiltedDomain
 
 @Suite("Podcast preparation pipeline")
 struct PodcastPreparationPipelineTests {
+    @Test(arguments: [false, true])
+    func everySuccessfulUncutTerminalPathRecordsSourceAudioButNoAdTime(removeAds: Bool) async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let stub = WorkerStub(response: [
+            "ok": true, "timing": "none", "audioPath": fixture.audioURL.path, "audioChanged": false
+        ])
+        _ = try await fixture.pipeline(stub).prepare(
+            episodeID: fixture.episodeID,
+            policy: PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: removeAds)
+        )
+
+        let totals = try await fixture.store.lifetimeStatistics()
+        #expect(totals.audioProcessedSeconds == 12)
+        #expect(totals.confirmedAdTimeRemovedSeconds == 0)
+    }
+
+    @Test func committedCutRecordsOnlyQualifiedRemovedTime() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+
+        _ = try await fixture.pipeline(Fixture.cuttingStub()).prepare(episodeID: fixture.episodeID)
+
+        let totals = try await fixture.store.lifetimeStatistics()
+        #expect(totals.audioProcessedSeconds == 12)
+        #expect(totals.confirmedAdTimeRemovedSeconds == 4.5)
+    }
+
     @Test func refusesToPrepareAnEpisodeThatIsNotDownloaded() async throws {
         let fixture = try await Fixture(installDownload: false)
         defer { fixture.remove() }

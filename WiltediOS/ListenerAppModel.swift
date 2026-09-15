@@ -154,6 +154,12 @@ public final class WiltedListenerAppModel: ObservableObject {
     @Published public private(set) var transcriptsByItem: [ItemID: Transcript] = [:]
     @Published public private(set) var downloadStatistics = ListenerDownloadStatistics()
     @Published public private(set) var syncObservability = ListenerSyncObservability()
+    /// The listener never owns or merges the producer's device-local ledger.
+    public let lifetimeStatisticsUnavailableReason = WiltedScreenCopy.lifetimeStatisticsUnavailableReason
+    /// The item whose download currently owns the shared operation slot.
+    @Published public private(set) var downloadingItemID: ItemID?
+    /// Short-lived feedback for a duplicate download request that arrives before its button disables.
+    @Published public private(set) var downloadRequestFeedback: String?
 
     private let repository: (any SyncRepository)?
     private var transport: (any SyncTransport)?
@@ -177,6 +183,18 @@ public final class WiltedListenerAppModel: ObservableObject {
     private var revisionByItem: [ItemID: AudioRevision] = [:]
     private var assetByItem: [ItemID: WiltedAsset] = [:]
     private var manifestByItem: [ItemID: AudioChunkManifest] = [:]
+    private enum SyncRetryOperation {
+        case refresh
+        case send
+        case download(ItemID)
+    }
+    private enum PlaybackRetryOperation {
+        case play(ItemID)
+        case pause
+        case seek(Double)
+    }
+    private var syncRetryOperation: SyncRetryOperation?
+    private var playbackRetryOperation: PlaybackRetryOperation?
     private var operationInFlight = false
     private var operationHandoffReserved = false
     private var operationWaiters: [CheckedContinuation<Void, Never>] = []
@@ -268,10 +286,11 @@ public final class WiltedListenerAppModel: ObservableObject {
     }
 
     static func defaultSessionMode(
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        isXCTestRuntime: Bool = NSClassFromString("XCTestCase") != nil
     ) -> ListenerDefaultSessionMode {
 #if WILTED_CLOUDKIT_LIVE
-        environment["XCTestConfigurationFilePath"] == nil ? .liveCloudKit : .localOnly
+        environment["XCTestConfigurationFilePath"] == nil && !isXCTestRuntime ? .liveCloudKit : .localOnly
 #else
         .localOnly
 #endif
@@ -358,6 +377,7 @@ public final class WiltedListenerAppModel: ObservableObject {
     }
 
     public func refresh() async {
+        syncRetryOperation = nil
         guard let operation = beginOperation() else { return }
         defer { finishOperation(operation) }
         syncPhase = .refreshing("Refreshing larder…")
@@ -399,6 +419,7 @@ public final class WiltedListenerAppModel: ObservableObject {
                 await loadLocal(repository: repository, fallback: error.localizedDescription, operation: operation)
                 guard isCurrent(operation) else { return }
                 if case .offline = syncPhase {
+                    syncRetryOperation = .refresh
                     syncPhase = .failed("Sync unavailable: \(error.localizedDescription)", retryable: true)
                 }
                 return
@@ -450,6 +471,7 @@ public final class WiltedListenerAppModel: ObservableObject {
                 await loadLocal(repository: repository, fallback: error.localizedDescription, operation: operation)
                 guard isCurrent(operation) else { return }
                 if case .offline = syncPhase {
+                    syncRetryOperation = .refresh
                     syncPhase = .failed("Refresh failed: \(error.localizedDescription)", retryable: true)
                 }
                 return
@@ -480,6 +502,7 @@ public final class WiltedListenerAppModel: ObservableObject {
     }
 
     public func sendPending() async {
+        syncRetryOperation = nil
         let operation = await beginQueuedOperation()
         defer { finishOperation(operation) }
         guard let repository, let transport else {
@@ -512,6 +535,7 @@ public final class WiltedListenerAppModel: ObservableObject {
                     syncPhase = .ready
                 } else {
                     let subject = held.count == 1 ? "1 playback update is" : "\(held.count) playback updates are"
+                    syncRetryOperation = .send
                     syncPhase = .failed("Nothing was sent. \(subject) held by unresolved conflicts.", retryable: true)
                 }
                 return
@@ -524,21 +548,41 @@ public final class WiltedListenerAppModel: ObservableObject {
             guard isCurrent(operation) else { return }
             await updateDownloadedStates()
             guard isCurrent(operation) else { return }
-            syncPhase = result.failures.isEmpty ? .ready : .failed("Some playback changes need retry", retryable: true)
+            if result.failures.isEmpty {
+                syncPhase = .ready
+            } else {
+                syncRetryOperation = .send
+                syncPhase = .failed("Some playback changes need retry", retryable: true)
+            }
         } catch {
             guard isCurrent(operation) else { return }
+            syncRetryOperation = .send
             syncPhase = .failed("Send failed: \(error.localizedDescription)", retryable: true)
         }
     }
 
     public func download(itemID: ItemID) async {
+        syncRetryOperation = nil
         guard !accountQuarantined else { return }
         guard let cache,
               let item = items.first(where: { $0.itemID == itemID }),
               let revision = revisionByItem[itemID], let asset = assetByItem[itemID] else { return }
         guard item.state == .metadataOnly else { return }
-        guard let operation = beginOperation() else { return }
-        defer { finishOperation(operation) }
+        guard let operation = beginOperation() else {
+            if downloadingItemID == itemID {
+                downloadRequestFeedback = "Download already in progress."
+            }
+            return
+        }
+        downloadingItemID = itemID
+        downloadRequestFeedback = nil
+        defer {
+            if downloadingItemID == itemID {
+                downloadingItemID = nil
+                downloadRequestFeedback = nil
+            }
+            finishOperation(operation)
+        }
         syncPhase = .refreshing("Downloading \(item.title)…")
         do {
             if let manifest = manifestByItem[itemID] {
@@ -563,6 +607,7 @@ public final class WiltedListenerAppModel: ObservableObject {
             syncPhase = .ready
         } catch {
             guard isCurrent(operation) else { return }
+            syncRetryOperation = .download(itemID)
             syncPhase = .failed("Download failed: \(error.localizedDescription)", retryable: true)
         }
     }
@@ -584,6 +629,7 @@ public final class WiltedListenerAppModel: ObservableObject {
     }
 
     public func play(itemID: ItemID) async {
+        playbackRetryOperation = nil
         guard let item = items.first(where: { $0.itemID == itemID }) else { return }
         guard item.state == .downloaded, let revision = revisionByItem[itemID], let asset = assetByItem[itemID], let playback else {
             playbackPhase = item.state == .incompatibleRevision
@@ -613,11 +659,13 @@ public final class WiltedListenerAppModel: ObservableObject {
             selectedPlayback = updated
             playbackPhase = .playing
         } catch {
+            playbackRetryOperation = .play(itemID)
             playbackPhase = .failed("Playback failed: \(error.localizedDescription)", retryable: true)
         }
     }
 
     public func pause() async {
+        playbackRetryOperation = nil
         guard let playback else { return }
         do {
             if let updated = try await playback.pause() {
@@ -625,10 +673,14 @@ public final class WiltedListenerAppModel: ObservableObject {
                 selectedPlayback = updated
             }
             playbackPhase = .paused
-        } catch { playbackPhase = .failed("Pause failed: \(error.localizedDescription)", retryable: true) }
+        } catch {
+            playbackRetryOperation = .pause
+            playbackPhase = .failed("Pause failed: \(error.localizedDescription)", retryable: true)
+        }
     }
 
     public func seek(to position: Double) async {
+        playbackRetryOperation = nil
         guard let itemID = selectedItemID, let item = items.first(where: { $0.itemID == itemID }),
               let revision = revisionByItem[itemID], let asset = assetByItem[itemID], let current = playbackByItem[itemID],
               let playback else { return }
@@ -705,8 +757,31 @@ public final class WiltedListenerAppModel: ObservableObject {
 
     public func cancel() {
         invalidateCurrentOperation()
+        syncRetryOperation = nil
+        playbackRetryOperation = nil
         syncPhase = .idle
         Task { await session?.cancel() }
+    }
+
+    /// Repeats the sync operation that produced the visible retryable failure.
+    /// A failed download or send must not turn into a catalog refresh.
+    public func retrySyncOperation() async {
+        guard case .failed(_, retryable: true) = syncPhase, let operation = syncRetryOperation else { return }
+        switch operation {
+        case .refresh: await refresh()
+        case .send: await sendPending()
+        case let .download(itemID): await download(itemID: itemID)
+        }
+    }
+
+    /// Repeats the playback command that produced the visible retryable failure.
+    public func retryPlaybackOperation() async {
+        guard case .failed(_, retryable: true) = playbackPhase, let operation = playbackRetryOperation else { return }
+        switch operation {
+        case let .play(itemID): await play(itemID: itemID)
+        case .pause: await pause()
+        case let .seek(position): await seek(to: position)
+        }
     }
 
     private func invalidateCurrentOperation() {
@@ -1087,6 +1162,23 @@ public final class WiltedListenerAppModel: ObservableObject {
     private func positionChange(item: ListenerLibraryItem, asset: WiltedAsset,
                                 playback: ListenerPlaybackController, current: PlaybackState,
                                 position: Double, intent: PlaybackIntent, newSession: Bool) async {
+        if playbackPhase == .paused {
+            do {
+                if let updated = try await playback.seek(
+                    position: position,
+                    intent: intent,
+                    newSession: newSession
+                ) {
+                    try await recordPlayback(updated)
+                    selectedPlayback = updated
+                }
+                playbackPhase = .paused
+            } catch {
+                playbackRetryOperation = .seek(position)
+                playbackPhase = .failed("Playback command failed: \(error.localizedDescription)", retryable: true)
+            }
+            return
+        }
         playbackPhase = .refreshing("Preparing offline audio")
         do {
             let updated = try await playback.play(asset: asset, title: item.title,
@@ -1095,7 +1187,10 @@ public final class WiltedListenerAppModel: ObservableObject {
             try await recordPlayback(updated)
             selectedPlayback = updated
             playbackPhase = .playing
-        } catch { playbackPhase = .failed("Playback command failed: \(error.localizedDescription)", retryable: true) }
+        } catch {
+            playbackRetryOperation = .seek(position)
+            playbackPhase = .failed("Playback command failed: \(error.localizedDescription)", retryable: true)
+        }
     }
 
     private func nextPlayback(_ current: PlaybackState, position: Double, intent: PlaybackIntent, newSession: Bool) throws -> PlaybackState {
@@ -1375,7 +1470,9 @@ public final class WiltedListenerAppModel: ObservableObject {
         switch event.phase {
         case .fetching, .staging: syncPhase = .refreshing(event.message)
         case .committing: syncPhase = .sending(event.message)
-        case .failed: syncPhase = .failed(event.message, retryable: true)
+        case .failed:
+            syncRetryOperation = .refresh
+            syncPhase = .failed(event.message, retryable: true)
         case .completed: if !operationInFlight { syncPhase = .ready }
         case .idle: break
         }

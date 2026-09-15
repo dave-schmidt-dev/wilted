@@ -5,6 +5,92 @@ import WiltedDomain
 
 @MainActor
 final class PlaybackControllerTests: XCTestCase {
+    func testSpeedSavingsUseDurableRevisionHighWaterAcrossSeeksAndRelaunch() async throws {
+        let path = storeURL()
+        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: path)
+        let (_, revision) = try fixture()
+        let backend = FakeBackend()
+        var controller = PlaybackController(store: store, backend: backend)
+        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
+        controller.setRate(2)
+        backend.currentTime = 10
+        try await controller.checkpoint()
+        try await controller.checkpoint()
+        try await controller.seek(to: 3)
+        backend.currentTime = 8
+        try await controller.checkpoint()
+        let firstTotal = try await store.lifetimeStatistics().fasterPlaybackTimeSavedSeconds
+        XCTAssertEqual(firstTotal, 5, accuracy: 0.0001)
+
+        let relaunchedBackend = FakeBackend()
+        controller = PlaybackController(store: store, backend: relaunchedBackend)
+        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
+        controller.setRate(2)
+        try await controller.seek(to: 30)
+        relaunchedBackend.currentTime = 40
+        try await controller.checkpoint()
+        let relaunchedTotal = try await store.lifetimeStatistics().fasterPlaybackTimeSavedSeconds
+        XCTAssertEqual(relaunchedTotal, 10, accuracy: 0.0001)
+    }
+
+    func testListenerEquivalentNormalRateAdvancesHighWaterWithoutRecordingSavings() async throws {
+        let path = storeURL()
+        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: path)
+        let (_, revision) = try fixture()
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
+        controller.setRate(1)
+        backend.currentTime = 20
+        try await controller.checkpoint()
+        controller.setRate(2)
+        backend.currentTime = 30
+        try await controller.checkpoint()
+
+        let total = try await store.lifetimeStatistics().fasterPlaybackTimeSavedSeconds
+        XCTAssertEqual(total, 5, accuracy: 0.0001)
+    }
+
+    func testManualCompletionDoesNotCountUnplayedRemainderAsSpeedSavings() async throws {
+        let path = storeURL()
+        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: path)
+        let (_, revision) = try fixture()
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
+        controller.setRate(2)
+        backend.currentTime = 10
+
+        try await controller.markCompleted()
+
+        let total = try await store.lifetimeStatistics().fasterPlaybackTimeSavedSeconds
+        XCTAssertEqual(total, 5, accuracy: 0.0001)
+    }
+
+    func testRateChangesSplitUncheckpointedPlaybackAtTheirExactBoundary() async throws {
+        let path = storeURL()
+        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: path)
+        let (_, revision) = try fixture()
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
+        controller.setRate(2)
+        backend.currentTime = 10
+        controller.setRate(1)
+        backend.currentTime = 20
+        controller.setRate(2)
+        backend.currentTime = 30
+
+        try await controller.checkpoint()
+
+        let total = try await store.lifetimeStatistics().fasterPlaybackTimeSavedSeconds
+        XCTAssertEqual(total, 10, accuracy: 0.0001)
+    }
+
     private final class FakeBackend: PlaybackBackend {
         var duration: TimeInterval = 42
         var currentTime: TimeInterval = 0

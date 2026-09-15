@@ -94,6 +94,20 @@ public enum WiltedScreenCopy {
     public static let nowPlayingEmptyIdentifier = "wilted-player-empty"
     public static let settings = "Settings"
     public static let settingsIdentifier = "wilted-settings"
+    public static let lifetimeStatistics = "Lifetime statistics"
+    public static let lifetimeStatisticsScope = "This Mac"
+    public static let lifetimeStatisticsUnavailableReason =
+        "These lifetime statistics are stored only on the Mac that produces and plays audio."
+    public static let audioProcessed = "Audio processed"
+    public static let speechGenerated = "Speech generated"
+    public static let confirmedAdTimeRemoved = "Confirmed ad time removed"
+    public static let fasterPlaybackTimeSaved = "Time saved at faster speeds"
+    public static let lifetimeStatisticsScopeIdentifier = "wilted-lifetime-statistics-scope"
+    public static let audioProcessedIdentifier = "wilted-lifetime-audio-processed"
+    public static let speechGeneratedIdentifier = "wilted-lifetime-speech-generated"
+    public static let confirmedAdTimeRemovedIdentifier = "wilted-lifetime-ad-time-removed"
+    public static let fasterPlaybackTimeSavedIdentifier = "wilted-lifetime-speed-time-saved"
+    public static let lifetimeStatisticsReasonIdentifier = "wilted-lifetime-statistics-reason"
     public static let sync = "Sync"
     /// Account recovery is worded identically on both platforms. Before this
     /// was shared, only the Mac had the control at all; the listener showed a

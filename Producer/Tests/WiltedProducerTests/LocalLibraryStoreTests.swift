@@ -5,6 +5,39 @@ import WiltedSync
 @testable import WiltedProducer
 
 final class LocalLibraryStoreTests: XCTestCase {
+    func testLifetimeLedgerDeduplicatesAcrossRelaunchAndRejectsInvalidSeconds() async throws {
+        let url = makeURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        var store = try LocalLibraryStore(url: url)
+
+        let first = try await store.recordLifetimeStatistic(
+            id: "speech|revision", kind: .speechGenerated, seconds: 12.5
+        )
+        let duplicate = try await store.recordLifetimeStatistic(
+            id: "speech|revision", kind: .speechGenerated, seconds: 99
+        )
+        let negative = try await store.recordLifetimeStatistic(
+            id: "negative", kind: .audioProcessed, seconds: -1
+        )
+        let infinite = try await store.recordLifetimeStatistic(
+            id: "infinite", kind: .audioProcessed, seconds: .infinity
+        )
+        XCTAssertTrue(first)
+        XCTAssertFalse(duplicate)
+        XCTAssertFalse(negative)
+        XCTAssertFalse(infinite)
+
+        store = try LocalLibraryStore(url: url)
+        let relaunchedDuplicate = try await store.recordLifetimeStatistic(
+            id: "speech|revision", kind: .speechGenerated, seconds: 12.5
+        )
+        let totals = try await store.lifetimeStatistics()
+        XCTAssertFalse(relaunchedDuplicate)
+        XCTAssertEqual(totals, LifetimeStatistics(
+            speechGeneratedSeconds: 12.5
+        ))
+    }
+
     /// Reproduces the pre-Phase-7 blanket behavior for tests written before
     /// rules existed: any fingerprint drift is treated as incompatible. Real
     /// callers use `PodcastPreparationPipeline.invalidationRules`, which
@@ -227,7 +260,7 @@ final class LocalLibraryStoreTests: XCTestCase {
         let migratedTranscript = try await migrated.transcript(for: item.itemID, revisionID: rev.revisionID)
         let migratedInspection = try await migrated.inspect()
         XCTAssertNil(migratedTranscript)
-        XCTAssertEqual(migratedInspection.schemaVersion, .v10)
+        XCTAssertEqual(migratedInspection.schemaVersion, .v11)
     }
 
     /// The V4 -> V5 stage renames the deletion column. A read-back inside one
@@ -993,7 +1026,7 @@ final class LocalLibraryStoreTests: XCTestCase {
                                                        playback: try playback(for: item, revision: rev, position: 23))
         let migrated = try LocalLibraryStore(url: url)
         let inspection = try await migrated.inspect()
-        XCTAssertEqual(inspection.schemaVersion, .v10)
+        XCTAssertEqual(inspection.schemaVersion, .v11)
         XCTAssertEqual(inspection.articleCount, 1)
         XCTAssertEqual(inspection.revisionCount, 1)
         XCTAssertEqual(inspection.transcriptCount, 1)
@@ -1194,7 +1227,7 @@ final class LocalLibraryStoreTests: XCTestCase {
 
         let migrated = try LocalLibraryStore(url: url)
         let inspection = try await migrated.inspect()
-        XCTAssertEqual(inspection.schemaVersion, .v10, "the migration plan must carry a V9 store all the way to V10")
+        XCTAssertEqual(inspection.schemaVersion, .v11, "the migration plan must carry a V9 store all the way to V11")
 
         // Fix 4: prove the migrated store's live call sites actually see the
         // V9 fixture's rows through the new V10 classes end-to-end, not just

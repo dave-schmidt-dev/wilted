@@ -71,15 +71,17 @@ private final class MemoryEngine: ListenerAudioEngine, @unchecked Sendable {
     var loadedURL: URL?
     var playing = false
     var allowsPlay = true
+    var loadCallCount = 0
+    var playCallCount = 0
     var completionGeneration: UInt64 = 0
     var completionHandler: (@Sendable (UInt64) -> Void)?
     var isPlaying: Bool { playing }
-    func load(url: URL) throws { loadedURL = url }
+    func load(url: URL) throws { loadCallCount += 1; loadedURL = url }
     func load(url: URL, completionGeneration: UInt64) throws {
-        loadedURL = url
+        try load(url: url)
         self.completionGeneration = completionGeneration
     }
-    func play() -> Bool { playing = allowsPlay; return allowsPlay }
+    func play() -> Bool { playCallCount += 1; playing = allowsPlay; return allowsPlay }
     func pause() { playing = false }
     func installCompletionHandler(_ handler: @escaping @Sendable (UInt64) -> Void) { completionHandler = handler }
     func finishNaturally() { playing = false; completionHandler?(completionGeneration) }
@@ -795,6 +797,43 @@ func inactiveRewindAndRestartKeepPausedRateAndState() async throws {
     #expect(restart?.isPlaying == false)
     #expect(engine.isPlaying == false)
     #expect(nowPlaying.lastRate == 0)
+}
+
+@Test("paused seeks update causal state without reloading or starting audio")
+func pausedSeekDoesNotRestartAudio() async throws {
+    let bytes = Data("paused-seek-audio".utf8)
+    let cache = try ListenerAudioCache(
+        rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    let audio = try asset(bytes)
+    _ = try await cache.store(data: bytes, asset: audio)
+    let engine = MemoryEngine()
+    let nowPlaying = TestNowPlaying()
+    let controller = ListenerPlaybackController(cache: cache, engine: engine, nowPlaying: nowPlaying)
+    _ = try await controller.play(asset: audio, title: "Paused seek", state: try playbackState(position: 20))
+    let pausedState = try await controller.pause()
+    let paused = try #require(pausedState)
+    let loadsBeforeSeek = engine.loadCallCount
+    let playsBeforeSeek = engine.playCallCount
+
+    let rewindState = try await controller.seek(position: 5, intent: .rewind, newSession: true)
+    let rewind = try #require(rewindState)
+    #expect(rewind.intent == .rewind)
+    #expect(rewind.sessionID != paused.sessionID)
+    #expect(rewind.sequence == 1)
+    #expect(rewind.positionSeconds == 5)
+    #expect(engine.isPlaying == false)
+    #expect(nowPlaying.lastRate == 0)
+
+    let progressState = try await controller.seek(position: 20, intent: .progress, newSession: false)
+    let progress = try #require(progressState)
+    #expect(progress.intent == .progress)
+    #expect(progress.sessionID == rewind.sessionID)
+    #expect(progress.sequence == rewind.sequence + 1)
+    #expect(progress.positionSeconds == 20)
+    #expect(engine.loadCallCount == loadsBeforeSeek)
+    #expect(engine.playCallCount == playsBeforeSeek)
+    #expect(engine.isPlaying == false)
 }
 
 @Test("a refused remote play does not publish an active playback transition")
