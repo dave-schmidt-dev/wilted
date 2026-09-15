@@ -24,7 +24,17 @@ private func playbackState(sequence: Int64 = 1, intent: PlaybackIntent = .progre
                              deviceID: "iphone", updatedAt: Timestamp(Date()))
 }
 
-private func playbackEnvelope(_ state: PlaybackState) throws -> WiltedRecordEnvelope { try WiltedRecordCodec().encode(playback: state) }
+private func playbackEnvelope(
+    _ state: PlaybackState,
+    sidecar: WiltedOpaqueSidecar? = nil,
+    marker: String? = nil
+) throws -> WiltedRecordEnvelope {
+    try WiltedRecordCodec().encode(
+        playback: state,
+        sidecar: sidecar,
+        opaqueFields: marker.map { ["mergeMarker": .string($0)] } ?? [:]
+    )
+}
 
 private func transcriptEnvelope() throws -> WiltedRecordEnvelope {
     let (item, revision) = try ids()
@@ -217,7 +227,7 @@ func fullSnapshotFamilyProtection() async throws {
     #expect(Set((await repository.state()).records.map(\.id)) == Set([item.id, playback.id]))
 }
 
-@Test("incoming catalog records do not overwrite protected local work, but playback remains remote-authoritative")
+@Test("incoming catalog records remain protected and playback uses causal merge")
 func protectedCatalogRecordsRemainLocalWhilePlaybackUpdates() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let item = try itemEnvelope()
@@ -252,7 +262,147 @@ func protectedCatalogRecordsRemainLocalWhilePlaybackUpdates() async throws {
     for localRecord in local where localRecord.id.recordType != .playbackState {
         #expect(final.records.first(where: { $0.id == localRecord.id })?.fields["remoteMarker"] == nil)
     }
-    #expect(final.records.first(where: { $0.id == playback.id })?.fields["remoteMarker"] == .string("incoming"))
+    #expect(final.records.first(where: { $0.id == playback.id })?.fields["remoteMarker"] == nil)
+}
+
+@Test("fetched playback uses causal merge and always refreshes incoming sidecar")
+func fetchedPlaybackUsesMergeAndRefreshesSidecar() async throws {
+    let repository = try ListenerRepository(
+        directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    let current = try playbackEnvelope(
+        playbackState(sequence: 3, position: 20),
+        sidecar: WiltedOpaqueSidecar(changeTag: "stored-tag", encodedSystemFields: Data([1])),
+        marker: "current"
+    )
+    try await repository.commit(try await repository.stage(
+        try SyncFetchBatch(generationID: "playback-current", records: [current], engineState: Data([1]))
+    ))
+    let staleIncoming = try playbackEnvelope(
+        playbackState(sequence: 2, position: 10),
+        sidecar: WiltedOpaqueSidecar(changeTag: "fresh-tag", encodedSystemFields: Data([2])),
+        marker: "incoming"
+    )
+
+    try await repository.commit(try await repository.stage(
+        try SyncFetchBatch(generationID: "playback-stale", records: [staleIncoming], engineState: Data([2]))
+    ))
+
+    let stored = try #require((await repository.state()).records.first(where: { $0.id == current.id }))
+    let decoded = try WiltedRecordCodec().decodePlayback(stored)
+    #expect(decoded.sequence == 3)
+    #expect(decoded.positionSeconds == 20)
+    #expect(stored.fields["mergeMarker"] == .string("current"))
+    #expect(stored.sidecar?.changeTag == "fresh-tag")
+    #expect(stored.sidecar?.encodedSystemFields == Data([2]))
+}
+
+@Test("fetched newer playback is accepted without a pending tag comparison")
+func fetchedNewerPlaybackWinsWithoutPendingWrite() async throws {
+    let repository = try ListenerRepository(
+        directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    let current = try playbackEnvelope(
+        playbackState(sequence: 1, position: 5),
+        sidecar: WiltedOpaqueSidecar(changeTag: "old-tag", encodedSystemFields: Data([1]))
+    )
+    try await repository.commit(try await repository.stage(
+        try SyncFetchBatch(generationID: "playback-old", records: [current], engineState: Data([1]))
+    ))
+    let incoming = try playbackEnvelope(
+        playbackState(sequence: 2, position: 12),
+        sidecar: WiltedOpaqueSidecar(changeTag: "different-tag", encodedSystemFields: Data([2])),
+        marker: "incoming"
+    )
+
+    try await repository.commit(try await repository.stage(
+        try SyncFetchBatch(generationID: "playback-new", records: [incoming], engineState: Data([2]))
+    ))
+
+    let stored = try #require((await repository.state()).records.first(where: { $0.id == current.id }))
+    let decoded = try WiltedRecordCodec().decodePlayback(stored)
+    #expect(decoded.sequence == 2)
+    #expect(decoded.positionSeconds == 12)
+    #expect(stored.fields["mergeMarker"] == .string("incoming"))
+    #expect(stored.sidecar?.changeTag == "different-tag")
+}
+
+@Test("fetched playback defers while the same record has a pending local write")
+func fetchedPlaybackDefersToPendingWrite() async throws {
+    let repository = try ListenerRepository(
+        directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    let baseline = try playbackEnvelope(
+        playbackState(sequence: 1, position: 5),
+        sidecar: WiltedOpaqueSidecar(changeTag: "baseline-tag", encodedSystemFields: Data([1]))
+    )
+    try await repository.commit(try await repository.stage(
+        try SyncFetchBatch(generationID: "playback-baseline", records: [baseline], engineState: Data([1]))
+    ))
+    let pendingEnvelope = try playbackEnvelope(
+        playbackState(sequence: 2, position: 10),
+        sidecar: baseline.sidecar,
+        marker: "pending"
+    )
+    let pending = try SyncPendingChange(
+        operation: .update,
+        recordID: pendingEnvelope.id,
+        record: pendingEnvelope
+    )
+    try await repository.enqueue(pending)
+    let incoming = try playbackEnvelope(
+        playbackState(sequence: 3, position: 15),
+        sidecar: WiltedOpaqueSidecar(changeTag: "fetched-tag", encodedSystemFields: Data([3])),
+        marker: "incoming"
+    )
+
+    try await repository.commit(try await repository.stage(
+        try SyncFetchBatch(generationID: "playback-deferred", records: [incoming], engineState: Data([2]))
+    ))
+
+    let state = await repository.state()
+    let stored = try #require(state.records.first(where: { $0.id == pendingEnvelope.id }))
+    let decoded = try WiltedRecordCodec().decodePlayback(stored)
+    #expect(decoded.sequence == 2)
+    #expect(stored.fields["mergeMarker"] == .string("pending"))
+    #expect(stored.sidecar?.changeTag == "baseline-tag")
+    #expect(state.pendingChanges == [pending])
+}
+
+@Test("acknowledged playback uses causal merge and refreshes server sidecar")
+func acknowledgedPlaybackUsesMergeAndRefreshesSidecar() async throws {
+    let repository = try ListenerRepository(
+        directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    let local = try playbackEnvelope(
+        playbackState(sequence: 3, position: 20),
+        sidecar: WiltedOpaqueSidecar(changeTag: "sent-tag", encodedSystemFields: Data([1])),
+        marker: "local"
+    )
+    let change = try SyncPendingChange(operation: .update, recordID: local.id, record: local)
+    try await repository.enqueue(change)
+    let server = try playbackEnvelope(
+        playbackState(sequence: 2, position: 10),
+        sidecar: WiltedOpaqueSidecar(changeTag: "acknowledged-tag", encodedSystemFields: Data([9])),
+        marker: "server"
+    )
+    let result = try SyncSendResult(
+        engineState: Data([2]),
+        acknowledgedRecordIDs: [local.id],
+        serverEnvelopes: [server]
+    )
+
+    try await repository.acknowledge(result, sent: [change])
+
+    let state = await repository.state()
+    let stored = try #require(state.records.first(where: { $0.id == local.id }))
+    let decoded = try WiltedRecordCodec().decodePlayback(stored)
+    #expect(decoded.sequence == 3)
+    #expect(decoded.positionSeconds == 20)
+    #expect(stored.fields["mergeMarker"] == .string("local"))
+    #expect(stored.sidecar?.changeTag == "acknowledged-tag")
+    #expect(stored.sidecar?.encodedSystemFields == Data([9]))
+    #expect(state.pendingChanges.isEmpty)
 }
 
 @Test("repository applies remote deletion and quarantines pending playback")

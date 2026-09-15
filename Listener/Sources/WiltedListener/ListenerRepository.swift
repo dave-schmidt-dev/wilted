@@ -137,14 +137,28 @@ public actor ListenerRepository: SyncRepository {
                 records = retained
             }
         }
-        for record in catalogRecords {
-            let preservesLocalCatalogRecord = switch record.id.recordType {
+        for incoming in catalogRecords {
+            switch incoming.id.recordType {
             case .item, .revision, .transcript:
-                pendingIDs.contains(record.id) || current.protectedRecordIDs.contains(record.id)
-            case .playbackState, .revisionChunk:
-                false
+                let preservesLocalCatalogRecord = pendingIDs.contains(incoming.id)
+                    || current.protectedRecordIDs.contains(incoming.id)
+                if !preservesLocalCatalogRecord { records[incoming.id] = incoming }
+            case .playbackState:
+                // An unsent local playback write owns this record until the existing
+                // send/acknowledgement or conflict path resolves it. Comparing the
+                // pending write to a fetched tag would manufacture a false conflict.
+                guard !pendingIDs.contains(incoming.id) else { continue }
+                if let stored = records[incoming.id] {
+                    records[incoming.id] = try mergedPlaybackEnvelope(
+                        current: stored,
+                        incoming: incoming
+                    )
+                } else {
+                    records[incoming.id] = incoming
+                }
+            case .revisionChunk:
+                continue
             }
-            if !preservesLocalCatalogRecord { records[record.id] = record }
         }
         let next = SyncRepositoryState(records: Array(records.values).sorted { $0.id.description < $1.id.description },
                                        engineState: effectiveEngineState, pendingChanges: pending,
@@ -250,7 +264,13 @@ public actor ListenerRepository: SyncRepository {
         }
         let pending = current.pendingChanges.filter { !acknowledged.contains($0.recordID) && !terminalFailures.contains($0.recordID) }
         var records = Dictionary(uniqueKeysWithValues: current.records.map { ($0.id, $0) })
-        for envelope in result.serverEnvelopes where acknowledged.contains(envelope.id) { records[envelope.id] = envelope }
+        for envelope in result.serverEnvelopes where acknowledged.contains(envelope.id) {
+            if envelope.id.recordType == .playbackState, let stored = records[envelope.id] {
+                records[envelope.id] = try mergedPlaybackEnvelope(current: stored, incoming: envelope)
+            } else {
+                records[envelope.id] = envelope
+            }
+        }
         var conflicts = current.conflictedRecordIDs
         var conflictRecords = current.conflictServerRecords
         conflicts.formUnion(terminalFailures)
@@ -327,6 +347,25 @@ public actor ListenerRepository: SyncRepository {
         if case let .string(itemID)? = record.fields["itemID"] { return itemID }
         let components = record.id.recordName.split(separator: ":")
         return components.count > 1 ? String(components[1]) : record.id.recordName
+    }
+
+    /// Applies the shared causal playback policy while always adopting the latest
+    /// CloudKit system fields and change tag carried by the incoming envelope.
+    private func mergedPlaybackEnvelope(
+        current currentEnvelope: WiltedRecordEnvelope,
+        incoming incomingEnvelope: WiltedRecordEnvelope
+    ) throws -> WiltedRecordEnvelope {
+        let codec = WiltedRecordCodec()
+        let current = try codec.decodePlaybackRecord(currentEnvelope).value
+        let incoming = try codec.decodePlaybackRecord(incomingEnvelope).value
+        let merge = mergePlayback(current: current, incoming: incoming, changeTagMatches: true)
+        let winner = merge.acceptedStateIsIncoming ? incomingEnvelope : currentEnvelope
+        return try WiltedRecordEnvelope(
+            id: winner.id,
+            schemaVersion: winner.schemaVersion,
+            fields: winner.fields,
+            sidecar: incomingEnvelope.sidecar
+        )
     }
 
     private func persist(_ state: SyncRepositoryState) throws { try atomicWrite(JSONEncoder().encode(state), to: stateURL) }

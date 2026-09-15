@@ -576,6 +576,103 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertEqual(reopenedTombstone?.remoteAcknowledged, true)
     }
 
+    func testSyncCommitRefreshesPlaybackSidecarWhenLocalStateWins() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article(); let rev = try revision(for: item, id: "rev-sidecar-refresh")
+        let current = try PlaybackState(
+            itemID: item.itemID, revisionID: rev.revisionID, sessionID: "shared-session", sequence: 2,
+            positionSeconds: 20, durationSeconds: rev.durationSeconds, completed: false, intent: .progress,
+            deviceID: "device-local", updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_020)))
+        let staleIncoming = try PlaybackState(
+            itemID: item.itemID, revisionID: rev.revisionID, sessionID: "shared-session", sequence: 1,
+            positionSeconds: 10, durationSeconds: rev.durationSeconds, completed: false, intent: .progress,
+            deviceID: "device-remote", updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_030)))
+        let incomingSidecar = PlaybackSystemFieldsSidecar(
+            encodedSystemFields: Data([8, 9]), changeTag: "change-tag-new")
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(playback: current)
+        try await store.save(
+            playbackSidecar: PlaybackSystemFieldsSidecar(encodedSystemFields: Data([4, 5]), changeTag: "change-tag-old"),
+            for: item.itemID, revisionID: rev.revisionID)
+
+        try await store.applySyncCommit(LocalLibrarySyncCommit(
+            state: SyncRepositoryState(), playbacks: [.init(state: staleIncoming, sidecar: incomingSidecar)]))
+
+        let saved = try await store.playbackState(for: item.itemID, revisionID: rev.revisionID)
+        let sidecar = try await store.playbackSidecar(for: item.itemID, revisionID: rev.revisionID)
+        XCTAssertEqual(saved?.sequence, current.sequence)
+        XCTAssertEqual(saved?.positionSeconds, current.positionSeconds)
+        XCTAssertEqual(saved?.deviceID, current.deviceID)
+        XCTAssertEqual(sidecar, incomingSidecar)
+    }
+
+    func testSyncCommitAcceptsForwardProgressWithDifferingStoredChangeTag() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article(); let rev = try revision(for: item, id: "rev-forward-progress")
+        let current = try PlaybackState(
+            itemID: item.itemID, revisionID: rev.revisionID, sessionID: "shared-session", sequence: 1,
+            positionSeconds: 10, durationSeconds: rev.durationSeconds, completed: false, intent: .progress,
+            deviceID: "device-local", updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_020)))
+        let incoming = try PlaybackState(
+            itemID: item.itemID, revisionID: rev.revisionID, sessionID: "shared-session", sequence: 2,
+            positionSeconds: 20, durationSeconds: rev.durationSeconds, completed: false, intent: .progress,
+            deviceID: "device-remote", updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_030)))
+        let incomingSidecar = PlaybackSystemFieldsSidecar(
+            encodedSystemFields: Data([8, 9]), changeTag: "change-tag-new")
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(playback: current)
+        try await store.save(
+            playbackSidecar: PlaybackSystemFieldsSidecar(encodedSystemFields: Data([4, 5]), changeTag: "change-tag-old"),
+            for: item.itemID, revisionID: rev.revisionID)
+
+        try await store.applySyncCommit(LocalLibrarySyncCommit(
+            state: SyncRepositoryState(), playbacks: [.init(state: incoming, sidecar: incomingSidecar)]))
+
+        let saved = try await store.playbackState(for: item.itemID, revisionID: rev.revisionID)
+        let sidecar = try await store.playbackSidecar(for: item.itemID, revisionID: rev.revisionID)
+        XCTAssertEqual(saved?.sequence, incoming.sequence)
+        XCTAssertEqual(saved?.positionSeconds, incoming.positionSeconds)
+        XCTAssertEqual(saved?.deviceID, incoming.deviceID)
+        XCTAssertEqual(sidecar, incomingSidecar)
+    }
+
+    func testSyncCommitPreservesPendingLocalPlaybackAndSidecarAgainstStaleCrossSessionFetch() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article(); let rev = try revision(for: item, id: "rev-pending-playback")
+        let pendingLocal = try PlaybackState(
+            itemID: item.itemID, revisionID: rev.revisionID, sessionID: "local-session", sequence: 3,
+            positionSeconds: 24, durationSeconds: rev.durationSeconds, completed: false, intent: .progress,
+            deviceID: "device-local", updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_030)))
+        let staleIncoming = try PlaybackState(
+            itemID: item.itemID, revisionID: rev.revisionID, sessionID: "remote-session", sequence: 1,
+            positionSeconds: 0, durationSeconds: rev.durationSeconds, completed: false, intent: .restart,
+            deviceID: "device-remote", updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_020)))
+        let localSidecar = PlaybackSystemFieldsSidecar(
+            encodedSystemFields: Data([4, 5]), changeTag: "change-tag-local")
+        let incomingSidecar = PlaybackSystemFieldsSidecar(
+            encodedSystemFields: Data([8, 9]), changeTag: "change-tag-stale")
+        let pendingEnvelope = try WiltedRecordCodec().encode(playback: pendingLocal)
+        let pendingChange = try SyncPendingChange(
+            operation: .update, recordID: pendingEnvelope.id, record: pendingEnvelope)
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(playback: pendingLocal)
+        try await store.save(
+            playbackSidecar: localSidecar, for: item.itemID, revisionID: rev.revisionID)
+
+        try await store.applySyncCommit(LocalLibrarySyncCommit(
+            state: SyncRepositoryState(pendingChanges: [pendingChange]),
+            playbacks: [.init(state: staleIncoming, sidecar: incomingSidecar)]))
+
+        let saved = try await store.playbackState(for: item.itemID, revisionID: rev.revisionID)
+        let sidecar = try await store.playbackSidecar(for: item.itemID, revisionID: rev.revisionID)
+        XCTAssertEqual(saved?.sessionID, pendingLocal.sessionID)
+        XCTAssertEqual(saved?.sequence, pendingLocal.sequence)
+        XCTAssertEqual(saved?.positionSeconds, pendingLocal.positionSeconds)
+        XCTAssertEqual(saved?.intent, pendingLocal.intent)
+        XCTAssertEqual(saved?.deviceID, pendingLocal.deviceID)
+        XCTAssertEqual(sidecar, localSidecar)
+    }
+
     func testCorruptRepositoryStateDoesNotSilentlyReset() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         try LocalLibraryStore.corruptRepositoryStateFixture(at: url, data: Data("corrupt-state".utf8))

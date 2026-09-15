@@ -1,0 +1,38 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "playback-stale-change-tag",
+  "operation": "playbackMerge",
+  "description": "Forward progress is rejected when it is evaluated against a stale CloudKit change tag.",
+  "input": {
+    "changeTagMatches": false,
+    "current": {
+      "itemID": "item-alpha",
+      "revisionID": "rev-alpha-v1",
+      "sessionID": "session-alpha-1",
+      "sequence": 7,
+      "positionSeconds": 120,
+      "durationSeconds": 420,
+      "completed": false,
+      "intent": "progress",
+      "deviceID": "device-mac",
+      "updatedAt": "2026-08-17T12:10:00Z"
+    },
+    "incoming": {
+      "itemID": "item-alpha",
+      "revisionID": "rev-alpha-v1",
+      "sessionID": "session-alpha-1",
+      "sequence": 8,
+      "positionSeconds": 145,
+      "durationSeconds": 420,
+      "completed": false,
+      "intent": "progress",
+      "deviceID": "device-iphone",
+      "updatedAt": "2026-08-17T12:11:00Z"
+    }
+  },
+  "expected": {
+    "decision": "reject",
+    "winningState": "current",
+    "reason": "staleChangeTag"
+  }
+}

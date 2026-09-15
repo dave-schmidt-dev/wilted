@@ -2823,6 +2823,8 @@ public actor LocalLibraryStore {
         }
 
         for applied in commit.playbacks {
+            let recordID = try WiltedRecordID.playback(applied.state.itemID, applied.state.revisionID)
+            guard !commit.state.pendingChanges.contains(where: { $0.recordID == recordID }) else { continue }
             let id = "\(applied.state.itemID.rawValue)|\(applied.state.revisionID.rawValue)"
             if let existing = playbacks.first(where: { $0.id == id }) {
                 let current = try PlaybackState(itemID: applied.state.itemID, revisionID: applied.state.revisionID,
@@ -2831,15 +2833,16 @@ public actor LocalLibraryStore {
                                                 completed: existing.completed, intent: PlaybackIntent(rawValue: existing.intent) ?? .progress,
                                                 deviceID: existing.deviceID, encodedCloudKitRecordSystemFields: existing.encodedCloudKitRecordSystemFields,
                                                 updatedAt: Timestamp(existing.updatedAt))
-                let currentTag = existing.encodedCloudKitRecordChangeTag
                 let incomingTag = applied.sidecar.changeTag
-                let merge = mergePlayback(current: current, incoming: applied.state, changeTagMatches: currentTag == incomingTag)
-                guard merge.acceptedStateIsIncoming else { continue }
-                existing.sessionID = applied.state.sessionID; existing.sequence = applied.state.sequence
-                existing.positionSeconds = applied.state.positionSeconds; existing.durationSeconds = applied.state.durationSeconds
-                existing.completed = applied.state.completed; existing.intent = applied.state.intent.rawValue
-                existing.deviceID = applied.state.deviceID; existing.encodedCloudKitRecordSystemFields = applied.sidecar.encodedSystemFields
-                existing.encodedCloudKitRecordChangeTag = incomingTag; existing.updatedAt = applied.state.updatedAt.date
+                let merge = mergePlayback(current: current, incoming: applied.state, changeTagMatches: true)
+                if merge.acceptedStateIsIncoming {
+                    existing.sessionID = applied.state.sessionID; existing.sequence = applied.state.sequence
+                    existing.positionSeconds = applied.state.positionSeconds; existing.durationSeconds = applied.state.durationSeconds
+                    existing.completed = applied.state.completed; existing.intent = applied.state.intent.rawValue
+                    existing.deviceID = applied.state.deviceID; existing.updatedAt = applied.state.updatedAt.date
+                }
+                existing.encodedCloudKitRecordSystemFields = applied.sidecar.encodedSystemFields
+                existing.encodedCloudKitRecordChangeTag = incomingTag
             } else {
                 let record = LocalLibrarySchemaV3Models.PlaybackRecord(applied.state)
                 record.encodedCloudKitRecordSystemFields = applied.sidecar.encodedSystemFields
