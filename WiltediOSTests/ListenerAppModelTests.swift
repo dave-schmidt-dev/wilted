@@ -177,6 +177,35 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertEqual(WiltedListenerAppModel.defaultSessionMode(environment: [:]), .liveCloudKit)
     }
 
+    func testColdLaunchSessionConstructionFailureKeepsLocalCatalogAndDownloadedAudio() async throws {
+        let fixture = try makeChunkedCatalogFixture()
+        _ = try await fixture.cache.store(data: fixture.bytes, asset: fixture.asset)
+        let factory = FailingSessionFactory()
+        let model = WiltedListenerAppModel(
+            repository: fixture.repository,
+            sessionFactory: { stateData in
+                try await factory.makeSession(stateData: stateData)
+            },
+            cache: fixture.cache
+        )
+
+        await model.start()
+
+        let constructionCount = await factory.constructionCount
+        let cachedURL = await fixture.cache.url(for: fixture.asset)
+        XCTAssertEqual(constructionCount, 1, "cold launch must attempt the live session once")
+        XCTAssertEqual(model.items.map(\.itemID), [fixture.itemID])
+        XCTAssertEqual(model.items.first?.state, .downloaded,
+                       "the local cache must remain available when live session construction fails")
+        XCTAssertNotNil(cachedURL)
+        XCTAssertEqual(model.downloadStatistics, ListenerDownloadStatistics(fileCount: 1, byteCount: Int64(fixture.bytes.count)))
+        guard case let .failed(message, retryable) = model.syncPhase else {
+            return XCTFail("Expected a retryable live-session construction failure, got \(model.syncPhase)")
+        }
+        XCTAssertTrue(message.contains("Sync unavailable"))
+        XCTAssertTrue(retryable)
+    }
+
     func testDebugModelDoesNotContactTransportAndReportsLocalFailure() async {
         let model = WiltedListenerAppModel()
         await model.refresh()
@@ -1622,6 +1651,15 @@ private actor BlockingChunkLoader {
 private actor SessionCancelProbe {
     private(set) var wasCalled = false
     func record() { wasCalled = true }
+}
+
+private actor FailingSessionFactory {
+    private(set) var constructionCount = 0
+
+    func makeSession(stateData: Data?) throws -> any ListenerSyncSession {
+        constructionCount += 1
+        throw TestSyncError.network
+    }
 }
 
 private actor SessionSequenceProbe {

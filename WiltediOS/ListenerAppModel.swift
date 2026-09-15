@@ -391,7 +391,16 @@ public final class WiltedListenerAppModel: ObservableObject {
             } catch {
                 guard isCurrent(operation) else { return }
                 rebuildSessionBeforeNextRefresh = true
-                syncPhase = .failed("Sync unavailable: \(error.localizedDescription)", retryable: true)
+                if let listenerRepository = repository as? ListenerRepository {
+                    try? await listenerRepository.recordFetchFailure(error.localizedDescription)
+                }
+                await refreshSyncObservability()
+                guard isCurrent(operation) else { return }
+                await loadLocal(repository: repository, fallback: error.localizedDescription, operation: operation)
+                guard isCurrent(operation) else { return }
+                if case .offline = syncPhase {
+                    syncPhase = .failed("Sync unavailable: \(error.localizedDescription)", retryable: true)
+                }
                 return
             }
         }
