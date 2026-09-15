@@ -61,7 +61,7 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertEqual(rewind.intent, .rewind)
         XCTAssertEqual(rewind.positionSeconds, 5)
         XCTAssertEqual(harness.model.selectedPlayback, rewind)
-        XCTAssertEqual(harness.model.status, .playing)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
 
         harness.engine.currentTime = 9
         let pauseHandled = remoteCommands.receivePause(nil)
@@ -73,7 +73,7 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertEqual(pause.intent, .progress)
         XCTAssertEqual(pause.positionSeconds, 9)
         XCTAssertEqual(harness.model.selectedPlayback, pause)
-        XCTAssertEqual(harness.model.status, .paused)
+        XCTAssertEqual(harness.model.playbackPhase, .paused)
     }
 
     func testRemotePlayWhileBackgroundedRestartsBoundedPersistence() async throws {
@@ -91,12 +91,12 @@ final class ListenerAppModelTests: XCTestCase {
 
         XCTAssertEqual(remoteCommands.receivePause(nil), .success)
         _ = await waitForEnqueuedChanges(harness.repository, count: 3)
-        XCTAssertEqual(harness.model.status, .paused)
+        XCTAssertEqual(harness.model.playbackPhase, .paused)
 
         XCTAssertEqual(remoteCommands.receivePlay(nil), .success)
         let changes = await waitForEnqueuedChanges(harness.repository, count: 4)
         XCTAssertEqual(changes.count, 4)
-        XCTAssertEqual(harness.model.status, .playing)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
         for _ in 0..<100 {
             if await sleeper.sleepCount() == 2 { break }
             try? await Task.sleep(for: .milliseconds(2))
@@ -124,7 +124,7 @@ final class ListenerAppModelTests: XCTestCase {
         let writesAfter = await harness.repository.enqueuedChanges()
         XCTAssertEqual(writesAfter, writesBefore)
         XCTAssertEqual(harness.model.selectedPlayback, selectedBefore)
-        XCTAssertEqual(harness.model.status, .paused)
+        XCTAssertEqual(harness.model.playbackPhase, .paused)
         XCTAssertFalse(harness.engine.isPlaying)
     }
 
@@ -143,14 +143,14 @@ final class ListenerAppModelTests: XCTestCase {
         let remotePersistenceStarted = await delayedRemotePersistence.waitUntilStarted()
         XCTAssertTrue(remotePersistenceStarted)
         await harness.model.play(itemID: successor)
-        XCTAssertEqual(harness.model.status, .playing)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
 
         await delayedRemotePersistence.release()
         for _ in 0..<100 { await Task.yield() }
 
         XCTAssertEqual(harness.model.selectedItemID, successor)
         XCTAssertEqual(harness.model.selectedPlayback?.itemID, successor)
-        XCTAssertEqual(harness.model.status, .playing,
+        XCTAssertEqual(harness.model.playbackPhase, .playing,
                        "a delayed outgoing remote result must not overwrite the active successor")
     }
 
@@ -181,7 +181,7 @@ final class ListenerAppModelTests: XCTestCase {
         let model = WiltedListenerAppModel()
         await model.refresh()
 
-        guard case let .failed(message, retryable) = model.status else {
+        guard case let .failed(message, retryable) = model.syncPhase else {
             return XCTFail("Expected a visible local-larder failure")
         }
         XCTAssertTrue(message.contains("Local larder unavailable"))
@@ -212,7 +212,7 @@ final class ListenerAppModelTests: XCTestCase {
         let fetchCount = await transport.fetchCountValue()
         XCTAssertEqual(fetchCount, 2,
                        "launch discovery is one fetch; foreground discovery is a later fetch")
-        XCTAssertEqual(model.status, .ready)
+        XCTAssertEqual(model.syncPhase, .ready)
     }
 
     func testConcurrentRefreshesShareTheInFlightOperation() async {
@@ -233,7 +233,7 @@ final class ListenerAppModelTests: XCTestCase {
 
         let fetchCount = await transport.fetchCountValue()
         XCTAssertEqual(fetchCount, 1)
-        XCTAssertEqual(model.status, .ready)
+        XCTAssertEqual(model.syncPhase, .ready)
     }
 
     func testAutomaticDiscoverySurfacesRetryableFailure() async {
@@ -243,8 +243,8 @@ final class ListenerAppModelTests: XCTestCase {
 
         await model.start()
 
-        guard case let .failed(message, retryable) = model.status else {
-            return XCTFail("Expected automatic discovery failure, got \(model.status)")
+        guard case let .failed(message, retryable) = model.syncPhase else {
+            return XCTFail("Expected automatic discovery failure, got \(model.syncPhase)")
         }
         XCTAssertTrue(message.contains("Refresh failed"))
         XCTAssertTrue(retryable)
@@ -259,7 +259,7 @@ final class ListenerAppModelTests: XCTestCase {
 
         await model.refresh()
 
-        XCTAssertEqual(model.status, .ready)
+        XCTAssertEqual(model.syncPhase, .ready)
         let stageCalls = await repository.stageCalls
         let commitCalls = await repository.commitCalls
         let fetchCalls = await transport.fetchCalls
@@ -282,8 +282,8 @@ final class ListenerAppModelTests: XCTestCase {
 
         await model.refresh()
 
-        guard case let .failed(message, retryable) = model.status else {
-            return XCTFail("Expected stale retry exhaustion, got \(model.status)")
+        guard case let .failed(message, retryable) = model.syncPhase else {
+            return XCTFail("Expected stale retry exhaustion, got \(model.syncPhase)")
         }
         XCTAssertTrue(message.contains("The staged sync batch is stale"))
         XCTAssertTrue(retryable)
@@ -320,14 +320,14 @@ final class ListenerAppModelTests: XCTestCase {
         )
 
         await model.refresh()
-        guard case .failed(_, retryable: true) = model.status else {
+        guard case .failed(_, retryable: true) = model.syncPhase else {
             return XCTFail("Expected the initial transport to fail")
         }
         XCTAssertEqual(model.items.count, 1, "the committed local catalog remains visible")
 
         await model.refresh()
 
-        XCTAssertEqual(model.status, .ready)
+        XCTAssertEqual(model.syncPhase, .ready)
         let stateInputs = await factory.stateInputs()
         let firstSessionWasCancelled = await cancelProbe.wasCalled
         let failedFetchCount = await failedTransport.fetchCountValue()
@@ -343,18 +343,18 @@ final class ListenerAppModelTests: XCTestCase {
 
     func testPixelFixturesAreAccountFreeAndExposeTheirIntendedTerminalStates() {
         let library = WiltedListenerAppModel.makePixelFixture()
-        XCTAssertEqual(library.status, .ready)
+        XCTAssertEqual(library.syncPhase, .ready)
         XCTAssertEqual(library.items.count, 1)
         XCTAssertEqual(library.transcriptsByItem.values.first?.availability, .available)
         XCTAssertEqual(library.downloadStatistics.fileCount, 1)
         XCTAssertNotNil(library.syncObservability.lastSuccessfulFetchAt)
 
         let playing = WiltedListenerAppModel.makePixelFixture(state: .nowPlaying)
-        XCTAssertEqual(playing.status, .playing)
+        XCTAssertEqual(playing.playbackPhase, .playing)
         XCTAssertEqual(playing.selectedPlayback?.positionSeconds, 31)
 
         let failure = WiltedListenerAppModel.makePixelFixture(state: .terminalFailure)
-        XCTAssertEqual(failure.status, .failed("iCloud account changed; sync is quarantined", retryable: false))
+        XCTAssertEqual(failure.syncPhase, .failed("iCloud account changed; sync is quarantined", retryable: false))
         XCTAssertEqual(failure.items.count, 1)
     }
 
@@ -505,7 +505,7 @@ final class ListenerAppModelTests: XCTestCase {
             let expected = type.userFacingName
             var observed = false
             for _ in 0..<100 {
-                if case let .failed(message, retryable) = model.status,
+                if case let .failed(message, retryable) = model.syncPhase,
                    message.contains(expected), !retryable {
                     observed = true
                     break
@@ -588,8 +588,8 @@ final class ListenerAppModelTests: XCTestCase {
         // is indistinguishable from having had nothing to send.
         let sent = await transport.savedChanges()
         XCTAssertTrue(sent.isEmpty)
-        guard case let .failed(message, retryable) = model.status else {
-            XCTFail("Expected a held-work failure, got \(model.status)")
+        guard case let .failed(message, retryable) = model.syncPhase else {
+            XCTFail("Expected a held-work failure, got \(model.syncPhase)")
             return
         }
         XCTAssertEqual(message, "Nothing was sent. 1 playback update is held by unresolved conflicts.")
@@ -631,6 +631,233 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertEqual(acknowledged, [[change]])
     }
 
+    func testConcurrentRefreshSuccessAndFailurePreservePlayingPhaseAndLivePosition() async throws {
+        let transport = BlockingSyncTransport()
+        let harness = try await PlaybackHarness.make(transport: transport)
+        let initialRefresh = Task { await harness.model.refresh() }
+        for _ in 0..<100 {
+            if await transport.fetchCountValue() == 1 { break }
+            await Task.yield()
+        }
+        await transport.releaseFetch()
+        await initialRefresh.value
+        await harness.model.play(itemID: harness.itemID)
+        harness.engine.currentTime = 11
+        await harness.model.refreshNowPlayingReadout()
+
+        let successfulRefresh = Task { await harness.model.refresh() }
+        for _ in 0..<100 {
+            if await transport.fetchCountValue() == 2 { break }
+            await Task.yield()
+        }
+        XCTAssertTrue(harness.model.syncPhase.isBusy)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
+        XCTAssertEqual(harness.model.selectedPlayback?.positionSeconds, 11)
+        XCTAssertTrue(harness.engine.isPlaying)
+        await transport.releaseFetch()
+        await successfulRefresh.value
+        XCTAssertEqual(harness.model.syncPhase, .ready)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
+        XCTAssertEqual(harness.model.selectedPlayback?.positionSeconds, 11)
+
+        harness.engine.currentTime = 17
+        await harness.model.refreshNowPlayingReadout()
+        let failedRefresh = Task { await harness.model.refresh() }
+        for _ in 0..<100 {
+            if await transport.fetchCountValue() == 3 { break }
+            await Task.yield()
+        }
+        await transport.releaseFetch(failing: true)
+        await failedRefresh.value
+
+        guard case .failed(_, retryable: true) = harness.model.syncPhase else {
+            return XCTFail("the failed refresh must remain a retryable library phase")
+        }
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
+        XCTAssertEqual(harness.model.selectedPlayback?.positionSeconds, 17)
+        XCTAssertTrue(harness.engine.isPlaying)
+    }
+
+    func testConcurrentDownloadPreservesPlayingPhaseAndLivePosition() async throws {
+        let loader = try BlockingAssetLoader()
+        let harness = try await PlaybackHarness.make(
+            includeSecondItem: true,
+            cacheSecondItem: false,
+            assetLoader: { recordID, asset in
+                await loader.load(recordID: recordID, asset: asset)
+            }
+        )
+        let secondItemID = try XCTUnwrap(harness.secondItemID)
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        harness.engine.currentTime = 12
+        await harness.model.refreshNowPlayingReadout()
+
+        let download = Task { await harness.model.download(itemID: secondItemID) }
+        let downloadRequested = await loader.waitUntilRequested()
+        XCTAssertTrue(downloadRequested)
+        XCTAssertTrue(harness.model.syncPhase.isBusy)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
+        XCTAssertEqual(harness.model.selectedPlayback?.positionSeconds, 12)
+        XCTAssertTrue(harness.engine.isPlaying)
+
+        await loader.releaseLoad()
+        await download.value
+        XCTAssertEqual(harness.model.syncPhase, .ready)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
+        XCTAssertEqual(harness.model.selectedPlayback?.positionSeconds, 12)
+        XCTAssertEqual(harness.model.items.first(where: { $0.itemID == secondItemID })?.state, .downloaded)
+    }
+
+    func testSendQueuesBehindConcurrentRefreshAndIsNotDroppedWhilePlaying() async throws {
+        let transport = BlockingSyncTransport()
+        let harness = try await PlaybackHarness.make(transport: transport)
+        let initialRefresh = Task { await harness.model.refresh() }
+        for _ in 0..<100 {
+            if await transport.fetchCountValue() == 1 { break }
+            await Task.yield()
+        }
+        await transport.releaseFetch()
+        await initialRefresh.value
+        await harness.model.play(itemID: harness.itemID)
+        harness.engine.currentTime = 9
+        await harness.model.refreshNowPlayingReadout()
+
+        let refresh = Task { await harness.model.refresh() }
+        for _ in 0..<100 {
+            if await transport.fetchCountValue() == 2 { break }
+            await Task.yield()
+        }
+        let send = Task { await harness.model.sendPending() }
+        for _ in 0..<100 { await Task.yield() }
+        let sentWhileRefreshBlocked = await transport.savedChanges()
+        XCTAssertTrue(sentWhileRefreshBlocked.isEmpty,
+                      "the send must wait for the active refresh rather than overlap it")
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
+        XCTAssertEqual(harness.model.selectedPlayback?.positionSeconds, 9)
+
+        await transport.releaseFetch()
+        await refresh.value
+        await send.value
+
+        let sent = await transport.savedChanges()
+        XCTAssertEqual(sent.count, 1, "the queued send must execute exactly once")
+        XCTAssertFalse(sent[0].isEmpty)
+        XCTAssertEqual(harness.model.syncPhase, .ready)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
+        XCTAssertEqual(harness.model.selectedPlayback?.positionSeconds, 9)
+        XCTAssertTrue(harness.engine.isPlaying)
+    }
+
+    func testPlaybackEnqueueStatusDoesNotReplaceExistingSyncFailure() async throws {
+        let transport = RecordingSyncTransport(fetchError: .network)
+        let harness = try await PlaybackHarness.make(transport: transport)
+        await harness.model.refresh()
+        let failedPhase = harness.model.syncPhase
+        guard case .failed(_, retryable: true) = failedPhase else {
+            return XCTFail("the setup must expose a retryable sync failure")
+        }
+
+        await harness.model.play(itemID: harness.itemID)
+        for _ in 0..<100 { await Task.yield() }
+
+        XCTAssertEqual(harness.model.syncPhase, failedPhase,
+                       "durably enqueuing playback must not publish a successful sync")
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
+    }
+
+    func testQuarantineInvalidatesRemoveDownloadWithoutRemovingOrClearingFailure() async throws {
+        let harness = try await PlaybackHarness.make()
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        let pausePersistence = AsyncEnqueueGate()
+        await harness.repository.holdNextEnqueue(on: pausePersistence)
+
+        let removal = Task { await harness.model.removeDownload(itemID: harness.itemID) }
+        let pauseStarted = await pausePersistence.waitUntilStarted()
+        XCTAssertTrue(pauseStarted)
+        harness.model.quarantineForMVPFixture()
+        await pausePersistence.release()
+        await removal.value
+        for _ in 0..<100 { await Task.yield() }
+
+        XCTAssertEqual(harness.model.items.first?.state, .downloaded)
+        XCTAssertTrue(harness.model.accountQuarantined)
+        XCTAssertEqual(
+            harness.model.syncPhase,
+            .failed("iCloud account switch detected; sync is quarantined", retryable: false)
+        )
+    }
+
+    func testCancelledRemoveDownloadDoesNotReleaseTwoQueuedSends() async throws {
+        let transport = BlockingSaveSyncTransport()
+        let harness = try await PlaybackHarness.make(transport: transport)
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        let pausePersistence = AsyncEnqueueGate()
+        await harness.repository.holdNextEnqueue(on: pausePersistence)
+
+        let removal = Task { await harness.model.removeDownload(itemID: harness.itemID) }
+        let pauseStarted = await pausePersistence.waitUntilStarted()
+        XCTAssertTrue(pauseStarted)
+        let firstSend = Task { await harness.model.sendPending() }
+        let secondSend = Task { await harness.model.sendPending() }
+        for _ in 0..<100 { await Task.yield() }
+
+        harness.model.cancel()
+        let firstSaveStarted = await transport.waitForSaveCount(1)
+        XCTAssertTrue(firstSaveStarted)
+        await pausePersistence.release()
+        await removal.value
+        for _ in 0..<100 { await Task.yield() }
+        let saveCountWhileFirstBlocked = await transport.saveCountValue()
+        XCTAssertEqual(saveCountWhileFirstBlocked, 1,
+                       "the invalidated removal must not release the second waiter over the active send")
+
+        await transport.releaseNextSave()
+        let secondSaveStarted = await transport.waitForSaveCount(2)
+        XCTAssertTrue(secondSaveStarted)
+        await transport.releaseNextSave()
+        await firstSend.value
+        await secondSend.value
+    }
+
+    func testCancelledRefreshCannotClobberUnblockedSendPhaseDuringLocalFallback() async throws {
+        let transport = BlockingSyncTransport()
+        let harness = try await PlaybackHarness.make(transport: transport)
+        let initialRefresh = Task { await harness.model.refresh() }
+        for _ in 0..<100 {
+            if await transport.fetchCountValue() == 1 { break }
+            await Task.yield()
+        }
+        await transport.releaseFetch()
+        await initialRefresh.value
+        await harness.model.play(itemID: harness.itemID)
+
+        let localFallback = AsyncEnqueueGate()
+        await harness.repository.holdNextState(on: localFallback)
+        let failedRefresh = Task { await harness.model.refresh() }
+        for _ in 0..<100 {
+            if await transport.fetchCountValue() == 2 { break }
+            await Task.yield()
+        }
+        await transport.releaseFetch(failing: true)
+        let fallbackStarted = await localFallback.waitUntilStarted()
+        XCTAssertTrue(fallbackStarted)
+
+        harness.model.cancel()
+        let send = Task { await harness.model.sendPending() }
+        await send.value
+        XCTAssertEqual(harness.model.syncPhase, .ready)
+        let savedChanges = await transport.savedChanges()
+        XCTAssertEqual(savedChanges.count, 1)
+
+        await localFallback.release()
+        await failedRefresh.value
+        XCTAssertEqual(harness.model.syncPhase, .ready,
+                       "stale local fallback must not replace the completed queued send phase")
+    }
+
     func testAFirstEverPlayStartsPlaybackInsteadOfFailingTheSequenceFloor() async throws {
         let harness = try await PlaybackHarness.make()
 
@@ -640,8 +867,8 @@ final class ListenerAppModelTests: XCTestCase {
 
         await harness.model.play(itemID: harness.itemID)
 
-        guard case .playing = harness.model.status else {
-            return XCTFail("first play failed: \(harness.model.status)")
+        guard case .playing = harness.model.playbackPhase else {
+            return XCTFail("first play failed: \(harness.model.playbackPhase)")
         }
         let started = try XCTUnwrap(harness.model.selectedPlayback)
         // `PlaybackState` rejects a sequence below one, so an item that has never been
@@ -659,11 +886,11 @@ final class ListenerAppModelTests: XCTestCase {
         let play = Task { await harness.model.play(itemID: harness.itemID) }
         let loadStarted = await gate.waitUntilStarted()
         XCTAssertTrue(loadStarted)
-        XCTAssertEqual(harness.model.status, .refreshing("Preparing offline audio"))
+        XCTAssertEqual(harness.model.playbackPhase, .refreshing("Preparing offline audio"))
 
         gate.release.signal()
         await play.value
-        XCTAssertEqual(harness.model.status, .playing)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
     }
 
     func testPlaybackCompletionEventsPreservePlayingAndPausedStatuses() async throws {
@@ -672,11 +899,11 @@ final class ListenerAppModelTests: XCTestCase {
 
         await harness.model.play(itemID: harness.itemID)
         await drainPlaybackStatusDelivery()
-        XCTAssertEqual(harness.model.status, .playing)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
 
         await harness.model.pause()
         await drainPlaybackStatusDelivery()
-        XCTAssertEqual(harness.model.status, .paused)
+        XCTAssertEqual(harness.model.playbackPhase, .paused)
     }
 
     func testRestartOpensANewSessionInsteadOfFailingTheSequenceFloor() async throws {
@@ -687,8 +914,8 @@ final class ListenerAppModelTests: XCTestCase {
 
         await harness.model.restart()
 
-        guard case .playing = harness.model.status else {
-            return XCTFail("restart failed: \(harness.model.status)")
+        guard case .playing = harness.model.playbackPhase else {
+            return XCTFail("restart failed: \(harness.model.playbackPhase)")
         }
         let restarted = try XCTUnwrap(harness.model.selectedPlayback)
         XCTAssertNotEqual(restarted.sessionID, firstSession, "restart should open a new session")
@@ -705,11 +932,11 @@ final class ListenerAppModelTests: XCTestCase {
         let restart = Task { await harness.model.restart() }
         let loadStarted = await gate.waitUntilStarted()
         XCTAssertTrue(loadStarted)
-        XCTAssertEqual(harness.model.status, .refreshing("Preparing offline audio"))
+        XCTAssertEqual(harness.model.playbackPhase, .refreshing("Preparing offline audio"))
 
         gate.release.signal()
         await restart.value
-        XCTAssertEqual(harness.model.status, .playing)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
     }
 
     private func drainPlaybackStatusDelivery() async {
@@ -847,7 +1074,7 @@ final class ListenerAppModelTests: XCTestCase {
         let completionStarted = await completionPersistence.waitUntilStarted()
         XCTAssertTrue(completionStarted)
         await harness.model.play(itemID: successor)
-        XCTAssertEqual(harness.model.status, .playing)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
 
         await completionPersistence.release()
         for _ in 0..<100 {
@@ -856,7 +1083,7 @@ final class ListenerAppModelTests: XCTestCase {
         }
 
         XCTAssertEqual(harness.model.selectedItemID, successor)
-        XCTAssertEqual(harness.model.status, .playing)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
         XCTAssertFalse(harness.model.selectedPlayback?.completed ?? true)
     }
 
@@ -1171,7 +1398,7 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertEqual(model.items.first?.state, .metadataOnly)
         let cachedURL = await fixture.cache.url(for: fixture.asset)
         XCTAssertNil(cachedURL)
-        guard case let .failed(message, retryable) = model.status else {
+        guard case let .failed(message, retryable) = model.syncPhase else {
             return XCTFail("Expected a retryable download failure")
         }
         XCTAssertTrue(message.contains("Download failed"))
@@ -1188,7 +1415,7 @@ final class ListenerAppModelTests: XCTestCase {
         await model.download(itemID: fixture.itemID)
 
         XCTAssertEqual(model.items.first?.state, .metadataOnly)
-        XCTAssertEqual(model.status, .failed("Download failed: network unavailable", retryable: true))
+        XCTAssertEqual(model.syncPhase, .failed("Download failed: network unavailable", retryable: true))
     }
 
     func testDuplicateChunkDownloadsAreSuppressedWhileOneIsInFlight() async throws {
@@ -1241,13 +1468,13 @@ final class ListenerAppModelTests: XCTestCase {
         await cancelled.value
         XCTAssertEqual(model.items.first?.state, .metadataOnly,
                        "the cancelled generation must not publish its completed bytes")
-        XCTAssertTrue(model.status.isBusy,
+        XCTAssertTrue(model.syncPhase.isBusy,
                       "the cancelled generation must not clear the retry's visible progress")
 
         await loader.release()
         await retry.value
         XCTAssertEqual(model.items.first?.state, .downloaded)
-        XCTAssertEqual(model.status, .ready)
+        XCTAssertEqual(model.syncPhase, .ready)
     }
 
     func testAccountQuarantineInvalidatesAnActiveChunkDownload() async throws {
@@ -1278,7 +1505,7 @@ final class ListenerAppModelTests: XCTestCase {
         }
         signals.send(.quarantined(.switchAccounts))
         for _ in 0..<100 {
-            if case .failed(_, retryable: false) = model.status { break }
+            if case .failed(_, retryable: false) = model.syncPhase { break }
             await Task.yield()
         }
 
@@ -1289,7 +1516,7 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertEqual(model.items.first?.state, .metadataOnly)
         XCTAssertNil(cachedURL)
         XCTAssertTrue(sessionWasCancelled)
-        XCTAssertEqual(model.status,
+        XCTAssertEqual(model.syncPhase,
                        .failed("iCloud account switch detected; sync is quarantined", retryable: false))
     }
 
@@ -1313,7 +1540,7 @@ final class ListenerAppModelTests: XCTestCase {
         await model.refresh()
         signals.send(.quarantined(.signOut))
         for _ in 0..<100 {
-            if case .failed(_, retryable: false) = model.status { break }
+            if case .failed(_, retryable: false) = model.syncPhase { break }
             await Task.yield()
         }
 
@@ -1322,7 +1549,7 @@ final class ListenerAppModelTests: XCTestCase {
         let loadCount = await loader.count
         XCTAssertEqual(loadCount, 0)
         XCTAssertEqual(model.items.first?.state, .metadataOnly)
-        XCTAssertEqual(model.status,
+        XCTAssertEqual(model.syncPhase,
                        .failed("iCloud sign-out detected; sync is quarantined", retryable: false))
     }
 
@@ -1452,18 +1679,28 @@ private func listenerStaleStageFixture(changeCount: Int) throws -> ([WiltedRecor
 }
 
 private actor StaticSyncRepository: SyncRepository {
-    let statuses: AsyncStream<SyncStatus>
+    nonisolated let statuses: AsyncStream<SyncStatus>
+    private let statusContinuation: AsyncStream<SyncStatus>.Continuation
     private var snapshot: SyncRepositoryState
     private var acknowledgements: [[SyncPendingChange]] = []
     private var enqueued: [SyncPendingChange] = []
     private var nextEnqueueGate: AsyncEnqueueGate?
+    private var nextStateGate: AsyncEnqueueGate?
 
     init(state: SyncRepositoryState) {
         self.snapshot = state
-        self.statuses = AsyncStream { _ in }
+        let (stream, continuation) = AsyncStream<SyncStatus>.makeStream()
+        self.statuses = stream
+        self.statusContinuation = continuation
     }
 
-    func state() async -> SyncRepositoryState { snapshot }
+    func state() async -> SyncRepositoryState {
+        if let gate = nextStateGate {
+            nextStateGate = nil
+            await gate.suspend()
+        }
+        return snapshot
+    }
 
     func stage(_ batch: SyncFetchBatch) async throws -> StagedSyncBatch {
         StagedSyncBatch(batch: batch, priorState: snapshot)
@@ -1500,11 +1737,13 @@ private actor StaticSyncRepository: SyncRepository {
             conflictedRecordIDs: snapshot.conflictedRecordIDs,
             conflictServerRecords: snapshot.conflictServerRecords
         )
+        statusContinuation.yield(.init(phase: .completed, message: "Listener playback change queued"))
     }
     func acknowledge(_ result: SyncSendResult, sent: [SyncPendingChange]) async throws { acknowledgements.append(sent) }
     func acknowledgedBatches() -> [[SyncPendingChange]] { acknowledgements }
     func enqueuedChanges() -> [SyncPendingChange] { enqueued }
     func holdNextEnqueue(on gate: AsyncEnqueueGate) { nextEnqueueGate = gate }
+    func holdNextState(on gate: AsyncEnqueueGate) { nextStateGate = gate }
 }
 
 private actor StaleStageListenerRepository: SyncRepository {
@@ -1638,22 +1877,96 @@ private actor BlockingSyncTransport: SyncTransport {
     let statuses = AsyncStream<SyncStatus> { _ in }
     private var fetchCount = 0
     private var release: CheckedContinuation<Void, Never>?
+    private var failReleasedFetch = false
+    private var sent: [[SyncPendingChange]] = []
 
     func fetchChanges() async throws -> SyncFetchBatch {
         fetchCount += 1
         await withCheckedContinuation { continuation in
             release = continuation
         }
+        if failReleasedFetch {
+            failReleasedFetch = false
+            throw TestSyncError.network
+        }
         return try SyncFetchBatch(generationID: "refresh", records: [], engineState: Data([2]))
     }
 
     func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {
-        try SyncSendResult(engineState: Data([3]))
+        sent.append(changes)
+        return try SyncSendResult(engineState: Data([3]))
     }
 
     func fetchCountValue() -> Int { fetchCount }
 
-    func releaseFetch() {
+    func releaseFetch(failing: Bool = false) {
+        failReleasedFetch = failing
+        release?.resume()
+        release = nil
+    }
+
+    func savedChanges() -> [[SyncPendingChange]] { sent }
+}
+
+private actor BlockingSaveSyncTransport: SyncTransport {
+    nonisolated let statuses = AsyncStream<SyncStatus> { _ in }
+    private var saveCount = 0
+    private var saveWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func fetchChanges() async throws -> SyncFetchBatch {
+        try SyncFetchBatch(generationID: "blocking-save-refresh", records: [], engineState: Data([2]))
+    }
+
+    func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {
+        saveCount += 1
+        await withCheckedContinuation { saveWaiters.append($0) }
+        return try SyncSendResult(engineState: Data([3]))
+    }
+
+    func saveCountValue() -> Int { saveCount }
+
+    func waitForSaveCount(_ expected: Int) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(2)
+        while saveCount < expected, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        return saveCount >= expected
+    }
+
+    func releaseNextSave() {
+        guard !saveWaiters.isEmpty else { return }
+        saveWaiters.removeFirst().resume()
+    }
+}
+
+private actor BlockingAssetLoader {
+    private let sourceURL: URL
+    private var requestCount = 0
+    private var release: CheckedContinuation<Void, Never>?
+
+    init() throws {
+        sourceURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wilted-blocking-asset-\(UUID().uuidString).m4a")
+        try Data("wilted-second-play-audio".utf8).write(to: sourceURL, options: .atomic)
+    }
+
+    func load(recordID: WiltedRecordID, asset: WiltedAsset) async -> URL {
+        requestCount += 1
+        await withCheckedContinuation { release = $0 }
+        return sourceURL
+    }
+
+    func waitUntilRequested() async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(2)
+        while requestCount == 0, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        return requestCount > 0
+    }
+
+    func releaseLoad() {
         release?.resume()
         release = nil
     }
@@ -1725,6 +2038,9 @@ private struct PlaybackHarness {
     static func make(
         cachedPlaybackRevisionID: RevisionID? = nil,
         includeSecondItem: Bool = false,
+        cacheSecondItem: Bool = true,
+        transport: (any SyncTransport)? = nil,
+        assetLoader: ListenerAssetLoader? = nil,
         backgroundSleeper: @escaping @Sendable (Duration) async throws -> Void = { duration in
             try await Task.sleep(for: duration)
         }
@@ -1770,7 +2086,9 @@ private struct PlaybackHarness {
                                                    durationSeconds: 30, byteCount: Int64(secondBytes.count),
                                                    contentHash: secondHash, mediaType: "audio/mp4",
                                                    createdAt: Timestamp(Date()), schemaVersion: 1)
-            _ = try await cache.store(data: secondBytes, asset: secondAsset)
+            if cacheSecondItem {
+                _ = try await cache.store(data: secondBytes, asset: secondAsset)
+            }
             records.append(try codec.encode(article: secondArticle, currentRevisionID: secondRevisionID))
             records.append(try codec.encode(revision: secondRevision, audioAsset: secondAsset))
             secondItemID = secondID
@@ -1781,8 +2099,10 @@ private struct PlaybackHarness {
             engineState: Data([1])))
         return PlaybackHarness(model: WiltedListenerAppModel(
             repository: repository,
+            transport: transport,
             cache: cache,
             playback: controller,
+            assetLoader: assetLoader,
             metadataSaver: { metadata in await metadataCapture.save(metadata) },
             backgroundSleeper: backgroundSleeper
         ), itemID: itemID, engine: engine, metadataCapture: metadataCapture,

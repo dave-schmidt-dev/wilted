@@ -56,19 +56,19 @@ public struct WiltedListenerLibraryView: View {
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
-                Text(model.status.message)
+                Text(model.syncPhase.message)
                     .wiltedFont(.utility)
-                    .foregroundStyle(model.status.tone.color(colorScheme))
+                    .foregroundStyle(model.syncPhase.tone.color(colorScheme))
                     .accessibilityIdentifier("wilted-listener-status")
 
-                if model.status.isBusy {
+                if model.syncPhase.isBusy {
                     Button("Cancel") { model.cancel() }
                         .buttonStyle(.bordered)
                         .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
                         .accessibilityIdentifier("wilted-listener-cancel")
                 }
 
-                if case .failed(_, retryable: true) = model.status {
+                if case .failed(_, retryable: true) = model.syncPhase {
                     Button("Retry") { Task { await model.refresh() } }
                         .buttonStyle(.borderedProminent)
                         .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
@@ -136,7 +136,7 @@ public struct WiltedListenerLibraryView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("Refresh") { Task { await model.refresh() } }
-                    .disabled(model.status.isBusy)
+                    .disabled(model.syncPhase.isBusy)
                     .accessibilityIdentifier("wilted-listener-refresh")
             }
         }
@@ -282,9 +282,9 @@ public struct WiltedListenerNowPlayingView: View {
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
 
-                Text(model.status.message)
+                Text(model.playbackPhase.message)
                     .wiltedFont(.utility)
-                    .foregroundStyle(model.status.tone.color(colorScheme))
+                    .foregroundStyle(model.playbackPhase.tone.color(colorScheme))
                     .accessibilityIdentifier("wilted-now-playing-status")
 
                 HStack(spacing: WiltedTheme.Spacing.medium) {
@@ -364,7 +364,7 @@ public struct WiltedListenerNowPlayingView: View {
     }
 
     private var playbackIsPlaying: Bool {
-        if case .playing = model.status { return true }
+        if case .playing = model.playbackPhase { return true }
         return false
     }
 
@@ -446,7 +446,7 @@ public struct WiltedListenerSettingsView: View {
                     // the Library list, presented as a primary listener action.
                     Button(WiltedScreenCopy.sendPlaybackProgress) { Task { await model.sendPending() } }
                         .buttonStyle(.bordered)
-                        .disabled(model.status.isBusy)
+                        .disabled(model.syncPhase.isBusy)
                         .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
                         .padding(.top, WiltedTheme.Spacing.xSmall)
                         .accessibilityIdentifier("wilted-listener-send")

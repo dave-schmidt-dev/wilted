@@ -147,7 +147,8 @@ public final class WiltedListenerAppModel: ObservableObject {
     public static let durableBackgroundCheckpointInterval: Duration = .seconds(15)
 
     @Published public private(set) var items: [ListenerLibraryItem] = []
-    @Published public private(set) var status: ListenerAppStatus = .idle
+    @Published public private(set) var syncPhase: ListenerAppStatus = .idle
+    @Published public private(set) var playbackPhase: ListenerAppStatus = .paused
     @Published public private(set) var selectedItemID: ItemID?
     @Published public private(set) var selectedPlayback: PlaybackState?
     @Published public private(set) var transcriptsByItem: [ItemID: Transcript] = [:]
@@ -177,6 +178,8 @@ public final class WiltedListenerAppModel: ObservableObject {
     private var assetByItem: [ItemID: WiltedAsset] = [:]
     private var manifestByItem: [ItemID: AudioChunkManifest] = [:]
     private var operationInFlight = false
+    private var operationHandoffReserved = false
+    private var operationWaiters: [CheckedContinuation<Void, Never>] = []
     /// Invalidates every suspended model operation when cancellation permits a retry.
     /// A Boolean alone cannot distinguish the cancelled operation from its successor.
     private var operationGeneration: UInt64 = 0
@@ -218,8 +221,8 @@ public final class WiltedListenerAppModel: ObservableObject {
         self.metadataSaver = metadataSaver
         self.backgroundCheckpointInterval = backgroundCheckpointInterval
         self.backgroundSleeper = backgroundSleeper
-        if let unavailableMessage { status = .failed(unavailableMessage, retryable: false) }
-        if let repository { observe(repository.statuses) }
+        if let unavailableMessage { syncPhase = .failed(unavailableMessage, retryable: false) }
+        if let repository { observeRepository(repository.statuses) }
         if let transport { observe(transport.statuses) }
         if let cache { observe(cache.statuses) }
         // Playback commands set their final presentation state directly. Their status stream
@@ -282,7 +285,7 @@ public final class WiltedListenerAppModel: ObservableObject {
     ) -> WiltedListenerAppModel {
         let model = WiltedListenerAppModel()
         if state == .emptyNowPlaying {
-            model.status = .ready
+            model.syncPhase = .ready
             return model
         }
         guard let itemID = try? ItemID.derive(from: URL(string: "https://example.test/wilted-listener")!) else {
@@ -314,7 +317,7 @@ public final class WiltedListenerAppModel: ObservableObject {
         )
         switch state {
         case .library, .emptyNowPlaying:
-            model.status = .ready
+            model.syncPhase = .ready
         case .nowPlaying:
             guard let playback = try? PlaybackState(
                       itemID: itemID,
@@ -330,7 +333,8 @@ public final class WiltedListenerAppModel: ObservableObject {
                   ) else {
                 return model
             }
-            model.status = .playing
+            model.syncPhase = .ready
+            model.playbackPhase = .playing
             model.selectedPlayback = playback
         case .terminalFailure:
             // The quarantine flag, not just its message. Setting only the
@@ -338,7 +342,7 @@ public final class WiltedListenerAppModel: ObservableObject {
             // without the condition, so the baseline recorded a screen with no
             // recovery control and nothing flagged it as a dead end.
             model.accountQuarantined = true
-            model.status = .failed("iCloud account changed; sync is quarantined", retryable: false)
+            model.syncPhase = .failed("iCloud account changed; sync is quarantined", retryable: false)
         }
         return model
     }
@@ -356,9 +360,9 @@ public final class WiltedListenerAppModel: ObservableObject {
     public func refresh() async {
         guard let operation = beginOperation() else { return }
         defer { finishOperation(operation) }
-        status = .refreshing("Refreshing larder…")
+        syncPhase = .refreshing("Refreshing larder…")
         guard let repository else {
-            status = .failed("Local larder unavailable", retryable: false)
+            syncPhase = .failed("Local larder unavailable", retryable: false)
             return
         }
 
@@ -387,13 +391,13 @@ public final class WiltedListenerAppModel: ObservableObject {
             } catch {
                 guard isCurrent(operation) else { return }
                 rebuildSessionBeforeNextRefresh = true
-                status = .failed("Sync unavailable: \(error.localizedDescription)", retryable: true)
+                syncPhase = .failed("Sync unavailable: \(error.localizedDescription)", retryable: true)
                 return
             }
         }
 
         guard !accountQuarantined else {
-            status = .failed("iCloud account changed; sync is quarantined", retryable: false)
+            syncPhase = .failed("iCloud account changed; sync is quarantined", retryable: false)
             return
         }
 
@@ -412,9 +416,12 @@ public final class WiltedListenerAppModel: ObservableObject {
                 // Remote metadata is fetched first; audio is an explicit per-item download.
                 rebuild(from: state)
                 await removeOrphanedAssets(previousAssets)
+                guard isCurrent(operation) else { return }
                 await restoreMetadata()
+                guard isCurrent(operation) else { return }
                 await updateDownloadedStates()
-                status = decodeHadErrors
+                guard isCurrent(operation) else { return }
+                syncPhase = decodeHadErrors
                     ? .incompatible("Some listener records are incompatible")
                     : items.contains(where: { $0.state == .deleted })
                     ? .deleted("An item was deleted remotely")
@@ -430,16 +437,18 @@ public final class WiltedListenerAppModel: ObservableObject {
                     try? await listenerRepository.recordFetchFailure(error.localizedDescription)
                 }
                 await refreshSyncObservability()
-                await loadLocal(repository: repository, fallback: error.localizedDescription)
                 guard isCurrent(operation) else { return }
-                if case .offline = status {
-                    status = .failed("Refresh failed: \(error.localizedDescription)", retryable: true)
+                await loadLocal(repository: repository, fallback: error.localizedDescription, operation: operation)
+                guard isCurrent(operation) else { return }
+                if case .offline = syncPhase {
+                    syncPhase = .failed("Refresh failed: \(error.localizedDescription)", retryable: true)
                 }
                 return
             }
         }
 
-        await loadLocal(repository: repository, fallback: "Offline mode")
+        guard isCurrent(operation) else { return }
+        await loadLocal(repository: repository, fallback: "Offline mode", operation: operation)
     }
 
     /// Re-stages one fetched batch when a concurrent local enqueue invalidates its snapshot.
@@ -462,17 +471,17 @@ public final class WiltedListenerAppModel: ObservableObject {
     }
 
     public func sendPending() async {
+        let operation = await beginQueuedOperation()
+        defer { finishOperation(operation) }
         guard let repository, let transport else {
-            status = .offline("Offline: changes will send when connected")
+            syncPhase = .offline("Offline: changes will send when connected")
             return
         }
         guard !accountQuarantined else {
-            status = .failed("iCloud account changed; sync is quarantined", retryable: false)
+            syncPhase = .failed("iCloud account changed; sync is quarantined", retryable: false)
             return
         }
-        guard let operation = beginOperation() else { return }
-        defer { finishOperation(operation) }
-        status = .sending("Sending playback progress…")
+        syncPhase = .sending("Sending playback progress…")
         do {
             let state = await repository.state()
             guard isCurrent(operation) else { return }
@@ -491,10 +500,10 @@ public final class WiltedListenerAppModel: ObservableObject {
                 // stranded queue cannot present as a completed send.
                 let held = state.conflictBlockedChanges.filter { $0.recordID.recordType == .playbackState }
                 if held.isEmpty {
-                    status = .ready
+                    syncPhase = .ready
                 } else {
                     let subject = held.count == 1 ? "1 playback update is" : "\(held.count) playback updates are"
-                    status = .failed("Nothing was sent. \(subject) held by unresolved conflicts.", retryable: true)
+                    syncPhase = .failed("Nothing was sent. \(subject) held by unresolved conflicts.", retryable: true)
                 }
                 return
             }
@@ -504,10 +513,10 @@ public final class WiltedListenerAppModel: ObservableObject {
             guard isCurrent(operation) else { return }
             rebuild(from: await repository.state())
             guard isCurrent(operation) else { return }
-            status = result.failures.isEmpty ? .ready : .failed("Some playback changes need retry", retryable: true)
+            syncPhase = result.failures.isEmpty ? .ready : .failed("Some playback changes need retry", retryable: true)
         } catch {
             guard isCurrent(operation) else { return }
-            status = .failed("Send failed: \(error.localizedDescription)", retryable: true)
+            syncPhase = .failed("Send failed: \(error.localizedDescription)", retryable: true)
         }
     }
 
@@ -519,7 +528,7 @@ public final class WiltedListenerAppModel: ObservableObject {
         guard item.state == .metadataOnly else { return }
         guard let operation = beginOperation() else { return }
         defer { finishOperation(operation) }
-        status = .refreshing("Downloading \(item.title)…")
+        syncPhase = .refreshing("Downloading \(item.title)…")
         do {
             if let manifest = manifestByItem[itemID] {
                 guard let audioChunkLoader else {
@@ -540,32 +549,37 @@ public final class WiltedListenerAppModel: ObservableObject {
             guard isCurrent(operation) else { return }
             updateItemState(itemID: itemID, state: .downloaded)
             await refreshDownloadStatistics()
-            status = .ready
+            syncPhase = .ready
         } catch {
             guard isCurrent(operation) else { return }
-            status = .failed("Download failed: \(error.localizedDescription)", retryable: true)
+            syncPhase = .failed("Download failed: \(error.localizedDescription)", retryable: true)
         }
     }
 
     public func removeDownload(itemID: ItemID) async {
-        guard !operationInFlight, let cache, let asset = assetByItem[itemID],
-              let index = items.firstIndex(where: { $0.itemID == itemID }) else { return }
-        operationInFlight = true
-        defer { operationInFlight = false }
+        guard !accountQuarantined,
+              let cache, let asset = assetByItem[itemID],
+              items.contains(where: { $0.itemID == itemID }) else { return }
+        guard let operation = beginOperation() else { return }
+        defer { finishOperation(operation) }
         if selectedItemID == itemID { await pause() }
+        guard isCurrent(operation), !accountQuarantined else { return }
         try? await cache.remove(asset)
+        guard isCurrent(operation), !accountQuarantined else { return }
         await refreshDownloadStatistics()
+        guard isCurrent(operation), !accountQuarantined,
+              let index = items.firstIndex(where: { $0.itemID == itemID }) else { return }
         let item = items[index]
         items[index] = ListenerLibraryItem(itemID: item.itemID, title: item.title, source: item.source,
                                            revisionID: item.revisionID, durationSeconds: item.durationSeconds,
                                            asset: item.asset, state: .metadataOnly)
-        status = .ready
+        syncPhase = .ready
     }
 
     public func play(itemID: ItemID) async {
         guard let item = items.first(where: { $0.itemID == itemID }) else { return }
         guard item.state == .downloaded, let revision = revisionByItem[itemID], let asset = assetByItem[itemID], let playback else {
-            status = item.state == .incompatibleRevision
+            playbackPhase = item.state == .incompatibleRevision
                 ? .incompatible("This item cannot play with its current revision")
                 : .offline("Audio is not cached for offline playback")
             return
@@ -576,10 +590,10 @@ public final class WiltedListenerAppModel: ObservableObject {
         } else if let initial = makeInitialPlayback(for: item, revision: revision) {
             state = initial
         } else {
-            status = .failed("Playback state could not be created", retryable: false)
+            playbackPhase = .failed("Playback state could not be created", retryable: false)
             return
         }
-        status = .refreshing("Preparing offline audio")
+        playbackPhase = .refreshing("Preparing offline audio")
         do {
             if selectedItemID != nil, selectedItemID != itemID,
                let outgoing = try await playback.liveCheckpoint() {
@@ -590,9 +604,9 @@ public final class WiltedListenerAppModel: ObservableObject {
             try await recordPlayback(updated)
             selectedItemID = itemID
             selectedPlayback = updated
-            status = .playing
+            playbackPhase = .playing
         } catch {
-            status = .failed("Playback failed: \(error.localizedDescription)", retryable: true)
+            playbackPhase = .failed("Playback failed: \(error.localizedDescription)", retryable: true)
         }
     }
 
@@ -603,8 +617,8 @@ public final class WiltedListenerAppModel: ObservableObject {
                 try await recordPlayback(updated)
                 selectedPlayback = updated
             }
-            status = .paused
-        } catch { status = .failed("Pause failed: \(error.localizedDescription)", retryable: true) }
+            playbackPhase = .paused
+        } catch { playbackPhase = .failed("Pause failed: \(error.localizedDescription)", retryable: true) }
     }
 
     public func seek(to position: Double) async {
@@ -652,19 +666,19 @@ public final class WiltedListenerAppModel: ObservableObject {
                 scheduleBackgroundCheckpoints(generation: generation)
             }
         } catch {
-            status = .failed("Background persistence failed: \(error.localizedDescription)", retryable: true)
+            playbackPhase = .failed("Background persistence failed: \(error.localizedDescription)", retryable: true)
         }
     }
 
     /// Refreshes the displayed position from the active engine without queuing a sync write.
     public func refreshNowPlayingReadout() async {
-        guard case .playing = status, let playback else { return }
+        guard case .playing = playbackPhase, let playback else { return }
         do {
             guard let readout = try await playback.liveReadout() else { return }
             playbackByItem[readout.itemID] = readout
             selectedPlayback = readout
         } catch {
-            status = .failed("Playback readout failed: \(error.localizedDescription)", retryable: true)
+            playbackPhase = .failed("Playback readout failed: \(error.localizedDescription)", retryable: true)
         }
     }
 
@@ -684,18 +698,31 @@ public final class WiltedListenerAppModel: ObservableObject {
 
     public func cancel() {
         invalidateCurrentOperation()
-        status = .idle
+        syncPhase = .idle
         Task { await session?.cancel() }
     }
 
     private func invalidateCurrentOperation() {
         cancellationRequested = true
         operationGeneration &+= 1
-        operationInFlight = false
+        guard operationInFlight else { return }
+        releaseOperationSlot()
     }
 
     private func beginOperation() -> UInt64? {
-        guard !operationInFlight else { return nil }
+        guard !operationInFlight, !operationHandoffReserved else { return nil }
+        return claimOperationSlot()
+    }
+
+    private func beginQueuedOperation() async -> UInt64 {
+        if operationInFlight || operationHandoffReserved {
+            await withCheckedContinuation { operationWaiters.append($0) }
+            operationHandoffReserved = false
+        }
+        return claimOperationSlot()
+    }
+
+    private func claimOperationSlot() -> UInt64 {
         operationGeneration &+= 1
         operationInFlight = true
         cancellationRequested = false
@@ -708,14 +735,24 @@ public final class WiltedListenerAppModel: ObservableObject {
 
     private func finishOperation(_ operation: UInt64) {
         guard operationGeneration == operation else { return }
+        releaseOperationSlot()
+    }
+
+    private func releaseOperationSlot() {
         operationInFlight = false
+        guard !operationWaiters.isEmpty else {
+            operationHandoffReserved = false
+            return
+        }
+        operationHandoffReserved = true
+        operationWaiters.removeFirst().resume()
     }
 
     public func resetAfterAccountChange() async {
         guard let session else { return }
         await session.resetAfterAccountChange()
         accountQuarantined = false
-        status = .ready
+        syncPhase = .ready
     }
 
     /// The single account-review entry point the listener UI calls.
@@ -732,7 +769,7 @@ public final class WiltedListenerAppModel: ObservableObject {
         }
         accountQuarantined = false
         await updateDownloadedStates()
-        status = .ready
+        syncPhase = .ready
     }
 
 #if DEBUG
@@ -749,14 +786,14 @@ public final class WiltedListenerAppModel: ObservableObject {
         playbackChangeTagByItem = [:]
         transcriptsByItem = transcript.map { [item.itemID: $0] } ?? [:]
         downloadStatistics = ListenerDownloadStatistics()
-        status = .ready
+        syncPhase = .ready
     }
 
     /// Drives the recovery state exposed only by the account-free UI fixture.
     func quarantineForMVPFixture() {
         accountQuarantined = true
         invalidateCurrentOperation()
-        status = .failed("iCloud account switch detected; sync is quarantined", retryable: false)
+        syncPhase = .failed("iCloud account switch detected; sync is quarantined", retryable: false)
     }
 
     /// Recovers the account-free UI fixture after its simulated quarantine.
@@ -764,7 +801,7 @@ public final class WiltedListenerAppModel: ObservableObject {
         guard session == nil, accountQuarantined else { return }
         accountQuarantined = false
         await updateDownloadedStates()
-        status = .ready
+        syncPhase = .ready
     }
 #endif
 
@@ -786,19 +823,27 @@ public final class WiltedListenerAppModel: ObservableObject {
     }
 #endif
 
-    private func loadLocal(repository: any SyncRepository, fallback: String) async {
+    private func loadLocal(
+        repository: any SyncRepository,
+        fallback: String,
+        operation: UInt64? = nil
+    ) async {
         let state = await repository.state()
+        guard operation.map(isCurrent) ?? true else { return }
         let previousAssets = assetByItem
         rebuild(from: state)
         await removeOrphanedAssets(previousAssets)
+        guard operation.map(isCurrent) ?? true else { return }
         await restoreMetadata()
+        guard operation.map(isCurrent) ?? true else { return }
         await updateDownloadedStates()
-        if decodeHadErrors { status = .incompatible("Some listener records are incompatible") }
-        else if items.contains(where: { $0.state == .deleted }) { status = .deleted("An item was deleted remotely") }
-        else if items.isEmpty { status = .offline(fallback) }
+        guard operation.map(isCurrent) ?? true else { return }
+        if decodeHadErrors { syncPhase = .incompatible("Some listener records are incompatible") }
+        else if items.contains(where: { $0.state == .deleted }) { syncPhase = .deleted("An item was deleted remotely") }
+        else if items.isEmpty { syncPhase = .offline(fallback) }
         else if items.contains(where: { $0.state == .incompatibleRevision }) {
-            status = .incompatible("A larder item has an incompatible revision")
-        } else { status = .offline(fallback) }
+            syncPhase = .incompatible("A larder item has an incompatible revision")
+        } else { syncPhase = .offline(fallback) }
     }
 
     private func removeOrphanedAssets(_ previous: [ItemID: WiltedAsset]) async {
@@ -829,6 +874,11 @@ public final class WiltedListenerAppModel: ObservableObject {
     private func rebuild(from state: SyncRepositoryState) {
         let codec = WiltedRecordCodec()
         decodeHadErrors = false
+        let activePlaybackPresentation: PlaybackState? = if case .playing = playbackPhase {
+            selectedPlayback
+        } else {
+            nil
+        }
         let previousItems = Dictionary(uniqueKeysWithValues: items.map { ($0.itemID, $0) })
         var articles: [(Article, WiltedRecordEnvelope)] = []
         var revisions: [ItemID: [RevisionID: (AudioRevision, WiltedAsset?, AudioChunkManifest?)]] = [:]
@@ -922,6 +972,10 @@ public final class WiltedListenerAppModel: ObservableObject {
                                 asset: nil, state: .deleted)
         })
         items = rebuilt.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        if let activePlaybackPresentation,
+           revisionByItem[activePlaybackPresentation.itemID]?.revisionID == activePlaybackPresentation.revisionID {
+            playbackByItem[activePlaybackPresentation.itemID] = activePlaybackPresentation
+        }
         transcriptsByItem = Dictionary(uniqueKeysWithValues: rebuilt.compactMap { item in
             guard let revisionID = item.revisionID,
                   let recordID = try? WiltedRecordID.transcript(item.itemID, revisionID),
@@ -1029,15 +1083,15 @@ public final class WiltedListenerAppModel: ObservableObject {
     private func positionChange(item: ListenerLibraryItem, asset: WiltedAsset,
                                 playback: ListenerPlaybackController, current: PlaybackState,
                                 position: Double, intent: PlaybackIntent, newSession: Bool) async {
-        status = .refreshing("Preparing offline audio")
+        playbackPhase = .refreshing("Preparing offline audio")
         do {
             let updated = try await playback.play(asset: asset, title: item.title,
                                                   state: try nextPlayback(current, position: position,
                                                                            intent: intent, newSession: newSession))
             try await recordPlayback(updated)
             selectedPlayback = updated
-            status = .playing
-        } catch { status = .failed("Playback command failed: \(error.localizedDescription)", retryable: true) }
+            playbackPhase = .playing
+        } catch { playbackPhase = .failed("Playback command failed: \(error.localizedDescription)", retryable: true) }
     }
 
     private func nextPlayback(_ current: PlaybackState, position: Double, intent: PlaybackIntent, newSession: Bool) throws -> PlaybackState {
@@ -1097,7 +1151,7 @@ public final class WiltedListenerAppModel: ObservableObject {
             if selectedItemID == updated.itemID { selectedPlayback = updated }
             return true
         } catch {
-            status = .failed("Background persistence failed: \(error.localizedDescription)", retryable: true)
+            playbackPhase = .failed("Background persistence failed: \(error.localizedDescription)", retryable: true)
             return false
         }
     }
@@ -1117,7 +1171,7 @@ public final class WiltedListenerAppModel: ObservableObject {
             try await recordPlayback(updated)
             if selectedItemID == updated.itemID { selectedPlayback = updated }
         } catch {
-            status = .failed("Background persistence failed: \(error.localizedDescription)", retryable: true)
+            playbackPhase = .failed("Background persistence failed: \(error.localizedDescription)", retryable: true)
         }
     }
 
@@ -1221,6 +1275,17 @@ public final class WiltedListenerAppModel: ObservableObject {
         })
     }
 
+    /// Repository events without a generation are local bookkeeping (for example,
+    /// durable playback enqueue) and must not replace the independently published
+    /// sync result. Fetch stage/commit events retain their generation identifier.
+    private func observeRepository(_ stream: AsyncStream<SyncStatus>) {
+        statusTasks.append(Task { [weak self] in
+            for await event in stream where event.generationID != nil {
+                self?.receive(event)
+            }
+        })
+    }
+
     private func observePlayback(_ stream: AsyncStream<SyncStatus>) {
         statusTasks.append(Task {
             for await _ in stream {}
@@ -1235,10 +1300,10 @@ public final class WiltedListenerAppModel: ObservableObject {
                     try await recordPlayback(checkpoint)
                     if selectedItemID == checkpoint.itemID {
                         selectedPlayback = checkpoint
-                        if checkpoint.completed { status = .paused }
+                        if checkpoint.completed { playbackPhase = .paused }
                     }
                 } catch {
-                    status = .failed("Playback persistence failed: \(error.localizedDescription)", retryable: true)
+                    playbackPhase = .failed("Playback persistence failed: \(error.localizedDescription)", retryable: true)
                 }
             }
         })
@@ -1253,10 +1318,10 @@ public final class WiltedListenerAppModel: ObservableObject {
                     guard let playback, await playback.current() == result.state else { continue }
                     selectedItemID = result.state.itemID
                     selectedPlayback = result.state
-                    status = result.isPlaying ? .playing : .paused
+                    playbackPhase = result.isPlaying ? .playing : .paused
                     reconcileBackgroundCheckpointing(isPlaying: result.isPlaying)
                 } catch {
-                    status = .failed("Remote playback persistence failed: \(error.localizedDescription)", retryable: true)
+                    playbackPhase = .failed("Remote playback persistence failed: \(error.localizedDescription)", retryable: true)
                 }
             }
         })
@@ -1286,7 +1351,7 @@ public final class WiltedListenerAppModel: ObservableObject {
                 case let .quarantined(type):
                     accountQuarantined = true
                     invalidateCurrentOperation()
-                    status = .failed("\(type.userFacingName) detected; sync is quarantined", retryable: false)
+                    syncPhase = .failed("\(type.userFacingName) detected; sync is quarantined", retryable: false)
                     await session?.cancel()
                     if let repository = repository as? ListenerRepository {
                         try? await repository.quarantineAfterAccountChange()
@@ -1304,10 +1369,10 @@ public final class WiltedListenerAppModel: ObservableObject {
 
     private func receive(_ event: SyncStatus) {
         switch event.phase {
-        case .fetching, .staging: status = .refreshing(event.message)
-        case .committing: status = .sending(event.message)
-        case .failed: status = .failed(event.message, retryable: true)
-        case .completed: if !operationInFlight { status = .ready }
+        case .fetching, .staging: syncPhase = .refreshing(event.message)
+        case .committing: syncPhase = .sending(event.message)
+        case .failed: syncPhase = .failed(event.message, retryable: true)
+        case .completed: if !operationInFlight { syncPhase = .ready }
         case .idle: break
         }
     }

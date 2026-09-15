@@ -87,7 +87,7 @@ struct ListenerMVPFixture: View {
 
     @ViewBuilder
     private var fixtureControls: some View {
-        switch model.status {
+        switch model.syncPhase {
         case .failed(_, retryable: false):
             Button("Recover Larder") { Task { await model.recoverMVPFixture() } }
                 .buttonStyle(.borderedProminent)
