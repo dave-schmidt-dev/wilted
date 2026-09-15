@@ -100,7 +100,7 @@ public enum WiltedScreenCopy {
     /// non-retryable red line and no way out of quarantine.
     public static let useCurrentAccount = "Use Current iCloud Account"
     public static let useCurrentAccountIdentifier = "wilted-use-current-account"
-    public static let useCurrentAccountDetail = "Wilted paused sync and kept your local work. Review before continuing with the account now signed in."
+    public static let useCurrentAccountDetail = "Your library is kept. Review before continuing with the account now signed in."
     public static let sendPlaybackProgress = "Send Playback Progress"
     public static let playerIdentifier = "wilted-player"
     public static let playerRewindIdentifier = "wilted-player-rewind"
