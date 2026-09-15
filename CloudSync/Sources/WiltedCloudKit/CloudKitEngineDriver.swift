@@ -135,6 +135,50 @@ public extension CloudKitEngineDriver {
     }
 }
 
+actor CloudKitRecordFetchCoordinator {
+    typealias RecordFetcher = @Sendable ([CKRecord.ID]) async throws -> [CKRecord]
+
+    private let recordFetcher: RecordFetcher
+    private var sequence: UInt64 = 0
+    private var activeFetches: [UInt64: Task<[CKRecord], Error>] = [:]
+
+    init(recordFetcher: @escaping RecordFetcher) { self.recordFetcher = recordFetcher }
+
+    func fetch(_ ids: [CKRecord.ID]) async throws -> [CKRecord] {
+        guard !ids.isEmpty else { return [] }
+        sequence &+= 1
+        let fetchID = sequence
+        let recordFetcher = self.recordFetcher
+        let fetchTask = Task { try await recordFetcher(ids) }
+        activeFetches[fetchID] = fetchTask
+
+        do {
+            let records = try await withTaskCancellationHandler {
+                try await fetchTask.value
+            } onCancel: {
+                // Cancel the exact task this invocation created. Dispatching an
+                // unbound actor callback here could cancel a later fetch after
+                // this cancellation handler finally gets scheduled.
+                fetchTask.cancel()
+            }
+            guard activeFetches.removeValue(forKey: fetchID) != nil,
+                  !fetchTask.isCancelled else {
+                throw CancellationError()
+            }
+            return records
+        } catch {
+            activeFetches.removeValue(forKey: fetchID)
+            throw error
+        }
+    }
+
+    func cancelAll() {
+        let fetches = Array(activeFetches.values)
+        activeFetches.removeAll()
+        for fetch in fetches { fetch.cancel() }
+    }
+}
+
 /// The production driver. It does not expose CKSyncEngine to WiltedSync or tests.
 ///
 /// The state serialization is fixed when the engine is constructed. CKSyncEngine
@@ -145,12 +189,18 @@ public actor LiveCloudKitEngineDriver: CloudKitEngineDriver {
     private let engine: CKSyncEngine
     private let delegate: CloudKitEngineDelegateProxy
     private let zoneBootstrap: any CloudKitZoneBootstrap
+    private let recordFetchCoordinator: CloudKitRecordFetchCoordinator
 
     public init(database: CKDatabase, stateSerialization: CKSyncEngine.State.Serialization? = nil,
                 automaticallySync: Bool = false,
                 zoneBootstrap: (any CloudKitZoneBootstrap)? = nil,
-                recordProvider: @escaping @Sendable (CKRecord.ID) async -> CKRecord? = { _ in nil }) {
+                recordProvider: @escaping @Sendable (CKRecord.ID) async -> CKRecord? = { _ in nil },
+                recordFetcher: (@Sendable ([CKRecord.ID]) async throws -> [CKRecord])? = nil) {
         self.database = database
+        self.recordFetchCoordinator = CloudKitRecordFetchCoordinator(recordFetcher: recordFetcher ?? { ids in
+            let results = try await database.records(for: ids)
+            return try results.map { try $0.value.get() }
+        })
         let delegate = CloudKitEngineDelegateProxy(recordProvider: recordProvider)
         self.delegate = delegate
         var configuration = CKSyncEngine.Configuration(database: database, stateSerialization: stateSerialization, delegate: delegate)
@@ -192,14 +242,13 @@ public actor LiveCloudKitEngineDriver: CloudKitEngineDriver {
     public func ensureZone() async throws { try await zoneBootstrap.ensureZone() }
     public func fetchChanges() async throws { try await engine.fetchChanges() }
     public func fetchRecords(_ ids: [CKRecord.ID]) async throws -> [CKRecord] {
-        guard !ids.isEmpty else { return [] }
-        let results = try await database.records(for: ids)
-        return try results.map { try $0.value.get() }
+        try await recordFetchCoordinator.fetch(ids)
     }
     public func sendChanges() async throws {
         try await engine.sendChanges()
     }
     public func cancelOperations() async {
+        await recordFetchCoordinator.cancelAll()
         await zoneBootstrap.cancel()
         await engine.cancelOperations()
     }

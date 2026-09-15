@@ -660,6 +660,151 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertEqual(acknowledged, [[change]])
     }
 
+    func testPlaybackSendAcknowledgementReconcilesAnAlreadyCachedItemAsDownloaded() async throws {
+        let fixture = try makeChunkedCatalogFixture()
+        let revisionID = try RevisionID(rawValue: "revision-chunked-listener")
+        let playback = try PlaybackState(
+            itemID: fixture.itemID,
+            revisionID: revisionID,
+            sessionID: "cached-send",
+            sequence: 1,
+            positionSeconds: 5,
+            durationSeconds: 30,
+            completed: false,
+            intent: .progress,
+            deviceID: "iphone",
+            updatedAt: Timestamp(Date())
+        )
+        let playbackRecord = try WiltedRecordCodec().encode(playback: playback)
+        let change = try SyncPendingChange(operation: .update, recordID: playbackRecord.id, record: playbackRecord)
+        try await fixture.repository.enqueue(change)
+        let model = WiltedListenerAppModel(
+            repository: fixture.repository,
+            transport: RecordingSyncTransport(),
+            cache: fixture.cache
+        )
+
+        await model.refresh()
+        XCTAssertEqual(model.items.first?.state, .metadataOnly)
+        _ = try await fixture.cache.store(data: fixture.bytes, asset: fixture.asset)
+
+        await model.sendPending()
+
+        XCTAssertEqual(model.items.first?.state, .downloaded,
+                       "send acknowledgement must reconcile an asset that was cached while it was in flight")
+    }
+
+    func testRemoteDeletionRetainsSharedCachedAudioForTheSurvivingItem() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("shared-cache-\(UUID().uuidString)")
+        let repository = try ListenerRepository(directoryURL: root.appendingPathComponent("Repository", isDirectory: true))
+        let cache = try ListenerAudioCache(rootURL: root.appendingPathComponent("Audio", isDirectory: true))
+        let bytes = Data("shared-cached-audio".utf8)
+        let contentHash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let firstURL = URL(string: "https://example.test/shared-first")!
+        let secondURL = URL(string: "https://example.test/shared-second")!
+        let firstItemID = try ItemID.derive(from: firstURL)
+        let secondItemID = try ItemID.derive(from: secondURL)
+        let firstRevisionID = try RevisionID(rawValue: "shared-first-revision")
+        let secondRevisionID = try RevisionID(rawValue: "shared-second-revision")
+        let firstAsset = try WiltedAsset(assetID: "shared-first-audio", contentHash: contentHash)
+        let secondAsset = try WiltedAsset(assetID: "shared-second-audio", contentHash: contentHash)
+        let firstArticle = try Article(itemID: firstItemID, canonicalURL: firstURL, title: "Shared first",
+                                       source: "Test", createdAt: Timestamp(Date()))
+        let secondArticle = try Article(itemID: secondItemID, canonicalURL: secondURL, title: "Shared second",
+                                        source: "Test", createdAt: Timestamp(Date()))
+        let firstRevision = try AudioRevision(itemID: firstItemID, revisionID: firstRevisionID, durationSeconds: 30,
+                                              byteCount: Int64(bytes.count), contentHash: contentHash,
+                                              mediaType: "audio/mpeg", createdAt: Timestamp(Date()), schemaVersion: 1)
+        let secondRevision = try AudioRevision(itemID: secondItemID, revisionID: secondRevisionID, durationSeconds: 30,
+                                               byteCount: Int64(bytes.count), contentHash: contentHash,
+                                               mediaType: "audio/mpeg", createdAt: Timestamp(Date()), schemaVersion: 1)
+        let codec = WiltedRecordCodec()
+        let seed = [
+            try codec.encode(article: firstArticle, currentRevisionID: firstRevisionID),
+            try codec.encode(revision: firstRevision, audioAsset: firstAsset),
+            try codec.encode(article: secondArticle, currentRevisionID: secondRevisionID),
+            try codec.encode(revision: secondRevision, audioAsset: secondAsset)
+        ]
+        try await repository.commit(try await repository.stage(
+            try SyncFetchBatch(generationID: "shared-seed", records: seed, engineState: Data([1]))
+        ))
+        _ = try await cache.store(data: bytes, asset: firstAsset)
+        let transport = SequencedSyncTransport(batches: [
+            try SyncFetchBatch(generationID: "shared-warmup", records: [], engineState: Data([2])),
+            try SyncFetchBatch(generationID: "shared-delete", records: [], engineState: Data([3]),
+                               deletedRecordIDs: [try WiltedRecordID.item(firstItemID)])
+        ])
+        let playback = ListenerPlaybackController(cache: cache, engine: FakeAudioEngine(duration: 30),
+                                                  session: FakeAudioSession(), nowPlaying: FakeNowPlaying())
+        let model = WiltedListenerAppModel(repository: repository, transport: transport, cache: cache, playback: playback)
+
+        await model.refresh()
+        XCTAssertEqual(model.items.filter { $0.state == .downloaded }.count, 2)
+
+        await model.refresh()
+
+        XCTAssertEqual(model.items.first(where: { $0.itemID == firstItemID })?.state, .deleted)
+        XCTAssertEqual(model.items.first(where: { $0.itemID == secondItemID })?.state, .downloaded)
+        let survivingURL = await cache.url(for: secondAsset)
+        XCTAssertNotNil(survivingURL)
+        await model.play(itemID: secondItemID)
+        XCTAssertEqual(model.playbackPhase, .playing)
+    }
+
+    func testOneRecordRevisionPointerDeltaReclaimsSupersededCachedAudio() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("revision-cache-\(UUID().uuidString)")
+        let repository = try ListenerRepository(directoryURL: root.appendingPathComponent("Repository", isDirectory: true))
+        let cache = try ListenerAudioCache(rootURL: root.appendingPathComponent("Audio", isDirectory: true))
+        let itemURL = URL(string: "https://example.test/revision-replacement")!
+        let itemID = try ItemID.derive(from: itemURL)
+        let oldRevisionID = try RevisionID(rawValue: "revision-old")
+        let newRevisionID = try RevisionID(rawValue: "revision-new")
+        let oldBytes = Data("old-cached-audio".utf8)
+        let newBytes = Data("new-cached-audio".utf8)
+        let oldHash = "sha256:" + SHA256.hash(data: oldBytes).map { String(format: "%02x", $0) }.joined()
+        let newHash = "sha256:" + SHA256.hash(data: newBytes).map { String(format: "%02x", $0) }.joined()
+        let oldAsset = try WiltedAsset(assetID: "old-audio", contentHash: oldHash)
+        let newAsset = try WiltedAsset(assetID: "new-audio", contentHash: newHash)
+        let article = try Article(itemID: itemID, canonicalURL: itemURL, title: "Replacement",
+                                  source: "Test", createdAt: Timestamp(Date()))
+        let oldRevision = try AudioRevision(itemID: itemID, revisionID: oldRevisionID, durationSeconds: 30,
+                                            byteCount: Int64(oldBytes.count), contentHash: oldHash,
+                                            mediaType: "audio/mpeg", createdAt: Timestamp(Date()), schemaVersion: 1)
+        let newRevision = try AudioRevision(itemID: itemID, revisionID: newRevisionID, durationSeconds: 30,
+                                            byteCount: Int64(newBytes.count), contentHash: newHash,
+                                            mediaType: "audio/mpeg", createdAt: Timestamp(Date()), schemaVersion: 1)
+        let codec = WiltedRecordCodec()
+        let oldArticleRecord = try codec.encode(article: article, currentRevisionID: oldRevisionID)
+        let newArticleRecord = try codec.encode(article: article, currentRevisionID: newRevisionID)
+        try await repository.commit(try await repository.stage(
+            try SyncFetchBatch(generationID: "revision-seed", records: [
+                oldArticleRecord,
+                try codec.encode(revision: oldRevision, audioAsset: oldAsset),
+                try codec.encode(revision: newRevision, audioAsset: newAsset)
+            ], engineState: Data([1]))
+        ))
+        _ = try await cache.store(data: oldBytes, asset: oldAsset)
+        let transport = SequencedSyncTransport(batches: [
+            try SyncFetchBatch(generationID: "revision-warmup", records: [], engineState: Data([2])),
+            try SyncFetchBatch(generationID: "revision-pointer-update", records: [newArticleRecord], engineState: Data([3]))
+        ])
+        let model = WiltedListenerAppModel(repository: repository, transport: transport, cache: cache)
+
+        await model.refresh()
+        XCTAssertEqual(model.items.first?.revisionID, oldRevisionID)
+        XCTAssertEqual(model.items.first?.state, .downloaded)
+        _ = try await cache.store(data: newBytes, asset: newAsset)
+
+        await model.refresh()
+
+        XCTAssertEqual(model.items.first?.revisionID, newRevisionID)
+        XCTAssertEqual(model.items.first?.state, .downloaded)
+        let oldURL = await cache.url(for: oldAsset)
+        let newURL = await cache.url(for: newAsset)
+        XCTAssertNil(oldURL)
+        XCTAssertNotNil(newURL)
+    }
+
     func testConcurrentRefreshSuccessAndFailurePreservePlayingPhaseAndLivePosition() async throws {
         let transport = BlockingSyncTransport()
         let harness = try await PlaybackHarness.make(transport: transport)
@@ -1832,6 +1977,22 @@ private actor SingleBatchSyncTransport: SyncTransport {
     func fetchChanges() async throws -> SyncFetchBatch {
         fetchCalls += 1
         return batch
+    }
+
+    func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {
+        try SyncSendResult(engineState: Data([3]))
+    }
+}
+
+private actor SequencedSyncTransport: SyncTransport {
+    nonisolated let statuses = AsyncStream<SyncStatus> { _ in }
+    private var batches: [SyncFetchBatch]
+
+    init(batches: [SyncFetchBatch]) { self.batches = batches }
+
+    func fetchChanges() async throws -> SyncFetchBatch {
+        guard !batches.isEmpty else { throw TestSyncError.network }
+        return batches.removeFirst()
     }
 
     func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {

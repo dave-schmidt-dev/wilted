@@ -198,13 +198,12 @@ public actor CloudKitSyncTransport: SyncTransport {
         let records: [CKRecord]
         do { records = try await driver.fetchRecords(ids) }
         catch {
-            throw quarantined || operationGeneration != operationGenerationValue
-                ? .accountChanged
-                : CloudKitSyncError.map(error)
+            if quarantined { throw CloudKitSyncError.accountChanged }
+            if operationGeneration != operationGenerationValue { throw CloudKitSyncError.cancelled }
+            throw CloudKitSyncError.map(error)
         }
-        guard !quarantined, operationGeneration == operationGenerationValue else {
-            throw CloudKitSyncError.accountChanged
-        }
+        guard !quarantined else { throw CloudKitSyncError.accountChanged }
+        guard operationGeneration == operationGenerationValue else { throw CloudKitSyncError.cancelled }
         var byID: [String: CKRecord] = [:]
         for record in records { byID[record.recordID.recordName] = record }
         var chunks: [Data] = []

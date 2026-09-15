@@ -560,6 +560,62 @@ func audioCacheStatistics() async throws {
     #expect(stats == ListenerDownloadStatistics(fileCount: 2, byteCount: Int64(first.count + second.count)))
 }
 
+@Test("audio cache reconciliation retains shared hashes and reclaims only managed orphans")
+func audioCacheReconciliation() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let cache = try ListenerAudioCache(rootURL: root)
+    let sharedBytes = Data("shared-audio".utf8)
+    let orphanedBytes = Data("orphaned-audio".utf8)
+    let sharedHash = "sha256:" + SHA256.hash(data: sharedBytes).map { String(format: "%02x", $0) }.joined()
+    let orphanedHash = "sha256:" + SHA256.hash(data: orphanedBytes).map { String(format: "%02x", $0) }.joined()
+    let firstReference = try WiltedAsset(assetID: "shared-first", contentHash: sharedHash)
+    let secondReference = try WiltedAsset(assetID: "shared-second", contentHash: sharedHash)
+    let orphanedReference = try WiltedAsset(assetID: "orphaned", contentHash: orphanedHash)
+    _ = try await cache.store(data: sharedBytes, asset: firstReference)
+    _ = try await cache.store(data: orphanedBytes, asset: orphanedReference)
+    let unmanaged = root.appendingPathComponent("future-cache-format")
+    try Data("leave this alone".utf8).write(to: unmanaged)
+
+    await cache.reconcile(retaining: [firstReference, secondReference])
+
+    #expect(await cache.url(for: firstReference) != nil)
+    #expect(await cache.url(for: secondReference) != nil)
+    #expect(await cache.url(for: orphanedReference) == nil)
+    #expect(FileManager.default.fileExists(atPath: unmanaged.path))
+
+    await cache.reconcile(retaining: [secondReference])
+    #expect(await cache.url(for: secondReference) != nil)
+
+    await cache.reconcile(retaining: [])
+    #expect(await cache.url(for: secondReference) == nil)
+}
+
+@Test("full-file hash benchmark reports deterministic cache validation cost")
+func fullFileHashCostBenchmark() async throws {
+    let revisionCount = 4
+    let fixtureBytesPerRevision = 4 * 1_024 * 1_024
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let cache = try ListenerAudioCache(rootURL: root)
+    var assets: [WiltedAsset] = []
+    for index in 0..<revisionCount {
+        let bytes = Data(repeating: UInt8(index), count: fixtureBytesPerRevision)
+        let hash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let asset = try WiltedAsset(assetID: "benchmark-\(index)", contentHash: hash)
+        _ = try await cache.store(data: bytes, asset: asset)
+        assets.append(asset)
+    }
+
+    let clock = ContinuousClock()
+    let start = clock.now
+    for asset in assets { #expect(await cache.url(for: asset) != nil) }
+    let elapsed = start.duration(to: clock.now)
+    let milliseconds = Double(elapsed.components.seconds) * 1_000
+        + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000
+    let formattedMilliseconds = String(format: "%.3f", milliseconds)
+    print("HASH_COST_BENCHMARK revisions=\(revisionCount) fixture_bytes=\(fixtureBytesPerRevision) total_bytes=\(revisionCount * fixtureBytesPerRevision) hash=sha256 command=swift-test-filter duration_ms=\(formattedMilliseconds) proposed_threshold_ms=100.000 optimizationNeeded=awaiting-owner-threshold")
+}
+
 @Test("offline playback supports resume, rewind, restart, interruption, and route changes")
 func offlinePlaybackControls() async throws {
     let bytes = Data("audio".utf8)

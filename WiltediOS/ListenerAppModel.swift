@@ -424,7 +424,7 @@ public final class WiltedListenerAppModel: ObservableObject {
                 let previousAssets = assetByItem
                 // Remote metadata is fetched first; audio is an explicit per-item download.
                 rebuild(from: state)
-                await removeOrphanedAssets(previousAssets)
+                await reconcileCachedAssets(previousAssets)
                 guard isCurrent(operation) else { return }
                 await restoreMetadata()
                 guard isCurrent(operation) else { return }
@@ -522,6 +522,8 @@ public final class WiltedListenerAppModel: ObservableObject {
             guard isCurrent(operation) else { return }
             rebuild(from: await repository.state())
             guard isCurrent(operation) else { return }
+            await updateDownloadedStates()
+            guard isCurrent(operation) else { return }
             syncPhase = result.failures.isEmpty ? .ready : .failed("Some playback changes need retry", retryable: true)
         } catch {
             guard isCurrent(operation) else { return }
@@ -567,21 +569,17 @@ public final class WiltedListenerAppModel: ObservableObject {
 
     public func removeDownload(itemID: ItemID) async {
         guard !accountQuarantined,
-              let cache, let asset = assetByItem[itemID],
+              let cache, assetByItem[itemID] != nil,
               items.contains(where: { $0.itemID == itemID }) else { return }
         guard let operation = beginOperation() else { return }
         defer { finishOperation(operation) }
         if selectedItemID == itemID { await pause() }
         guard isCurrent(operation), !accountQuarantined else { return }
-        try? await cache.remove(asset)
+        let retainedAssets = assetByItem.compactMap { $0.key == itemID ? nil : $0.value }
+        await cache.reconcile(retaining: retainedAssets)
         guard isCurrent(operation), !accountQuarantined else { return }
-        await refreshDownloadStatistics()
-        guard isCurrent(operation), !accountQuarantined,
-              let index = items.firstIndex(where: { $0.itemID == itemID }) else { return }
-        let item = items[index]
-        items[index] = ListenerLibraryItem(itemID: item.itemID, title: item.title, source: item.source,
-                                           revisionID: item.revisionID, durationSeconds: item.durationSeconds,
-                                           asset: item.asset, state: .metadataOnly)
+        await updateDownloadedStates()
+        guard isCurrent(operation), !accountQuarantined else { return }
         syncPhase = .ready
     }
 
@@ -841,7 +839,7 @@ public final class WiltedListenerAppModel: ObservableObject {
         guard operation.map(isCurrent) ?? true else { return }
         let previousAssets = assetByItem
         rebuild(from: state)
-        await removeOrphanedAssets(previousAssets)
+        await reconcileCachedAssets(previousAssets)
         guard operation.map(isCurrent) ?? true else { return }
         await restoreMetadata()
         guard operation.map(isCurrent) ?? true else { return }
@@ -855,12 +853,9 @@ public final class WiltedListenerAppModel: ObservableObject {
         } else { syncPhase = .offline(fallback) }
     }
 
-    private func removeOrphanedAssets(_ previous: [ItemID: WiltedAsset]) async {
-        guard let cache else { return }
-        let currentIDs = Set(assetByItem.keys)
-        for (itemID, asset) in previous where !currentIDs.contains(itemID) {
-            try? await cache.remove(asset)
-        }
+    private func reconcileCachedAssets(_ previousAssets: [ItemID: WiltedAsset]) async {
+        guard let cache, !assetByItem.isEmpty || !previousAssets.isEmpty else { return }
+        await cache.reconcile(retaining: Array(assetByItem.values))
     }
 
     private func updateDownloadedStates() async {

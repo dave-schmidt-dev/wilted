@@ -51,6 +51,28 @@ public actor ListenerAudioCache {
 
     public func remove(_ asset: WiltedAsset) throws { try? FileManager.default.removeItem(at: destination(for: asset)) }
 
+    /// Removes managed cache files that no current library revision references.
+    ///
+    /// The caller supplies the complete current revision-to-asset mapping after it has
+    /// applied a sync delta. Files with unknown names stay untouched so a malformed or
+    /// future cache entry is never mistaken for an orphaned content hash.
+    public func reconcile(retaining assets: [WiltedAsset]) {
+        let retainedFilenames = Set(assets.map { String($0.contentHash.dropFirst(7)) })
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: rootURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        for file in files {
+            let values = try? file.resourceValues(forKeys: [.isRegularFileKey])
+            guard values?.isRegularFile == true,
+                  isManagedContentHashFilename(file.lastPathComponent),
+                  !retainedFilenames.contains(file.lastPathComponent) else { continue }
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
     /// Derives truthful local download facts from the content-addressed cache.
     /// Temporary or hidden files are excluded so an interrupted write cannot inflate the count.
     public func statistics() throws -> ListenerDownloadStatistics {
@@ -87,6 +109,13 @@ public actor ListenerAudioCache {
     private func destination(for asset: WiltedAsset) -> URL {
         let key = asset.contentHash.dropFirst(7)
         return rootURL.appendingPathComponent(String(key), isDirectory: false)
+    }
+
+    private func isManagedContentHashFilename(_ name: String) -> Bool {
+        guard name.utf8.count == 64 else { return false }
+        return name.utf8.allSatisfy { byte in
+            (48...57).contains(byte) || (97...102).contains(byte)
+        }
     }
 
     private func sha256(_ data: Data) -> String {

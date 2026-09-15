@@ -2,7 +2,7 @@ import CloudKit
 import CryptoKit
 import Foundation
 import Testing
-import WiltedCloudKit
+@testable import WiltedCloudKit
 import WiltedDomain
 import WiltedSync
 
@@ -89,6 +89,51 @@ private actor SaveGate {
             try? await Task.sleep(for: .milliseconds(2))
         }
         return calls >= expected
+    }
+}
+
+private actor LiveRecordFetchProbe {
+    private let firstRecord: CKRecord
+    private let secondRecord: CKRecord
+    private let firstReleaseStream: AsyncStream<Void>
+    private let firstRelease: AsyncStream<Void>.Continuation
+    private(set) var calls = 0
+    private(set) var cancellationCount = 0
+
+    init(firstRecord: CKRecord, secondRecord: CKRecord) {
+        self.firstRecord = firstRecord
+        self.secondRecord = secondRecord
+        (firstReleaseStream, firstRelease) = AsyncStream<Void>.makeStream()
+    }
+
+    func fetch(_ ids: [CKRecord.ID]) async throws -> [CKRecord] {
+        calls += 1
+        let call = calls
+        if call == 1 {
+            await withTaskCancellationHandler {
+                for await _ in firstReleaseStream { break }
+            } onCancel: {
+                Task { await self.recordCancellation() }
+            }
+        }
+        let requested = Set(ids)
+        let available = call == 1 ? [firstRecord] : [secondRecord]
+        return available.filter { requested.contains($0.recordID) }
+    }
+
+    func waitForFirstFetch() async -> Bool { await until { calls >= 1 } }
+    func waitForCancellation() async -> Bool { await until { cancellationCount >= 1 } }
+    func releaseFirstFetch() { firstRelease.yield(()) }
+    private func recordCancellation() { cancellationCount += 1 }
+
+    private func until(_ satisfied: () -> Bool) async -> Bool {
+        let clock = ContinuousClock()
+        let end = clock.now + .seconds(5)
+        while clock.now < end {
+            if satisfied() { return true }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        return satisfied()
     }
 }
 
@@ -207,6 +252,38 @@ private actor FakeEngineDriver: CloudKitEngineDriver {
         }
         return satisfied()
     }
+}
+
+@Test("live explicit record fetch cancellation reaches the active task and rejects late records")
+func liveExplicitRecordFetchCancellationRejectsLateRecords() async throws {
+    let mapper = try mapper()
+    let firstID = CKRecord.ID(recordName: "item:cancelled-fetch", zoneID: mapper.zoneID)
+    let secondID = CKRecord.ID(recordName: "item:later-fetch", zoneID: mapper.zoneID)
+    let firstRecord = CKRecord(recordType: WiltedRecordType.item.rawValue, recordID: firstID)
+    let secondRecord = CKRecord(recordType: WiltedRecordType.item.rawValue, recordID: secondID)
+    let probe = LiveRecordFetchProbe(firstRecord: firstRecord, secondRecord: secondRecord)
+    let coordinator = CloudKitRecordFetchCoordinator(recordFetcher: { ids in try await probe.fetch(ids) })
+
+    let firstFetch = Task { try await coordinator.fetch([firstID]) }
+    guard await probe.waitForFirstFetch() else {
+        firstFetch.cancel()
+        Issue.record("live explicit record fetch did not start")
+        return
+    }
+
+    await coordinator.cancelAll()
+    #expect(await probe.waitForCancellation())
+    await probe.releaseFirstFetch()
+    do {
+        let records = try await firstFetch.value
+        Issue.record("cancelled live fetch delivered \(records.count) late record(s)")
+    } catch {
+        #expect(error is CancellationError)
+    }
+
+    let laterRecords = try await coordinator.fetch([secondID])
+    #expect(laterRecords.map(\.recordID) == [secondID])
+    #expect(await probe.cancellationCount == 1)
 }
 
 private final class DriverFactoryProbe: @unchecked Sendable {
