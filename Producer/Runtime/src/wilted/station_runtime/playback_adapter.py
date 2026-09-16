@@ -7,7 +7,7 @@ backend that a future checkpoint poller / controller wiring (Task 3.5 / A.4)
 will drive; this module does not import or know about the controller.
 
 Two integration risks this module resolves (see
-``spikes/integration-seam-2026-07-10/spike.py`` for the throwaway proof this
+the 2026-07-10 integration-seam spike for the throwaway proof this
 design is based on):
 
   PM-1: ``wilted.station.models.TranscriptSegment`` stores integer

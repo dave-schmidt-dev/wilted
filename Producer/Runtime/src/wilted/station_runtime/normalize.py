@@ -15,7 +15,7 @@ paths mean the ``MediaDescriptor`` always refers to immutable, hash-addressed
 bytes rather than a mutable filesystem path the DB row could later change out
 from under a caller.
 
-PM-1 (``spikes/integration-seam-2026-07-10/FINDINGS.md``): there are two
+PM-1 (the 2026-07-10 integration-seam spike): there are two
 distinct ``TranscriptSegment`` types in this codebase —
 ``wilted.transcribe.TranscriptSegment`` (float **seconds**) and
 ``wilted.station.models.TranscriptSegment`` (int **milliseconds**). The only

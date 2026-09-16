@@ -1,10 +1,10 @@
 """``RouteMonitor`` — detects a macOS default-output-device change.
 
-The A.0.1 spike (``spikes/route-recovery-listener-2026-07-10/``) proved a
+The A.0.1 route-recovery listener spike (2026-07-10) proved a
 pure-ctypes ``AudioObjectAddPropertyListener`` on
 ``kAudioHardwarePropertyDefaultOutputDevice`` reliably detects a default
 output device switch (~10ms latency, no TCC prompt, clean teardown) — see
-``FINDINGS.md``'s "follow-the-device viable" verdict. This module wraps that
+that spike's "follow-the-device viable" verdict. This module wraps that
 primitive behind an injectable :class:`RouteBackend` seam so the TUI/tests
 never need to touch real CoreAudio, mirroring ``CheckpointPoller``'s
 lifecycle shape: :meth:`RouteMonitor.start` raises ``RuntimeError`` on a
@@ -13,10 +13,10 @@ runs its listener-delivery loop on a daemon thread.
 
 ``_CoreAudioBackend`` ports its ctypes struct/function signatures, FourCC
 constants, callback trampoline, and ``CFRunLoopRunInMode`` pump loop
-directly from ``spikes/route-recovery-listener-2026-07-10/listener_spike.py``
+directly from that spike's ``listener_spike.py``
 (that spike's argtypes/restype tables — derived from grepping the real SDK
 headers before writing any Python — ran correctly on real hardware on the
-first try, per ``FINDINGS.md`` section 2, so they are reused verbatim here
+first try, per its findings section 2, so they are reused verbatim here
 rather than re-derived). It queries the device name via
 ``kAudioObjectPropertyName`` ('lnam'), NOT the deprecated
 ``kAudioDevicePropertyDeviceNameCFString`` alias (``FINDINGS.md`` section 1).
@@ -136,10 +136,10 @@ class RouteMonitor:
 
 
 # ---------------------------------------------------------------------------
-# ctypes CoreAudio bindings — darwin only. Ported from
-# spikes/route-recovery-listener-2026-07-10/listener_spike.py (argtypes/
-# restype tables verified against real hardware — see FINDINGS.md section 2
-# — reused verbatim rather than re-derived). Guarded behind
+# ctypes CoreAudio bindings — darwin only. Ported from the 2026-07-10
+# route-recovery listener spike's listener_spike.py (argtypes/restype
+# tables verified against real hardware, per its findings section 2 —
+# reused verbatim rather than re-derived). Guarded behind
 # ``sys.platform == "darwin"`` so importing this module never fails to load
 # on a non-macOS platform.
 # ---------------------------------------------------------------------------

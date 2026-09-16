@@ -202,7 +202,7 @@ def _default_user_agent() -> str:
     misbehaving client. That contact belongs to whoever deploys this, not to
     the project, so it comes from ``WILTED_NWS_CONTACT`` instead of being
     committed -- a public checkout must not carry anyone's address. The live
-    verification in ``spikes/nws-gridpoint-2026-07-10/findings.md`` was run
+    verification in the 2026-07-10 NWS gridpoint spike was run
     with a contact present; the bare product token below is the unconfigured
     fallback and is still accepted by the API.
     """

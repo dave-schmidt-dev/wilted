@@ -13,7 +13,7 @@ loaded model:
 - ``BriefingGenerator.fetch_fn``: zero-arg callable returning the parsed NWS
   gridpoint-forecast JSON payload. Defaults to :func:`fetch_nws_gridpoint_forecast`,
   which reuses the exact request shape verified live in
-  ``spikes/nws-gridpoint-2026-07-10/findings.md`` (descriptive ``User-Agent``,
+  the 2026-07-10 NWS gridpoint spike (descriptive ``User-Agent``,
   ``Accept: application/geo+json``, and the deployer's configured office/grid
   -- see :func:`_resolve_gridpoint`).
 - ``BriefingGenerator.synth_fn``: one-arg callable ``(script_text) -> result``.
@@ -62,7 +62,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # NWS gridpoint forecast (A.0.3) -- ADR 0001 Decision 3, request shape verified
 # live against api.weather.gov 2026-07-10
-# (spikes/nws-gridpoint-2026-07-10/findings.md). The one-time
+# (the 2026-07-10 NWS gridpoint spike). The one-time
 # ZIP -> lat/lon -> /points -> gridpoint resolution the spike exercised is
 # NOT repeated on every briefing generation: the office/grid are a fixed
 # property of the deployer's configured location, so re-resolving via /points
@@ -166,7 +166,7 @@ def fetch_nws_gridpoint_forecast(
 ) -> dict:
     """Fetch the live NWS gridpoint forecast (default ``fetch_fn`` implementation).
 
-    Mirrors ``spikes/nws-gridpoint-2026-07-10/findings.md`` step 3 exactly:
+    Mirrors the 2026-07-10 NWS gridpoint spike's step 3 exactly:
     same URL shape, same descriptive ``User-Agent`` (required by NWS -- ADR
     0001 Decision 3), same ``Accept: application/geo+json``. That spike
     confirmed no 403s occur with this header on the first attempt, so no

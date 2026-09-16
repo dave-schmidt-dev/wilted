@@ -3,7 +3,7 @@
 Article TTS audio is cached as a per-paragraph directory
 (``wilted.AUDIO_DIR/<item_id>/para_NNN.mp3`` + ``manifest.json``), never as a
 single file the way podcast ``Item.audio_file`` is — see
-``spikes/integration-seam-2026-07-10/FINDINGS.md`` (PM-3) for the full
+the 2026-07-10 integration-seam spike (PM-3) for the full
 contract this module implements. To play an article through the same
 ``engine.play_file(path=...)`` call a podcast uses, the paragraphs must
 first be concatenated into one canonical artifact, published into the

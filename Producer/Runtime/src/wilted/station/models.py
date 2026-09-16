@@ -136,8 +136,8 @@ class SafeInterruptionMap:
         ``band_ms`` is a *matching tolerance* around that boundary — the
         window is ``(max(0, seg.start_ms - band_ms), seg.start_ms + band_ms)``
         — NOT a promise that the audio is actually silent for the full
-        ``±band_ms``. Measured reality (0.2 timing-precision spike,
-        `spikes/timing-precision-2026-07-10/FINDINGS.md`): the distance from
+        ``±band_ms``. Measured reality (the 0.2 timing-precision spike,
+        2026-07-10): the distance from
         a transcript boundary to the nearest real silence is p50~=54ms,
         p90~=1566ms, p95~=2409ms, and only ~70% of boundaries have silence
         within +/-250ms at all; ~1-2% of boundaries (long, continuous

@@ -1,7 +1,7 @@
 """Tests for wilted.station_runtime.article_assembly.
 
 Covers the PM-3 "article finalization completeness contract"
-(spikes/integration-seam-2026-07-10/FINDINGS.md):
+(the 2026-07-10 integration-seam spike):
 
 - INV-4 completeness guard: assembly refuses (no output produced) when the
   manifest is missing, not status="complete", or any listed paragraph file

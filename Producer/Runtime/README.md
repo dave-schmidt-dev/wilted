@@ -360,11 +360,14 @@ tests/                   # pytest suite (1,660 collected tests with overlapping 
 migrations/              # numbered schema migrations
 docs/adr/                # architecture decision records
     0001-mac-radio-substrate.md  # Mac-first personal-radio substrate decision (candidate a: headless core)
-spikes/                  # Phase-0 feasibility prototypes (disposable, removable)
-    mac-substrate-2026-07-10/       # two candidate substrates, shared reducer fixture
-    migration-rehearsal-2026-07-10/ # versioned JSON store + media/<sha256> validation
-    pairing-security-2026-07-10/    # threat model + Python cryptography+keyring spike
 ```
+
+The Phase-0 feasibility spikes (`mac-substrate`, `migration-rehearsal`,
+`pairing-security`, `integration-seam`, `nws-gridpoint`,
+`route-recovery-listener`, `timing-precision`, all dated 2026-07-10) were
+disposable by design and are no longer in the tree. Source comments cite them
+by name for provenance only; each finding those comments rely on is restated
+inline at its call site, so no behaviour here depends on reading them.
 
 ## Validation
 

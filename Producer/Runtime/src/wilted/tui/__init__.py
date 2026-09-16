@@ -2170,7 +2170,7 @@ class WiltedApp(App):
         no pinned ``device=`` (``engine.py``'s ``_stream_pcm``), which binds
         to whatever is the CURRENT default output device at open time — that
         IS the recovery onto the new device (see
-        ``spikes/route-recovery-listener-2026-07-10/`` + the A.3.3 design
+        the 2026-07-10 route-recovery listener spike + the A.3.3 design
         note: "route-recovery via restart", no mid-stream engine surgery
         needed).
         """
