@@ -269,7 +269,7 @@ func validateSchema(_ schema: JSON) throws -> (JSON, JSON) {
     let coverage = try object(schema["fixtureCoverage"], "schema.fixtureCoverage")
     try exactKeys(coverage, ["fixtureVersion", "requiredCases"], "schema.fixtureCoverage")
     guard try integer(coverage["fixtureVersion"], "schema.fixtureCoverage.fixtureVersion") == 1 else { try fail("fixture coverage version must be 1") }
-    guard let cases = coverage["requiredCases"] as? [Any], cases.count == 16 else { try fail("fixture coverage must list exactly 16 cases") }
+    guard let cases = coverage["requiredCases"] as? [Any], cases.count == 17 else { try fail("fixture coverage must list exactly 17 cases") }
     var seen = Set<String>()
     for (index, raw) in cases.enumerated() {
         let entry = try object(raw, "schema.fixtureCoverage.requiredCases[\(index)]")

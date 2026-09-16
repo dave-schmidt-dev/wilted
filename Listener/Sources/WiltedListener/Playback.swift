@@ -21,7 +21,12 @@ public extension ListenerAudioEngine {
     func installCompletionHandler(_ handler: @escaping @Sendable (UInt64) -> Void) {}
 }
 
-public final class AVFoundationAudioEngine: NSObject, ListenerAudioEngine, AVAudioPlayerDelegate, @unchecked Sendable {
+/// `nonisolated` because `AVAudioPlayerDelegate` is main-actor-isolated in the
+/// iOS 27 SDK, and inheriting that isolation would make every member unable to
+/// satisfy the nonisolated `ListenerAudioEngine` requirements. The engine was
+/// always meant to be callable from any actor -- it is `@unchecked Sendable`
+/// and guards its own mutable state with `completionLock`.
+nonisolated public final class AVFoundationAudioEngine: NSObject, ListenerAudioEngine, AVAudioPlayerDelegate, @unchecked Sendable {
     private var player: AVAudioPlayer?
     private let completionLock = NSLock()
     private var playerGeneration: [ObjectIdentifier: UInt64] = [:]

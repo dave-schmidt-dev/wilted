@@ -90,6 +90,34 @@ fail() {
   return 1
 }
 
+# Xcode 27's SwiftPM writes test bundles to `<scratch>/out/Products/Debug` and
+# emits one per test target rather than a single `<Package>PackageTests.xctest`,
+# so the bundle is discovered by shape and every bundle found is run. Passing a
+# single expected name here is what broke both package legs on the upgrade.
+run_package_xctest_bundles() {
+  local label="$1" scratch_path="$2" log_path="$3"
+  local bundles=()
+  while IFS= read -r bundle; do
+    bundles+=("$bundle")
+  done < <(find "$scratch_path" -type d -name '*.xctest' | sort)
+  if [[ "${#bundles[@]}" -eq 0 ]]; then
+    fail "$label produced no XCTest bundle"
+    return 1
+  fi
+  printf 'native.xctest.bundles label=%s count=%s\n' "$label" "${#bundles[@]}"
+  : >"$log_path"
+  local status=0 bundle bundle_status
+  for bundle in "${bundles[@]}"; do
+    printf 'native.xctest.start label=%s bundle=%s\n' "$label" "$(basename "$bundle")"
+    set +e
+    xcrun xctest "$bundle" 2>&1 | tee -a "$log_path" >&2
+    bundle_status="${PIPESTATUS[0]}"
+    set -e
+    [[ "$bundle_status" -eq 0 ]] || status="$bundle_status"
+  done
+  return "$status"
+}
+
 is_forced_failure() {
   [[ "$forced_fail_leg" == "$1" ]]
 }
@@ -697,16 +725,12 @@ leg_wiltedkit_tests() {
   require_tool swift
   require_tool xcrun
   swift build --package-path "$package" --scratch-path "$scratch_path" --build-tests
-  local test_bundle
-  test_bundle="$(find "$scratch_path" -type d -name 'WiltedKitPackageTests.xctest' -print -quit)"
-  [[ -n "$test_bundle" && -d "$test_bundle" ]] || fail 'WiltedKit XCTest bundle was not produced'
-
   # The installed Swift toolchain accepts the SwiftPM xUnit flag but does not
-  # emit the requested file for this package. Invoke the built XCTest bundle
-  # directly; its runner log is authoritative and remains visible while running.
+  # emit the requested file for this package. Invoke the built XCTest bundles
+  # directly; their runner log is authoritative and remains visible while running.
   set +e
-  xcrun xctest "$test_bundle" 2>&1 | tee "$tmp_root/wiltedkit-tests.xctest.log" >&2
-  local xctest_status="${PIPESTATUS[0]}"
+  run_package_xctest_bundles WiltedKit "$scratch_path" "$tmp_root/wiltedkit-tests.xctest.log"
+  local xctest_status="$?"
   set -e
   if [[ "$xctest_status" -eq 0 ]]; then
     [[ -s "$tmp_root/wiltedkit-tests.xctest.log" ]] || fail 'WiltedKit XCTest log is empty'
@@ -728,13 +752,9 @@ leg_wiltedproducer_tests() {
   require_tool swift
   require_tool xcrun
   swift build --package-path "$package" --scratch-path "$scratch_path" --build-tests
-  local test_bundle
-  test_bundle="$(find "$scratch_path" -type d -name 'WiltedProducerPackageTests.xctest' -print -quit)"
-  [[ -n "$test_bundle" && -d "$test_bundle" ]] || fail 'WiltedProducer XCTest bundle was not produced'
-
   set +e
-  xcrun xctest "$test_bundle" 2>&1 | tee "$tmp_root/wiltedproducer-tests.xctest.log" >&2
-  local xctest_status="${PIPESTATUS[0]}"
+  run_package_xctest_bundles WiltedProducer "$scratch_path" "$tmp_root/wiltedproducer-tests.xctest.log"
+  local xctest_status="$?"
   set -e
   return "$xctest_status"
 }

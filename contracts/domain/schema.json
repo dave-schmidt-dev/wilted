@@ -315,7 +315,8 @@
       {"caseID": "delayed-delivery-preserves-local-playback", "operation": "delayedDelivery"},
       {"caseID": "schema-version-mismatch-fails-closed", "operation": "schemaCompatibility"},
       {"caseID": "partial-preparation-failure-preserves-valid-revision", "operation": "preparationFailure"},
-      {"caseID": "timeout-terminal-error-preserves-ready-revision", "operation": "timeoutTerminalError"}
+      {"caseID": "timeout-terminal-error-preserves-ready-revision", "operation": "timeoutTerminalError"},
+      {"caseID": "playback-stale-change-tag", "operation": "playbackMerge"}
     ]
   }
 }
