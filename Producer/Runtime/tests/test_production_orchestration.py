@@ -91,6 +91,21 @@ def _make_selected_item(*, text: str = "Article body for preparation.") -> None:
     )
 
 
+def _install_launchd_target(makefile_text: str) -> str:
+    """Return just the body of the ``install-launchd`` target.
+
+    Both sentinels are asserted rather than assumed: slicing on a marker that is
+    no longer there yields the entire remainder of the file, which turns every
+    ``not in target`` assertion in this module into a vacuous pass.
+    """
+    assert "install-launchd:" in makefile_text, "Makefile has no install-launchd target"
+    assert "\nuninstall-launchd:" in makefile_text, (
+        "install-launchd is no longer bounded by uninstall-launchd; "
+        "update the slice or these assertions become vacuous"
+    )
+    return makefile_text.split("install-launchd:", 1)[1].split("\nuninstall-launchd:", 1)[0]
+
+
 class _CoordinatorInitSpy:
     """Track ``ModelCoordinator`` construction without blocking real behavior."""
 
@@ -495,14 +510,14 @@ class TestShellWrapperOrchestration:
         assert script.is_file(), f"Expected nightly wrapper at {script}"
         content = script.read_text(encoding="utf-8")
         assert "ingest" in content
-        assert "report --email" in content or "report --email" in content.replace('"', "")
+        assert "report --email" in content
 
     def test_nightly_script_invokes_runtime_for_ingest(self, monkeypatch, tmp_path) -> None:
         """Nightly wrapper subprocess path calls the runtime ingest command."""
         script = nightly_script_path()
         content = script.read_text(encoding="utf-8")
         assert "WILTED_RUNTIME" in content
-        assert '"$WILTED_RUNTIME" ingest' in content or '$WILTED_RUNTIME" ingest' in content
+        assert '"$WILTED_RUNTIME" ingest' in content
 
     def test_nightly_script_routes_runtime_through_bin_bash_not_direct_exec(self) -> None:
         """Nightly wrapper must invoke wilted-runtime.sh via /bin/bash, not direct-exec.
@@ -604,9 +619,7 @@ class TestLaunchdLogCapture:
         assert "/Users/" not in source
 
         makefile = plist_path_fn().parent.parent / "Makefile"
-        target = makefile.read_text(encoding="utf-8").split("install-launchd:", 1)[1].split(
-            "\nuninstall-launchd:", 1
-        )[0]
+        target = _install_launchd_target(makefile.read_text(encoding="utf-8"))
 
         substitution = f"sed 's|__HOME__|$(HOME)|g' scripts/local.wilted-{agent}.plist"
         assert substitution in target, f"install-launchd must expand __HOME__ for the {agent} agent"
@@ -623,10 +636,19 @@ class TestLaunchdLogCapture:
         makefile = nightly_plist_path().parent.parent / "Makefile"
         content = makefile.read_text(encoding="utf-8")
 
-        target = content.split("install-launchd:", 1)[1].split("\nuninstall-launchd:", 1)[0]
+        target = _install_launchd_target(content)
         mkdir_nightly = target.index("mkdir -p $(HOME)/Library/Logs/homelab/wilted-nightly")
         mkdir_scheduler = target.index("mkdir -p $(HOME)/Library/Logs/homelab/wilted-scheduler")
         first_bootstrap = target.index("launchctl bootstrap")
 
         assert mkdir_nightly < first_bootstrap, "nightly log dir must be created before bootstrap"
         assert mkdir_scheduler < first_bootstrap, "scheduler log dir must be created before bootstrap"
+
+        # Same contract, different directory: the target symlinks the wrappers into
+        # ~/.launchd/scripts, which `ln -sf` will not create. It exists on the
+        # machine this was written on, which is exactly why it went unnoticed.
+        mkdir_launchd = target.index("mkdir -p $(HOME)/.launchd/scripts")
+        first_symlink = target.index("ln -sf")
+        assert mkdir_launchd < first_symlink, (
+            "~/.launchd/scripts must be created before the wrappers are symlinked into it"
+        )
