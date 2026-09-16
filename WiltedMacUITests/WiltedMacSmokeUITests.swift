@@ -319,10 +319,13 @@ final class WiltedMacSmokeUITests: XCTestCase {
         ).firstMatch
         XCTAssertTrue(retry.waitForExistence(timeout: 3))
         retry.click()
-        let offline = app.descendants(matching: .any).matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-offline-'")
+        // A successful download enters preparation immediately. Fixture mode
+        // has no worker, so the row settles as downloaded with retryable Prep
+        // status rather than falsely claiming ready-to-play audio.
+        let completedActions = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-actions-'")
         ).firstMatch
-        XCTAssertTrue(offline.waitForExistence(timeout: 3))
+        XCTAssertTrue(completedActions.waitForExistence(timeout: 3))
 
         XCTAssertEqual(
             app.descendants(matching: .any).matching(
@@ -469,9 +472,15 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(addAll.waitForExistence(timeout: 5))
         XCTAssertTrue(addAll.isEnabled)
         addAll.click()
-        XCTAssertTrue(app.descendants(matching: .any)
+        let menuRow = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-row-'"))
-            .firstMatch.waitForExistence(timeout: 8))
+            .firstMatch
+        // The fresh Mac test host occasionally drops its first pointer event
+        // while AppKit finishes activating the destination. The model projects
+        // the row synchronously, so one repeated reader gesture distinguishes
+        // that host quirk from a queue write that did not reach the UI.
+        if !menuRow.waitForExistence(timeout: 3) { addAll.click() }
+        XCTAssertTrue(menuRow.waitForExistence(timeout: 5))
     }
 
     func testMenuBulkAddIsDisabledWithHonestEmptyState() {

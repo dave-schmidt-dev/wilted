@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wilted queue summaries and sorting</title>
+<style>
+:root{color-scheme:dark;--page:#0d110f;--sidebar:#101612;--card:#151b17;--strong:#1a221d;--line:#2a382f;--text:#ecf2ed;--muted:#92a398;--leaf:#7fd48c;--amber:#e8c468;--red:#f08585}
+*{box-sizing:border-box}html,body{height:100%}body{margin:0;min-width:880px;background:#080b09;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;display:grid;place-items:center}
+button,select{font:inherit}button{cursor:pointer}button:focus-visible,select:focus-visible{outline:2px solid var(--leaf);outline-offset:2px}.note{position:fixed;right:18px;top:14px;color:var(--muted);font:600 10px ui-monospace,monospace;letter-spacing:.06em}.window{width:min(1230px,calc(100vw - 48px));height:min(790px,calc(100vh - 48px));display:grid;grid-template-columns:204px 1fr;overflow:hidden;border:1px solid #344339;border-radius:14px;background:var(--page);box-shadow:0 25px 80px #0009}aside{padding:26px 12px;background:var(--sidebar);border-right:1px solid var(--line)}.brand{margin:0 10px 24px;font-size:19px;font-weight:750}.brand span{color:var(--leaf)}.nav{display:grid;gap:4px}.nav button{padding:10px 12px;border:0;border-radius:8px;background:transparent;color:var(--muted);text-align:left}.nav button.active{background:#294834;color:var(--text)}main{overflow:auto;padding:38px 42px}.page{display:none;max-width:930px}.page.active{display:block}h1{margin:0;font-size:31px;letter-spacing:-.03em}.lede{max-width:680px;margin:8px 0 22px;color:var(--muted);font-size:14px;line-height:1.5}.toolbar,.summary,.group-head,.row,.actions{display:flex;align-items:center}.toolbar{justify-content:space-between;gap:14px;margin:0 0 18px}.summary{gap:8px;flex-wrap:wrap}.pill{padding:5px 8px;border:1px solid var(--line);border-radius:999px;background:#162019;color:var(--muted);font:600 11px ui-monospace,monospace}.pill strong{color:var(--text)}.pill.ready{color:var(--leaf)}.pill.busy{color:var(--amber)}.pill.failed{color:var(--red)}.controls{display:flex;align-items:center;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#182019}.controls label{padding:7px 0 7px 10px;color:var(--muted);font:600 10px ui-monospace,monospace}.controls select{height:32px;border:0;border-left:1px solid var(--line);background:#202a22;color:var(--text);padding:0 9px}.group{margin:24px 0}.group-head{justify-content:space-between;margin:0 0 9px}.group-head h2{margin:0;font-size:17px}.group-head span{color:var(--muted);font:11px ui-monospace,monospace}.list{overflow:hidden;border:1px solid var(--line);border-radius:10px;background:var(--card)}.row{display:grid;grid-template-columns:43px minmax(0,1fr) auto;gap:13px;padding:13px 14px;border-bottom:1px solid var(--line)}.row:last-child{border:0}.art{width:42px;height:42px;display:grid;place-items:center;border:1px solid #385340;border-radius:7px;background:#1c3022;color:var(--leaf);font-size:18px}.title{font-weight:680}.meta,.status{color:var(--muted);font-size:12px;line-height:1.45}.status{margin-top:3px;font:600 11px ui-monospace,monospace}.status.ready{color:var(--leaf)}.status.preparing,.status.queued{color:var(--amber)}.status.failed{color:var(--red)}.row button,.empty button{padding:6px 10px;border:1px solid #3b4b42;border-radius:7px;background:#202922;color:var(--text);font-size:12px}.row button.primary{border-color:var(--leaf);background:var(--leaf);color:#0d150f;font-weight:700}.current{border-color:#4f7959;background:var(--strong)}.current .status{color:var(--leaf)}.empty{padding:32px;text-align:center;color:var(--muted)}.empty strong{display:block;margin-bottom:5px;color:var(--text)}.sort-hint{margin-top:13px;color:var(--muted);font-size:12px}.sort-hint code{color:#ccefd1;font:600 11px ui-monospace,monospace}
+@media(max-width:950px){body{min-width:0;display:block}.window{width:100%;height:100%;border:0;border-radius:0;grid-template-columns:168px 1fr}main{padding:28px 24px}.toolbar{align-items:flex-start;flex-direction:column}.controls{max-width:100%}}
+</style>
+</head>
+<body>
+<div class="note">INTERACTIVE UX MOCKUP · NOT INSTALLED BEHAVIOR</div>
+<section class="window" aria-label="Wilted queue controls mockup">
+  <aside><div class="brand"><span>♧</span> Wilted</div><nav class="nav" id="nav"><button data-page="larder">▣&nbsp; Larder</button><button data-page="prep">▱&nbsp; Prep</button><button class="active" data-page="menu">☷&nbsp; Menu</button></nav></aside>
+  <main>
+    <section class="page" id="larder">
+      <h1>Larder</h1><p class="lede">All saved episodes stay visible. Grouping and sorting change this view only, never the listening order.</p>
+      <div class="toolbar"><div class="summary" id="larder-summary"></div><div class="controls"><label for="larder-group">GROUP</label><select id="larder-group"><option value="status">Status</option><option value="none">None</option></select><label for="larder-sort">SORT</label><select id="larder-sort"><option value="newest">Date added · newest</option><option value="length">Length · shortest</option><option value="show">Show · A–Z</option><option value="title">Title · A–Z</option></select></div></div>
+      <div id="larder-list"></div>
+      <p class="sort-hint">An episode says <code>On Menu</code> only while the same canonical record is in Menu. Remove it there to watch the label disappear here.</p>
+    </section>
+    <section class="page" id="prep">
+      <h1>Prep</h1><p class="lede">The processing queue totals only active and waiting audio. Failures and ready episodes remain visible in their own status groups.</p>
+      <div class="toolbar"><div class="summary" id="prep-summary"></div><div class="controls"><label for="prep-group">GROUP</label><select id="prep-group"><option value="status">Status</option><option value="none">None</option></select><label for="prep-sort">SORT</label><select id="prep-sort"><option value="queue">Queue position</option><option value="length">Length · shortest</option><option value="show">Show · A–Z</option><option value="title">Title · A–Z</option></select></div></div>
+      <div id="prep-list"></div>
+    </section>
+    <section class="page active" id="menu">
+      <h1>Menu</h1><p class="lede">The listening queue shows its total audio before you press play. Custom listening order is preserved unless you deliberately choose another sort.</p>
+      <div class="toolbar"><div class="summary" id="menu-summary"></div><div class="controls"><label for="menu-group">GROUP</label><select id="menu-group"><option value="status">Status</option><option value="none">None</option></select><label for="menu-sort">SORT</label><select id="menu-sort"><option value="custom">Listening order</option><option value="added">Date added · newest</option><option value="length">Length · shortest</option><option value="show">Show · A–Z</option><option value="title">Title · A–Z</option></select></div></div>
+      <div id="menu-list"></div>
+      <p class="sort-hint">Changing Menu sort is an explicit reorder of the durable listening sequence. Grouping is visual only and never changes order.</p>
+    </section>
+  </main>
+</section>
+<script>
+const episodes=[
+ {id:'twit',title:'Marked Safe from Buying M5 Ultra',show:'Mac Power Users',minutes:75.8,added:4,status:'ready',prep:'ready',menu:'upcoming',position:2},
+ {id:'bombcast',title:'Giant Bombcast 957: The Cow Situation',show:'Giant Bombcast',minutes:168.2,added:3,status:'preparing',prep:'preparing',menu:null,position:0},
+ {id:'waveform',title:'Did Apple Actually Duo It?',show:'Waveform: The MKBHD Podcast',minutes:46.4,added:2,status:'queued',prep:'queued',menu:'current',position:1},
+ {id:'wolverine',title:"Marvel's Wolverine Review Discussion",show:'Giant Bombcast',minutes:62.0,added:1,status:'failed',prep:'failed',menu:null,position:0},
+ {id:'headlines',title:'Trump Dangles $5,000 Payments if Republicans Win',show:'The Headlines',minutes:0.98,added:5,status:'ready',prep:'ready',menu:'upcoming',position:3}
+];
+const labels={ready:'Ready to play',preparing:'Preparing',queued:'Queued',failed:'Needs attention',current:'Now playing',upcoming:'Coming up'};
+const statusOrder=['preparing','queued','failed','ready'],menuOrder=['current','upcoming'];
+const fmt=n=>{const h=Math.floor(n/60),m=Math.round(n%60);return h?`${h} hr ${m} min`:`${m} min`};
+const sum=list=>list.reduce((n,e)=>n+e.minutes,0);
+const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function compare(key){return(a,b)=>key==='title'?a.title.localeCompare(b.title):key==='show'?a.show.localeCompare(b.show):key==='length'?a.minutes-b.minutes:key==='added'?b.added-a.added:key==='queue'||key==='custom'?a.position-b.position:b.added-a.added}
+function grouped(records,group,key,order){const sorted=[...records].sort(compare(key));if(group==='none')return[['All episodes',sorted]];return order.filter(k=>sorted.some(e=>e._group===k)).map(k=>[labels[k],sorted.filter(e=>e._group===k)])}
+function card(e,kind){const menu=e.menu;const display=kind==='menu'?menu:e.prep;const status=kind==='menu'?(menu==='current'?'Now playing':'Coming up'):labels[e.prep];const action=kind==='menu'?`<button data-remove="${e.id}">Remove</button>`:menu?'<span class="status ready">On Menu</span>':'<button class="primary">Open</button>';return `<div class="row ${menu==='current'?'current':''}"><div class="art">♪</div><div><div class="title">${esc(e.title)}</div><div class="meta">${esc(e.show)} · ${fmt(e.minutes)}</div><div class="status ${display}">${status}</div></div>${action}</div>`}
+function renderGroups(target,groups,kind){target.innerHTML=groups.map(([name,items])=>`<section class="group"><div class="group-head"><h2>${name}</h2><span>${items.length} · ${fmt(sum(items))}</span></div><div class="list">${items.map(e=>card(e,kind)).join('')}</div></section>`).join('')||'<div class="list empty"><strong>Nothing here</strong>The canonical queue has no matching records.</div>'}
+function renderLarder(){const g=larderGroup.value,k=larderSort.value;const records=episodes.map(e=>({...e,_group:e.prep}));larderSummary.innerHTML=`<span class="pill"><strong>${records.length}</strong> saved</span><span class="pill"><strong>${fmt(sum(records))}</strong> audio</span><span class="pill ready"><strong>${records.filter(e=>e.menu).length}</strong> on Menu</span>`;renderGroups(larderList,grouped(records,g,k,statusOrder),'larder')}
+function renderPrep(){const g=prepGroup.value,k=prepSort.value;const records=episodes.map(e=>({...e,_group:e.prep}));const inFlight=records.filter(e=>['preparing','queued'].includes(e.prep));prepSummary.innerHTML=`<span class="pill busy"><strong>${inFlight.length}</strong> processing or queued</span><span class="pill busy"><strong>${fmt(sum(inFlight))}</strong> audio in queue</span><span class="pill failed"><strong>${records.filter(e=>e.prep==='failed').length}</strong> needs attention</span>`;renderGroups(prepList,grouped(records,g,k,statusOrder),'prep')}
+function renderMenu(){const g=menuGroup.value,k=menuSort.value;const records=episodes.filter(e=>e.menu).map(e=>({...e,_group:e.menu}));const upcoming=records.filter(e=>e.menu==='upcoming');menuSummary.innerHTML=`<span class="pill"><strong>${records.length}</strong> on Menu</span><span class="pill ready"><strong>${fmt(sum(records))}</strong> total audio</span><span class="pill"><strong>${fmt(sum(upcoming))}</strong> coming up</span>`;renderGroups(menuList,grouped(records,g,k,menuOrder),'menu')}
+function render(){renderLarder();renderPrep();renderMenu()}
+const [larderGroup,larderSort,prepGroup,prepSort,menuGroup,menuSort,larderSummary,larderList,prepSummary,prepList,menuSummary,menuList]=['larder-group','larder-sort','prep-group','prep-sort','menu-group','menu-sort','larder-summary','larder-list','prep-summary','prep-list','menu-summary','menu-list'].map(id=>document.getElementById(id));
+[larderGroup,larderSort,prepGroup,prepSort,menuGroup,menuSort].forEach(x=>x.addEventListener('change',render));
+menuList.addEventListener('click',e=>{const id=e.target.dataset.remove;if(!id)return;const item=episodes.find(x=>x.id===id);if(item){item.menu=null;item.position=0;render()}});
+document.getElementById('nav').addEventListener('click',e=>{const button=e.target.closest('button[data-page]');if(!button)return;document.querySelectorAll('.page,.nav button').forEach(x=>x.classList.remove('active'));button.classList.add('active');document.getElementById(button.dataset.page).classList.add('active')});
+render();
+</script>
+</body>
+</html>

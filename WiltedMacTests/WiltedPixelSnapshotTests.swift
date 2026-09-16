@@ -193,7 +193,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         let image = render(
             WiltedMacFullWindowPlayer(
                 model: model,
-                presentation: .transcript,
+                presentation: .constant(.transcript),
                 onSelect: { _ in },
                 onCollapse: { _ in }
             ),

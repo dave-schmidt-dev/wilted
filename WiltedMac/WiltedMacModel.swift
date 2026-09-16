@@ -104,6 +104,117 @@ enum WiltedMacLibraryOrder: String, CaseIterable, Identifiable, Sendable {
     var id: Self { self }
 }
 
+/// The presentation-only grouping shared by the three audio queues.
+enum WiltedMacQueueGrouping: String, CaseIterable, Identifiable, Sendable {
+    case status = "Status"
+    case none = "None"
+
+    var id: Self { self }
+}
+
+/// Larder ordering. These choices affect only the saved-items view; they do
+/// not change the listening order held by Menu.
+enum WiltedMacLarderSort: String, CaseIterable, Identifiable, Sendable {
+    case newest = "Newest"
+    case oldest = "Oldest"
+    case shortest = "Length · shortest"
+    case show = "Show · A–Z"
+    case title = "Title · A–Z"
+
+    var id: Self { self }
+}
+
+/// Prep ordering. Queue position is the process order; the other choices are
+/// view-only scans of the same preparation records.
+enum WiltedMacPreparationSort: String, CaseIterable, Identifiable, Sendable {
+    case queue = "Queue position"
+    case shortest = "Length · shortest"
+    case show = "Show · A–Z"
+    case title = "Title · A–Z"
+
+    var id: Self { self }
+}
+
+/// Menu ordering. `custom` is the explicit listening order; every other
+/// choice reorders only upcoming episodes and leaves the current episode in
+/// place.
+enum WiltedMacMenuSort: String, CaseIterable, Identifiable, Sendable {
+    case custom = "Listening order"
+    case newest = "Newest"
+    case shortest = "Length · shortest"
+    case show = "Show · A–Z"
+    case title = "Title · A–Z"
+
+    var id: Self { self }
+}
+
+/// A known-duration total for one queue or status group. Unknown durations
+/// stay visible in the count rather than being silently treated as zero.
+struct WiltedMacQueueAudioSummary: Equatable, Sendable {
+    let seconds: TimeInterval
+    let unknownCount: Int
+
+    init(durations: [TimeInterval?]) {
+        var seconds = 0.0
+        var unknownCount = 0
+        for duration in durations {
+            guard let duration, duration.isFinite, duration > 0 else {
+                unknownCount += 1
+                continue
+            }
+            seconds += duration
+        }
+        self.seconds = seconds
+        self.unknownCount = unknownCount
+    }
+
+    init(items: [WiltedMacLibraryItem]) {
+        self.init(durations: items.map { $0.progress.duration })
+    }
+
+    init(episodes: [WiltedMacEpisode]) {
+        self.init(durations: episodes.map(\.durationSeconds))
+    }
+
+    /// Compact, queue-header copy: whole minutes for short queues and hours
+    /// plus minutes once the total is long enough to benefit from both.
+    var label: String {
+        let minutes = Int(ceil(max(0, seconds) / 60))
+        let hours = minutes / 60
+        let remainder = minutes % 60
+        if hours > 0 { return "\(hours)h \(remainder)m" }
+        return "\(minutes)m"
+    }
+
+    var detailLabel: String {
+        unknownCount == 0 ? label : "\(label) · \(unknownCount) unknown"
+    }
+}
+
+/// A status bucket used by queue headers. The raw value is user-facing copy
+/// so it can be used by the native view without a second translation table.
+enum WiltedMacQueueStatus: String, CaseIterable, Identifiable, Sendable {
+    case all = "All episodes"
+    case playing = "Now playing"
+    case preparing = "Preparing"
+    case queued = "Queued"
+    case failed = "Needs attention"
+    case ready = "Ready to play"
+    case downloaded = "Ready to prepare"
+    case unavailable = "Not downloaded"
+    case upcoming = "Coming up"
+
+    var id: Self { self }
+}
+
+/// A stable group snapshot for a queue. The rows retain their canonical IDs,
+/// while each group carries its own audio total for quick scanning.
+struct WiltedMacQueueSection: Identifiable, Equatable, Sendable {
+    let id: WiltedMacQueueStatus
+    let itemIDs: [String]
+    let audio: WiltedMacQueueAudioSummary
+}
+
 /// The bounded refresh cadence used while the Mac app remains open.
 enum WiltedAutomationRefreshPolicy: Equatable, Sendable, Codable {
     case manual
@@ -366,7 +477,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         downloadPolicy: .manual,
         processingPolicy: .immediate,
         transcriptPolicy: .bestAvailable,
-        removeAds: true
+        removeAds: true,
+        autoAddPreparedToMenu: true
     )
 
     let version: Int
@@ -376,19 +488,27 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     let transcriptPolicy: WiltedAutomationTranscriptPolicy
     let removeAds: Bool
 
+    /// Whether an episode that finishes preparing joins the Menu on its own.
+    /// Defaulted rather than required at every call site: a listener who
+    /// prepares an episode almost always means to listen to it, and the
+    /// existing tests describe automation policies, not queueing.
+    let autoAddPreparedToMenu: Bool
+
     init(refreshPolicy: WiltedAutomationRefreshPolicy, downloadPolicy: WiltedAutomationDownloadPolicy,
          processingPolicy: WiltedAutomationProcessingPolicy, transcriptPolicy: WiltedAutomationTranscriptPolicy,
-         removeAds: Bool) {
+         removeAds: Bool, autoAddPreparedToMenu: Bool = true) {
         version = Self.currentVersion
         self.refreshPolicy = refreshPolicy
         self.downloadPolicy = downloadPolicy
         self.processingPolicy = processingPolicy
         self.transcriptPolicy = transcriptPolicy
         self.removeAds = removeAds
+        self.autoAddPreparedToMenu = autoAddPreparedToMenu
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, refreshPolicy, downloadPolicy, processingPolicy, transcriptPolicy, removeAds
+        case autoAddPreparedToMenu
         case legacyReadableTranscriptPass = "readableTranscriptPass"
     }
 
@@ -410,6 +530,11 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         processingPolicy = try container.decode(WiltedAutomationProcessingPolicy.self, forKey: .processingPolicy)
         transcriptPolicy = try container.decode(WiltedAutomationTranscriptPolicy.self, forKey: .transcriptPolicy)
         removeAds = try container.decode(Bool.self, forKey: .removeAds)
+        // Absent in settings saved before the Menu learned to fill itself.
+        // Decoded permissively rather than behind a version bump, because
+        // refusing to read an otherwise valid file would reset every other
+        // preference to answer a question the file simply predates.
+        autoAddPreparedToMenu = try container.decodeIfPresent(Bool.self, forKey: .autoAddPreparedToMenu) ?? true
         // Settings saved before the single-pass pipeline included this no-op
         // preference. Deliberately accept and discard it on migration.
         _ = try? container.decode(Bool.self, forKey: .legacyReadableTranscriptPass)
@@ -427,6 +552,7 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         try container.encode(processingPolicy, forKey: .processingPolicy)
         try container.encode(transcriptPolicy, forKey: .transcriptPolicy)
         try container.encode(removeAds, forKey: .removeAds)
+        try container.encode(autoAddPreparedToMenu, forKey: .autoAddPreparedToMenu)
     }
 
     var isValid: Bool { version == Self.currentVersion && refreshPolicy.isValid }
@@ -1062,6 +1188,36 @@ final class WiltedMacModel {
         didSet { preferences.set(libraryOrder.rawValue, forKey: Self.libraryOrderPreferenceKey) }
     }
     static let libraryOrderPreferenceKey = "wilted.library.order"
+    /// Grouping and ordering are independent per destination. Grouping only
+    /// changes presentation; Larder and Prep never mutate their source data.
+    var larderGrouping: WiltedMacQueueGrouping = .status {
+        didSet { preferences.set(larderGrouping.rawValue, forKey: Self.larderGroupingPreferenceKey) }
+    }
+    var larderSort: WiltedMacLarderSort = .newest {
+        didSet { preferences.set(larderSort.rawValue, forKey: Self.larderSortPreferenceKey) }
+    }
+    var preparationGrouping: WiltedMacQueueGrouping = .status {
+        didSet { preferences.set(preparationGrouping.rawValue, forKey: Self.preparationGroupingPreferenceKey) }
+    }
+    var preparationSort: WiltedMacPreparationSort = .queue {
+        didSet { preferences.set(preparationSort.rawValue, forKey: Self.preparationSortPreferenceKey) }
+    }
+    var menuGrouping: WiltedMacQueueGrouping = .status {
+        didSet { preferences.set(menuGrouping.rawValue, forKey: Self.menuGroupingPreferenceKey) }
+    }
+    var menuSort: WiltedMacMenuSort = .custom {
+        didSet {
+            preferences.set(menuSort.rawValue, forKey: Self.menuSortPreferenceKey)
+            guard oldValue != menuSort else { return }
+            applyMenuSortIfNeeded()
+        }
+    }
+    static let larderGroupingPreferenceKey = "wilted.queue.larder.grouping"
+    static let larderSortPreferenceKey = "wilted.queue.larder.sort"
+    static let preparationGroupingPreferenceKey = "wilted.queue.preparation.grouping"
+    static let preparationSortPreferenceKey = "wilted.queue.preparation.sort"
+    static let menuGroupingPreferenceKey = "wilted.queue.menu.grouping"
+    static let menuSortPreferenceKey = "wilted.queue.menu.sort"
     /// The last speed the owner chose. It seeds every load that has no
     /// per-episode speed of its own, so 1.25× chosen once stays 1.25×.
     static let playbackRatePreferenceKey = "wilted.playback.rate"
@@ -1218,6 +1374,22 @@ final class WiltedMacModel {
     private let podcastMediaValidatorFactory: WiltedMacPodcastMediaValidatorFactory?
     private let podcastPipelineRunnerFactory: WiltedMacPodcastPipelineRunnerFactory?
     private var podcastPreparationTasks: [String: Task<Void, Never>] = [:]
+    /// The journal is written by the preparation actor, so it can be a few
+    /// hops behind the action that admitted a run. Keep the active run the
+    /// model just accepted visible until the journal catches up.
+    private var projectedProcessorRuns: [String: WiltedMacProcessorRun] = [:]
+    private var processorRunsRefreshGeneration: UInt64 = 0
+    /// Queue reads are independent actor calls. A late read from an older
+    /// mutation must not overwrite the snapshot published for a newer one.
+    private var podcastQueueRefreshGeneration: UInt64 = 0
+    /// Set while a Menu sort is writing itself to the durable queue.
+    /// `applyMenuSortIfNeeded` refreshes the queue after that write, and the
+    /// refresh applies the sort again -- which is mutual recursion the moment
+    /// the write fails or the store does not round-trip the order verbatim:
+    /// the re-read disagrees with the sort forever, one store write and one
+    /// store read per turn. The flag makes the refresh that a sort caused
+    /// decline to start another one.
+    private var isApplyingMenuSort = false
     /// Automatic work that was admitted while its off-peak window was closed.
     /// The snapshot belongs to the job rather than Settings, so changing a
     /// preference cannot rewrite work already waiting for its window.
@@ -1328,6 +1500,36 @@ final class WiltedMacModel {
         if let stored = self.preferences.string(forKey: Self.libraryOrderPreferenceKey),
            let order = WiltedMacLibraryOrder(rawValue: stored) {
             libraryOrder = order
+        }
+        if let stored = self.preferences.string(forKey: Self.larderGroupingPreferenceKey),
+           let grouping = WiltedMacQueueGrouping(rawValue: stored) {
+            larderGrouping = grouping
+        }
+        if let stored = self.preferences.string(forKey: Self.larderSortPreferenceKey),
+           let sort = WiltedMacLarderSort(rawValue: stored) {
+            larderSort = sort
+        } else if let stored = self.preferences.string(forKey: Self.libraryOrderPreferenceKey),
+                  let order = WiltedMacLibraryOrder(rawValue: stored),
+                  order == .oldest {
+            // Preserve the existing Larder order choice for an upgrade that
+            // predates the richer queue sort control.
+            larderSort = .oldest
+        }
+        if let stored = self.preferences.string(forKey: Self.preparationGroupingPreferenceKey),
+           let grouping = WiltedMacQueueGrouping(rawValue: stored) {
+            preparationGrouping = grouping
+        }
+        if let stored = self.preferences.string(forKey: Self.preparationSortPreferenceKey),
+           let sort = WiltedMacPreparationSort(rawValue: stored) {
+            preparationSort = sort
+        }
+        if let stored = self.preferences.string(forKey: Self.menuGroupingPreferenceKey),
+           let grouping = WiltedMacQueueGrouping(rawValue: stored) {
+            menuGrouping = grouping
+        }
+        if let stored = self.preferences.string(forKey: Self.menuSortPreferenceKey),
+           let sort = WiltedMacMenuSort(rawValue: stored) {
+            menuSort = sort
         }
         if self.preferences.object(forKey: Self.playbackRatePreferenceKey) != nil {
             playbackRate = Self.clampPlaybackRate(self.preferences.double(forKey: Self.playbackRatePreferenceKey))
@@ -1809,6 +2011,235 @@ final class WiltedMacModel {
         }
     }
 
+    /// The Larder rows after its own view-only sort. Search and scope still
+    /// narrow this list, while the total below intentionally covers the whole
+    /// saved shelf.
+    var larderQueueItems: [WiltedMacLibraryItem] {
+        Self.sortLarderItems(libraryItems, by: larderSort)
+    }
+
+    /// Total known listening time in the saved shelf, independent of search
+    /// and filter controls. Missing durations remain countable as unknown.
+    var larderAudioSummary: WiltedMacQueueAudioSummary {
+        let items = articles.map(WiltedMacLibraryItem.article)
+            + episodes
+                .filter { !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil }
+                .map(WiltedMacLibraryItem.episode)
+        return WiltedMacQueueAudioSummary(items: items)
+    }
+
+    var larderQueueSections: [WiltedMacQueueSection] {
+        let items = larderQueueItems
+        return makeQueueSections(
+            items: items,
+            grouping: larderGrouping,
+            status: larderQueueStatus(for:)
+        )
+    }
+
+    func larderQueueStatus(for item: WiltedMacLibraryItem) -> WiltedMacQueueStatus {
+        switch item {
+        case .article(let article):
+            return article.isReady ? .ready : .preparing
+        case .episode(let episode):
+            switch episode.downloadState {
+            case .notDownloaded: return .unavailable
+            case .queued, .downloading: return .queued
+            case .failed, .cancelled: return .failed
+            case .completed:
+                switch episode.preparationState {
+                case .notPrepared: return .downloaded
+                case .preparing: return .preparing
+                case .failed: return .failed
+                case .prepared: return episode.isReadyMediaAvailable ? .ready : .failed
+                }
+            }
+        }
+    }
+
+    /// All podcast records surfaced by Prep, sorted without changing queue
+    /// admission order. The queue itself remains FIFO in preparationQueue.
+    var preparationQueueEpisodes: [WiltedMacEpisode] {
+        let visible = episodes.filter {
+            !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil && !hasMovedPastPreparation($0)
+        }
+        return Self.sortPreparationEpisodes(visible, by: preparationSort, queue: preparationQueue)
+    }
+
+    /// True once an episode's next step owns it, so Prep can stop listing it.
+    ///
+    /// Prep is a view of work outstanding, not a second copy of the Larder. A
+    /// prepared episode that is on the Menu, playing, or already played has
+    /// nothing left for this surface to offer or report, and leaving it here
+    /// pushed the episodes still waiting below a growing pile of finished ones.
+    /// It stays in the Larder, which is where an episode lives for good.
+    func hasMovedPastPreparation(_ episode: WiltedMacEpisode) -> Bool {
+        Self.hasMovedPastPreparation(episode,
+                                     isCurrent: currentPodcastEpisodeID == episode.id,
+                                     isOnMenu: podcastQueueIDs.contains(episode.id))
+    }
+
+    /// The rule on its own, so it can be read and tested without standing up a
+    /// model and a durable queue to say what it already says.
+    nonisolated static func hasMovedPastPreparation(
+        _ episode: WiltedMacEpisode, isCurrent: Bool, isOnMenu: Bool
+    ) -> Bool {
+        guard episode.preparationState.isPrepared else { return false }
+        return episode.isPlayed || isCurrent || isOnMenu
+    }
+
+    /// How far this episode's running preparation has got, when it has said.
+    /// Nil while it is queued or reporting no fraction, so the Larder shows an
+    /// indeterminate bar rather than one parked at zero.
+    func preparationFraction(forEpisode id: String) -> Double? {
+        processorRuns.first { $0.itemID == id && $0.outcome == .running }?.fraction
+    }
+
+    var preparationReadyEpisodes: [WiltedMacEpisode] {
+        preparationQueueEpisodes.filter { canPlayEpisode($0) }
+    }
+
+    var preparationNotQueuedEpisodes: [WiltedMacEpisode] {
+        preparationQueueEpisodes.filter { Self.isEligibleForPreparation($0) }
+    }
+
+    /// Total duration of all podcast audio represented by Prep.
+    var preparationAudioSummary: WiltedMacQueueAudioSummary {
+        WiltedMacQueueAudioSummary(episodes: preparationQueueEpisodes)
+    }
+
+    /// The total that is actively consuming the preparation pipeline: the
+    /// current run plus waiting podcast episodes. It is separate from the
+        /// full Prep total so the header can answer both "how much is here?" and
+        /// "how much is still in flight?".
+    var preparationInFlightAudioSummary: WiltedMacQueueAudioSummary {
+        var ids = Set(preparationQueue.entries.map(\.id))
+        ids.formUnion(episodes.filter { $0.preparationState.isRunning }.map(\.id))
+        let queuedEpisodes = episodes.filter { ids.contains($0.id) }
+        var durations = queuedEpisodes.map(\.durationSeconds)
+        if preparation?.phase.isTerminal == false,
+           let article = currentArticle {
+            durations.append(article.durationSeconds)
+        }
+        return WiltedMacQueueAudioSummary(durations: durations)
+    }
+
+    var preparationQueueSections: [WiltedMacQueueSection] {
+        let items = preparationQueueEpisodes.map(WiltedMacLibraryItem.episode)
+        return makeQueueSections(
+            items: items,
+            grouping: preparationGrouping,
+            status: preparationQueueStatus(for:)
+        )
+    }
+
+    func preparationQueueStatus(for item: WiltedMacLibraryItem) -> WiltedMacQueueStatus {
+        guard case .episode(let episode) = item else { return .downloaded }
+        if episode.preparationState.isRunning { return .preparing }
+        if preparationQueue.itemIDs.contains(episode.id) { return .queued }
+        switch episode.downloadState {
+        case .notDownloaded, .queued, .downloading: return .unavailable
+        case .failed, .cancelled:
+            return .failed
+        case .completed:
+            switch episode.preparationState {
+            case .failed: return .failed
+            case .prepared: return episode.isReadyMediaAvailable ? .ready : .failed
+            case .notPrepared: return .downloaded
+            case .preparing: return .preparing
+            }
+        }
+    }
+
+    private static func sortLarderItems(
+        _ items: [WiltedMacLibraryItem],
+        by sort: WiltedMacLarderSort
+    ) -> [WiltedMacLibraryItem] {
+        items.sorted { lhs, rhs in
+            switch sort {
+            case .newest:
+                if lhs.date != rhs.date { return lhs.date > rhs.date }
+            case .oldest:
+                if lhs.date != rhs.date { return lhs.date < rhs.date }
+            case .shortest:
+                switch (lhs.progress.duration, rhs.progress.duration) {
+                case let (left?, right?) where left != right:
+                    return left < right
+                case (nil, .some): return false
+                case (.some, nil): return true
+                default: break
+                }
+            case .show:
+                let comparison = lhs.source.localizedStandardCompare(rhs.source)
+                if comparison != .orderedSame { return comparison == .orderedAscending }
+            case .title:
+                let comparison = lhs.title.localizedStandardCompare(rhs.title)
+                if comparison != .orderedSame { return comparison == .orderedAscending }
+            }
+            return lhs.id < rhs.id
+        }
+    }
+
+    private static func sortPreparationEpisodes(
+        _ episodes: [WiltedMacEpisode],
+        by sort: WiltedMacPreparationSort,
+        queue: WiltedMacPreparationQueue
+    ) -> [WiltedMacEpisode] {
+        let queuePositions = Dictionary(uniqueKeysWithValues: queue.entries.enumerated().map { ($0.element.id, $0.offset) })
+        return episodes.sorted { lhs, rhs in
+            switch sort {
+            case .queue:
+                let leftRank = queuePositions[lhs.id].map { $0 + 1 }
+                    ?? (lhs.preparationState.isRunning ? 0 : Int.max)
+                let rightRank = queuePositions[rhs.id].map { $0 + 1 }
+                    ?? (rhs.preparationState.isRunning ? 0 : Int.max)
+                if leftRank != rightRank { return leftRank < rightRank }
+            case .shortest:
+                switch (lhs.durationSeconds, rhs.durationSeconds) {
+                case let (left?, right?) where left != right:
+                    return left < right
+                case (nil, .some): return false
+                case (.some, nil): return true
+                default: break
+                }
+            case .show:
+                let comparison = lhs.feedTitle.localizedStandardCompare(rhs.feedTitle)
+                if comparison != .orderedSame { return comparison == .orderedAscending }
+            case .title:
+                let comparison = lhs.title.localizedStandardCompare(rhs.title)
+                if comparison != .orderedSame { return comparison == .orderedAscending }
+            }
+            return lhs.id < rhs.id
+        }
+    }
+
+    private func makeQueueSections(
+        items: [WiltedMacLibraryItem],
+        grouping: WiltedMacQueueGrouping,
+        status: (WiltedMacLibraryItem) -> WiltedMacQueueStatus
+    ) -> [WiltedMacQueueSection] {
+        guard !items.isEmpty else { return [] }
+        if grouping == .none {
+            return [WiltedMacQueueSection(
+                id: .all,
+                itemIDs: items.map(\.id),
+                audio: WiltedMacQueueAudioSummary(items: items)
+            )]
+        }
+        let order: [WiltedMacQueueStatus] = [
+            .playing, .preparing, .queued, .failed, .ready, .downloaded, .unavailable, .upcoming
+        ]
+        return order.compactMap { statusID in
+            let matching = items.filter { status($0) == statusID }
+            guard !matching.isEmpty else { return nil }
+            return WiltedMacQueueSection(
+                id: statusID,
+                itemIDs: matching.map(\.id),
+                audio: WiltedMacQueueAudioSummary(items: matching)
+            )
+        }
+    }
+
     func selectLibraryItem(_ id: String) { selectedLibraryItemID = id }
 
     /// Starts production persistence only after the root surface has made its
@@ -2106,6 +2537,13 @@ final class WiltedMacModel {
             // One place to clear the task-table entry, run on every exit
             // (return or throw) rather than duplicated in each branch below.
             defer { self.podcastDownloadTasks[episode.id] = nil }
+            // Fixture rows are published immediately for a responsive launch,
+            // while their store records are installed asynchronously. Wait for
+            // that install before exercising the real coordinator so a fast UI
+            // retry cannot race the episode lookup and fail a second time.
+            if self.fixtureMode {
+                await self.fixturePodcastInstallTask?.value
+            }
             if !alreadyClaimed {
                 let won = await self.claimDownload(itemID)
                 guard won else {
@@ -2362,11 +2800,15 @@ final class WiltedMacModel {
         if fixtureMode {
             // No worker in fixture mode; the row still has to leave the state
             // it was in, so a UI test can tell a live control from a drawn one.
+            startProjectedProcessorRun(for: episode)
             updateEpisode(episode.id) { $0.preparationState = .preparing(stage: "Preparing…") }
             podcastPreparationTasks[episode.id] = Task { [weak self] in
+                defer {
+                    self?.podcastPreparationTasks[episode.id] = nil
+                    self?.finishProjectedProcessorRun(for: episode.id)
+                }
                 await Task.yield()
                 self?.updateEpisode(episode.id) { $0.preparationState = .failed("No preparation worker in fixture mode") }
-                self?.podcastPreparationTasks[episode.id] = nil
             }
             return true
         }
@@ -2395,6 +2837,11 @@ final class WiltedMacModel {
                 id: episode.id, title: episode.title, source: episode.feedTitle
             ))
         }
+        // A retry replaces the old terminal row immediately. Queued retries
+        // are represented by preparationQueue; once one owns the gate it
+        // gets the active projection below.
+        processorRuns.removeAll { $0.isPodcast && $0.itemID == episode.id }
+        if !queued { startProjectedProcessorRun(for: episode) }
         podcastOperationMessage = queued
             ? "\(episode.title) is queued behind the preparation in flight."
             : "Preparing \(episode.title)…"
@@ -2407,6 +2854,7 @@ final class WiltedMacModel {
                 // Every way out of this run leaves the line, including the
                 // ones that never reached the admission below.
                 self?.preparationQueue.leave(episode.id)
+                self?.finishProjectedProcessorRun(for: episode.id)
             }
             guard let gate = self?.preparationGate else { return }
             do {
@@ -2418,6 +2866,7 @@ final class WiltedMacModel {
             }
             defer { gate.release() }
             self?.preparationQueue.leave(episode.id)
+            self?.startProjectedProcessorRun(for: episode)
             if queued {
                 self?.updateEpisode(episode.id) { $0.preparationState = .preparing(stage: Self.preparingStage) }
                 self?.podcastOperationMessage = "Preparing \(episode.title)…"
@@ -2448,7 +2897,6 @@ final class WiltedMacModel {
                 }
                 await self.reloadPreparedPlayback(episode.id, itemID: itemID)
                 await self.refreshLifetimeStatistics()
-                self.refreshProcessorRuns()
             } catch is CancellationError {
                 self?.updateEpisode(episode.id) { $0.preparationState = .notPrepared }
                 self?.podcastOperationMessage = "Preparation cancelled."
@@ -2456,7 +2904,6 @@ final class WiltedMacModel {
                 // The reason is on Prep, with the log that led to it.
                 self?.updateEpisode(episode.id) { $0.preparationState = .failed(Self.preparationFailedLabel) }
                 self?.podcastOperationMessage = "\(episode.title): \(Self.preparationFailedLabel)"
-                self?.refreshProcessorRuns()
             }
         }
         return true
@@ -2464,6 +2911,41 @@ final class WiltedMacModel {
         return false
 #endif
     }
+
+#if canImport(WiltedProducer)
+    /// Publishes the active run before the preparation actor has written its
+    /// first journal entry. Queued work remains in preparationQueue until it
+    /// owns the gate, so the two Processor sections cannot show duplicate rows.
+    private func startProjectedProcessorRun(for episode: WiltedMacEpisode) {
+        let run = WiltedMacProcessorRun(
+            id: Self.podcastRequestPrefix + episode.id,
+            itemID: episode.id,
+            isPodcast: true,
+            title: episode.title,
+            source: episode.feedTitle,
+            stage: "preparing",
+            detail: Self.preparingStage,
+            narrative: Self.preparingStage,
+            fraction: nil,
+            outcome: .running,
+            updatedAt: Date()
+        )
+        projectedProcessorRuns[episode.id] = run
+        processorRuns.removeAll { $0.isPodcast && $0.itemID == episode.id }
+        processorRuns.insert(run, at: 0)
+    }
+
+    /// Drops the local projection once the task has left the process-owned
+    /// table. The next journal refresh then supplies the durable terminal row,
+    /// if one exists.
+    private func finishProjectedProcessorRun(for episodeID: String) {
+        let projected = projectedProcessorRuns.removeValue(forKey: episodeID)
+        if let projected, let index = processorRuns.firstIndex(of: projected) {
+            processorRuns.remove(at: index)
+        }
+        refreshProcessorRuns()
+    }
+#endif
 
     /// What a row says when its preparation failed. The cause is on Prep.
     nonisolated static let preparationFailedLabel = "Preparation failed. See \(WiltedScreenCopy.processor)."
@@ -2553,6 +3035,45 @@ final class WiltedMacModel {
     }
 
 #if canImport(WiltedProducer)
+    /// Starts whatever the Menu has next, once the episode that was playing
+    /// has been finished by hand.
+    ///
+    /// Playing an episode to its end advances inside the controller's own
+    /// completion sequence. Saying "I am done with this" at 91% means the same
+    /// thing to a listener, and it was stopping the audio instead: the two ways
+    /// of finishing an episode agreed about the durable record and disagreed
+    /// about what happened next. `retireFinishedEpisode` has already taken the
+    /// finished episode off the queue, so the next one is normally its head --
+    /// asking the controller for "next" would be asking relative to an item
+    /// that is no longer in the list.
+    ///
+    /// "Normally" is doing real work there, which is why the head is not
+    /// trusted blindly. `retireFinishedEpisode` swallows a failed
+    /// `removePodcastQueueEpisode`, and `refreshPodcastQueueState` returns
+    /// early when the store cannot be read, so either fault leaves the episode
+    /// that was just finished sitting at the head of the queue. Starting it
+    /// again is the worst possible answer to "I am done with this", so the
+    /// episode just retired is skipped explicitly rather than assumed gone.
+    private func advanceToNextMenuEpisode() {
+        guard isPodcastPlayback,
+              let next = nextMenuEpisodeToPlay() else { return }
+        playEpisode(next)
+    }
+
+    /// The episode the Menu should start once the current one is finished:
+    /// the first queued entry that is not the episode just finished, has not
+    /// been retired or hidden, and can actually be played.
+    func nextMenuEpisodeToPlay() -> WiltedMacEpisode? {
+        let finishedID = currentPodcastEpisodeID
+        for id in podcastQueueIDs {
+            guard id != finishedID, !hiddenEpisodeIDs.contains(id),
+                  let candidate = episodes.first(where: { $0.id == id }),
+                  candidate.retiredAt == nil, canPlayEpisode(candidate) else { continue }
+            return candidate
+        }
+        return nil
+    }
+
     /// Re-points the player at an episode that was just prepared.
     ///
     /// Preparation supersedes the revision and deletes the audio it was cut
@@ -2635,6 +3156,16 @@ final class WiltedMacModel {
         await refresh?.value
         for task in downloads { _ = try? await task.value }
         for task in restores { await task.value }
+    }
+
+    /// Test-only drain for preparations. The normal operation wait intentionally
+    /// excludes long-running speech work, while model regressions need to
+    /// observe every queued task leaving the process-owned table.
+    func waitForPodcastPreparationOperationsForTesting() async {
+#if canImport(WiltedProducer)
+        let tasks = Array(podcastPreparationTasks.values)
+        for task in tasks { await task.value }
+#endif
     }
 
     /// Turns a feed's episodes on or off in the Larder without unsubscribing.
@@ -2745,6 +3276,10 @@ final class WiltedMacModel {
         podcastDownloadTasks[episode.id]?.cancel()
         podcastPreparationTasks[episode.id]?.cancel()
         removeDeferredAutomaticPreparation(episode.id)
+        // A removed episode has no business holding a run slot. Cancelling the
+        // task is not enough on its own: an episode still waiting on the gate
+        // has no task to cancel, and its entry outlived the row.
+        preparationQueue.leave(episode.id)
         hiddenEpisodeIDs.insert(episode.id)
         if selectedLibraryItemID == episode.id { selectedLibraryItemID = nil }
     }
@@ -2971,12 +3506,63 @@ final class WiltedMacModel {
     /// until it reaches a terminal one of its own.
     private func applyEpisodes(_ loaded: [WiltedMacEpisode]) {
 #if canImport(WiltedProducer)
+        // The preparation queue counts as running. An episode waiting for the
+        // run slot has no task and no deferred job, so a reload used to reset
+        // its row to not-prepared while the entry kept its place in line --
+        // which is how Larder and Prep came to disagree about how many were
+        // waiting, and how a queued episode offered a Prepare button that
+        // could do nothing.
         let running = Set(podcastPreparationTasks.keys)
             .union(deferredAutomaticPreparations.map(\.episodeID))
+            .union(preparationQueue.itemIDs)
 #else
         let running: Set<String> = []
 #endif
+        let preparedBefore = Set(episodes.filter { $0.preparationState.isPrepared }.map(\.id))
+        let knownBefore = Set(episodes.map(\.id))
         episodes = Self.applyingRunningPreparations(to: loaded, from: episodes, running: running)
+        let arrivals = Self.episodeIDsNewlyPrepared(in: episodes, preparedBefore: preparedBefore,
+                                                    knownBefore: knownBefore)
+        if !arrivals.isEmpty { autoAddPreparedEpisodesToMenu(arrivals) }
+    }
+
+    /// The episodes that became prepared on this reload, and only those.
+    ///
+    /// An episode this process has never seen is deliberately excluded: the
+    /// first load after launch publishes a whole library of already-prepared
+    /// rows, and treating that as an arrival would empty the Larder into the
+    /// Menu every time the app opened.
+    nonisolated static func episodeIDsNewlyPrepared(
+        in loaded: [WiltedMacEpisode], preparedBefore: Set<String>, knownBefore: Set<String>
+    ) -> [String] {
+        loaded
+            .filter { $0.preparationState.isPrepared && knownBefore.contains($0.id)
+                      && !preparedBefore.contains($0.id) }
+            .map(\.id)
+    }
+
+    /// Appends freshly prepared episodes to the durable queue when the
+    /// listener has asked the Menu to fill itself. Silent by design: this is
+    /// not an action the listener just took, so it does not claim the status
+    /// line a real press is using, and a failure is left to the next reload
+    /// rather than reported as an error against nothing.
+    private func autoAddPreparedEpisodesToMenu(_ ids: [String]) {
+#if canImport(WiltedProducer)
+        guard automationSettings.autoAddPreparedToMenu, let playback else { return }
+        let eligible = ids.compactMap { id in episodes.first { $0.id == id } }
+            .filter { !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil && !$0.isPlayed
+                      && canAddEpisodeToMenu($0) }
+        guard !eligible.isEmpty else { return }
+        podcastQueueIDs.append(contentsOf: eligible.map(\.id))
+        Task { [weak self] in
+            guard let self else { return }
+            for episode in eligible {
+                guard let id = try? ItemID(rawValue: episode.id) else { continue }
+                try? await playback.addPodcastQueueEpisode(id)
+            }
+            await self.refreshPodcastQueueState()
+        }
+#endif
     }
 
     /// Carries a preparation state this process owns onto the loaded row.
@@ -3045,14 +3631,14 @@ final class WiltedMacModel {
     /// playback wins over queue membership because the current item is not an
     /// upcoming item, even though the durable queue contains its identifier.
     func episodePlaybackIndicators(for episodeID: String) -> [String] {
-        if currentPodcastEpisodeID == episodeID {
+        if isPodcastPlayback, currentPodcastEpisodeID == episodeID {
             return [isPlaying ? "Playing" : "Now Playing"]
         }
         return podcastQueueIDs.contains(episodeID) ? ["On Menu"] : []
     }
 
     var menuUpcomingEpisodeIDs: [String] {
-        guard let currentPodcastEpisodeID,
+        guard isPodcastPlayback, let currentPodcastEpisodeID,
               let currentIndex = podcastQueueIDs.firstIndex(of: currentPodcastEpisodeID) else {
             return podcastQueueIDs
         }
@@ -3060,6 +3646,126 @@ final class WiltedMacModel {
         return nextIndex < podcastQueueIDs.endIndex
             ? Array(podcastQueueIDs[nextIndex...])
             : []
+    }
+
+    /// The Menu rows after the selected durable ordering. Non-custom orders
+    /// are applied to the persisted queue as soon as the choice changes, so
+    /// this remains a defensive presentation projection while that write is
+    /// in flight.
+    var menuDisplayEpisodeIDs: [String] {
+        sortedMenuEpisodeIDs(podcastQueueIDs, by: menuSort)
+    }
+
+    /// The display order for the queue after the current episode. This is the
+    /// same ordering the durable sort writes, kept separate from the raw
+    /// queue so Menu never renders an old order while that write is in flight.
+    var menuDisplayUpcomingEpisodeIDs: [String] {
+        let ids = menuDisplayEpisodeIDs
+        guard isPodcastPlayback, let currentPodcastEpisodeID,
+              let currentIndex = ids.firstIndex(of: currentPodcastEpisodeID) else {
+            return ids
+        }
+        let nextIndex = ids.index(after: currentIndex)
+        return nextIndex < ids.endIndex ? Array(ids[nextIndex...]) : []
+    }
+
+    var menuAudioSummary: WiltedMacQueueAudioSummary {
+        let durations = podcastQueueIDs.map { id in
+            episodes.first(where: { $0.id == id })?.durationSeconds
+        }
+        return WiltedMacQueueAudioSummary(durations: durations)
+    }
+
+    var menuUpcomingAudioSummary: WiltedMacQueueAudioSummary {
+        let durations = menuUpcomingEpisodeIDs.map { id in
+            episodes.first(where: { $0.id == id })?.durationSeconds
+        }
+        return WiltedMacQueueAudioSummary(durations: durations)
+    }
+
+    /// Menu groups are for its upcoming portion only. The current episode is
+    /// already represented by the player immediately above this queue.
+    var menuQueueSections: [WiltedMacQueueSection] {
+        let items = menuDisplayUpcomingEpisodeIDs.compactMap { id in
+            episodes.first(where: { $0.id == id }).map(WiltedMacLibraryItem.episode)
+        }
+        return makeQueueSections(
+            items: items,
+            grouping: menuGrouping,
+            status: { _ in .upcoming }
+        )
+    }
+
+    private func sortedMenuEpisodeIDs(
+        _ ids: [String],
+        by sort: WiltedMacMenuSort
+    ) -> [String] {
+        guard sort != .custom else { return ids }
+        let currentIndex = currentPodcastEpisodeID.flatMap { ids.firstIndex(of: $0) }
+        let prefixEnd = currentIndex.map { ids.index(after: $0) } ?? ids.startIndex
+        let prefix = Array(ids[..<prefixEnd])
+        let upcoming = Array(ids[prefixEnd...])
+        let sorted = upcoming.sorted { lhsID, rhsID in
+            let lhs = episodes.first(where: { $0.id == lhsID })
+            let rhs = episodes.first(where: { $0.id == rhsID })
+            switch sort {
+            case .custom:
+                return false
+            case .newest:
+                if let lhs, let rhs, lhs.releasedAt != rhs.releasedAt {
+                    return lhs.releasedAt > rhs.releasedAt
+                }
+            case .shortest:
+                switch (lhs?.durationSeconds, rhs?.durationSeconds) {
+                case let (left?, right?) where left != right:
+                    return left < right
+                case (nil, .some): return false
+                case (.some, nil): return true
+                default: break
+                }
+            case .show:
+                let comparison = (lhs?.feedTitle ?? "").localizedStandardCompare(rhs?.feedTitle ?? "")
+                if comparison != .orderedSame { return comparison == .orderedAscending }
+            case .title:
+                let comparison = (lhs?.title ?? "").localizedStandardCompare(rhs?.title ?? "")
+                if comparison != .orderedSame { return comparison == .orderedAscending }
+            }
+            return lhsID < rhsID
+        }
+        return prefix + sorted
+    }
+
+    /// Applies a non-custom Menu sort to the durable queue without moving the
+    /// current item. The local snapshot changes first so the picker never
+    /// appears to do nothing while SwiftData catches up.
+    private func applyMenuSortIfNeeded() {
+        guard !isApplyingMenuSort, menuSort != .custom else { return }
+        let sorted = sortedMenuEpisodeIDs(podcastQueueIDs, by: menuSort)
+        guard sorted != podcastQueueIDs else { return }
+        podcastQueueIDs = sorted
+#if canImport(WiltedProducer)
+        guard let playback,
+              let episodeIDs = try? sorted.map({ try ItemID(rawValue: $0) }),
+              let state = try? PodcastQueueState(
+                episodeIDs: episodeIDs,
+                currentEpisodeID: currentPodcastEpisodeID.flatMap { try? ItemID(rawValue: $0) }
+              ) else {
+            return
+        }
+        isApplyingMenuSort = true
+        Task { [weak self] in
+            do {
+                try await playback.replacePodcastQueue(state)
+            } catch {
+                // Reported rather than swallowed: the old code retried forever
+                // and said nothing, so a queue that would not accept the sort
+                // looked like a Menu that simply ignored the picker.
+                self?.podcastOperationMessage = "The Menu order could not be saved."
+            }
+            await self?.refreshPodcastQueueState()
+            self?.isApplyingMenuSort = false
+        }
+#endif
     }
 
     func canPlayEpisode(_ episode: WiltedMacEpisode) -> Bool {
@@ -3283,7 +3989,10 @@ final class WiltedMacModel {
             phase: .cancelling, detail: "The current work will stop without replacing saved audio.",
             fraction: preparation?.fraction, cancellable: false
         )
-        if fixtureMode { return }
+        if fixtureMode {
+            preparation = nil
+            return
+        }
 #if canImport(WiltedProducer)
         let run = preparationRun
         Task { await run?.cancel() }
@@ -3368,6 +4077,12 @@ final class WiltedMacModel {
 #if canImport(WiltedProducer)
         let eligible = preparedEpisodesReadyForMenu
         guard !eligible.isEmpty, let playback else { return }
+        // Publish the requested order immediately. The durable controller
+        // still owns the final answer and the catch below reconciles a failed
+        // write, but holding every row back until a serial batch completes
+        // made a multi-episode press look like only its first item queued.
+        let requestedIDs = eligible.map(\.id)
+        podcastQueueIDs.append(contentsOf: requestedIDs)
         playbackOperationStatus = "Adding \(eligible.count) prepared episodes to Menu…"
         playbackOperationTask = Task { [weak self] in
             guard let self else { return }
@@ -3468,6 +4183,9 @@ final class WiltedMacModel {
         guard episodeID != destinationID,
               let source = podcastQueueIDs.firstIndex(of: episodeID),
               let destination = podcastQueueIDs.firstIndex(of: destinationID) else { return }
+        // A drag is an explicit custom order. Leaving a calculated sort
+        // selected would immediately redraw the listener's manual move away.
+        menuSort = .custom
         moveEpisodeInUpNext(
             from: source,
             to: Self.menuInsertionIndex(source: source, destination: destination)
@@ -3483,6 +4201,7 @@ final class WiltedMacModel {
         let destination = source + offset
         guard podcastQueueIDs.indices.contains(destination),
               podcastQueueIDs[destination] != currentPodcastEpisodeID else { return }
+        menuSort = .custom
         moveEpisodeInUpNext(from: source, to: destination)
     }
 
@@ -3846,6 +4565,7 @@ final class WiltedMacModel {
                     await self.reloadLibraryRows()
                 }
                 await self.retireFinishedEpisode()
+                self.advanceToNextMenuEpisode()
             } catch { self.playbackError = "This episode could not be marked completed." }
         }
 #endif
@@ -3862,9 +4582,10 @@ final class WiltedMacModel {
     /// agreed about the durable record and disagreed about the one thing the
     /// listener could see.
     ///
-    /// Articles are untouched -- they have no Larder retirement on finishing --
-    /// and nothing advances either way, because the press is about this
-    /// episode and not the next one.
+    /// Articles are untouched: they have no Larder retirement on finishing.
+    /// Advancing is the caller's job rather than this method's, because this
+    /// also runs from the controller's own completion sequence, which has
+    /// already advanced by the time it gets here.
     private func retireFinishedEpisode() async {
         guard isPodcastPlayback, let finished = currentEpisode,
               let id = try? ItemID(rawValue: finished.id) else { return }
@@ -4335,6 +5056,8 @@ final class WiltedMacModel {
     func refreshProcessorRuns() {
 #if canImport(WiltedProducer)
         guard let store else { return }
+        processorRunsRefreshGeneration &+= 1
+        let generation = processorRunsRefreshGeneration
         Task { [weak self] in
             guard let self else { return }
             guard let runs = try? await store.preparationRuns() else { return }
@@ -4356,7 +5079,7 @@ final class WiltedMacModel {
                     dismissal.feedID.flatMap { feedTitles[$0] } ?? "Removed podcast"
                 )
             }
-            self.processorRuns = runs.map { run in
+            let durableRuns = runs.map { run in
                 let known = titles[run.itemID.rawValue]
                 let outcome: WiltedMacProcessorRun.Outcome = if !run.isTerminal {
                     .running
@@ -4390,6 +5113,29 @@ final class WiltedMacModel {
                     timeline: timeline
                 )
             }
+            guard generation == self.processorRunsRefreshGeneration else { return }
+
+            let trackedItemIDs = Set(self.podcastPreparationTasks.keys)
+            self.projectedProcessorRuns = self.projectedProcessorRuns.filter {
+                trackedItemIDs.contains($0.key)
+            }
+            var mergedRuns = durableRuns.filter { run in
+                guard run.isPodcast, trackedItemIDs.contains(run.itemID) else { return true }
+                guard let projected = self.projectedProcessorRuns[run.itemID] else {
+                    // A queued task has not reached the journal yet. Do not
+                    // redraw the failed row from its previous attempt.
+                    return false
+                }
+                // The durable row wins once it is at least as new as the
+                // projection, including a terminal row written at completion.
+                return run.updatedAt >= projected.updatedAt
+            }
+            for projected in self.projectedProcessorRuns.values
+                where trackedItemIDs.contains(projected.itemID)
+                    && !mergedRuns.contains(where: { $0.id == projected.id }) {
+                mergedRuns.insert(projected, at: 0)
+            }
+            self.processorRuns = mergedRuns
         }
 #endif
     }
@@ -4678,9 +5424,14 @@ final class WiltedMacModel {
         if let podcastDownloadTransportFactory {
             resolvedPodcastDownloadTransportFactory = podcastDownloadTransportFactory
         } else if fixtureMode {
-            let failuresRemaining = fixtureDownloadFailuresRemaining
+            // The fixture retry must reuse one scripted transport. Creating a
+            // fresh transport per coordinator request reset its one failure,
+            // so Retry could never reach the successful offline state.
+            let transport = WiltedFixturePodcastDownloadTransport(
+                failuresRemaining: fixtureDownloadFailuresRemaining
+            )
             resolvedPodcastDownloadTransportFactory = {
-                WiltedFixturePodcastDownloadTransport(failuresRemaining: failuresRemaining)
+                transport
             }
         } else {
             resolvedPodcastDownloadTransportFactory = nil
@@ -4762,8 +5513,13 @@ final class WiltedMacModel {
     }
 
     private func refreshPodcastQueueState() async {
-        guard let store, let state = try? await store.podcastQueueState() else { return }
+        guard let store else { return }
+        podcastQueueRefreshGeneration &+= 1
+        let generation = podcastQueueRefreshGeneration
+        guard let state = try? await store.podcastQueueState() else { return }
+        guard generation == podcastQueueRefreshGeneration else { return }
         podcastQueueIDs = state.episodeIDs.map(\.rawValue)
+        applyMenuSortIfNeeded()
         if isPodcastPlayback {
             let loadedEpisodeID = playback?.itemID?.rawValue
             let activeEpisodeID = loadedEpisodeID.flatMap { id in

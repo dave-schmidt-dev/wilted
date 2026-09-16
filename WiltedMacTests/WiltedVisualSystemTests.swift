@@ -5,6 +5,23 @@ import WiltedProducer
 @testable import WiltedMac
 
 final class WiltedVisualSystemTests: XCTestCase {
+    func testPodcastOperationMessageReservesEqualShortAndWrappingRows() {
+        for scale in WiltedTheme.TextScale.allCases {
+            let shortHeight = WiltedMacPodcastOperationMessageLayout.rowHeight(
+                for: WiltedTheme.scaled(16, scale: scale), scale: scale
+            )
+            let wrappingHeight = WiltedMacPodcastOperationMessageLayout.rowHeight(
+                for: WiltedTheme.scaled(32, scale: scale), scale: scale
+            )
+
+            XCTAssertEqual(shortHeight, wrappingHeight)
+            XCTAssertEqual(
+                shortHeight,
+                WiltedMacPodcastOperationMessageLayout.minimumRowHeight(for: scale)
+            )
+        }
+    }
+
     func testMacSettingsExposeThisMacLifetimeStatisticsWithStableIdentifiers() throws {
         let sourceRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let source = try String(
@@ -32,7 +49,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(source.contains("Text(\"Saved articles and episodes\")"))
         XCTAssertLessThan(
             try XCTUnwrap(source.range(of: "model.larderRemaining.label")?.lowerBound),
-            try XCTUnwrap(source.range(of: "if model.libraryItems.isEmpty")?.lowerBound)
+            try XCTUnwrap(source.range(of: "if model.larderQueueItems.isEmpty")?.lowerBound)
         )
     }
 
@@ -880,9 +897,16 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(source.contains("WiltedMacPlayerContent("))
         XCTAssertFalse(playerSource.contains("maxHeight: 170"))
         XCTAssertTrue(playerSource.contains("maxHeight: .infinity"))
-        XCTAssertTrue(source.contains(".allowsHitTesting(playerPresentation == nil)"))
-        XCTAssertTrue(source.contains(".accessibilityHidden(playerPresentation != nil)"))
-        XCTAssertTrue(source.contains(".disabled(playerPresentation != nil)"))
+        // Menu owns its compact player inside the destination, so it stays
+        // live while the full-window presentation is set; every other
+        // destination is still made unavailable behind the overlay, which is
+        // what keeps duplicate live controls out of the accessibility tree.
+        XCTAssertTrue(source.contains(
+            ".allowsHitTesting(playerPresentation == nil || model.selectedNavigation == .menu)"))
+        XCTAssertTrue(source.contains(
+            ".accessibilityHidden(playerPresentation != nil && model.selectedNavigation != .menu)"))
+        XCTAssertTrue(source.contains(
+            ".disabled(playerPresentation != nil && model.selectedNavigation != .menu)"))
         XCTAssertTrue(source.contains("playerPresentation = nil\n                        playerFocusRequest = nil\n                        model.selectedNavigation = destination"))
         XCTAssertTrue(source.contains("case .menu:"))
         XCTAssertTrue(source.contains("WiltedMacMenuView("))

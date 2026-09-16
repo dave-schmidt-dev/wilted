@@ -133,14 +133,19 @@ struct WiltedMacRootView: View {
                 // the same scroll position, but make its controls unavailable
                 // while the full-window player is presented. Otherwise the
                 // overlay would leave duplicate live controls in the AX tree.
-                .allowsHitTesting(playerPresentation == nil)
-                .accessibilityHidden(playerPresentation != nil)
-                .disabled(playerPresentation != nil)
+                // Menu owns its compact player in the destination so its
+                // transcript and notes expand inline. Other destinations use
+                // the full-window presentation below. Treating both states
+                // alike hid Menu as soon as its inline control expanded,
+                // leaving Escape with no reachable destination to restore.
+                .allowsHitTesting(playerPresentation == nil || model.selectedNavigation == .menu)
+                .accessibilityHidden(playerPresentation != nil && model.selectedNavigation != .menu)
+                .disabled(playerPresentation != nil && model.selectedNavigation != .menu)
 
-                if let presentation = playerPresentation {
+                if playerPresentation != nil, model.selectedNavigation != .menu {
                     WiltedMacFullWindowPlayer(
                         model: model,
-                        presentation: presentation,
+                        presentation: $playerPresentation,
                         onSelect: { playerPresentation = $0 },
                         onCollapse: { section in
                             playerPresentation = nil
@@ -309,6 +314,36 @@ private struct WiltedMacDestination<Content: View>: View {
     }
 }
 
+/// Shared queue controls. Each destination owns separate bindings and
+/// preferences, while the control layout remains identical.
+private struct WiltedMacQueueControls<Sort>: View
+where Sort: CaseIterable & Hashable & Identifiable & RawRepresentable, Sort.RawValue == String {
+    @Binding var grouping: WiltedMacQueueGrouping
+    @Binding var sort: Sort
+    let sortIdentifier: String
+
+    var body: some View {
+        HStack(spacing: WiltedTheme.Spacing.small) {
+            Picker("Group", selection: $grouping) {
+                ForEach(WiltedMacQueueGrouping.allCases) { option in
+                    Text(option.rawValue).tag(option)
+                }
+            }
+            .accessibilityIdentifier("\(sortIdentifier)-group")
+            Picker("Sort", selection: $sort) {
+                ForEach(Array(Sort.allCases), id: \.id) { option in
+                    Text(option.rawValue).tag(option)
+                }
+            }
+            .accessibilityIdentifier("\(sortIdentifier)-sort")
+        }
+        .pickerStyle(.menu)
+        .controlSize(.small)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("\(sortIdentifier)-controls")
+    }
+}
+
 // MARK: - Library
 
 private struct WiltedMacLibraryView: View {
@@ -346,6 +381,10 @@ private struct WiltedMacLibraryView: View {
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-larder-remaining")
+                    Text("Audio: \(model.larderAudioSummary.detailLabel)")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-larder-audio-total")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 if !model.dismissedEpisodes.isEmpty {
@@ -353,16 +392,15 @@ private struct WiltedMacLibraryView: View {
                 }
                 addArticleButton
                 if !model.libraryItems.isEmpty {
-                    Picker("Order", selection: $model.libraryOrder) {
-                        ForEach(WiltedMacLibraryOrder.allCases) { order in Text(order.rawValue).tag(order) }
-                    }
-                    .labelsHidden()
-                    .frame(width: 110)
-                    .accessibilityIdentifier("wilted-library-order")
+                    WiltedMacQueueControls(
+                        grouping: $model.larderGrouping,
+                        sort: $model.larderSort,
+                        sortIdentifier: "wilted-larder"
+                    )
                 }
             }
 
-            if model.libraryItems.isEmpty {
+            if model.larderQueueItems.isEmpty {
                 ContentUnavailableView {
                     Label(
                         model.librarySearchQuery.isEmpty ? WiltedScreenCopy.libraryEmpty : "No matching Larder items",
@@ -378,54 +416,86 @@ private struct WiltedMacLibraryView: View {
                 .accessibilityIdentifier("wilted-mac-empty-state")
 
             } else {
-                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(model.libraryItems.enumerated()), id: \.element.id) { index, item in
-                            let isReadyEpisode: Bool = {
-                                guard case let .episode(episode) = item else { return false }
-                                return episode.preparationState.isPrepared && episode.isReadyMediaAvailable
-                            }()
-                            if index > 0 { Divider() }
-                            VStack(alignment: .leading, spacing: 0) {
-                                switch item {
-                                case .article(let article):
-                                    WiltedMacArticleRow(model: model, article: article)
-                                case .episode(let episode):
-                                    WiltedMacEpisodeRow(model: model, episode: episode)
-                                }
-                                // Without this the row shows no occurrence of
-                                // the words searched for, and reads as a bug.
-                                if model.matchedOnlyInTranscript(item) {
-                                    Label("Matches the transcript", systemImage: "text.quote")
-                                        .wiltedFont(.caption)
-                                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                                        .padding(.horizontal, WiltedTheme.Spacing.medium)
-                                        .padding(.bottom, WiltedTheme.Spacing.small)
-                                        .accessibilityIdentifier("wilted-transcript-match-note")
-                                }
-                            }
-                            // The wrapper must stretch exactly as the bare row
-                            // did, or the selection background and tap target
-                            // shrink to the row's intrinsic width.
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(
-                                model.selectedLibraryItemID == item.id
-                                    ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.16)
-                                    : isReadyEpisode
-                                        ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.08)
-                                        : Color.clear
-                            )
-                            .onTapGesture { model.selectLibraryItem(item.id) }
-                        }
-                    }
-                    .wiltedCard(colorScheme)
-                }
+                larderQueueList
             }
         }
         .searchable(text: $model.librarySearchQuery, prompt: "Search titles, shows, notes, and transcripts")
         .searchScopes($model.libraryFilter) {
             ForEach(WiltedMacLibraryFilter.allCases) { filter in
                 Text(filter.rawValue).tag(filter)
+            }
+        }
+    }
+
+    @ViewBuilder private var larderQueueList: some View {
+        if model.larderGrouping == .none {
+            larderRows(model.larderQueueItems)
+                .wiltedCard(colorScheme)
+        } else {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+                ForEach(model.larderQueueSections) { section in
+                    VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                        queueSectionHeader(section)
+                        larderRows(model.larderQueueItems.filter {
+                            section.itemIDs.contains($0.id)
+                        })
+                    }
+                    .wiltedCard(colorScheme)
+                }
+            }
+        }
+    }
+
+    private func queueSectionHeader(_ section: WiltedMacQueueSection) -> some View {
+        HStack {
+            Text(section.id.rawValue)
+                .wiltedFont(.title)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+            Spacer()
+            Text("\(section.itemIDs.count) · \(section.audio.detailLabel)")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+        }
+    }
+
+    @ViewBuilder private func larderRows(_ items: [WiltedMacLibraryItem]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                let isReadyEpisode: Bool = {
+                    guard case let .episode(episode) = item else { return false }
+                    return episode.preparationState.isPrepared && episode.isReadyMediaAvailable
+                }()
+                if index > 0 { Divider() }
+                VStack(alignment: .leading, spacing: 0) {
+                    switch item {
+                    case .article(let article):
+                        WiltedMacArticleRow(model: model, article: article)
+                    case .episode(let episode):
+                        WiltedMacEpisodeRow(model: model, episode: episode)
+                    }
+                    // Without this the row shows no occurrence of the words
+                    // searched for, and reads as a bug.
+                    if model.matchedOnlyInTranscript(item) {
+                        Label("Matches the transcript", systemImage: "text.quote")
+                            .wiltedFont(.caption)
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            .padding(.horizontal, WiltedTheme.Spacing.medium)
+                            .padding(.bottom, WiltedTheme.Spacing.small)
+                            .accessibilityIdentifier("wilted-transcript-match-note")
+                    }
+                }
+                // The wrapper must stretch exactly as the bare row did, or
+                // the selection background and tap target shrink to the row's
+                // intrinsic width.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    model.selectedLibraryItemID == item.id
+                        ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.16)
+                        : isReadyEpisode
+                            ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.08)
+                            : Color.clear
+                )
+                .onTapGesture { model.selectLibraryItem(item.id) }
             }
         }
     }
@@ -827,6 +897,21 @@ private struct WiltedMacFeedsView: View {
 
 }
 
+/// Keeps the transient podcast status row at a two-line minimum without
+/// truncating a longer diagnostic message.
+enum WiltedMacPodcastOperationMessageLayout {
+    static let utilityLineHeight: CGFloat = 16
+    static let reservedLineCount = 2
+
+    static func minimumRowHeight(for scale: WiltedTheme.TextScale) -> CGFloat {
+        WiltedTheme.scaled(utilityLineHeight * CGFloat(reservedLineCount), scale: scale)
+    }
+
+    static func rowHeight(for measuredTextHeight: CGFloat, scale: WiltedTheme.TextScale) -> CGFloat {
+        max(minimumRowHeight(for: scale), measuredTextHeight)
+    }
+}
+
 /// The running report for the last podcast action.
 ///
 /// Downloads and preparation are reported from Larder and refreshes from Feeds,
@@ -835,6 +920,7 @@ private struct WiltedMacFeedsView: View {
 private struct WiltedMacPodcastOperationMessage: View {
     let model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.wiltedTextScale) private var textScale
 
     var body: some View {
         if let message = model.podcastOperationMessage {
@@ -843,6 +929,10 @@ private struct WiltedMacPodcastOperationMessage: View {
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(
+                        minHeight: WiltedMacPodcastOperationMessageLayout.minimumRowHeight(for: textScale),
+                        alignment: .top
+                    )
                     .accessibilityIdentifier("wilted-podcast-operation-message")
                 if let undoable = model.undoableRemoval {
                     Button("Undo") {
@@ -1064,6 +1154,20 @@ private struct WiltedMacEpisodeRow: View {
                         scheme: colorScheme
                     ))
                     .accessibilityIdentifier("wilted-episode-lifecycle-\(episode.id)")
+                // Processing gets the same bar downloading has, and only when
+                // a run has actually reported how far it is. Deliberately no
+                // indeterminate fallback: an episode waiting for the run slot
+                // is `.preparing(stage:)` too, so a spinner for "running but
+                // silent" appeared on every queued row and never stopped. The
+                // stage text above already says the work is coming.
+                if episode.preparationState.isRunning,
+                   let fraction = model.preparationFraction(forEpisode: episode.id) {
+                    ProgressView(value: fraction)
+                        .tint(WiltedTheme.color(.progress, scheme: colorScheme))
+                        .frame(width: 120)
+                        .accessibilityValue("\(Int(fraction * 100)) percent prepared")
+                        .accessibilityIdentifier("wilted-episode-preparation-progress-\(episode.id)")
+                }
                 if let detail = episode.lifecyclePresentation.detailLabel {
                     Text(detail)
                         .wiltedFont(.utility)
@@ -1274,7 +1378,7 @@ private struct WiltedMacEpisodeRow: View {
 /// preparation had ever happened was whether an article appeared in Library.
 /// This lists what is running now and every attempt that came before it.
 private struct WiltedMacProcessorView: View {
-    let model: WiltedMacModel
+    @Bindable var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
     /// Runs whose log is open. Per run rather than a page-wide switch: the
     /// reader opens the one they are asking about.
@@ -1297,17 +1401,31 @@ private struct WiltedMacProcessorView: View {
     var body: some View {
         WiltedMacDestination(title: WiltedScreenCopy.processor, identifier: "wilted-mac-processor-detail") {
             HStack(alignment: .firstTextBaseline, spacing: WiltedTheme.Spacing.medium) {
-                Text("Preparing is active now, Queued runs next, and Not queued is ready whenever you choose.")
-                    .wiltedFont(.body)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                    Text("Preparing is active now, Queued runs next, and Not queued is ready whenever you choose.")
+                        .wiltedFont(.body)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    Text("Audio in Prep: \(model.preparationAudioSummary.detailLabel) · In flight: \(model.preparationInFlightAudioSummary.detailLabel)")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-processor-audio-total")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Button("Prepare all (\(model.preparationEligibleEpisodes.count))") {
                     model.prepareAllEligibleEpisodes()
                 }
                 .disabled(model.preparationEligibleEpisodes.isEmpty)
                 .accessibilityIdentifier("wilted-processor-prepare-all")
+                WiltedMacQueueControls(
+                    grouping: $model.preparationGrouping,
+                    sort: $model.preparationSort,
+                    sortIdentifier: "wilted-processor"
+                )
             }
 
+            if model.preparationGrouping == .none {
+                flatPreparationQueue
+            } else {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
                 HStack {
                     Text("Ready to play")
@@ -1318,14 +1436,14 @@ private struct WiltedMacProcessorView: View {
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 }
-                if model.readyToPlayEpisodes.isEmpty {
+                if model.preparationReadyEpisodes.isEmpty {
                     Text("No prepared episodes are ready to play.")
                         .wiltedFont(.body)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-processor-ready-empty")
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(model.readyToPlayEpisodes.enumerated()), id: \.element.id) { index, episode in
+                        ForEach(Array(model.preparationReadyEpisodes.enumerated()), id: \.element.id) { index, episode in
                             if index > 0 { Divider() }
                             readyToPlayRow(episode)
                         }
@@ -1369,8 +1487,15 @@ private struct WiltedMacProcessorView: View {
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-processor-waiting-empty")
                 } else {
+                    // Rows come from the queue itself, not from the visible
+                    // episode list, so the count above and the list below are
+                    // the same set. Matching episodes first meant a waiting
+                    // entry whose episode was hidden or retired was counted and
+                    // never drawn, and the queue read "3 waiting" over two rows
+                    // numbered 2 and 3.
                     VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(model.preparationQueue.entries.enumerated()), id: \.element.id) { index, waiting in
+                        ForEach(Array(model.preparationQueue.entries.enumerated()),
+                                id: \.element.id) { index, waiting in
                             if index > 0 { Divider() }
                             waitingRow(waiting, position: index + 1)
                         }
@@ -1389,14 +1514,14 @@ private struct WiltedMacProcessorView: View {
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 }
-                if model.preparationEligibleEpisodes.isEmpty {
+                if model.preparationNotQueuedEpisodes.isEmpty {
                     Text("No downloaded episodes are waiting to be prepared.")
                         .wiltedFont(.body)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-processor-not-queued-empty")
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(model.preparationEligibleEpisodes.enumerated()), id: \.element.id) { index, episode in
+                        ForEach(Array(model.preparationNotQueuedEpisodes.enumerated()), id: \.element.id) { index, episode in
                             if index > 0 { Divider() }
                             notQueuedRow(episode)
                         }
@@ -1437,6 +1562,7 @@ private struct WiltedMacProcessorView: View {
                         .accessibilityIdentifier("wilted-processor-operation-message")
                 }
             }
+            }
         }
         .task {
             // Polled rather than pushed: the journal is written by the
@@ -1445,6 +1571,57 @@ private struct WiltedMacProcessorView: View {
             while !Task.isCancelled {
                 model.refreshProcessorRuns()
                 try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    @ViewBuilder private var flatPreparationQueue: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+            Text("All preparation")
+                .wiltedFont(.title)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+            if let preparation = model.preparation, !preparation.phase.isTerminal {
+                WiltedMacPreparationView(model: model, preparation: preparation)
+            }
+            ForEach(activeRuns) { run in
+                activeRunCard(run)
+            }
+            if model.preparationQueueEpisodes.isEmpty {
+                Text("No podcast episodes are in Prep.")
+                    .wiltedFont(.body)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(model.preparationQueueEpisodes.enumerated()), id: \.element.id) { index, episode in
+                        if index > 0 { Divider() }
+                        switch model.preparationQueueStatus(for: .episode(episode)) {
+                        case .ready:
+                            readyToPlayRow(episode)
+                        case .queued:
+                            if let waiting = model.preparationQueue.entries.first(where: { $0.id == episode.id }) {
+                                // The position is the queue's, not this list's:
+                                // grouping sorts by something other than turn.
+                                let turn = (model.preparationQueue.entries.firstIndex(of: waiting) ?? index) + 1
+                                waitingRow(waiting, position: turn)
+                            }
+                        default:
+                            notQueuedRow(episode)
+                        }
+                    }
+                }
+                .wiltedCard(colorScheme)
+            }
+            if !recentRuns.isEmpty {
+                Text("History")
+                    .wiltedFont(.title)
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(recentRuns.enumerated()), id: \.element.id) { index, run in
+                        if index > 0 { Divider() }
+                        runRow(run)
+                    }
+                }
+                .wiltedCard(colorScheme)
             }
         }
     }
@@ -1465,7 +1642,10 @@ private struct WiltedMacProcessorView: View {
     }
 
     private var readyToPlayCountLabel: String {
-        let count = model.readyToPlayEpisodes.count
+        // The set this section actually lists, not every prepared episode in
+        // the library: Prep drops the ones whose next step already owns them,
+        // so counting the library read "28 prepared" over an empty section.
+        let count = model.preparationReadyEpisodes.count
         return count == 1 ? "1 prepared" : "\(count) prepared"
     }
 
@@ -1788,6 +1968,25 @@ private struct WiltedMacMenuView: View {
                 .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
 
+            HStack(alignment: .firstTextBaseline, spacing: WiltedTheme.Spacing.medium) {
+                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                    Text("Audio on Menu: \(model.menuAudioSummary.detailLabel)")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-menu-audio-total")
+                    Text("Coming up: \(model.menuUpcomingAudioSummary.detailLabel)")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-menu-upcoming-audio-total")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                WiltedMacQueueControls(
+                    grouping: $model.menuGrouping,
+                    sort: $model.menuSort,
+                    sortIdentifier: "wilted-menu"
+                )
+            }
+
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
                 Text("Now Playing")
                     .wiltedFont(.title)
@@ -1830,11 +2029,10 @@ private struct WiltedMacMenuView: View {
                 RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
                     .stroke(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.45), lineWidth: 1)
             )
-            .accessibilityIdentifier("wilted-menu-prepared-callout")
 
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
                 HStack {
-                    Text("Coming up")
+                    Text(model.menuGrouping == .status ? "Coming up" : "On Menu")
                         .wiltedFont(.title)
                         .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     Spacer()
@@ -1843,20 +2041,37 @@ private struct WiltedMacMenuView: View {
                         .accessibilityIdentifier("wilted-menu-clear-upcoming")
                 }
 
-                if model.menuUpcomingEpisodeIDs.isEmpty {
+                if model.menuDisplayUpcomingEpisodeIDs.isEmpty {
                     Text("Nothing else is on the Menu. Add a prepared episode from Larder.")
                         .wiltedFont(.body)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-menu-empty")
                 } else {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(model.menuUpcomingEpisodeIDs.enumerated()), id: \.element) { index, episodeID in
-                            if index > 0 { Divider() }
-                            menuRow(episodeID, position: index + 1)
+                    VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+                        ForEach(model.menuQueueSections) { section in
+                            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                                if model.menuGrouping == .status {
+                                    HStack {
+                                        Text(section.id.rawValue)
+                                            .wiltedFont(.utility)
+                                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                                        Spacer()
+                                        Text("\(section.itemIDs.count) · \(section.audio.detailLabel)")
+                                            .wiltedFont(.utility)
+                                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                                    }
+                                }
+                                VStack(alignment: .leading, spacing: 0) {
+                                    ForEach(Array(section.itemIDs.enumerated()), id: \.element) { index, episodeID in
+                                        if index > 0 { Divider() }
+                                        let position = (model.menuDisplayUpcomingEpisodeIDs.firstIndex(of: episodeID) ?? index) + 1
+                                        menuRow(episodeID, position: position)
+                                    }
+                                }
+                                .wiltedCard(colorScheme)
+                            }
                         }
                     }
-                    .wiltedCard(colorScheme)
-                    .accessibilityIdentifier("wilted-menu-list")
                 }
             }
         }
@@ -1866,7 +2081,7 @@ private struct WiltedMacMenuView: View {
         let episode = model.episodes.first { $0.id == episodeID }
         let title = episode?.title ?? "Episode unavailable"
         let source = episode?.feedTitle ?? "Remove this unavailable item"
-        let upcoming = model.menuUpcomingEpisodeIDs
+        let upcoming = model.menuDisplayUpcomingEpisodeIDs
         let index = upcoming.firstIndex(of: episodeID) ?? 0
 
         return HStack(spacing: WiltedTheme.Spacing.medium) {
@@ -1899,6 +2114,14 @@ private struct WiltedMacMenuView: View {
                 .accessibilityAction(named: Text("Move later")) {
                     model.moveMenuEpisode(episodeID, by: 1)
                 }
+            // The Menu listed what would play and offered no way to play any of
+            // it: the only route to an episode here was waiting for the one
+            // ahead of it to finish.
+            if let episode, model.canPlayEpisode(episode), model.currentPodcastEpisodeID != episodeID {
+                Button("Play now") { model.playEpisode(episode) }
+                    .accessibilityLabel("Play \(title) now")
+                    .accessibilityIdentifier("wilted-menu-play-\(episodeID)")
+            }
             Button("Remove") { model.removeEpisodeFromUpNext(episodeID) }
                 .accessibilityLabel("Remove \(title) from Menu")
                 .accessibilityIdentifier("wilted-menu-remove-\(episodeID)")
@@ -1997,18 +2220,18 @@ struct WiltedMacCompactPlayer: View {
 /// the detail column, so collapsing returns to precisely the prior work view.
 struct WiltedMacFullWindowPlayer: View {
     @Bindable var model: WiltedMacModel
-    let presentation: WiltedMacPlayerSection
+    @Binding private var presentation: WiltedMacPlayerSection?
     let onSelect: (WiltedMacPlayerSection) -> Void
     let onCollapse: (WiltedMacPlayerSection) -> Void
 
     init(
         model: WiltedMacModel,
-        presentation: WiltedMacPlayerSection,
+        presentation: Binding<WiltedMacPlayerSection?>,
         onSelect: @escaping (WiltedMacPlayerSection) -> Void,
         onCollapse: @escaping (WiltedMacPlayerSection) -> Void
     ) {
         self.model = model
-        self.presentation = presentation
+        _presentation = presentation
         self.onSelect = onSelect
         self.onCollapse = onCollapse
     }
@@ -2016,7 +2239,7 @@ struct WiltedMacFullWindowPlayer: View {
     var body: some View {
         WiltedMacPlayerContent(
             model: model,
-            presentation: .constant(presentation),
+            presentation: $presentation,
             layout: .fullWindow,
             focusRequest: nil,
             onCollapse: onCollapse,
@@ -2701,6 +2924,18 @@ private struct WiltedMacSettingsView: View {
                         .accessibilityIdentifier("wilted-automation-transcript-conflict")
                 }
 
+                Divider()
+
+                automationSectionTitle("Menu")
+                Toggle("Add prepared episodes to Menu", isOn: autoAddPreparedToMenuBinding)
+                    .accessibilityIdentifier("wilted-automation-auto-add-to-menu")
+                Text("An episode joins the Menu when it finishes preparing. Episodes already "
+                     + "played, already queued, or now playing are left alone.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-automation-auto-add-to-menu-explanation")
+
             }
         }
         .accessibilityElement(children: .contain)
@@ -2759,6 +2994,11 @@ private struct WiltedMacSettingsView: View {
         Binding(get: { model.automationSettings.removeAds }, set: { replaceAutomationSettings(removeAds: $0) })
     }
 
+    private var autoAddPreparedToMenuBinding: Binding<Bool> {
+        Binding(get: { model.automationSettings.autoAddPreparedToMenu },
+                set: { replaceAutomationSettings(autoAddPreparedToMenu: $0) })
+    }
+
     private var defaultOffPeakWindow: WiltedAutomationOffPeakWindow {
         let start = WiltedAutomationLocalTime(hour: 22, minute: 0)!
         let end = WiltedAutomationLocalTime(hour: 6, minute: 0)!
@@ -2807,7 +3047,8 @@ private struct WiltedMacSettingsView: View {
         downloadPolicy: WiltedAutomationDownloadPolicy? = nil,
         processingPolicy: WiltedAutomationProcessingPolicy? = nil,
         transcriptPolicy: WiltedAutomationTranscriptPolicy? = nil,
-        removeAds: Bool? = nil
+        removeAds: Bool? = nil,
+        autoAddPreparedToMenu: Bool? = nil
     ) {
         model.updateAutomationSettings { settings in
             WiltedAutomationSettings(
@@ -2815,7 +3056,8 @@ private struct WiltedMacSettingsView: View {
                 downloadPolicy: downloadPolicy ?? settings.downloadPolicy,
                 processingPolicy: processingPolicy ?? settings.processingPolicy,
                 transcriptPolicy: transcriptPolicy ?? settings.transcriptPolicy,
-                removeAds: removeAds ?? settings.removeAds
+                removeAds: removeAds ?? settings.removeAds,
+                autoAddPreparedToMenu: autoAddPreparedToMenu ?? settings.autoAddPreparedToMenu
             )
         }
     }

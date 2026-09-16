@@ -243,10 +243,17 @@ public struct WiltedSyncedTranscriptView: View {
 
         var id: String {
             switch self {
-            case .cue(let cue): "cue-\(cue.id)"
+            case .cue(let cue): Row.scrollTarget(forCueID: cue.id)
             case .marker(let marker): "marker-\(marker.id)"
             }
         }
+
+        /// The scroll target for a cue: the identity the row itself carries in
+        /// the `ForEach`, and the only identity anywhere in the row's subtree.
+        /// A `LazyVStack` can only resolve a scroll target for a row that is
+        /// not on screen from its `ForEach` identity, so nothing inside the row
+        /// may declare an `.id()` of its own and shadow it.
+        static func scrollTarget(forCueID cueID: Int) -> String { "cue-\(cueID)" }
     }
 
     @Environment(\.colorScheme) private var colorScheme
@@ -337,7 +344,9 @@ public struct WiltedSyncedTranscriptView: View {
             }
             .onChange(of: activeCueID) { _, current in
                 guard let current else { return }
-                withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(current, anchor: .center) }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    proxy.scrollTo(Row.scrollTarget(forCueID: current), anchor: .center)
+                }
             }
         }
         .accessibilityIdentifier(identifier)
@@ -392,7 +401,11 @@ public struct WiltedSyncedTranscriptView: View {
             )
         }
         .buttonStyle(.plain)
-        .id(cue.id)
+        // Deliberately no `.id(cue.id)` here. An explicit identity inside a
+        // `LazyVStack` row shadows the row's own `ForEach` identity as a scroll
+        // target, so `proxy.scrollTo` had nothing to resolve for a row that was
+        // not already on screen -- which is auto-scroll's entire job. The row
+        // identity built by `Row.scrollTarget(forCueID:)` is the only target.
         // The name goes in the spoken label, not just on screen: a reader
         // listening to the transcript needs to know the voice changed, and the
         // visual heading above is hidden from them precisely so this reads once.
