@@ -74,3 +74,9 @@ opencode.jsonc
 # Never commit -- this repository is public.
 wilted.toml
 **/wilted.toml
+
+# Preparation runtime: deployer-local state and test artifacts. The data tree is
+# the operator's own library (audio, transcripts, feeds), never a project asset.
+Producer/Runtime/data/
+Producer/Runtime/snapshot_report.html
+Producer/Runtime/.coverage

@@ -20,6 +20,7 @@ expected_legs=(
   "test-audio-contract-probe"
   "test-audit-walkthrough"
   "test-pipeline-worker"
+  "test-preparation-runtime"
   "test-install-mac-app"
   "test-temp-sweep"
 )

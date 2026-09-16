@@ -1,0 +1,351 @@
+"""Tests for wilted.queue — reading list persistence and operations."""
+
+import pytest
+
+import wilted
+from wilted.queue import (
+    add_article,
+    clear_queue,
+    get_article_text,
+    load_queue,
+    mark_completed,
+    remove_article,
+)
+
+
+class TestLoadSaveQueue:
+    def test_empty_when_no_items(self):
+        assert load_queue() == []
+
+    def test_load_returns_only_ready_items(self):
+        add_article("Text.", title="Added")
+        queue = load_queue()
+        assert len(queue) == 1
+        assert queue[0]["status"] == "ready"
+
+
+class TestAddArticle:
+    def test_adds_to_empty_queue(self):
+        entry = add_article("Hello world article text.", title="Test Article")
+        assert entry["id"] == 1
+        assert entry["title"] == "Test Article"
+        assert entry["words"] == 4
+        assert load_queue() == [entry]
+
+    def test_increments_id(self):
+        add_article("First article.", title="First")
+        entry2 = add_article("Second article.", title="Second")
+        assert entry2["id"] == 2
+
+    def test_saves_article_file(self):
+        entry = add_article("Article content here.", title="My Article")
+        article_path = wilted.ARTICLES_DIR / entry["file"]
+        assert article_path.exists()
+        assert article_path.read_text() == "Article content here."
+
+    def test_default_title_from_first_line(self):
+        entry = add_article("First line as title\nBody text here.")
+        assert entry["title"] == "First line as title"
+
+    def test_preserves_urls(self):
+        entry = add_article(
+            "Content.",
+            title="Test",
+            source_url="https://apple.news/abc",
+            canonical_url="https://example.com/article",
+        )
+        assert entry["source_url"] == "https://apple.news/abc"
+        assert entry["canonical_url"] == "https://example.com/article"
+
+
+class TestRemoveArticle:
+    def test_removes_by_index(self):
+        add_article("First.", title="First")
+        add_article("Second.", title="Second")
+        removed = remove_article(0)
+        assert removed["title"] == "First"
+        assert len(load_queue()) == 1
+
+    def test_deletes_cached_file(self):
+        entry = add_article("Content.", title="Test")
+        article_path = wilted.ARTICLES_DIR / entry["file"]
+        assert article_path.exists()
+        remove_article(0)
+        assert not article_path.exists()
+
+    def test_raises_on_invalid_index(self):
+        with pytest.raises(IndexError):
+            remove_article(0)
+
+    def test_raises_on_negative_index(self):
+        add_article("Content.", title="Test")
+        with pytest.raises(IndexError):
+            remove_article(-1)
+
+
+class TestClearQueue:
+    def test_clears_all(self):
+        add_article("First.", title="First")
+        add_article("Second.", title="Second")
+        count = clear_queue()
+        assert count == 2
+        assert load_queue() == []
+
+    def test_returns_zero_when_empty(self):
+        assert clear_queue() == 0
+
+    def test_deletes_cached_files(self):
+        entry = add_article("Content.", title="Test")
+        article_path = wilted.ARTICLES_DIR / entry["file"]
+        clear_queue()
+        assert not article_path.exists()
+
+    def test_clears_queued_items_not_just_ready(self):
+        """clear_queue removes queued-but-unbuilt items, not only ready ones.
+
+        Regression: clear_queue was ready-only, so "Clear All" left queued items
+        (e.g. podcast episodes awaiting the nightly pipeline) behind and the
+        larder still showed items right after the user cleared it. It now clears
+        the whole active playlist (predicate_playlist_active), matching the
+        Larder's own _all_items count.
+        """
+        from wilted.background_work.contracts import (
+            AnalysisState,
+            ContentState,
+            FetchState,
+            PlaybackState,
+            PreparationState,
+            RetentionFacts,
+            RetentionState,
+        )
+        from wilted.content_state import read_content_state, transition_item
+        from wilted.db import Item
+
+        add_article("Ready body.", title="Ready One")  # preparation=ready
+        entry = add_article("Queued body.", title="Queued One")
+        item = Item.get_by_id(entry["id"])
+        current = read_content_state(item)
+        transition_item(
+            item,
+            ContentState(
+                fetch=current.fetch if current else FetchState.CONTENT_READY,
+                analysis=current.analysis if current else AnalysisState.READY,
+                preparation=PreparationState.QUEUED,
+                playback=current.playback if current else PlaybackState.UNPLAYED,
+                retention=current.retention if current else RetentionFacts(state=RetentionState.ACTIVE),
+            ),
+            legacy_status="selected",
+        )
+
+        # Both the ready and the queued item are removed; larder ends empty.
+        assert clear_queue() == 2
+        assert load_queue() == []
+
+    def test_clear_queue_keeps_rows_as_dedup_tombstone(self):
+        """clear_queue expires rows instead of hard-deleting them.
+
+        Regression: hard delete erased the discovery dedup ledger, so cleared
+        feed items were re-discovered and re-emailed. The row is now preserved
+        (dedup keeps matching it) but expired out of every active surface — the
+        larder, the playable queue, and report candidacy all require
+        retention=active — and its on-disk files are deleted and paths nulled.
+        """
+        from wilted.background_work.contracts import RetentionState
+        from wilted.content_state import (
+            items_for_playlist_all,
+            items_for_report,
+            items_playable_in_queue,
+        )
+        from wilted.db import Item
+
+        entry = add_article("Body text.", title="To Clear")
+        item_id = entry["id"]
+        before_count = Item.select().count()
+
+        assert clear_queue() == 1
+
+        # Row preserved as a dedup tombstone, not deleted.
+        assert Item.select().count() == before_count
+        row = Item.get_by_id(item_id)
+        assert row.retention_state == RetentionState.EXPIRED.value
+        assert row.transcript_file is None
+        # Gone from every active surface.
+        assert items_for_playlist_all() == []
+        assert items_playable_in_queue() == []
+        assert item_id not in [it.id for it in items_for_report()]
+
+    def test_clear_queue_removes_queued_item_from_prepare_stage(self):
+        """A cleared queued item must not survive in the prepare queue.
+
+        Regression: the prepare queue (predicate_prepare_queue) is the one
+        active surface not retention-gated — its first branch matches
+        preparation=queued outright. clear_queue used to preserve preparation,
+        so a cleared podcast episode stayed queued and the nightly prepare stage
+        rebuilt the audio files clear had just deleted. clear now drives
+        preparation to not_queued (and playback to completed), so both branches
+        of predicate_prepare_queue exclude it.
+        """
+        from wilted.background_work.contracts import (
+            AnalysisState,
+            ContentState,
+            FetchState,
+            PlaybackState,
+            PreparationState,
+            RetentionFacts,
+            RetentionState,
+        )
+        from wilted.content_state import (
+            items_for_prepare,
+            read_content_state,
+            transition_item,
+        )
+        from wilted.db import Item
+
+        entry = add_article("Queued body.", title="Queued To Clear")
+        item_id = entry["id"]
+        item = Item.get_by_id(item_id)
+        current = read_content_state(item)
+        transition_item(
+            item,
+            ContentState(
+                fetch=current.fetch if current else FetchState.CONTENT_READY,
+                analysis=current.analysis if current else AnalysisState.READY,
+                preparation=PreparationState.QUEUED,
+                playback=current.playback if current else PlaybackState.UNPLAYED,
+                retention=current.retention if current else RetentionFacts(state=RetentionState.ACTIVE),
+            ),
+            legacy_status="selected",
+        )
+        # Before clearing, the queued item is in the prepare stage.
+        assert item_id in [it.id for it in items_for_prepare()]
+
+        assert clear_queue() == 1
+
+        # After clearing, it is gone from the prepare stage — no rebuild tonight.
+        assert item_id not in [it.id for it in items_for_prepare()]
+        row = Item.get_by_id(item_id)
+        assert row.preparation_state == PreparationState.NOT_QUEUED.value
+        assert row.playback_state == PlaybackState.COMPLETED.value
+        assert row.retention_state == RetentionState.EXPIRED.value
+
+
+class TestGetArticleText:
+    def test_reads_cached_text(self):
+        entry = add_article("The full article text.", title="Test")
+        assert get_article_text(entry) == "The full article text."
+
+    def test_returns_none_for_missing_file(self):
+        entry = {"file": "nonexistent.txt"}
+        assert get_article_text(entry) is None
+
+
+class TestLoadQueueSelectedStatus:
+    def test_selected_article_appears_in_queue(self):
+        """load_queue() includes articles with preparation=queued."""
+        from wilted.background_work.contracts import (
+            AnalysisState,
+            ContentState,
+            FetchState,
+            PlaybackState,
+            PreparationState,
+            RetentionFacts,
+            RetentionState,
+        )
+        from wilted.content_state import read_content_state, transition_item
+        from wilted.db import Item
+
+        entry = add_article("Article text.", title="Selected Article")
+        item = Item.get_by_id(entry["id"])
+        current = read_content_state(item)
+        transition_item(
+            item,
+            ContentState(
+                fetch=current.fetch if current else FetchState.CONTENT_READY,
+                analysis=current.analysis if current else AnalysisState.READY,
+                preparation=PreparationState.QUEUED,
+                playback=current.playback if current else PlaybackState.UNPLAYED,
+                retention=current.retention if current else RetentionFacts(state=RetentionState.ACTIVE),
+            ),
+            legacy_status="selected",
+        )
+        queue = load_queue()
+        assert len(queue) == 1
+        assert queue[0]["title"] == "Selected Article"
+
+    def test_selected_podcast_excluded_from_queue(self):
+        """load_queue() excludes podcast episodes with status='selected' (needs Phase 4)."""
+        from datetime import UTC, datetime
+
+        from wilted.db import Feed, Item
+
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        feed = Feed.create(
+            title="Test Podcast",
+            feed_url="https://example.com/podcast.xml",
+            feed_type="podcast",
+            enabled=True,
+            created_at=now,
+            updated_at=now,
+        )
+        Item.create(
+            feed=feed,
+            guid="pod-ep-1",
+            title="Podcast Episode",
+            discovered_at=now,
+            item_type="podcast_episode",
+            status="selected",
+            status_changed_at=now,
+        )
+        assert load_queue() == []
+
+    def test_ready_podcast_included_in_queue(self):
+        """load_queue() includes podcast episodes with status='ready' (Phase 4 prepared them)."""
+        from datetime import UTC, datetime
+
+        from wilted.db import Feed, Item
+
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        feed = Feed.create(
+            title="Test Podcast",
+            feed_url="https://example.com/podcast2.xml",
+            feed_type="podcast",
+            enabled=True,
+            created_at=now,
+            updated_at=now,
+        )
+        Item.create(
+            feed=feed,
+            guid="pod-ep-ready",
+            title="Ready Podcast Episode",
+            discovered_at=now,
+            item_type="podcast_episode",
+            status="ready",
+            status_changed_at=now,
+        )
+        queue = load_queue()
+        assert len(queue) == 1
+        assert queue[0]["title"] == "Ready Podcast Episode"
+
+
+class TestMarkCompleted:
+    def test_removes_from_queue(self):
+        entry = add_article("Content.", title="Test")
+        mark_completed(entry)
+        assert load_queue() == []
+
+    def test_retains_cached_file(self):
+        """mark_completed keeps files; retention policy handles cleanup later."""
+        entry = add_article("Content.", title="Test")
+        article_path = wilted.ARTICLES_DIR / entry["file"]
+        mark_completed(entry)
+        assert article_path.exists()
+
+    def test_leaves_other_entries(self):
+        add_article("First.", title="First")
+        add_article("Second.", title="Second")
+        # Remove first (id=1)
+        queue = load_queue()
+        mark_completed(queue[0])
+        remaining = load_queue()
+        assert len(remaining) == 1
+        assert remaining[0]["title"] == "Second"

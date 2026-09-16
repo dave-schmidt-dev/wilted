@@ -1,0 +1,1806 @@
+"""Tests for wilted.cli — CLI commands and argument parsing."""
+
+import argparse
+import os
+import subprocess
+import sys
+import types
+from pathlib import Path
+from unittest.mock import ANY, MagicMock, patch
+
+import pytest
+from speech_stack import client
+
+from wilted.cli import (
+    CLIError,
+    _maybe_chain_discover_prepare,
+    _play_text,
+    _prompt_yes,
+    _weather_monitor_for_launch,
+    cmd_add,
+    cmd_clear,
+    cmd_direct,
+    cmd_discover,
+    cmd_list,
+    cmd_next,
+    cmd_play,
+    cmd_playlist,
+    cmd_queue,
+    cmd_remove,
+    main,
+    run_cli,
+)
+from wilted.queue import add_article, load_queue
+from wilted.speech_ready import require_speech_ready
+from wilted.station_runtime.weather_monitor import WeatherMonitor, _default_fetch_alerts
+
+
+def _make_args(**overrides):
+    """Create an argparse.Namespace with sensible defaults."""
+    defaults = {
+        "input": None,
+        "add": False,
+        "list": False,
+        "play": False,
+        "next": False,
+        "remove": None,
+        "clear": False,
+        "voice": "af_heart",
+        "speed": 1.0,
+        "model": "mlx-community/Kokoro-82M-bf16",
+        "lang": "a",
+        "save": None,
+        "clean": False,
+        "list_voices": False,
+        "version": False,
+    }
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+def _add_test_article(text="Hello world. This is a test article.", title="Test Article"):
+    """Helper to add a test article to the queue."""
+    return add_article(text, title=title)
+
+
+# ---------------------------------------------------------------------------
+# cmd_add
+# ---------------------------------------------------------------------------
+
+
+class TestCmdAdd:
+    def test_add_from_url(self, capsys):
+        """cmd_add with URL input fetches and adds article."""
+        from wilted.ingest import ArticleResult
+
+        args = _make_args(input="https://example.com/article", add=True)
+        fake_result = ArticleResult(
+            text="Article body text here.",
+            title="Example Article",
+            source_url="https://example.com/article",
+            canonical_url="https://example.com/article",
+        )
+        with patch("wilted.cli.resolve_article", return_value=fake_result):
+            cmd_add(args)
+
+        captured = capsys.readouterr()
+        assert "Added #1" in captured.out
+        assert "Queue now has 1 article" in captured.out
+        assert load_queue()[0]["title"] == "Example Article"
+
+    def test_add_from_clipboard(self, capsys):
+        """cmd_add from clipboard when no URL given."""
+        from wilted.ingest import ArticleResult
+
+        args = _make_args(add=True)
+        fake_result = ArticleResult(
+            text="Clipboard article text here.",
+            title=None,
+            source_url=None,
+            canonical_url=None,
+        )
+        with patch("wilted.cli.resolve_article", return_value=fake_result):
+            cmd_add(args)
+
+        captured = capsys.readouterr()
+        assert "Added #1" in captured.out
+        assert load_queue()[0]["words"] > 0
+
+    def test_add_empty_clipboard_raises(self):
+        """cmd_add raises CLIError when clipboard is empty."""
+        args = _make_args(add=True)
+        with (
+            patch("wilted.cli.resolve_article", side_effect=ValueError("Clipboard is empty.")),
+            pytest.raises(CLIError, match="Clipboard is empty"),
+        ):
+            cmd_add(args)
+
+    def test_add_url_fetch_fails_raises(self):
+        """cmd_add raises CLIError when URL fetch returns no text."""
+        args = _make_args(input="https://example.com/paywall", add=True)
+        with (
+            patch("wilted.cli.resolve_article", side_effect=ValueError("Could not fetch article text")),
+            pytest.raises(CLIError, match="Could not fetch"),
+        ):
+            cmd_add(args)
+
+
+# ---------------------------------------------------------------------------
+# cmd_direct — progress visibility (no silent waits)
+# ---------------------------------------------------------------------------
+
+
+class TestCmdDirectProgressVisibility:
+    """The direct-URL path must surface live fetch progress, to stderr.
+
+    Regression guard for the fetch-path consolidation (AGENTS.md "Progress
+    Visibility"): get_text_from_url gained an on_status hook, and cmd_direct
+    must forward a sink so a slow fetch — Apple News resolution, or the
+    multi-second headless-browser escalation — is never a silent wait. That
+    progress must land on stderr so it never pollutes a --clean stdout pipe.
+    """
+
+    def test_fetch_progress_reaches_stderr_not_stdout(self, capsys):
+        """Cascade on_status messages surface on stderr; stdout carries only text."""
+        from wilted.fetch_cascade import ResolvedText
+
+        url = "https://example.com/article"
+
+        def fake_resolve(u, *, budget, on_status=None, min_words=25):
+            # The real cascade emits progress through on_status at each wait
+            # point; forwarding it is exactly what this test locks.
+            assert on_status is not None, "cmd_direct dropped the status sink"
+            on_status("Fetching article...")
+            on_status("Opening browser to bypass bot protection...")
+            return ResolvedText(
+                text="Real article body text.",
+                title="Example",
+                resolved_url=u,
+                outcome="ok",
+                tier_used="browser",
+            )
+
+        args = _make_args(input=url, clean=True)
+        with patch("wilted.fetch_cascade.resolve_article_text", side_effect=fake_resolve):
+            cmd_direct(args)
+
+        captured = capsys.readouterr()
+        # Progress is visible to the user during the wait...
+        assert "Fetching article..." in captured.err
+        assert "Opening browser to bypass bot protection..." in captured.err
+        # ...on stderr only — stdout carries just the piped article text.
+        assert "Fetching article..." not in captured.out
+        assert "Opening browser" not in captured.out
+        assert "Real article body text." in captured.out
+
+    def test_get_text_from_url_forwards_on_status(self):
+        """get_text_from_url must thread its on_status down into the cascade."""
+        from wilted import fetch
+        from wilted.fetch_cascade import ResolvedText
+
+        seen = {}
+
+        def fake_resolve(u, *, budget, on_status=None, min_words=25):
+            seen["on_status"] = on_status
+            return ResolvedText(text="body", title=None, resolved_url=u, outcome="ok", tier_used="trafilatura")
+
+        def sink(_msg):
+            return None
+
+        with patch("wilted.fetch_cascade.resolve_article_text", side_effect=fake_resolve):
+            fetch.get_text_from_url("https://example.com/a", on_status=sink)
+
+        assert seen["on_status"] is sink, "get_text_from_url did not forward on_status"
+
+
+# ---------------------------------------------------------------------------
+# cmd_list
+# ---------------------------------------------------------------------------
+
+
+class TestCmdList:
+    def test_list_empty(self, capsys):
+        """cmd_list shows empty message for empty queue."""
+        cmd_list(_make_args())
+        assert "empty" in capsys.readouterr().out.lower()
+
+    def test_list_populated(self, capsys):
+        """cmd_list shows articles with word counts and time estimates."""
+        _add_test_article(text="Word " * 300, title="Long Article")
+        _add_test_article(text="Short text.", title="Short Article")
+        cmd_list(_make_args())
+
+        out = capsys.readouterr().out
+        assert "Long Article" in out
+        assert "Short Article" in out
+        assert "2 articles" in out
+        assert "Total:" in out
+
+
+# ---------------------------------------------------------------------------
+# cmd_remove
+# ---------------------------------------------------------------------------
+
+
+class TestCmdRemove:
+    def test_remove_valid(self, capsys):
+        """cmd_remove removes article at given 1-based index."""
+        _add_test_article(title="First")
+        _add_test_article(title="Second")
+        cmd_remove(_make_args(remove=1))
+
+        out = capsys.readouterr().out
+        assert "Removed: First" in out
+        assert len(load_queue()) == 1
+
+    def test_remove_invalid_raises(self):
+        """cmd_remove raises CLIError for out-of-range index."""
+        _add_test_article()
+        with pytest.raises(CLIError, match="Invalid index"):
+            cmd_remove(_make_args(remove=99))
+
+    def test_remove_targets_displayed_item_not_ready_only_index(self, capsys):
+        """INV-3 lock: cmd_remove deletes the item at the DISPLAYED position N,
+        resolving its id from load_queue() — the same query cmd_list shows —
+        never a positional index into the narrower ready-only query.
+
+        Divergence construction: load_queue() surfaces both 'ready' and
+        'selected'/article items ordered by discovered_at, but the legacy
+        remove_article(index) indexes a 'ready'-ONLY query. We place a 'selected'
+        article with an EARLIER discovered_at so it occupies display position 1,
+        while the only 'ready' item occupies ready-only index 0. cmd_remove(1)
+        must delete the displayed item (the selected one).
+
+        Pre-fix (remove_article(N-1)) this FAILS: index 0 of the ready-only query
+        is the 'ready' article, so the wrong (non-displayed) item is destroyed —
+        exactly the permanent data loss INV-3 forbids.
+        """
+        from wilted.db import Item, now_utc
+
+        # 'ready' article added "now" (later timestamp).
+        ready_entry = _add_test_article(title="Ready Article")
+
+        # 'selected' article with an EARLIER discovered_at → sorts first in
+        # load_queue() (display position 1) but is invisible to the ready-only
+        # query that legacy remove_article() indexes.
+        earlier = "2000-01-01T00:00:00Z"
+        selected = Item.create(
+            guid="inv3-selected-earlier",
+            title="Selected Article",
+            discovered_at=earlier,
+            item_type="article",
+            status="selected",
+            status_changed_at=now_utc(),
+            word_count=5,
+        )
+
+        queue = load_queue()
+        # Sanity: the DISPLAYED position 1 is the selected item; the ready-only
+        # index 0 is a DIFFERENT item — this is the scope divergence INV-3 guards.
+        assert queue[0]["id"] == selected.id
+        assert queue[0]["id"] != ready_entry["id"]
+
+        cmd_remove(_make_args(remove=1))
+
+        out = capsys.readouterr().out
+        assert "Removed: Selected Article" in out
+
+        # The displayed item (selected) is gone; the ready item — which the buggy
+        # ready-only index would have destroyed — survives.
+        remaining_ids = {e["id"] for e in load_queue()}
+        assert selected.id not in remaining_ids
+        assert ready_entry["id"] in remaining_ids
+
+
+# ---------------------------------------------------------------------------
+# cmd_clear
+# ---------------------------------------------------------------------------
+
+
+class TestCmdClear:
+    def test_clear_empty(self, capsys):
+        """cmd_clear with empty queue shows appropriate message."""
+        cmd_clear(_make_args())
+        assert "already empty" in capsys.readouterr().out.lower()
+
+    def test_clear_populated(self, capsys):
+        """cmd_clear removes all articles."""
+        _add_test_article()
+        _add_test_article()
+        cmd_clear(_make_args())
+
+        assert "Cleared 2" in capsys.readouterr().out
+        assert load_queue() == []
+
+
+# ---------------------------------------------------------------------------
+# cmd_play
+# ---------------------------------------------------------------------------
+
+
+class TestCmdDiscover:
+    def test_reports_discovered_and_errors(self, capsys, monkeypatch):
+        monkeypatch.setattr(
+            "wilted.pipeline_submit.run_discover_via_runner",
+            lambda **kwargs: {"discovered": 3, "feeds_polled": 2, "errors": 1, "unknown": 0},
+        )
+        cmd_discover([])
+        out = capsys.readouterr().out
+        assert "3 new items from 2 feeds" in out
+        assert "1 feed(s) had errors" in out
+        assert "did not finish draining" not in out
+
+    def test_surfaces_unknown_feeds_instead_of_silent_zero(self, capsys, monkeypatch):
+        # Regression for the "0 new items" misreport: when feeds don't drain to a
+        # terminal state, run_discover_via_runner tallies them under `unknown`
+        # rather than as zero, and cmd_discover must surface that to the user.
+        monkeypatch.setattr(
+            "wilted.pipeline_submit.run_discover_via_runner",
+            lambda **kwargs: {"discovered": 0, "feeds_polled": 2, "errors": 0, "unknown": 2},
+        )
+        cmd_discover([])
+        out = capsys.readouterr().out
+        assert "2 feed(s) did not finish draining" in out
+
+
+class TestCmdPlay:
+    def test_play_empty(self, capsys):
+        """cmd_play with empty queue shows appropriate message."""
+        args = _make_args(play=True)
+        with (
+            patch("wilted.cli.require_speech_ready") as mock_ready,
+            patch("wilted.cli._play_text", return_value=True),
+        ):
+            cmd_play(args)
+        mock_ready.assert_not_called()
+        assert "empty" in capsys.readouterr().out.lower()
+
+    def test_play_articles(self, capsys):
+        """cmd_play plays articles and marks them completed."""
+        _add_test_article(title="Article One")
+        _add_test_article(title="Article Two")
+        args = _make_args(play=True)
+        with (
+            patch("wilted.cli.require_speech_ready") as mock_ready,
+            patch("wilted.cli._play_text", return_value=True),
+        ):
+            cmd_play(args)
+
+        mock_ready.assert_called_once_with()
+        out = capsys.readouterr().out
+        assert "Article One" in out
+        assert "Article Two" in out
+        assert "Finished 2" in out
+        assert load_queue() == []
+
+    def test_play_does_not_mark_completed_when_playback_raises(self):
+        """A hard mid-play failure must not mark the article completed.
+
+        BUG #3 close-out (verify-and-close): the truncated-ffmpeg-decode
+        false-completion scenario is structurally unreachable on the CLI path —
+        ``cmd_play`` synthesizes fresh TTS via the daemon (``_play_text`` ->
+        ``engine.play_article``) and never calls ``AudioEngine.play_file``. This
+        locks the adjacent property that a daemon failure mid-stream (the engine
+        re-raises as ``RuntimeError``) propagates out of ``cmd_play`` and
+        ``mark_completed`` is never reached, so a failed playback cannot silently
+        complete an article. ``cmd_next`` shares the same ``finished =
+        _play_text(...)`` -> ``mark_completed`` gate.
+        """
+        _add_test_article(title="Article One")
+        args = _make_args(play=True)
+        with (
+            patch("wilted.cli.require_speech_ready"),
+            patch("wilted.cli._play_text", side_effect=RuntimeError("daemon died mid-stream")),
+            patch("wilted.cli.mark_completed") as mock_mark,
+            pytest.raises(RuntimeError, match="daemon died mid-stream"),
+        ):
+            cmd_play(args)
+
+        mock_mark.assert_not_called()
+        assert len(load_queue()) == 1  # article stays queued, not completed
+
+    def test_play_probes_once_for_multi_article_queue(self, capsys):
+        """cmd_play probes daemon readiness once before the first playable item."""
+        _add_test_article(title="Article One")
+        _add_test_article(title="Article Two")
+        args = _make_args(play=True)
+        with (
+            patch("wilted.cli.require_speech_ready") as mock_ready,
+            patch("wilted.cli._play_text", return_value=True),
+        ):
+            cmd_play(args)
+
+        assert mock_ready.call_count == 1
+
+    def test_play_all_missing_cache_never_probes(self, capsys):
+        """cmd_play skips every missing cache file without probing speech readiness."""
+        import wilted
+
+        entry_one = _add_test_article(title="Missing One")
+        entry_two = _add_test_article(title="Missing Two")
+        (wilted.ARTICLES_DIR / entry_one["file"]).unlink()
+        (wilted.ARTICLES_DIR / entry_two["file"]).unlink()
+
+        args = _make_args(play=True)
+        with patch("wilted.cli.require_speech_ready") as mock_ready:
+            cmd_play(args)
+
+        mock_ready.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Skipping #1: cached file missing" in out
+        assert "Skipping #2: cached file missing" in out
+        assert len(load_queue()) == 2
+
+    def test_play_skips_missing_then_probes_once(self, capsys):
+        """cmd_play probes readiness once at the first playable item after skips."""
+        import wilted
+
+        missing = _add_test_article(title="Missing Article")
+        _add_test_article(title="Playable Article")
+        (wilted.ARTICLES_DIR / missing["file"]).unlink()
+
+        args = _make_args(play=True)
+        with (
+            patch("wilted.cli.require_speech_ready") as mock_ready,
+            patch("wilted.cli._play_text", return_value=True),
+        ):
+            cmd_play(args)
+
+        mock_ready.assert_called_once_with()
+        out = capsys.readouterr().out
+        assert "Skipping #1: cached file missing" in out
+        assert "Playable Article" in out
+        assert "Finished 1" in out
+        remaining = load_queue()
+        assert len(remaining) == 1
+        assert remaining[0]["title"] == "Missing Article"
+
+    def test_play_daemon_down_raises_loudly(self):
+        """cmd_play aborts at the speech boundary when the daemon is unavailable."""
+        _add_test_article(title="First Article")
+        with (
+            patch(
+                "wilted.cli.require_speech_ready",
+                side_effect=client.DaemonUnavailable("speech daemon unavailable"),
+            ),
+            patch("wilted.cli._play_text") as mock_play_text,
+        ):
+            with pytest.raises(client.DaemonUnavailable, match="speech daemon unavailable"):
+                cmd_play(_make_args(play=True))
+
+        mock_play_text.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# cmd_next
+# ---------------------------------------------------------------------------
+
+
+class TestCmdNext:
+    def test_next_empty(self, capsys):
+        """cmd_next with empty queue shows appropriate message."""
+        with patch("wilted.cli.require_speech_ready") as mock_ready:
+            cmd_next(_make_args())
+        mock_ready.assert_not_called()
+        assert "empty" in capsys.readouterr().out.lower()
+
+    def test_next_plays_first(self, capsys):
+        """cmd_next plays the first article and marks it completed."""
+        _add_test_article(title="First Article")
+        _add_test_article(title="Second Article")
+        args = _make_args()
+        with (
+            patch("wilted.cli.require_speech_ready") as mock_ready,
+            patch("wilted.cli._play_text", return_value=True),
+        ):
+            cmd_next(args)
+
+        mock_ready.assert_called_once_with()
+        out = capsys.readouterr().out
+        assert "First Article" in out
+        assert "1 article(s) remaining" in out
+        assert len(load_queue()) == 1
+
+    def test_next_daemon_down_raises_loudly(self):
+        """cmd_next aborts at the speech boundary when the daemon is unavailable."""
+        _add_test_article(title="First Article")
+        with (
+            patch(
+                "wilted.cli.require_speech_ready",
+                side_effect=client.DaemonUnavailable("speech daemon unavailable"),
+            ),
+            patch("wilted.cli._play_text") as mock_play_text,
+        ):
+            with pytest.raises(client.DaemonUnavailable, match="speech daemon unavailable"):
+                cmd_next(_make_args())
+
+        mock_play_text.assert_not_called()
+
+    def test_next_missing_file_raises(self, tmp_path):
+        """cmd_next raises CLIError when cached file is missing."""
+        import wilted
+
+        entry = _add_test_article(title="Missing File Article")
+        # Delete the cached file
+        article_path = wilted.ARTICLES_DIR / entry["file"]
+        article_path.unlink()
+
+        with pytest.raises(CLIError, match="Cached file missing"):
+            cmd_next(_make_args())
+
+
+# ---------------------------------------------------------------------------
+# IA-1: lease-awareness guard (cmd_remove / cmd_play / cmd_next)
+# ---------------------------------------------------------------------------
+
+
+class TestLeaseGuard:
+    """cmd_remove/cmd_play/cmd_next refuse (never mutate) while a live controller lease is held.
+
+    MVP scope (IA-1) is refuse-when-held, not proxy-through-controller: when
+    ``wilted.cli.is_station_active()`` reports a live holder, each of these
+    three commands must print a one-line refusal and return WITHOUT loading/
+    mutating the queue or touching playback, then behave byte-for-byte as
+    before once no holder is live.
+    """
+
+    def test_remove_refuses_when_lease_held(self, capsys):
+        """cmd_remove prints the refusal and performs no mutation when the probe reports a live holder."""
+        _add_test_article(title="Untouched")
+
+        with patch("wilted.cli.is_station_active", return_value=True):
+            cmd_remove(_make_args(remove=1))
+
+        out = capsys.readouterr().out
+        assert "station is active" in out.lower()
+        queue = load_queue()
+        assert len(queue) == 1
+        assert queue[0]["title"] == "Untouched"
+
+    def test_play_refuses_when_lease_held(self, capsys):
+        """cmd_play prints the refusal and never calls _play_text when the probe reports a live holder."""
+        _add_test_article(title="Article One")
+        args = _make_args(play=True)
+
+        with (
+            patch("wilted.cli.is_station_active", return_value=True),
+            patch("wilted.cli._play_text") as mock_play_text,
+        ):
+            cmd_play(args)
+
+        out = capsys.readouterr().out
+        assert "station is active" in out.lower()
+        mock_play_text.assert_not_called()
+        assert len(load_queue()) == 1  # nothing marked completed/removed
+
+    def test_next_refuses_when_lease_held(self, capsys):
+        """cmd_next prints the refusal and never calls _play_text when the probe reports a live holder."""
+        _add_test_article(title="First Article")
+        args = _make_args()
+
+        with (
+            patch("wilted.cli.is_station_active", return_value=True),
+            patch("wilted.cli._play_text") as mock_play_text,
+        ):
+            cmd_next(args)
+
+        out = capsys.readouterr().out
+        assert "station is active" in out.lower()
+        mock_play_text.assert_not_called()
+        assert len(load_queue()) == 1
+
+    def test_remove_proceeds_when_probe_explicitly_reports_no_holder(self, capsys):
+        """Sanity check: with the probe explicitly False, cmd_remove's happy path is unchanged."""
+        _add_test_article(title="Only Article")
+
+        with patch("wilted.cli.is_station_active", return_value=False):
+            cmd_remove(_make_args(remove=1))
+
+        assert "Removed: Only Article" in capsys.readouterr().out
+        assert load_queue() == []
+
+    def test_commands_refuse_while_a_real_controller_lease_is_held(self, capsys):
+        """End-to-end: a REAL ``ControllerLeaseManager.acquire()`` (not a monkeypatch) trips the guard.
+
+        Exercises the actual wiring between ``wilted.cli.is_station_active``
+        and the flock-based probe in ``wilted.station_runtime.lease``, not
+        just the patched symbol used by the tests above -- proves the guard
+        also fires against a real controller (e.g. the TUI) holding the
+        lease. After ``release()``, all three commands proceed normally
+        again, confirming the guard is a no-op once no holder is live.
+        """
+        from wilted.station_runtime.lease import ControllerLeaseManager
+
+        _add_test_article(title="Guarded Article")
+        manager = ControllerLeaseManager("test-controller")
+        manager.acquire()
+        try:
+            with patch("wilted.cli._play_text") as mock_play_text:
+                cmd_remove(_make_args(remove=1))
+                cmd_play(_make_args(play=True))
+                cmd_next(_make_args())
+            mock_play_text.assert_not_called()
+        finally:
+            manager.release()
+
+        out = capsys.readouterr().out
+        assert out.lower().count("station is active") == 3
+        queue = load_queue()
+        assert len(queue) == 1
+        assert queue[0]["title"] == "Guarded Article"
+
+        # Lease released -> the guard is a no-op again, same as pre-IA-1 behavior.
+        with patch("wilted.cli._play_text", return_value=True):
+            cmd_remove(_make_args(remove=1))
+
+        assert "Removed: Guarded Article" in capsys.readouterr().out
+        assert load_queue() == []
+
+
+# ---------------------------------------------------------------------------
+# cmd_direct
+# ---------------------------------------------------------------------------
+
+
+class TestCmdDirect:
+    def test_direct_url(self, capsys):
+        """cmd_direct with URL input fetches and plays."""
+        args = _make_args(input="https://example.com/test")
+        with (
+            patch("wilted.cli.get_text_from_url", return_value=("Test article text.", "https://example.com/test")),
+            patch("wilted.cli.require_speech_ready") as mock_ready,
+            patch("wilted.cli._play_text", return_value=True),
+        ):
+            cmd_direct(args)
+        mock_ready.assert_called_once_with()
+
+    def test_direct_file(self, tmp_path, capsys):
+        """cmd_direct with file path reads and plays."""
+        test_file = tmp_path / "article.txt"
+        test_file.write_text("File article content here.")
+        args = _make_args(input=str(test_file))
+        with (
+            patch("wilted.cli.require_speech_ready") as mock_ready,
+            patch("wilted.cli._play_text", return_value=True),
+        ):
+            cmd_direct(args)
+        mock_ready.assert_called_once_with()
+
+    def test_direct_clean(self, capsys):
+        """cmd_direct with --clean prints cleaned text, no audio."""
+        args = _make_args(input="https://example.com/test", clean=True)
+        with (
+            patch("wilted.cli.get_text_from_url", return_value=("Raw text content.", "https://example.com/test")),
+            patch("wilted.cli.require_speech_ready") as mock_ready,
+        ):
+            cmd_direct(args)
+
+        mock_ready.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Raw text content" in out
+
+    def test_direct_daemon_down_raises_loudly(self):
+        """cmd_direct aborts at the speech boundary when the daemon is unavailable."""
+        args = _make_args(input="https://example.com/test")
+        with (
+            patch("wilted.cli.get_text_from_url", return_value=("Test article text.", "https://example.com/test")),
+            patch(
+                "wilted.cli.require_speech_ready",
+                side_effect=client.DaemonUnavailable("speech daemon unavailable"),
+            ),
+            patch("wilted.cli._play_text") as mock_play_text,
+        ):
+            with pytest.raises(client.DaemonUnavailable, match="speech daemon unavailable"):
+                cmd_direct(args)
+
+        mock_play_text.assert_not_called()
+
+    def test_direct_no_text_raises(self):
+        """cmd_direct raises CLIError when no text found."""
+        args = _make_args()
+        with (
+            patch("wilted.cli.get_text_from_clipboard", return_value=""),
+            patch("sys.stdin") as mock_stdin,
+            pytest.raises(CLIError, match="No text found"),
+        ):
+            mock_stdin.isatty.return_value = True
+            cmd_direct(args)
+
+
+# ---------------------------------------------------------------------------
+# _play_text
+# ---------------------------------------------------------------------------
+
+
+class TestPlayText:
+    def test_playback_mode(self, capsys):
+        """_play_text in playback mode uses AudioEngine.play_article."""
+        args = _make_args()
+        mock_engine = MagicMock()
+        with patch("wilted.engine.AudioEngine", return_value=mock_engine):
+            result = _play_text("Hello world test text.", args)
+
+        assert result is True
+        mock_engine.play_article.assert_called_once()
+        assert "Done" in capsys.readouterr().out
+
+    def test_save_mode(self, tmp_path, capsys):
+        """_play_text in save mode generates audio and writes WAV."""
+        import numpy as np
+
+        save_path = str(tmp_path / "output.wav")
+        args = _make_args(save=save_path)
+        mock_engine = MagicMock()
+        mock_engine.generate_audio.return_value = np.zeros(1024, dtype=np.float32)
+        mock_engine.sample_rate = 24000
+
+        with (
+            patch("wilted.engine.AudioEngine", return_value=mock_engine),
+            patch("mlx_audio.audio_io.write"),
+        ):
+            result = _play_text("Hello world test text.", args)
+
+        assert result is True
+        mock_engine.generate_audio.assert_called()
+        assert "Saved" in capsys.readouterr().out
+
+    def test_playback_keyboard_interrupt(self, capsys):
+        """_play_text returns False on KeyboardInterrupt and calls stop."""
+        args = _make_args()
+        mock_engine = MagicMock()
+        mock_engine.play_article.side_effect = KeyboardInterrupt
+        with patch("wilted.engine.AudioEngine", return_value=mock_engine):
+            result = _play_text("Hello world test text.", args)
+
+        assert result is False
+        mock_engine.stop.assert_called_once()
+        assert "Stopped" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Argparse / run_cli dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestArgparse:
+    def test_list_voices(self, capsys):
+        """--list-voices prints available voices."""
+        run_cli(["--list-voices"])
+        out = capsys.readouterr().out
+        assert "af_heart" in out
+        assert "American" in out
+
+    def test_version(self, capsys):
+        """--version prints version string."""
+        run_cli(["--version"])
+        out = capsys.readouterr().out
+        assert "wilted" in out
+        assert "0.2.0" in out
+
+    def test_list_dispatch(self, capsys):
+        """--list dispatches to cmd_list."""
+        run_cli(["--list"])
+        assert "empty" in capsys.readouterr().out.lower()
+
+    def test_clear_dispatch(self, capsys):
+        """--clear dispatches to cmd_clear."""
+        run_cli(["--clear"])
+        assert "empty" in capsys.readouterr().out.lower()
+
+    def test_cli_error_exits(self):
+        """CLIError is caught and converted to sys.exit(1)."""
+        with (
+            patch("wilted.cli.cmd_add", side_effect=CLIError("test error")),
+            pytest.raises(SystemExit, match="1"),
+        ):
+            run_cli(["--add"])
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 subcommand dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestFeedSubcommand:
+    def test_feed_add(self, capsys):
+        """wilted feed add creates a feed."""
+        run_cli(["feed", "add", "https://example.com/feed.xml", "--type", "article"])
+        out = capsys.readouterr().out
+        assert "Added feed #1" in out
+
+    def test_feed_list_empty(self, capsys):
+        """wilted feed list with no feeds."""
+        run_cli(["feed", "list"])
+        out = capsys.readouterr().out
+        assert "No feeds" in out
+
+    def test_feed_list_populated(self, capsys):
+        """wilted feed list shows feeds."""
+        run_cli(["feed", "add", "https://example.com/feed.xml"])
+        run_cli(["feed", "list"])
+        out = capsys.readouterr().out
+        assert "example.com" in out
+
+    def test_feed_list_shows_bws_reference_not_resolved_url(self, monkeypatch, capsys):
+        private_url = "https://private.example/credential-material.xml"
+        monkeypatch.setenv("WILTED_FEED_PRIVATE", private_url)
+        run_cli(["feed", "add", "bws:WILTED_FEED_PRIVATE", "--type", "podcast", "--no-chain"])
+        run_cli(["feed", "list"])
+        out = capsys.readouterr().out
+        assert "bws:WILTED_FEED_PRIVATE" in out
+        assert private_url not in out
+
+    def test_feed_remove(self, capsys):
+        """wilted feed remove deletes a feed."""
+        run_cli(["feed", "add", "https://example.com/feed.xml"])
+        run_cli(["feed", "remove", "1"])
+        out = capsys.readouterr().out
+        assert "Removed feed #1" in out
+
+    def test_feed_remove_nonexistent_exits(self):
+        """wilted feed remove with bad ID exits 1."""
+        with pytest.raises(SystemExit):
+            run_cli(["feed", "remove", "999"])
+
+    def test_feed_no_action_exits(self):
+        """wilted feed with no action exits 1."""
+        with pytest.raises(SystemExit):
+            run_cli(["feed"])
+
+
+class TestCmdPrepareSummary:
+    """`wilted prepare` names isolated submit failures on its summary line (INV-6)."""
+
+    def test_submission_errors_surfaced(self, capsys):
+        with patch(
+            "wilted.pipeline_submit.run_prepare_via_runner",
+            return_value={"prepared": 1, "errors": 0, "skipped": 0, "submission_errors": 2},
+        ):
+            run_cli(["prepare"])
+        out = capsys.readouterr().out
+        assert "Prepare complete: 1 prepared, 0 errors, 2 failed to submit" in out
+
+    def test_clean_run_omits_submit_line(self, capsys):
+        with patch(
+            "wilted.pipeline_submit.run_prepare_via_runner",
+            return_value={"prepared": 3, "errors": 0, "skipped": 0, "submission_errors": 0},
+        ):
+            run_cli(["prepare"])
+        out = capsys.readouterr().out
+        assert "failed to submit" not in out
+        assert "Prepare complete: 3 prepared, 0 errors" in out
+
+
+class TestFeedAddChainPrompt:
+    """`wilted feed add` offers to chain into discover and prepare."""
+
+    def test_yes_flag_skips_prompts_and_chains_both(self, capsys):
+        with (
+            patch("wilted.discover.run_discover", return_value={"discovered": 3, "feeds_polled": 1, "errors": 0}) as rd,
+            patch(
+                "wilted.pipeline_submit.run_prepare_via_runner", return_value={"prepared": 3, "errors": 0, "skipped": 0}
+            ) as rp,
+        ):
+            run_cli(["feed", "add", "https://example.com/feed.xml", "--type", "podcast", "--yes"])
+        rd.assert_called_once()
+        rp.assert_called_once()
+        out = capsys.readouterr().out
+        assert "Discovered 3" in out
+        assert "Prepared 3" in out
+
+    def test_no_chain_flag_suppresses_prompts(self, capsys):
+        with (
+            patch("wilted.discover.run_discover") as rd,
+            patch("wilted.pipeline_submit.run_prepare_via_runner") as rp,
+            patch("sys.stdin.isatty", return_value=True),
+        ):
+            run_cli(["feed", "add", "https://example.com/feed.xml", "--no-chain"])
+        rd.assert_not_called()
+        rp.assert_not_called()
+
+    def test_non_tty_skips_prompts_silently(self, capsys):
+        with (
+            patch("wilted.discover.run_discover") as rd,
+            patch("wilted.pipeline_submit.run_prepare_via_runner") as rp,
+            patch("sys.stdin.isatty", return_value=False),
+        ):
+            run_cli(["feed", "add", "https://example.com/feed.xml"])
+        rd.assert_not_called()
+        rp.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Added feed #1" in out
+        assert "wilted discover" in out  # hint for non-interactive users
+
+    def test_tty_prompts_yes_runs_both(self, capsys):
+        with (
+            patch("wilted.discover.run_discover", return_value={"discovered": 5, "feeds_polled": 1, "errors": 0}) as rd,
+            patch(
+                "wilted.pipeline_submit.run_prepare_via_runner", return_value={"prepared": 5, "errors": 0, "skipped": 0}
+            ) as rp,
+            patch("sys.stdin.isatty", return_value=True),
+            patch("builtins.input", side_effect=["y", "y"]),
+        ):
+            run_cli(["feed", "add", "https://example.com/feed.xml"])
+        rd.assert_called_once()
+        rp.assert_called_once()
+
+    def test_tty_empty_response_defaults_to_yes(self, capsys):
+        with (
+            patch("wilted.discover.run_discover", return_value={"discovered": 1, "feeds_polled": 1, "errors": 0}) as rd,
+            patch(
+                "wilted.pipeline_submit.run_prepare_via_runner", return_value={"prepared": 1, "errors": 0, "skipped": 0}
+            ) as rp,
+            patch("sys.stdin.isatty", return_value=True),
+            patch("builtins.input", side_effect=["", ""]),
+        ):
+            run_cli(["feed", "add", "https://example.com/feed.xml"])
+        rd.assert_called_once()
+        rp.assert_called_once()
+
+    def test_tty_no_to_discover_skips_both(self, capsys):
+        with (
+            patch("wilted.discover.run_discover") as rd,
+            patch("wilted.pipeline_submit.run_prepare_via_runner") as rp,
+            patch("sys.stdin.isatty", return_value=True),
+            patch("builtins.input", side_effect=["n"]),
+        ):
+            run_cli(["feed", "add", "https://example.com/feed.xml"])
+        rd.assert_not_called()
+        rp.assert_not_called()
+
+    def test_tty_yes_to_discover_no_to_prepare(self, capsys):
+        with (
+            patch("wilted.discover.run_discover", return_value={"discovered": 2, "feeds_polled": 1, "errors": 0}) as rd,
+            patch("wilted.pipeline_submit.run_prepare_via_runner") as rp,
+            patch("sys.stdin.isatty", return_value=True),
+            patch("builtins.input", side_effect=["y", "n"]),
+        ):
+            run_cli(["feed", "add", "https://example.com/feed.xml"])
+        rd.assert_called_once()
+        rp.assert_not_called()
+
+    def test_yes_and_no_chain_together_no_chain_wins(self, capsys):
+        """--yes --no-chain: no_chain takes priority; nothing runs."""
+        with (
+            patch("wilted.discover.run_discover") as rd,
+            patch("wilted.pipeline_submit.run_prepare_via_runner") as rp,
+        ):
+            _maybe_chain_discover_prepare(yes=True, no_chain=True)
+        rd.assert_not_called()
+        rp.assert_not_called()
+
+    def test_yes_flag_output_shows_errors_and_skipped(self, capsys):
+        """--yes chains both; output includes errors and skipped counts."""
+        with (
+            patch("wilted.discover.run_discover", return_value={"discovered": 1, "feeds_polled": 1, "errors": 0}),
+            patch(
+                "wilted.pipeline_submit.run_prepare_via_runner", return_value={"prepared": 0, "errors": 2, "skipped": 1}
+            ),
+        ):
+            _maybe_chain_discover_prepare(yes=True, no_chain=False)
+        out = capsys.readouterr().out
+        assert "2 errors" in out
+        assert "1 skipped" in out
+
+    def test_non_tty_hint_message_content(self, capsys):
+        """Non-TTY hint includes both discover and prepare commands."""
+        with patch("sys.stdin.isatty", return_value=False):
+            _maybe_chain_discover_prepare(yes=False, no_chain=False)
+        out = capsys.readouterr().out
+        assert "discover" in out
+        assert "prepare" in out
+
+
+class TestPromptYes:
+    """`_prompt_yes` — unit tests for all accepted truthy/falsy inputs."""
+
+    def test_empty_string_is_yes(self):
+        with patch("builtins.input", return_value=""):
+            assert _prompt_yes("Continue?") is True
+
+    def test_y_is_yes(self):
+        with patch("builtins.input", return_value="y"):
+            assert _prompt_yes("Continue?") is True
+
+    def test_yes_full_word_is_yes(self):
+        with patch("builtins.input", return_value="yes"):
+            assert _prompt_yes("Continue?") is True
+
+    def test_uppercase_Y_is_yes(self):
+        """Input is lowercased before comparison; 'Y' should match."""
+        with patch("builtins.input", return_value="Y"):
+            assert _prompt_yes("Continue?") is True
+
+    def test_uppercase_YES_is_yes(self):
+        with patch("builtins.input", return_value="YES"):
+            assert _prompt_yes("Continue?") is True
+
+    def test_n_is_no(self):
+        with patch("builtins.input", return_value="n"):
+            assert _prompt_yes("Continue?") is False
+
+    def test_no_full_word_is_no(self):
+        with patch("builtins.input", return_value="no"):
+            assert _prompt_yes("Continue?") is False
+
+    def test_arbitrary_string_is_no(self):
+        with patch("builtins.input", return_value="maybe"):
+            assert _prompt_yes("Continue?") is False
+
+    def test_whitespace_only_strips_to_empty_is_yes(self):
+        """Leading/trailing whitespace is stripped; spaces alone → empty → Yes."""
+        with patch("builtins.input", return_value="   "):
+            assert _prompt_yes("Continue?") is True
+
+    def test_prompt_text_appears_in_input_call(self):
+        """The question string is included in the prompt passed to input()."""
+        with patch("builtins.input", return_value="") as mock_input:
+            _prompt_yes("Shall we proceed?")
+        call_arg = mock_input.call_args[0][0]
+        assert "Shall we proceed?" in call_arg
+        assert "[Y/n]" in call_arg
+
+    def test_eof_is_no(self):
+        """Ctrl-D (EOFError) at the prompt declines instead of crashing."""
+        with patch("builtins.input", side_effect=EOFError):
+            assert _prompt_yes("Continue?") is False
+
+
+class TestKeywordSubcommand:
+    def test_keyword_add(self, capsys):
+        """wilted keyword add creates a keyword."""
+        run_cli(["keyword", "add", "kubernetes"])
+        out = capsys.readouterr().out
+        assert "Added keyword" in out
+        assert "kubernetes" in out
+
+    def test_keyword_add_with_weight(self, capsys):
+        """wilted keyword add with --weight."""
+        run_cli(["keyword", "add", "security", "--weight", "2.0"])
+        out = capsys.readouterr().out
+        assert "weight: 2.0" in out
+
+    def test_keyword_list_empty(self, capsys):
+        """wilted keyword list with no keywords."""
+        run_cli(["keyword", "list"])
+        out = capsys.readouterr().out
+        assert "No keywords" in out
+
+    def test_keyword_list_populated(self, capsys):
+        """wilted keyword list shows keywords."""
+        run_cli(["keyword", "add", "python"])
+        run_cli(["keyword", "list"])
+        out = capsys.readouterr().out
+        assert "python" in out
+
+    def test_keyword_remove(self, capsys):
+        """wilted keyword remove deletes a keyword."""
+        run_cli(["keyword", "add", "remove-me"])
+        run_cli(["keyword", "remove", "remove-me"])
+        out = capsys.readouterr().out
+        assert "Removed keyword" in out
+
+    def test_keyword_no_action_exits(self):
+        """wilted keyword with no action exits 1."""
+        with pytest.raises(SystemExit):
+            run_cli(["keyword"])
+
+
+class TestPipelineSubcommands:
+    def test_discover_dispatch(self, monkeypatch, capsys):
+        """wilted discover dispatches to run_discover_via_runner."""
+        monkeypatch.setattr(
+            "wilted.pipeline_submit.run_discover_via_runner",
+            lambda **kwargs: {"discovered": 3, "feeds_polled": 2, "errors": 0},
+        )
+        run_cli(["discover"])
+        out = capsys.readouterr().out
+        assert "3 new items" in out
+
+    def test_classify_dispatch(self, monkeypatch, capsys):
+        """wilted classify dispatches to run_classify_via_runner."""
+        monkeypatch.setattr(
+            "wilted.pipeline_submit.run_classify_via_runner",
+            lambda **kwargs: {"classified": 5, "errors": 0, "total": 5},
+        )
+        run_cli(["classify"])
+        out = capsys.readouterr().out
+        assert "5 items classified" in out
+
+    def test_stub_subcmds_still_exit(self):
+        """playlist with no subcommand exits 1 (usage error)."""
+        with pytest.raises(SystemExit):
+            run_cli(["playlist"])
+
+
+class TestPlaylistSubcommand:
+    def test_cmd_playlist_list(self, capsys):
+        """wilted playlist list shows default playlists after ensure_default_playlists."""
+        from wilted.playlists import ensure_default_playlists
+
+        ensure_default_playlists()
+        cmd_playlist(["list"])
+        out = capsys.readouterr().out
+        assert "All" in out
+        assert "Work" in out
+
+    def test_cmd_playlist_create(self, capsys):
+        """wilted playlist create <name> creates a static playlist."""
+        cmd_playlist(["create", "My List"])
+        out = capsys.readouterr().out
+        assert "Created" in out
+        assert "My List" in out
+
+    def test_cmd_playlist_delete(self, capsys):
+        """wilted playlist delete <name> removes a static playlist."""
+        cmd_playlist(["create", "Temp List"])
+        capsys.readouterr()  # discard create output
+        cmd_playlist(["delete", "Temp List"])
+        out = capsys.readouterr().out
+        assert "Deleted" in out
+        assert "Temp List" in out
+
+    def test_cmd_playlist_add_item(self, capsys):
+        """wilted playlist add <name> <item_id> adds an item to a static playlist."""
+        from datetime import UTC, datetime
+
+        from wilted.db import Item
+
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        item = Item.create(
+            guid=f"test-playlist-add-{now}",
+            title="Playlist Test Item",
+            discovered_at=now,
+            item_type="article",
+            status="ready",
+            status_changed_at=now,
+        )
+        cmd_playlist(["create", "Test Static"])
+        capsys.readouterr()
+        cmd_playlist(["add", "Test Static", str(item.id)])
+        out = capsys.readouterr().out
+        assert "Added" in out
+        assert str(item.id) in out
+
+    def test_cmd_playlist_no_args_exits(self):
+        """wilted playlist with no args exits 1."""
+        with pytest.raises(SystemExit):
+            cmd_playlist([])
+
+    def test_cmd_playlist_unknown_action_exits(self):
+        """wilted playlist with unknown action exits 1."""
+        with pytest.raises(SystemExit):
+            cmd_playlist(["bogus"])
+
+    def test_cmd_playlist_dispatch_via_run_cli(self, capsys):
+        """run_cli(['playlist', 'list']) dispatches to cmd_playlist."""
+        from wilted.playlists import ensure_default_playlists
+
+        ensure_default_playlists()
+        run_cli(["playlist", "list"])
+        out = capsys.readouterr().out
+        assert "All" in out
+
+
+class TestMainEntrypoint:
+    def test_main_non_speech_startup_skips_daemon_readiness(self):
+        """Non-speech CLI entry points must not probe the speech daemon."""
+        calls: list[str] = []
+
+        with (
+            patch("wilted.cli.validate_project_root", side_effect=lambda: calls.append("validate")),
+            patch("wilted.cli.require_speech_ready", side_effect=lambda: calls.append("ready")),
+            patch("wilted.db.run_migrations", side_effect=lambda _path: calls.append("migrate")),
+            patch("wilted.playlists.ensure_default_playlists", side_effect=lambda: calls.append("playlists")),
+            patch("wilted.cli.run_cli", side_effect=lambda: calls.append("dispatch")),
+            patch("sys.argv", ["wilted", "--version"]),
+        ):
+            main()
+
+        assert calls == ["validate", "migrate", "playlists", "dispatch"]
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["wilted", "--version"],
+            ["wilted", "--help"],
+            ["wilted", "feed", "add", "--help"],
+            ["wilted", "--clean", "article.txt"],
+            ["wilted", "list"],
+        ],
+    )
+    def test_non_speech_commands_never_probe_daemon(self, argv, tmp_path):
+        """Management, help, version, and clean-only paths stay daemon-independent."""
+        article = tmp_path / "article.txt"
+        article.write_text("Preview text only.")
+        resolved_argv = [str(article) if arg == "article.txt" else arg for arg in argv]
+
+        with patch("wilted.cli.require_speech_ready") as mock_ready:
+            with patch("sys.argv", resolved_argv):
+                if "--help" in argv[1:]:
+                    with pytest.raises(SystemExit) as exc_info:
+                        main()
+                    assert exc_info.value.code == 0
+                else:
+                    main()
+
+        mock_ready.assert_not_called()
+
+    def test_main_cli_mode_dispatches_without_tqdm_preinit(self):
+        """CLI mode should dispatch directly to run_cli."""
+        with (
+            patch("wilted.cli.run_cli") as mock_run_cli,
+            patch("sys.argv", ["wilted", "--version"]),
+        ):
+            main()
+
+        mock_run_cli.assert_called_once_with()
+
+    def test_main_tui_mode_probes_daemon_before_launch(self):
+        """No-arg TUI entry probes speech readiness once before launch."""
+        mock_tqdm = MagicMock()
+        mock_app = MagicMock()
+        mock_app_cls = MagicMock(return_value=mock_app)
+        sentinel_monitor = object()
+
+        with (
+            patch("sys.argv", ["wilted"]),
+            patch("wilted.cli.require_speech_ready") as mock_ready,
+            patch("wilted.cli._weather_monitor_for_launch", return_value=sentinel_monitor),
+            patch.dict(
+                "sys.modules",
+                {
+                    "tqdm": types.SimpleNamespace(tqdm=mock_tqdm),
+                    "wilted.tui": types.SimpleNamespace(WiltedApp=mock_app_cls),
+                },
+            ),
+        ):
+            main()
+
+        mock_ready.assert_called_once_with()
+        # tqdm's lock is now warmed via RuntimeBootstrap.init_tqdm_lock() (which
+        # imports tqdm and calls get_lock() on the main thread), and that same
+        # bootstrap is threaded into the app for its worker-thread drain.
+        mock_tqdm.get_lock.assert_called_once_with()
+        mock_app_cls.assert_called_once_with(
+            weather_monitor=sentinel_monitor,
+            bootstrap=ANY,
+        )
+        mock_app.run.assert_called_once_with()
+
+    def test_main_tui_mode_daemon_down_raises_loudly(self):
+        """No-arg TUI must abort loudly when speech readiness fails."""
+        with (
+            patch(
+                "wilted.cli.require_speech_ready",
+                side_effect=client.DaemonUnavailable(
+                    "speech daemon is not available (no broker at socket); "
+                    "run `make install-daemon` to install and start it"
+                ),
+            ),
+            patch("wilted.cli._launch_tui") as mock_launch_tui,
+            patch("sys.argv", ["wilted"]),
+        ):
+            with pytest.raises(client.DaemonUnavailable, match="make install-daemon"):
+                main()
+
+        mock_launch_tui.assert_not_called()
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_run_module_invokes_main(self, capsys):
+        """INV-6 C1 lock: `python -m wilted.cli <args>` must actually run main().
+
+        scripts/wilted-nightly.sh invokes `python -m wilted.cli`. Without an
+        `if __name__ == "__main__": main()` guard the module imports, defines
+        main(), and exits 0 having executed NOTHING — the nightly job logged
+        "completed successfully" every night while doing no work (C1).
+
+        We drive that exact entrypoint hermetically via runpy with run_name
+        "__main__" (equivalent to `python -m wilted.cli`) and argv ["wilted",
+        "list"]. main() runs the full chain (setup_logging → validate_project_root
+        → run_migrations → ensure_default_playlists → run_cli) against the
+        isolated_data tmp db, whose queue is empty, so cmd_list prints the
+        empty-queue message — an observable side effect only produced if
+        main() actually ran.
+
+        Pre-fix (no guard) this FAILS: run_module executes the module body but
+        nothing calls main(), so no output is produced and the assertion trips.
+        """
+        import runpy
+
+        with patch.object(sys, "argv", ["wilted", "list"]):
+            try:
+                runpy.run_module("wilted.cli", run_name="__main__", alter_sys=True)
+            except SystemExit:
+                # main() may sys.exit on some paths; a clean list does not, but
+                # tolerate it so the assertion below is the real gate.
+                pass
+
+        out = capsys.readouterr().out
+        assert "empty" in out.lower()
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_run_module_version_succeeds_when_daemon_down(self):
+        """`python -m wilted.cli --version` stays truthful without daemon coupling."""
+        import runpy
+
+        with patch.object(sys, "argv", ["wilted", "--version"]):
+            runpy.run_module("wilted.cli", run_name="__main__", alter_sys=True)
+
+
+class TestRequireSpeechReady:
+    def test_helper_delegates_to_client_with_probe(self):
+        """The shared speech gate exercises a real daemon probe."""
+        with patch("wilted.speech_ready.client.require_daemon_ready") as mock_ready:
+            require_speech_ready()
+
+        mock_ready.assert_called_once_with(probe=True)
+
+
+class TestNightlyWrapper:
+    @staticmethod
+    def _write_fixture(tmp_path, runtime_source, *, email_alert_source=None):
+        """Install a hermetic nightly wrapper and runtime stub."""
+        project_root = tmp_path / "project"
+        scripts_dir = project_root / "scripts"
+        scripts_dir.mkdir(parents=True)
+        script = scripts_dir / "wilted-nightly.sh"
+        source_script = Path(__file__).parent.parent / "scripts" / "wilted-nightly.sh"
+        script.write_text(source_script.read_text(encoding="utf-8"), encoding="utf-8")
+        script.chmod(0o755)
+
+        fake_runtime = scripts_dir / "wilted-runtime.sh"
+        fake_runtime.write_text(runtime_source, encoding="utf-8")
+        fake_runtime.chmod(0o755)
+
+        home = tmp_path / "home"
+        home.mkdir()
+        if email_alert_source is not None:
+            email_alert = home / ".agent" / "bin" / "email-alert"
+            email_alert.parent.mkdir(parents=True)
+            email_alert.write_text(email_alert_source, encoding="utf-8")
+            email_alert.chmod(0o755)
+
+        env = {
+            "HOME": str(home),
+            "PATH": os.environ["PATH"],
+            "TMPDIR": str(tmp_path),
+        }
+        return script, env, home
+
+    def test_preserves_the_failed_ingest_exit_status(self, tmp_path):
+        """A failed ingest's distinctive status is both logged and returned."""
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+
+        fake_flock = fake_bin / "flock"
+        fake_flock.write_text("#!/bin/bash\nexit 0\n")
+        fake_flock.chmod(0o755)
+
+        project_root = tmp_path / "project"
+        scripts_dir = project_root / "scripts"
+        scripts_dir.mkdir(parents=True)
+        script = scripts_dir / "wilted-nightly.sh"
+        source_script = Path(__file__).parent.parent / "scripts" / "wilted-nightly.sh"
+        script.write_text(source_script.read_text(encoding="utf-8"), encoding="utf-8")
+        script.chmod(0o755)
+
+        fake_runtime = scripts_dir / "wilted-runtime.sh"
+        fake_runtime.write_text('#!/bin/bash\nif [[ "${*: -1}" == "ingest" ]]; then\n    exit 37\nfi\nexit 0\n')
+        fake_runtime.chmod(0o755)
+
+        home = tmp_path / "home"
+        home.mkdir()
+        env = {
+            "HOME": str(home),
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "TMPDIR": str(tmp_path),
+        }
+
+        result = subprocess.run(
+            ["/bin/bash", str(script)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 37
+        aggregate_log = home / "Library" / "Logs" / "homelab" / "wilted-nightly" / "wilted.log"
+        log_text = aggregate_log.read_text()
+        assert "failed with exit code 37" in log_text
+        assert "completed successfully" not in log_text
+
+    def test_retries_exit_126_only_for_exclusive_eintr_stderr(self, tmp_path):
+        attempts = tmp_path / "attempts"
+        runtime_source = f"""#!/bin/bash
+if [[ "${{*: -1}}" == "ingest" ]]; then
+    count=0
+    [[ -f "{attempts}" ]] && count=$(<"{attempts}")
+    count=$((count + 1))
+    printf '%s' "$count" > "{attempts}"
+    printf '%s\\n' 'stdout-preserved-sentinel'
+    printf '%s\\n' 'Interrupted system call' >&2
+    [[ "$count" -eq 1 ]] && exit 126
+fi
+exit 0
+"""
+        script, env, home = self._write_fixture(tmp_path, runtime_source)
+
+        result = subprocess.run(
+            ["/bin/bash", str(script)], env=env, capture_output=True, text=True, check=False
+        )
+
+        assert result.returncode == 0
+        assert attempts.read_text() == "2"
+        log_dir = home / "Library" / "Logs" / "homelab" / "wilted-nightly"
+        aggregate_log = (log_dir / "wilted.log").read_text()
+        run_log_path = next(log_dir.glob("wilted-*.log"))
+        run_log = run_log_path.read_text()
+        assert "stdout-preserved-sentinel" in run_log
+        assert aggregate_log.count("retrying after interrupted ingestion") == 1
+        assert not list(tmp_path.glob("wilted-nightly-stderr.*"))
+
+    def test_retry_exhaustion_notifies_once_and_hides_stderr(self, tmp_path):
+        attempts = tmp_path / "attempts"
+        notifications = tmp_path / "notifications"
+        runtime_source = f"""#!/bin/bash
+if [[ "${{*: -1}}" == "ingest" ]]; then
+    count=0
+    [[ -f "{attempts}" ]] && count=$(<"{attempts}")
+    count=$((count + 1))
+    printf '%s' "$count" > "{attempts}"
+    [[ "$count" -eq 1 ]] && printf '%s\\n' 'EINTR' >&2 && exit 126
+    printf '%s\\n' 'raw-stderr-sentinel' >&2
+    exit 37
+fi
+exit 0
+"""
+        email_alert_source = f"""#!/bin/bash
+count=0
+[[ -f "{notifications}" ]] && count=$(<"{notifications}")
+printf '%s' $((count + 1)) > "{notifications}"
+"""
+        script, env, home = self._write_fixture(
+            tmp_path, runtime_source, email_alert_source=email_alert_source
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(script)], env=env, capture_output=True, text=True, check=False
+        )
+
+        assert result.returncode == 37
+        assert attempts.read_text() == "2"
+        assert notifications.read_text() == "1"
+        log_dir = home / "Library" / "Logs" / "homelab" / "wilted-nightly"
+        aggregate_log = (log_dir / "wilted.log").read_text()
+        run_log = next(log_dir.glob("wilted-*.log")).read_text()
+        assert aggregate_log.count("failed with exit code 37") == 1
+        assert aggregate_log.count("retrying after interrupted ingestion") == 1
+        assert "raw-stderr-sentinel" not in aggregate_log + run_log
+        assert not list(tmp_path.glob("wilted-nightly-stderr.*"))
+
+    def test_second_eintr_is_final_failure_after_one_retry(self, tmp_path):
+        attempts = tmp_path / "attempts"
+        notifications = tmp_path / "notifications"
+        runtime_source = f"""#!/bin/bash
+if [[ "${{*: -1}}" == "ingest" ]]; then
+    count=0
+    [[ -f "{attempts}" ]] && count=$(<"{attempts}")
+    printf '%s' $((count + 1)) > "{attempts}"
+    printf '%s\\n' 'Interrupted system call' >&2
+    exit 126
+fi
+exit 0
+"""
+        email_alert_source = f"""#!/bin/bash
+count=0
+[[ -f "{notifications}" ]] && count=$(<"{notifications}")
+printf '%s' $((count + 1)) > "{notifications}"
+"""
+        script, env, home = self._write_fixture(
+            tmp_path, runtime_source, email_alert_source=email_alert_source
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(script)], env=env, capture_output=True, text=True, check=False
+        )
+
+        assert result.returncode == 126
+        assert attempts.read_text() == "2"
+        assert notifications.read_text() == "1"
+        log_dir = home / "Library" / "Logs" / "homelab" / "wilted-nightly"
+        aggregate_log = (log_dir / "wilted.log").read_text()
+        assert aggregate_log.count("retrying after interrupted ingestion") == 1
+        assert aggregate_log.count("failed with exit code 126") == 1
+        assert not list(tmp_path.glob("wilted-nightly-stderr.*"))
+
+    def test_non_eintr_exit_126_is_not_retried_and_stderr_is_removed(self, tmp_path):
+        attempts = tmp_path / "attempts"
+        runtime_source = f"""#!/bin/bash
+if [[ "${{*: -1}}" == "ingest" ]]; then
+    count=0
+    [[ -f "{attempts}" ]] && count=$(<"{attempts}")
+    printf '%s' $((count + 1)) > "{attempts}"
+    printf '%s\\n' 'permission-denied-sentinel' >&2
+    exit 126
+fi
+exit 0
+"""
+        script, env, home = self._write_fixture(tmp_path, runtime_source)
+
+        result = subprocess.run(
+            ["/bin/bash", str(script)], env=env, capture_output=True, text=True, check=False
+        )
+
+        assert result.returncode == 126
+        assert attempts.read_text() == "1"
+        log_dir = home / "Library" / "Logs" / "homelab" / "wilted-nightly"
+        aggregate_log = (log_dir / "wilted.log").read_text()
+        run_log = next(log_dir.glob("wilted-*.log")).read_text()
+        assert "permission-denied-sentinel" not in aggregate_log + run_log
+        assert "retrying after interrupted ingestion" not in aggregate_log
+        assert not list(tmp_path.glob("wilted-nightly-stderr.*"))
+
+    def test_uses_fixed_runtime_launcher(self):
+        """Nightly uses the repo launcher, never a broad BWS shell helper."""
+        script = Path(__file__).parent.parent / "scripts" / "wilted-nightly.sh"
+        source = script.read_text(encoding="utf-8")
+        assert 'WILTED_RUNTIME="${SCRIPT_DIR}/wilted-runtime.sh"' in source
+        assert '"$WILTED_RUNTIME" ingest' in source
+        assert "bws-run" not in source
+
+
+class TestWeatherMonitorForLaunch:
+    """``_weather_monitor_for_launch`` wires the real ``WeatherMonitor`` into
+    the production TUI launch (was previously never constructed at all).
+    Only constructs -- never starts/polls -- so these tests never touch the
+    network or a real TTS model."""
+
+    def test_returns_a_production_monitor_by_default(self, monkeypatch):
+        monkeypatch.delenv("WILTED_WEATHER_TEST_TRIGGER", raising=False)
+
+        monitor = _weather_monitor_for_launch()
+
+        assert isinstance(monitor, WeatherMonitor)
+        assert monitor._fetch is _default_fetch_alerts
+
+    def test_wires_trigger_file_fetch_when_env_var_set(self, monkeypatch, tmp_path):
+        trigger_path = tmp_path / "trigger"
+        monkeypatch.setenv("WILTED_WEATHER_TEST_TRIGGER", str(trigger_path))
+
+        monitor = _weather_monitor_for_launch()
+
+        assert isinstance(monitor, WeatherMonitor)
+        assert monitor._fetch is not _default_fetch_alerts
+
+    def test_returns_none_and_logs_when_construction_fails(self, monkeypatch, caplog):
+        monkeypatch.delenv("WILTED_WEATHER_TEST_TRIGGER", raising=False)
+
+        def _boom(*, trigger_path=None):
+            raise RuntimeError("optional weather dependency missing")
+
+        with patch("wilted.station_runtime.weather_monitor.build_production_monitor", _boom):
+            with caplog.at_level("WARNING"):
+                monitor = _weather_monitor_for_launch()
+
+        assert monitor is None
+        assert "failed to construct WeatherMonitor" in caplog.text
+
+
+class TestCmdReportEmail:
+    def test_cmd_report_email_sends(self, capsys):
+        """wilted report --email pipes to email-alert."""
+        from wilted.db import Item
+        from wilted.db import now_utc as _now_utc
+
+        Item.create(
+            title="Email Test",
+            item_type="article",
+            status="classified",
+            playlist_assigned="Work",
+            relevance_score=0.8,
+            discovered_at=_now_utc(),
+            status_changed_at=_now_utc(),
+        )
+
+        with (
+            patch("wilted.cli.subprocess") as mock_sub,
+            patch(
+                "wilted.cli._load_email_config",
+                return_value={"enabled": True, "to": "test@example.com"},
+            ),
+        ):
+            mock_sub.run.return_value = MagicMock(returncode=0)
+            from wilted.cli import cmd_report
+
+            cmd_report(["--email"])
+            mock_sub.run.assert_called_once()
+
+    def test_cmd_report_email_disabled(self, capsys):
+        """wilted report --email prints config message when disabled."""
+        from wilted.db import Item
+        from wilted.db import now_utc as _now_utc
+
+        Item.create(
+            title="Test",
+            item_type="article",
+            status="classified",
+            playlist_assigned="Work",
+            discovered_at=_now_utc(),
+            status_changed_at=_now_utc(),
+        )
+
+        with patch("wilted.cli._load_email_config", return_value={"enabled": False, "to": ""}):
+            from wilted.cli import cmd_report
+
+            cmd_report(["--email"])
+            out = capsys.readouterr().out
+            assert "wilted.toml" in out
+
+
+class TestCmdDoctor:
+    def test_cmd_doctor_shows_email_info(self, capsys):
+        """cmd_doctor output includes email-alert path and email config."""
+        from wilted.cli import cmd_doctor
+
+        cmd_doctor()
+        out = capsys.readouterr().out
+        assert "email-alert" in out or "Email" in out
+
+    def test_cmd_doctor_shows_playlist_info(self, capsys):
+        """cmd_doctor output includes playlist count after ensure_default_playlists."""
+        from wilted.cli import cmd_doctor
+        from wilted.playlists import ensure_default_playlists
+
+        ensure_default_playlists()
+        cmd_doctor()
+        out = capsys.readouterr().out
+        assert "Playlist" in out or "All" in out
+
+
+# ---------------------------------------------------------------------------
+# cmd_queue (M5: read-only deferral observability, no scheduling change)
+# ---------------------------------------------------------------------------
+class TestCmdQueueStatus:
+    """`wilted queue status` — a read-only projection of the M3 claim-seam
+    deferral policy. Reuses the same seeding shape as
+    tests/test_processing_jobs.py::TestClaimSeamDeferralPolicy (duplicated
+    locally, not cross-imported, so this file's fixtures stay self-contained).
+    """
+
+    @staticmethod
+    def _seed_representative_queue() -> None:
+        """One held (busy-daytime) expensive job, one priority-bypassed
+        expensive job, and one always-cheap job — a small but representative
+        claimable queue."""
+        from wilted.background_work.contracts import JobKind
+        from wilted.background_work.idempotency import build_idempotency_key, logical_identity_for_kind
+        from wilted.db import ProcessingJob
+        from wilted.processing_jobs import submit_job
+
+        def _submit(kind, identity, *, priority=0):
+            key = build_idempotency_key(kind, operation_version=1, logical_identity=identity)
+            job_id = submit_job(key, priority=priority).job_id
+            ProcessingJob.update(created_at="2026-07-25T09:00:00Z").where(ProcessingJob.id == job_id).execute()
+            return job_id
+
+        _submit(JobKind.ARTICLE_CACHE, logical_identity_for_kind(JobKind.ARTICLE_CACHE, item_id="held-1"))
+        _submit(
+            JobKind.ARTICLE_CACHE,
+            logical_identity_for_kind(JobKind.ARTICLE_CACHE, item_id="bypassed-1"),
+            priority=5,
+        )
+        _submit(
+            JobKind.REPORT_ASSEMBLY,
+            logical_identity_for_kind(JobKind.REPORT_ASSEMBLY, report_date="2026-07-25"),
+        )
+
+    @staticmethod
+    def _fake_collaborators() -> dict:
+        """A busy-daytime machine sample + a fixed clock inside the default
+        [08:00, 20:00) window + controllable inventory — injected explicitly
+        (never monkeypatched defaults), mirroring how the seam's own tests
+        inject fakes into ``claim_next_job``."""
+        from datetime import UTC, datetime
+
+        from wilted.scheduling_policy import PolicyThresholds
+        from wilted.station_runtime.machine_availability import MachineAvailability
+
+        class _BusyBackend:
+            def sample(self) -> MachineAvailability:
+                return MachineAvailability(
+                    load_per_core=2.0,
+                    on_ac_power=True,
+                    user_idle_seconds=5.0,
+                    sampled_at="2026-07-25T10:00:00Z",
+                    ok=True,
+                )
+
+        return {
+            "now": lambda: datetime(2026, 7, 25, 10, 0, tzinfo=UTC),
+            "availability_backend": _BusyBackend(),
+            "inventory_probe": lambda: 5,
+            "thresholds": PolicyThresholds(),
+        }
+
+    def test_projection_text_for_representative_seeded_queue(self):
+        """Drives the REAL read_deferral_summary against seeded DB rows with
+        injected fakes — proves the end-to-end projection text, not just a
+        mocked stats dict."""
+        from wilted.processing_jobs import read_deferral_summary
+        from wilted.scheduling_policy import format_deferral_summary
+
+        self._seed_representative_queue()
+        summary = read_deferral_summary(**self._fake_collaborators())
+        text = format_deferral_summary(summary)
+
+        assert "1 expensive job held until 20:00" in text
+        assert "1 bypassed (priority)" in text
+
+    def test_status_writes_to_stderr_not_stdout(self, capsys, monkeypatch):
+        """INV-11: the interactive `queue status` command surfaces its
+        projection on stderr, never stdout."""
+        from wilted.scheduling_policy import DeferralReason, DeferralSummary
+
+        fixed = DeferralSummary(
+            deferred_count=1,
+            claimable_now_count=2,
+            by_reason={DeferralReason.PRIORITY_BYPASS: 1},
+            next_window_open_hour=20,
+        )
+        monkeypatch.setattr("wilted.processing_jobs.read_deferral_summary", lambda: fixed)
+
+        cmd_queue(["status"])
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "1 expensive job held until 20:00" in captured.err
+        assert "1 bypassed (priority)" in captured.err
+
+    def test_direct_gatherer_call_is_byte_silent(self, capsys):
+        """INV-11: a caller that reaches read_deferral_summary directly (no
+        CLI wrapper — the shape a daemon/non-interactive path would take)
+        gets ZERO bytes on either stream. Only the CLI layer above chooses
+        to print, and only to stderr (see the sibling test)."""
+        from wilted.processing_jobs import read_deferral_summary
+
+        self._seed_representative_queue()
+        read_deferral_summary(**self._fake_collaborators())
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+
+    def test_status_dispatches_through_run_cli(self, monkeypatch, capsys):
+        from wilted.scheduling_policy import DeferralSummary
+
+        fixed = DeferralSummary(deferred_count=0, claimable_now_count=4, by_reason={}, next_window_open_hour=None)
+        monkeypatch.setattr("wilted.processing_jobs.read_deferral_summary", lambda: fixed)
+
+        run_cli(["queue", "status"])
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "no expensive jobs held" in captured.err
+
+    def test_status_fails_open_when_read_raises(self, capsys, monkeypatch):
+        """A genuine read failure (DB/probe error) degrades gracefully rather
+        than surfacing a traceback — parity with the TUI's fail-open. INV-11:
+        the notice goes to stderr, nothing leaks to stdout, and cmd_queue
+        returns normally instead of propagating."""
+
+        def _boom():
+            raise RuntimeError("db locked")
+
+        monkeypatch.setattr("wilted.processing_jobs.read_deferral_summary", _boom)
+
+        cmd_queue(["status"])  # must not raise
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "queue status unavailable" in captured.err
+
+    def test_unknown_action_errors(self):
+        with pytest.raises(SystemExit):
+            cmd_queue(["bogus"])

@@ -202,6 +202,7 @@ run_leg_async "test-persistence-probe" "$repo_root/tests/test-persistence-probe.
 run_leg_async "test-audio-contract-probe" "$repo_root/tests/test-audio-contract-probe.sh"
 run_leg_async "test-audit-walkthrough" "$repo_root/tests/test-audit-walkthrough.sh"
 run_leg_async "test-pipeline-worker" "$repo_root/tests/test-pipeline-worker.sh"
+run_leg_async "test-preparation-runtime" "$repo_root/tests/test-preparation-runtime.sh"
 run_leg_async "test-install-mac-app" "$repo_root/tests/test-install-mac-app.sh"
 run_leg_async "test-temp-sweep" "$repo_root/tests/test-temp-sweep.sh"
 if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
