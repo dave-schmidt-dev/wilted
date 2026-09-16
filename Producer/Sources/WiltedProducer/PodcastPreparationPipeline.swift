@@ -166,9 +166,8 @@ public protocol PodcastPipelineRunning: Sendable {
 ///
 /// The worker is Python because the ad detection it wraps is Python: about
 /// 1,500 lines of tuned prompts and boundary verification that would lose its
-/// tuning in translation. Paths are configuration rather than constants --
-/// the previous project is a working tree on this machine, not a dependency
-/// this app ships.
+/// tuning in translation. Paths remain configurable for tests and local
+/// recovery, while production defaults stay inside this project.
 public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable {
     public struct Configuration: Sendable {
         public var interpreterURL: URL
@@ -218,13 +217,13 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         /// tighter one would abandon real work rather than catch a hang.
         public static func resolved(environment: [String: String] = ProcessInfo.processInfo.environment) -> Configuration {
             let home = FileManager.default.homeDirectoryForCurrentUser
-            let previousProject = home.appending(path: "Documents/Projects/wilted-old")
+            let runtime = home.appending(path: "Documents/Projects/wilted/Producer/Runtime")
             let interpreter = environment["WILTED_PIPELINE_PYTHON"].map { URL(fileURLWithPath: $0) }
-                ?? previousProject.appending(path: ".venv/bin/python")
+                ?? runtime.appending(path: ".venv/bin/python")
             let worker = environment["WILTED_PIPELINE_WORKER"].map { URL(fileURLWithPath: $0) }
                 ?? home.appending(path: "Documents/Projects/wilted/Producer/Workers/wilted_pipeline.py")
             let sources = environment["WILTED_PIPELINE_PYTHONPATH"].map { URL(fileURLWithPath: $0) }
-                ?? previousProject.appending(path: "src")
+                ?? runtime.appending(path: "src")
             let timeout = environment["WILTED_PIPELINE_TIMEOUT_S"].flatMap(TimeInterval.init) ?? 7_200
             let toolSearchPaths = environment["WILTED_PIPELINE_TOOL_PATH"]
                 .map { $0.split(separator: ":", omittingEmptySubsequences: true).map(String.init) }
@@ -246,10 +245,23 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
     ) async throws -> Data {
         let fileManager = FileManager.default
         guard fileManager.isExecutableFile(atPath: configuration.interpreterURL.path) else {
-            throw PodcastPreparationError.workerUnavailable("no interpreter at \(configuration.interpreterURL.path)")
+            throw PodcastPreparationError.workerUnavailable(
+                "no interpreter at \(configuration.interpreterURL.path); run "
+                + "`uv sync --project Producer/Runtime --locked` from ~/Documents/Projects/wilted "
+                + "or set WILTED_PIPELINE_PYTHON"
+            )
         }
         guard fileManager.fileExists(atPath: configuration.workerURL.path) else {
             throw PodcastPreparationError.workerUnavailable("no worker at \(configuration.workerURL.path)")
+        }
+        if let pythonPath = configuration.pythonPath {
+            let requiredRuntimeSource = pythonPath.appending(path: "wilted/ads.py")
+            guard fileManager.fileExists(atPath: requiredRuntimeSource.path) else {
+                throw PodcastPreparationError.workerUnavailable(
+                    "no Wilted runtime source at \(requiredRuntimeSource.path); "
+                    + "restore Producer/Runtime/src from the repository or set WILTED_PIPELINE_PYTHONPATH"
+                )
+            }
         }
         let process = Process()
         process.executableURL = configuration.interpreterURL
@@ -459,15 +471,16 @@ public actor PodcastPreparationPipeline {
     /// The worker is part of the semantic pipeline even though it lives in a
     /// separate Python source tree. Update this alongside the fingerprint when
     /// that worker changes.
-    public static let workerSourceHash = "sha256:e630732bebf494651709e7b988ae00ac2e16380f04067e33b0631c96710a7bf4"
+    public static let workerSourceHash = "sha256:8f5f16c758c0156d858663a0007e5b9dbda7bb9ef8c9cf0660d3b6456c081499"
     /// This file's own source hash is computed with this value normalized out;
     /// it makes a semantic edit fail the coverage test until this fingerprint
     /// block is deliberately updated.
-    public static let pipelineSourceHash = "sha256:7b451cf9734df61b9adb2a3f903182453497438b68b318a6e443c86e1e3d46e5"
+    public static let pipelineSourceHash = "sha256:f0578545b1017ac9b616a3fe24c7ba97b1ad77124e23515ab4f1fd170f0a64c3"
 
-    /// Includes the external Python packages imported by the worker. Those
-    /// sources remain outside this repository during the native migration, so
-    /// a constant-only fingerprint would miss a detector or transcription
+    /// Includes the external Python packages imported by the worker. The
+    /// runtime itself now lives in this repository under `Producer/Runtime`,
+    /// but `speech-stack` is still an editable dependency resolved outside it,
+    /// so a constant-only fingerprint would miss a detector or transcription
     /// change made between app builds.
     public static let semanticFingerprintResolution = resolvedSemanticFingerprint()
     public static let semanticFingerprint = semanticFingerprintResolution

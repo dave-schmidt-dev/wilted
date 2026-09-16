@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Prepare one downloaded podcast episode: transcript, ad detection, ad removal.
 
-This is the bridge to the previous Python Wilted. The valuable, hard to
-reproduce part of that codebase is `wilted.ads` -- roughly 1,500 lines of tuned
-prompts and boundary verification -- and the transcript parsers beside it. None
-of that is reimplemented here; this module is the process boundary the native
-app talks to.
+This is the bridge to Wilted's project-owned Python runtime. The valuable,
+hard-to-reproduce part is `wilted.ads` -- roughly 1,500 lines of tuned prompts
+and boundary verification -- and the transcript parsers beside it. None of that
+is reimplemented here; this module is the process boundary the native app talks
+to.
 
 Protocol, deliberately narrow:
 
@@ -18,9 +18,9 @@ transcript, the episode page -- is fetched by the caller and passed in as text,
 so the transport policy (HTTPS only, size caps, redirect rules) stays in one
 place on the Swift side and no credentialed feed URL ever reaches this process.
 
-Run it with the previous project's virtualenv and source tree on the path:
+Run it with the generated project-local environment and source tree:
 
-    PYTHONPATH=<wilted-old>/src <wilted-old>/.venv/bin/python wilted_pipeline.py
+    PYTHONPATH=Producer/Runtime/src Producer/Runtime/.venv/bin/python wilted_pipeline.py
 """
 
 from __future__ import annotations
@@ -139,6 +139,14 @@ PREROLL_ALREADY_CLAIMED_SECONDS = 1.0
 # sentence than an advertisement worth cutting.
 PREROLL_RECOVERY_MINIMUM_SECONDS = 10.0
 
+# How far into the opening program content may sit and still mean "this is a
+# cold open, cut nothing". A cold open wrongly nominated has the hosts talking
+# from the top, so the confirmation finds them at the first ID or the one after
+# it. Finding them further in says something else entirely: the opening really
+# is advertising and the boundary question simply put the program's start too
+# late, which is the ordinary shape of a pre-roll holding more than one spot.
+PREROLL_COLD_OPEN_MAX_ID = 1
+
 # Both opening questions used to describe the program by its shape -- an
 # opening, a title, host introductions, banter -- and a passage that was none of
 # those read as advertising whatever it said. That definition failed in both
@@ -237,6 +245,25 @@ promotion. The program's own reporting, discussion, interviews, host introductio
 banter belong to the program. Return -1 when no supplied ID belongs to the program. Use only a
 supplied ID or -1.
 Return only the strict JSON object {"program_id": ID}, with no prose or Markdown."""
+
+# The first review asks one question -- where does the programme resume -- and a
+# short news alert that really is half sponsor read has no answer to it. Asking
+# it again the same way returns the same nothing, so the rescan tests the other
+# hypothesis instead: not "where does this stop being an advertisement" but "is
+# there positive evidence it ever was one".
+OVERSIZED_SPAN_RESCAN_PROMPT = """\
+This passage was classified as advertising and a first review could not find where the program
+resumes inside it, so the classification is now in doubt and is being checked a second time. Do not
+look for a boundary. Look for positive evidence that the passage is a paid advertisement at all: a
+named sponsor or advertiser being sold, a product or service offered for purchase, a call to action,
+a destination URL, a promotional code, a discount or trial offer, or the scripted framing of a
+produced spot. The show's own reporting, interviews, host introductions, unstructured banter,
+credits, and promotions for the show itself are not advertising, however long they run and however
+much of the episode they occupy -- a short news episode may legitimately be mostly advertising, so
+length is not evidence either way. Return the ID of the single clearest piece of advertising
+evidence. Return -1 when the passage carries no such evidence. Use only a supplied ID or -1.
+Return only the strict JSON object {"advertisement_evidence_id": ID}, with no prose or Markdown."""
+
 
 # A verified commercial can be followed by another produced promotion without
 # enough standalone CTA/destination evidence to enter generic host-read
@@ -2976,9 +3003,24 @@ def recover_transcript_start_preroll(ads_module, backend, segments, detections):
     except Exception as error:  # noqa: BLE001 - an unanswered question never cuts audio
         progress("ads.detect.preroll.skipped", f"opening confirmation failed: {type(error).__name__}: {error}")
         return detections
-    if program_id != -1:
+    if 0 <= program_id <= PREROLL_COLD_OPEN_MAX_ID:
         progress("ads.detect.preroll.skipped", f"the opening holds program content at {program_id}")
         return detections
+    if program_id != -1:
+        # The confirmation read only the passage the boundary question
+        # nominated, and it placed the program earlier inside that passage.
+        # Believing it cuts strictly less audio than the nomination asked for,
+        # so the safe move is to take its boundary rather than to cut nothing:
+        # abandoning the whole recovery here is what left Economics of Everyday
+        # Things 70 opening on two untouched sponsor reads.
+        program_start_id = program_id
+        nominated_end_s = float(segments[program_start_id].start_s)
+        progress("ads.detect.preroll.shortened",
+                 f"program moved to ID {program_start_id} at {nominated_end_s:.3f}s")
+        if nominated_end_s < PREROLL_RECOVERY_MINIMUM_SECONDS:
+            progress("ads.detect.preroll.skipped",
+                     f"the shortened opening is only {nominated_end_s:.1f}s long")
+            return detections
 
     # The cut runs to where the program begins rather than to the last
     # advertising cue, because the insertion gap between them is the spot's
@@ -3174,20 +3216,26 @@ def recover_transcript_end_postroll(ads_module, backend, segments, detections, t
 
 
 def _resize_one_oversized_span(ads_module, backend, segments, ad, total_seconds):
-    """Trim one too-large span back to where the program resumes, or decline.
+    """Review one too-large span and return `(outcome, segment)`.
 
     Two questions in the shape the opening review established: the first
     nominates a boundary, the second is handed only the shortened span and
     asked to find program content inside it. A boundary in the wrong place has
     the program in that passage, so the second question finds it and the trim
     never happens.
+
+    `outcome` is `"confirmed"` when the review positively established what the
+    span is -- advertising throughout, or advertising up to a located boundary
+    -- and `"unconfirmed"` when it could not answer. The distinction is the
+    whole point: size alone never decides, so a span the review vouched for is
+    not later thrown away for being large.
     """
     span_ids = [
         segment_id for segment_id, segment in enumerate(segments)
         if float(segment.start_s) < float(ad.end_s) and float(segment.end_s) > float(ad.start_s)
     ]
     if len(span_ids) < 2:
-        return None
+        return ("unconfirmed", None)
     window_ids = span_ids[:OVERSIZED_SPAN_RESIZE_MAX_SEGMENTS]
 
     try:
@@ -3197,10 +3245,13 @@ def _resize_one_oversized_span(ads_module, backend, segments, ad, total_seconds)
         )
     except Exception as error:  # noqa: BLE001 - an unanswered question never cuts audio
         progress("ads.detect.span.resize.skipped", f"resize review failed: {type(error).__name__}: {error}")
-        return None
+        return ("unconfirmed", None)
     if program_start_id == window_ids[0]:
-        progress("ads.detect.span.resize.skipped", "the span is advertising throughout")
-        return None
+        # An affirmative verdict, not a decline: the review read the whole span
+        # and found no programme in it. A short news alert really can be mostly
+        # advertising, so this is the answer, not a failure to answer.
+        progress("ads.detect.span.confirmed", "the span is advertising throughout")
+        return ("confirmed", ad)
 
     if program_start_id - 1 > window_ids[0] and _program_starts_inside(
         ads_module, backend, segments, program_start_id - 1
@@ -3216,15 +3267,7 @@ def _resize_one_oversized_span(ads_module, backend, segments, ad, total_seconds)
     end_s = float(segments[program_start_id].start_s)
     if end_s <= float(ad.start_s):
         progress("ads.detect.span.resize.skipped", "the program resumes before the span begins")
-        return None
-    share = (end_s - float(ad.start_s)) / total_seconds
-    if share > MAXIMUM_SINGLE_AD_SHARE:
-        progress(
-            "ads.detect.span.resize.skipped",
-            f"the program still resumes {share:.0%} into the episode",
-        )
-        return None
-
+        return ("unconfirmed", None)
     opening_ids = [segment_id for segment_id in window_ids if segment_id < program_start_id]
     try:
         program_id = _constrained_id(
@@ -3233,10 +3276,10 @@ def _resize_one_oversized_span(ads_module, backend, segments, ad, total_seconds)
         )
     except Exception as error:  # noqa: BLE001 - an unanswered question never cuts audio
         progress("ads.detect.span.resize.skipped", f"resize confirmation failed: {type(error).__name__}: {error}")
-        return None
+        return ("unconfirmed", None)
     if program_id != -1:
         progress("ads.detect.span.resize.skipped", f"the shortened span holds program content at {program_id}")
-        return None
+        return ("unconfirmed", None)
 
     progress(
         "ads.detect.span.resized",
@@ -3246,40 +3289,97 @@ def _resize_one_oversized_span(ads_module, backend, segments, ad, total_seconds)
     # Only the front of the span is recovered. A true bracket -- advertising at
     # both ends with program between -- keeps its tail read in the audio, which
     # is the safe half of the trade and not worth a backwards pass to close.
-    return ads_module.AdSegment(float(ad.start_s), end_s, float(ad.confidence), ad.label)
+    return ("confirmed", ads_module.AdSegment(float(ad.start_s), end_s, float(ad.confidence), ad.label))
+
+
+def _rescan_unconfirmed_oversized_span(ads_module, backend, segments, ad):
+    """Re-examine a span the first review could not place a boundary in.
+
+    Deliberately not the same question asked twice. The first review looks for
+    where the programme resumes and a passage that is advertising end to end
+    has no such point, so repeating it learns nothing. This asks the opposite
+    question -- what evidence says this was ever an advertisement -- and names
+    the programme content most often mistaken for one. A sponsor read carries a
+    sponsor, an offer, a destination; a news segment misread as an ad carries
+    none of them, and that is the difference size cannot see.
+    """
+    span_ids = [
+        segment_id for segment_id, segment in enumerate(segments)
+        if float(segment.start_s) < float(ad.end_s) and float(segment.end_s) > float(ad.start_s)
+    ]
+    if not span_ids:
+        return False
+    window_ids = span_ids[:OVERSIZED_SPAN_RESIZE_MAX_SEGMENTS]
+    try:
+        evidence_id = _constrained_id(
+            ads_module, backend, OVERSIZED_SPAN_RESCAN_PROMPT, "advertisement_evidence_id",
+            window_ids, [-1, *window_ids], segments,
+        )
+    except Exception as error:  # noqa: BLE001 - an unanswered question never cuts audio
+        progress("ads.detect.span.rescan.skipped", f"rescan failed: {type(error).__name__}: {error}")
+        return False
+    if evidence_id == -1:
+        progress(
+            "ads.detect.span.rescan.rejected",
+            f"{float(ad.start_s):.3f}-{float(ad.end_s):.3f} carries no advertising evidence on a second read",
+        )
+        return False
+    progress(
+        "ads.detect.span.rescan.confirmed",
+        f"{float(ad.start_s):.3f}-{float(ad.end_s):.3f} is advertising; evidence at ID {evidence_id}",
+    )
+    return True
 
 
 def resize_oversized_ad_spans(ads_module, backend, segments, detections, total_seconds):
-    """Ask where the program resumes inside any span too large to be an ad.
+    """Review every span too large to be an ad, and say which ones were vouched for.
 
-    Runs while the model is loaded, before the arithmetic guard below, so a
-    span the detector overreached on can be recovered as the advertisement it
-    started as rather than dropped whole. Whatever this declines to trim is
-    still handed to `reject_implausible_ad_spans`, which is the net.
+    Returns `(detections, confirmed)`, where `confirmed` holds the
+    `(start_s, end_s)` of each span a review positively established. Size alone
+    decides nothing here: a large span is a reason to look harder, not a reason
+    to throw the span away. A span the first review cannot place a boundary in
+    gets a second, differently-worded read; only a span that survives neither is
+    handed to `reject_implausible_ad_spans`, which remains the net.
 
     `total_seconds` is the probed audio duration, the same denominator the
     rejection below uses, so the two bounds cannot disagree about how large a
     span is.
     """
     if total_seconds <= 0 or not detections or not segments:
-        return detections
+        return detections, frozenset()
     resized = []
+    confirmed = set()
     for ad in detections:
         share = (float(ad.end_s) - float(ad.start_s)) / total_seconds
         if share <= MAXIMUM_SINGLE_AD_SHARE:
             resized.append(ad)
             continue
-        trimmed = _resize_one_oversized_span(ads_module, backend, segments, ad, total_seconds)
-        resized.append(trimmed if trimmed is not None else ad)
-    return resized
+        outcome, reviewed = _resize_one_oversized_span(
+            ads_module, backend, segments, ad, total_seconds
+        )
+        if outcome == "unconfirmed" and _rescan_unconfirmed_oversized_span(
+            ads_module, backend, segments, ad
+        ):
+            outcome, reviewed = "confirmed", ad
+        kept = reviewed if reviewed is not None else ad
+        if outcome == "confirmed":
+            confirmed.add((float(kept.start_s), float(kept.end_s)))
+        resized.append(kept)
+    return resized, frozenset(confirmed)
 
 
-def reject_implausible_ad_spans(detections, total_seconds):
-    """Drop detections too large to be advertising, and say which and why.
+def reject_implausible_ad_spans(detections, total_seconds, confirmed=frozenset()):
+    """Drop unreviewed detections too large to be advertising, and say which and why.
 
     Dropping the span rather than trimming it is deliberate: nothing here knows
     where the advertisement actually ended, and a guessed boundary would cut
     programme audio with the same confidence the detector just misplaced.
+
+    `confirmed` holds the spans a review already read end to end and vouched
+    for. Those are exempt from both ceilings, including the total: a short news
+    alert can legitimately be mostly advertising, and overruling a verdict on
+    arithmetic is how a correctly-detected sponsor read became a failed
+    preparation. The ceilings remain the net for everything unreviewed.
     """
     if total_seconds <= 0 or not detections:
         return detections
@@ -3287,22 +3387,23 @@ def reject_implausible_ad_spans(detections, total_seconds):
     for ad in detections:
         span_seconds = float(ad.end_s) - float(ad.start_s)
         share = span_seconds / total_seconds
-        if share > MAXIMUM_SINGLE_AD_SHARE:
+        if share > MAXIMUM_SINGLE_AD_SHARE and (float(ad.start_s), float(ad.end_s)) not in confirmed:
             progress(
                 "ads.detect.span.rejected",
-                f"{float(ad.start_s):.3f}-{float(ad.end_s):.3f} is {share:.0%} of the episode; "
-                "a span that size is a detection failure, not an advertisement",
+                f"{float(ad.start_s):.3f}-{float(ad.end_s):.3f} is {share:.0%} of the episode and no "
+                "review could vouch for it; a span that size is a detection failure, not an advertisement",
             )
             continue
         kept.append(ad)
-    removed = sum(float(ad.end_s) - float(ad.start_s) for ad in kept)
+    unreviewed = [ad for ad in kept if (float(ad.start_s), float(ad.end_s)) not in confirmed]
+    removed = sum(float(ad.end_s) - float(ad.start_s) for ad in unreviewed)
     if removed / total_seconds > MAXIMUM_TOTAL_AD_SHARE:
         progress(
             "ads.detect.refused",
             f"{removed:.1f}s of {total_seconds:.1f}s ({removed / total_seconds:.0%}) was classified "
-            "as advertising; keeping the episode whole",
+            "as advertising without review; keeping the episode whole",
         )
-        return []
+        return [ad for ad in kept if (float(ad.start_s), float(ad.end_s)) in confirmed]
     return kept
 
 
@@ -3654,11 +3755,11 @@ def analyze_ad_detections(
     detections = recover_transcript_end_postroll(
         ads_module, auditing_backend, segments, detections, total_seconds
     )
-    detections = resize_oversized_ad_spans(
+    detections, confirmed_spans = resize_oversized_ad_spans(
         ads_module, auditing_backend, segments, detections, total_seconds
     )
     proposed_detections = detections
-    detections = reject_implausible_ad_spans(detections, total_seconds)
+    detections = reject_implausible_ad_spans(detections, total_seconds, confirmed_spans)
     detections = recover_adjacent_ad_pod_continuations(
         ads_module, auditing_backend, segments, detections, total_seconds
     )
@@ -3677,7 +3778,8 @@ def analyze_ad_detections(
         progress("ads.detect.recovery.audit.failed", details)
         raise WorkerError(
             "ads-recovery-audit-failed",
-            f"post-cut safeguards dropped explicit sponsor anchors: {details}",
+            "explicit sponsor anchors were dropped after review twice declined to vouch for the "
+            f"span covering them: {details}",
         )
     audit = auditing_backend.audit(detections, segments)
     if auditing_backend.contract_errors:

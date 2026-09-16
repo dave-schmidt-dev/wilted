@@ -816,9 +816,36 @@ struct PodcastPreparationPipelineTests {
         #expect(overridden.toolSearchPaths == ["/opt/tools/bin", "/opt/more"])
 
         let defaults = SubprocessPodcastPipelineRunner.Configuration.resolved(environment: [:])
+        let activeRuntime = "/Documents/Projects/wilted/Producer/Runtime"
+        #expect(defaults.interpreterURL.path.hasSuffix(activeRuntime + "/.venv/bin/python"))
+        #expect(defaults.pythonPath?.path.hasSuffix(activeRuntime + "/src") == true)
         #expect(defaults.workerURL.lastPathComponent == "wilted_pipeline.py")
+        #expect(!defaults.interpreterURL.path.contains("wilted-old"))
+        #expect(defaults.pythonPath?.path.contains("wilted-old") == false)
         #expect(defaults.timeout > 0)
         #expect(defaults.toolSearchPaths.contains("/opt/homebrew/bin"))
+    }
+
+    @Test func subprocessRunnerNamesMissingRuntimeSourceBeforeLaunchingPython() async throws {
+        let directory = try Fixture.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let worker = directory.appendingPathComponent("worker.py")
+        try Data("raise RuntimeError('should not launch')\n".utf8).write(to: worker)
+        let missingSource = directory.appendingPathComponent("missing-runtime-src")
+        let runner = SubprocessPodcastPipelineRunner(configuration: .init(
+            interpreterURL: URL(fileURLWithPath: "/usr/bin/python3"),
+            workerURL: worker,
+            pythonPath: missingSource
+        ))
+
+        do {
+            _ = try await runner.run(request: Data("{}".utf8)) { _ in }
+            Issue.record("expected the missing runtime source preflight to fail")
+        } catch let error as PodcastPreparationError {
+            #expect(String(describing: error).contains(missingSource.path))
+            #expect(String(describing: error).contains("restore Producer/Runtime/src"))
+            #expect(String(describing: error).contains("WILTED_PIPELINE_PYTHONPATH"))
+        }
     }
 
     /// The app is launched from Finder with a PATH that cannot find ffmpeg;

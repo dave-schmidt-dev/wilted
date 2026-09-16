@@ -56,6 +56,14 @@ def load_worker():
 wp = load_worker()
 
 
+def _passthrough_detections(_ads, _backend, _segments, detections, *_args):
+    return detections
+
+
+def _passthrough_reviewed_detections(_ads, _backend, _segments, detections, *_args):
+    return detections, frozenset()
+
+
 @dataclass
 class FakeSegment:
     start_s: float
@@ -218,6 +226,7 @@ class FakeLLM:
     preroll_program_id: int | None = None
     boundary_starts_program: bool | None = None
     postroll_advertising_start_id: int | None = None
+    rescan_evidence_id: int | None = None
     tail_carries_program: bool | None = None
     commercial_ad_ids: list[int] | None = None
     commercial_programme_ids: list[int] | None = None
@@ -290,6 +299,7 @@ class FakeLLM:
             return json.dumps({"program_id": self.program_id_answers.pop(0)}), 1
         for name, answer in (("program_start_id", self.preroll_program_start_id),
                              ("advertising_start_id", self.postroll_advertising_start_id),
+                             ("advertisement_evidence_id", self.rescan_evidence_id),
                              ("program_id", self.preroll_program_id)):
             if field_name == name:
                 return (json.dumps({name: answer}) if answer is not None else self.answer), 1
@@ -1092,7 +1102,7 @@ class AdDetectionTests(unittest.TestCase):
         llm.load()  # `detect_and_cut` does this; a direct call has to say so.
         stream = io.StringIO()
         with redirect_stderr(stream):
-            resized = wp.resize_oversized_ad_spans(ads, llm, self.OVERSIZED, [ad], total)
+            resized, self.confirmed = wp.resize_oversized_ad_spans(ads, llm, self.OVERSIZED, [ad], total)
         details = {
             json.loads(line)["stage"]: json.loads(line)["detail"]
             for line in stream.getvalue().splitlines()
@@ -1118,18 +1128,84 @@ class AdDetectionTests(unittest.TestCase):
         self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 456.88)])
         self.assertIn("holds program content at 3", details["ads.detect.span.resize.skipped"])
 
-    def test_a_span_the_review_calls_advertising_throughout_is_not_shortened(self):
+    def test_a_span_the_review_calls_advertising_throughout_is_confirmed(self):
+        # Reading the whole span and finding no programme in it is an answer,
+        # not a failure to answer. A short news alert can legitimately be
+        # mostly advertising, so the verdict stands and the span is vouched for.
         llm = FakeLLM(preroll_program_start_id=0)
         resized, details = self.resize(llm, FakeAd(6.72, 456.88))
         self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 456.88)])
-        self.assertIn("advertising throughout", details["ads.detect.span.resize.skipped"])
+        self.assertIn("advertising throughout", details["ads.detect.span.confirmed"])
+        self.assertEqual(self.confirmed, frozenset({(6.72, 456.88)}))
 
-    def test_a_shortening_that_is_still_implausible_is_refused(self):
-        # Recovering four minutes of a nine minute episode is not a recovery.
+    def test_a_located_boundary_is_honoured_however_large_the_advertisement(self):
+        # The review found where the programme resumes, which is the question
+        # asked. Discarding that answer because the advertisement it leaves
+        # behind is a large share of a short episode overrules a verdict with
+        # arithmetic, which is how a correct sponsor read became a failure.
         llm = FakeLLM(preroll_program_start_id=20, preroll_program_id=-1, boundary_starts_program=False)
         resized, details = self.resize(llm, FakeAd(6.72, 456.88))
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 400.0)])
+        self.assertIn("before program ID 20", details["ads.detect.span.resized"])
+        self.assertEqual(self.confirmed, frozenset({(6.72, 400.0)}))
+
+    # David, 2026-09-16, after three TechCrunch preparations failed in one
+    # morning: "on a short episode which is just a news alert, it really might
+    # be half ads ... that should not trigger anything except further review".
+    # Size is a reason to look harder. It is never the verdict.
+    def test_a_span_the_review_vouched_for_survives_the_size_ceiling(self):
+        confirmed = frozenset({(6.72, 292.64)})
+        kept = wp.reject_implausible_ad_spans([FakeAd(6.72, 292.64)], 459.0, confirmed)
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in kept], [(6.72, 292.64)])
+
+    def test_a_span_no_review_vouched_for_is_still_dropped_for_its_size(self):
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            kept = wp.reject_implausible_ad_spans([FakeAd(6.72, 292.64)], 459.0)
+        self.assertEqual(kept, [])
+        self.assertIn("no review could vouch for it", stream.getvalue())
+
+    def test_a_vouched_for_span_is_not_discarded_by_the_total_ceiling(self):
+        # The total ceiling exists to catch a detector that classified most of
+        # an episode by accident. A reviewed span is not an accident, and the
+        # unreviewed remainder is still measured against the ceiling on its own.
+        confirmed = frozenset({(6.72, 292.64)})
+        kept = wp.reject_implausible_ad_spans(
+            [FakeAd(6.72, 292.64), FakeAd(300.0, 310.0)], 459.0, confirmed
+        )
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in kept],
+                         [(6.72, 292.64), (300.0, 310.0)])
+
+    def test_an_unplaceable_span_is_rescanned_for_evidence_it_was_ever_an_ad(self):
+        # The first review found programme content inside the span, so it could
+        # not place a boundary. Asking that same question again would return the
+        # same nothing; the rescan asks what evidence says this was advertising.
+        llm = FakeLLM(preroll_program_start_id=20, preroll_program_id=3, rescan_evidence_id=2)
+        resized, details = self.resize(llm, FakeAd(6.72, 456.88))
         self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 456.88)])
-        self.assertIn("still resumes 70% into the episode", details["ads.detect.span.resize.skipped"])
+        self.assertIn("evidence at ID 2", details["ads.detect.span.rescan.confirmed"])
+        self.assertEqual(self.confirmed, frozenset({(6.72, 456.88)}))
+
+    def test_a_span_that_fails_the_rescan_too_is_left_unvouched_for(self):
+        # Reviewed twice, in two different ways, and neither could call it an
+        # advertisement. That is the case where there really is a problem, and
+        # the size ceiling downstream is what catches it.
+        llm = FakeLLM(preroll_program_start_id=20, preroll_program_id=3, rescan_evidence_id=-1)
+        resized, details = self.resize(llm, FakeAd(6.72, 456.88))
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 456.88)])
+        self.assertIn("no advertising evidence on a second read",
+                      details["ads.detect.span.rescan.rejected"])
+        self.assertEqual(self.confirmed, frozenset())
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(wp.reject_implausible_ad_spans(resized, 563.17, self.confirmed), [])
+
+    def test_the_rescan_asks_a_different_question_than_the_first_review(self):
+        self.assertNotIn("program_start_id", wp.OVERSIZED_SPAN_RESCAN_PROMPT)
+        self.assertIn("advertisement_evidence_id", wp.OVERSIZED_SPAN_RESCAN_PROMPT)
+        self.assertIn("second time", wp.OVERSIZED_SPAN_RESCAN_PROMPT)
+        self.assertIn("Do not\nlook for a boundary", wp.OVERSIZED_SPAN_RESCAN_PROMPT)
+        for confusable in ("interviews", "host introductions", "credits", "length is not evidence"):
+            self.assertIn(confusable, wp.OVERSIZED_SPAN_RESCAN_PROMPT)
 
     def test_an_unanswered_resize_review_never_shortens_a_span(self):
         llm = FakeLLM(answer="not json")
@@ -4174,12 +4250,34 @@ class TranscriptStartPrerollRecoveryTests(unittest.TestCase):
             [(0.0, 100.0, "ad_break"), (150.0, 180.0, "sponsor_read")],
         )
 
-    def test_a_confirmation_that_finds_program_content_leaves_detections_unchanged(self):
-        llm = FakeLLM(preroll_program_start_id=5, preroll_program_id=2)
+    def test_a_confirmation_that_finds_the_hosts_at_the_top_leaves_detections_unchanged(self):
+        # Program content at the first ID or the one after it is a cold open
+        # the nomination should never have claimed, and nothing may be cut.
+        llm = FakeLLM(preroll_program_start_id=5, preroll_program_id=1)
         result, details = self.preroll(llm, self.segments(), self.existing())
         self.assertEqual([(ad.start_s, ad.end_s, ad.label) for ad in result],
                           [(150.0, 180.0, "sponsor_read")])
-        self.assertIn("program content at 2", details["ads.detect.preroll.skipped"])
+        self.assertIn("program content at 1", details["ads.detect.preroll.skipped"])
+
+    def test_a_confirmation_that_finds_the_program_further_in_shortens_the_cut(self):
+        # Economics of Everyday Things 70: the nomination put the program at
+        # 185.8s, the confirmation found it at ID 5, and abandoning the whole
+        # recovery left the episode opening on two untouched sponsor reads.
+        # The confirmation read that passage, so its boundary is the one taken.
+        llm = FakeLLM(preroll_program_start_id=5, preroll_program_id=2)
+        result, details = self.preroll(llm, self.segments(), self.existing())
+        self.assertEqual([(ad.start_s, ad.end_s, ad.label) for ad in result],
+                          [(0.0, 40.0, "ad_break"), (150.0, 180.0, "sponsor_read")])
+        self.assertEqual(details["ads.detect.preroll.shortened"],
+                         "program moved to ID 2 at 40.000s")
+
+    def test_a_shortened_boundary_under_the_minimum_cuts_nothing(self):
+        segments = [FakeSegment(i * 4.0, i * 4.0 + 4.0, f"segment {i}") for i in range(6)]
+        llm = FakeLLM(preroll_program_start_id=5, preroll_program_id=2)
+        result, details = self.preroll(llm, segments, self.existing())
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in result], [(150.0, 180.0)])
+        self.assertIn("shortened opening is only 8.0s long",
+                      details["ads.detect.preroll.skipped"])
 
     def test_an_unanswerable_confirmation_leaves_detections_unchanged(self):
         # `answer` is the detector's own "[]", which is not a program_id
@@ -4227,13 +4325,14 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
             FakeSegment(20.0, 30.0, "third segment"),
         ]
         self.patches = [
-            mock.patch.object(wp, name, lambda _ads, _backend, _segments, detections, *_args: detections)
-            for name in (
-                "recover_unclaimed_explicit_sponsor_reads",
-                "recover_commercial_evidence_reads",
-                "recover_transcript_start_preroll",
-                "recover_transcript_end_postroll",
-                "resize_oversized_ad_spans",
+            mock.patch.object(wp, name, passthrough)
+            for name, passthrough in (
+                ("recover_unclaimed_explicit_sponsor_reads", _passthrough_detections),
+                ("recover_commercial_evidence_reads", _passthrough_detections),
+                ("recover_transcript_start_preroll", _passthrough_detections),
+                ("recover_transcript_end_postroll", _passthrough_detections),
+                # This one reports what the review vouched for alongside them.
+                ("resize_oversized_ad_spans", _passthrough_reviewed_detections),
             )
         ]
         for patcher in self.patches:
@@ -4410,6 +4509,8 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
                      "recover_transcript_end_postroll", "resize_oversized_ad_spans"):
             def record(*args, _name=name, **_kwargs):
                 order.append(_name)
+                if _name == "resize_oversized_ad_spans":
+                    return args[3], frozenset()
                 return args[3]
             patcher = mock.patch.object(wp, name, record)
             patcher.start()
@@ -4694,7 +4795,7 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         llm.create_backend = lambda kind, model: (
             calls.append(("create_backend", kind, model)) or Backend()
         )
-        # The archive will not build a model outside this, and the worker claims
+        # The runtime will not build a model outside this, and the worker claims
         # it in `main` rather than in any pass, so a replay importing the passes
         # directly gets no capability unless it claims one itself.
         @contextmanager
@@ -4713,7 +4814,7 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         package.execution_capability = capability
         sys.modules.update({"wilted": package, "wilted.ads": ads, "wilted.llm": llm,
                             "wilted.execution_capability": capability})
-        self.use_archive(self.fake_archive())
+        self.use_runtime(self.fake_runtime())
 
         def recorder(ads_module, backend, segments, total, **kwargs):
             calls.append(("analyze", segments, total, backend, ads_module))
@@ -4724,8 +4825,8 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         self.patch("analyze_ad_detections", recorder)
         self.patch("prepare_ad_model_lock", lambda *_a, **_k: None)
 
-    def fake_archive(self):
-        """A directory shaped like the archive, for the existence check to find.
+    def fake_runtime(self):
+        """A directory shaped like the runtime, for the existence check to find.
 
         `sys.modules` already holds the stub package, so the import itself would
         succeed anywhere; the check that runs before it is what needs a path.
@@ -4736,33 +4837,35 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         (Path(root) / "wilted" / "ads.py").write_text("")
         return root
 
-    def use_archive(self, path):
+    def use_runtime(self, path):
         patcher = mock.patch.dict(os.environ, {"WILTED_PIPELINE_PYTHONPATH": str(path)})
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_the_archive_is_resolved_the_way_the_app_resolves_it(self):
+    def test_the_runtime_is_resolved_the_way_the_app_resolves_it(self):
         # Swift hands the worker a PYTHONPATH from this variable with this
         # fallback. A replay resolving it any other way would be measuring a
         # different detector than the one the app runs.
-        self.use_archive("/tmp/somewhere-else/src")
-        self.assertEqual(self.corpus.archive_sources(), Path("/tmp/somewhere-else/src"))
+        self.use_runtime("/tmp/somewhere-else/src")
+        self.assertEqual(self.corpus.runtime_sources(), Path("/tmp/somewhere-else/src"))
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(self.corpus.archive_sources(), self.corpus.DEFAULT_ARCHIVE_SOURCES)
-        self.assertTrue(str(self.corpus.DEFAULT_ARCHIVE_SOURCES).endswith("wilted-old/src"))
+            self.assertEqual(self.corpus.runtime_sources(), self.corpus.DEFAULT_RUNTIME_SOURCES)
+        self.assertTrue(str(self.corpus.DEFAULT_RUNTIME_SOURCES).endswith("wilted/Producer/Runtime/src"))
+        self.assertNotIn("wilted-old", str(self.corpus.DEFAULT_RUNTIME_SOURCES))
 
-    def test_a_missing_archive_is_named_rather_than_left_as_an_import_error(self):
-        # Nothing in the worker puts the archive on the path -- Swift does it
+    def test_missing_runtime_source_is_named_rather_than_left_as_an_import_error(self):
+        # Nothing in the worker puts the runtime on the path -- Swift does it
         # from outside -- so a replay run from a shell finds it or explains why.
         case = self.waveform()
         cache = self.cache_for(case)
         self.install_stubs()
         empty = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, empty, True)
-        self.use_archive(empty)
+        self.use_runtime(empty)
         with self.assertRaises(RuntimeError) as caught:
             self.corpus.replay_spans(case, cache=cache)
         self.assertIn(empty, str(caught.exception))
+        self.assertIn("restore Producer/Runtime/src", str(caught.exception))
         self.assertIn("WILTED_PIPELINE_PYTHONPATH", str(caught.exception))
 
     def patch(self, name, replacement):
