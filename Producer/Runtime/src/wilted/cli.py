@@ -1,0 +1,1548 @@
+"""CLI commands for wilted — extracted from the root wilted script for testability."""
+
+import argparse
+import logging
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from wilted import VOICES, WPM_ESTIMATE
+from wilted.fetch import get_text_from_clipboard, get_text_from_url
+from wilted.ingest import resolve_article
+from wilted.llm import DEFAULT_GGUF_MODEL
+from wilted.log import setup_logging
+from wilted.queue import (
+    add_article,
+    clear_queue,
+    get_article_text,
+    load_queue,
+    mark_completed,
+    remove_article,
+    remove_article_by_id,
+    utc_to_local_date,
+)
+from wilted.speech_ready import require_speech_ready
+from wilted.station_runtime.lease import is_station_active
+from wilted.text import clean_text
+
+if TYPE_CHECKING:
+    from wilted.station_runtime.weather_monitor import WeatherMonitor
+
+logger = logging.getLogger(__name__)
+
+_STATION_ACTIVE_MESSAGE = (
+    "The station is active in another wilted session — this command is unavailable "
+    "while it's running. Stop the station first."
+)
+
+
+class CLIError(Exception):
+    """Raised by CLI commands to signal a user-facing error."""
+
+
+# ---------------------------------------------------------------------------
+# Subcommand dispatch helpers
+# ---------------------------------------------------------------------------
+
+# Old --flag → new subcommand name (for translation in both directions)
+_SUBCMD_TO_FLAG = {
+    "add": "--add",
+    "list": "--list",
+    "play": "--play",
+    "next": "--next",
+    "clear": "--clear",
+}
+
+# Phase 2+ pipeline and management subcommands — stubbed until implemented.
+_STUB_SUBCMDS = frozenset()
+
+
+def _normalize_argv(argv: list[str]) -> list[str]:
+    """Translate new subcommand argv to legacy flag argv.
+
+    Allows ``wilted list`` and ``wilted --list`` to both work.
+
+    Examples::
+
+        ['add', 'URL']   → ['--add', 'URL']
+        ['remove', '3']  → ['--remove', '3']
+        ['list']         → ['--list']
+    """
+    if not argv:
+        return argv
+    first = argv[0]
+    if first in _SUBCMD_TO_FLAG:
+        return [_SUBCMD_TO_FLAG[first]] + argv[1:]
+    if first == "remove":
+        return ["--remove"] + argv[1:]
+    return argv
+
+
+def _run_stub(argv: list[str]) -> None:
+    """Print a 'not yet implemented' message for Phase 2+ subcommands."""
+    cmd = argv[0]
+    print(f"'{cmd}' is not yet implemented (coming in Phase 2+).", file=sys.stderr)
+    sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# PROJECT_ROOT validation (Task 1.4)
+# ---------------------------------------------------------------------------
+
+
+def validate_project_root() -> None:
+    """Verify PROJECT_ROOT is sane and data/ is writable.
+
+    Raises:
+        RuntimeError: If PROJECT_ROOT does not contain pyproject.toml or
+            data/ cannot be created/written to.  The message includes
+            instructions for setting WILTED_PROJECT_ROOT.
+    """
+    from wilted import DATA_DIR, PROJECT_ROOT
+
+    if not (PROJECT_ROOT / "pyproject.toml").exists():
+        raise RuntimeError(
+            f"PROJECT_ROOT '{PROJECT_ROOT}' does not contain pyproject.toml.\n"
+            "Set the WILTED_PROJECT_ROOT environment variable to the correct path, e.g.:\n"
+            "  export WILTED_PROJECT_ROOT=/path/to/wilted"
+        )
+
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        probe = DATA_DIR / ".write_probe"
+        probe.touch()
+        probe.unlink()
+    except OSError as e:
+        raise RuntimeError(
+            f"data/ directory '{DATA_DIR}' is not writable: {e}\n"
+            "Check directory permissions or set WILTED_PROJECT_ROOT."
+        ) from e
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+
+def cmd_add(args):
+    """Add an article to the reading list from URL or clipboard."""
+    try:
+        result = resolve_article(
+            url=args.input if args.input and args.input.startswith(("http://", "https://")) else None,
+            on_status=lambda msg: print(msg),
+        )
+    except ValueError as e:
+        raise CLIError(str(e)) from e
+
+    entry = add_article(
+        result.text,
+        title=result.title,
+        source_url=result.source_url,
+        canonical_url=result.canonical_url,
+    )
+
+    est_min = entry["words"] / WPM_ESTIMATE
+    print(f"Added #{entry['id']}: {entry['title']}")
+    print(f"  {entry['words']} words, ~{est_min:.0f} min listen time")
+    queue = load_queue()
+    print(f"  Queue now has {len(queue)} article(s).")
+
+
+def cmd_list(args):
+    """Show the reading list."""
+    queue = load_queue()
+    if not queue:
+        print("Reading list is empty.")
+        return
+
+    total_words = 0
+    print(f"Reading list ({len(queue)} articles):\n")
+    for i, entry in enumerate(queue, 1):
+        words = entry.get("words", 0)
+        total_words += words
+        est = words / WPM_ESTIMATE
+        added = utc_to_local_date(entry.get("added", ""))
+        print(f"  {i}. {entry['title']}")
+        print(f"     {words} words, ~{est:.0f} min | added {added}")
+
+    total_min = total_words / WPM_ESTIMATE
+    print(f"\nTotal: ~{total_words} words, ~{total_min:.0f} min listen time")
+
+
+def cmd_remove(args):
+    """Remove an article from the reading list by its displayed number.
+
+    INV-3: resolve the stable item id from ``load_queue()`` — the same query and
+    ordering that ``cmd_list`` shows the user — then delete by id. The user-facing
+    listing includes ``selected`` articles that the legacy ``remove_article(index)``
+    (a ``ready``-only positional query) does not, so indexing into that narrower
+    query would delete a different article than the one displayed at position N.
+
+    IA-1: refuses (rather than mutating) when a live controller lease is
+    held — see the guard at the top of this function.
+    """
+    if is_station_active():
+        print(_STATION_ACTIVE_MESSAGE)
+        return
+
+    queue = load_queue()
+    index = args.remove - 1
+    if index < 0 or index >= len(queue):
+        raise CLIError(f"Invalid index {args.remove}. Queue has {len(queue)} article(s).")
+
+    entry = remove_article_by_id(queue[index]["id"])
+
+    print(f"Removed: {entry['title']}")
+    queue = load_queue()
+    print(f"Queue now has {len(queue)} article(s).")
+
+
+def cmd_clear(args):
+    """Clear the entire reading list."""
+    count = clear_queue()
+    if count == 0:
+        print("Reading list is already empty.")
+    else:
+        print(f"Cleared {count} article(s) from reading list.")
+
+
+def _play_text(text, args):
+    """Generate and play TTS audio for text using AudioEngine.
+
+    Returns True if playback completed, False if interrupted.
+    """
+    from wilted.engine import AudioEngine
+
+    word_count = len(text.split())
+    est_minutes = word_count / WPM_ESTIMATE
+    print(f"  {word_count} words, ~{est_minutes:.0f} min listen time")
+
+    from wilted import get_default_speed
+
+    speed = args.speed if args.speed is not None else get_default_speed()
+    engine = AudioEngine(model_name=args.model, voice=args.voice, speed=speed, lang=args.lang)
+
+    if args.save:
+        from wilted.engine import export_to_wav
+        from wilted.text import split_into_chunks
+
+        chunks = split_into_chunks(text)
+        print(f"  {len(chunks)} chunks. Generating...")
+
+        def on_progress(current, total):
+            sys.stdout.write(f"\r  Generating {current}/{total}...")
+            sys.stdout.flush()
+
+        try:
+            export_to_wav(engine, chunks, args.save, on_progress=on_progress)
+            print(f"\n  Saved to {args.save}")
+        except ValueError as e:
+            print(f"\n  {e}", file=sys.stderr)
+    else:
+        # Stream playback via AudioEngine.play_article
+        from wilted.text import split_paragraphs
+
+        paragraphs = split_paragraphs(text)
+        print(f"  {len(paragraphs)} paragraphs. Playing... (Ctrl+C to stop)\n")
+
+        def on_progress(para_idx, seg_idx, total_paras, current_text):
+            sys.stdout.write(f"\r  Paragraph {para_idx + 1}/{total_paras}")
+            sys.stdout.flush()
+
+        try:
+            engine.play_article(text, on_progress=on_progress)
+            print("\n  Done.")
+        except KeyboardInterrupt:
+            engine.stop()
+            print("\n  Stopped.")
+            return False
+
+    return True
+
+
+def cmd_play(args):
+    """Play all articles in the reading list sequentially.
+
+    IA-1: refuses (rather than mutating/playing) when a live controller
+    lease is held — see the guard at the top of this function.
+    """
+    if is_station_active():
+        print(_STATION_ACTIVE_MESSAGE)
+        return
+
+    queue = load_queue()
+    if not queue:
+        print("Reading list is empty. Add articles with: wilted --add URL")
+        return
+
+    print(f"Playing {len(queue)} article(s)...\n")
+    completed = []
+    speech_ready = False
+    for i, entry in enumerate(queue):
+        text = get_article_text(entry)
+        if text is None:
+            print(f"Skipping #{entry['id']}: cached file missing")
+            continue
+
+        if not speech_ready:
+            require_speech_ready()
+            speech_ready = True
+
+        print(f"[{i + 1}/{len(queue)}] {entry['title']}")
+        finished = _play_text(text, args)
+        if finished:
+            completed.append(entry)
+        else:
+            break
+
+    if completed:
+        for entry in completed:
+            mark_completed(entry)
+        remaining = load_queue()
+        print(f"\nFinished {len(completed)} article(s). {len(remaining)} remaining.")
+
+
+def cmd_next(args):
+    """Play the next article in the reading list.
+
+    IA-1: refuses (rather than mutating/playing) when a live controller
+    lease is held — see the guard at the top of this function.
+    """
+    if is_station_active():
+        print(_STATION_ACTIVE_MESSAGE)
+        return
+
+    queue = load_queue()
+    if not queue:
+        print("Reading list is empty. Add articles with: wilted --add URL")
+        return
+
+    entry = queue[0]
+    text = get_article_text(entry)
+    if text is None:
+        remove_article(0)
+        raise CLIError(f"Cached file missing for: {entry['title']}")
+
+    require_speech_ready()
+    print(f"Now playing: {entry['title']}")
+    finished = _play_text(text, args)
+
+    if finished:
+        mark_completed(entry)
+        remaining = load_queue()
+        if remaining:
+            print(f"{len(remaining)} article(s) remaining.")
+        else:
+            print("Reading list is now empty.")
+
+
+def _print_status(msg: str) -> None:
+    """Surface fetch/extract progress to stderr.
+
+    Progress goes to stderr, not stdout, so it stays visible interactively
+    without polluting piped output (e.g. ``wilted URL --clean > out.txt``).
+    """
+    print(msg, file=sys.stderr)
+
+
+def cmd_direct(args):
+    """Play text directly from URL, file, stdin, or clipboard."""
+    text = None
+
+    if args.input == "-":
+        text = sys.stdin.read()
+    elif args.input:
+        if args.input.startswith(("http://", "https://")):
+            # Forward live cascade progress to stderr so a slow fetch (Apple
+            # News resolution, or the multi-second headless-browser fallback)
+            # never looks like a hang. The cascade emits "Fetching article..."
+            # itself, so there is no static pre-print here.
+            text, _ = get_text_from_url(args.input, on_status=_print_status)
+            if not text:
+                raise CLIError("Could not extract article text (paywall?). Try: wilted --add")
+        elif os.path.isfile(args.input):
+            with open(args.input) as f:
+                text = f.read()
+        else:
+            raise CLIError(f"File not found: {args.input}")
+    elif not sys.stdin.isatty():
+        text = sys.stdin.read()
+    else:
+        print("Reading from clipboard...")
+        text = get_text_from_clipboard()
+
+    if not text or not text.strip():
+        raise CLIError("No text found.")
+
+    text = clean_text(text)
+
+    if args.clean:
+        print(text)
+        return
+
+    require_speech_ready()
+    _play_text(text, args)
+
+
+def cmd_list_voices():
+    """Print available Kokoro voices grouped by accent."""
+    print("Kokoro voices:\n")
+    for accent in ["American", "British", "Japanese", "Chinese"]:
+        voices = [f"{code} ({v['name']}, {v['gender']})" for code, v in VOICES.items() if v["accent"] == accent]
+        if voices:
+            print(f"  {accent}: {', '.join(voices)}")
+
+
+def cmd_db_prune(argv: list[str]) -> None:
+    """Delete terminal processing-job ledger rows older than a retention window."""
+    parser = argparse.ArgumentParser(prog="wilted db prune")
+    parser.add_argument(
+        "--older-than-days",
+        type=int,
+        default=14,
+        help="Delete terminal processing jobs completed more than N days ago (default: 14)",
+    )
+    args = parser.parse_args(argv)
+
+    from wilted import DATA_DIR
+    from wilted.db import connect_db
+    from wilted.processing_jobs import prune_terminal_jobs
+
+    connect_db(DATA_DIR / "wilted.db")
+    deleted = prune_terminal_jobs(older_than_days=args.older_than_days)
+    print(f"Pruned {deleted} terminal processing job(s) older than {args.older_than_days} day(s)")
+
+
+def cmd_db(argv: list[str]) -> None:
+    """Database maintenance commands."""
+    if not argv or argv[0] not in ("cutover", "prune"):
+        print("Usage: wilted db cutover [--dry-run] [--backup-dir PATH] [--force]", file=sys.stderr)
+        print("       wilted db prune [--older-than-days N]", file=sys.stderr)
+        sys.exit(1)
+
+    if argv[0] == "prune":
+        cmd_db_prune(argv[1:])
+        return
+
+    parser = argparse.ArgumentParser(prog="wilted db cutover")
+    parser.add_argument("--dry-run", action="store_true", help="Plan cutover without mutating the database")
+    parser.add_argument(
+        "--backup-dir",
+        type=Path,
+        default=None,
+        help="Directory for verified SQLite backups (required for live cutover)",
+    )
+    parser.add_argument("--force", action="store_true", help="Skip interactive confirmation prompt")
+    args = parser.parse_args(argv[1:])
+
+    from wilted import DATA_DIR
+    from wilted.db import Item, connect_db
+    from wilted.legacy_cutover import (
+        CutoverError,
+        apply_legacy_cutover,
+        cutover_complete,
+        cutover_required,
+        restore_instructions,
+    )
+
+    db_path = DATA_DIR / "wilted.db"
+    connect_db(db_path)
+
+    if cutover_complete() and not cutover_required(Item._meta.database):
+        print("Legacy cutover already complete.")
+        return
+
+    if not cutover_required(Item._meta.database) and not args.dry_run:
+        print("Legacy cutover is not required for this database.")
+        return
+
+    if not args.dry_run and not args.force:
+        answer = input("Apply destructive legacy cutover? Type 'yes' to continue: ").strip().lower()
+        if answer != "yes":
+            print("Cutover cancelled.")
+            return
+
+    backup_dir = args.backup_dir or (DATA_DIR / "backups")
+
+    try:
+        report = apply_legacy_cutover(
+            db_path,
+            dry_run=args.dry_run,
+            backup_dir=None if args.dry_run else backup_dir,
+        )
+    except CutoverError as exc:
+        print(f"Cutover failed: {exc}", file=sys.stderr)
+        print(file=sys.stderr)
+        print(restore_instructions(), file=sys.stderr)
+        sys.exit(1)
+
+    print(report.message)
+    print(f"  items mapped     : {report.items_mapped}")
+    print(f"  items quarantined: {report.items_quarantined}")
+    print(f"  report_items new : {report.report_items_created}")
+    if report.backup_path is not None:
+        print(f"  backup           : {report.backup_path}")
+    if report.completed_at is not None:
+        print(f"  completed_at     : {report.completed_at}")
+
+    if report.quarantine_rows:
+        print("\nQuarantine report:")
+        for row in report.quarantine_rows:
+            print(
+                f"  item #{row['item_id']} "
+                f"({row['legacy_status']}/{row['item_type']}/{row['artifact_cohort']}): "
+                f"{row['reason']}"
+            )
+
+    if report.cohort_reconciliation:
+        print("\nCohort reconciliation:")
+        for row in report.cohort_reconciliation:
+            status = "ok" if row.matches else "MISMATCH"
+            print(
+                f"  {row.legacy_status}/{row.item_type}/{row.artifact_cohort}: "
+                f"legacy={len(row.legacy_ids)} new={len(row.new_ids)} [{status}]"
+            )
+
+
+def cmd_doctor(_argv: list[str] | None = None) -> None:
+    """Print diagnostic path and configuration info."""
+    import shutil
+
+    from wilted import DATA_DIR, PROJECT_ROOT
+
+    db_path = DATA_DIR / "wilted.db"
+    config_path = PROJECT_ROOT / "wilted.toml"
+
+    print("wilted doctor\n")
+    print(f"  PROJECT_ROOT : {PROJECT_ROOT}")
+    print(f"  DATA_DIR     : {DATA_DIR}")
+    print(f"  DB path      : {db_path}  ({'exists' if db_path.exists() else 'missing'})")
+    print(f"  Config path  : {config_path}  ({'exists' if config_path.exists() else 'using defaults'})")
+    print(f"  pyproject    : {(PROJECT_ROOT / 'pyproject.toml').exists()}")
+
+    data_writable = os.access(DATA_DIR, os.W_OK) if DATA_DIR.exists() else False
+    print(f"  data/ writable: {data_writable}")
+
+    ffmpeg = shutil.which("ffmpeg")
+    print(f"  ffmpeg       : {ffmpeg or 'NOT FOUND'}")
+
+    # Email-alert check
+    email_alert = os.path.expanduser("~/.agent/bin/email-alert")
+    print(f"  email-alert  : {email_alert}  ({'exists' if os.path.exists(email_alert) else 'NOT FOUND'})")
+
+    email_config = _load_email_config()
+    email_status = "enabled" if email_config["enabled"] else "disabled"
+    email_to = email_config["to"] or "(not set)"
+    print(f"  Email        : {email_status}, to={email_to}")
+
+    # Playlist health
+    try:
+        from wilted.playlists import ensure_default_playlists, list_playlists
+
+        ensure_default_playlists()
+        playlists = list_playlists()
+        print(f"  Playlists    : {len(playlists)} ({', '.join(p.name for p in playlists)})")
+    except Exception as e:
+        print(f"  Playlists    : error — {e}")
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Feed management subcommands
+# ---------------------------------------------------------------------------
+
+
+def _prompt_yes(question: str) -> bool:
+    """Prompt with [Y/n]; empty/y/yes → True, anything else → False.
+
+    Ctrl-D (EOF) at the prompt is treated as a decline, matching `--no-chain`.
+    """
+    try:
+        response = input(f"{question} [Y/n] ").strip().lower()
+    except EOFError:
+        return False
+    return response in ("", "y", "yes")
+
+
+def _maybe_chain_discover_prepare(*, yes: bool, no_chain: bool) -> None:
+    """After `feed add`, optionally chain into discover and prepare.
+
+    - `--no-chain` → silent no-op.
+    - `--yes` → run both, no prompts.
+    - Interactive TTY → prompt Y/n for each stage, default Yes.
+    - Non-TTY without `--yes` → print a hint and exit.
+    """
+    if no_chain:
+        return
+
+    if not yes and not sys.stdin.isatty():
+        print("Run `wilted discover && wilted prepare` to fetch and process new items.")
+        return
+
+    run_discover_now = yes or _prompt_yes("Run discover now?")
+    if not run_discover_now:
+        return
+
+    from wilted.discover import run_discover
+    from wilted.pipeline_submit import run_prepare_via_runner
+
+    stats = run_discover(on_status=_print_status)
+    print(f"→ Discovered {stats['discovered']} new items across {stats['feeds_polled']} feeds")
+
+    run_prepare_now = yes or _prompt_yes("Run prepare now?")
+    if not run_prepare_now:
+        return
+
+    prep = run_prepare_via_runner(on_status=_print_status)
+    print(f"→ Prepared {prep['prepared']} items ({prep['errors']} errors, {prep['skipped']} skipped)")
+
+
+def cmd_feed(argv: list[str]) -> None:
+    """Dispatch feed subcommands: add, list, remove."""
+    if not argv:
+        print("Usage: wilted feed <add|list|remove> [args]", file=sys.stderr)
+        sys.exit(1)
+
+    action = argv[0]
+
+    if action == "add":
+        parser = argparse.ArgumentParser(prog="wilted feed add")
+        parser.add_argument("url", help="Feed URL")
+        parser.add_argument("--type", dest="feed_type", default="article", choices=["article", "podcast"])
+        parser.add_argument("--title", default=None, help="Feed title (auto-detected if omitted)")
+        parser.add_argument("--playlist", default=None, help="Default playlist for new items")
+        parser.add_argument("--yes", "-y", action="store_true", help="Skip prompts; chain discover + prepare")
+        parser.add_argument("--no-chain", action="store_true", help="Suppress discover/prepare prompts entirely")
+        args = parser.parse_args(argv[1:])
+
+        from wilted.feeds import add_feed
+
+        try:
+            feed = add_feed(
+                args.url,
+                feed_type=args.feed_type,
+                title=args.title,
+                default_playlist=args.playlist,
+            )
+            print(f"Added feed #{feed.id}: {feed.title} ({feed.feed_type})")
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+        _maybe_chain_discover_prepare(yes=args.yes, no_chain=args.no_chain)
+
+    elif action == "list":
+        from wilted.feed_refs import display_feed_reference
+        from wilted.feeds import list_feeds
+
+        feeds = list_feeds()
+        if not feeds:
+            print("No feeds configured. Add one with: wilted feed add <url>")
+            return
+
+        print(f"Feeds ({len(feeds)}):\n")
+        for f in feeds:
+            status = "enabled" if f.enabled else "disabled"
+            playlist = f" -> {f.default_playlist}" if f.default_playlist else ""
+            print(f"  #{f.id}  {f.title} [{f.feed_type}] ({status}){playlist}")
+            print(f"       {display_feed_reference(f.feed_url)}")
+
+    elif action == "remove":
+        if len(argv) < 2:
+            print("Usage: wilted feed remove <id>", file=sys.stderr)
+            sys.exit(1)
+
+        from wilted.feeds import remove_feed
+
+        try:
+            feed_id = int(argv[1])
+            feed = remove_feed(feed_id)
+            print(f"Removed feed #{feed_id}: {feed.title}")
+        except (ValueError, TypeError) as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    elif action == "stats":
+        from wilted.report import get_feed_stats
+
+        stats = get_feed_stats()
+        if not stats:
+            print("No feed statistics available.")
+            return
+
+        print("Feed Stats (last 4 weeks):\n")
+        for i, stat in enumerate(stats, 1):
+            feed_title = stat.get("feed_title", "Unknown")
+            discovered = stat.get("items_discovered", 0)
+            selected = stat.get("items_selected", 0)
+            rate = stat.get("selection_rate")
+            rate_percent = f"{rate * 100:.1f}%" if rate is not None else "0.0%"
+            print(f"  #{i}  {feed_title}")
+            print(f"       Discovered: {discovered}  Selected: {selected}  Rate: {rate_percent}")
+
+    else:
+        print(f"Unknown feed action: '{action}'. Use add, list, remove, or stats.", file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Keyword management subcommands
+# ---------------------------------------------------------------------------
+
+
+def cmd_keyword(argv: list[str]) -> None:
+    """Dispatch keyword subcommands: add, list, remove."""
+    if not argv:
+        print("Usage: wilted keyword <add|list|remove> [args]", file=sys.stderr)
+        sys.exit(1)
+
+    action = argv[0]
+
+    if action == "add":
+        parser = argparse.ArgumentParser(prog="wilted keyword add")
+        parser.add_argument("keyword", help="Keyword or phrase")
+        parser.add_argument("--weight", type=float, default=1.0, help="Relevance weight (default: 1.0)")
+        args = parser.parse_args(argv[1:])
+
+        from wilted.preferences import add_keyword
+
+        try:
+            kw = add_keyword(args.keyword, weight=args.weight)
+            print(f"Added keyword: '{kw.keyword}' (weight: {kw.weight:.1f})")
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    elif action == "list":
+        from wilted.preferences import list_keywords
+
+        keywords = list_keywords()
+        if not keywords:
+            print("No keywords configured. Add one with: wilted keyword add <word>")
+            return
+
+        print(f"Keywords ({len(keywords)}):\n")
+        for kw in keywords:
+            print(f"  {kw.keyword} (weight: {kw.weight:.1f})")
+
+    elif action == "remove":
+        if len(argv) < 2:
+            print("Usage: wilted keyword remove <keyword>", file=sys.stderr)
+            sys.exit(1)
+
+        from wilted.preferences import remove_keyword
+
+        keyword = " ".join(argv[1:])  # Support multi-word keywords
+        try:
+            remove_keyword(keyword)
+            print(f"Removed keyword: '{keyword}'")
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    else:
+        print(f"Unknown keyword action: '{action}'. Use add, list, or remove.", file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Playlist management subcommands
+# ---------------------------------------------------------------------------
+
+
+def cmd_playlist(argv: list[str]) -> None:
+    """Dispatch playlist subcommands: list, create, delete, add, remove."""
+    if not argv:
+        print(
+            "Usage: wilted playlist <list|create|delete|add|remove> [args]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    action = argv[0]
+
+    if action == "list":
+        from wilted.playlists import (
+            ensure_default_playlists,
+            get_playlist_items,
+            list_playlists,
+        )
+
+        ensure_default_playlists()
+        playlists = list_playlists()
+        if not playlists:
+            print("No playlists found.")
+            return
+
+        print(f"Playlists ({len(playlists)}):\n")
+        for pl in playlists:
+            items = get_playlist_items(pl.name)
+            print(f"  {pl.name} [{pl.playlist_type}] — {len(items)} item(s)")
+
+    elif action == "create":
+        if len(argv) < 2:
+            print("Usage: wilted playlist create <name>", file=sys.stderr)
+            sys.exit(1)
+
+        from wilted.playlists import create_playlist
+
+        name = " ".join(argv[1:])
+        try:
+            pl = create_playlist(name)
+            print(f"Created playlist: '{pl.name}'")
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    elif action == "delete":
+        if len(argv) < 2:
+            print("Usage: wilted playlist delete <name>", file=sys.stderr)
+            sys.exit(1)
+
+        from wilted.playlists import delete_playlist
+
+        name = " ".join(argv[1:])
+        try:
+            delete_playlist(name)
+            print(f"Deleted playlist: '{name}'")
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    elif action == "add":
+        if len(argv) < 3:
+            print(
+                "Usage: wilted playlist add <playlist_name> <item_id> [position]",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        from wilted.playlists import add_to_playlist
+
+        playlist_name = argv[1]
+        try:
+            item_id = int(argv[2])
+            position = int(argv[3]) if len(argv) >= 4 else None
+            add_to_playlist(playlist_name, item_id, position=position)
+            print(f"Added item #{item_id} to playlist '{playlist_name}'")
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    elif action == "remove":
+        if len(argv) < 3:
+            print(
+                "Usage: wilted playlist remove <playlist_name> <item_id>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        from wilted.playlists import remove_from_playlist
+
+        playlist_name = argv[1]
+        try:
+            item_id = int(argv[2])
+            remove_from_playlist(playlist_name, item_id)
+            print(f"Removed item #{item_id} from playlist '{playlist_name}'")
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    else:
+        print(
+            f"Unknown playlist action: '{action}'. Use list, create, delete, add, or remove.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Pipeline subcommands
+# ---------------------------------------------------------------------------
+
+
+def cmd_discover(argv: list[str]) -> None:
+    """Run the discovery stage: poll feeds, dedup, fetch articles."""
+    from wilted.pipeline_submit import run_discover_via_runner
+
+    try:
+        stats = run_discover_via_runner(on_status=_print_status)
+        print(f"Discovery complete: {stats['discovered']} new items from {stats['feeds_polled']} feeds")
+        if stats["errors"]:
+            print(f"  {stats['errors']} feed(s) had errors (see /tmp/wilted.log)")
+        if stats.get("unknown"):
+            print(
+                f"  {stats['unknown']} feed(s) did not finish draining — outcome unknown, "
+                f"not counted (see /tmp/wilted.log)",
+            )
+    except Exception as e:
+        print(f"Discovery failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_classify(argv: list[str]) -> None:
+    """Run the classification stage: categorize, score, summarize fetched items."""
+    from wilted.pipeline_submit import run_classify_via_runner
+
+    try:
+        stats = run_classify_via_runner(on_status=_print_status)
+        print(f"Classification complete: {stats['classified']} items classified")
+        if stats["errors"]:
+            print(f"  {stats['errors']} item(s) had errors (see /tmp/wilted.log)")
+    except Exception as e:
+        print(f"Classification failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _load_email_config() -> dict:
+    """Load email config from wilted.toml. Returns {'enabled': bool, 'to': str}."""
+    from wilted import load_config
+
+    email_section = load_config().get("email", {})
+    return {
+        "enabled": bool(email_section.get("enabled", False)),
+        "to": str(email_section.get("to", "")),
+    }
+
+
+def cmd_report(argv: list[str]) -> None:
+    """Generate the morning report from classified items."""
+    from wilted.pipeline_submit import run_report_via_runner
+    from wilted.report import get_report
+
+    parser = argparse.ArgumentParser(prog="wilted report", add_help=False)
+    parser.add_argument("--email", action="store_true", default=False)
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        default=False,
+        help="Undo decisions on the most recent report so it can be reviewed again",
+    )
+    args, _ = parser.parse_known_args(argv)
+
+    if args.reset:
+        from wilted.report import reset_latest_report
+
+        result = reset_latest_report()
+        if result is None:
+            print("No report to reset.")
+            return
+        print(
+            f"Reset morning report for {result['report_date']}: "
+            f"cleared {result['cleared']} decision(s), "
+            f"returned {result['requeued_cleared']} item(s) to the candidate pool."
+        )
+        print(f"{result['candidates']} item(s) will show next time you open the report.")
+        return
+
+    try:
+        run_report_via_runner(on_status=_print_status)
+
+        if args.email:
+            from wilted.report import format_report_email
+
+            result = format_report_email()
+            if result is None:
+                print("No report to email.")
+                return
+
+            subject, body = result
+            config = _load_email_config()
+            if not config["enabled"] or not config["to"]:
+                print("Email not configured. Set [email] enabled=true and to=... in wilted.toml")
+                return
+
+            subprocess.run(
+                [
+                    os.path.expanduser("~/.agent/bin/email-alert"),
+                    "--subject",
+                    subject,
+                    "--to",
+                    config["to"],
+                ],
+                input=body,
+                text=True,
+                check=True,
+            )
+            print(f"Report emailed to {config['to']}.")
+            return
+
+        report_data = get_report()
+
+        if report_data is None:
+            print("No report available. Run discovery and classification first.")
+            return
+
+        report = report_data["report"]
+        report_date = report["report_date"]
+        items_dict = report_data["items"]
+
+        print(f"Morning report for {report_date}:")
+
+        total_items = 0
+        for playlist, items in sorted(items_dict.items()):
+            item_count = len(items)
+            total_items += item_count
+            playlist_header = f"  {playlist} ({item_count} items):"
+            print(playlist_header)
+            for item in items:
+                score = item.get("relevance_score")
+                score_str = f"[{score:.2f}]" if score is not None else "[N/A]"
+                title = item.get("title", "Untitled")
+                summary = item.get("summary", "")
+                if len(title) > 60:
+                    title = title[:57] + "..."
+                if summary:
+                    summary_preview = summary[:40] + "..." if len(summary) > 40 else summary
+                    print(f"    {score_str} {title} — {summary_preview}")
+                else:
+                    print(f"    {score_str} {title}")
+
+        # Count unique feeds
+        feed_ids = set()
+        for playlist, items in items_dict.items():
+            for item in items:
+                if item.get("feed_id"):
+                    feed_ids.add(item["feed_id"])
+
+        print(f"Total: {total_items} items from {len(feed_ids)} feeds")
+
+    except Exception as e:
+        print(f"Report generation failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_benchmark(argv: list[str]) -> None:
+    """Run LLM benchmarking for classification tasks."""
+    if not argv:
+        print("Usage: wilted benchmark classify --models 'model1,model2'", file=sys.stderr)
+        sys.exit(1)
+
+    task = argv[0]
+    if task != "classify":
+        print(f"Unknown benchmark task: '{task}'. Available: classify", file=sys.stderr)
+        sys.exit(1)
+
+    parser = argparse.ArgumentParser(prog="wilted benchmark classify")
+    parser.add_argument("--models", required=True, help="Comma-separated list of model identifiers")
+    parser.add_argument("--backend", default="gguf", choices=["gguf", "mlx"], help="Backend type (default: gguf)")
+    args = parser.parse_args(argv[1:])
+
+    from wilted.handlers.benchmark import run_benchmark
+
+    models = [m.strip() for m in args.models.split(",")]
+    try:
+        run_benchmark(models=models, backend_type=args.backend)
+    except Exception as e:
+        print(f"Benchmark failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Content preparation
+# ---------------------------------------------------------------------------
+
+
+def cmd_prepare(argv: list[str]) -> None:
+    """Run the content preparation stage for selected items."""
+    parser = argparse.ArgumentParser(prog="wilted prepare")
+    parser.add_argument("--no-llm", action="store_true", help="Skip LLM-based ad/promo detection")
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_GGUF_MODEL,
+        help="LLM model for ad detection (GGUF path or hf:<repo_id>/<filename>)",
+    )
+    parser.add_argument("--backend", default="gguf", choices=["gguf", "mlx"], help="LLM backend type")
+    args = parser.parse_args(argv)
+
+    from wilted.pipeline_submit import run_prepare_via_runner
+
+    try:
+        stats = run_prepare_via_runner(
+            use_llm=not args.no_llm,
+            llm_model=args.model,
+            llm_backend_type=args.backend,
+            on_status=_print_status,
+        )
+        summary = f"Prepare complete: {stats['prepared']} prepared, {stats['errors']} errors"
+        # Truthful accounting (INV-6): name isolated submit failures on the surface.
+        if stats.get("submission_errors"):
+            summary += f", {stats['submission_errors']} failed to submit"
+        print(summary)
+    except Exception as e:
+        print(f"Prepare failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Onboarding + ingestion
+# ---------------------------------------------------------------------------
+
+
+def cmd_setup(argv: list[str]) -> None:
+    """Interactive first-run setup: feeds, keywords, first ingestion."""
+    from wilted.onboard import run_setup
+
+    try:
+        run_setup()
+    except (KeyboardInterrupt, EOFError):
+        print("\n\nSetup cancelled.")
+
+
+def cmd_scheduler(argv: list[str]) -> None:
+    """Run one bounded background-work scheduler tick."""
+    parser = argparse.ArgumentParser(prog="wilted scheduler")
+    subparsers = parser.add_subparsers(dest="action", required=True)
+    tick_parser = subparsers.add_parser("tick", help="Execute one bounded scheduler tick")
+    tick_parser.add_argument(
+        "--owner-id",
+        default=None,
+        help="Opaque scheduler identity recorded on claimed job leases",
+    )
+    args = parser.parse_args(argv)
+
+    if args.action != "tick":
+        parser.error(f"unknown scheduler action: {args.action}")
+
+    from wilted.scheduler_tick import run_scheduler_tick
+
+    result = run_scheduler_tick(owner_id=args.owner_id)
+    print(f"scheduler tick: outcome={result.outcome.value} jobs_due={result.jobs_due} jobs_ran={result.jobs_ran}")
+    raise SystemExit(result.exit_code)
+
+
+def cmd_queue(argv: list[str]) -> None:
+    """Read-only queue-deferral observability (M5 — no scheduling behavior change).
+
+    Re-samples availability/inventory/clock and re-derives the M3 deferral
+    policy over the live claimable queue at display time (there is no
+    persisted DEFERRED state to read); claims nothing, locks nothing, writes
+    nothing. INV-11: this is an interactive surface, so the projection goes
+    to stderr via ``_print_status``, never stdout.
+    """
+    parser = argparse.ArgumentParser(prog="wilted queue")
+    subparsers = parser.add_subparsers(dest="action", required=True)
+    subparsers.add_parser("status", help="Show the current resource-aware deferral projection")
+    args = parser.parse_args(argv)
+
+    if args.action != "status":
+        parser.error(f"unknown queue action: {args.action}")
+
+    from wilted.processing_jobs import read_deferral_summary
+    from wilted.scheduling_policy import format_deferral_summary
+
+    try:
+        summary = read_deferral_summary()
+    except Exception:
+        # Fail-open, mirroring the TUI (tui/__init__.py:_build_sequencer_worker):
+        # an unreadable projection is observability degrading, not a scheduling
+        # fault, so it must never surface as a traceback. INV-11: the graceful
+        # notice stays on stderr, never stdout.
+        logger.exception("wilted queue status: failed to read deferral summary")
+        _print_status("queue status unavailable")
+        return
+    _print_status(format_deferral_summary(summary))
+
+
+def cmd_ingest(argv: list[str]) -> None:
+    """Run the full nightly pipeline: discover → classify → report."""
+    parser = argparse.ArgumentParser(
+        prog="wilted ingest",
+        description="Run the content ingestion pipeline.",
+    )
+    parser.add_argument("--skip-discover", action="store_true", help="Skip feed polling")
+    parser.add_argument("--skip-classify", action="store_true", help="Skip LLM classification")
+    parser.add_argument("--skip-report", action="store_true", help="Skip report generation")
+    args = parser.parse_args(argv)
+
+    from wilted.onboard import run_ingest
+
+    try:
+        # No on_status sink: `wilted ingest` is the nightly launchd entry
+        # (scripts/wilted-nightly.sh), whose per-run log must stay unchanged, and
+        # run_ingest already names each stage wait on stdout. Passing a stderr
+        # heartbeat here would widen the daemon's output (INV-11 byte-silence).
+        run_ingest(
+            skip_discover=args.skip_discover,
+            skip_classify=args.skip_classify,
+            skip_report=args.skip_report,
+        )
+    except KeyboardInterrupt:
+        print("\n\nIngestion interrupted.")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Argument parsing and dispatch
+# ---------------------------------------------------------------------------
+
+
+def run_cli(argv=None):
+    """Parse CLI arguments and dispatch to the appropriate command.
+
+    Accepts both new subcommand syntax (``wilted list``) and legacy flag
+    syntax (``wilted --list``) via :func:`_normalize_argv`.
+
+    Args:
+        argv: Argument list to parse. Defaults to sys.argv[1:] if None.
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+    argv = list(argv)
+
+    # Route subcommands before argparse.
+    if argv:
+        first = argv[0]
+        if first == "doctor":
+            cmd_doctor(argv[1:])
+            return
+        if first == "db":
+            cmd_db(argv[1:])
+            return
+        if first == "feed":
+            cmd_feed(argv[1:])
+            return
+        if first == "keyword":
+            cmd_keyword(argv[1:])
+            return
+        if first == "discover":
+            cmd_discover(argv[1:])
+            return
+        if first == "classify":
+            cmd_classify(argv[1:])
+            return
+        if first == "report":
+            cmd_report(argv[1:])
+            return
+        if first == "benchmark":
+            cmd_benchmark(argv[1:])
+            return
+        if first == "prepare":
+            cmd_prepare(argv[1:])
+            return
+        if first == "setup":
+            cmd_setup(argv[1:])
+            return
+        if first == "ingest":
+            cmd_ingest(argv[1:])
+            return
+        if first == "scheduler":
+            cmd_scheduler(argv[1:])
+            return
+        if first == "queue":
+            cmd_queue(argv[1:])
+            return
+        if first == "playlist":
+            cmd_playlist(argv[1:])
+            return
+        if first in _STUB_SUBCMDS:
+            _run_stub(argv)
+            return
+
+    # Translate subcommand style → flag style so the flat parser handles both.
+    argv = _normalize_argv(argv)
+
+    parser = argparse.ArgumentParser(
+        description="Wilted — local TTS article reader. No args launches the TUI.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  wilted                                  Launch interactive TUI
+  wilted add https://apple.news/ABC123    Add to reading list (subcommand)
+  wilted --add https://apple.news/ABC123  Add to reading list (legacy)
+  wilted list                             Show reading list
+  wilted play                             Play entire reading list
+  wilted --clean URL                      Preview cleaned article text
+  wilted --save out.wav URL               Export article audio to WAV""",
+    )
+
+    parser.add_argument("input", nargs="?", help="URL, file path, '-' for stdin (CLI mode only)")
+
+    queue_group = parser.add_argument_group("reading list")
+    queue_group.add_argument("--add", action="store_true", help="Add article to reading list (from URL or clipboard)")
+    queue_group.add_argument("--list", action="store_true", help="Show reading list")
+    queue_group.add_argument("--play", action="store_true", help="Play all articles in reading list")
+    queue_group.add_argument("--next", action="store_true", help="Play next article in reading list")
+    queue_group.add_argument("--remove", type=int, metavar="N", help="Remove article N from reading list")
+    queue_group.add_argument("--clear", action="store_true", help="Clear entire reading list")
+
+    play_group = parser.add_argument_group("playback")
+    play_group.add_argument("--voice", default="af_heart", help="Voice preset (default: af_heart)")
+    play_group.add_argument(
+        "--speed", type=float, default=None, help="Speech speed 0.5-2.0 (default: from wilted.toml or 1.0)"
+    )
+    play_group.add_argument(
+        "--model", default="mlx-community/Kokoro-82M-bf16", help="TTS model (default: mlx-community/Kokoro-82M-bf16)"
+    )
+    play_group.add_argument(
+        "--lang", default="a", help="Language: a=American, b=British, j=Japanese, z=Chinese (default: a)"
+    )
+    play_group.add_argument("--save", metavar="FILE", help="Save audio to file instead of playing")
+
+    util_group = parser.add_argument_group("utility")
+    util_group.add_argument("--clean", action="store_true", help="Output cleaned text only, no audio")
+    util_group.add_argument("--list-voices", action="store_true", help="List available voices")
+    util_group.add_argument("--version", action="store_true", help="Show version and exit")
+    util_group.add_argument("--debug", action="store_true", help="Enable DEBUG logging to /tmp/wilted.log")
+
+    args = parser.parse_args(argv)
+
+    try:
+        if args.version:
+            from wilted import __version__
+
+            print(f"wilted {__version__}")
+            return
+        if args.list_voices:
+            cmd_list_voices()
+        elif args.list:
+            cmd_list(args)
+        elif args.add:
+            cmd_add(args)
+        elif args.remove is not None:
+            cmd_remove(args)
+        elif args.clear:
+            cmd_clear(args)
+        elif args.play:
+            cmd_play(args)
+        elif args.next:
+            cmd_next(args)
+        else:
+            cmd_direct(args)
+    except CLIError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def _weather_monitor_for_launch() -> "WeatherMonitor | None":
+    """Construct the production ``WeatherMonitor`` for a live TUI launch.
+
+    ``WILTED_WEATHER_TEST_TRIGGER``, when set, is a filesystem path passed
+    through to ``build_production_monitor(trigger_path=...)`` -- the A.5.1
+    manual-test hook that lets a QA session fire a real bulletin without a
+    live NWS alert (see ``wilted.station_runtime.weather_monitor``). Unset
+    means the real NWS fetch is used, as in normal production.
+
+    Construction failures (e.g. optional weather/TTS dependencies missing)
+    are logged and swallowed rather than raised -- the TUI must still launch
+    even when weather wiring is unavailable, matching ``WiltedApp``'s own
+    "no weather_monitor given" default.
+    """
+    trigger = os.environ.get("WILTED_WEATHER_TEST_TRIGGER")
+    try:
+        from wilted.station_runtime.weather_monitor import build_production_monitor
+
+        monitor = build_production_monitor(trigger_path=Path(trigger) if trigger else None)
+    except Exception:
+        logger.warning(
+            "_weather_monitor_for_launch: failed to construct WeatherMonitor; launching without it", exc_info=True
+        )
+        return None
+    # Logged at WARNING (not INFO) ON PURPOSE: which mode armed is the single
+    # most common source of "I touched the trigger and nothing happened"
+    # confusion, and the default file log is WARNING+ — an INFO line here is
+    # invisible exactly when it is needed for diagnosis. The live-NWS branch is
+    # a WARNING too so a launch that FORGOT to arm the test trigger is equally
+    # visible (it silently ignores the trigger file).
+    if trigger:
+        logger.warning(
+            "weather monitor ARMED with A.5.1 TEST TRIGGER at %s — `touch %s` to fire a bulletin", trigger, trigger
+        )
+    else:
+        logger.warning(
+            "weather monitor in LIVE-NWS mode (WILTED_WEATHER_TEST_TRIGGER not set) — "
+            "touching /tmp/wilted-fire-bulletin does NOTHING in this mode; "
+            "use `make station-test` to arm the test trigger"
+        )
+    return monitor
+
+
+# DEC private-mode resets that undo the terminal state a full-screen TUI driver
+# sets. Held as raw bytes so a signal handler can emit them with a single
+# async-signal-safe os.write() — no buffered-stream lock, no allocation.
+_TERMINAL_RESTORE_SEQ = (
+    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l"  # mouse reporting (all encodings)
+    b"\x1b[?1004l"  # focus reporting
+    b"\x1b[?2004l"  # bracketed paste
+    b"\x1b[?25h"  # show cursor
+    b"\x1b[?1049l"  # leave the alternate screen
+)
+
+
+def _terminal_fd() -> "int | None":
+    """Best-effort file descriptor of the controlling terminal.
+
+    Prefers the real stdout/stderr streams; falls back to opening /dev/tty so a
+    restore still lands even if the standard streams are redirected. Returns
+    None when there is no terminal to restore (e.g. piped output, cron).
+    """
+    for stream in (sys.__stdout__, sys.stdout, sys.__stderr__):
+        try:
+            if stream is not None and stream.isatty():
+                return stream.fileno()
+        except Exception:
+            pass
+    try:
+        return os.open("/dev/tty", os.O_WRONLY)
+    except OSError:
+        return None
+
+
+def _emit_terminal_restore(fd: "int | None") -> None:
+    """Raw, unbuffered write of the DEC-mode restore sequence.
+
+    A single os.write() syscall — safe to call from a signal handler, unlike
+    buffered sys.stdout.write() which can deadlock against Textual's writer
+    thread on the stream lock.
+    """
+    if fd is None:
+        return
+    try:
+        os.write(fd, _TERMINAL_RESTORE_SEQ)
+    except OSError:
+        pass
+
+
+def _restore_terminal() -> None:
+    """Best-effort undo of the terminal modes a full-screen TUI driver sets.
+
+    Textual restores these itself on a clean quit; this is the safety net for
+    the exit paths that BYPASS Textual's teardown — a native crash, or the
+    terminal tab being closed (SIGHUP) while the app runs. Without it the shell
+    is left with mouse/focus reporting on (every mouse move spews escape
+    codes), the alternate screen active, or the cursor hidden — the "Wilted is
+    broken and I can't escape the terminal" wedge. Idempotent and quiet.
+
+    Full path (normal Python exit): emit the escape bytes AND run ``stty sane``
+    to restore cooked mode/echo. The signal-handler path uses only the raw
+    ``_emit_terminal_restore`` above, since subprocess calls are not
+    async-signal-safe.
+    """
+    _emit_terminal_restore(_terminal_fd())
+    try:
+        if sys.stdin.isatty():
+            # Restore cooked mode / echo in case raw mode was left engaged.
+            subprocess.run(["stty", "sane"], stdin=sys.stdin, check=False)
+    except Exception:
+        pass
+
+
+def _launch_tui() -> None:
+    """Launch the Textual TUI with crash/kill terminal safety.
+
+    - ``faulthandler`` writes a native-crash (SIGSEGV/SIGABRT/...) C traceback
+      to a file that survives the terminal being cleared, so a hard crash that
+      leaves no Python traceback is still diagnosable in the next session.
+    - SIGTERM/SIGHUP (delivered by ``kill`` or by closing the terminal tab)
+      restore the terminal before the process dies, so an external kill can
+      never wedge it.
+    - A ``finally`` restores the terminal on every Python-level exit path, on
+      top of Textual's own (idempotent) teardown.
+    """
+    import faulthandler
+    import signal
+
+    try:
+        # Append-mode, left open for the process lifetime (closed at exit).
+        fault_log = open("/tmp/wilted-faulthandler.log", "a")  # noqa: SIM115
+        faulthandler.enable(file=fault_log)
+    except Exception:
+        pass
+
+    # Capture the terminal fd ONCE, here on the main thread before Textual takes
+    # over, so the signal handler need only do a single async-signal-safe
+    # os.write() + re-raise — no isatty()/open()/subprocess/buffered I/O in the
+    # handler, all of which are unsafe or can deadlock against Textual's writer
+    # thread on the stdout lock.
+    _restore_fd = _terminal_fd()
+
+    def _restore_and_reraise(signum, _frame):
+        _emit_terminal_restore(_restore_fd)
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    for _sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(_sig, _restore_and_reraise)
+        except (ValueError, OSError):
+            pass  # e.g. not running on the main thread / signal unsupported
+
+    # Pre-initialize tqdm's multiprocessing lock on the main thread, via the
+    # same RuntimeBootstrap the app then threads into its worker-thread
+    # article-cache drain. If the first initialization instead happened inside
+    # a Textual worker during Hugging Face snapshot_download(), Python's
+    # resource_tracker may spawn a subprocess with invalid pass-through FDs and
+    # raise fds_to_keep (INV-1/BUG-2).
+    from wilted.station_runtime import RuntimeBootstrap
+
+    bootstrap = RuntimeBootstrap()
+    bootstrap.init_tqdm_lock()
+
+    try:
+        from wilted.tui import WiltedApp
+    except ModuleNotFoundError:
+        print("Error: textual is not installed. Run: uv sync", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        WiltedApp(
+            weather_monitor=_weather_monitor_for_launch(),
+            bootstrap=bootstrap,
+        ).run()
+    finally:
+        _restore_terminal()
+
+
+def main():
+    """Main entry point — dispatches to TUI (no args) or CLI (with args).
+
+    Startup order: logging → project root validation → migrations →
+    tqdm lock → TUI/CLI (speech readiness is gated at speech boundaries).
+    """
+    debug = bool(os.environ.get("WILTED_DEBUG")) or "--debug" in sys.argv
+    setup_logging(debug=debug)
+
+    validate_project_root()
+
+    from wilted import DATA_DIR
+    from wilted.content_state import backfill_items_with_null_fetch_state
+    from wilted.db import Item, connect_db, run_migrations
+    from wilted.legacy_cutover import cutover_in_progress, restore_instructions
+
+    db_path = DATA_DIR / "wilted.db"
+    run_migrations(db_path)
+    connect_db(db_path)
+    backfill_items_with_null_fetch_state()
+    if cutover_in_progress(Item._meta.database):
+        print(
+            "Legacy content-state cutover was interrupted and must be resolved before startup.\n"
+            "Run `wilted db cutover` after restoring from backup, or complete the cutover manually.",
+            file=sys.stderr,
+        )
+        print(file=sys.stderr)
+        print(restore_instructions(), file=sys.stderr)
+        sys.exit(1)
+
+    from wilted.playlists import ensure_default_playlists
+
+    ensure_default_playlists()
+
+    if len(sys.argv) > 1:
+        run_cli()
+    else:
+        require_speech_ready()
+        _launch_tui()
+
+
+# INV-6 C1: `python -m wilted.cli` is the target of scripts/wilted-nightly.sh.
+# Without this guard the module imports, defines main(), and exits 0 having run
+# NOTHING — the nightly job logged "completed successfully" every night while
+# doing no work. This makes the module actually invoke main() and propagate its
+# real exit status (main()'s sys.exit / uncaught exceptions surface as usual).
+if __name__ == "__main__":
+    main()

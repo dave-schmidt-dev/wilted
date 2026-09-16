@@ -52,9 +52,10 @@ ad-corpus:
 # holds is how a fix gets called good. `ad-corpus` stays lenient -- it reads
 # mutable library state and a machine that has prepared neither episode should
 # still be able to run it and read the report.
-# The archive's interpreter, not the system one, and resolved from the same
-# variable Swift resolves it from: the model bindings the detector imports live
-# in that virtualenv and nowhere else.
+# The runtime's own interpreter, not the system one, and resolved from the same
+# variable Swift resolves it from (see `PodcastPreparationPipeline.Configuration
+# .resolved`): the model bindings the detector imports live in that virtualenv
+# and nowhere else. Populate it with `uv sync --project Producer/Runtime --locked`.
 ad-corpus-replay:
-	@"$${WILTED_PIPELINE_PYTHON:-$$HOME/Documents/Projects/wilted-old/.venv/bin/python}" \
+	@"$${WILTED_PIPELINE_PYTHON:-Producer/Runtime/.venv/bin/python}" \
 		Producer/Workers/ad_corpus.py --mode replay --strict

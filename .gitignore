@@ -69,3 +69,8 @@ opencode.jsonc
 
 # Ad-hoc verification scratch: Xcode derived data from focused reruns
 .verify-tmp/
+
+# Deployer-local configuration: holds the operator location and contact.
+# Never commit -- this repository is public.
+wilted.toml
+**/wilted.toml

@@ -1,0 +1,1288 @@
+"""ProcessingJob admission repository and metadata safety helpers."""
+
+from __future__ import annotations
+
+import errno
+import fcntl
+import json
+import logging
+import os
+import re
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
+
+from peewee import IntegrityError, OperationalError
+
+import wilted
+from wilted.background_work.contracts import ArtifactManifest, JobKind, ProcessingJobState, SubmissionOutcome
+from wilted.background_work.idempotency import (
+    IdempotencyKey,
+    ReAdmissionPolicy,
+    resolve_recurring_admission,
+)
+from wilted.background_work.transitions import (
+    CancellationOutcome,
+    ProcessingJobTransitionError,
+    cancel_job,
+    reconcile_running_cancel,
+    transition_processing_job,
+)
+from wilted.content_state import count_listenable_ready
+from wilted.db import Item, ProcessingJob, ensure_db, now_utc
+from wilted.scheduling_policy import (
+    DeferralReason,
+    DeferralSummary,
+    JobCandidate,
+    PolicyContext,
+    PolicyThresholds,
+    select_claimable,
+    should_defer,
+    summarize_claimable,
+    thresholds_from_settings,
+)
+from wilted.station_runtime.machine_availability import _DarwinAvailabilityBackend
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Iterator
+    from pathlib import Path
+
+    from wilted.station_runtime.machine_availability import AvailabilityBackend
+
+logger = logging.getLogger(__name__)
+
+MAX_METADATA_BYTES = 4096
+
+_CLAIMABLE_STATES = frozenset(
+    {
+        ProcessingJobState.QUEUED,
+        ProcessingJobState.RETRY,
+    }
+)
+
+_UNCLAIMED_CANCEL_STATES = frozenset(
+    {
+        ProcessingJobState.QUEUED,
+        ProcessingJobState.RETRY,
+        ProcessingJobState.DEFERRED,
+    }
+)
+
+_TERMINAL_STATES = frozenset(
+    {
+        ProcessingJobState.COMPLETED,
+        ProcessingJobState.FAILED,
+        ProcessingJobState.CANCELLED,
+    }
+)
+
+_LOCKFILE_NAME = ".processing_runner.lock"
+_CLAIM_DB_RETRY_ATTEMPTS = 6
+_CLAIM_DB_RETRY_DELAY_S = 0.02
+
+# Production default for the claim-seam machine-availability sample. Stateless
+# (no I/O until ``sample()``), so constructing it at import time is safe and it
+# can be shared across every default claim attempt.
+_DEFAULT_AVAILABILITY_BACKEND = _DarwinAvailabilityBackend()
+
+
+def _utc_local_now() -> datetime:
+    """Production clock for the claim seam: a local-aware "now".
+
+    Returns a timezone-aware datetime whose wall-clock is local time. The seam
+    reads ``.hour`` for the daytime-window check (so it is machine-local in
+    production) and normalizes to UTC for the persisted 'Z' timestamps. Tests
+    inject their own callable returning an aware datetime with a chosen hour.
+    """
+    return datetime.now().astimezone()
+
+
+def _parse_utc_ts(value: str) -> datetime:
+    """Parse a stored ``...Z`` timestamp into a timezone-aware UTC datetime."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _item_type_for(job: ProcessingJob) -> str | None:
+    """Resolve a job's item type, only when the cost model needs it.
+
+    Cost estimation consults ``item_type`` solely for the ``PREPARE`` branch,
+    so this avoids an ``Item`` lookup for every other kind. Returns ``None``
+    when the job has no item or the item row is gone (``SET NULL`` FK).
+    """
+    if job.kind != JobKind.PREPARE.value or job.item_id is None:
+        return None
+    item = Item.get_or_none(Item.id == job.item_id)
+    return item.item_type if item is not None else None
+
+
+def _candidate_from_row(job: ProcessingJob) -> JobCandidate:
+    """Project a claimable ``ProcessingJob`` row into a pure :class:`JobCandidate`."""
+    return JobCandidate(
+        priority=job.priority,
+        kind=job.kind,
+        created_at=_parse_utc_ts(job.created_at),
+        item_type=_item_type_for(job),
+        checkpoint_json=job.checkpoint_json,
+        job_id=job.id,
+    )
+
+
+class ExecutionLockBusy(OSError):
+    """Raised when the per-``DATA_DIR`` execution flock is already held."""
+
+
+def execution_lock_path(data_dir: Path) -> Path:
+    """Return the runner execution lock path beside call-time ``wilted.DATA_DIR``.
+
+    INV-5: ``data_dir`` is supplied by callers; when omitted elsewhere in this
+    module, ``wilted.DATA_DIR`` is read at call time rather than import time.
+    """
+    return data_dir / _LOCKFILE_NAME
+
+
+@contextmanager
+def try_acquire_execution_lock(data_dir: Path) -> Iterator[Path]:
+    """Acquire the per-``DATA_DIR`` exclusive non-blocking ``fcntl`` flock.
+
+    Args:
+        data_dir: Root data directory that owns the lock file.
+
+    Yields:
+        Resolved lock file path.
+
+    Raises:
+        ExecutionLockBusy: When another live holder already owns the flock.
+    """
+    path = execution_lock_path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+            raise ExecutionLockBusy(
+                f"Processing runner execution lock at {path} is held by a live process",
+            ) from exc
+        raise
+    try:
+        yield path
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _resolve_data_dir(data_dir: Path | None) -> Path:
+    return data_dir if data_dir is not None else wilted.DATA_DIR
+
+
+def _lease_expires_at(now: str, lease_seconds: int) -> str:
+    if lease_seconds <= 0:
+        raise ValueError(f"lease_seconds must be > 0, got {lease_seconds}")
+    dt = datetime.fromisoformat(now.replace("Z", "+00:00"))
+    return (dt.astimezone(UTC) + timedelta(seconds=lease_seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _encode_result_metadata(
+    manifest: ArtifactManifest,
+    result_metadata: dict[str, Any] | None,
+) -> str:
+    payload: dict[str, Any] = {
+        "manifest": {
+            "item_id": manifest.item_id,
+            "source_id": manifest.source_id,
+            "input_digest": manifest.input_digest,
+            "operation_version": manifest.operation_version,
+            "model_identity": manifest.model_identity,
+            "prompt_identity": manifest.prompt_identity,
+            "output_digests": list(manifest.output_digests),
+            "completeness_checks": list(manifest.completeness_checks),
+        },
+    }
+    if result_metadata is not None:
+        payload["metadata"] = redact_metadata(result_metadata)
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    if len(encoded.encode("utf-8")) > MAX_METADATA_BYTES:
+        raise MetadataTooLargeError(
+            f"result metadata exceeds {MAX_METADATA_BYTES} bytes after serialization",
+        )
+    return encoded
+
+
+def _manifest_from_result_json(result_json: str | None) -> ArtifactManifest | None:
+    if not result_json:
+        return None
+    try:
+        doc = json.loads(result_json)
+        raw = doc.get("manifest")
+        if not isinstance(raw, dict):
+            return None
+        return ArtifactManifest(
+            item_id=raw.get("item_id"),
+            source_id=raw.get("source_id"),
+            input_digest=raw.get("input_digest", ""),
+            operation_version=int(raw.get("operation_version", 1)),
+            model_identity=raw.get("model_identity"),
+            prompt_identity=raw.get("prompt_identity"),
+            output_digests=tuple(raw.get("output_digests") or ()),
+            completeness_checks=tuple(raw.get("completeness_checks") or ()),
+        )
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def validate_job_output(manifest: ArtifactManifest, *, nondeterministic: bool = False) -> bool:
+    """Return True when ``manifest`` satisfies publication completeness rules.
+
+    Non-deterministic handlers additionally require model and prompt identity so
+    output is never accepted solely from digests on disk.
+    """
+    if not manifest.is_complete:
+        return False
+    if nondeterministic and (not manifest.model_identity or not manifest.prompt_identity):
+        return False
+    return True
+
+
+def _claim_next_job_under_lock(
+    *,
+    owner_id: str,
+    lease_seconds: int,
+    now: Callable[[], datetime] = _utc_local_now,
+    availability_backend: AvailabilityBackend = _DEFAULT_AVAILABILITY_BACKEND,
+    inventory_probe: Callable[[], int] = count_listenable_ready,
+    thresholds: PolicyThresholds | None = None,
+) -> ProcessingJob | None:
+    """Claim the next eligible job assuming the execution flock is already held.
+
+    Collaborators default to production; tests inject fakes. ``thresholds`` is
+    resolved from settings here (once per claim attempt, not per DB retry) so
+    the DB read happens at call time under the live ``DATA_DIR`` (INV-5) rather
+    than as an import-time default.
+    """
+    resolved_thresholds = thresholds if thresholds is not None else thresholds_from_settings()
+    last_error: OperationalError | None = None
+    for attempt in range(_CLAIM_DB_RETRY_ATTEMPTS):
+        try:
+            return _claim_next_job_under_lock_once(
+                owner_id=owner_id,
+                lease_seconds=lease_seconds,
+                now=now,
+                availability_backend=availability_backend,
+                inventory_probe=inventory_probe,
+                thresholds=resolved_thresholds,
+            )
+        except OperationalError as exc:
+            if "locked" not in str(exc).lower():
+                raise
+            last_error = exc
+            time.sleep(_CLAIM_DB_RETRY_DELAY_S * (attempt + 1))
+    if last_error is not None:
+        raise last_error
+    return None
+
+
+def _claim_next_job_under_lock_once(
+    *,
+    owner_id: str,
+    lease_seconds: int,
+    now: Callable[[], datetime],
+    availability_backend: AvailabilityBackend,
+    inventory_probe: Callable[[], int],
+    thresholds: PolicyThresholds,
+) -> ProcessingJob | None:
+    ensure_db()
+    now_dt = now()
+    now_str = now_dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    expires_at = _lease_expires_at(now_str, lease_seconds)
+
+    # Candidate-set contract: fetch ALL currently-claimable rows in the base
+    # order (priority DESC, created_at ASC) — never a bounded LIMIT — so
+    # ``select_claimable`` returning None means "nothing claimable globally",
+    # not "nothing in the first N". The policy only SKIPS ineligible expensive
+    # jobs; it never reorders and never mutates state (deferred jobs simply stay
+    # QUEUED). This read is a single statement (autocommit): the atomic CAS
+    # UPDATE below — not a read snapshot — is what enforces single-flight.
+    rows = list(
+        ProcessingJob.select()
+        .where(
+            (ProcessingJob.state.in_([state.value for state in _CLAIMABLE_STATES]))
+            & ((ProcessingJob.not_before.is_null()) | (ProcessingJob.not_before <= now_str))
+        )
+        .order_by(ProcessingJob.priority.desc(), ProcessingJob.created_at.asc())
+    )
+    if not rows:
+        return None
+
+    # Sample the machine + inventory at most once per claim attempt (not per
+    # candidate), and deliberately OUTSIDE any write transaction: the machine
+    # probe shells out to pmset/ioreg (up to a ~2s timeout) and the inventory
+    # probe hits the DB, so holding a write-intent SQLite transaction open
+    # across that I/O would invite "database is locked" churn during the
+    # nightly drain. Single-flight does not depend on this being transactional —
+    # the flock serializes claimers and the CAS below re-validates state — so we
+    # keep the only impure inputs to the pure policy out of the transaction.
+    ctx = PolicyContext(
+        now=now_dt,
+        availability=availability_backend.sample(),
+        listenable_count=inventory_probe(),
+    )
+    candidates = [_candidate_from_row(row) for row in rows]
+    chosen = select_claimable(candidates, ctx, thresholds)
+    if chosen is None:
+        return None
+
+    # Fail-open observability (INV-11: WARNING to the logger, never stdout):
+    # log exactly once, and only when a broken/unknown sensor is the operative
+    # reason this expensive job ran unrestricted.
+    if not ctx.availability.ok and should_defer(chosen, ctx, thresholds).reason is DeferralReason.SENSOR_UNAVAILABLE:
+        logger.warning(
+            "Machine-availability sensor unavailable; expensive job %s claimed unrestricted "
+            "(fail-open: deferral policy not enforced this attempt).",
+            chosen.job_id,
+        )
+
+    rows_by_id = {row.id: row for row in rows}
+    winner = rows_by_id[chosen.job_id]
+    expected_state = winner.state
+    # Compare-and-swap under the SAME flock the caller holds. This single
+    # atomic UPDATE is the single-flight guard: only the transition from the
+    # observed state to RUNNING succeeds, so a concurrent claimer that already
+    # took this row sees ``updated == 0`` and returns None.
+    with ProcessingJob._meta.database.atomic():
+        updated = (
+            ProcessingJob.update(
+                state=ProcessingJobState.RUNNING.value,
+                lease_owner=owner_id,
+                lease_expires_at=expires_at,
+                attempt_count=ProcessingJob.attempt_count + 1,
+                started_at=now_str,
+                updated_at=now_str,
+                cancel_requested=False,
+            )
+            .where(
+                (ProcessingJob.id == winner.id) & (ProcessingJob.state == expected_state),
+            )
+            .execute()
+        )
+    if updated != 1:
+        return None
+
+    return ProcessingJob.get_by_id(winner.id)
+
+
+def count_due_jobs(*, now: str | None = None) -> int:
+    """Return persisted queued/retry jobs whose ``not_before`` has elapsed."""
+    from wilted.background_work.contracts import ProcessingJobState
+
+    ensure_db()
+    resolved_now = now or now_utc()
+    return (
+        ProcessingJob.select()
+        .where(
+            (ProcessingJob.state.in_([ProcessingJobState.QUEUED.value, ProcessingJobState.RETRY.value]))
+            & ((ProcessingJob.not_before.is_null()) | (ProcessingJob.not_before <= resolved_now))
+        )
+        .count()
+    )
+
+
+def has_active_jobs(kinds: Iterable[str] | None = None) -> bool:
+    """Return True when any background job is non-terminal (in flight or pending).
+
+    Non-terminal means the state is *not* in :data:`_TERMINAL_STATES`
+    (``completed``/``failed``/``cancelled``) — i.e. one of
+    ``queued``/``running``/``retry``/``deferred``. A True result means the
+    durable work queue has jobs actively running or waiting to run, including
+    podcast ``prepare`` jobs and deferred (M5) jobs that the article-cache view
+    is structurally blind to. Cheap: an indexed ``EXISTS`` on ``state``.
+
+    Args:
+        kinds: when given, restrict the check to these :class:`JobKind` values.
+            Callers use this to ask "is any job *of a kind that prepares larder
+            items* active?" so an unrelated ``discover``/``classify``/
+            ``report_assembly`` job never reads as active preparation.
+            ``report_assembly`` in particular is submitted on launch, so an
+            unscoped check would flag an idle larder as "being prepared" purely
+            because a report is assembling. ``None`` (default) checks every kind.
+
+    Used by the TUI empty-state message to distinguish "items are actively being
+    prepared" from "queued but idle".
+    """
+    ensure_db()
+    terminal = [state.value for state in _TERMINAL_STATES]
+    query = ProcessingJob.select().where(ProcessingJob.state.not_in(terminal))
+    if kinds is not None:
+        query = query.where(ProcessingJob.kind.in_(list(kinds)))
+    return query.exists()
+
+
+def claim_next_job(
+    *,
+    data_dir: Path | None = None,
+    owner_id: str,
+    lease_seconds: int = 300,
+    now: Callable[[], datetime] = _utc_local_now,
+    availability_backend: AvailabilityBackend = _DEFAULT_AVAILABILITY_BACKEND,
+    inventory_probe: Callable[[], int] = count_listenable_ready,
+    thresholds: PolicyThresholds | None = None,
+) -> ProcessingJob | None:
+    """Claim the next eligible queued/retry job under the execution flock.
+
+    Scans all currently-claimable rows in base order (highest-priority oldest
+    first), applies the resource-aware deferral policy to skip expensive local
+    work that should wait, then CAS-advances the first eligible row to
+    ``running`` with lease evidence and an incremented attempt count. Deferred
+    rows are left untouched (they stay ``QUEUED``); the single-flight execution
+    flock and CAS are unchanged, so at most one job is ever claimed.
+
+    Args:
+        data_dir: Data directory for the execution flock (defaults to live
+            ``wilted.DATA_DIR`` at call time).
+        owner_id: Opaque runner identity recorded as ``lease_owner``.
+        lease_seconds: Lease duration from claim time.
+        now: Clock returning a local-aware "now" (production default reads the
+            wall clock; tests inject a fixed instant).
+        availability_backend: Machine-availability sensor, sampled at most once
+            per claim attempt (production default probes this Mac).
+        inventory_probe: Callable returning the ready-to-play inventory count,
+            probed once per claim attempt.
+        thresholds: Policy tunables; ``None`` resolves from settings at call
+            time (INV-5).
+
+    Returns:
+        The claimed :class:`~wilted.db.ProcessingJob`, or ``None`` when no
+        eligible work exists, all claimable work is deferred, or the CAS loses
+        a race.
+    """
+    if not owner_id:
+        raise ValueError("owner_id must be non-empty")
+
+    resolved_dir = _resolve_data_dir(data_dir)
+    with try_acquire_execution_lock(resolved_dir):
+        return _claim_next_job_under_lock(
+            owner_id=owner_id,
+            lease_seconds=lease_seconds,
+            now=now,
+            availability_backend=availability_backend,
+            inventory_probe=inventory_probe,
+            thresholds=thresholds,
+        )
+
+
+def read_deferral_summary(
+    *,
+    now: Callable[[], datetime] = _utc_local_now,
+    availability_backend: AvailabilityBackend = _DEFAULT_AVAILABILITY_BACKEND,
+    inventory_probe: Callable[[], int] = count_listenable_ready,
+    thresholds: PolicyThresholds | None = None,
+) -> DeferralSummary:
+    """Read-only projection of the claim seam's current deferral state (M5).
+
+    Mirrors ``_claim_next_job_under_lock_once``'s READ pattern exactly — the
+    same claimable-row query and base order, one machine-availability
+    sample, one inventory count, one clock read, the same
+    ``_candidate_from_row`` projection — but claims NOTHING: no execution
+    flock, no CAS, no state write. Safe to call from an interactive CLI/TUI
+    surface at any time: it never competes for the flock, so a concurrent
+    real claim attempt is unaffected, and it never mutates a row, so it can
+    never itself race with anything.
+
+    Collaborators default to production, exactly like :func:`claim_next_job`;
+    tests inject fakes. ``thresholds`` is resolved from settings here (once
+    per call) when not supplied, under the live ``DATA_DIR`` (INV-5).
+
+    This function performs no printing/logging of its own (INV-11
+    byte-silence) — it only samples and returns data. Callers (the CLI, the
+    TUI) decide whether and where to surface it.
+
+    Args:
+        now: Clock returning a local-aware "now" (production default reads
+            the wall clock; tests inject a fixed instant).
+        availability_backend: Machine-availability sensor, sampled once.
+        inventory_probe: Callable returning the ready-to-play inventory
+            count, probed once.
+        thresholds: Policy tunables; ``None`` resolves from settings at call
+            time (INV-5).
+
+    Returns:
+        A :class:`~wilted.scheduling_policy.DeferralSummary` covering every
+        currently-claimable row.
+    """
+    ensure_db()
+    now_dt = now()
+    now_str = now_dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    resolved_thresholds = thresholds if thresholds is not None else thresholds_from_settings()
+
+    # Same candidate-set contract as the seam: ALL currently-claimable rows,
+    # never a bounded LIMIT (see _claim_next_job_under_lock_once's comment).
+    rows = list(
+        ProcessingJob.select()
+        .where(
+            (ProcessingJob.state.in_([state.value for state in _CLAIMABLE_STATES]))
+            & ((ProcessingJob.not_before.is_null()) | (ProcessingJob.not_before <= now_str))
+        )
+        .order_by(ProcessingJob.priority.desc(), ProcessingJob.created_at.asc())
+    )
+    ctx = PolicyContext(
+        now=now_dt,
+        availability=availability_backend.sample(),
+        listenable_count=inventory_probe(),
+    )
+    candidates = [_candidate_from_row(row) for row in rows]
+    return summarize_claimable(candidates, ctx, resolved_thresholds)
+
+
+def request_cancel(job_id: int) -> bool:
+    """Cancel an unclaimed job immediately or flag a running job for cooperative stop.
+
+    Returns:
+        True when the cancel request was applied.
+    """
+    ensure_db()
+    job = ProcessingJob.get_or_none(ProcessingJob.id == job_id)
+    if job is None:
+        return False
+
+    state = ProcessingJobState(job.state)
+    now = now_utc()
+
+    if state in _UNCLAIMED_CANCEL_STATES:
+        try:
+            target = cancel_job(state)
+        except ProcessingJobTransitionError:
+            return False
+        updated = (
+            ProcessingJob.update(
+                state=target.value,
+                updated_at=now,
+                completed_at=now,
+                lease_owner=None,
+                lease_expires_at=None,
+            )
+            .where((ProcessingJob.id == job_id) & (ProcessingJob.state == state.value))
+            .execute()
+        )
+        return updated == 1
+
+    if state is ProcessingJobState.RUNNING:
+        updated = (
+            ProcessingJob.update(cancel_requested=True, updated_at=now)
+            .where(
+                (ProcessingJob.id == job_id)
+                & (ProcessingJob.state == ProcessingJobState.RUNNING.value)
+                & (ProcessingJob.cancel_requested == False),  # noqa: E712
+            )
+            .execute()
+        )
+        return updated == 1
+
+    return False
+
+
+def apply_running_cancel(job_id: int, *, artifact_complete: bool) -> ProcessingJobState:
+    """Resolve a running cancel request using published-artifact reconciliation.
+
+    Args:
+        job_id: Processing job identifier.
+        artifact_complete: Whether a published artifact passed validation.
+
+    Returns:
+        Terminal state applied to the job (``completed`` or ``cancelled``).
+
+    Raises:
+        ValueError: When the job is missing, not running, or not cancel-requested.
+    """
+    ensure_db()
+    job = ProcessingJob.get_or_none(ProcessingJob.id == job_id)
+    if job is None or job.state != ProcessingJobState.RUNNING.value or not job.cancel_requested:
+        raise ValueError(f"job {job_id} is not a running cancel-requested job")
+
+    outcome = reconcile_running_cancel(
+        cancel_requested=True,
+        artifact_published=artifact_complete,
+        artifact_valid=artifact_complete,
+    )
+    target = ProcessingJobState.COMPLETED if outcome is CancellationOutcome.COMPLETED else ProcessingJobState.CANCELLED
+    now = now_utc()
+    updates: dict[str, Any] = {
+        "state": target.value,
+        "updated_at": now,
+        "completed_at": now,
+        "lease_owner": None,
+        "lease_expires_at": None,
+    }
+    updated = (
+        ProcessingJob.update(**updates)
+        .where(
+            (ProcessingJob.id == job_id)
+            & (ProcessingJob.state == ProcessingJobState.RUNNING.value)
+            & (ProcessingJob.cancel_requested == True),  # noqa: E712
+        )
+        .execute()
+    )
+    if updated != 1:
+        raise ValueError(f"failed to apply running cancel for job {job_id}")
+    return target
+
+
+def recover_stale_jobs(*, data_dir: Path | None, owner_id: str, now: str) -> int:
+    """Reconcile running jobs whose lease expired while the execution flock was free.
+
+    The caller must already hold the execution flock — a free lock proves the
+    prior runner is dead. Completed jobs are never modified. When a stored
+    result manifest validates, the job is acknowledged as completed instead of
+    retried.
+
+    Args:
+        data_dir: Reserved for future path-scoped artifact checks (INV-5).
+        owner_id: Runner identity recorded on recovered retries.
+        now: Current UTC ISO-8601 ``Z`` timestamp.
+
+    Returns:
+        Count of jobs transitioned out of stale ``running``.
+    """
+    _ = _resolve_data_dir(data_dir)
+    if not owner_id:
+        raise ValueError("owner_id must be non-empty")
+    if not now:
+        raise ValueError("now must be non-empty")
+
+    ensure_db()
+    recovered = 0
+
+    stale_jobs = list(
+        ProcessingJob.select().where(
+            (ProcessingJob.state == ProcessingJobState.RUNNING.value)
+            & (ProcessingJob.lease_expires_at.is_null(False))
+            & (ProcessingJob.lease_expires_at < now),
+        ),
+    )
+
+    for job in stale_jobs:
+        if job.state == ProcessingJobState.COMPLETED.value:
+            continue
+
+        manifest = _manifest_from_result_json(job.result_json)
+        if manifest is not None and validate_job_output(manifest):
+            updated = (
+                ProcessingJob.update(
+                    state=ProcessingJobState.COMPLETED.value,
+                    completed_at=now,
+                    updated_at=now,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                )
+                .where(
+                    (ProcessingJob.id == job.id) & (ProcessingJob.state == ProcessingJobState.RUNNING.value),
+                )
+                .execute()
+            )
+            if updated == 1:
+                recovered += 1
+            continue
+
+        if job.attempt_count >= job.max_attempts:
+            target = ProcessingJobState.FAILED
+        else:
+            target = ProcessingJobState.RETRY
+
+        transition_processing_job(ProcessingJobState.RUNNING, target)
+        updated = (
+            ProcessingJob.update(
+                state=target.value,
+                updated_at=now,
+                started_at=None,
+                lease_owner=None,
+                lease_expires_at=None,
+            )
+            .where(
+                (ProcessingJob.id == job.id) & (ProcessingJob.state == ProcessingJobState.RUNNING.value),
+            )
+            .execute()
+        )
+        if updated == 1:
+            recovered += 1
+            logger.info(
+                "Recovered stale processing job %s -> %s (attempt %s/%s)",
+                job.id,
+                target.value,
+                job.attempt_count,
+                job.max_attempts,
+            )
+
+    return recovered
+
+
+def record_job_completion(
+    job_id: int,
+    owner_id: str,
+    manifest: ArtifactManifest,
+    result_metadata: dict[str, Any] | None = None,
+    *,
+    nondeterministic: bool = False,
+) -> bool:
+    """CAS-advance a running job to ``completed`` after manifest validation.
+
+    Rejects completion when the manifest is incomplete or a cancel request
+    reconciles to ``cancelled`` despite published bytes.
+
+    Returns:
+        True when exactly one row was updated to ``completed``.
+    """
+    if not owner_id:
+        raise ValueError("owner_id must be non-empty")
+    if not validate_job_output(manifest, nondeterministic=nondeterministic):
+        return False
+
+    ensure_db()
+    job = ProcessingJob.get_or_none(ProcessingJob.id == job_id)
+    if job is None:
+        return False
+    if job.state != ProcessingJobState.RUNNING.value or job.lease_owner != owner_id:
+        return False
+
+    if job.cancel_requested:
+        outcome = reconcile_running_cancel(
+            cancel_requested=True,
+            artifact_published=True,
+            artifact_valid=True,
+        )
+        if outcome is CancellationOutcome.CANCELLED:
+            return False
+
+    now = now_utc()
+    result_json = _encode_result_metadata(manifest, result_metadata)
+    updated = (
+        ProcessingJob.update(
+            state=ProcessingJobState.COMPLETED.value,
+            completed_at=now,
+            updated_at=now,
+            result_json=result_json,
+            lease_owner=None,
+            lease_expires_at=None,
+            cancel_requested=False,
+        )
+        .where(
+            (ProcessingJob.id == job_id)
+            & (ProcessingJob.state == ProcessingJobState.RUNNING.value)
+            & (ProcessingJob.lease_owner == owner_id),
+        )
+        .execute()
+    )
+    return updated == 1
+
+
+_FORBIDDEN_KEY_PATTERN = re.compile(
+    r"(?i)(api[_-]?key|secret|token|password|authorization|credential|bearer)",
+)
+_URL_PATTERN = re.compile(r"https?://", re.IGNORECASE)
+_TRACEBACK_PATTERN = re.compile(r"Traceback \(most recent call last\)", re.IGNORECASE)
+_CAUSE_CHAIN_PATTERN = re.compile(r"(?:\s__cause__|\sraise\s+.+\s+from\s+)", re.IGNORECASE)
+
+
+class MetadataForbiddenError(ValueError):
+    """Raised when job metadata contains forbidden content."""
+
+
+class MetadataTooLargeError(ValueError):
+    """Raised when serialized job metadata exceeds the byte bound."""
+
+
+@dataclass(frozen=True, slots=True)
+class SubmitResult:
+    """Outcome of one idempotent job submission attempt.
+
+    Attributes:
+        outcome: Truthful submission vocabulary for callers.
+        job_id: Durable processing job identifier.
+        idempotency_key: Canonical idempotency key string.
+        created: True when a new row was inserted.
+    """
+
+    outcome: SubmissionOutcome
+    job_id: int
+    idempotency_key: str
+    created: bool
+
+
+def redact_metadata(data: dict[str, Any]) -> dict[str, Any]:
+    """Validate metadata and return a JSON-safe copy without forbidden content.
+
+    Rejects values containing URLs, traceback/cause-chain text, and keys or
+    string values that resemble secrets or credentials.
+
+    Args:
+        data: Candidate metadata dictionary.
+
+    Returns:
+        A shallow-validated copy safe to persist in checkpoint/result/error JSON.
+
+    Raises:
+        MetadataForbiddenError: When forbidden content is present.
+        TypeError: When ``data`` is not a mapping or contains non-JSON types.
+    """
+    if not isinstance(data, dict):
+        raise TypeError("metadata must be a dict")
+
+    def _inspect(value: Any, *, path: str) -> Any:
+        if isinstance(value, dict):
+            cleaned: dict[str, Any] = {}
+            for key, nested in value.items():
+                key_text = str(key)
+                if _FORBIDDEN_KEY_PATTERN.search(key_text):
+                    raise MetadataForbiddenError(f"forbidden metadata key at {path}.{key_text}")
+                cleaned[key_text] = _inspect(nested, path=f"{path}.{key_text}")
+            return cleaned
+        if isinstance(value, list):
+            return [_inspect(item, path=f"{path}[{index}]") for index, item in enumerate(value)]
+        if value is None or isinstance(value, bool | int | float):
+            return value
+        if not isinstance(value, str):
+            raise TypeError(f"metadata value at {path} must be JSON-serializable")
+        if _URL_PATTERN.search(value):
+            raise MetadataForbiddenError(f"forbidden URL in metadata at {path}")
+        if _TRACEBACK_PATTERN.search(value):
+            raise MetadataForbiddenError(f"forbidden traceback in metadata at {path}")
+        if _CAUSE_CHAIN_PATTERN.search(value):
+            raise MetadataForbiddenError(f"forbidden exception chain in metadata at {path}")
+        if _FORBIDDEN_KEY_PATTERN.search(value):
+            raise MetadataForbiddenError(f"forbidden secret-like value at {path}")
+        return value
+
+    return _inspect(data, path="metadata")
+
+
+def _encode_metadata(data: dict[str, Any] | None) -> str | None:
+    if data is None:
+        return None
+    cleaned = redact_metadata(data)
+    encoded = json.dumps(cleaned, separators=(",", ":"), sort_keys=True)
+    if len(encoded.encode("utf-8")) > MAX_METADATA_BYTES:
+        raise MetadataTooLargeError(
+            f"metadata exceeds {MAX_METADATA_BYTES} bytes after serialization ({len(encoded.encode('utf-8'))} bytes)",
+        )
+    return encoded
+
+
+# Namespaced checkpoint envelope (backward-compatible). ``checkpoint_json`` stays
+# a flat dict of immutable submission options; mutable in-flight progress lives
+# under the reserved ``_progress`` key, with ``_checkpoint_v`` marking the format.
+# Legacy records lack the marker and are treated as v1 (options-only). Every
+# existing flat-key reader is unchanged — it ignores ``_progress``/``_checkpoint_v``.
+_PROGRESS_KEY = "_progress"
+_CHECKPOINT_VERSION_KEY = "_checkpoint_v"
+_CHECKPOINT_VERSION = 2
+
+
+def read_checkpoint_progress(job: ProcessingJob) -> dict[str, Any]:
+    """Return the mutable progress hint from a job's checkpoint envelope.
+
+    Parses ``job.checkpoint_json`` and returns ``payload["_progress"]`` when it is
+    a dict. Returns ``{}`` on ANY error — a ``None`` checkpoint, malformed JSON, a
+    legacy options-only (v1) record, or a non-dict ``_progress``. Never raises.
+
+    Args:
+        job: The processing job whose checkpoint envelope to read.
+
+    Returns:
+        The recorded progress dict, or ``{}`` when absent/unreadable.
+    """
+    raw = getattr(job, "checkpoint_json", None)
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    progress = payload.get(_PROGRESS_KEY)
+    return progress if isinstance(progress, dict) else {}
+
+
+def merge_checkpoint_progress(
+    job_id: int,
+    owner_id: str,
+    progress: dict[str, Any],
+    *,
+    now: str | None = None,
+) -> bool:
+    """Lease-fenced read-modify-write of a running job's progress hint.
+
+    Merges ``progress`` into the reserved ``_progress`` envelope key on the job's
+    ``checkpoint_json`` (later keys win on collision), preserving every pre-existing
+    flat option key untouched, then CAS-writes it back only while the caller still
+    holds the lease.
+
+    progress is a NON-AUTHORITATIVE hint. Single-writer-per-lease makes the
+    read-modify-write safe; a lost/expired lease (state flipped by
+    recover_stale_jobs) makes the WHERE match 0 rows → returns False, no write.
+    Retry/recovery (``_requeue_job``, ``recover_stale_jobs``) deliberately PRESERVE
+    this hint; the resume consumer re-validates against the on-disk transcript +
+    Item row, so preservation is safe.
+
+    Args:
+        job_id: Target processing job identifier.
+        owner_id: Lease owner asserting the write; must be non-empty.
+        progress: Primitive-only progress fields to merge into the hint.
+        now: Optional UTC ISO-8601 ``Z`` timestamp for ``updated_at`` (defaults to now).
+
+    Returns:
+        True when exactly one row was updated (lease still held); False otherwise.
+
+    Raises:
+        ValueError: When ``owner_id`` is falsy.
+        MetadataForbiddenError: When ``progress`` carries redaction-forbidden content.
+        MetadataTooLargeError: When the encoded envelope exceeds the byte bound.
+    """
+    if not owner_id:
+        raise ValueError("owner_id must be non-empty")
+
+    ensure_db()
+    job = ProcessingJob.get_or_none(ProcessingJob.id == job_id)
+    if job is None:
+        return False
+    if job.state != ProcessingJobState.RUNNING.value or job.lease_owner != owner_id:
+        return False
+
+    payload: dict[str, Any] = {}
+    if job.checkpoint_json:
+        try:
+            loaded = json.loads(job.checkpoint_json)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            loaded = None
+        if isinstance(loaded, dict):
+            payload = loaded
+
+    existing_progress = payload.get(_PROGRESS_KEY)
+    if not isinstance(existing_progress, dict):
+        existing_progress = {}
+    payload[_PROGRESS_KEY] = {**existing_progress, **progress}
+    payload[_CHECKPOINT_VERSION_KEY] = _CHECKPOINT_VERSION
+
+    encoded = _encode_metadata(payload)
+
+    resolved_now = now if now is not None else now_utc()
+    updated = (
+        ProcessingJob.update(checkpoint_json=encoded, updated_at=resolved_now)
+        .where(
+            (ProcessingJob.id == job_id)
+            & (ProcessingJob.state == ProcessingJobState.RUNNING.value)
+            & (ProcessingJob.lease_owner == owner_id),
+        )
+        .execute()
+    )
+    return updated == 1
+
+
+@dataclass(frozen=True, slots=True)
+class JobCheckpoint:
+    """Live handle a leased handler uses to read/write its in-flight progress hint.
+
+    Binds a ``job_id`` to the ``owner_id`` that currently holds the lease, so the
+    transcription path can consult and record the non-authoritative ``_progress``
+    marker without re-plumbing the lease fence. ``read_progress`` fetches the job
+    fresh (it may have been updated by an earlier stage of the same run), and
+    ``record`` merges through the lease-fenced CAS. Both delegate to the module
+    substrate — the resume consumer re-validates against the on-disk transcript +
+    Item row, so a stale or missing hint can never cause a wrong skip.
+    """
+
+    job_id: int
+    owner_id: str
+
+    def read_progress(self) -> dict[str, Any]:
+        """Return the recorded progress hint for this job, or ``{}`` when absent."""
+        return read_checkpoint_progress(get_job(self.job_id))
+
+    def record(self, **progress: Any) -> bool:
+        """Merge ``progress`` into the lease-fenced ``_progress`` marker.
+
+        Returns:
+            True when the lease still held and exactly one row was updated.
+        """
+        return merge_checkpoint_progress(self.job_id, self.owner_id, progress)
+
+
+def _parse_stored_key(kind_value: str, canonical: str) -> IdempotencyKey:
+    kind = JobKind(kind_value)
+    prefix = f"{kind.value}:v"
+    if not canonical.startswith(prefix):
+        raise ValueError(f"Stored idempotency_key does not match kind {kind.value!r}")
+    rest = canonical[len(prefix) :]
+    version_str, sep, logical_identity = rest.partition(":")
+    if not sep or not logical_identity:
+        raise ValueError(f"Invalid stored idempotency_key: {canonical!r}")
+    return IdempotencyKey(kind=kind, operation_version=int(version_str), logical_identity=logical_identity)
+
+
+def _state_enum(value: str) -> ProcessingJobState:
+    return ProcessingJobState(value)
+
+
+def _terminal_state(job: ProcessingJob) -> ProcessingJobState | None:
+    state = _state_enum(job.state)
+    if state in _TERMINAL_STATES:
+        return state
+    return None
+
+
+def _outcome_for_existing(
+    *,
+    existing: ProcessingJob,
+    proposed_key: IdempotencyKey,
+    now: str,
+) -> SubmitResult:
+    terminal = _terminal_state(existing)
+    if terminal is None:
+        return SubmitResult(
+            outcome=SubmissionOutcome.BUSY,
+            job_id=existing.id,
+            idempotency_key=existing.idempotency_key,
+            created=False,
+        )
+
+    if terminal is ProcessingJobState.COMPLETED:
+        return SubmitResult(
+            outcome=SubmissionOutcome.COMPLETED,
+            job_id=existing.id,
+            idempotency_key=existing.idempotency_key,
+            created=False,
+        )
+
+    prior_key = _parse_stored_key(existing.kind, existing.idempotency_key)
+    policy = resolve_recurring_admission(
+        prior_key=prior_key,
+        proposed_key=proposed_key,
+        prior_terminal_state=terminal,
+    )
+
+    if policy is ReAdmissionPolicy.RETRY_IN_PLACE:
+        _requeue_job(existing.id, now=now)
+        logger.info("Re-queued processing job %s after terminal state %s", existing.id, terminal.value)
+        return SubmitResult(
+            outcome=SubmissionOutcome.SUBMITTED,
+            job_id=existing.id,
+            idempotency_key=existing.idempotency_key,
+            created=False,
+        )
+
+    raise ValueError(f"Unexpected re-admission policy {policy!s} for job {existing.id}")
+
+
+def _requeue_job(job_id: int, *, now: str) -> None:
+    """Reset a terminal failed/cancelled job back to ``queued`` for retry-in-place.
+
+    Clears ``attempt_count`` and ``result_json`` in addition to the existing
+    lease/timestamp/error resets — a retry-in-place generation starts with a
+    clean attempt budget and never carries forward a prior generation's result.
+    """
+    ProcessingJob.update(
+        state=ProcessingJobState.QUEUED.value,
+        updated_at=now,
+        started_at=None,
+        completed_at=None,
+        lease_owner=None,
+        lease_expires_at=None,
+        error_json=None,
+        attempt_count=0,
+        result_json=None,
+    ).where(ProcessingJob.id == job_id).execute()
+
+
+def _create_job_row(
+    *,
+    key: IdempotencyKey,
+    item_id: int | None,
+    priority: int,
+    not_before: str | None,
+    max_attempts: int,
+    checkpoint_json: str | None,
+    now: str,
+) -> ProcessingJob:
+    return ProcessingJob.create(
+        idempotency_key=key.canonical,
+        kind=key.kind.value,
+        item_id=item_id,
+        state=ProcessingJobState.QUEUED.value,
+        priority=priority,
+        not_before=not_before,
+        attempt_count=0,
+        max_attempts=max_attempts,
+        created_at=now,
+        updated_at=now,
+        checkpoint_json=checkpoint_json,
+    )
+
+
+def submit_job(
+    key: IdempotencyKey,
+    *,
+    item_id: int | None = None,
+    priority: int = 0,
+    not_before: str | None = None,
+    max_attempts: int = 3,
+    metadata: dict[str, Any] | None = None,
+) -> SubmitResult:
+    """Submit one processing job with transactional idempotent admission.
+
+    Concurrent identical submissions converge on one durable row via the
+    unique ``idempotency_key`` constraint. Terminal failed/cancelled jobs may
+    retry in place; completed jobs with the same key return ``COMPLETED``.
+
+    Args:
+        key: Canonical idempotency identity for the work unit.
+        item_id: Optional owning item foreign key.
+        priority: Scheduler priority (lower runs sooner when tied).
+        not_before: Optional UTC ISO-8601 ``Z`` deferral timestamp.
+        max_attempts: Maximum execution attempts before terminal failure.
+        metadata: Optional checkpoint metadata (validated and size-bounded).
+
+    Returns:
+        :class:`SubmitResult` describing the admission outcome.
+    """
+    ensure_db()
+    checkpoint_json = _encode_metadata(metadata)
+    now = now_utc()
+
+    existing = ProcessingJob.get_or_none(ProcessingJob.idempotency_key == key.canonical)
+    if existing is not None:
+        return _outcome_for_existing(existing=existing, proposed_key=key, now=now)
+
+    try:
+        with ProcessingJob._meta.database.atomic():
+            job = _create_job_row(
+                key=key,
+                item_id=item_id,
+                priority=priority,
+                not_before=not_before,
+                max_attempts=max_attempts,
+                checkpoint_json=checkpoint_json,
+                now=now,
+            )
+    except IntegrityError:
+        existing = ProcessingJob.get(ProcessingJob.idempotency_key == key.canonical)
+        return _outcome_for_existing(existing=existing, proposed_key=key, now=now)
+
+    logger.info("Submitted processing job %s (%s)", job.id, key.canonical)
+    return SubmitResult(
+        outcome=SubmissionOutcome.SUBMITTED,
+        job_id=job.id,
+        idempotency_key=job.idempotency_key,
+        created=True,
+    )
+
+
+def get_job(job_id: int) -> ProcessingJob | None:
+    """Return one processing job by primary key, or None."""
+    ensure_db()
+    return ProcessingJob.get_or_none(ProcessingJob.id == job_id)
+
+
+def get_job_by_key(idempotency_key: str) -> ProcessingJob | None:
+    """Return one processing job by canonical idempotency key, or None."""
+    ensure_db()
+    return ProcessingJob.get_or_none(ProcessingJob.idempotency_key == idempotency_key)
+
+
+def prune_terminal_jobs(*, older_than_days: int = 14, now: str | None = None) -> int:
+    """Delete terminal-state :class:`ProcessingJob` rows older than a cutoff.
+
+    Only rows whose state is a terminal state (``completed``, ``failed``,
+    ``cancelled``) with a ``completed_at`` older than ``older_than_days`` are
+    removed. Non-terminal rows (``queued``/``running``/``retry``/``deferred``)
+    are never candidates regardless of age.
+
+    The removal is a single atomic ``DELETE`` whose ``WHERE`` clause carries
+    the full terminal + age predicate. SQLite re-evaluates that predicate at
+    delete time, so a row a concurrent writer requeues (``_requeue_job`` sets
+    ``state`` back to ``queued`` and clears ``completed_at``) after we decide
+    to prune but before the delete lands no longer matches and is left
+    untouched — a prune can never remove in-flight work. Filtering inside the
+    ``DELETE`` (rather than selecting ids and deleting by ``id.in_(...)``) also
+    binds only the constant predicate values, so a large candidate set cannot
+    trip SQLite's bound-variable limit and silently no-op the retention sweep.
+
+    Args:
+        older_than_days: Age threshold in days from ``now``.
+        now: Current UTC ISO-8601 ``Z`` timestamp (defaults to live ``now_utc()``).
+
+    Returns:
+        Count of deleted rows.
+
+    Raises:
+        ValueError: When ``older_than_days`` is negative.
+    """
+    if older_than_days < 0:
+        raise ValueError(f"older_than_days must be >= 0, got {older_than_days}")
+
+    ensure_db()
+    resolved_now = now or now_utc()
+    cutoff_dt = datetime.fromisoformat(resolved_now.replace("Z", "+00:00")).astimezone(UTC) - timedelta(
+        days=older_than_days,
+    )
+    cutoff = cutoff_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    terminal_values = [state.value for state in _TERMINAL_STATES]
+
+    deleted = (
+        ProcessingJob.delete()
+        .where(
+            (ProcessingJob.state.in_(terminal_values))
+            & (ProcessingJob.completed_at.is_null(False))
+            & (ProcessingJob.completed_at < cutoff),
+        )
+        .execute()
+    )
+    if deleted:
+        logger.info("Pruned %d terminal processing job(s) completed before %s", deleted, cutoff)
+    return deleted
+
+
+def transition_job_state(
+    job_id: int,
+    expected_state: ProcessingJobState,
+    target_state: ProcessingJobState,
+) -> bool:
+    """CAS-advance one job state when the stored state matches ``expected_state``.
+
+    Args:
+        job_id: Processing job identifier.
+        expected_state: Required current state for the update to succeed.
+        target_state: Desired next state (must be a valid contract edge).
+
+    Returns:
+        True when exactly one row was updated, False when the CAS missed.
+    """
+    ensure_db()
+    try:
+        transition_processing_job(expected_state, target_state)
+    except ProcessingJobTransitionError:
+        logger.warning(
+            "Rejected invalid processing job transition for job %s: %s -> %s",
+            job_id,
+            expected_state.value,
+            target_state.value,
+        )
+        raise
+
+    now = now_utc()
+    updates: dict[str, Any] = {
+        "state": target_state.value,
+        "updated_at": now,
+    }
+    if target_state is ProcessingJobState.RUNNING:
+        updates["started_at"] = now
+    if target_state in _TERMINAL_STATES:
+        updates["completed_at"] = now
+
+    updated = (
+        ProcessingJob.update(**updates)
+        .where(
+            (ProcessingJob.id == job_id) & (ProcessingJob.state == expected_state.value),
+        )
+        .execute()
+    )
+    return updated == 1

@@ -1,0 +1,621 @@
+"""Peewee ORM models and database management for wilted.
+
+All timestamps are stored as UTC ISO 8601 strings ('2026-04-18T06:00:00Z').
+The database uses WAL mode so the TUI can read while nightly batches write.
+
+Thread-local connections: each thread (including Textual @work threads) must
+call connect_db() or use the worker_db() context manager before touching models.
+
+Usage:
+    from wilted.db import connect_db, worker_db, Item, Feed
+    from wilted.content_state import items_playable_ready_only
+
+    connect_db(DATA_DIR / "wilted.db")
+    items = items_playable_ready_only()
+"""
+
+import logging
+import threading
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from peewee import (
+    SQL,
+    BooleanField,
+    CharField,
+    FloatField,
+    ForeignKeyField,
+    IntegerField,
+    Model,
+    SqliteDatabase,
+    TextField,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def now_utc() -> str:
+    """Return current UTC time as ISO 8601 string (e.g. '2026-04-20T12:00:00Z')."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def ensure_db() -> None:
+    """Connect to the database if not already connected. Safe to call multiple times."""
+    import wilted
+
+    connect_db(wilted.DATA_DIR / "wilted.db")
+
+
+# ---------------------------------------------------------------------------
+# Database instance — initialized by connect_db(); thread-local connections
+# ---------------------------------------------------------------------------
+
+# Peewee's SqliteDatabase uses thread-local connections automatically.
+_db = SqliteDatabase(
+    None,  # path set by connect_db()
+    pragmas={
+        "journal_mode": "wal",
+        "synchronous": "NORMAL",
+        "busy_timeout": 5000,
+        "cache_size": -65536,
+        "foreign_keys": 1,
+    },
+)
+
+_connect_lock = threading.Lock()
+
+# After legacy cutover drops ``status`` / ``status_changed_at``, Peewee must not
+# SELECT them. Cache the Field objects so tests that ``reset_db()`` and recreate
+# a pre-cutover schema can restore the model.
+_LEGACY_STATUS_FIELDS: dict[str, Any] | None = None
+
+
+def _items_table_has_status_column(db: SqliteDatabase) -> bool:
+    """Return True when ``items.status`` exists (pre-cutover schema)."""
+    rows = list(db.execute_sql("PRAGMA table_info(items)"))
+    return any(row[1] == "status" for row in rows)
+
+
+def _sync_item_model_to_schema(db: SqliteDatabase) -> None:
+    """Align ``Item`` fields with the live ``items`` table after cutover.
+
+    Cutover rebuilds ``items`` without ``status`` / ``status_changed_at``. The
+    model still declares those fields for pre-cutover DBs and tests; without
+    this sync every ``Item.select()`` fails with ``no such column: t1.status``.
+    """
+    global _LEGACY_STATUS_FIELDS
+
+    rows = list(db.execute_sql("PRAGMA table_info(items)"))
+    if not rows:
+        return
+
+    has_status = any(row[1] == "status" for row in rows)
+    if not has_status:
+        if "status" in Item._meta.fields:
+            _LEGACY_STATUS_FIELDS = {
+                "status": Item._meta.fields["status"],
+                "status_changed_at": Item._meta.fields["status_changed_at"],
+            }
+            Item._meta.remove_field("status")
+            Item._meta.remove_field("status_changed_at")
+        return
+
+    if _LEGACY_STATUS_FIELDS:
+        for name, field in _LEGACY_STATUS_FIELDS.items():
+            if name not in Item._meta.fields:
+                Item._meta.add_field(name, field)
+
+
+def legacy_status_create_fields(*, status: str, changed_at: str | None = None) -> dict[str, str]:
+    """Return ``status``/``status_changed_at`` kwargs only when those columns exist.
+
+    Post-cutover databases drop the legacy columns; including them in
+    ``Item.create(...)`` raises ``OperationalError``. Pre-cutover schemas
+    require them (NOT NULL). Uses the live table PRAGMA (not just model meta)
+    so an in-process cutover without reconnect cannot emit stale kwargs.
+    """
+    if not _items_table_has_status_column(_db):
+        return {}
+    return {
+        "status": status,
+        "status_changed_at": changed_at or now_utc(),
+    }
+
+
+def connect_db(path: Path | str) -> SqliteDatabase:
+    """Open the database at *path*, applying WAL pragmas.
+
+    Safe to call multiple times — subsequent calls on the same thread reuse
+    the existing connection. Creates the file if it does not exist.
+
+    After connect, syncs the ``Item`` model to the live schema so post-cutover
+    databases (no legacy ``status`` column) remain queryable.
+
+    Args:
+        path: Filesystem path to wilted.db.
+
+    Returns:
+        The initialized SqliteDatabase instance.
+    """
+    with _connect_lock:
+        if _db.database is None:
+            _db.init(str(path))
+    if not _db.is_connection_usable():
+        _db.connect(reuse_if_open=True)
+    _sync_item_model_to_schema(_db)
+    return _db
+
+
+@contextmanager
+def worker_db(path: Path | str | None = None):
+    """Context manager for Textual @work thread connections.
+
+    Opens a per-thread connection on entry and closes it on exit.
+    Pass *path* only when the database has not yet been initialized.
+
+    Usage inside a Textual worker::
+
+        async def on_mount(self) -> None:
+            self.run_worker(self._load_items)
+
+        def _load_items(self) -> None:
+            with worker_db():
+                from wilted.content_state import items_playable_ready_only
+
+                items = items_playable_ready_only()
+    """
+    if path is not None and _db.database is None:
+        _db.init(str(path))
+    _db.connect(reuse_if_open=True)
+    _sync_item_model_to_schema(_db)
+    try:
+        yield _db
+    finally:
+        if not _db.is_closed():
+            _db.close()
+
+
+# ---------------------------------------------------------------------------
+# Base model
+# ---------------------------------------------------------------------------
+
+
+class BaseModel(Model):
+    class Meta:
+        database = _db
+
+
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+
+
+class Feed(BaseModel):
+    """An RSS/Atom feed subscription."""
+
+    title = CharField()
+    feed_url = CharField(unique=True)
+    site_url = CharField(null=True)
+    feed_type = CharField(constraints=[SQL("CHECK(feed_type IN ('article', 'podcast'))")])
+    default_playlist = CharField(null=True)
+    enabled = BooleanField(default=True)
+    last_checked_at = CharField(null=True)
+    etag = CharField(null=True)
+    last_modified = CharField(null=True)
+    created_at = CharField()
+    updated_at = CharField()
+
+    class Meta:
+        table_name = "feeds"
+
+
+class Report(BaseModel):
+    """A morning report record (one per day)."""
+
+    report_date = CharField(unique=True)
+    generated_at = CharField()
+    item_count = IntegerField()
+    metadata = TextField(
+        null=True,
+        constraints=[SQL("CHECK(metadata IS NULL OR json_valid(metadata))")],
+    )
+
+    class Meta:
+        table_name = "reports"
+
+
+class Item(BaseModel):
+    """A content item — either an article or a podcast episode."""
+
+    feed = ForeignKeyField(Feed, backref="items", null=True, on_delete="SET NULL")
+    guid = CharField(null=True)
+    title = CharField()
+    author = CharField(null=True)
+    source_name = CharField(null=True)
+    source_url = CharField(null=True)
+    canonical_url = CharField(null=True)
+    published_at = CharField(null=True)
+    discovered_at = CharField()
+    item_type = CharField(constraints=[SQL("CHECK(item_type IN ('article', 'podcast_episode'))")])
+    status = CharField(
+        constraints=[
+            SQL(
+                "CHECK(status IN ("
+                "'discovered', 'fetched', 'classified', "
+                "'selected', 'processing', 'ready', "
+                "'completed', 'expired', 'skipped', 'error'"
+                "))"
+            )
+        ]
+    )
+    status_changed_at = CharField()
+    fetch_state = CharField(
+        null=True,
+        constraints=[
+            SQL("CHECK(fetch_state IS NULL OR fetch_state IN ('metadata', 'content_ready', 'error'))"),
+        ],
+    )
+    analysis_state = CharField(
+        null=True,
+        constraints=[
+            SQL("CHECK(analysis_state IS NULL OR analysis_state IN ('pending', 'ready', 'error'))"),
+        ],
+    )
+    preparation_state = CharField(
+        null=True,
+        constraints=[
+            SQL("CHECK(preparation_state IS NULL OR preparation_state IN ('not_queued', 'queued', 'ready', 'error'))"),
+        ],
+    )
+    playback_state = CharField(
+        null=True,
+        constraints=[
+            SQL("CHECK(playback_state IS NULL OR playback_state IN ('unplayed', 'playing', 'paused', 'completed'))"),
+        ],
+    )
+    retention_state = CharField(
+        null=True,
+        constraints=[
+            SQL("CHECK(retention_state IS NULL OR retention_state IN ('active', 'expired'))"),
+        ],
+    )
+    retention_expires_at = CharField(null=True)
+    error_message = TextField(null=True)
+    word_count = IntegerField(null=True)
+    duration_seconds = FloatField(null=True)
+    transcript_file = CharField(null=True)
+    audio_file = CharField(null=True)
+    enclosure_url = CharField(null=True)
+    enclosure_type = CharField(null=True)
+    playlist_assigned = CharField(null=True)
+    playlist_override = CharField(null=True)
+    relevance_score = FloatField(null=True)
+    summary = TextField(null=True)
+    tags = TextField(null=True)
+    keep = BooleanField(default=False)
+    metadata = TextField(
+        null=True,
+        constraints=[SQL("CHECK(metadata IS NULL OR json_valid(metadata))")],
+    )
+
+    class Meta:
+        table_name = "items"
+        constraints = [SQL("UNIQUE(feed_id, guid)")]
+        indexes = (
+            (("status", "discovered_at"), False),
+            (("preparation_state", "discovered_at"), False),
+            (("analysis_state", "relevance_score"), False),
+            (("feed_id",), False),
+        )
+
+
+class Playlist(BaseModel):
+    """A named playlist — dynamic (expiry) or static (manual ordering)."""
+
+    name = CharField(unique=True)
+    playlist_type = CharField(constraints=[SQL("CHECK(playlist_type IN ('dynamic', 'static'))")])
+    expiry_days = IntegerField(null=True, default=7)
+    created_at = CharField()
+
+    class Meta:
+        table_name = "playlists"
+
+
+class PlaylistItem(BaseModel):
+    """Association between a playlist and an item."""
+
+    playlist = ForeignKeyField(Playlist, backref="playlist_items", on_delete="CASCADE")
+    item = ForeignKeyField(Item, backref="playlist_memberships", on_delete="CASCADE")
+    added_at = CharField()
+    position = IntegerField(null=True)
+
+    class Meta:
+        table_name = "playlist_items"
+        constraints = [SQL("UNIQUE(playlist_id, item_id)")]
+
+
+class SelectionHistory(BaseModel):
+    """Record of user selection or skip for a report item."""
+
+    item = ForeignKeyField(Item, backref="selection_history", on_delete="CASCADE")
+    report = ForeignKeyField(Report, backref="selections", null=True, on_delete="SET NULL")
+    selected = BooleanField()
+    selected_at = CharField(null=True)
+
+    class Meta:
+        table_name = "selection_history"
+
+
+class ReportItem(BaseModel):
+    """Ordered report membership with a report-scoped user decision.
+
+    Replaces :class:`SelectionHistory` for new code paths. Legacy
+    ``selection_history`` rows remain until the destructive cutover in Task 2.2.
+    """
+
+    report = ForeignKeyField(Report, backref="report_items", on_delete="CASCADE")
+    item = ForeignKeyField(Item, backref="report_memberships", on_delete="CASCADE")
+    rank = IntegerField()
+    decision = CharField(
+        constraints=[
+            SQL(
+                "CHECK(decision IN ('pending', 'accepted', 'deferred', 'dismissed'))",
+            ),
+        ],
+    )
+    defer_until = CharField(null=True)
+    created_at = CharField()
+
+    class Meta:
+        table_name = "report_items"
+        constraints = [SQL("UNIQUE(report_id, item_id)")]
+        indexes = ((("report_id", "rank"), False),)
+
+
+class Keyword(BaseModel):
+    """A user-defined relevance keyword with optional weight."""
+
+    keyword = CharField(unique=True)
+    weight = FloatField(default=1.0)
+    created_at = CharField()
+
+    class Meta:
+        table_name = "keywords"
+
+
+class SourceStat(BaseModel):
+    """Weekly per-feed selection statistics."""
+
+    feed = ForeignKeyField(Feed, backref="stats", on_delete="CASCADE")
+    period_start = CharField()
+    period_end = CharField()
+    items_discovered = IntegerField(default=0)
+    items_selected = IntegerField(default=0)
+    selection_rate = FloatField(null=True)
+
+    class Meta:
+        table_name = "source_stats"
+        constraints = [SQL("UNIQUE(feed_id, period_start)")]
+
+
+class ProcessingJob(BaseModel):
+    """Durable background-work queue row with idempotent admission."""
+
+    idempotency_key = CharField(unique=True)
+    kind = CharField(
+        constraints=[
+            SQL(
+                "CHECK(kind IN ("
+                "'discover', 'classify', 'prepare', 'article_cache', "
+                "'report_assembly', 'compact_briefing'"
+                "))",
+            ),
+        ],
+    )
+    item = ForeignKeyField(Item, backref="processing_jobs", null=True, on_delete="SET NULL")
+    state = CharField(
+        constraints=[
+            SQL(
+                "CHECK(state IN ('queued', 'running', 'retry', 'deferred', 'completed', 'failed', 'cancelled'))",
+            ),
+        ],
+    )
+    priority = IntegerField(default=0)
+    not_before = CharField(null=True)
+    attempt_count = IntegerField(default=0)
+    max_attempts = IntegerField(default=3)
+    created_at = CharField()
+    updated_at = CharField()
+    started_at = CharField(null=True)
+    completed_at = CharField(null=True)
+    lease_owner = CharField(null=True)
+    lease_expires_at = CharField(null=True)
+    cancel_requested = BooleanField(default=False)
+    checkpoint_json = TextField(
+        null=True,
+        constraints=[SQL("CHECK(checkpoint_json IS NULL OR json_valid(checkpoint_json))")],
+    )
+    result_json = TextField(
+        null=True,
+        constraints=[SQL("CHECK(result_json IS NULL OR json_valid(result_json))")],
+    )
+    error_json = TextField(
+        null=True,
+        constraints=[SQL("CHECK(error_json IS NULL OR json_valid(error_json))")],
+    )
+
+    class Meta:
+        table_name = "processing_jobs"
+        indexes = (
+            (("state", "priority", "not_before"), False),
+            (("item_id",), False),
+        )
+
+
+# ---------------------------------------------------------------------------
+# All models — used by migration runner and tests
+# ---------------------------------------------------------------------------
+
+ALL_MODELS = [
+    Feed,
+    Report,
+    Item,
+    Playlist,
+    PlaylistItem,
+    SelectionHistory,
+    ReportItem,
+    Keyword,
+    SourceStat,
+    ProcessingJob,
+]
+
+
+# ---------------------------------------------------------------------------
+# Migration tracking — _meta table, not in ALL_MODELS
+# ---------------------------------------------------------------------------
+
+
+class _Meta(BaseModel):
+    """Internal key/value metadata table used by the migration runner."""
+
+    key = CharField(primary_key=True)
+    value = CharField()
+
+    class Meta:
+        table_name = "_meta"
+
+
+# ---------------------------------------------------------------------------
+# User settings — stored in _meta with "setting:" prefix
+# ---------------------------------------------------------------------------
+
+
+def get_setting(key: str, default: str | None = None) -> str | None:
+    """Read a user setting from the _meta table."""
+    ensure_db()
+    try:
+        row = _Meta.get_by_id(f"setting:{key}")
+        return row.value
+    except _Meta.DoesNotExist:
+        return default
+
+
+def set_setting(key: str, value: str) -> None:
+    """Write a user setting to the _meta table."""
+    ensure_db()
+    _Meta.replace(key=f"setting:{key}", value=str(value)).execute()
+
+
+# ---------------------------------------------------------------------------
+# Migration runner
+# ---------------------------------------------------------------------------
+
+
+def run_migrations(
+    db_path: Path | str,
+    migrations_dir: Path | None = None,
+    *,
+    allow_destructive: bool = False,
+) -> None:
+    """Run pending schema migrations against the database at *db_path*.
+
+    Migrations are Python files in *migrations_dir* named ``NNN_*.py``
+    (e.g. ``001_initial.py``).  Each must expose an ``up(db)`` function.
+    Already-applied migrations are skipped; the runner is safe to call on
+    every startup.
+
+    Destructive schema changes (legacy content-state cutover) are **not**
+    applied here. Migrations above :func:`max_auto_migration_version` are skipped
+    unless *allow_destructive* is True. Use :func:`wilted.legacy_cutover.apply_legacy_cutover`
+    for the maintenance-only cutover.
+
+    Startup order guaranteed by cli.py: logging → run_migrations → tqdm lock → TUI.
+
+    Args:
+        db_path:        Path to wilted.db (created if absent).
+        migrations_dir: Directory containing migration scripts.  Defaults to
+                        ``migrations/`` adjacent to the project root.
+        allow_destructive: When False (default), skip migrations above the
+                          auto-applied version cap.
+    """
+    from wilted.legacy_cutover import max_auto_migration_version
+
+    max_version = None if allow_destructive else max_auto_migration_version()
+    connect_db(db_path)
+
+    if migrations_dir is None:
+        # Resolve relative to this file: src/wilted/db.py → project_root/migrations/
+        migrations_dir = Path(__file__).resolve().parent.parent.parent / "migrations"
+
+    _db.create_tables([_Meta], safe=True)
+
+    try:
+        row = _Meta.get_by_id("schema_version")
+        current_version = int(row.value)
+    except _Meta.DoesNotExist:
+        _Meta.create(key="schema_version", value="0")
+        current_version = 0
+
+    logger.debug("Current schema version: %d", current_version)
+
+    migration_files = sorted(migrations_dir.glob("[0-9]*.py"))
+    for mig_file in migration_files:
+        try:
+            version = int(mig_file.stem.split("_")[0])
+        except ValueError:
+            logger.warning("Skipping non-numeric migration file: %s", mig_file.name)
+            continue
+
+        if version <= current_version:
+            continue
+
+        if max_version is not None and version > max_version:
+            logger.info(
+                "Skipping migration %03d (%s); destructive migrations require explicit cutover",
+                version,
+                mig_file.name,
+            )
+            continue
+
+        logger.info("Applying migration %03d: %s", version, mig_file.name)
+
+        import importlib.util as _ilu
+
+        spec = _ilu.spec_from_file_location(f"migration_{version:03d}", mig_file)
+        module = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        with _db.atomic():
+            module.up(_db)
+            _Meta.update(value=str(version)).where(_Meta.key == "schema_version").execute()
+
+        current_version = version
+        logger.info("Migration %03d applied successfully", version)
+
+
+# ---------------------------------------------------------------------------
+# Test helpers
+# ---------------------------------------------------------------------------
+
+
+def reset_db() -> None:
+    """Close and de-initialize the database singleton.
+
+    For use in tests only.  After calling this, the next :func:`connect_db`
+    call will initialize ``_db`` with a new path, giving each test an isolated
+    SQLite database.
+    """
+    global _LEGACY_STATUS_FIELDS
+
+    if not _db.is_closed():
+        _db.close()
+    _db.init(None)  # Reset to uninitialized; triggers re-init on next connect_db()
+
+    # Restore legacy status fields so the next create_tables() includes them
+    # (post-cutover connects may have removed them from the live model).
+    if _LEGACY_STATUS_FIELDS:
+        for name, field in _LEGACY_STATUS_FIELDS.items():
+            if name not in Item._meta.fields:
+                Item._meta.add_field(name, field)
