@@ -226,6 +226,18 @@
       "audioDurationSeconds": 2711.042
     }
   ],
+  "decisions": [
+    {
+      "id": "house-promotion-is-not-advertising",
+      "decided": "2026-09-17",
+      "by": "David",
+      "question": "Is an unpaid promotion for a sister show on the same network advertising?",
+      "decision": "No. An unpaid house promotion is not advertising. The detector is not wrong to leave one in.",
+      "applies": "Label such a span `acceptable-cut`, not `must-cut` and not `must-keep`. The decision settles what it is, not whether David minds losing it, so a replay still scores it neither way.",
+      "closes": "daily-sister-show-pitch-split-cue",
+      "context": "A sister-show pitch split at a cue boundary: the call to action fell outside the sparse run that nominated it."
+    }
+  ],
   "gaps": [
     {
       "id": "twit-1098-unloaded-backend",
@@ -266,14 +278,6 @@
       "reported": "A short produced Chase Sapphire spot was discarded by the sparse-run promotional-evidence gate, which did not recognise legal and brand copy as evidence.",
       "missing": "The input is retained -- sourceHash sha256:3a1051fa9b3c5c2bc85e450a3cd9cf150270d0a9859a3b9a38265a5e56c44961, 59 Parakeet 1.1B cues -- and the historical advertising interval 839.32-860.00 is documented. What is missing is bounded programme labels for the rest of the episode: a case with one must-cut and no must-keep would score a detector that cut the whole episode as perfect.",
       "closes": "Hand-timed programme boundaries around that interval, against the retained cache entry."
-    },
-    {
-      "id": "daily-sister-show-pitch-split-cue",
-      "show": "The Daily",
-      "kind": "policy",
-      "reported": "A sister-show pitch split at a cue boundary: the call to action fell outside the sparse run that nominated it.",
-      "missing": "Not an input gap but a policy one. Whether an unpaid house promotion for another show in the same network is advertising has not been decided, and labelling it either way would put a decision into ground truth that David has not made.",
-      "closes": "An explicit owner decision on house promotion versus paid advertising. The `acceptable-cut` label exists for exactly this and is deliberately unscored."
     },
     {
       "id": "techcrunch-short-episode-overcut",
