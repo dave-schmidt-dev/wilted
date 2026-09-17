@@ -321,11 +321,15 @@ where Sort: CaseIterable & Hashable & Identifiable & RawRepresentable, Sort.RawV
     @Binding var grouping: WiltedMacQueueGrouping
     @Binding var sort: Sort
     let sortIdentifier: String
+    /// Which groupings this particular queue offers. A queue that holds only
+    /// episodes passes `.episodeOnly`, since grouping those by kind produces
+    /// one section containing everything.
+    var groupings: [WiltedMacQueueGrouping] = WiltedMacQueueGrouping.allCases
 
     var body: some View {
         HStack(spacing: WiltedTheme.Spacing.small) {
             Picker("Group", selection: $grouping) {
-                ForEach(WiltedMacQueueGrouping.allCases) { option in
+                ForEach(groupings) { option in
                     Text(option.rawValue).tag(option)
                 }
             }
@@ -448,7 +452,7 @@ private struct WiltedMacLibraryView: View {
 
     private func queueSectionHeader(_ section: WiltedMacQueueSection) -> some View {
         HStack {
-            Text(section.id.rawValue)
+            Text(section.id.title)
                 .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             Spacer()
@@ -1419,7 +1423,8 @@ private struct WiltedMacProcessorView: View {
                 WiltedMacQueueControls(
                     grouping: $model.preparationGrouping,
                     sort: $model.preparationSort,
-                    sortIdentifier: "wilted-processor"
+                    sortIdentifier: "wilted-processor",
+                    groupings: WiltedMacQueueGrouping.episodeOnly
                 )
             }
 
@@ -1983,7 +1988,8 @@ private struct WiltedMacMenuView: View {
                 WiltedMacQueueControls(
                     grouping: $model.menuGrouping,
                     sort: $model.menuSort,
-                    sortIdentifier: "wilted-menu"
+                    sortIdentifier: "wilted-menu",
+                    groupings: WiltedMacQueueGrouping.episodeOnly
                 )
             }
 
@@ -2052,7 +2058,7 @@ private struct WiltedMacMenuView: View {
                             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                                 if model.menuGrouping == .status {
                                     HStack {
-                                        Text(section.id.rawValue)
+                                        Text(section.id.title)
                                             .wiltedFont(.utility)
                                             .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                                         Spacer()

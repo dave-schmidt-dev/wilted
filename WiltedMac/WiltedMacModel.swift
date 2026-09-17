@@ -107,9 +107,15 @@ enum WiltedMacLibraryOrder: String, CaseIterable, Identifiable, Sendable {
 /// The presentation-only grouping shared by the three audio queues.
 enum WiltedMacQueueGrouping: String, CaseIterable, Identifiable, Sendable {
     case status = "Status"
+    case kind = "Kind"
     case none = "None"
 
     var id: Self { self }
+
+    /// The groupings worth offering on a queue that holds only episodes.
+    /// Grouping those by kind yields one section named "Podcasts", which is
+    /// the same list under a redundant heading.
+    static let episodeOnly: [WiltedMacQueueGrouping] = [.status, .none]
 }
 
 /// Larder ordering. These choices affect only the saved-items view; they do
@@ -207,10 +213,32 @@ enum WiltedMacQueueStatus: String, CaseIterable, Identifiable, Sendable {
     var id: Self { self }
 }
 
+/// What a queue section is a section *of*.
+///
+/// Status and kind are separate axes on purpose: the Larder's search scopes
+/// already filter by status, so folding "podcasts" and "articles" in beside
+/// "unplayed" would have cost the reader "unplayed podcasts". Grouping is the
+/// second axis instead, and the two compose.
+enum WiltedMacQueueSectionID: Hashable, Identifiable, Sendable {
+    case status(WiltedMacQueueStatus)
+    case kind(WiltedMacLibraryKind)
+
+    var id: Self { self }
+
+    /// User-facing header copy. Both cases already carry their own, so this is
+    /// a passthrough rather than a second translation table.
+    var title: String {
+        switch self {
+        case .status(let status): status.rawValue
+        case .kind(let kind): kind.rawValue
+        }
+    }
+}
+
 /// A stable group snapshot for a queue. The rows retain their canonical IDs,
 /// while each group carries its own audio total for quick scanning.
 struct WiltedMacQueueSection: Identifiable, Equatable, Sendable {
-    let id: WiltedMacQueueStatus
+    let id: WiltedMacQueueSectionID
     let itemIDs: [String]
     let audio: WiltedMacQueueAudioSummary
 }
@@ -791,9 +819,21 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
+/// The two things a Larder row can be. Its raw value is the section header.
+enum WiltedMacLibraryKind: String, CaseIterable, Identifiable, Sendable {
+    case podcasts = "Podcasts"
+    case articles = "Articles"
+
+    var id: Self { self }
+}
+
 enum WiltedMacLibraryItem: Identifiable, Hashable, Sendable {
     case article(WiltedMacArticle)
     case episode(WiltedMacEpisode)
+
+    var kind: WiltedMacLibraryKind {
+        switch self { case .article: .articles; case .episode: .podcasts }
+    }
 
     var id: String {
         switch self { case .article(let value): value.id; case .episode(let value): value.id }
@@ -2219,24 +2259,36 @@ final class WiltedMacModel {
         status: (WiltedMacLibraryItem) -> WiltedMacQueueStatus
     ) -> [WiltedMacQueueSection] {
         guard !items.isEmpty else { return [] }
-        if grouping == .none {
+        switch grouping {
+        case .none:
             return [WiltedMacQueueSection(
-                id: .all,
+                id: .status(.all),
                 itemIDs: items.map(\.id),
                 audio: WiltedMacQueueAudioSummary(items: items)
             )]
-        }
-        let order: [WiltedMacQueueStatus] = [
-            .playing, .preparing, .queued, .failed, .ready, .downloaded, .unavailable, .upcoming
-        ]
-        return order.compactMap { statusID in
-            let matching = items.filter { status($0) == statusID }
-            guard !matching.isEmpty else { return nil }
-            return WiltedMacQueueSection(
-                id: statusID,
-                itemIDs: matching.map(\.id),
-                audio: WiltedMacQueueAudioSummary(items: matching)
-            )
+        case .kind:
+            return WiltedMacLibraryKind.allCases.compactMap { kind in
+                let matching = items.filter { $0.kind == kind }
+                guard !matching.isEmpty else { return nil }
+                return WiltedMacQueueSection(
+                    id: .kind(kind),
+                    itemIDs: matching.map(\.id),
+                    audio: WiltedMacQueueAudioSummary(items: matching)
+                )
+            }
+        case .status:
+            let order: [WiltedMacQueueStatus] = [
+                .playing, .preparing, .queued, .failed, .ready, .downloaded, .unavailable, .upcoming
+            ]
+            return order.compactMap { statusID in
+                let matching = items.filter { status($0) == statusID }
+                guard !matching.isEmpty else { return nil }
+                return WiltedMacQueueSection(
+                    id: .status(statusID),
+                    itemIDs: matching.map(\.id),
+                    audio: WiltedMacQueueAudioSummary(items: matching)
+                )
+            }
         }
     }
 

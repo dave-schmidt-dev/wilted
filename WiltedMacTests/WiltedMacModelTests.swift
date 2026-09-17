@@ -1132,7 +1132,51 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(model.preparationAudioSummary, WiltedMacQueueAudioSummary(
             durations: [600, nil]
         ))
-        XCTAssertEqual(model.larderQueueSections.map(\.id), [.ready, .downloaded])
+        XCTAssertEqual(model.larderQueueSections.map(\.id), [.status(.ready), .status(.downloaded)])
+    }
+
+    func testLarderGroupsByKindWithoutLosingTheStatusFilter() {
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        let article = WiltedMacArticle(
+            id: "kind-article", title: "Article", source: "Example",
+            url: URL(string: "https://example.test/article")!, isReady: true,
+            durationSeconds: 125
+        )
+        let ready = WiltedMacEpisode(
+            id: "kind-ready", title: "Ready", feedTitle: "Show", summary: "Fixture",
+            artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            durationSeconds: 600, playbackSeconds: 0, downloadState: .completed,
+            preparationState: .prepared(summary: "Ad removed")
+        )
+        let unplayed = WiltedMacEpisode(
+            id: "kind-unplayed", title: "Unplayed", feedTitle: "Show", summary: "Fixture",
+            artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_001),
+            durationSeconds: 300, playbackSeconds: 0, downloadState: .completed,
+            preparationState: .notPrepared
+        )
+        model.installArticleForTesting(article)
+        model.installEpisodeForTesting(ready)
+        model.installEpisodeForTesting(unplayed)
+
+        model.larderGrouping = .kind
+        XCTAssertEqual(model.larderQueueSections.map(\.id), [.kind(.podcasts), .kind(.articles)],
+                       "podcasts lead, and a kind with no rows is not given an empty section")
+        XCTAssertEqual(model.larderQueueSections.first?.itemIDs.sorted(), [ready.id, unplayed.id].sorted())
+        XCTAssertEqual(model.larderQueueSections.last?.itemIDs, [article.id])
+        XCTAssertEqual(model.larderQueueSections.map(\.id.title), ["Podcasts", "Articles"])
+
+        // The point of grouping by kind rather than filtering by it: the
+        // status axis still narrows the same list.
+        model.libraryFilter = .unplayed
+        let unplayedKinds = model.larderQueueSections
+        XCTAssertTrue(unplayedKinds.allSatisfy { !$0.itemIDs.isEmpty })
+        XCTAssertFalse(unplayedKinds.flatMap(\.itemIDs).isEmpty,
+                       "filtering by status while grouped by kind must not empty the screen")
+    }
+
+    func testEpisodeOnlyQueuesDoNotOfferKindGrouping() {
+        XCTAssertEqual(WiltedMacQueueGrouping.episodeOnly, [.status, .none])
+        XCTAssertTrue(WiltedMacQueueGrouping.allCases.contains(.kind))
     }
 
     func testQueueControlsRestoreEachDestinationPreference() {
@@ -1196,7 +1240,7 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(model.currentPodcastEpisodeID, current.id)
 
         model.menuGrouping = .none
-        XCTAssertEqual(model.menuQueueSections.map(\.id), [.all])
+        XCTAssertEqual(model.menuQueueSections.map(\.id), [.status(.all)])
         XCTAssertEqual(model.menuQueueSections.first?.itemIDs, [long.id, middle.id, short.id])
 
         model.moveMenuEpisode(short.id, before: long.id)
