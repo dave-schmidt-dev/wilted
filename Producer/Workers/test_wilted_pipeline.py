@@ -5085,5 +5085,67 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
                 self.corpus.main(["--mode", "replay", "--cache", str(empty), "--strict"]), 1)
 
 
+class WorkerPromptContractTests(unittest.TestCase):
+    """Every prompt this worker sends must survive its own audit backend.
+
+    `AuditingBackend.generate` flags an unrecognized prompt that *looks* like an
+    archived classifier request. The shape test is a word search over prose, so
+    for a long time the only thing keeping a worker prompt out of that branch
+    was not happening to use the word "classification" in a sentence.
+    `OVERSIZED_SPAN_RESCAN_PROMPT` eventually did, which made every oversized
+    span fail its whole preparation with `ads-audit-contract-unavailable` --
+    invisibly, because the rescan's own `except` swallowed the raise while the
+    recorded contract error still aborted the run downstream. No existing test
+    could see it: they all hand a raw fake backend to the detector functions and
+    never construct an `AuditingBackend` at all.
+    """
+
+    def backend(self):
+        ads = types.ModuleType("wilted.ads")
+        ads._AD_DETECT_SYSTEM_PROMPT = "classify"
+        ads._AD_DETECT_CORRECTION_PROMPT = "correct"
+        ads._AD_DETECT_RESPONSE_FORMAT = {"type": "json_object"}
+        ads._parse_ad_response = lambda *a, **k: []
+
+        class Inner:
+            def generate(inner, prompt, content, *, response_format=None):
+                return "{}", 1
+
+        return wp.AuditingBackend(Inner(), ads)
+
+    def worker_prompts(self):
+        return sorted(
+            (name, value) for name, value in vars(wp).items()
+            if name.endswith("_PROMPT") and isinstance(value, str) and value
+        )
+
+    def test_no_worker_prompt_trips_its_own_contract_guard(self):
+        content = "[ID 0] first\n[ID 1] second\n[ID 2] third\n"
+        self.assertGreater(len(self.worker_prompts()), 1)
+        for name, prompt in self.worker_prompts():
+            with self.subTest(prompt=name):
+                backend = self.backend()
+                try:
+                    backend.generate(prompt, content, response_format=None)
+                except wp.WorkerError as error:  # pragma: no cover - the failure we are locking out
+                    self.fail(f"{name} tripped the audit contract guard: {error}")
+                except Exception:
+                    pass  # unrelated stub plumbing; only the contract matters here
+                self.assertEqual(
+                    backend.contract_errors, [],
+                    f"{name} recorded a contract error, which aborts the whole preparation",
+                )
+
+    def test_an_unknown_classification_shaped_prompt_is_still_refused(self):
+        backend = self.backend()
+        with self.assertRaises(wp.WorkerError):
+            backend.generate(
+                "Please classify each of the segments below.",
+                "[ID 0] first\n[ID 1] second\n",
+                response_format=None,
+            )
+        self.assertEqual(backend.contract_errors, ["unknown classification-shaped prompt"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

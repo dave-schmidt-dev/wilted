@@ -1782,6 +1782,24 @@ def _audit_ad_response(ads_module, response: str, expected_ids: tuple[int, ...])
     return decisions
 
 
+def _worker_owned_prompts() -> frozenset:
+    """Every system prompt this worker itself defines.
+
+    The contract guard below flags an unrecognized prompt that *looks* like an
+    archived classifier request, to catch the archive's own prompts drifting
+    out from under us. A prompt this module declares is by definition not that,
+    but the guard's shape test is a word search over prose, so a worker prompt
+    that merely says "classification" in a sentence tripped it and failed the
+    whole preparation. Exempting our own prompts keeps the guard pointed at
+    what it is for, and keeps the next prompt author from having to know which
+    English words are load-free.
+    """
+    return frozenset(
+        value for name, value in globals().items()
+        if name.endswith("_PROMPT") and isinstance(value, str) and value
+    )
+
+
 class AuditingBackend(CountingBackend):
     """Observe archive classification requests while leaving its retry policy intact."""
 
@@ -1805,6 +1823,7 @@ class AuditingBackend(CountingBackend):
         self._normal_prompt = prompts[0]
         self._correction_prompt = prompts[1]
         self._classification_response_format = response_format
+        self._worker_prompts = _worker_owned_prompts()
 
     def bind_segment_count(self, segment_count: int) -> None:
         """Bind rendered IDs to the transcript domain before detection begins."""
@@ -1823,7 +1842,9 @@ class AuditingBackend(CountingBackend):
         if classification and not schema_matches:
             self._contract_failure("archived classifier request used an unrecognized response schema")
         classification_shaped = bool(
-            rendered_ids and re.search(r"\bclassif(?:y|ication|ier)\b", system_prompt, re.IGNORECASE)
+            rendered_ids
+            and system_prompt not in self._worker_prompts
+            and re.search(r"\bclassif(?:y|ication|ier)\b", system_prompt, re.IGNORECASE)
         )
         if not classification and (schema_matches or classification_shaped):
             self._contract_failure("unknown classification-shaped prompt")
