@@ -348,6 +348,19 @@ public struct WiltedSyncedTranscriptView: View {
                     proxy.scrollTo(Row.scrollTarget(forCueID: current), anchor: .center)
                 }
             }
+            .onAppear {
+                // `onChange` never fires for the value the view mounts with, so
+                // a pane opened mid-episode (activeCueID already past row 0)
+                // would otherwise sit at the top until the next cue boundary.
+                // Deferred a tick: at the moment `onAppear` fires, the
+                // `LazyVStack` has not completed its first layout pass, so
+                // `scrollTo` has no geometry to resolve an off-screen target
+                // against and silently does nothing.
+                guard let activeCueID else { return }
+                DispatchQueue.main.async {
+                    proxy.scrollTo(Row.scrollTarget(forCueID: activeCueID), anchor: .center)
+                }
+            }
         }
         .accessibilityIdentifier(identifier)
         .accessibilityLabel("Transcript, synchronized with playback")
