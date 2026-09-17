@@ -825,7 +825,12 @@ def render_keep_segments(audio_path: Path, output_path: Path, keeps: list[KeepIn
         label = f"k{index}"
         filters.append(f"[0:a]atrim=start={keep.start_s:.6f}:end={keep.end_s:.6f},asetpts=PTS-STARTPTS[{label}]")
         labels.append(f"[{label}]")
-    filters.append("".join(labels) + f"concat=n={len(labels)}:v=0:a=1[outa]")
+    filters.append("".join(labels) + f"concat=n={len(labels)}:v=0:a=1[outc]")
+    # libmp3lame's FLTP path rejects any frame with
+    # linesize < 4 * FFALIGN(nb_samples, 8); concat's output frames routinely
+    # fail that check at non-frame-aligned trim points, so resample once more
+    # to force fully-padded frames before the encoder ever sees them.
+    filters.append("[outc]aresample[outa]")
     command = ["ffmpeg", "-y", "-v", "error", "-i", str(audio_path), "-filter_complex", ";".join(filters),
                "-map", "[outa]", *_render_codec_arguments(output_path), str(temporary)]
     progress("ads.cut.render", f"accurately re-encoding {len(keeps)} kept intervals")

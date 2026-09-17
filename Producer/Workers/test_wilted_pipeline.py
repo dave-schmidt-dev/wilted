@@ -3672,6 +3672,35 @@ class OutcomeContractTests(unittest.TestCase):
                                    msg=f"{suffix} rendered {measured:.3f}s")
             self.assertGreater(output.stat().st_size, 0)
 
+    def test_render_resamples_the_concat_graph_before_the_encoder(self):
+        # Regression for a real crash: libmp3lame's FLTP path rejects any
+        # frame with linesize < 4 * FFALIGN(nb_samples, 8), which the raw
+        # atrim+concat output can produce at non-frame-aligned trim points.
+        # Reproduced against a real crashed episode's source audio; fixed by
+        # resampling once more after concat, before the encoder ever sees it.
+        scratch = REPO_ROOT / ".verify-tmp" / f"render-filtergraph-{os.getpid()}"
+        scratch.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        source = scratch / "source.mp3"
+        source.write_bytes(b"\x00")
+        output = scratch / "cut.mp3"
+        keeps = wp.build_keep_map([(0.0, 3.0), (7.5, 12.0)])
+        captured: dict[str, list[str]] = {}
+
+        def fake_run(command, *, timeout_s):
+            captured["command"] = command
+            Path(command[-1]).write_bytes(b"\x00")
+
+        with mock.patch.object(wp, "_run_render_with_progress", side_effect=fake_run), \
+             mock.patch.object(wp, "probe_duration", return_value=7.5):
+            wp.render_keep_segments(source, output, keeps)
+
+        command = captured["command"]
+        filter_complex = command[command.index("-filter_complex") + 1]
+        self.assertIn("concat=n=2:v=0:a=1[outc]", filter_complex)
+        self.assertIn(";[outc]aresample[outa]", filter_complex)
+        self.assertEqual(command[command.index("-map") + 1], "[outa]")
+
 
 class AlignedSTTCacheTests(unittest.TestCase):
     """The detector transcript is reusable only for its exact model and bytes."""
