@@ -212,9 +212,13 @@ _HOUSEKEEPING_CUES = (
     re.compile(r"\b(?:sponsorship|advertising)\s+(?:contact|inquir(?:y|ies))\b", re.IGNORECASE),
 )
 
+# SmartLess and others split sponsors across one open with "brought to you in
+# part by"; the qualifier must not break the anchor match.
+_BROUGHT_TO_YOU_QUALIFIER = r"(?:\s+(?:today|in\s+part))*"
+
 _SPARSE_PROMO_CUES = (
     re.compile(
-        r"\b(?:brought to you by|paid for by|sponsor(?:ed|ship)?)\b",
+        rf"\b(?:brought\s+to\s+you{_BROUGHT_TO_YOU_QUALIFIER}\s+by|paid for by|sponsor(?:ed|ship)?)\b",
         re.IGNORECASE,
     ),
     re.compile(r"\b[a-z0-9-]+\.(?:com|net|org|io)\b|\bdot[ -]?com\b", re.IGNORECASE),
@@ -246,17 +250,17 @@ _SPARSE_PRODUCT_CONTEXT = re.compile(
 )
 
 _SPONSOR_OPENING_RE = re.compile(
-    r"\b(?:this|the)\s+episode\s+is\s+(?:brought\s+to\s+you\s+by|sponsored\s+by)\b"
-    r"|\bthis\s+message\s+is\s+brought\s+to\s+you\s+by\b"
-    r"|\bbrought\s+to\s+you\s+by\b|\bpaid\s+for\s+by\b|\bpaid\s+ad\b",
+    rf"\b(?:this|the)\s+episode\s+is\s+(?:brought\s+to\s+you{_BROUGHT_TO_YOU_QUALIFIER}\s+by|sponsored\s+by)\b"
+    rf"|\bthis\s+message\s+is\s+brought\s+to\s+you{_BROUGHT_TO_YOU_QUALIFIER}\s+by\b"
+    rf"|\bbrought\s+to\s+you{_BROUGHT_TO_YOU_QUALIFIER}\s+by\b|\bpaid\s+for\s+by\b|\bpaid\s+ad\b",
     re.IGNORECASE,
 )
 
 _EXPLICIT_HOST_READ_OPENING_RE = re.compile(
-    r"\b(?:"
-    r"(?:this|the)\s+(?:episode|show)(?:\s+of\s+[^.!?]{1,80}?)?\s+(?:is\s+)?brought\s+to\s+you"
-    r"(?:\s+today)?\s+by|"
-    r"our\s+show(?:\s+today)?\s+(?:is\s+)?brought\s+to\s+you\s+by|"
+    rf"\b(?:"
+    rf"(?:this|the)\s+(?:episode|show)(?:\s+of\s+[^.!?]{{1,80}}?)?\s+(?:is\s+)?brought\s+to\s+you"
+    rf"{_BROUGHT_TO_YOU_QUALIFIER}\s+by|"
+    rf"our\s+show(?:\s+today)?\s+(?:is\s+)?brought\s+to\s+you{_BROUGHT_TO_YOU_QUALIFIER}\s+by|"
     r"today(?:'s|’s|\s+is\s+our)\s+sponsor(?:\s+is)?|"
     r"our\s+sponsor\s+for\s+this\s+(?:section|segment|episode|show)"
     r")\b",
@@ -325,9 +329,7 @@ def _parse_ad_response(response: str, expected_ids: list[int]) -> list[tuple[int
     if len(set(ad_ids)) != len(ad_ids):
         raise ValueError("ads IDs must not be duplicated")
     return [
-        (segment_id, False, None)
-        if segment_id not in ad_labels
-        else (segment_id, True, ad_labels[segment_id])
+        (segment_id, False, None) if segment_id not in ad_labels else (segment_id, True, ad_labels[segment_id])
         for segment_id in expected_ids
     ]
 
@@ -360,9 +362,7 @@ def _backend_supports_response_format(backend: LLMBackend) -> bool:
     )
 
 
-def _generate_ad_classification(
-    backend: LLMBackend, system_prompt: str, transcript_text: str
-) -> tuple[str, int]:
+def _generate_ad_classification(backend: LLMBackend, system_prompt: str, transcript_text: str) -> tuple[str, int]:
     """Generate a compact ad response, applying constraints when supported."""
     return _generate_constrained_response(backend, system_prompt, transcript_text, _AD_DETECT_RESPONSE_FORMAT)
 
@@ -427,8 +427,7 @@ def _has_sparse_call_to_action(text: str) -> bool:
     sales_context_matches = list(_SPARSE_SALES_CONTEXT.finditer(text))
     product_matches = list(_SPARSE_PRODUCT_CONTEXT.finditer(text))
     return any(
-        max(match.start(), context.start(), product.start())
-        - min(match.start(), context.start(), product.start())
+        max(match.start(), context.start(), product.start()) - min(match.start(), context.start(), product.start())
         <= 120
         for match in sales_matches
         for context in sales_context_matches
@@ -623,8 +622,8 @@ def _recover_explicit_sponsor_pods(
         for _ in range(3):
             candidate_text = segments[content_start_id].text.strip()
             is_tail = _SPONSOR_TAIL_RE.search(candidate_text) is not None
-            is_tail_punctuation = tail_seen and bool(candidate_text) and not any(
-                char.isalnum() for char in candidate_text
+            is_tail_punctuation = (
+                tail_seen and bool(candidate_text) and not any(char.isalnum() for char in candidate_text)
             )
             if not (is_tail or is_tail_punctuation):
                 break
@@ -1206,9 +1205,7 @@ def _refine_ad_start_from_tokens(
     return segment.start_s
 
 
-def _last_meaningful_ad_end(
-    content_start_id: int, minimum_ad_id: int, segments: list[TranscriptSegment]
-) -> float:
+def _last_meaningful_ad_end(content_start_id: int, minimum_ad_id: int, segments: list[TranscriptSegment]) -> float:
     """Return the final spoken ad endpoint before content or punctuation gaps."""
     ad_end_id = content_start_id - 1
     while ad_end_id > minimum_ad_id:

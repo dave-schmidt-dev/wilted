@@ -62,6 +62,7 @@ def test_head_tail_truncation_never_exceeds_tiny_budget(budget):
         assert result.startswith("A" + _TRUNCATION_MARKER)
         assert result.endswith("Z")
 
+
 # ---------------------------------------------------------------------------
 # Local TranscriptSegment for tests (avoids dependency on transcribe.py)
 # ---------------------------------------------------------------------------
@@ -345,6 +346,7 @@ class TestDetectAds:
         "text",
         [
             "This episode is brought to you by Acme.",
+            "This episode of SmartLess is brought to you in part by Acme.",
             "Visit acme.com/savings today.",
             "Use promo code ROGAN at checkout.",
             "Get 20 percent off your first order.",
@@ -397,9 +399,7 @@ class TestDetectAds:
         assert detect_ads(segs, backend) == [AdSegment(0, 20, 1.0, "sponsor_read")]
         verifier_call = backend.generate.call_args_list[1]
         assert verifier_call.args[0] == _SPARSE_CONTENT_VERIFY_SYSTEM_PROMPT
-        assert verifier_call.kwargs["response_format"] == _id_response_format(
-            "content_start_id", [1, 2, 3, 4]
-        )
+        assert verifier_call.kwargs["response_format"] == _id_response_format("content_start_id", [1, 2, 3, 4])
 
     def test_sparse_content_verifier_at_window_edge_suppresses_partial_pod(self):
         segs = _make_segments(
@@ -556,9 +556,7 @@ class TestDetectAds:
         ("duration_s", "segment_count", "text_size"),
         [(300, 154, 250), (3 * 60 * 60, 180, 50)],
     )
-    def test_compact_requests_are_bounded_for_short_dense_and_long_podcasts(
-        self, duration_s, segment_count, text_size
-    ):
+    def test_compact_requests_are_bounded_for_short_dense_and_long_podcasts(self, duration_s, segment_count, text_size):
         segment_duration = duration_s / segment_count
         segs = _make_segments(
             [
@@ -605,10 +603,7 @@ class TestDetectAds:
         segment_count = 154
         segment_duration = 300 / segment_count
         segs = _make_segments(
-            [
-                (index * segment_duration, (index + 1) * segment_duration, "x" * 250)
-                for index in range(segment_count)
-            ]
+            [(index * segment_duration, (index + 1) * segment_duration, "x" * 250) for index in range(segment_count)]
         )
         accepted_prompts = []
 
@@ -689,9 +684,7 @@ class TestDetectAds:
         assert backend.generate.call_count == 3
 
     def test_noncontiguous_ad_runs_are_not_merged(self):
-        segs = _make_segments(
-            [(0, 10, "Visit acme.com."), (10, 20, "editorial"), (20, 30, "Use promo code ROGAN.")]
-        )
+        segs = _make_segments([(0, 10, "Visit acme.com."), (10, 20, "editorial"), (20, 30, "Use promo code ROGAN.")])
         backend = _mock_backend(
             [self._classifications([0, 1, 2], {0, 2}), '{"content_start_id":1}', '{"include": false}']
         )
@@ -845,9 +838,7 @@ class TestDetectAds:
         segs = _make_segments([(index * 10, index * 10 + 10, f"segment {index}") for index in range(9)])
         segs[3] = TranscriptSegment(30, 40, "This message is brought to you by Acme.")
         classification = self._classifications(list(range(9)), {3})
-        backend = _mock_backend(
-            [classification, '{"include":true}', '{"include":true}', '{"content_start_id":7}']
-        )
+        backend = _mock_backend([classification, '{"include":true}', '{"include":true}', '{"content_start_id":7}'])
 
         assert [(ad.start_s, ad.end_s) for ad in detect_ads(segs, backend)] == [(10, 70)]
         assert backend.generate.call_count == 4
@@ -1047,9 +1038,10 @@ class TestDetectAds:
         backend = MagicMock()
         backend.generate = MagicMock(wraps=generate)
 
-        assert _recover_explicit_sponsor_pods(
-            segs, backend, [_CoarseAdRun(1, 1, 1.0, "sponsor_read")]
-        ) == ([AdSegment(0, 20, 1.0, "sponsor_read")], [(0, 1)])
+        assert _recover_explicit_sponsor_pods(segs, backend, [_CoarseAdRun(1, 1, 1.0, "sponsor_read")]) == (
+            [AdSegment(0, 20, 1.0, "sponsor_read")],
+            [(0, 1)],
+        )
         assert backend.generate.call_args.kwargs == {}
 
     def test_explicit_anchor_recovery_skips_second_anchor_inside_recovered_pod(self):
@@ -1064,9 +1056,10 @@ class TestDetectAds:
         )
         backend = _mock_backend(['{"content_start_id":4}'])
 
-        assert _recover_explicit_sponsor_pods(
-            segs, backend, [_CoarseAdRun(1, 3, 1.0, "sponsor_read")]
-        ) == ([AdSegment(0, 40, 1.0, "sponsor_read")], [(0, 3)])
+        assert _recover_explicit_sponsor_pods(segs, backend, [_CoarseAdRun(1, 3, 1.0, "sponsor_read")]) == (
+            [AdSegment(0, 40, 1.0, "sponsor_read")],
+            [(0, 3)],
+        )
         assert backend.generate.call_count == 1
 
     def test_explicit_anchor_at_truncated_context_edge_fails_closed(self):
@@ -1095,9 +1088,10 @@ class TestDetectAds:
         )
         backend = _mock_backend(['{"content_start_id":2}'])
 
-        assert _recover_explicit_sponsor_pods(
-            segs, backend, [_CoarseAdRun(3, 3, 1.0, "sponsor_read")]
-        ) == ([], [(0, 3)])
+        assert _recover_explicit_sponsor_pods(segs, backend, [_CoarseAdRun(3, 3, 1.0, "sponsor_read")]) == (
+            [],
+            [(0, 3)],
+        )
 
     def test_empty_smartless_bumpers_are_not_recovered_as_ads(self):
         segs = _make_segments(

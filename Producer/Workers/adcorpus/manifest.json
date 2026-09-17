@@ -314,6 +314,14 @@
       "reported": "The app was replaced while a worker was running, leaving the job neither finished nor failed.",
       "missing": "Not a detector judgement. Bootstrap now marks interrupted jobs failed; an in-flight guard in the installer is still open.",
       "closes": "The installer guard, not a corpus case."
+    },
+    {
+      "id": "smartless-steve-zahn-brought-to-you-in-part-by",
+      "show": "SmartLess",
+      "kind": "judgement",
+      "reported": "David, 2026-09-17: heard a Skinny Pop popcorn sponsor read intact at 18:51 in the cut file. The transcript showed 'this episode of smartlist is brought to you in part by skinny pop popcorn'; the raw classifier isolated that one sentence as its own single-segment run (segment 193, original 1273.9-1293.9s) immediately adjacent to the sponsor_read span it did cut (1293.92-1453.56s), and the coarse_size<=2 sparse-run guard discarded it as 'without promotional evidence' -- logged as ads.detect.discarded, 'Discarding sparse ad run 193-193 without promotional evidence (1273.9-1293.9s)'.",
+      "missing": "Preparation overwrites the download in place, so the pre-cut audio no longer exists; the aligned-STT cache entry keyed to that source (sha256:3f16a875cea97aeb73fa069c48b7a901a58720475aa407d515b514045925dcdd) has since been evicted (bounded to 32 entries). There is no input a replay could be scored against.",
+      "closes": "_SPARSE_PROMO_CUES, _SPONSOR_OPENING_RE, and _EXPLICIT_HOST_READ_OPENING_RE in ads.py required the literal phrase 'brought to you by' with nothing between 'you' and 'by'; SmartLess's copy inserts 'in part'. Fixed by a shared _BROUGHT_TO_YOU_QUALIFIER fragment tolerating 'today' and/or 'in part' between them, covered by a new case in test_sparse_genuine_promotional_cues_are_retained rather than a corpus replay, since the source is gone."
     }
   ]
 }
