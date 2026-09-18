@@ -502,8 +502,13 @@ private struct WiltedMacFeedsView: View {
                     }
                 }
                 .wiltedCard(colorScheme)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("wilted-feeds-list")
+                // Deliberately bare, like the Menu's group cards. An
+                // accessibility identifier here publishes the card as a
+                // container element, and a container placed directly around
+                // rows that are themselves `.contain` hoists their children
+                // into it -- the per-row `wilted-feeds-row-` identifiers then
+                // never reach the tree. Dropping `.contain` alone was not
+                // enough; the identifier creates the container on its own.
             }
         }
     }
@@ -1204,9 +1209,15 @@ private struct WiltedMacMenuView: View {
                 }
             }
             .wiltedCard(colorScheme)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("wilted-menu-articles")
         }
+        // The container goes on the section, not on the VStack that holds the
+        // rows. A `.contain` element directly around rows that are themselves
+        // `.contain` swallows them: the children are hoisted into the parent
+        // and the per-row identifiers never reach the tree. The Menu's own
+        // groups already use this shape, which is why `wilted-menu-row-` is
+        // queryable and `wilted-article-row-` was not.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-menu-articles")
     }
 
     private func menuRow(_ episode: WiltedMacEpisode, position: Int, count: Int) -> some View {

@@ -115,6 +115,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
 
     /// The library had no removal path, so anything added once stayed on
     /// screen permanently. The article row lives on the Menu now.
+    /// The library had no removal path, so anything added once stayed on
+    /// screen permanently. The article row lives on the Menu now.
     func testMenuArticleRowOffersRemoval() {
         let app = launch(arguments: ["--wilted-ui-fixture-ready"])
 
@@ -344,6 +346,18 @@ final class WiltedMacSmokeUITests: XCTestCase {
         let app = launch(arguments: [
             "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"
         ])
+        // The fixture episode arrives in the Feeds inbox, the way a real one
+        // does; the Menu is where it waits once kept. The sibling tests that
+        // share these launch arguments keep it first for the same reason.
+        let navFeeds = app.descendants(matching: .any)["wilted-navigation-feeds"]
+        XCTAssertTrue(navFeeds.waitForExistence(timeout: 8))
+        navFeeds.click()
+        let keep = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-keep-'")
+        ).firstMatch
+        XCTAssertTrue(keep.waitForExistence(timeout: 8))
+        keep.click()
+
         let navMenu = app.descendants(matching: .any)["wilted-navigation-menu"]
         XCTAssertTrue(navMenu.waitForExistence(timeout: 5))
         navMenu.click()
@@ -352,7 +366,12 @@ final class WiltedMacSmokeUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-row-'")
         ).firstMatch
         XCTAssertTrue(menuRow.waitForExistence(timeout: 8))
-        XCTAssertTrue(app.staticTexts["Ready to play"].waitForExistence(timeout: 5))
+        // The Menu's own playable group, by identifier rather than by copy.
+        // The sidebar's "Ready to play" row combines its children into one
+        // element, so its label is never that string on its own.
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-menu-ready-count"].waitForExistence(timeout: 5)
+        )
         XCTAssertTrue(app.buttons["wilted-menu-play-first"].exists)
         XCTAssertTrue(app.buttons["wilted-menu-prepare-all"].exists)
         XCTAssertTrue(app.buttons["wilted-menu-play-first"].isEnabled)
@@ -492,7 +511,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         for identifier in [
             "wilted-player-speed", "wilted-player-rewind", "wilted-player-play-pause",
             "wilted-player-forward", "wilted-player-transcript",
-            "wilted-player-notes", "wilted-player-menu", "wilted-player-volume",
+            "wilted-player-notes", "wilted-player-volume",
             "wilted-player-scrubber", "wilted-player-previous", "wilted-player-next",
             "wilted-player-restart", "wilted-player-keyboard-transports"
         ] {
@@ -501,6 +520,11 @@ final class WiltedMacSmokeUITests: XCTestCase {
                 "missing or duplicate \(identifier)"
             )
         }
+
+        XCTAssertEqual(
+            app.descendants(matching: .any).matching(identifier: "wilted-player-menu").count, 0,
+            "on the Menu the player offers no shortcut back to the Menu"
+        )
 
         let playPause = app.descendants(matching: .any)["wilted-player-play-pause"]
         XCTAssertEqual(playPause.label, "Pause")
@@ -528,6 +552,12 @@ final class WiltedMacSmokeUITests: XCTestCase {
         // The same live player follows the reader to every other destination.
         navFeeds.click()
         XCTAssertTrue(app.descendants(matching: .any)["wilted-mac-feeds-detail"].waitForExistence(timeout: 5))
+        // The player's way back to the Menu exists only off the Menu: on the
+        // Menu itself the shortcut would point at the page already showing.
+        XCTAssertEqual(
+            app.descendants(matching: .any).matching(identifier: "wilted-player-menu").count, 1,
+            "the player offers one way back to the Menu from another destination"
+        )
         XCTAssertTrue(compact.exists)
         XCTAssertTrue(compact.isHittable)
         XCTAssertEqual(playPause.label, "Pause")
