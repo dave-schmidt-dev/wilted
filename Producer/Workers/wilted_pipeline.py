@@ -456,8 +456,74 @@ GPU_LOCK_ACQUISITION_TIMEOUT_S = 30 * 60.0
 # reads at either end and every news item between them. Uncut audio is
 # recoverable and over-cut audio is not, because preparation writes over the
 # download, so a span this size is dropped and said out loud rather than obeyed.
+#
+# Calibrated 2026-09-17 against the show that motivated it. Nine TechCrunch
+# Daily episodes retained in the aligned-STT cache run 5.9-10.1 minutes and open
+# with one contiguous preroll block of two back-to-back sponsor reads, 160.8-
+# 180.8s long and near enough fixed in absolute terms, so the share is set by how
+# short the episode is: 26.6%, 28.0%, 30.0%, 30.6%, 31.7%, 32.5%, 34.9% and
+# 46.8%. The worst case was then read from the
+# transcript cue by cue: that 6.4-minute episode -- sourceHash
+# sha256:b6edb96f37de..., 21 cues, 386.52s -- carries the same ODSC sponsor read
+# twice back to back. The block opens at 6.72s and ends inside cue 9, which
+# straddles the read's sign-off and the first headline. Cues that are wholly
+# advertising are 6.72-167.32, so 160.6s of 386.52s = 41.6% is what a label read
+# from cue edges can assert. Interpolating the straddle by character position
+# puts the boundary near 176.7s, making the episode's real share about 44%.
+# Either way the margin under this ceiling is 5 to 8 points, not the 3.2 the
+# 46.8% cue-granular figure implied. Every other figure above is still cue-granular and so is an upper
+# bound. David accepted 0.5 on this evidence rather than raising it or making it
+# duration-aware. What this rules out is inferring the ceiling from the corpus:
+# no corpus case has a single block above 8.2%, because all three are 25-89
+# minutes long. A show shorter or ad-heavier than TechCrunch would breach it,
+# and the fix then is a duration-aware bound, not a bigger number.
 MAXIMUM_SINGLE_AD_SHARE = 0.5
 MAXIMUM_TOTAL_AD_SHARE = 0.6
+# A reviewed span is a verdict and is never thrown away for its size, but a
+# verdict standing behind one span does not license the unreviewed rest. The
+# unreviewed spans are measured together against a bound of their own, tighter
+# than the total -- the same half a single span may claim -- and the total
+# ceiling still measures reviewed and unreviewed removals together, so a
+# vouched-for span cannot carry unreviewed companions across the episode.
+# Either bound tripping keeps only the spans a review vouched for, which is the
+# cut that risks the least programme.
+MAXIMUM_UNCONFIRMED_AD_SHARE = 0.5
+# The absolute floor under all of it. Whatever the reviews say, an episode
+# cannot be mostly gone: the combined removal -- every span that would be cut,
+# vouched for or not -- has to leave at least this share of the episode as
+# programme. The floor overrides even a review, because a verdict that reads
+# 95% of a file as advertising is a detection failure no confirmation can
+# rescue. When it is crossed the whole episode is kept, not the vouched set,
+# so no arithmetic between a runaway detector and a reviewer that agrees with
+# it can empty the file.
+MINIMUM_PROGRAMME_SHARE = 0.3
+# A run that nominates almost nothing cannot be told apart from one whose
+# backend never really answered: both report nearly no advertising, and the
+# worker has no model of how much advertising an episode should carry to
+# predict which one it is looking at. These floors are the arithmetic that
+# stands in for that prediction. A run with at least one nomination, but under
+# both floors -- trivially small in absolute terms and in share of the episode
+# -- carries a near-empty note in its audit so the caller can treat the result
+# with suspicion. The note changes nothing about what is cut. The figures come
+# from the labelled corpus: the shortest genuine cut is Practical AI's 15.00s
+# closing sponsor credit and music bed (2696.04-2711.04,
+# `practical-ai-two-host-reads-left-whole`), and the smallest genuine
+# advertising share is 0.53%, the 28.48s Amazon Prime spot (4162.76-4191.24)
+# in the 5337.26s Waveform episode `waveform-two-preroll-sponsor-reads`. The
+# seconds floor sits exactly at that minimum rather than under it, and the
+# comparison is strict, so a 15.00s cut is not near-empty by one epsilon. Both
+# margins are therefore thin and both rest on a three-episode corpus: a genuine
+# cut shorter than any yet labelled would be called near-empty.
+NOMINATED_SECONDS_FLOOR = 15.0
+NOMINATED_SHARE_FLOOR = 0.005
+# Worker-produced spans are built by a review, not classified by the model, so
+# there is no model probability to carry. What the worker does know is how much
+# of the corroboration its own recovery contract looks for was actually
+# observed, and a produced span's confidence reports that receipt. It is never
+# 1.0 -- no review proves a span the way a classification does -- and no cut
+# reads it. Confidence reports; it does not decide.
+RECOVERED_CONFIDENCE_FLOOR = 0.5
+RECOVERED_CONFIDENCE_CEILING = 0.9
 
 # How many of the previous project's warnings are relayed verbatim before the
 # rest are counted. The ad detector logs one warning per failed batch and
@@ -726,7 +792,31 @@ def serialize_ad_audit(audit) -> dict:
             for candidate in audit.candidates
         ],
         "incompleteError": audit.incomplete_error,
+        "nearEmpty": audit.near_empty,
     }
+
+
+def _near_empty_nominations(detections, total_seconds) -> str | None:
+    """Name a run whose nominations are too small to trust, or ``None``.
+
+    An empty nomination set is not near-empty: that is the shape of a
+    genuinely ad-free episode, and the audit's request and failure counts are
+    what separate a clean empty run from a backend that never answered. What
+    this catches is a run that returned *something*, but so little that it is
+    equally likely to be a broken backend's trace. The thresholds are the
+    floors above; this is diagnostic only and never changes a cut.
+    """
+    if not detections or not 0 < float(total_seconds) < float("inf"):
+        return None
+    nominated_seconds = sum(float(ad.end_s) - float(ad.start_s) for ad in detections)
+    nominated_share = nominated_seconds / float(total_seconds)
+    if nominated_seconds < NOMINATED_SECONDS_FLOOR and nominated_share < NOMINATED_SHARE_FLOOR:
+        return (
+            f"nominations total {nominated_seconds:.1f}s "
+            f"({nominated_share:.2%} of the episode), under both the "
+            f"{NOMINATED_SECONDS_FLOOR:.0f}s and {NOMINATED_SHARE_FLOOR:.1%} floors"
+        )
+    return None
 
 
 def validate_aligned_segments(segments, total_seconds: float) -> list:
@@ -1738,6 +1828,7 @@ class AdAnalysisAudit:
     candidates: tuple[AuditCandidate, ...] = ()
     speculative_cuts: tuple[object, ...] = ()
     incomplete_error: str | None = None
+    near_empty: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2682,6 +2773,23 @@ def _evidence_is_covered(segment_id, segments, detections):
     )
 
 
+def recovered_confidence(observed: int, expected: int) -> float:
+    """Map observed corroboration onto the recovered-span confidence band.
+
+    `observed` and `expected` are integer evidence counts: how many of the
+    signals a recovery looks for it actually found. The result is a receipt of
+    that share, never the literal 1.0 a classification carries.
+    """
+    if expected <= 0:
+        return RECOVERED_CONFIDENCE_FLOOR
+    share = min(1.0, max(0.0, observed / expected))
+    return round(
+        RECOVERED_CONFIDENCE_FLOOR
+        + (RECOVERED_CONFIDENCE_CEILING - RECOVERED_CONFIDENCE_FLOOR) * share,
+        4,
+    )
+
+
 def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, detections):
     """Recover or extend explicit host reads through verified content return."""
     recovered = []
@@ -2851,6 +2959,20 @@ def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, dete
         )
         if overlapping and recovered_end <= max(ad.end_s for ad in overlapping):
             continue
+        # The receipt is the share of the recovery contract's corroboration
+        # that was actually observed: the call to action that found the
+        # evidence, a spoken address, any destination, and the sponsor's name
+        # coming back. A read with one of those is weaker evidence than a read
+        # with all four, and the reported confidence says which one this is.
+        confidence = recovered_confidence(
+            sum((
+                cta_seen,
+                actual_domain_seen,
+                destination_seen,
+                name_repeated,
+            )),
+            4,
+        )
         recovered.append(
             ads_module.AdSegment(  # noqa: SLF001 - preserve legacy detection result type
                 # The fallback's proof is the full explicit host-read cue. Its
@@ -2858,7 +2980,7 @@ def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, dete
                 # not retain it by token-refining this worker-only recovery.
                 recovered_start,
                 recovered_end,
-                1.0,
+                confidence,
                 "sponsor_read",
             )
         )
@@ -2946,7 +3068,19 @@ def recover_commercial_evidence_reads(ads_module, backend, segments, detections,
                 f"commercial evidence IDs {first}-{last} overlapped an existing cut",
             )
             continue
-        recovered.append(ads_module.AdSegment(start_s, end_s, 1.0, "sponsor_read"))
+        # The receipt is how sharp the evidence was: a seed that sits in one
+        # cue is a tighter observation than one spread across a window, and a
+        # nomination that stayed on the observed evidence is a tighter read
+        # than one that widened it.
+        confidence = recovered_confidence(
+            sum((
+                True,
+                len(evidence_ids) == 1,
+                proposed_ids == evidence_ids,
+            )),
+            3,
+        )
+        recovered.append(ads_module.AdSegment(start_s, end_s, confidence, "sponsor_read"))
     if not recovered:
         return detections
     merged = ads_module._merge_adjacent(  # noqa: SLF001 - preserve legacy merge shape
@@ -3032,6 +3166,7 @@ def recover_transcript_start_preroll(ads_module, backend, segments, detections):
     if 0 <= program_id <= PREROLL_COLD_OPEN_MAX_ID:
         progress("ads.detect.preroll.skipped", f"the opening holds program content at {program_id}")
         return detections
+    confirmation_agreed = program_id == -1
     if program_id != -1:
         # The confirmation read only the passage the boundary question
         # nominated, and it placed the program earlier inside that passage.
@@ -3052,7 +3187,19 @@ def recover_transcript_start_preroll(ads_module, backend, segments, detections):
     # advertising cue, because the insertion gap between them is the spot's
     # own music bed and leaving it behind is leaving the advertisement in.
     end_s = float(segments[program_start_id].start_s)
-    preroll = ads_module.AdSegment(0.0, end_s, 1.0, "ad_break")  # noqa: SLF001 - legacy result type
+    # The receipt is: the boundary review named where the program resumes, the
+    # confirmation did not move it, and the opening is comfortably longer than
+    # the smallest thing the worker will cut. A moved boundary or a bare-minimum
+    # opening is weaker evidence and reports lower.
+    confidence = recovered_confidence(
+        sum((
+            True,
+            confirmation_agreed,
+            end_s >= 2 * PREROLL_RECOVERY_MINIMUM_SECONDS,
+        )),
+        3,
+    )
+    preroll = ads_module.AdSegment(0.0, end_s, confidence, "ad_break")  # noqa: SLF001 - legacy result type
     progress("ads.detect.preroll", f"0.000-{end_s:.3f} before program ID {program_start_id}")
     return ads_module._merge_adjacent(  # noqa: SLF001 - retain legacy overlap semantics
         sorted([preroll, *detections], key=lambda ad: ad.start_s)
@@ -3198,6 +3345,7 @@ def recover_transcript_end_postroll(ads_module, backend, segments, detections, t
         )
         program_id = -1
 
+    disputed = program_id != -1
     if program_id != -1:
         # One shrink, then the answer stands. The realistic disagreement is the
         # first question overshooting by a segment or two -- The Daily's closing
@@ -3231,13 +3379,30 @@ def recover_transcript_end_postroll(ads_module, backend, segments, detections, t
             progress("ads.detect.postroll.skipped", f"the ending still holds program content at {program_id}")
             return detections
 
+    # The receipt mirrors the opening's: the closing review found appended
+    # advertising, the confirmation agreed without the ending having to be
+    # narrowed, and the tail is comfortably longer than the smallest thing the
+    # worker will cut.
+    confidence = recovered_confidence(
+        sum((
+            True,
+            not disputed,
+            total_seconds - start_s >= 2 * POSTROLL_RECOVERY_MINIMUM_SECONDS,
+        )),
+        3,
+    )
     progress(
         "ads.detect.postroll",
         f"{start_s:.3f}-{total_seconds:.3f} after program ID {advertising_start_id}",
     )
     return ads_module._merge_adjacent([  # noqa: SLF001
         *detections,
-        ads_module.AdSegment(start_s, total_seconds, 1.0, "ad_break"),
+        # The closing review is the one pass that positively established this
+        # run as the sign-off/credits/music-bed shape rather than a mid-roll
+        # break, so it is the one place `credits` is attached. The detector's
+        # own `ad_break` spans stay paid.
+        ads_module.AdSegment(start_s, total_seconds, confidence, "ad_break",
+                             kinds=(ads_module.AD_KIND_CREDITS,)),
     ])
 
 
@@ -3333,7 +3498,18 @@ def _rescan_unconfirmed_oversized_span(ads_module, backend, segments, ad):
         segment_id for segment_id, segment in enumerate(segments)
         if float(segment.start_s) < float(ad.end_s) and float(segment.end_s) > float(ad.start_s)
     ]
-    if not span_ids:
+    if len(span_ids) < 2:
+        # The first review already refuses a span it cannot see as a passage,
+        # and asking the second question about one segment is asking it to
+        # vouch for a single cue: a lone segment carries neither the run of
+        # programme a boundary needs nor the recurrence advertising evidence
+        # needs, and a confirmation that rests on it is not evidence of
+        # anything. Rejecting costs at most leaving the span to the size guard.
+        progress(
+            "ads.detect.span.rescan.rejected",
+            f"{float(ad.start_s):.3f}-{float(ad.end_s):.3f} covers fewer than two segments; "
+            "a passage that short cannot be vouched for",
+        )
         return False
     window_ids = span_ids[:OVERSIZED_SPAN_RESIZE_MAX_SEGMENTS]
     try:
@@ -3402,10 +3578,20 @@ def reject_implausible_ad_spans(detections, total_seconds, confirmed=frozenset()
     programme audio with the same confidence the detector just misplaced.
 
     `confirmed` holds the spans a review already read end to end and vouched
-    for. Those are exempt from both ceilings, including the total: a short news
-    alert can legitimately be mostly advertising, and overruling a verdict on
+    for. A vouched-for span is never dropped for its size: a short news alert
+    can legitimately be mostly advertising, and overruling a verdict on
     arithmetic is how a correctly-detected sponsor read became a failed
-    preparation. The ceilings remain the net for everything unreviewed.
+    preparation. But a verdict behind one span is not a verdict behind the
+    rest. Unreviewed spans are measured against a bound of their own, tighter
+    than the total, so they cannot accumulate past what a single span may
+    claim, and the total ceiling still measures reviewed and unreviewed
+    removals together, so a vouched-for span cannot carry unreviewed
+    companions across the episode. Either bound tripping keeps only the spans
+    a review vouched for, which is the cut that risks the least programme.
+    Under all of it is `MINIMUM_PROGRAMME_SHARE`: a combined removal that
+    would leave less than that share of the episode as programme keeps the
+    whole episode, even when every span was vouched for, because that much of
+    an episode called advertising is a detector failure no review can rescue.
     """
     if total_seconds <= 0 or not detections:
         return detections
@@ -3421,15 +3607,35 @@ def reject_implausible_ad_spans(detections, total_seconds, confirmed=frozenset()
             )
             continue
         kept.append(ad)
+    vouched = [ad for ad in kept if (float(ad.start_s), float(ad.end_s)) in confirmed]
     unreviewed = [ad for ad in kept if (float(ad.start_s), float(ad.end_s)) not in confirmed]
-    removed = sum(float(ad.end_s) - float(ad.start_s) for ad in unreviewed)
-    if removed / total_seconds > MAXIMUM_TOTAL_AD_SHARE:
+    unreviewed_removed = sum(float(ad.end_s) - float(ad.start_s) for ad in unreviewed)
+    total_removed = sum(float(ad.end_s) - float(ad.start_s) for ad in kept)
+    programme_share = 1 - total_removed / total_seconds
+    if programme_share < MINIMUM_PROGRAMME_SHARE:
         progress(
             "ads.detect.refused",
-            f"{removed:.1f}s of {total_seconds:.1f}s ({removed / total_seconds:.0%}) was classified "
-            "as advertising without review; keeping the episode whole",
+            f"{total_removed:.1f}s of {total_seconds:.1f}s ({total_removed / total_seconds:.0%}) "
+            f"would be removed, leaving {programme_share:.0%} of the episode as programme, under the "
+            f"{MINIMUM_PROGRAMME_SHARE:.0%} floor; keeping the episode whole",
         )
-        return [ad for ad in kept if (float(ad.start_s), float(ad.end_s)) in confirmed]
+        return []
+    if unreviewed_removed / total_seconds > MAXIMUM_UNCONFIRMED_AD_SHARE:
+        progress(
+            "ads.detect.refused",
+            f"{unreviewed_removed:.1f}s of {total_seconds:.1f}s "
+            f"({unreviewed_removed / total_seconds:.0%}) was classified as advertising without review; "
+            "keeping the episode whole",
+        )
+        return vouched
+    if total_removed / total_seconds > MAXIMUM_TOTAL_AD_SHARE:
+        progress(
+            "ads.detect.refused",
+            f"{total_removed:.1f}s of {total_seconds:.1f}s ({total_removed / total_seconds:.0%}) "
+            f"would be removed, {unreviewed_removed:.1f}s of it without review; keeping only the spans "
+            "a review vouched for",
+        )
+        return vouched
     return kept
 
 
@@ -3700,12 +3906,51 @@ def _experimental_speculative_cuts(
     return audit
 
 
+def detect_nominated_ad_spans(
+    ads_module, backend, segments, total_seconds, *, pod_share_bound=None
+):
+    """Call the vendored detector and enforce an optional proportional pod bound.
+
+    The archive's pod recovery has no proportional guard of its own. Its
+    bracket bound is a fixed ten minutes written for a two-hour show, so on a
+    short episode a single pod can swallow most of the programme -- the
+    recorded TechCrunch overcut is exactly that shape (`gaps`, id
+    `techcrunch-short-episode-overcut`). The worker holds no value it can
+    defend for a share bound: the corpus carries three hand-labelled episodes,
+    all tuning inputs, and the short-episode input that would calibrate one is
+    gone, so replay evidence alone cannot establish its safety.
+
+    The bound is therefore a caller-supplied parameter and nothing in this
+    module reads a constant for it. `None` -- the production default -- applies
+    no bound at all and returns the detector's own output untouched. When a
+    bound is supplied, a nominated span whose share of the episode exceeds it
+    is dropped uncut, the same conservative direction as every other ceiling:
+    an advertisement left in is an annoyance, programme removed is gone.
+    """
+    detections = ads_module.detect_ads(segments, backend)
+    if pod_share_bound is None or not 0 < float(total_seconds) < float("inf"):
+        return detections
+    bounded = []
+    for ad in detections:
+        share = (float(ad.end_s) - float(ad.start_s)) / float(total_seconds)
+        if share > pod_share_bound:
+            progress(
+                "ads.detect.pod.rejected",
+                f"{float(ad.start_s):.3f}-{float(ad.end_s):.3f} is {share:.0%} of the episode, "
+                f"past the {pod_share_bound:.0%} nominated-pod bound",
+            )
+            continue
+        bounded.append(ad)
+    return bounded
+
+
 def analyze_ad_detections(
     ads_module,
     backend,
     segments,
     total_seconds: float,
     *,
+    pod_share_bound: float | None = None,
     experimental_candidates=(),
     experimental_max_additional_model_calls: int = 0,
 ) -> AdAnalysis:
@@ -3714,6 +3959,11 @@ def analyze_ad_detections(
     The caller owns model construction, GPU admission, and closing. This makes
     the exact live path replayable with a supplied backend and duration, while
     retaining the archive as the sole classifier and recovery implementation.
+
+    `pod_share_bound` is the optional proportional bound on a single nominated
+    pod, passed through to `detect_nominated_ad_spans`. It is `None` in
+    production because no corpus case can justify a value; the seam exists so
+    a bound can be supplied and measured the day a short-episode case lands.
     """
     auditing_backend = backend if isinstance(backend, AuditingBackend) else AuditingBackend(
         backend, ads_module, len(segments)
@@ -3729,7 +3979,13 @@ def analyze_ad_detections(
     ads_logger.addHandler(discarded)
     ads_logger.setLevel(logging.INFO)
     try:
-        detections = ads_module.detect_ads(segments, auditing_backend)
+        detections = detect_nominated_ad_spans(
+            ads_module,
+            auditing_backend,
+            segments,
+            total_seconds,
+            pod_share_bound=pod_share_bound,
+        )
     finally:
         ads_logger.removeHandler(discarded)
         ads_logger.setLevel(previous_level)
@@ -3816,6 +4072,7 @@ def analyze_ad_detections(
             f"the model failed {auditing_backend.failures} of {auditing_backend.calls} requests; last error: "
             f"{type(auditing_backend.last_error).__name__}: {auditing_backend.last_error}",
         )
+    audit.near_empty = _near_empty_nominations(detections, total_seconds)
     audit = _experimental_speculative_cuts(
         audit,
         auditing_backend,
@@ -3833,6 +4090,57 @@ def analyze_ad_detections(
             f"classifier exhausted normal and corrective retries for global IDs: {details}",
         )
     return AdAnalysis(tuple(detections), audit)
+
+
+def effective_ad_spans(ads_module, raw_nominations, keeps, total_seconds) -> list[dict]:
+    """The removed intervals the keep map actually cuts, with their kinds.
+
+    Effective-cut selection is the keep map's complement, not the nomination
+    list: a nomination can be cut down or absorbed by its neighbour. Every
+    nomination overlapping an interval contributes its kind, so a cut that
+    removes a paid read and a house promotion together still reports both and
+    is treated as a paid removal. An interval no nomination overlaps reports
+    the label `advertisement` and a paid kind, the conservative reading.
+    """
+    spans = []
+    for start, end in effective_removed_intervals(keeps, total_seconds):
+        overlapping = [
+            ad for ad in raw_nominations
+            if ad["endSeconds"] > start and ad["startSeconds"] < end
+        ]
+        kinds = tuple(sorted({kind for ad in overlapping for kind in ad["kinds"]}))
+        if not kinds:
+            kinds = (ads_module.AD_KIND_PAID,)
+        spans.append({
+            "startSeconds": round(start, 3), "endSeconds": round(end, 3),
+            "label": overlapping[0]["label"] if overlapping else "advertisement",
+            **_ad_kind_fields(ads_module, kinds),
+            "confidence": max((ad["confidence"] for ad in overlapping), default=0.0),
+        })
+    return spans
+
+
+def _ad_kind_fields(ads_module, kinds) -> dict:
+    """The kind fields every published span carries.
+
+    `kind` is the single strongest kind for the span -- paid advertising,
+    house promotion, or credits -- while `kinds` is the full set a merged span
+    can carry, so two adjacent differently labelled runs report both rather
+    than attributing the whole run to the survivor's label. `disposition` is
+    the corpus's scoring vocabulary: `must-cut` for a span that contains paid
+    advertising, `acceptable-cut` for house promotion and credits, which David
+    decided on 2026-09-17 are not advertising.
+    """
+    if ads_module.AD_KIND_PAID in kinds:
+        disposition = "must-cut"
+    else:
+        disposition = "acceptable-cut"
+    for kind in (ads_module.AD_KIND_PAID, ads_module.AD_KIND_HOUSE, ads_module.AD_KIND_CREDITS):
+        if kind in kinds:
+            return {"kind": kind, "kinds": list(kinds), "disposition": disposition}
+    # An unknown vocabulary is paid advertising by default: cutting a sold
+    # placement is required, leaving programme in is not.
+    return {"kind": ads_module.AD_KIND_PAID, "kinds": list(kinds), "disposition": "must-cut"}
 
 
 def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, *, model_lock=None,
@@ -3895,15 +4203,15 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
             return audio_path, [], [], [], serialize_ad_audit(analysis.audit)
         return audio_path, [], []
 
-    raw_nominations = [
-        {
+    raw_nominations = []
+    for ad in detections:
+        raw_nominations.append({
             "startSeconds": round(float(ad.start_s), 3),
             "endSeconds": round(float(ad.end_s), 3),
             "label": ad.label,
+            **_ad_kind_fields(ads_module, ads_module.ad_segment_kinds(ad)),
             "confidence": round(float(ad.confidence), 4),
-        }
-        for ad in detections
-    ]
+        })
     progress("ads.detect.complete", f"{len(raw_nominations)} spans")
 
     if with_report:
@@ -3936,14 +4244,7 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
     render_keep_segments(audio_path, output_path, keeps)
     if not output_path.exists() or output_path.stat().st_size == 0:
         raise WorkerError("cut-output-empty", "ffmpeg produced no playable audio")
-    effective = []
-    for start, end in effective_removed_intervals(keeps, total):
-        overlapping = [ad for ad in raw_nominations if ad["endSeconds"] > start and ad["startSeconds"] < end]
-        effective.append({
-            "startSeconds": round(start, 3), "endSeconds": round(end, 3),
-            "label": overlapping[0]["label"] if overlapping else "advertisement",
-            "confidence": max((ad["confidence"] for ad in overlapping), default=0.0),
-        })
+    effective = effective_ad_spans(ads_module, raw_nominations, keeps, total)
     progress("ads.cut.complete", f"{output_path.stat().st_size} bytes")
     if with_report:
         return output_path, effective, keeps, raw_nominations, serialize_ad_audit(analysis.audit)

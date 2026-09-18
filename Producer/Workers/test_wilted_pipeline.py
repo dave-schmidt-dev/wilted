@@ -9,7 +9,9 @@ of behind a virtualenv and a four-gigabyte model.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
+import inspect
 import io
 import json
 import logging
@@ -326,6 +328,40 @@ class FakeAd:
     end_s: float
     label: str = "sponsor"
     confidence: float = 0.9
+    kinds: tuple = ()
+
+
+# The taxonomy the vendored module publishes, mirrored here the way the rest
+# of the fake archive mirrors `wilted.ads`: the gate never loads that module.
+# Values must agree with `Producer/Runtime/src/wilted/ads.py`.
+AD_KIND_BY_LABEL = {
+    "sponsor_read": "paid advertising",
+    "ad_break": "paid advertising",
+    "self_promo": "house promotion",
+    "newsletter_pitch": "house promotion",
+}
+
+
+def attach_ad_kind_taxonomy(ads):
+    """Give a fake archive module the shared kind vocabulary.
+
+    `AdSegment`, `_merge_adjacent` and the serializer all need the same answer
+    to "what is this span?", so the worker reads it from the module it was
+    handed rather than keeping a second copy of the mapping.
+    """
+    ads.AD_KIND_PAID = "paid advertising"
+    ads.AD_KIND_HOUSE = "house promotion"
+    ads.AD_KIND_CREDITS = "credits"
+    ads.AD_KIND_BY_LABEL = dict(AD_KIND_BY_LABEL)
+
+    def ad_segment_kinds(segment):
+        explicit = tuple(getattr(segment, "kinds", ()) or ())
+        if explicit:
+            return tuple(sorted(set(explicit)))
+        return (ads.AD_KIND_BY_LABEL.get(segment.label, ads.AD_KIND_PAID),)
+
+    ads.ad_segment_kinds = ad_segment_kinds
+    return ads
 
 
 def install_fake_ads(llm: FakeLLM, detections=()):
@@ -421,8 +457,9 @@ def install_fake_ads(llm: FakeLLM, detections=()):
         ),
         re.compile(r"\blimited[- ]time sale\b", re.IGNORECASE),
     )
-    ads.AdSegment = lambda start_s, end_s, confidence, label: FakeAd(  # noqa: E731
-        start_s, end_s, label, confidence
+    attach_ad_kind_taxonomy(ads)
+    ads.AdSegment = lambda start_s, end_s, confidence, label, kinds=(): FakeAd(  # noqa: E731
+        start_s, end_s, label, confidence, kinds
     )
     ads._refine_ad_start_from_tokens = lambda segment, _pattern: segment.start_s  # noqa: SLF001
 
@@ -436,6 +473,7 @@ def install_fake_ads(llm: FakeLLM, detections=()):
                     max(previous.end_s, item.end_s),
                     previous.label,
                     max(previous.confidence, item.confidence),
+                    tuple(sorted({*ads.ad_segment_kinds(previous), *ads.ad_segment_kinds(item)})),
                 )
             else:
                 merged.append(item)
@@ -1039,7 +1077,7 @@ class AdDetectionTests(unittest.TestCase):
         stream = io.StringIO()
         with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=4.0):
             _path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
-        self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 2.0, "label": "sponsor", "confidence": 0.9}])
+        self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 2.0, "label": "sponsor", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9}])
         self.assertEqual(keeps, [])
         stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
         self.assertIn("ads.detect.calls", stages)
@@ -1167,14 +1205,84 @@ class AdDetectionTests(unittest.TestCase):
 
     def test_a_vouched_for_span_is_not_discarded_by_the_total_ceiling(self):
         # The total ceiling exists to catch a detector that classified most of
-        # an episode by accident. A reviewed span is not an accident, and the
-        # unreviewed remainder is still measured against the ceiling on its own.
+        # an episode by accident, and a reviewed span is not an accident: its
+        # verdict stands and the span survives. What the combined ceiling
+        # changed is that the verdict no longer carries an unreviewed
+        # companion with it. The 286s span plus the 10s span are 64% of the
+        # episode together, over the 60% ceiling, so the 10s span no review
+        # vouched for is handed back and the vouched-for span is the cut.
         confirmed = frozenset({(6.72, 292.64)})
         kept = wp.reject_implausible_ad_spans(
             [FakeAd(6.72, 292.64), FakeAd(300.0, 310.0)], 459.0, confirmed
         )
-        self.assertEqual([(ad.start_s, ad.end_s) for ad in kept],
-                         [(6.72, 292.64), (300.0, 310.0)])
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in kept], [(6.72, 292.64)])
+
+    def test_spans_that_would_cross_the_programme_floor_keep_the_episode_whole(self):
+        # 55% of the episode vouched for plus 23% unreviewed is 78% removed,
+        # which leaves 22% programme -- under the absolute floor. The floor
+        # overrides even the reviewed verdict rather than falling back to it:
+        # a detector and a reviewer that between them want most of the
+        # episode are both wrong, and the whole episode is kept.
+        confirmed = frozenset({(0.0, 330.0)})
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            kept = wp.reject_implausible_ad_spans(
+                [FakeAd(0.0, 330.0), FakeAd(340.0, 420.0), FakeAd(430.0, 490.0)],
+                600.0,
+                confirmed,
+            )
+        self.assertEqual(kept, [])
+        details = {
+            json.loads(line)["stage"]: json.loads(line)["detail"]
+            for line in stream.getvalue().splitlines()
+        }
+        self.assertIn("under the 30% floor", details["ads.detect.refused"])
+        self.assertIn("keeping the episode whole", details["ads.detect.refused"])
+
+    def test_a_fully_confirmed_cut_that_crosses_the_programme_floor_keeps_the_episode_whole(self):
+        # The floor binds even when every span was vouched for: a review that
+        # reads 95% of an episode as advertising is a detector failure that no
+        # confirmation can rescue, not a verdict.
+        confirmed = frozenset({(0.0, 570.0)})
+        self.assertLess(1 - 570.0 / 600.0, wp.MINIMUM_PROGRAMME_SHARE)
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            kept = wp.reject_implausible_ad_spans([FakeAd(0.0, 570.0)], 600.0, confirmed)
+        self.assertEqual(kept, [])
+        self.assertIn("keeping the episode whole", stream.getvalue())
+
+    def test_unreviewed_spans_have_a_tighter_bound_than_the_total(self):
+        # Two spans that are each plausible add up past half the episode with
+        # nothing vouching for either. The total ceiling alone would permit
+        # that until 60%; the unreviewed bound is the extra, tighter net, and
+        # it is additional to the total rather than a replacement for it.
+        self.assertLess(wp.MAXIMUM_UNCONFIRMED_AD_SHARE, wp.MAXIMUM_TOTAL_AD_SHARE)
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            kept = wp.reject_implausible_ad_spans(
+                [FakeAd(0.0, 150.0), FakeAd(200.0, 360.0)], 600.0
+            )
+        # 310 of 600 seconds is 52%: under the 60% total, over the 50% bound.
+        self.assertEqual(kept, [])
+        self.assertIn("without review", stream.getvalue())
+
+    def test_a_short_episodes_vouched_for_spans_are_the_cut_the_ceiling_leaves(self):
+        # A news-alert episode that genuinely is mostly advertising: the
+        # review vouched for 53% of it, which leaves the programme inside the
+        # absolute floor. The unreviewed 9% would push the removal past the
+        # total ceiling, so the ceiling keeps the confirmed set exactly.
+        total = 459.0
+        confirmed = frozenset({(6.72, 250.0)})
+        combined = (sum(end - start for start, end in confirmed) + 40.0) / total
+        self.assertGreater(combined, wp.MAXIMUM_TOTAL_AD_SHARE)
+        self.assertGreaterEqual(1 - combined, wp.MINIMUM_PROGRAMME_SHARE)
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            kept = wp.reject_implausible_ad_spans(
+                [FakeAd(6.72, 250.0), FakeAd(260.0, 300.0)], total, confirmed
+            )
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in kept], [(6.72, 250.0)])
+        self.assertIn("ads.detect.refused", stream.getvalue())
 
     def test_an_unplaceable_span_is_rescanned_for_evidence_it_was_ever_an_ad(self):
         # The first review found programme content inside the span, so it could
@@ -1198,6 +1306,49 @@ class AdDetectionTests(unittest.TestCase):
         self.assertEqual(self.confirmed, frozenset())
         with redirect_stderr(io.StringIO()):
             self.assertEqual(wp.reject_implausible_ad_spans(resized, 563.17, self.confirmed), [])
+
+    def rescan(self, llm, ad, segments=None):
+        ads = install_fake_ads(llm)
+        llm.load()  # `detect_and_cut` does this; a direct call has to say so.
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            verdict = wp._rescan_unconfirmed_oversized_span(
+                ads, llm, self.OVERSIZED if segments is None else segments, ad
+            )
+        details = {
+            json.loads(line)["stage"]: json.loads(line)["detail"]
+            for line in stream.getvalue().splitlines()
+        }
+        return verdict, details
+
+    def test_the_rescan_reaches_the_model_and_can_confirm_a_span(self):
+        # Both verdicts have to be reachable from a rescan pass: positive
+        # evidence vouches for the span, and -1 declines to.
+        llm = FakeLLM(rescan_evidence_id=2)
+        verdict, details = self.rescan(llm, FakeAd(6.72, 456.88))
+        self.assertTrue(verdict)
+        self.assertIn("evidence at ID 2", details["ads.detect.span.rescan.confirmed"])
+        self.assertEqual(len(llm.requests), 1)
+
+    def test_the_rescan_declines_a_span_it_cannot_evidence(self):
+        llm = FakeLLM(rescan_evidence_id=-1)
+        verdict, details = self.rescan(llm, FakeAd(6.72, 456.88))
+        self.assertFalse(verdict)
+        self.assertIn("no advertising evidence on a second read",
+                      details["ads.detect.span.rescan.rejected"])
+        self.assertEqual(len(llm.requests), 1)
+
+    def test_a_rescan_of_a_single_segment_vouches_for_nothing(self):
+        # A single cue is not a passage: it carries neither the run a
+        # boundary needs nor the recurrence advertising evidence needs, so
+        # the rescan refuses to confirm it without asking.
+        llm = FakeLLM(rescan_evidence_id=0)
+        verdict, details = self.rescan(
+            llm, FakeAd(0.0, 19.0), [FakeSegment(0.0, 19.0, "one segment")]
+        )
+        self.assertFalse(verdict)
+        self.assertIn("fewer than two segments", details["ads.detect.span.rescan.rejected"])
+        self.assertEqual(llm.requests, [])
 
     def test_the_rescan_asks_a_different_question_than_the_first_review(self):
         self.assertNotIn("program_start_id", wp.OVERSIZED_SPAN_RESCAN_PROMPT)
@@ -1259,6 +1410,15 @@ class AdDetectionTests(unittest.TestCase):
         # the spot's own music bed.
         self.assertEqual([(ad.start_s, ad.end_s, ad.label) for ad in recovered],
                          [(760.0, 810.0, "ad_break")])
+        # The receipt is the opening's mirror: the closing review found the
+        # appended spot, the confirmation agreed, and the tail is well over the
+        # floor, so the produced span reports the band's measured ceiling.
+        self.assertEqual(recovered[0].confidence, wp.RECOVERED_CONFIDENCE_CEILING)
+        self.assertNotEqual(recovered[0].confidence, 1.0)
+        # The closing review is the pass that positively established this run
+        # as the sign-off/credits/music-bed shape; a mid-roll produced break
+        # stays paid advertising.
+        self.assertEqual(recovered[0].kinds, ("credits",))
         self.assertIn("after program ID 19", details["ads.detect.postroll"])
 
     def test_the_cut_claims_the_spots_own_leader(self):
@@ -1375,7 +1535,7 @@ class AdDetectionTests(unittest.TestCase):
         with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=563.17):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.OVERSIZED)
         self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 180.0,
-                                  "label": "sponsor_read", "confidence": 0.9}])
+                                  "label": "sponsor_read", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9}])
         stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
         self.assertIn("ads.detect.span.resized", stages)
         self.assertNotIn("ads.detect.span.rejected", stages)
@@ -1400,7 +1560,7 @@ class AdDetectionTests(unittest.TestCase):
         # advertising cue: the thirty-two seconds between them are the spot's
         # own music bed, and leaving them is leaving the advertisement in.
         self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 84.5,
-                                  "label": "ad_break", "confidence": 1.0}])
+                                  "label": "ad_break", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9}])
         stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
         self.assertIn("ads.detect.preroll", stages)
 
@@ -1443,7 +1603,7 @@ class AdDetectionTests(unittest.TestCase):
         with redirect_stderr(io.StringIO()), mock.patch.object(wp, "probe_duration", return_value=200.0):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
         self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 51.9,
-                                  "label": "sponsor", "confidence": 0.9}])
+                                  "label": "sponsor", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9}])
         self.assertEqual([r for r in llm.requests if r.get("field") == "program_start_id"], [])
 
     def test_an_opening_the_detector_claimed_only_part_of_is_still_reviewed(self):
@@ -1459,7 +1619,7 @@ class AdDetectionTests(unittest.TestCase):
         # recovered opening absorbs the partial detection rather than sitting
         # beside it.
         self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 84.5,
-                                  "label": "ad_break", "confidence": 1.0}])
+                                  "label": "ad_break", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9}])
 
     def test_an_unanswered_opening_review_never_cuts(self):
         llm = FakeLLM(fail_generate=None)
@@ -2013,7 +2173,9 @@ class ExplicitSponsorRecoveryTests(unittest.TestCase):
         self.assertEqual([span["startSeconds"] for span in spans], [120.0, 450.0, 700.0, 900.0, 3813.36])
         self.assertEqual(
             spans[-1],
-            {"startSeconds": 3813.36, "endSeconds": 4139.88, "label": "sponsor_read", "confidence": 1.0},
+            {"startSeconds": 3813.36, "endSeconds": 4139.88, "label": "sponsor_read",
+             "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut",
+             "confidence": 0.8},
         )
         recovered = next(event for event in events if event["stage"] == "ads.detect.recovered")
         self.assertIn("1 spans", recovered["detail"])
@@ -2034,7 +2196,7 @@ class ExplicitSponsorRecoveryTests(unittest.TestCase):
         self.assertEqual(
             spans,
             [{"startSeconds": 20.0, "endSeconds": 40.0,
-              "label": "sponsor_read", "confidence": 1.0}],
+              "label": "sponsor_read", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.8}],
         )
 
     def test_cue_by_cue_review_preserves_an_interior_programme_cue(self):
@@ -2090,7 +2252,7 @@ class ExplicitSponsorRecoveryTests(unittest.TestCase):
         self.assertEqual(
             spans,
             [{"startSeconds": 4066.16, "endSeconds": 4122.76,
-              "label": "sponsor_read", "confidence": 1.0}],
+              "label": "sponsor_read", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.8}],
         )
         nominated = next(event for event in events if event["stage"] == "ads.detect.recovery.nominated")
         self.assertIn("raw anchor ID 0", nominated["detail"])
@@ -2148,7 +2310,7 @@ class ExplicitSponsorRecoveryTests(unittest.TestCase):
         self.assertEqual(
             spans,
             [{"startSeconds": 100.0, "endSeconds": 120.0,
-              "label": "sponsor_read", "confidence": 1.0}],
+              "label": "sponsor_read", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.8}],
         )
 
     def test_editorial_non_anchor_phrasing_does_not_nominate(self):
@@ -2237,8 +2399,11 @@ class ExplicitSponsorRecoveryTests(unittest.TestCase):
         spans, _events = self.detect(segments, [])
         self.assertEqual(
             spans,
+            # The receipt is 0.7: recurrence and the call to action were
+            # observed, but no spoken address and no destination corroborate
+            # them. It is the weaker of the recoveries this suite pins.
             [{"startSeconds": 3455.16, "endSeconds": 3517.76,
-              "label": "sponsor_read", "confidence": 1.0}],
+              "label": "sponsor_read", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.7}],
         )
 
     def test_a_recurring_name_without_a_call_to_action_does_not_cut(self):
@@ -2315,7 +2480,7 @@ class ExplicitSponsorRecoveryTests(unittest.TestCase):
         self.assertEqual(
             spans,
             [{"startSeconds": 1117.52, "endSeconds": 1186.92,
-              "label": "sponsor_read", "confidence": 1.0}],
+              "label": "sponsor_read", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.8}],
         )
 
     def test_a_business_partner_named_in_conversation_is_not_a_read(self):
@@ -2416,7 +2581,7 @@ class ExplicitSponsorRecoveryTests(unittest.TestCase):
         self.assertEqual(
             spans,
             [{"startSeconds": 0.0, "endSeconds": 66.08,
-              "label": "sponsor_read", "confidence": 1.0}],
+              "label": "sponsor_read", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.8}],
         )
         extended = next(
             event for event in events
@@ -2511,6 +2676,11 @@ class CommercialEvidenceRecoveryTests(unittest.TestCase):
             [(ad.start_s, ad.end_s, ad.label) for ad in analysis.detections],
             [(10.0, 30.0, "sponsor_read")],
         )
+        # The receipt is two of the recovery's three signals: the seed sits in
+        # one cue carrying both the call to action and the destination, but the
+        # nomination widened it to two. The span is reported, never 1.0.
+        self.assertEqual(analysis.detections[0].confidence, 0.7667)
+        self.assertLess(analysis.detections[0].confidence, 1.0)
 
     def test_destination_split_across_cues_still_nominates_the_exact_window(self):
         segments = [
@@ -2745,7 +2915,7 @@ class LegacySponsorRecoveryTests(unittest.TestCase):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
         self.assertEqual(
             spans,
-            [{"startSeconds": 212.25, "endSeconds": 248.75, "label": "sponsor", "confidence": 0.97}],
+            [{"startSeconds": 212.25, "endSeconds": 248.75, "label": "sponsor", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.97}],
         )
         self.assertEqual(llm.requests, [ads._AD_DETECT_RESPONSE_FORMAT, {"type": "json_object"}])
 
@@ -4205,6 +4375,42 @@ class AdCorpusManifestTests(unittest.TestCase):
             for source_hash in hashes:
                 self.assertNotIn(source_hash, gap["missing"], gap["id"])
 
+    def test_recorded_runs_reproduce_two_of_the_labelled_pods(self):
+        # The pod measurement Task 5.3 asks for, as far as the manifest can
+        # carry it: a labelled pod is a maximal run of adjacent `must-cut`
+        # labels, and this counts how many of them a recorded span reproduces
+        # end to end. It is a measurement against the `recorded` field, not the
+        # bracketing recovery's own hit rate -- the manifest does not attribute
+        # a recorded span to the pass that produced it, and the recovery runs
+        # only inside a replay on the host, which this container cannot run.
+        pods = []
+        reproduced = []
+        for case in self.manifest["cases"]:
+            case_pods = []
+            for expected in sorted(case["expected"], key=lambda entry: entry["start"]):
+                if expected["label"] != "must-cut":
+                    continue
+                if case_pods and expected["start"] <= case_pods[-1][1] + 0.001:
+                    case_pods[-1] = (case_pods[-1][0], expected["end"])
+                else:
+                    case_pods.append((expected["start"], expected["end"]))
+            recorded = [(entry["start"], entry["end"]) for entry in case["recorded"]]
+            for pod in case_pods:
+                pods.append((case["id"], *pod))
+                if any(
+                    abs(start - pod[0]) <= 0.01 and abs(end - pod[1]) <= 0.01
+                    for start, end in recorded
+                ):
+                    reproduced.append((case["id"], *pod))
+        # Eight labelled pods across four cases as of 2026-09-17. The count is a
+        # tripwire for a case being added or relabelled without anyone rereading
+        # this measurement; the two reproduced pods below are the point of it.
+        self.assertEqual(len(pods), 8)
+        self.assertEqual(
+            [(round(start, 2), round(end, 2)) for _case_id, start, end in reproduced],
+            [(2729.8, 2917.96), (5278.64, 5339.76)],
+        )
+
     def test_the_detector_reports_the_same_confidence_for_every_span_it_finds(self):
         # Both recorded runs come back at 1.0 throughout, including the spans
         # that were wrong in each direction, which is why nothing in the app
@@ -4214,6 +4420,80 @@ class AdCorpusManifestTests(unittest.TestCase):
             for case in self.manifest["cases"] for entry in case["recorded"]
         }
         self.assertEqual(confidences, {1.0})
+
+    def test_every_remaining_gap_names_the_input_that_would_close_it(self):
+        # The inventory is only actionable if a reader knows what to go and
+        # find. Every judgement gap names the retained artifact that would turn
+        # it into a case; every runtime gap says no corpus input can, because
+        # the defect is not a judgement on audio.
+        judgement = [gap for gap in self.manifest["gaps"] if gap["kind"] == "judgement"]
+        self.assertTrue(judgement)
+        for gap in judgement:
+            named = gap["closes"] + " " + gap["missing"]
+            self.assertTrue(
+                "cache entry" in named or "sha256:" in named or "episode" in named,
+                f"{gap['id']}: no input is named as what would close it",
+            )
+        runtime = [gap for gap in self.manifest["gaps"] if gap["kind"] == "runtime"]
+        self.assertTrue(runtime)
+        for gap in runtime:
+            self.assertIn(
+                "No corpus input closes it", gap["closes"],
+                f"{gap['id']}: a runtime gap must say why no input closes it",
+            )
+
+    def test_a_retained_input_without_programme_labels_stays_out_of_the_corpus(self):
+        # The one gap whose input is retained. It still cannot become a case
+        # yet: a must-cut-only case would score a detector that cut the whole
+        # episode as perfect, so the case enters only once its must-keep spans
+        # are hand-timed against the cache entry.
+        retained_hash = "sha256:3a1051fa9b3c5c2bc85e450a3cd9cf150270d0a9859a3b9a38265a5e56c44961"
+        gap = next(g for g in self.manifest["gaps"] if g["id"] == "daily-chase-sapphire-sparse-spot")
+        self.assertIn(retained_hash, gap["missing"])
+        self.assertIn("must-cut and no must-keep", gap["missing"])
+        self.assertIn("whole episode", gap["missing"])
+        self.assertIn(retained_hash, gap["closes"])
+        self.assertNotIn(retained_hash, {case["sourceHash"] for case in self.manifest["cases"]})
+        self.assertNotIn(gap["id"], {case["id"] for case in self.manifest["cases"]})
+
+    def test_no_case_can_score_whole_episode_deletion_as_perfect(self):
+        # The manifest's own warning, turned into a guard: every case that
+        # carries a must-cut span must also carry at least one must-keep span,
+        # or a detector that removed the whole episode would pass it.
+        for case in self.manifest["cases"]:
+            labels = {entry["label"] for entry in case["expected"]}
+            if "must-cut" in labels:
+                self.assertIn(
+                    "must-keep", labels,
+                    f"{case['id']}: a must-cut-only case scores whole-episode deletion as perfect",
+                )
+
+    def test_the_manifest_pins_inputs_and_records_the_eviction(self):
+        # The three original cases' transcripts were evicted from the
+        # preparation cache, and the manifest has to say so: the cache is a
+        # working set for preparation, and a case's input must be pinned rather
+        # than left in it.
+        decisions = {decision["id"]: decision for decision in self.manifest["decisions"]}
+        decision = decisions["corpus-inputs-are-pinned-not-cached"]
+        self.assertIn("pinned", decision["decision"].lower())
+        self.assertIn("preparation cache", decision["decision"])
+        self.assertIn("adcorpus-inputs", decision["applies"])
+        self.assertIn("evicted", decision["context"])
+        # The statement names the inputs that were actually evicted. A case
+        # whose input survives is not one of them -- the TechCrunch case exists
+        # because its preparation failed at the encoder before overwriting the
+        # download -- so requiring every case's hash here would force a true
+        # sentence to be padded with a false one.
+        evicted = [
+            case for case in self.manifest["cases"]
+            if case["sourceHash"] in decision["context"]
+        ]
+        self.assertGreaterEqual(len(evicted), 3, "the three evicted inputs must be named")
+        for case in evicted:
+            self.assertIn(
+                case["sourceHash"], decision["context"],
+                f"{case['id']}: the eviction statement must name its input",
+            )
 
 
 class PrerollPromptWordingTests(unittest.TestCase):
@@ -4646,6 +4926,32 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
         self.assertIn("budget", report.audit.incomplete_error)
         self.assertEqual(len(_backend.calls), 2, "budget refusal must occur before experimental inference")
 
+    def test_a_run_that_nominates_a_trace_is_marked_near_empty(self):
+        # A backend that answers, but answers with almost nothing, is the case
+        # that used to be indistinguishable from an ad-free episode. 0.4s on a
+        # 100s episode is under both floors, so the audit has to say so -- and
+        # say it without changing the cut.
+        def detector(_segments, _backend):
+            return [FakeAd(10.0, 10.4)]
+
+        analysis, _backend = self.analysis(detector, [])
+        self.assertIsNotNone(analysis.audit.near_empty)
+        self.assertIn("under both", analysis.audit.near_empty)
+        self.assertIsNotNone(wp.serialize_ad_audit(analysis.audit)["nearEmpty"])
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in analysis.detections], [(10.0, 10.4)])
+
+    def test_an_ad_free_episode_is_not_marked_near_empty(self):
+        # Zero nominations is a definite answer, not a sick backend's silence:
+        # the request and failure counts on the audit are what tell those two
+        # apart, so the near-empty note must stay clear of a clean empty run.
+        def detector(_segments, _backend):
+            return []
+
+        analysis, _backend = self.analysis(detector, [])
+        self.assertEqual(analysis.detections, ())
+        self.assertIsNone(analysis.audit.near_empty)
+        self.assertIsNone(wp.serialize_ad_audit(analysis.audit)["nearEmpty"])
+
     def test_unknown_classifier_shape_and_schema_fail_closed(self):
         def unknown_prompt(_segments, backend):
             try:
@@ -4746,6 +5052,143 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
                 self.assertEqual(raised.exception.code, "ads-audit-contract-unavailable")
 
 
+class NominatedPodBoundTests(unittest.TestCase):
+    """The proportional pod bound is a supplied parameter, and no value lands.
+
+    The archive's bracket bound is a fixed ten minutes, so on a short episode a
+    single pod can swallow most of the programme. The corpus cannot calibrate a
+    proportional replacement: its three cases are all tuning inputs and the
+    recorded short-episode overcut input is gone (`gaps`, id
+    `techcrunch-short-episode-overcut`), so replay evidence alone cannot
+    establish a safe value. The seam is what this class tests; `None` is the
+    production default and applies no bound.
+    """
+
+    def setUp(self):
+        self.segments = [FakeSegment(0.0, 30.0, "one long produced passage")]
+        self.llm = FakeLLM(loaded=True)
+        self.ads = install_fake_ads(self.llm, detections=[FakeAd(0.0, 30.0, label="ad_break")])
+
+    def test_the_bound_is_a_parameter_and_no_module_constant_lands(self):
+        parameters = inspect.signature(wp.detect_nominated_ad_spans).parameters
+        self.assertIn("pod_share_bound", parameters)
+        self.assertIsNone(parameters["pod_share_bound"].default)
+        analysis_parameters = inspect.signature(wp.analyze_ad_detections).parameters
+        self.assertIn("pod_share_bound", analysis_parameters)
+        self.assertIsNone(analysis_parameters["pod_share_bound"].default)
+        for name in vars(wp):
+            self.assertNotIn(
+                "POD_SHARE", name.upper(),
+                f"a pod bound constant landed: {name}; the bound must stay a parameter",
+            )
+
+    def test_no_bound_supplied_leaves_the_produced_span_set_unchanged(self):
+        omitted = wp.detect_nominated_ad_spans(self.ads, self.llm, self.segments, 100.0)
+        explicit_none = wp.detect_nominated_ad_spans(
+            self.ads, self.llm, self.segments, 100.0, pod_share_bound=None
+        )
+        expected = [(0.0, 30.0, "ad_break")]
+        self.assertEqual([(ad.start_s, ad.end_s, ad.label) for ad in omitted], expected)
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in explicit_none], [(0.0, 30.0)])
+
+    def test_a_nominated_pod_over_the_bound_is_dropped_uncut(self):
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            kept = wp.detect_nominated_ad_spans(
+                self.ads, self.llm, self.segments, 100.0, pod_share_bound=0.25
+            )
+        self.assertEqual(kept, [])
+        details = [json.loads(line) for line in stream.getvalue().splitlines()]
+        self.assertEqual([event["stage"] for event in details], ["ads.detect.pod.rejected"])
+        self.assertIn("30% of the episode", details[0]["detail"])
+        self.assertIn("25%", details[0]["detail"])
+
+    def test_only_the_pod_over_the_bound_is_dropped(self):
+        ads = install_fake_ads(self.llm, detections=[FakeAd(0.0, 10.0, label="ad_break"),
+                                                     FakeAd(40.0, 70.0, label="ad_break")])
+        kept = wp.detect_nominated_ad_spans(ads, self.llm, self.segments, 100.0, pod_share_bound=0.25)
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in kept], [(0.0, 10.0)])
+
+    def test_the_analysis_seam_applies_a_supplied_bound_to_the_produced_spans(self):
+        bounded = wp.analyze_ad_detections(
+            self.ads, self.llm, self.segments, 100.0, pod_share_bound=0.25
+        )
+        self.assertEqual(bounded.detections, ())
+        default = wp.analyze_ad_detections(self.ads, self.llm, self.segments, 100.0)
+        self.assertEqual(
+            [(ad.start_s, ad.end_s) for ad in default.detections], [(0.0, 30.0)],
+            "no bound supplied must leave the produced span set at its prior value",
+        )
+        self.assertTrue(
+            all((ad.end_s - ad.start_s) / 100.0 <= 0.25 for ad in bounded.detections),
+            "a supplied bound must not leave a pod whose share exceeds it",
+        )
+
+
+class CorpusBracketingMeasurementTests(unittest.TestCase):
+    """Task 5.3: the figure that blocks a proportional pod bound.
+
+    A proportional bound cannot be calibrated from replay alone unless the
+    corpus holds bracketed pods a bound would have to pass. This walks the
+    labels: how many labelled pods exist, how many have labelled programme on
+    both sides, and whether any short episode has one. The figure is pinned so
+    adding a case re-opens the calibration question deliberately.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.corpus = load_ad_corpus()
+        cls.cases = cls.corpus.load_manifest()["cases"]
+
+    def test_labelled_pods_merge_touching_cuts_and_ignore_other_labels(self):
+        case = {"id": "synthetic", "show": "S", "audioDurationSeconds": 100.0, "expected": [
+            {"start": 0.0, "end": 5.0, "label": "must-keep"},
+            {"start": 10.0, "end": 15.0, "label": "must-cut"},
+            {"start": 15.0, "end": 20.0, "label": "must-cut"},
+            {"start": 30.0, "end": 35.0, "label": "acceptable-cut"},
+            {"start": 40.0, "end": 45.0, "label": "must-cut"},
+        ]}
+        self.assertEqual(
+            [(pod.start, pod.end) for pod in self.corpus.labelled_pods(case)],
+            [(10.0, 20.0), (40.0, 45.0)],
+            "adjacent must-cut spans are one pod; acceptable-cut is not a pod",
+        )
+
+    def test_bracketing_needs_labelled_programme_on_both_sides(self):
+        case = {"id": "synthetic", "show": "S", "audioDurationSeconds": 100.0, "expected": [
+            {"start": 0.0, "end": 5.0, "label": "must-keep"},
+            {"start": 10.0, "end": 20.0, "label": "must-cut"},
+            {"start": 25.0, "end": 28.0, "label": "must-keep"},
+            {"start": 30.0, "end": 40.0, "label": "must-cut"},
+            {"start": 60.0, "end": 70.0, "label": "acceptable-cut"},
+        ]}
+        self.assertEqual(
+            [(pod.start, pod.end) for pod in self.corpus.bracketed_labelled_pods(case)],
+            [(10.0, 20.0)],
+            "acceptable-cut does not bracket; the later pod has no programme after it",
+        )
+
+    def test_the_corpus_holds_two_bracketed_pods_in_one_long_case(self):
+        measured = self.corpus.bracketing_measurement(self.cases)
+        self.assertEqual(measured["cases"], 4)
+        self.assertEqual(measured["labelled_pods"], 8)
+        self.assertEqual(measured["bracketed_pods"], 2)
+        self.assertEqual(measured["cases_with_bracketed_pods"], 1)
+        by_id = {row["id"]: row for row in measured["per_case"]}
+        practical = by_id["practical-ai-two-host-reads-left-whole"]
+        self.assertEqual(practical["bracketed_pods"], 2)
+        self.assertTrue(
+            all(0.0 < share < 0.05 for share in practical["bracketed_shares"]),
+            "both bracketed pods are a few percent of a long episode",
+        )
+        techcrunch = by_id["techcrunch-preroll-swallowed-the-headline-lead-in"]
+        self.assertLess(techcrunch["audio_seconds"], 400.0, "the corpus's one short episode")
+        self.assertEqual(
+            techcrunch["bracketed_pods"], 0,
+            "the short episode's overcut is an opening pod; bracketing cannot delimit it",
+        )
+
+
 class AdCorpusReplayWiringTests(unittest.TestCase):
     """The replay path, with the model stubbed out.
 
@@ -4795,14 +5238,38 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         }))
         return root
 
+    def empty_store(self):
+        """A pinned store that does not exist, so the cache is the only input.
+
+        The mounted host may have adopted the real store; a wiring test that
+        silently read it would be measuring the host's copy instead of its own
+        fixture.
+        """
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        return root / "adcorpus-inputs"
+
+    def pinned_store_for(self, case, *, text):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        store = root / "adcorpus-inputs"
+        store.mkdir()
+        (store / "entry.json").write_text(json.dumps({
+            "sourceHash": case["sourceHash"],
+            "segments": [{"text": text, "start_s": 0.0, "end_s": 1.0}],
+        }))
+        return store
+
     def install_stubs(self, detections=(), analyze=None):
         class Ad:
-            def __init__(self, start_s, end_s, confidence=1.0, label="ad_break"):
+            def __init__(self, start_s, end_s, confidence=1.0, label="ad_break", kinds=()):
                 self.start_s, self.end_s = start_s, end_s
                 self.confidence, self.label = confidence, label
+                self.kinds = kinds
 
         calls = self.calls
         ads = types.ModuleType("wilted.ads")
+        attach_ad_kind_taxonomy(ads)
         ads.AdSegment = Ad
         # The classifier contract `AuditingBackend` refuses to run without.
         # Only the live path builds one before handing it over, but the stub
@@ -4892,7 +5359,7 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, empty, True)
         self.use_runtime(empty)
         with self.assertRaises(RuntimeError) as caught:
-            self.corpus.replay_spans(case, cache=cache)
+            self.corpus.replay_spans(case, cache=cache, store=self.empty_store())
         self.assertIn(empty, str(caught.exception))
         self.assertIn("restore Producer/Runtime/src", str(caught.exception))
         self.assertIn("WILTED_PIPELINE_PYTHONPATH", str(caught.exception))
@@ -4914,10 +5381,11 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
                 return case
         self.fail("the Waveform case is no longer in the corpus")
 
-    def replay(self, case, detections=(), analyze=None, cache=None):
+    def replay(self, case, detections=(), analyze=None, cache=None, store=None):
         cache = cache if cache is not None else self.cache_for(case)
+        store = store if store is not None else self.empty_store()
         self.install_stubs(detections, analyze)
-        return self.corpus.replay_spans(case, cache=cache)
+        return self.corpus.replay_spans(case, cache=cache, store=store)
 
     def analyzed(self):
         return next(call for call in self.calls if call[0] == "analyze")
@@ -4933,6 +5401,23 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         # The same evidence a live analysis publishes, so a corpus verdict can
         # be trusted or distrusted on the same grounds as a preparation.
         self.assertIn("modelRequests", audit)
+
+    def test_a_replay_reads_the_pinned_store_before_the_preparation_cache(self):
+        # Through `replay_spans`, not just the resolver: the segments the
+        # detector is handed are the proof that the pinned copy was the input.
+        case = self.waveform()
+        cache = self.cache_for(case, segments=2)
+        store = self.pinned_store_for(case, text="pinned")
+        self.replay(case, detections=[(1.0, 2.0)], cache=cache, store=store)
+        _, segments, _, _, _ = self.analyzed()
+        self.assertEqual([segment.text for segment in segments], ["pinned"])
+
+        # With the pinned copy gone the cache answers, exactly as before.
+        (store / "entry.json").unlink()
+        self.calls.clear()
+        self.replay(case, detections=[(1.0, 2.0)], cache=cache, store=store)
+        _, segments, _, _, _ = self.analyzed()
+        self.assertEqual([segment.text for segment in segments], ["cue 0", "cue 1"])
 
     def test_a_replay_and_a_preparation_make_the_same_analysis_call(self):
         # The whole point of the shared entry: if these two ever diverge, the
@@ -4987,12 +5472,12 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
 
         self.install_stubs(analyze=refuse)
         with self.assertRaises(self.corpus.ReplayRefused) as caught:
-            self.corpus.replay_spans(case, cache=cache)
+            self.corpus.replay_spans(case, cache=cache, store=self.empty_store())
         self.assertEqual(caught.exception.code, "ads-classification-unresolved")
 
         with redirect_stderr(io.StringIO()):
             results = self.corpus.run("replay", library=Path("/nowhere"), cache=cache,
-                                      strict=True)
+                                      store=self.empty_store(), strict=True)
         refused = next(r for r in results if r.case_id == case["id"])
         self.assertFalse(refused.passed)
         self.assertFalse(refused.skipped)
@@ -5035,10 +5520,12 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         # lands at the end, so two cases running are one interleaved stream
         # nobody can attribute.
         stderr = io.StringIO()
-        with mock.patch.object(self.corpus, "replay_spans", lambda case, *, cache: None), \
+        with mock.patch.object(self.corpus, "replay_spans",
+                               lambda case, *, cache, store: None), \
                 redirect_stderr(stderr):
             results = self.corpus.run(
-                "replay", library=Path("/nowhere"), cache=Path("/nowhere"))
+                "replay", library=Path("/nowhere"), cache=Path("/nowhere"),
+                store=Path("/nowhere"))
         named = [line for line in stderr.getvalue().splitlines()
                  if line.startswith("ad-corpus: replaying ")]
         self.assertEqual(len(named), len(results))
@@ -5059,7 +5546,11 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         # readings, and only one of them is a failure.
         case = dict(self.waveform(), sourceHash="sha256:notacachedrun")
         self.install_stubs()
-        self.assertIsNone(self.corpus.replay_spans(case, cache=self.cache_for(self.waveform())))
+        self.assertIsNone(
+            self.corpus.replay_spans(
+                case, cache=self.cache_for(self.waveform()), store=self.empty_store()
+            )
+        )
 
     def test_a_missing_input_skips_by_default_and_fails_the_candidate_run(self):
         # The mode a fix is judged in cannot let the corpus shrink to whatever
@@ -5067,22 +5558,455 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         # one pass exits zero and reads as success.
         empty = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, empty, True)
+        store = empty / "adcorpus-inputs"
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            lenient = self.corpus.run("replay", library=Path("/nowhere"), cache=empty)
-            self.assertEqual(self.corpus.main(["--mode", "replay", "--cache", str(empty)]), 0)
-            strict = self.corpus.run("replay", library=Path("/nowhere"), cache=empty, strict=True)
+            lenient = self.corpus.run("replay", library=Path("/nowhere"), cache=empty, store=store)
+            self.assertEqual(self.corpus.main(
+                ["--mode", "replay", "--cache", str(empty), "--store", str(store)]), 0)
+            strict = self.corpus.run("replay", library=Path("/nowhere"), cache=empty,
+                                     store=store, strict=True)
         self.assertTrue(all(r.skipped and r.passed for r in lenient))
         self.assertTrue(strict)
         for verdict in strict:
             self.assertFalse(verdict.passed)
             self.assertFalse(verdict.skipped)
+            # The case did not run for want of input; it must not read as one
+            # that ran and scored badly.
+            self.assertTrue(verdict.unrunnable)
             # Named, not just counted: "something did not run" is not enough to
-            # act on when the fix is to go and prepare the missing episode.
+            # act on when the fix is to pin the missing input.
+            self.assertIn("unrunnable", verdict.reason)
+            self.assertIn("no pinned input for sha256:", verdict.reason)
             self.assertIn("no cached transcript for sha256:", verdict.reason)
             self.assertIn(str(empty), verdict.reason)
+            self.assertIn(str(store), verdict.reason)
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            self.assertEqual(
-                self.corpus.main(["--mode", "replay", "--cache", str(empty), "--strict"]), 1)
+            self.assertEqual(self.corpus.main(
+                ["--mode", "replay", "--cache", str(empty), "--store", str(store), "--strict"]), 1)
+
+
+class AdCorpusInputStoreTests(unittest.TestCase):
+    """The corpus's own copy of a case's input, and the adoption that fills it.
+
+    The aligned-STT cache is a 32-entry LRU working set for preparation, not a
+    corpus store: all three original cases' inputs were evicted from it and the
+    2026-09-17 replay returned 0/3 with "no cached transcript". These tests pin
+    the resolution order (pinned first, cache second), the distinct verdict for
+    a case with no input anywhere, and the adopt command that moves a cache
+    snapshot into the store.
+    """
+
+    def setUp(self):
+        self.corpus = load_ad_corpus()
+        self.cases = {case["id"]: case for case in self.corpus.load_manifest()["cases"]}
+        self.waveform = self.cases["waveform-two-preroll-sponsor-reads"]
+        self.pchh = self.cases["pchh-preroll-swallowed-the-premise"]
+        self.practical = self.cases["practical-ai-two-host-reads-left-whole"]
+
+    def entry(self, case, *, text="cue"):
+        return json.dumps({
+            "sourceHash": case["sourceHash"],
+            "segments": [{"text": text, "start_s": 0.0, "end_s": 1.0}],
+        })
+
+    def directory(self, name):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        return root / name
+
+    def test_the_boundary_set_still_resolves_through_the_cache_when_unpinned(self):
+        # Nothing adopted here: the fallback keeps an existing machine working,
+        # which is what makes landing the pinned store safe before the host has
+        # run the adoption.
+        cache = self.directory("cache")
+        cache.mkdir()
+        (cache / "entry.json").write_text(self.entry(self.waveform, text="from the cache"))
+        store = self.directory("adcorpus-inputs")
+        segments, source = self.corpus.case_segments(self.waveform, store=store, cache=cache)
+        self.assertEqual([segment["text"] for segment in segments], ["from the cache"])
+        self.assertEqual(source, "cache")
+
+    def test_the_pinned_store_is_read_before_the_cache(self):
+        cache = self.directory("cache")
+        cache.mkdir()
+        (cache / "entry.json").write_text(self.entry(self.waveform, text="from the cache"))
+        store = self.directory("adcorpus-inputs")
+        store.mkdir()
+        (store / self.corpus._pinned_input_name(self.waveform["sourceHash"])).write_text(
+            self.entry(self.waveform, text="pinned")
+        )
+
+        segments, source = self.corpus.case_segments(self.waveform, store=store, cache=cache)
+        self.assertEqual([segment["text"] for segment in segments], ["pinned"])
+        self.assertEqual(source, "pinned")
+
+        (store / self.corpus._pinned_input_name(self.waveform["sourceHash"])).unlink()
+        segments, source = self.corpus.case_segments(self.waveform, store=store, cache=cache)
+        self.assertEqual([segment["text"] for segment in segments], ["from the cache"])
+        self.assertEqual(source, "cache")
+
+        (cache / "entry.json").unlink()
+        self.assertEqual(
+            self.corpus.case_segments(self.waveform, store=store, cache=cache),
+            (None, None),
+        )
+
+    def test_a_case_with_input_in_neither_store_is_unrunnable_not_badly_scored(self):
+        # Two cases, one verdict each: a case that could not run and a case
+        # that ran and lost programme are different failures wanting different
+        # responses, and strict mode must not flatten them into one FAIL.
+        manifest = self.directory("manifest.json")
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(json.dumps({"cases": [self.waveform, self.pchh]}))
+
+        def replay(case, *, cache, store):
+            if case["id"] == self.waveform["id"]:
+                return None
+            # Ten seconds inside PCHH's must-keep run: it ran, and it scored
+            # badly.
+            return ([self.corpus.Span(40.0, 50.0)], {"modelRequests": 1})
+
+        with mock.patch.object(self.corpus, "replay_spans", replay), \
+                redirect_stderr(io.StringIO()):
+            results = self.corpus.run(
+                "replay", library=Path("/nowhere"), cache=Path("/nowhere"),
+                store=Path("/nowhere"), manifest=manifest, strict=True,
+            )
+        missing = next(result for result in results if result.case_id == self.waveform["id"])
+        scored = next(result for result in results if result.case_id == self.pchh["id"])
+        self.assertTrue(missing.unrunnable)
+        self.assertFalse(missing.skipped)
+        self.assertIn("unrunnable", missing.reason)
+        self.assertFalse(scored.unrunnable)
+        self.assertFalse(scored.skipped)
+        self.assertFalse(scored.passed)
+        self.assertIn("lost", scored.reason)
+        self.assertNotIn("unrunnable", scored.reason)
+
+    def test_adopt_copies_manifest_named_entries_and_names_the_unsatisfied_cases(self):
+        source = self.directory("snapshot")
+        source.mkdir()
+        (source / "one.json").write_text(self.entry(self.waveform, text="pinned"))
+        (source / "unrelated.json").write_text(json.dumps({
+            "sourceHash": "sha256:not-in-the-manifest",
+            "segments": [{"text": "other", "start_s": 0.0, "end_s": 1.0}],
+        }))
+        # A manifest case with no segments is not an input, so it stays
+        # unsatisfied rather than being pinned empty.
+        (source / "empty.json").write_text(json.dumps({
+            "sourceHash": self.pchh["sourceHash"], "segments": [],
+        }))
+        store = self.directory("adcorpus-inputs")
+
+        adopted, unsatisfied = self.corpus.adopt(source, store=store)
+        self.assertEqual([case_id for case_id, _ in adopted], [self.waveform["id"]])
+        pinned = store / self.corpus._pinned_input_name(self.waveform["sourceHash"])
+        self.assertTrue(pinned.is_file())
+        self.assertEqual(json.loads(pinned.read_text())["segments"][0]["text"], "pinned")
+        self.assertEqual(
+            unsatisfied,
+            [case["id"] for case in self.cases.values() if case["id"] != self.waveform["id"]],
+            "every case this source does not supply is named, not just the original three",
+        )
+
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            code = self.corpus.main(["--adopt", str(source), "--store", str(store)])
+        self.assertEqual(code, 1, "a partial adoption must not exit clean")
+        report = stdout.getvalue()
+        self.assertIn(f"adopted  {self.waveform['id']}", report)
+        self.assertIn(f"unsatisfied  {self.pchh['id']}", report)
+        self.assertIn(f"unsatisfied  {self.practical['id']}", report)
+
+        # A source holding every case adopts cleanly.
+        complete = self.directory("complete")
+        complete.mkdir()
+        for case in self.cases.values():
+            (complete / f"{case['id']}.json").write_text(self.entry(case))
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            code = self.corpus.main(["--adopt", str(complete), "--store", str(store)])
+        self.assertEqual(code, 0)
+        summary = [line for line in stdout.getvalue().splitlines()
+                   if line.startswith("ad-corpus:")]
+        self.assertEqual(summary, [
+            f"ad-corpus: adopted {len(self.cases)} case input(s), 0 unsatisfied; store {store}"
+        ])
+        self.assertNotIn("unsatisfied  ", stdout.getvalue())
+
+    def test_the_store_lives_outside_the_repository_and_is_gitignored(self):
+        root = Path(__file__).resolve().parents[2]
+        store = self.corpus.DEFAULT_AD_CORPUS_INPUTS
+        self.assertTrue(str(store).endswith("adcorpus-inputs"))
+        self.assertNotIn(str(root), str(store), "transcripts never live inside the repository")
+        ignore = (root / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("adcorpus-inputs/", ignore)
+        self.assertIn("Producer/Workers/adcorpus/inputs/", ignore)
+        # No transcript JSON is committed under the corpus directory.
+        corpus_directory = root / "Producer" / "Workers" / "adcorpus"
+        self.assertFalse((corpus_directory / "inputs").exists())
+        for path in corpus_directory.glob("*.json"):
+            self.assertNotIn('"segments"', path.read_text(encoding="utf-8"),
+                             f"{path} looks like transcript content")
+
+    def test_the_summary_counts_an_unrunnable_case_apart_from_a_failure(self):
+        # "0/3 cases pass" on a corpus that never ran reads as a detector
+        # regression and sends the reader to the detector. The pass ratio is
+        # therefore over the cases that actually measured something.
+        unrunnable = self.corpus.CaseVerdict(
+            case_id="waveform-two-preroll-sponsor-reads", show="Waveform",
+            passed=False, reason="unrunnable: no pinned input", unrunnable=True,
+        )
+        summary = self.corpus.report([unrunnable]).splitlines()[-1]
+        self.assertIn("0/0 measured cases pass", summary)
+        self.assertIn("1 unrunnable for want of input", summary)
+        self.assertIn("0 scored only in part", summary)
+
+    def test_a_measured_failure_still_counts_against_the_pass_ratio(self):
+        failed = self.corpus.CaseVerdict(
+            case_id="pchh-preroll-swallowed-the-premise", show="Pop Culture Happy Hour",
+            passed=False, reason="20.0s of programme removed",
+        )
+        passed = self.corpus.CaseVerdict(
+            case_id="practical-ai-two-host-reads-left-whole", show="Practical AI",
+            passed=True, reason="every labelled span is where it should be",
+        )
+        summary = self.corpus.report([failed, passed]).splitlines()[-1]
+        self.assertIn("1/2 measured cases pass", summary)
+        self.assertIn("0 unrunnable for want of input", summary)
+
+
+class AdKindContractTests(unittest.TestCase):
+    """Paid advertising, house promotion, and credits, as the contract's kinds.
+
+    The detector's four labels say how a read was delivered, not who paid for
+    it: `self_promo` is the show promoting itself, which David decided on
+    2026-09-17 is not advertising. The worker republishes every span with a
+    kind while leaving the label in place, carries every overlapping
+    nomination's kind through a merge and through effective-cut selection, and
+    reports `acceptable-cut` for anything that is not paid advertising.
+    """
+
+    def setUp(self):
+        self.audio = Path(REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py")
+        self.request = {"audioPath": str(self.audio), "outputPath": "/tmp/never-written.mp3"}
+        self.segments = [
+            FakeSegment(index * 10.0, index * 10.0 + 10.0, f"segment {index}")
+            for index in range(10)
+        ]
+
+    def cut(self, detections, total=100.0):
+        llm = FakeLLM()
+        install_fake_ads(llm, detections=list(detections))
+        with redirect_stderr(io.StringIO()), \
+                mock.patch.object(wp, "probe_duration", return_value=total):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
+        return spans
+
+    def test_each_detector_label_keeps_its_value_and_gains_a_kind(self):
+        spans = self.cut([
+            FakeAd(0.0, 5.0, label="sponsor_read"),
+            FakeAd(20.0, 25.0, label="self_promo"),
+            FakeAd(40.0, 45.0, label="ad_break"),
+            FakeAd(60.0, 65.0, label="newsletter_pitch"),
+        ])
+        by_label = {span["label"]: span for span in spans}
+        self.assertEqual(
+            set(by_label),
+            {"sponsor_read", "self_promo", "ad_break", "newsletter_pitch"},
+            "the label is added beside the kind, not replaced",
+        )
+        self.assertEqual(by_label["sponsor_read"]["kind"], "paid advertising")
+        self.assertEqual(by_label["sponsor_read"]["disposition"], "must-cut")
+        self.assertEqual(by_label["ad_break"]["kind"], "paid advertising")
+        self.assertEqual(by_label["self_promo"]["kind"], "house promotion")
+        self.assertEqual(by_label["self_promo"]["disposition"], "acceptable-cut")
+        self.assertEqual(by_label["newsletter_pitch"]["kind"], "house promotion")
+        self.assertEqual(by_label["newsletter_pitch"]["disposition"], "acceptable-cut")
+        for span in spans:
+            self.assertIn(span["kind"], {"paid advertising", "house promotion", "credits"})
+            self.assertEqual(span["kinds"], [span["kind"]], "a single nomination carries one kind")
+
+    def test_an_unpaid_house_promotion_is_acceptable_cut_and_keeps_its_boundaries(self):
+        spans = self.cut([FakeAd(0.0, 5.0, label="self_promo")])
+        # The cut span set is exactly what it was before the kinds landed.
+        self.assertEqual(
+            [(span["startSeconds"], span["endSeconds"], span["label"]) for span in spans],
+            [(0.0, 5.0, "self_promo")],
+        )
+        self.assertEqual(spans[0]["kind"], "house promotion")
+        self.assertEqual(spans[0]["disposition"], "acceptable-cut")
+
+    def test_an_adjacent_pair_with_different_labels_merges_with_both_kinds(self):
+        # Merging keeps the earlier label for the run, as it always has; the
+        # kinds are a set, so the survivor cannot silently claim the whole run.
+        ads = install_fake_ads(FakeLLM())
+        merged = ads._merge_adjacent([
+            FakeAd(0.0, 10.0, label="sponsor_read"),
+            FakeAd(11.0, 20.0, label="self_promo"),
+        ])
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].label, "sponsor_read")
+        self.assertEqual(list(merged[0].kinds), ["house promotion", "paid advertising"])
+
+    def test_effective_cut_selection_returns_every_overlapping_kind(self):
+        ads = install_fake_ads(FakeLLM())
+        paid = {
+            "startSeconds": 0.0, "endSeconds": 10.0, "label": "sponsor_read",
+            "kind": "paid advertising", "kinds": ["paid advertising"],
+            "disposition": "must-cut", "confidence": 0.9,
+        }
+        house = {
+            "startSeconds": 5.0, "endSeconds": 15.0, "label": "self_promo",
+            "kind": "house promotion", "kinds": ["house promotion"],
+            "disposition": "acceptable-cut", "confidence": 0.9,
+        }
+        keeps = wp.build_keep_map([(15.0, 100.0)])
+
+        both = wp.effective_ad_spans(ads, [paid, house], keeps, 100.0)
+        self.assertEqual(len(both), 1)
+        self.assertEqual(both[0]["label"], "sponsor_read")
+        self.assertEqual(both[0]["kinds"], ["house promotion", "paid advertising"],
+                         "each overlapping nomination's kind survives selection")
+        self.assertEqual(both[0]["kind"], "paid advertising")
+        self.assertEqual(both[0]["disposition"], "must-cut",
+                         "a cut holding paid advertising is required, whatever else it holds")
+
+        only_house = wp.effective_ad_spans(ads, [house], keeps, 100.0)
+        self.assertEqual(only_house[0]["kind"], "house promotion")
+        self.assertEqual(only_house[0]["disposition"], "acceptable-cut")
+
+        unmatched = wp.effective_ad_spans(ads, [], keeps, 100.0)
+        self.assertEqual(unmatched[0]["label"], "advertisement")
+        self.assertEqual(unmatched[0]["kind"], "paid advertising",
+                         "an interval no nomination explains is the conservative reading")
+
+    def test_a_closing_credits_span_reports_credits_and_stays_acceptable(self):
+        # The closing review is the one pass that positively established this
+        # run as the sign-off/credits/music-bed shape, so it is where `credits`
+        # is attached; the contract carries it with an acceptable disposition.
+        llm = FakeLLM(postroll_advertising_start_id=19, tail_carries_program=False,
+                      preroll_program_id=-1)
+        install_fake_ads(llm)
+        segments = [
+            FakeSegment(index * 40.0, index * 40.0 + 40.0, f"segment {index}")
+            for index in range(20)
+        ]
+        stream = io.StringIO()
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=810.0):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
+        credits = [span for span in spans if span["kind"] == "credits"]
+        self.assertEqual(len(credits), 1)
+        self.assertEqual(
+            (credits[0]["startSeconds"], credits[0]["endSeconds"], credits[0]["label"]),
+            (760.0, 810.0, "ad_break"),
+        )
+        self.assertEqual(credits[0]["disposition"], "acceptable-cut")
+
+    def test_the_test_taxonomy_matches_the_vendored_module(self):
+        # The real module cannot be imported in this gate -- it imports the
+        # model bindings -- so its taxonomy is read out of its source and
+        # compared with the fake the rest of these tests run against.
+        source = (
+            Path(REPO_ROOT) / "Producer" / "Runtime" / "src" / "wilted" / "ads.py"
+        ).read_text(encoding="utf-8")
+        constants = {}
+        mapping = None
+        for node in ast.parse(source).body:
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target = node.targets[0]
+            if not isinstance(target, ast.Name) or not target.id.startswith("AD_KIND_"):
+                continue
+            if target.id == "AD_KIND_BY_LABEL":
+                mapping = {
+                    key.value: constants[value.id]
+                    for key, value in zip(node.value.keys, node.value.values)
+                }
+            else:
+                constants[target.id] = ast.literal_eval(node.value)
+        self.assertEqual(constants, {
+            "AD_KIND_PAID": "paid advertising",
+            "AD_KIND_HOUSE": "house promotion",
+            "AD_KIND_CREDITS": "credits",
+        })
+        self.assertEqual(mapping, AD_KIND_BY_LABEL)
+
+
+class ProducedSpanConfidenceTests(unittest.TestCase):
+    """Every worker-produced span reports measured confidence, never 1.0.
+
+    The four recovery sites used to stamp their spans with a literal 1.0 --
+    the same value a classifier assigns -- so nothing downstream could tell a
+    reviewed span from a classified one. Confidence is now a receipt of the
+    evidence the recovery observed. It is reporting only: the seconds cut are
+    unchanged, which the cut-set test below pins.
+    """
+
+    PREROLL = [
+        FakeSegment(0.0, 30.0, "produced spot for a game"),
+        FakeSegment(30.0, 60.0, "the spot continues"),
+        FakeSegment(60.0, 90.0, "the spot ends"),
+        FakeSegment(90.0, 120.0, "more produced spot"),
+        FakeSegment(120.0, 150.0, "still produced spot"),
+        FakeSegment(150.0, 180.0, "Hey everybody, welcome to the show"),
+    ]
+
+    def setUp(self):
+        self.audio = Path(REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py")
+        self.request = {"audioPath": str(self.audio), "outputPath": "/tmp/never-written.mp3"}
+
+    def produced_preroll(self, **llm_kwargs):
+        llm = FakeLLM(**llm_kwargs)
+        install_fake_ads(llm)
+        with redirect_stderr(io.StringIO()), \
+                mock.patch.object(wp, "probe_duration", return_value=600.0):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
+        return spans
+
+    def test_no_worker_site_passes_a_literal_confidence_for_a_produced_span(self):
+        tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
+        literals = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "AdSegment"):
+                continue
+            third = (
+                node.args[2] if len(node.args) >= 3
+                else next((kw.value for kw in node.keywords if kw.arg == "confidence"), None)
+            )
+            if isinstance(third, ast.Constant) and third.value == 1.0:
+                literals.append(node.lineno)
+        self.assertEqual(literals, [], "produced spans must carry measured confidence, not 1.0")
+
+    def test_the_recovered_confidence_band_is_bounded_and_monotonic(self):
+        self.assertLess(wp.RECOVERED_CONFIDENCE_FLOOR, wp.RECOVERED_CONFIDENCE_CEILING)
+        self.assertLess(wp.RECOVERED_CONFIDENCE_CEILING, 1.0)
+        self.assertEqual(wp.recovered_confidence(0, 4), wp.RECOVERED_CONFIDENCE_FLOOR)
+        self.assertEqual(wp.recovered_confidence(4, 4), wp.RECOVERED_CONFIDENCE_CEILING)
+        self.assertLess(wp.recovered_confidence(2, 4), wp.recovered_confidence(4, 4))
+        self.assertEqual(wp.recovered_confidence(9, 4), wp.RECOVERED_CONFIDENCE_CEILING)
+        self.assertEqual(wp.recovered_confidence(1, 0), wp.RECOVERED_CONFIDENCE_FLOOR)
+
+    def test_weak_and_strong_openings_report_different_confidences(self):
+        # Same recovery, two evidence strengths: the confirmation agreeing is
+        # stronger than a boundary the second question had to move.
+        strong = self.produced_preroll(preroll_program_start_id=5, preroll_program_id=-1)
+        weak = self.produced_preroll(preroll_program_start_id=5, preroll_program_id=4)
+        self.assertEqual(len(strong), 1)
+        self.assertEqual(len(weak), 1)
+        self.assertEqual(strong[0]["confidence"], wp.RECOVERED_CONFIDENCE_CEILING)
+        self.assertLess(weak[0]["confidence"], strong[0]["confidence"])
+
+    def test_a_measured_confidence_does_not_change_which_span_is_cut(self):
+        # Confidence is reporting. The span set is exactly what the literal-1.0
+        # site produced; only the number beside it moved.
+        spans = self.produced_preroll(preroll_program_start_id=5, preroll_program_id=-1)
+        self.assertEqual(
+            [(span["startSeconds"], span["endSeconds"], span["label"]) for span in spans],
+            [(0.0, 150.0, "ad_break")],
+        )
+        self.assertNotEqual(spans[0]["confidence"], 1.0)
 
 
 class WorkerPromptContractTests(unittest.TestCase):
@@ -5100,7 +6024,7 @@ class WorkerPromptContractTests(unittest.TestCase):
     never construct an `AuditingBackend` at all.
     """
 
-    def backend(self):
+    def backend(self, inner=None):
         ads = types.ModuleType("wilted.ads")
         ads._AD_DETECT_SYSTEM_PROMPT = "classify"
         ads._AD_DETECT_CORRECTION_PROMPT = "correct"
@@ -5111,7 +6035,7 @@ class WorkerPromptContractTests(unittest.TestCase):
             def generate(inner, prompt, content, *, response_format=None):
                 return "{}", 1
 
-        return wp.AuditingBackend(Inner(), ads)
+        return wp.AuditingBackend(inner or Inner(), ads)
 
     def worker_prompts(self):
         return sorted(
@@ -5136,15 +6060,40 @@ class WorkerPromptContractTests(unittest.TestCase):
                     f"{name} recorded a contract error, which aborts the whole preparation",
                 )
 
+    def test_the_rescan_prompt_reaches_the_model_under_the_contract_guard(self):
+        # The exemption has to let the prompt through to the model, not merely
+        # avoid recording an error: the rescan's own `except` swallows a raise,
+        # so an exemption that only skipped the failure would still be caught
+        # by the recorded contract error downstream.
+        reached = []
+
+        class Inner:
+            def generate(inner, prompt, content, *, response_format=None):
+                reached.append(prompt)
+                return '{"advertisement_evidence_id": 1}', 1
+
+        backend = self.backend(Inner())
+        backend.generate(
+            wp.OVERSIZED_SPAN_RESCAN_PROMPT,
+            "[ID 0] first\n[ID 1] second\n",
+            response_format=None,
+        )
+        self.assertEqual(reached, [wp.OVERSIZED_SPAN_RESCAN_PROMPT])
+        self.assertEqual(backend.contract_errors, [])
+
     def test_an_unknown_classification_shaped_prompt_is_still_refused(self):
-        backend = self.backend()
-        with self.assertRaises(wp.WorkerError):
-            backend.generate(
-                "Please classify each of the segments below.",
-                "[ID 0] first\n[ID 1] second\n",
-                response_format=None,
-            )
-        self.assertEqual(backend.contract_errors, ["unknown classification-shaped prompt"])
+        for word in ("classify", "classification", "classifier"):
+            with self.subTest(word=word):
+                backend = self.backend()
+                with self.assertRaises(wp.WorkerError):
+                    backend.generate(
+                        f"Please use the {word} of each of the segments below.",
+                        "[ID 0] first\n[ID 1] second\n",
+                        response_format=None,
+                    )
+                self.assertEqual(
+                    backend.contract_errors, ["unknown classification-shaped prompt"]
+                )
 
 
 if __name__ == "__main__":

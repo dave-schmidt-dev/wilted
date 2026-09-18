@@ -1,4 +1,4 @@
-.PHONY: validate native-meta native native-ui install app-icon ad-corpus ad-corpus-replay
+.PHONY: validate native-meta native native-ui install app-icon ad-corpus ad-corpus-replay ad-corpus-adopt
 
 validate:
 	@bash tests/test-phase0-aggregate.sh
@@ -42,14 +42,29 @@ install:
 ad-corpus:
 	@python3 Producer/Workers/ad_corpus.py --mode recorded
 
+# Pins the corpus's inputs out of a snapshot of the preparation cache, because
+# that cache is a 32-entry LRU working set for preparation and evicts: all
+# three original cases' transcripts were evicted from it and the replay then
+# measured nothing. Takes the snapshot directory, e.g.
+# `make ad-corpus-adopt SOURCE=~/Library/Application\ Support/Wilted/adcorpus-snapshot-2026-09-17`. Copies only entries
+# a manifest case names into ~/Library/Application Support/Wilted/adcorpus-inputs/,
+# reports each by case id, and exits non-zero when the snapshot cannot satisfy
+# a case. Nothing is copied into the repository: transcripts are third-party
+# copyrighted content and this repository is public.
+ad-corpus-adopt:
+	@test -n "$(SOURCE)" || { printf '%s\n' 'usage: make ad-corpus-adopt SOURCE=<cache snapshot directory>'; exit 2; }
+	@python3 Producer/Workers/ad_corpus.py --adopt "$(SOURCE)"
+
 # The same scoring, but re-running the live detector over the aligned segments
 # the original run consumed, so a candidate fix can be measured without
 # re-preparing anything. Loads the GGUF model and takes minutes; it takes the
 # same GPU admission lock a preparation takes, so running it while the app is
 # working queues rather than contends. `--strict` because this is the mode a
-# candidate fix is judged in: a case whose cached transcript is missing here
-# measured nothing, and a corpus that silently shrinks to whatever this machine
-# holds is how a fix gets called good. `ad-corpus` stays lenient -- it reads
+# candidate fix is judged in: a case whose input is missing here measured
+# nothing, and a corpus that silently shrinks to whatever this machine holds is
+# how a fix gets called good. Inputs resolve from the pinned store first (see
+# `ad-corpus-adopt`) and the aligned cache only as a fallback. `ad-corpus`
+# stays lenient -- it reads
 # mutable library state and a machine that has prepared neither episode should
 # still be able to run it and read the report.
 # The runtime's own interpreter, not the system one, and resolved from the same

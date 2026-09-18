@@ -35,6 +35,7 @@ import argparse
 import contextlib
 import json
 import os
+import shutil
 import sqlite3
 import sys
 from dataclasses import dataclass, field
@@ -46,6 +47,20 @@ DEFAULT_LIBRARY = Path.home() / "Library" / "Application Support" / "Wilted" / "
 DEFAULT_ALIGNED_CACHE = (
     Path.home() / "Library" / "Application Support" / "Wilted" / "media" / "preparation"
     / "wilted-pipeline" / "aligned-stt-cache"
+)
+
+# Where a case's aligned transcript is pinned, keyed by `sourceHash`. The
+# aligned cache above is a 32-entry least-recently-used working set for
+# preparation, not a corpus store: all three original cases' inputs were
+# evicted from it, and the 2026-09-17 replay returned 0/3 with "no cached
+# transcript". A case's input is copied here by `--adopt <cache snapshot>` and
+# the replay reads here before falling back to the cache. The store lives
+# outside the repository on purpose -- these are third-party copyrighted
+# transcripts and this repository is public -- and a repo-internal path that
+# could hold them is gitignored. See the manifest's
+# `corpus-inputs-are-pinned-not-cached` decision.
+DEFAULT_AD_CORPUS_INPUTS = (
+    Path.home() / "Library" / "Application Support" / "Wilted" / "adcorpus-inputs"
 )
 
 # Where the project-owned detector lives. Swift resolves this from the same
@@ -133,6 +148,13 @@ class CaseVerdict:
     labelled_coverage: float = 0.0
     coverage_complete: bool = True
     audit: dict | None = None
+    # True when no store held this case's input, so the case measured nothing.
+    # Distinct from `skipped`, which is the lenient mode's presentation of the
+    # same fact: in strict mode an unrunnable case is neither passed nor
+    # skipped, and without this it would read as a case that ran and scored
+    # badly. A corpus that quietly shrinks to what a machine happens to hold is
+    # the failure this distinction exists to prevent.
+    unrunnable: bool = False
 
 
 class ReplayRefused(RuntimeError):
@@ -167,6 +189,70 @@ def union_spans(spans) -> list[Span]:
         else:
             merged.append(span)
     return merged
+
+
+def labelled_pods(case: dict) -> list[Span]:
+    """The maximal advertising pods one case's labels describe.
+
+    Touching or overlapping `must-cut` spans are one pod: a detector cutting
+    the block produces one span whatever edges the labels were split into.
+    """
+    return union_spans(
+        Span(entry["start"], entry["end"])
+        for entry in case["expected"]
+        if entry["label"] == "must-cut"
+    )
+
+
+def bracketed_labelled_pods(case: dict) -> list[Span]:
+    """Labelled advertising pods with labelled programme on both sides.
+
+    Programme is `must-keep`; `acceptable-cut` is neither advertising nor
+    programme and does not bracket. An episode-opening or episode-closing pod
+    has no programme on that side by construction, so it is not counted
+    however close its edge sits to the file boundary.
+    """
+    keeps = union_spans(
+        Span(entry["start"], entry["end"])
+        for entry in case["expected"]
+        if entry["label"] == "must-keep"
+    )
+    return [
+        pod
+        for pod in labelled_pods(case)
+        if any(keep.end <= pod.start for keep in keeps)
+        and any(keep.start >= pod.end for keep in keeps)
+    ]
+
+
+def bracketing_measurement(cases: list[dict]) -> dict:
+    """How often bracketing can delimit a labelled pod in the corpus as it stands.
+
+    Task 5.3's calibration evidence, and only that: a proportional pod bound
+    can be justified by replay only if the corpus holds bracketed pods a bound
+    would have to pass -- and, for a short-episode bound, short episodes whose
+    pods are bracketed. This reports the inventory; it does not decide a bound.
+    """
+    per_case: list[dict] = []
+    for case in cases:
+        total = float(case.get("audioDurationSeconds") or 0.0)
+        bracketed = bracketed_labelled_pods(case)
+        per_case.append({
+            "id": case["id"],
+            "audio_seconds": total,
+            "labelled_pods": len(labelled_pods(case)),
+            "bracketed_pods": len(bracketed),
+            "bracketed_shares": (
+                [round(pod.seconds / total, 4) for pod in bracketed] if total > 0.0 else []
+            ),
+        })
+    return {
+        "cases": len(cases),
+        "labelled_pods": sum(row["labelled_pods"] for row in per_case),
+        "bracketed_pods": sum(row["bracketed_pods"] for row in per_case),
+        "cases_with_bracketed_pods": sum(1 for row in per_case if row["bracketed_pods"]),
+        "per_case": per_case,
+    }
 
 
 def _invalid_interval(span: Span, total: float | None) -> str | None:
@@ -349,18 +435,66 @@ def cached_segments(case: dict, *, cache: Path):
     return None
 
 
+def _pinned_input_name(source_hash: str) -> str:
+    """One filesystem-safe filename per source hash, readable at a glance."""
+    return source_hash.replace(":", "-").replace("/", "-") + ".json"
+
+
+def pinned_segments(case: dict, *, store: Path):
+    """The case's pinned input segments, or None when the store has none.
+
+    The pinned store is the corpus's own copy, keyed by `sourceHash` and read
+    first so a replay never depends on the preparation cache's eviction
+    policy. A hand-placed file under any other name is found too, by the same
+    payload match the cache uses, because refusing one would be a foot-gun for
+    whoever copied it in by hand.
+    """
+    if not store.is_dir():
+        return None
+    preferred = store / _pinned_input_name(case["sourceHash"])
+    candidates = [preferred] if preferred.is_file() else sorted(store.glob("*.json"))
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if payload.get("sourceHash") == case["sourceHash"]:
+            return payload.get("segments") or None
+    return None
+
+
+def case_segments(case: dict, *, store: Path, cache: Path):
+    """Resolve one case's input and say which store supplied it.
+
+    Returns `(segments, source)` with `source` naming the store that answered,
+    or `(None, None)` when neither holds the case. Pinned first, the
+    preparation cache only as a fallback for a case not yet adopted.
+    """
+    segments = pinned_segments(case, store=store)
+    if segments is not None:
+        return segments, "pinned"
+    segments = cached_segments(case, cache=cache)
+    if segments is not None:
+        return segments, "cache"
+    return None, None
+
+
 def runtime_sources() -> Path:
     """The directory holding `wilted.ads`, resolved the way the app resolves it."""
     override = os.environ.get("WILTED_PIPELINE_PYTHONPATH")
     return Path(override) if override else DEFAULT_RUNTIME_SOURCES
 
 
-def replay_spans(case: dict, *, cache: Path):
-    """Re-run the live detector over this case's cached segments.
+def replay_spans(case: dict, *, cache: Path, store: Path = DEFAULT_AD_CORPUS_INPUTS):
+    """Re-run the live detector over this case's resolved segments.
 
     Returns the spans it produced and the serialized audit that travels with
-    every live analysis, or None when this machine has no cached transcript
-    for the case.
+    every live analysis, or None when neither the pinned store nor the
+    preparation cache holds the case's input.
+
+    The case's input is read from the pinned store first and from the aligned
+    preparation cache only as a fallback, so an unadopted case still replays
+    while an adopted one no longer depends on a working set that evicts.
 
     The judgement, the safeguards and the refusals all come from
     `analyze_ad_detections`, which is the same call `detect_and_cut` makes. The
@@ -369,7 +503,7 @@ def replay_spans(case: dict, *, cache: Path):
     -- it was missing the coverage refusals and the dropped-anchor audit, so it
     could score a run the app would have refused outright.
     """
-    segments = cached_segments(case, cache=cache)
+    segments, _source = case_segments(case, store=store, cache=cache)
     if segments is None:
         return None
 
@@ -435,8 +569,8 @@ def replay_spans(case: dict, *, cache: Path):
     )
 
 
-def run(mode: str, *, library: Path, cache: Path, manifest: Path = MANIFEST,
-        strict: bool = False) -> list[CaseVerdict]:
+def run(mode: str, *, library: Path, cache: Path, store: Path = DEFAULT_AD_CORPUS_INPUTS,
+        manifest: Path = MANIFEST, strict: bool = False) -> list[CaseVerdict]:
     results: list[CaseVerdict] = []
     for case in load_manifest(manifest)["cases"]:
         if mode == "replay":
@@ -452,7 +586,7 @@ def run(mode: str, *, library: Path, cache: Path, manifest: Path = MANIFEST,
             if mode == "recorded":
                 produced = recorded_spans(case, library=library)
             else:
-                replayed = replay_spans(case, cache=cache)
+                replayed = replay_spans(case, cache=cache, store=store)
                 produced, audit = replayed if replayed is not None else (None, None)
         except ReplayRefused as refusal:
             # The pipeline declining to guess is a result, not a crash, and it
@@ -464,16 +598,21 @@ def run(mode: str, *, library: Path, cache: Path, manifest: Path = MANIFEST,
             ))
             continue
         if produced is None:
-            missing = (
-                f"no preparation for {case['itemID']} in {library}" if mode == "recorded"
-                else f"no cached transcript for {case['sourceHash']} in {cache}"
-            )
+            if mode == "recorded":
+                missing = f"no preparation for {case['itemID']} in {library}"
+                unrunnable = False
+            else:
+                missing = (
+                    f"unrunnable: no pinned input for {case['sourceHash']} in {store}; "
+                    f"no cached transcript for {case['sourceHash']} in {cache}"
+                )
+                unrunnable = True
             results.append(CaseVerdict(
                 case_id=case["id"], show=case["show"],
                 # Strict is the candidate-measurement mode: a case that did not
                 # run measured nothing, and a corpus that quietly shrinks to the
                 # cases a machine happens to hold is how a fix gets called good.
-                passed=not strict, skipped=not strict,
+                passed=not strict, skipped=not strict, unrunnable=unrunnable,
                 reason=missing if strict else missing + " (skipped)",
             ))
             continue
@@ -483,10 +622,52 @@ def run(mode: str, *, library: Path, cache: Path, manifest: Path = MANIFEST,
     return results
 
 
+def adopt(source: Path, *, store: Path, manifest: Path = MANIFEST):
+    """Pin every manifest-named cache entry in `source` into the store.
+
+    Returns `(adopted, unsatisfied)`: `adopted` is `(case_id, destination)` for
+    each case copied, and `unsatisfied` names every manifest case the source
+    did not supply. The source is expected to be a snapshot of the aligned-STT
+    cache, but any directory of the same JSON shape works; entries the manifest
+    does not name, and entries with no segments, are ignored rather than
+    copied, because the store is not a second cache.
+    """
+    cases = load_manifest(manifest)["cases"]
+    by_hash = {case["sourceHash"]: case for case in cases}
+    adopted: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    store.mkdir(parents=True, exist_ok=True)
+    for path in sorted(source.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        source_hash = payload.get("sourceHash")
+        if source_hash in seen or not payload.get("segments"):
+            continue
+        case = by_hash.get(source_hash)
+        if case is None:
+            continue
+        destination = store / _pinned_input_name(source_hash)
+        shutil.copyfile(path, destination)
+        adopted.append((case["id"], destination))
+        seen.add(source_hash)
+    unsatisfied = [case["id"] for case in cases if case["sourceHash"] not in seen]
+    return adopted, unsatisfied
+
+
 def report(results: list[CaseVerdict]) -> str:
     lines: list[str] = []
     for result in results:
-        mark = "SKIP" if result.skipped else ("PASS" if result.passed else "FAIL")
+        if result.skipped:
+            mark = "SKIP"
+        elif result.unrunnable:
+            # Strict mode: the case did not run for want of input. Named
+            # rather than shown as FAIL, because "measured nothing" and
+            # "measured badly" want opposite responses.
+            mark = "UNRUN"
+        else:
+            mark = "PASS" if result.passed else "FAIL"
         lines.append(f"{mark}  {result.case_id}  ({result.show})")
         lines.append(f"      {result.reason}")
         for span in result.spans:
@@ -508,10 +689,16 @@ def report(results: list[CaseVerdict]) -> str:
             )
         lines.append("")
     scored = [r for r in results if not r.skipped]
-    failed = [r for r in scored if not r.passed]
     partial = [r for r in scored if not r.coverage_complete]
+    # Unrunnable cases are counted out of the pass ratio rather than into the
+    # failures, because "0/3 pass" on a corpus that never ran reads as a
+    # detector regression and sends a reader to the detector. They are named
+    # on their own term so the reader goes to the inputs instead.
+    unrunnable = [r for r in scored if r.unrunnable]
+    measured = [r for r in scored if not r.unrunnable]
     lines.append(
-        f"ad-corpus: {len(scored) - len(failed)}/{len(scored)} cases pass"
+        f"ad-corpus: {len([r for r in measured if r.passed])}/{len(measured)} measured cases pass"
+        f", {len(unrunnable)} unrunnable for want of input"
         f", {len(results) - len(scored)} skipped"
         f", {len(partial)} scored only in part"
     )
@@ -524,15 +711,35 @@ def main(argv: list[str] | None = None) -> int:
                         help="score the library's committed cuts, or re-run the live detector")
     parser.add_argument("--library", type=Path, default=DEFAULT_LIBRARY)
     parser.add_argument("--cache", type=Path, default=DEFAULT_ALIGNED_CACHE)
+    parser.add_argument("--store", type=Path, default=DEFAULT_AD_CORPUS_INPUTS,
+                        help="pinned corpus-input store, keyed by source hash; read before the cache")
+    parser.add_argument("--adopt", type=Path, metavar="SOURCE", default=None,
+                        help="copy every manifest-named cache entry in SOURCE into the pinned store")
     parser.add_argument("--strict", action="store_true",
                         help="require every case to run; a missing input fails rather than skips")
     parser.add_argument("--json", action="store_true", help="machine-readable verdicts")
     args = parser.parse_args(argv)
 
-    results = run(args.mode, library=args.library, cache=args.cache, strict=args.strict)
+    if args.adopt is not None:
+        adopted, unsatisfied = adopt(args.adopt, store=args.store)
+        for case_id, destination in adopted:
+            print(f"adopted  {case_id}  -> {destination}")
+        for case_id in unsatisfied:
+            print(f"unsatisfied  {case_id}  (no entry in {args.adopt})")
+        print(
+            f"ad-corpus: adopted {len(adopted)} case input(s), "
+            f"{len(unsatisfied)} unsatisfied; store {args.store}"
+        )
+        # Loud on a partial adoption: an unsatisfied case is a case that
+        # cannot replay, and the corpus must not quietly shrink around it.
+        return 1 if unsatisfied else 0
+
+    results = run(args.mode, library=args.library, cache=args.cache, store=args.store,
+                  strict=args.strict)
     if args.json:
         print(json.dumps([{
-            "case": r.case_id, "passed": r.passed, "skipped": r.skipped, "reason": r.reason,
+            "case": r.case_id, "passed": r.passed, "skipped": r.skipped,
+            "unrunnable": r.unrunnable, "reason": r.reason,
             "keepLossSeconds": round(r.keep_loss_seconds, 3),
             "unknownCutSeconds": round(r.unknown_cut_seconds, 3),
             "labelledCoverage": round(r.labelled_coverage, 4),

@@ -224,6 +224,65 @@
       ],
       "transcriptEndSeconds": 2705.96,
       "audioDurationSeconds": 2711.042
+    },
+    {
+      "id": "techcrunch-preroll-swallowed-the-headline-lead-in",
+      "itemID": "item-e69d6f28bdfa5a0dd62637c55cfe1c6233ceee860e7124dea1c862b5eb345df8",
+      "show": "TechCrunch Daily",
+      "sourceHash": "sha256:b6edb96f37de786a3ce913850ea194501dee9265305617b01f429cf8ad7cd6dd",
+      "sttModel": "mlx-community/parakeet-tdt-1.1b",
+      "segmentCount": 21,
+      "intentionalCondition": "The episode opens with the same ODSC sponsor read delivered twice back to back, and the detector removes both -- correctly -- but carries the cut through cue 9, which is not wholly advertising. Cue 9 holds the second read's sign-off and then the host's own lead-in to the episode: 'google's latest ai weather model gives you no excuse to forget your umbrella, i'm imran shake and your daily crunch for friday, featuring three big tech headlines starting right now'. All 20.16s of it goes, so the delivered file opens mid-sentence on 'after weeks of swirling rumors'. This is the Pop Culture Happy Hour failure on a different show: a preroll cut that runs past the advertising into the premise. It is also the corpus's first short episode -- 386.52s against 1546-5337s for the other three -- so a single advertising block is 41.6% of the file rather than a few percent.",
+      "reportedBy": "Not reported by David. Found 2026-09-17 by replaying this episode while calibrating MAXIMUM_SINGLE_AD_SHARE against short episodes. The same judgement is recorded in ZPREPARATIONRECORD for this itemID at 2026-09-17 13:51:57-13:52:13, whose run ended 'ads.detect.complete 1 spans' / 'ads.cut.start 2 keep spans' before failing at the encoder.",
+      "provenance": {
+        "labelledBy": "Labelled by reading the aligned transcript cue by cue on 2026-09-17. No owner listening acceptance of any boundary is recorded, and David was explicitly not asked to listen. That is a weaker warrant than the Waveform and Pop Culture Happy Hour cases, which began as owner reports, and the same warrant as this corpus's Prediction Guard read.",
+        "labelledOn": "2026-09-17",
+        "inputIdentity": "Every timing is a cue boundary of the aligned-STT cache entry keyed by this case's sourceHash, produced by mlx-community/parakeet-tdt-1.1b over 21 cues. The entry survives only because this preparation failed at the encoder before overwriting the download; see the ffmpeg libmp3lame plane-padding failure recorded for the same run.",
+        "labelSource": "Read from cue edges. Cue 9 (167.32-187.48) straddles the second read's sign-off and the first headline and is deliberately left unlabelled, following practical-ai-two-host-reads-left-whole, which leaves its two straddling cues unlabelled for the same reason. Interpolating cue 9 by character position puts the true advertising boundary near 176.7s; nothing here asserts that, because it is an estimate and not a cue edge.",
+        "recordedDerivation": "`recorded` is the span a 2026-09-17 replay of this input produced, not one read from the failed run's stored spans -- that run failed at the encoder and persisted none. An earlier attempt to derive the span from the run's progress events alone gave 0.88-87.04 and was WRONG at both ends: the replay cut 6.72-187.48. The events named a second nomination as 'skipped', which reads as a refused advertisement but is a nomination redundant with a span already taken. Recorded here because the same misreading is easy to repeat."
+      },
+      "expected": [
+        {
+          "start": 0.88,
+          "end": 2.56,
+          "label": "acceptable-cut",
+          "why": "The show's own spoken ident, cue 0, 'this is techcrunch'. Not advertising and not a spot. Marked acceptable by the same precedent this corpus set for a branded cold open: losing 1.7s of ident is not a defect anyone reports, and keeping it is not one either."
+        },
+        {
+          "start": 6.72,
+          "end": 167.32,
+          "label": "must-cut",
+          "why": "Cues 1-8, the ODSC sponsor read delivered twice back to back. Every cue in this range is advertising copy end to end: the promo code 'tc daily', the URL 'odsc dot ai slash west' and the fifteen percent offer all appear in both halves. 160.6s of a 386.52s episode, 41.6%, and the detector removed only the first half of it."
+        },
+        {
+          "start": 179.0,
+          "end": 187.48,
+          "label": "must-keep",
+          "why": "The host's lead-in to the episode, inside cue 9: \"i'm imran shake and your daily crunch for friday, featuring three big tech headlines starting right now\". Programme by any reading. This span does NOT start at a cue edge, which every other timing in this corpus does: cue 9 runs 167.32-187.48 and carries the second sponsor read's sign-off before this. Interpolating by character position puts the advertising boundary near 176.7s, and 179.0 is that estimate plus a deliberate 2.3s of margin, so the span under-claims rather than over-claims what was lost. The detector removes all of it."
+        },
+        {
+          "start": 187.48,
+          "end": 371.88,
+          "label": "must-keep",
+          "why": "Cues 10-19, the three news items the episode exists to deliver: the Nvidia acquisition of Hugging Face, the Zoox robotaxi airport expansion, and the Google DeepMind weather model. Removing any of this is the failure that cannot be undone from the cut file."
+        },
+        {
+          "start": 371.88,
+          "end": 386.52,
+          "label": "acceptable-cut",
+          "why": "Cue 20, the sign-off and reporter credits: 'and folks that's your daily crunch, today stories were reported by ...'. Programme rather than advertising, but the same shape as a closing credit run, and David has not said he minds losing it. Neither cutting nor keeping it is scored."
+        }
+      ],
+      "recorded": [
+        {
+          "start": 6.72,
+          "end": 187.48,
+          "confidence": 1.0,
+          "label": "ad_break"
+        }
+      ],
+      "transcriptEndSeconds": 386.52,
+      "audioDurationSeconds": 390.269387755102
     }
   ],
   "decisions": [
@@ -236,6 +295,16 @@
       "applies": "Label such a span `acceptable-cut`, not `must-cut` and not `must-keep`. The decision settles what it is, not whether David minds losing it, so a replay still scores it neither way.",
       "closes": "daily-sister-show-pitch-split-cue",
       "context": "A sister-show pitch split at a cue boundary: the call to action fell outside the sparse run that nominated it."
+    },
+    {
+      "id": "corpus-inputs-are-pinned-not-cached",
+      "decided": "2026-09-17",
+      "by": "David",
+      "question": "Where does a corpus case's aligned transcript live?",
+      "decision": "In the pinned input store under ~/Library/Application Support/Wilted/adcorpus-inputs/, keyed by sourceHash, not only in the preparation cache.",
+      "applies": "A replay reads the pinned store first and falls back to the aligned-STT cache only when the pinned copy is absent; `ad-corpus-adopt SOURCE=<cache snapshot>` copies every manifest-named entry into ~/Library/Application Support/Wilted/adcorpus-inputs/ and reports each case it cannot satisfy. The store lives outside the repository because these are third-party copyrighted transcripts.",
+      "closes": "corpus-inputs-evicted-from-preparation-cache",
+      "context": "The preparation cache is a 32-entry least-recently-used working set, not a corpus store. All three original cases' inputs -- sha256:38166909883bb20ba662299aa4a63df7590e8eea5960b2616b46dfaab40f08b5, sha256:6089921a9f668de9a384cd71450f7e70ee279d600cfcd82d42d686874ec4d469, and sha256:6664deea61754c68ceef94bb66b22fee6cc212c9629dbe19966ed95241517d2a -- were evicted before the 2026-09-17 replay, which returned 0/3 with 'no cached transcript'."
     }
   ],
   "gaps": [
@@ -245,7 +314,7 @@
       "kind": "runtime",
       "reported": "Episode 1098 returned zero advertisements almost immediately. The backend had been constructed but never loaded, and every request failure was converted into 'not an advertisement'.",
       "missing": "The exact aligned-STT cache entry that run consumed is gone, so there is no input a replay could be scored against.",
-      "closes": "Nothing labelled can close it: no judgement was ever made. The worker's explicit load, its counted failures and the `ads-backend-failed` refusal are what a unit test covers, and re-preparing the episode today would measure a different transcript."
+      "closes": "Nothing labelled can close it: no judgement was ever made. The worker's explicit load, its counted failures and the `ads-backend-failed` refusal are what a unit test covers, and re-preparing the episode today would measure a different transcript. No corpus input closes it."
     },
     {
       "id": "concurrent-preparation-gpu-contention",
@@ -253,7 +322,7 @@
       "kind": "runtime",
       "reported": "Concurrent preparations failed around model load, from speech-to-text and GGUF residency contending for the same GPU.",
       "missing": "There is no labelled audio that could express a scheduling failure; the corpus scores judgements, not admission.",
-      "closes": "The shared admission lock and residency drain, under their own tests. Listed here so the inventory is not read as a list of unfixed detector defects."
+      "closes": "The shared admission lock and residency drain, under their own tests. Listed here so the inventory is not read as a list of unfixed detector defects. No corpus input closes it."
     },
     {
       "id": "giant-bombcast-955-drifted-cuts",
@@ -261,7 +330,7 @@
       "kind": "judgement",
       "reported": "Episode 955's cuts drifted: the publisher transcript described a shorter advertising rendering than the audio actually carried, and similar duration was accepted as identity.",
       "missing": "The exact historical aligned-STT cache entry is gone. A dynamically inserted break is re-rolled per download, so re-fetching the episode does not recover the input that failed.",
-      "closes": "Aligned-STT timing is now required for a destructive cut, which removes the mechanism. A labelled case would need a retained input with a documented dynamic insertion, which nothing on this machine has."
+      "closes": "Aligned-STT timing is now required for a destructive cut, which removes the mechanism. A labelled case would need the exact aligned-STT cache entry the 2026-09-05 run consumed -- a dynamically inserted break is re-rolled per download, so a fresh fetch of the same episode is a different input, not the one that failed. Nothing on this machine retains that cache entry."
     },
     {
       "id": "video-game-town-unanchored-host-read",
@@ -269,7 +338,7 @@
       "kind": "judgement",
       "reported": "A host read survived: the coarse pass called it conversation, and the spoken domain name lacked the spelling the anchor expected.",
       "missing": "No retained input for this episode has been identified, and no hand-timed interval exists for it. The mechanism it exhibits is no longer unlabelled, though: the Practical AI case carries two host reads that open soft and close on a spoken domain, and the detector left both whole.",
-      "closes": "The cached input plus hand-timed boundaries, if this episode is ever recovered. The anchor-plus-CTA recovery is no longer covered only by synthetic cues -- practical-ai-two-host-reads-left-whole measures it on real audio -- so what remains open here is this show's specific failure, not the class of failure."
+      "closes": "The episode's retained aligned-STT cache entry plus hand-timed host-read boundaries, if this input is ever recovered. The anchor-plus-CTA recovery is no longer covered only by synthetic cues -- practical-ai-two-host-reads-left-whole measures it on real audio -- so what remains open here is this show's specific failure, not the class of failure."
     },
     {
       "id": "daily-chase-sapphire-sparse-spot",
@@ -277,7 +346,7 @@
       "kind": "judgement",
       "reported": "A short produced Chase Sapphire spot was discarded by the sparse-run promotional-evidence gate, which did not recognise legal and brand copy as evidence.",
       "missing": "The input is retained -- sourceHash sha256:3a1051fa9b3c5c2bc85e450a3cd9cf150270d0a9859a3b9a38265a5e56c44961, 59 Parakeet 1.1B cues -- and the historical advertising interval 839.32-860.00 is documented. What is missing is bounded programme labels for the rest of the episode: a case with one must-cut and no must-keep would score a detector that cut the whole episode as perfect.",
-      "closes": "Hand-timed programme boundaries around that interval, against the retained cache entry."
+      "closes": "Hand-timed programme boundaries around 839.32-860.00 against the retained cache entry for sourceHash sha256:3a1051fa9b3c5c2bc85e450a3cd9cf150270d0a9859a3b9a38265a5e56c44961. Until those boundaries exist the case stays out of `cases`: one must-cut span with no must-keep would score a detector that cut the whole episode as perfect."
     },
     {
       "id": "techcrunch-short-episode-overcut",
@@ -285,7 +354,7 @@
       "kind": "judgement",
       "reported": "A nine-minute-twenty-three-second episode was overcut: two reads bracketed almost the whole news programme.",
       "missing": "The original short episode's input is unavailable. Other TechCrunch entries in the local cache are different episodes and cannot stand in for it; using one would be inventing the case.",
-      "closes": "Proportional rejection and bounded resize cover the mechanism under synthetic cues. A labelled case needs a retained short episode with its own provenance."
+      "closes": "Proportional rejection and bounded resize cover the mechanism under synthetic cues. A labelled case needs a retained copy of the original nine-minute-twenty-three-second episode with its own provenance and hand-timed boundaries; the TechCrunch entries still in the local cache are different episodes and would be inventing the case."
     },
     {
       "id": "mixed-cue-and-partial-postroll",
@@ -293,7 +362,7 @@
       "kind": "judgement",
       "reported": "Coarse cue boundaries held advertising and real content in one cue, and a postroll was removed only in part.",
       "missing": "Half of this is now carried: the Practical AI case labels two cues that straddle an advertising boundary, cue 111 and cue 185, each opening on a read's closing words and continuing into programme. What is still missing is a retained episode with a partially removed postroll; neither straddle here is at the end of the file.",
-      "closes": "The straddling-cue half is closed by practical-ai-two-host-reads-left-whole. The partial postroll needs a retained episode that exhibits one; until then it is covered only by synthetic cues."
+      "closes": "The straddling-cue half is closed by practical-ai-two-host-reads-left-whole. The partial postroll needs a retained episode whose kept tail begins inside an appended postroll, with hand-timed boundaries for the partial cut; until then it is covered only by synthetic cues."
     },
     {
       "id": "duplicate-transcription-passes",
@@ -301,7 +370,7 @@
       "kind": "runtime",
       "reported": "Two speech-to-text engines did duplicate work: the detector and the displayed transcript transcribed the same audio independently.",
       "missing": "Not expressible as a labelled case. It is an invariant about how many passes run, not about which seconds are advertising.",
-      "closes": "Held by the worker's own tests and by this corpus consuming the cache rather than transcribing. A replay that transcribed again would break that invariant silently, which is why it is recorded here."
+      "closes": "Held by the worker's own tests and by this corpus consuming the cache rather than transcribing. A replay that transcribed again would break that invariant silently, which is why it is recorded here. No corpus input closes it."
     },
     {
       "id": "ready-labels-overstated-work",
@@ -309,7 +378,7 @@
       "kind": "runtime",
       "reported": "An episode was labelled ready because a transcript or a downloaded file existed, not because preparation had completed.",
       "missing": "No labelling of audio could catch it; the defect is in what the app claims, not in which seconds were cut.",
-      "closes": "The outcome contract between the worker and Swift, under its own tests."
+      "closes": "The outcome contract between the worker and Swift, under its own tests. No corpus input closes it."
     },
     {
       "id": "install-interrupted-preparation",
@@ -317,7 +386,7 @@
       "kind": "runtime",
       "reported": "The app was replaced while a worker was running, leaving the job neither finished nor failed.",
       "missing": "Not a detector judgement. Bootstrap now marks interrupted jobs failed; an in-flight guard in the installer is still open.",
-      "closes": "The installer guard, not a corpus case."
+      "closes": "The installer guard, not a corpus case. No corpus input closes it."
     },
     {
       "id": "smartless-steve-zahn-brought-to-you-in-part-by",
@@ -325,7 +394,7 @@
       "kind": "judgement",
       "reported": "David, 2026-09-17: heard a Skinny Pop popcorn sponsor read intact at 18:51 in the cut file. The transcript showed 'this episode of smartlist is brought to you in part by skinny pop popcorn'; the raw classifier isolated that one sentence as its own single-segment run (segment 193, original 1273.9-1293.9s) immediately adjacent to the sponsor_read span it did cut (1293.92-1453.56s), and the coarse_size<=2 sparse-run guard discarded it as 'without promotional evidence' -- logged as ads.detect.discarded, 'Discarding sparse ad run 193-193 without promotional evidence (1273.9-1293.9s)'.",
       "missing": "Preparation overwrites the download in place, so the pre-cut audio no longer exists; the aligned-STT cache entry keyed to that source (sha256:3f16a875cea97aeb73fa069c48b7a901a58720475aa407d515b514045925dcdd) has since been evicted (bounded to 32 entries). There is no input a replay could be scored against.",
-      "closes": "_SPARSE_PROMO_CUES, _SPONSOR_OPENING_RE, and _EXPLICIT_HOST_READ_OPENING_RE in ads.py required the literal phrase 'brought to you by' with nothing between 'you' and 'by'; SmartLess's copy inserts 'in part'. Fixed by a shared _BROUGHT_TO_YOU_QUALIFIER fragment tolerating 'today' and/or 'in part' between them, covered by a new case in test_sparse_genuine_promotional_cues_are_retained rather than a corpus replay, since the source is gone."
+      "closes": "_SPARSE_PROMO_CUES, _SPONSOR_OPENING_RE, and _EXPLICIT_HOST_READ_OPENING_RE in ads.py required the literal phrase 'brought to you by' with nothing between 'you' and 'by'; SmartLess's copy inserts 'in part'. Fixed by a shared _BROUGHT_TO_YOU_QUALIFIER fragment tolerating 'today' and/or 'in part' between them, covered by a new case in test_sparse_genuine_promotional_cues_are_retained rather than a corpus replay, since the source is gone. The input that would close a corpus case is a retained copy of the audio or an aligned-STT cache entry keyed to sha256:3f16a875cea97aeb73fa069c48b7a901a58720475aa407d515b514045925dcdd."
     }
   ]
 }

@@ -64,6 +64,30 @@ class EmptyCutResultError(ValueError):
     """
 
 
+# What a span actually is, independent of how the classifier labelled it. The
+# four labels say how a read was delivered, not whether it was paid for: a
+# `self_promo` is the show promoting itself and is not advertising (David,
+# 2026-09-17), and a closing produced run can be credits rather than a spot.
+# The pipeline publishes these alongside the label so the app can report a
+# figure per kind without re-deriving one from prose.
+AD_KIND_PAID = "paid advertising"
+AD_KIND_HOUSE = "house promotion"
+AD_KIND_CREDITS = "credits"
+
+# The kind each detector label carries when no worker pass has said otherwise.
+# A produced break and a host read are both sold placements; the show's own
+# newsletter and self-promotion are house content. `credits` is never derived
+# from a label alone -- a produced break mid-episode and the closing run share
+# `ad_break` -- so only a pass that positively identified the closing run
+# attaches it.
+AD_KIND_BY_LABEL = {
+    "sponsor_read": AD_KIND_PAID,
+    "ad_break": AD_KIND_PAID,
+    "self_promo": AD_KIND_HOUSE,
+    "newsletter_pitch": AD_KIND_HOUSE,
+}
+
+
 @dataclass
 class AdSegment:
     """A detected advertisement segment in an audio transcript."""
@@ -72,6 +96,22 @@ class AdSegment:
     end_s: float
     confidence: float
     label: str  # "sponsor_read", "self_promo", "ad_break", "newsletter_pitch"
+    # Kinds positively attached to this span. Empty means "derive from the
+    # label"; a merge fills this in so a span made of differently labelled runs
+    # reports all of them rather than only the first one's.
+    kinds: tuple[str, ...] = ()
+
+
+def ad_segment_kinds(segment: AdSegment) -> tuple[str, ...]:
+    """Every kind a span carries: its explicit ones, else its label's.
+
+    Sorted and de-duplicated, so a merge is deterministic and two runs that
+    produce the same set compare equal.
+    """
+    explicit = tuple(getattr(segment, "kinds", ()) or ())
+    if explicit:
+        return tuple(sorted(set(explicit)))
+    return (AD_KIND_BY_LABEL.get(segment.label, AD_KIND_PAID),)
 
 
 @dataclass(frozen=True)
@@ -1277,11 +1317,15 @@ def _merge_adjacent(segments: list[AdSegment], gap_threshold: float = 2.0) -> li
         if seg.start_s <= prev.end_s + gap_threshold:
             # A pair has no unique dominant label when its labels differ, so preserve
             # the earlier run's label instead of depending on unordered set iteration.
+            # The kinds, unlike the label, are a set: a merged run of a paid read and
+            # a house promotion has to report both, or the survivor's kind silently
+            # claims the whole run.
             merged[-1] = AdSegment(
                 start_s=prev.start_s,
                 end_s=max(prev.end_s, seg.end_s),
                 confidence=(prev.confidence + seg.confidence) / 2.0,
                 label=prev.label,
+                kinds=tuple(sorted({*ad_segment_kinds(prev), *ad_segment_kinds(seg)})),
             )
         else:
             merged.append(seg)
