@@ -1130,6 +1130,28 @@ class AdDetectionTests(unittest.TestCase):
         self.assertIn("ads.detect.refused", details)
         self.assertIn("keeping the episode whole", details["ads.detect.refused"])
 
+    def test_a_short_mostly_advertising_episode_still_prepares_the_confirmed_cut(self):
+        # Six minutes with 53% of it one reviewed sponsor read: the removal
+        # is inside both the absolute programme floor and the total ceiling,
+        # so the run has to prepare and report exactly the span the review
+        # vouched for. This is the case the tighter unconfirmed bound exists
+        # to leave alone: a short news-alert episode that really is mostly
+        # advertising.
+        segments = [FakeSegment(index * 20.0, index * 20.0 + 20.0, f"segment {index}") for index in range(28)]
+        llm = FakeLLM(preroll_program_start_id=0)
+        install_fake_ads(llm, detections=[FakeAd(6.72, 250.0, label="sponsor_read")])
+        stream = io.StringIO()
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=459.0):
+            path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
+        self.assertEqual(
+            (path, [(span["startSeconds"], span["endSeconds"]) for span in spans], keeps),
+            (self.audio, [(6.72, 250.0)], []),
+        )
+        stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
+        self.assertNotIn("ads.detect.span.rejected", stages)
+        self.assertNotIn("ads.detect.refused", stages)
+        self.assertIn("ads.cut.refused", stages)
+
     # A short episode's whole programme, bracketed as one advertisement. The
     # advertising is genuinely at the front; everything from segment 9 on is
     # the news, and the detector's absolute pod bounds swallowed all of it.
@@ -1283,6 +1305,46 @@ class AdDetectionTests(unittest.TestCase):
             )
         self.assertEqual([(ad.start_s, ad.end_s) for ad in kept], [(6.72, 250.0)])
         self.assertIn("ads.detect.refused", stream.getvalue())
+
+    def test_the_unconfirmed_bound_fires_inside_the_total_cap(self):
+        # Additional to the overall cap, not a replacement for it. The
+        # combined removal here sits exactly on the total ceiling, so the
+        # total cap leaves it alone; the unreviewed half is over the tighter
+        # bound on its own, and that is what keeps everything but the
+        # vouched-for span.
+        confirmed = frozenset({(0.0, 30.0)})
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            kept = wp.reject_implausible_ad_spans(
+                [FakeAd(0.0, 30.0), FakeAd(60.0, 200.0), FakeAd(240.0, 430.0)],
+                600.0,
+                confirmed,
+            )
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in kept], [(0.0, 30.0)])
+        details = {
+            json.loads(line)["stage"]: json.loads(line)["detail"]
+            for line in stream.getvalue().splitlines()
+        }
+        self.assertIn("without review", details["ads.detect.refused"])
+        self.assertIn("only the spans a review vouched for", details["ads.detect.refused"])
+
+    def test_the_unconfirmed_bound_with_nothing_vouched_keeps_the_episode_whole(self):
+        # The same tighter net with no verdict to fall back on: there is no
+        # vouched-for set to keep, so the correct disposition is the whole
+        # episode, and the refusal has to say so rather than name a set that
+        # does not exist.
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            kept = wp.reject_implausible_ad_spans(
+                [FakeAd(0.0, 180.0), FakeAd(220.0, 360.0)], 600.0
+            )
+        self.assertEqual(kept, [])
+        details = {
+            json.loads(line)["stage"]: json.loads(line)["detail"]
+            for line in stream.getvalue().splitlines()
+        }
+        self.assertIn("without review", details["ads.detect.refused"])
+        self.assertIn("keeping the episode whole", details["ads.detect.refused"])
 
     def test_an_unplaceable_span_is_rescanned_for_evidence_it_was_ever_an_ad(self):
         # The first review found programme content inside the span, so it could
@@ -4423,17 +4485,32 @@ class AdCorpusManifestTests(unittest.TestCase):
 
     def test_every_remaining_gap_names_the_input_that_would_close_it(self):
         # The inventory is only actionable if a reader knows what to go and
-        # find. Every judgement gap names the retained artifact that would turn
-        # it into a case; every runtime gap says no corpus input can, because
-        # the defect is not a judgement on audio.
+        # find. Every judgement gap either names the retained artifact by its
+        # source hash or says plainly that no specific input can be named,
+        # which is what keeps a reader from going to look for something the
+        # manifest never identifies; every runtime gap says no corpus input
+        # can, because the defect is not a judgement on audio.
         judgement = [gap for gap in self.manifest["gaps"] if gap["kind"] == "judgement"]
         self.assertTrue(judgement)
-        for gap in judgement:
-            named = gap["closes"] + " " + gap["missing"]
-            self.assertTrue(
-                "cache entry" in named or "sha256:" in named or "episode" in named,
-                f"{gap['id']}: no input is named as what would close it",
-            )
+        named = {
+            gap["id"] for gap in judgement
+            if "sha256:" in gap["closes"] + " " + gap["missing"]
+        }
+        unnamed = {
+            gap["id"] for gap in judgement
+            if "no specific input can be named" in gap["closes"] + " " + gap["missing"]
+        }
+        every_gap = {gap["id"] for gap in judgement}
+        self.assertEqual(
+            named | unnamed, every_gap,
+            "every judgement gap must name a source hash or say no specific input can be named",
+        )
+        self.assertEqual(
+            named & unnamed, set(),
+            "a gap that names a hash does not also claim no input can be named",
+        )
+        self.assertIn("daily-chase-sapphire-sparse-spot", named)
+        self.assertIn("smartless-steve-zahn-brought-to-you-in-part-by", named)
         runtime = [gap for gap in self.manifest["gaps"] if gap["kind"] == "runtime"]
         self.assertTrue(runtime)
         for gap in runtime:
@@ -4718,7 +4795,7 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
         )
         return response
 
-    def analysis(self, detector, responses, *, auto_cover=True, **kwargs):
+    def analysis(self, detector, responses, *, auto_cover=True, total_seconds=100.0, **kwargs):
         class Backend:
             def __init__(inner):
                 inner.responses = iter(responses)
@@ -4741,7 +4818,7 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
             return result
 
         return wp.analyze_ad_detections(
-            self.ads(detector_with_coverage), backend, self.segments, 100.0, **kwargs
+            self.ads(detector_with_coverage), backend, self.segments, total_seconds, **kwargs
         ), backend
 
     def test_the_render_budget_is_installed_before_the_classifier_runs(self):
@@ -4951,6 +5028,55 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
         self.assertEqual(analysis.detections, ())
         self.assertIsNone(analysis.audit.near_empty)
         self.assertIsNone(wp.serialize_ad_audit(analysis.audit)["nearEmpty"])
+
+    def test_near_empty_needs_both_floors_not_either(self):
+        # The marker is a conjunction. A nomination above the seconds floor
+        # is not near-empty even when its share of a long episode is a trace,
+        # and a nomination above the share floor is not near-empty even when
+        # it is small in absolute terms, so each floor has to be able to hold
+        # the marker back on its own.
+        def generous_seconds(_segments, _backend):
+            return [FakeAd(0.0, 20.0)]
+
+        long_episode, _backend = self.analysis(
+            generous_seconds, [], total_seconds=10_000.0
+        )
+        self.assertIsNone(long_episode.audit.near_empty)
+
+        def generous_share(_segments, _backend):
+            return [FakeAd(0.0, 10.0)]
+
+        dense_episode, _backend = self.analysis(
+            generous_share, [], total_seconds=1_000.0
+        )
+        self.assertIsNone(dense_episode.audit.near_empty)
+
+    def test_the_near_empty_floors_are_strict(self):
+        # The floors sit at the corpus minimum rather than under it, so a
+        # nomination exactly on both floors is not near-empty by one epsilon,
+        # and a nomination a hair under both is.
+        floor_total = wp.NOMINATED_SECONDS_FLOOR / wp.NOMINATED_SHARE_FLOOR
+
+        def on_the_floors(_segments, _backend):
+            return [FakeAd(0.0, wp.NOMINATED_SECONDS_FLOOR)]
+
+        at_floor, _backend = self.analysis(on_the_floors, [], total_seconds=floor_total)
+        self.assertIsNone(at_floor.audit.near_empty)
+
+        def under_the_floors(_segments, _backend):
+            return [FakeAd(0.0, wp.NOMINATED_SECONDS_FLOOR - 1.0)]
+
+        under, _backend = self.analysis(under_the_floors, [], total_seconds=floor_total)
+        self.assertIsNotNone(under.audit.near_empty)
+        self.assertIn("under both", under.audit.near_empty)
+        self.assertIsNotNone(wp.serialize_ad_audit(under.audit)["nearEmpty"])
+
+    def test_a_run_without_a_usable_duration_carries_no_near_empty_note(self):
+        # The marker is a share as well as a size, so without a denominator
+        # there is no note to add; the caller has already failed the run for
+        # the missing timing, and a second, invented complaint helps nobody.
+        self.assertIsNone(wp._near_empty_nominations([FakeAd(0.0, 1.0)], 0.0))
+        self.assertIsNone(wp._near_empty_nominations([FakeAd(0.0, 1.0)], float("inf")))
 
     def test_unknown_classifier_shape_and_schema_fail_closed(self):
         def unknown_prompt(_segments, backend):
@@ -5880,6 +6006,53 @@ class AdKindContractTests(unittest.TestCase):
         self.assertEqual(unmatched[0]["label"], "advertisement")
         self.assertEqual(unmatched[0]["kind"], "paid advertising",
                          "an interval no nomination explains is the conservative reading")
+
+    def test_an_explicit_credits_kind_stays_credits_on_a_paid_label(self):
+        # The kind is what the span is, the label is how the detector found
+        # it. A span the worker positively established as credits must not be
+        # re-attributed to paid advertising just because its detector label
+        # maps there by default.
+        spans = self.cut([FakeAd(40.0, 45.0, label="ad_break", kinds=("credits",))])
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0]["label"], "ad_break")
+        self.assertEqual(spans[0]["kind"], "credits")
+        self.assertEqual(spans[0]["kinds"], ["credits"])
+        self.assertEqual(spans[0]["disposition"], "acceptable-cut")
+
+    def test_both_unpaid_house_labels_report_house_promotion_without_moving_the_cut(self):
+        for label in ("self_promo", "newsletter_pitch"):
+            with self.subTest(label=label):
+                spans = self.cut([FakeAd(0.0, 5.0, label=label)])
+                self.assertEqual(
+                    [(span["startSeconds"], span["endSeconds"], span["label"]) for span in spans],
+                    [(0.0, 5.0, label)],
+                )
+                self.assertEqual(spans[0]["kind"], "house promotion")
+                self.assertEqual(spans[0]["disposition"], "acceptable-cut")
+
+    def test_a_merged_paid_and_house_pair_publishes_both_kinds(self):
+        # The archive's own merge fuses an adjacent paid read and a house
+        # promotion into one run; the publication path has to carry both
+        # kinds from that run, not the earlier label's kind alone.
+        llm = FakeLLM()
+        ads = install_fake_ads(llm)
+        merged = ads._merge_adjacent([
+            FakeAd(0.0, 10.0, label="sponsor_read"),
+            FakeAd(10.5, 20.0, label="self_promo"),
+        ])
+        self.assertEqual(len(merged), 1)
+        install_fake_ads(llm, detections=merged)
+        with redirect_stderr(io.StringIO()), \
+                mock.patch.object(wp, "probe_duration", return_value=100.0):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(
+            (spans[0]["startSeconds"], spans[0]["endSeconds"]), (0.0, 20.0)
+        )
+        self.assertEqual(spans[0]["label"], "sponsor_read")
+        self.assertEqual(spans[0]["kinds"], ["house promotion", "paid advertising"])
+        self.assertEqual(spans[0]["kind"], "paid advertising")
+        self.assertEqual(spans[0]["disposition"], "must-cut")
 
     def test_a_closing_credits_span_reports_credits_and_stays_acceptable(self):
         # The closing review is the one pass that positively established this

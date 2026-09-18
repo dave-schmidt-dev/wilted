@@ -3621,11 +3621,15 @@ def reject_implausible_ad_spans(detections, total_seconds, confirmed=frozenset()
         )
         return []
     if unreviewed_removed / total_seconds > MAXIMUM_UNCONFIRMED_AD_SHARE:
+        disposition = (
+            "keeping only the spans a review vouched for"
+            if vouched else "keeping the episode whole"
+        )
         progress(
             "ads.detect.refused",
             f"{unreviewed_removed:.1f}s of {total_seconds:.1f}s "
             f"({unreviewed_removed / total_seconds:.0%}) was classified as advertising without review; "
-            "keeping the episode whole",
+            f"{disposition}",
         )
         return vouched
     if total_removed / total_seconds > MAXIMUM_TOTAL_AD_SHARE:
