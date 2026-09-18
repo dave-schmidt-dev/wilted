@@ -5992,6 +5992,53 @@ class AdKindContractTests(unittest.TestCase):
         self.assertEqual(unmatched[0]["kind"], "paid advertising",
                          "an interval no nomination explains is the conservative reading")
 
+    def test_an_explicit_credits_kind_stays_credits_on_a_paid_label(self):
+        # The kind is what the span is, the label is how the detector found
+        # it. A span the worker positively established as credits must not be
+        # re-attributed to paid advertising just because its detector label
+        # maps there by default.
+        spans = self.cut([FakeAd(40.0, 45.0, label="ad_break", kinds=("credits",))])
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0]["label"], "ad_break")
+        self.assertEqual(spans[0]["kind"], "credits")
+        self.assertEqual(spans[0]["kinds"], ["credits"])
+        self.assertEqual(spans[0]["disposition"], "acceptable-cut")
+
+    def test_both_unpaid_house_labels_report_house_promotion_without_moving_the_cut(self):
+        for label in ("self_promo", "newsletter_pitch"):
+            with self.subTest(label=label):
+                spans = self.cut([FakeAd(0.0, 5.0, label=label)])
+                self.assertEqual(
+                    [(span["startSeconds"], span["endSeconds"], span["label"]) for span in spans],
+                    [(0.0, 5.0, label)],
+                )
+                self.assertEqual(spans[0]["kind"], "house promotion")
+                self.assertEqual(spans[0]["disposition"], "acceptable-cut")
+
+    def test_a_merged_paid_and_house_pair_publishes_both_kinds(self):
+        # The archive's own merge fuses an adjacent paid read and a house
+        # promotion into one run; the publication path has to carry both
+        # kinds from that run, not the earlier label's kind alone.
+        llm = FakeLLM()
+        ads = install_fake_ads(llm)
+        merged = ads._merge_adjacent([
+            FakeAd(0.0, 10.0, label="sponsor_read"),
+            FakeAd(10.5, 20.0, label="self_promo"),
+        ])
+        self.assertEqual(len(merged), 1)
+        install_fake_ads(llm, detections=merged)
+        with redirect_stderr(io.StringIO()), \
+                mock.patch.object(wp, "probe_duration", return_value=100.0):
+            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(
+            (spans[0]["startSeconds"], spans[0]["endSeconds"]), (0.0, 20.0)
+        )
+        self.assertEqual(spans[0]["label"], "sponsor_read")
+        self.assertEqual(spans[0]["kinds"], ["house promotion", "paid advertising"])
+        self.assertEqual(spans[0]["kind"], "paid advertising")
+        self.assertEqual(spans[0]["disposition"], "must-cut")
+
     def test_a_closing_credits_span_reports_credits_and_stays_acceptable(self):
         # The closing review is the one pass that positively established this
         # run as the sign-off/credits/music-bed shape, so it is where `credits`
