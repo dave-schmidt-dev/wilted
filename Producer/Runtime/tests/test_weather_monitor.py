@@ -50,6 +50,25 @@ from wilted.station_runtime.weather_monitor import (
 TEST_ZONE = "STZ001"
 TEST_COUNTY = "STC001"
 
+@pytest.fixture
+def configured_weather_location():
+    """Supply a station location instead of falling through to `wilted.toml`.
+
+    `wilted.toml` is gitignored, so it exists only on the machine that wrote
+    it: a test that constructs a *production* monitor without this reads the
+    host's real config and passes or fails on whether the developer happens to
+    live somewhere. Patching the same seam the resolver's own tests use keeps
+    these unit tests hermetic without checking in a sample config, which would
+    reintroduce the coupling by another route.
+    """
+    with patch(
+        "wilted.station_runtime.weather_monitor.load_config",
+        return_value={"weather": {"zone": TEST_ZONE, "county": TEST_COUNTY}},
+    ):
+        yield
+
+
+
 pytestmark = pytest.mark.integration
 
 
@@ -680,7 +699,7 @@ class TestWrapperEntrypoint:
 
 
 class TestBuildProductionMonitor:
-    def test_no_trigger_path_wires_real_fetch_and_synth(self):
+    def test_no_trigger_path_wires_real_fetch_and_synth(self, configured_weather_location):
         monitor = build_production_monitor()
 
         assert isinstance(monitor, WeatherMonitor)
@@ -689,7 +708,9 @@ class TestBuildProductionMonitor:
         # Live-NWS mode: no test trigger recorded (drives the TUI status line).
         assert monitor.test_trigger_path is None
 
-    def test_trigger_path_swaps_in_the_trigger_file_fetch_but_keeps_real_synth(self, tmp_path):
+    def test_trigger_path_swaps_in_the_trigger_file_fetch_but_keeps_real_synth(
+        self, tmp_path, configured_weather_location
+    ):
         trigger_path = tmp_path / "trigger"
 
         monitor = build_production_monitor(trigger_path=trigger_path)
@@ -752,7 +773,9 @@ class TestMakeTriggerFileFetch:
         assert sorted(len(response["features"]) for response in responses) == [0, 1]
         assert not trigger_path.exists()
 
-    def test_drives_a_real_monitor_through_fire_dedup_clear_and_requalify(self, tmp_path):
+    def test_drives_a_real_monitor_through_fire_dedup_clear_and_requalify(
+        self, tmp_path, configured_weather_location
+    ):
         """End-to-end through the real WeatherMonitor -- not just the raw
         fetch response -- proving the trigger file actually flows through
         dedup/escalation/handoff unmodified."""

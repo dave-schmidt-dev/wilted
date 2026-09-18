@@ -8,6 +8,8 @@ import types
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
+from contextlib import contextmanager
+
 import pytest
 from speech_stack import client
 
@@ -1551,6 +1553,21 @@ exit 0
         assert "bws-run" not in source
 
 
+@contextmanager
+def _configured_weather_location():
+    """Keep the production-monitor construction off the host's `wilted.toml`.
+
+    That file is gitignored, so without this these tests pass only on the
+    machine whose real station location happens to sit there. Same seam the
+    weather module's own tests patch.
+    """
+    with patch(
+        "wilted.station_runtime.weather_monitor.load_config",
+        return_value={"weather": {"zone": "STZ001", "county": "STC001"}},
+    ):
+        yield
+
+
 class TestWeatherMonitorForLaunch:
     """``_weather_monitor_for_launch`` wires the real ``WeatherMonitor`` into
     the production TUI launch (was previously never constructed at all).
@@ -1560,7 +1577,8 @@ class TestWeatherMonitorForLaunch:
     def test_returns_a_production_monitor_by_default(self, monkeypatch):
         monkeypatch.delenv("WILTED_WEATHER_TEST_TRIGGER", raising=False)
 
-        monitor = _weather_monitor_for_launch()
+        with _configured_weather_location():
+            monitor = _weather_monitor_for_launch()
 
         assert isinstance(monitor, WeatherMonitor)
         assert monitor._fetch is _default_fetch_alerts
@@ -1569,7 +1587,8 @@ class TestWeatherMonitorForLaunch:
         trigger_path = tmp_path / "trigger"
         monkeypatch.setenv("WILTED_WEATHER_TEST_TRIGGER", str(trigger_path))
 
-        monitor = _weather_monitor_for_launch()
+        with _configured_weather_location():
+            monitor = _weather_monitor_for_launch()
 
         assert isinstance(monitor, WeatherMonitor)
         assert monitor._fetch is not _default_fetch_alerts
