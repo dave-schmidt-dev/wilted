@@ -2058,6 +2058,111 @@ final class LocalLibraryStoreTests: XCTestCase {
 
     /// Builds one feed's worth of episodes at fixed offsets from `origin`, so a
     /// test can say "published 40 days ago" without arithmetic at every call.
+    // MARK: Measurement (Task 3.2)
+
+    /// Reports what the read paths cost on a library the size of a real one.
+    ///
+    /// Figures go into `docs/2026-09-17-queue-drawdown-measurements.md`. The
+    /// assertions are loose ceilings, not the measurement: they exist so a
+    /// change that makes a read an order of magnitude worse fails here rather
+    /// than being noticed as a slow window. Set `WILTED_MEASURE=1` to print.
+    func testMeasureTheLibrarySnapshotAndThePreparationRunQuery() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+
+        // Twelve subscribed shows, fifty admitted episodes each: 600 episodes,
+        // which is a year of weekly listening across a full subscription list.
+        let feedCount = 12
+        let perFeed = 50
+        for feedIndex in 0..<feedCount {
+            let feedURL = URL(string: "https://podcasts.example.test/measure-\(feedIndex)/feed.xml")!
+            let (feed, built) = try episodes(
+                feedURL: feedURL, origin: origin, daysAgo: Array(1...perFeed)
+            )
+            try await store.save(feed: feed)
+            try await store.save(subscription: PodcastSubscription(feedID: feed.itemID,
+                                                                   subscribedAt: Timestamp(origin)))
+            _ = try await store.savePodcastEpisodes(built, admission: .backfill)
+        }
+
+        // The Prep poll reads the journal, so it needs one: 200 runs of four
+        // statuses each, roughly a month of nightly preparation.
+        let article = try article()
+        let revision = try revision(for: article, id: "rev-measure")
+        try await store.save(article: article)
+        try await store.saveReadyRevision(revision, mediaURL: URL(fileURLWithPath: "/tmp/rev-measure.m4a"))
+        let stages: [(PreparationStage, String)] = [
+            (.preparing, "queued"), (.fetching, "downloading"),
+            (.assembling, "cutting"), (.completed, "ready")
+        ]
+        for run in 0..<200 {
+            for (step, stage) in stages.enumerated() {
+                let terminal = stage.0 == .completed
+                    ? try PreparationTerminalResult(outcome: .succeeded, revisionID: revision.revisionID)
+                    : nil
+                try await store.record(preparation: PreparationJournalEntry(
+                    id: "measure-\(run)-\(step)", itemID: article.itemID,
+                    requestID: "measure-request-\(run)",
+                    status: try PreparationStatus(
+                        stage: stage.0, detail: stage.1,
+                        fraction: terminal == nil ? 0.5 : 1, cancellable: terminal == nil,
+                        terminalResult: terminal,
+                        emittedAt: Timestamp(origin.addingTimeInterval(Double(run * 10 + step)))
+                    )
+                ))
+            }
+        }
+
+        func footprintBytes() -> UInt64 {
+            var info = mach_task_basic_info()
+            var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+            let result = withUnsafeMutablePointer(to: &info) {
+                $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                    task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+                }
+            }
+            return result == KERN_SUCCESS ? info.resident_size : 0
+        }
+
+        func measure(
+            _ label: String, _ body: () async throws -> Int
+        ) async rethrows -> (seconds: Double, bytes: Int64, rows: Int) {
+            _ = try await body()  // warm the caches; the first call pays for page-in
+            let beforeBytes = footprintBytes()
+            let started = DispatchTime.now().uptimeNanoseconds
+            var rows = 0
+            for _ in 0..<5 { rows = try await body() }
+            let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started) / 5e9
+            let delta = Int64(footprintBytes()) - Int64(beforeBytes)
+            if ProcessInfo.processInfo.environment["WILTED_MEASURE"] == "1" {
+                print("measure.\(label) seconds=\(String(format: "%.4f", elapsed)) "
+                      + "residentDeltaBytes=\(delta) rows=\(rows)")
+            }
+            return (elapsed, delta, rows)
+        }
+
+        let snapshot = try await measure("podcastLibrarySnapshot") {
+            try await store.podcastLibrarySnapshot().episodes.count
+        }
+        // Backfill admits a 30-day window plus the minimum floor, not the whole
+        // back catalogue, so 600 published episodes become 360 admitted rows.
+        XCTAssertEqual(snapshot.rows, 360)
+        XCTAssertLessThan(snapshot.seconds, 1.0,
+                          "the snapshot got an order of magnitude slower than its recorded figure")
+
+        let runs = try await measure("preparationRuns") { try await store.preparationRuns().count }
+        XCTAssertEqual(runs.rows, 200, "the journal collapses to one summary per request ID")
+        XCTAssertLessThan(runs.seconds, 1.0,
+                          "the preparation-run query got an order of magnitude slower")
+
+        if ProcessInfo.processInfo.environment["WILTED_MEASURE"] == "1" {
+            print("measure.fixture feeds=\(feedCount) episodesPerFeed=\(perFeed) "
+                  + "episodesPublished=\(feedCount * perFeed) episodesAdmitted=\(snapshot.rows) "
+                  + "preparationRuns=\(runs.rows) journalRows=\(200 * stages.count)")
+        }
+    }
+
     private func episodes(
         feedURL: URL, origin: Date, daysAgo: [Int], undated: Int = 0
     ) throws -> (feed: PodcastFeed, episodes: [PodcastEpisode]) {
