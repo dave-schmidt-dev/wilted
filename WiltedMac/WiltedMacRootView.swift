@@ -57,58 +57,46 @@ struct WiltedMacRootView: View {
             // background -- two highlights on the same row. The selected state
             // is carried by the row background and text colour, and announced
             // to accessibility by the isSelected trait below.
-            List {
-                ForEach(WiltedMacNavigation.allCases) { destination in
-                    let isSelected = model.selectedNavigation == destination
-                    Button {
-                        playerFocusRequest = nil
-                        model.selectedNavigation = destination
-                    } label: {
-                        Label(destination.title, symbol: destination.symbolName)
-                            .wiltedFont(.body)
-                            .foregroundStyle(
-                                isSelected
-                                    ? WiltedTheme.color(.primaryText, scheme: colorScheme)
-                                    : WiltedTheme.color(.secondaryText, scheme: colorScheme)
-                            )
-                            .frame(maxWidth: .infinity, alignment: .leading)
+            // The totals sit outside the List, so they stay pinned to the
+            // bottom of the column instead of scrolling away under the
+            // destinations as the navigation list grows.
+            VStack(spacing: 0) {
+                List {
+                    ForEach(WiltedMacNavigation.allCases) { destination in
+                        let isSelected = model.selectedNavigation == destination
+                        Button {
+                            playerFocusRequest = nil
+                            model.selectedNavigation = destination
+                        } label: {
+                            Label(destination.title, symbol: destination.symbolName)
+                                .wiltedFont(.body)
+                                .foregroundStyle(
+                                    isSelected
+                                        ? WiltedTheme.color(.primaryText, scheme: colorScheme)
+                                        : WiltedTheme.color(.secondaryText, scheme: colorScheme)
+                                )
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
+                        .listRowBackground(
+                            isSelected
+                                ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.24)
+                                : Color.clear
+                        )
+                        .accessibilityIdentifier("wilted-navigation-\(destination.rawValue)")
+                        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                     }
-                    .buttonStyle(.plain)
-                    .contentShape(Rectangle())
-                    .listRowBackground(
-                        isSelected
-                            ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.24)
-                            : Color.clear
-                    )
-                    .accessibilityIdentifier("wilted-navigation-\(destination.rawValue)")
-                    .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                 }
-                Section {
-                    sidebarTotal(
-                        "Ready to play",
-                        summary: model.menuGroupAudioSummary(.playable),
-                        identifier: "wilted-sidebar-ready-total"
-                    )
-                    sidebarTotal(
-                        "Downloaded",
-                        summary: model.menuGroupAudioSummary(.downloaded),
-                        identifier: "wilted-sidebar-downloaded-total"
-                    )
-                    sidebarTotal(
-                        "On the Menu",
-                        summary: model.menuAudioSummary,
-                        identifier: "wilted-sidebar-menu-total"
-                    )
-                } header: {
-                    Text("Waiting for you")
-                }
+                // The sidebar carries a page-token background rather than the
+                // default AppKit material. It matches the rest of the palette, and
+                // the material was additionally invisible to offscreen rendering,
+                // which is why the navigation column recorded as a blank rectangle
+                // in every Mac pixel baseline.
+                .scrollContentBackground(.hidden)
+                .background(WiltedTheme.color(.page, scheme: colorScheme))
+                sidebarTotals
             }
-            // The sidebar carries a page-token background rather than the
-            // default AppKit material. It matches the rest of the palette, and
-            // the material was additionally invisible to offscreen rendering,
-            // which is why the navigation column recorded as a blank rectangle
-            // in every Mac pixel baseline.
-            .scrollContentBackground(.hidden)
             .background(WiltedTheme.color(.page, scheme: colorScheme))
             .navigationSplitViewColumnWidth(
                 min: WiltedTheme.scaled(180, scale: model.textScale),
@@ -198,6 +186,35 @@ struct WiltedMacRootView: View {
         .wiltedRemovingToolbarTitle()
         .background(WiltedWindowTitleHider())
         .accessibilityIdentifier("wilted-mac-root")
+    }
+
+    /// The three waiting times, pinned to the bottom of the sidebar column.
+    /// Outside the List on purpose: they are a standing readout of what is
+    /// waiting, not another row to scroll past. No heading: each row names
+    /// itself, so a label over them only repeats what they already say.
+    private var sidebarTotals: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+            Divider()
+            sidebarTotal(
+                "Ready to play",
+                summary: model.menuGroupAudioSummary(.playable),
+                identifier: "wilted-sidebar-ready-total"
+            )
+            sidebarTotal(
+                "Downloaded",
+                summary: model.menuGroupAudioSummary(.downloaded),
+                identifier: "wilted-sidebar-downloaded-total"
+            )
+            sidebarTotal(
+                "On the Menu",
+                summary: model.menuAudioSummary,
+                identifier: "wilted-sidebar-menu-total"
+            )
+        }
+        .padding(.horizontal, WiltedTheme.Spacing.medium)
+        .padding(.bottom, WiltedTheme.Spacing.medium)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-sidebar-totals")
     }
 
     /// One sidebar waiting time. The figure and its unknown count come from
@@ -1249,7 +1266,12 @@ private struct WiltedMacMenuView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Image(systemName: "circle.grid.2x3.fill")
+            // `circle.grid.2x3.fill` is not in the system symbol set -- the
+            // handle drew as a blank square on every Menu row, so the reorder
+            // affordance was invisible. Checked against NSImage before
+            // choosing the replacement rather than swapping one guess for
+            // another.
+            Image(systemName: "line.3.horizontal")
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .frame(width: 32, height: 32)
                 .contentShape(Rectangle())

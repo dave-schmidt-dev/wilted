@@ -5,6 +5,42 @@ import WiltedProducer
 @testable import WiltedMac
 
 final class WiltedVisualSystemTests: XCTestCase {
+
+    /// Every SF Symbol the Mac views name must exist in the system symbol set.
+    ///
+    /// `circle.grid.2x3.fill` did not, and SwiftUI does not fail on a missing
+    /// symbol -- it logs "No symbol named ... found in system symbol set" and
+    /// draws nothing, so the Menu's drag handle was an invisible control on
+    /// every row and no test noticed. A name is cheap to typo and impossible
+    /// to catch by reading, so the whole set is checked rather than the one
+    /// that broke.
+    func testEverySystemSymbolTheMacViewsNameResolves() throws {
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("WiltedMac")
+        let files = try FileManager.default
+            .contentsOfDirectory(at: sources, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "swift" }
+        XCTAssertFalse(files.isEmpty, "the Mac sources must be readable from the test bundle")
+
+        let pattern = try NSRegularExpression(pattern: #"systemName:\s*"([^"]+)""#)
+        var named: Set<String> = []
+        for file in files {
+            let text = try String(contentsOf: file)
+            let range = NSRange(text.startIndex..., in: text)
+            for match in pattern.matches(in: text, range: range) {
+                guard let symbol = Range(match.range(at: 1), in: text) else { continue }
+                named.insert(String(text[symbol]))
+            }
+        }
+        XCTAssertFalse(named.isEmpty, "the views name at least one symbol")
+
+        let missing = named
+            .filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) == nil }
+            .sorted()
+        XCTAssertEqual(missing, [],
+                       "these symbols draw as nothing at runtime: \(missing.joined(separator: ", "))")
+    }
     func testPodcastOperationMessageReservesEqualShortAndWrappingRows() {
         for scale in WiltedTheme.TextScale.allCases {
             let shortHeight = WiltedMacPodcastOperationMessageLayout.rowHeight(
@@ -875,7 +911,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         // The sidebar no longer clears the presentation itself: every
         // navigation change is retired by the detail's onChange, while
         // collapsing keeps its own clear.
-        XCTAssertTrue(source.contains("playerFocusRequest = nil\n                        model.selectedNavigation = destination"))
+        XCTAssertTrue(source.contains("playerFocusRequest = nil\n                            model.selectedNavigation = destination"))
         XCTAssertTrue(source.contains(".onChange(of: model.selectedNavigation) {"))
         XCTAssertTrue(source.contains("playerPresentation = nil\n                            playerFocusRequest = section"))
         XCTAssertTrue(source.contains("case .menu:"))

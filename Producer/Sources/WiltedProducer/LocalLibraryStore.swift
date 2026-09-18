@@ -18,8 +18,9 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     case v9 = 9
     case v10 = 10
     case v11 = 11
+    case v12 = 12
 
-    public static let current: LocalLibrarySchemaVersion = .v11
+    public static let current: LocalLibrarySchemaVersion = .v12
 }
 
 /// The local ownership state used by generation-based remote reconciliation.
@@ -361,6 +362,71 @@ public struct PodcastListeningState: Codable, Equatable, Sendable {
     public init(episodeID: ItemID, completedAt: Timestamp?, lastRevisionID: RevisionID?, updatedAt: Timestamp) {
         self.episodeID = episodeID; self.completedAt = completedAt
         self.lastRevisionID = lastRevisionID; self.updatedAt = updatedAt
+    }
+}
+
+/// What kind of background work a `WorkTicket` tracks.
+public enum WorkTicketKind: String, Codable, Equatable, Sendable {
+    case podcastDownload
+    case podcastPreparation
+    case articlePreparation
+}
+
+/// A ticket's lifecycle. `isTerminal` covers the three states a ticket
+/// cannot leave once reached -- a fresh issue or retry always starts a new
+/// ticket rather than reopening one of these.
+public enum WorkTicketState: String, Codable, Equatable, Sendable {
+    case pending
+    case deferred
+    case running
+    case succeeded
+    case failed
+    case cancelled
+
+    public var isTerminal: Bool {
+        switch self {
+        case .succeeded, .failed, .cancelled: return true
+        case .pending, .deferred, .running: return false
+        }
+    }
+}
+
+/// One durable request for background work -- a podcast download, podcast
+/// preparation, or article preparation -- keyed by kind and subject so a
+/// retry or relaunch finds the existing ticket instead of issuing a
+/// duplicate. `requestSequence` orders tickets across kinds by intake order
+/// and is allocated by the store, never by the caller.
+public struct WorkTicket: Codable, Equatable, Sendable {
+    public let kind: WorkTicketKind
+    public let subjectID: String
+    public var resolvedItemID: String?
+    public let requestSequence: Int
+    public var state: WorkTicketState
+    public var attemptCount: Int
+    public var failureKind: String?
+    public var lastFailureMessage: String?
+    public var nextEligibleAt: Timestamp?
+    public var policySnapshot: Data?
+    public var processingPolicy: Data?
+    public var runID: String?
+    public let requestedAt: Timestamp
+    public var updatedAt: Timestamp
+
+    /// `"<kind>|<subjectID>"`, matching the persisted record's unique key.
+    public var id: String { "\(kind.rawValue)|\(subjectID)" }
+
+    public init(kind: WorkTicketKind, subjectID: String, resolvedItemID: String? = nil,
+                requestSequence: Int, state: WorkTicketState = .pending, attemptCount: Int = 0,
+                failureKind: String? = nil, lastFailureMessage: String? = nil,
+                nextEligibleAt: Timestamp? = nil, policySnapshot: Data? = nil,
+                processingPolicy: Data? = nil, runID: String? = nil,
+                requestedAt: Timestamp, updatedAt: Timestamp) {
+        self.kind = kind; self.subjectID = subjectID; self.resolvedItemID = resolvedItemID
+        self.requestSequence = requestSequence; self.state = state; self.attemptCount = attemptCount
+        self.failureKind = failureKind; self.lastFailureMessage = lastFailureMessage
+        self.nextEligibleAt = nextEligibleAt; self.policySnapshot = policySnapshot
+        self.processingPolicy = processingPolicy; self.runID = runID
+        self.requestedAt = requestedAt; self.updatedAt = updatedAt
     }
 }
 
@@ -1472,12 +1538,81 @@ private enum LocalLibrarySchemaV11: VersionedSchema {
     }
 }
 
+private enum LocalLibrarySchemaV12Models {
+    /// One durable request for background work -- a podcast download,
+    /// podcast preparation, or article preparation. A wholly new table; no
+    /// existing V11 entity changes shape.
+    @Model final class WorkTicketRecord {
+        @Attribute(.unique) var id: String
+        var kind: String
+        var subjectID: String
+        var resolvedItemID: String?
+        var requestSequence: Int
+        var state: String
+        var attemptCount: Int
+        var failureKind: String?
+        var lastFailureMessage: String?
+        var nextEligibleAt: Date?
+        var policySnapshot: Data?
+        var processingPolicy: Data?
+        var runID: String?
+        var requestedAt: Date
+        var updatedAt: Date
+
+        init(_ value: WorkTicket) {
+            id = value.id
+            kind = value.kind.rawValue
+            subjectID = value.subjectID
+            resolvedItemID = value.resolvedItemID
+            requestSequence = value.requestSequence
+            state = value.state.rawValue
+            attemptCount = value.attemptCount
+            failureKind = value.failureKind
+            lastFailureMessage = value.lastFailureMessage
+            nextEligibleAt = value.nextEligibleAt?.date
+            policySnapshot = value.policySnapshot
+            processingPolicy = value.processingPolicy
+            runID = value.runID
+            requestedAt = value.requestedAt.date
+            updatedAt = value.updatedAt.date
+        }
+
+        /// Overwrites every field but `id`/`kind`/`subjectID`/`requestedAt` --
+        /// the identity and intake time of a ticket never change underneath it.
+        func apply(_ value: WorkTicket) {
+            resolvedItemID = value.resolvedItemID
+            requestSequence = value.requestSequence
+            state = value.state.rawValue
+            attemptCount = value.attemptCount
+            failureKind = value.failureKind
+            lastFailureMessage = value.lastFailureMessage
+            nextEligibleAt = value.nextEligibleAt?.date
+            policySnapshot = value.policySnapshot
+            processingPolicy = value.processingPolicy
+            runID = value.runID
+            updatedAt = value.updatedAt.date
+        }
+    }
+}
+
+/// Version 12 adds the work-ticket queue only. Lightweight: the addition is
+/// a wholly new table and no existing column changes shape -- same
+/// justification V10 and V11 already carry.
+private enum LocalLibrarySchemaV12: VersionedSchema {
+    static let versionIdentifier = Schema.Version(12, 0, 0)
+    static var models: [any PersistentModel.Type] {
+        LocalLibrarySchemaV11.models + [
+            LocalLibrarySchemaV12Models.WorkTicketRecord.self,
+        ]
+    }
+}
+
 private enum LocalLibraryMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
         [LocalLibrarySchemaV1.self, LocalLibrarySchemaV2.self, LocalLibrarySchemaV3.self,
          LocalLibrarySchemaV4.self, LocalLibrarySchemaV5.self, LocalLibrarySchemaV6.self,
          LocalLibrarySchemaV7.self, LocalLibrarySchemaV8.self, LocalLibrarySchemaV9.self,
-         LocalLibrarySchemaV10.self, LocalLibrarySchemaV11.self]
+         LocalLibrarySchemaV10.self, LocalLibrarySchemaV11.self, LocalLibrarySchemaV12.self]
     }
     static var stages: [MigrationStage] {
         [.lightweight(fromVersion: LocalLibrarySchemaV1.self, toVersion: LocalLibrarySchemaV2.self),
@@ -1489,7 +1624,8 @@ private enum LocalLibraryMigrationPlan: SchemaMigrationPlan {
          .lightweight(fromVersion: LocalLibrarySchemaV7.self, toVersion: LocalLibrarySchemaV8.self),
          .lightweight(fromVersion: LocalLibrarySchemaV8.self, toVersion: LocalLibrarySchemaV9.self),
          .lightweight(fromVersion: LocalLibrarySchemaV9.self, toVersion: LocalLibrarySchemaV10.self),
-         .lightweight(fromVersion: LocalLibrarySchemaV10.self, toVersion: LocalLibrarySchemaV11.self)]
+         .lightweight(fromVersion: LocalLibrarySchemaV10.self, toVersion: LocalLibrarySchemaV11.self),
+         .lightweight(fromVersion: LocalLibrarySchemaV11.self, toVersion: LocalLibrarySchemaV12.self)]
     }
 }
 
@@ -1546,7 +1682,7 @@ public actor LocalLibraryStore {
             try migrationFailure?()
         }
         migrationBackupURL = retainedURL
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV11.self)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV12.self)
         let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         if migrate {
             container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
@@ -1568,7 +1704,7 @@ public actor LocalLibraryStore {
             retainedURL = try Self.migrationPreflight(at: url).retainedURL
         }
         migrationBackupURL = retainedURL
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV11.self)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV12.self)
         let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         if migrate {
             container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
@@ -1699,6 +1835,79 @@ public actor LocalLibraryStore {
         }
         try context.save()
         return savedSeconds
+    }
+
+    /// Decodes a persisted work-ticket row, dropping it if its `kind` or
+    /// `state` raw value is not one this store recognizes.
+    private static func decodeWorkTicket(_ record: LocalLibrarySchemaV12Models.WorkTicketRecord) -> WorkTicket? {
+        guard let kind = WorkTicketKind(rawValue: record.kind),
+              let state = WorkTicketState(rawValue: record.state) else { return nil }
+        return WorkTicket(
+            kind: kind, subjectID: record.subjectID, resolvedItemID: record.resolvedItemID,
+            requestSequence: record.requestSequence, state: state, attemptCount: record.attemptCount,
+            failureKind: record.failureKind, lastFailureMessage: record.lastFailureMessage,
+            nextEligibleAt: record.nextEligibleAt.map(Timestamp.init),
+            policySnapshot: record.policySnapshot, processingPolicy: record.processingPolicy,
+            runID: record.runID, requestedAt: Timestamp(record.requestedAt), updatedAt: Timestamp(record.updatedAt)
+        )
+    }
+
+    /// All persisted work tickets, in no particular order.
+    public func workTickets() throws -> [WorkTicket] {
+        let context = ModelContext(container)
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+            .compactMap(Self.decodeWorkTicket)
+    }
+
+    /// Overwrites the ticket matching `ticket.id`, or inserts it if absent.
+    /// Unlike `issueWorkTicket`, the caller supplies `requestSequence`
+    /// directly -- this is the path state transitions (running, succeeded,
+    /// a retry's incremented `attemptCount`) use, not the path that assigns
+    /// a ticket its place in the queue.
+    @discardableResult
+    public func upsertWorkTicket(_ ticket: WorkTicket) throws -> WorkTicket {
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+        if let existing = records.first(where: { $0.id == ticket.id }) {
+            existing.apply(ticket)
+        } else {
+            context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
+        }
+        try context.save()
+        return ticket
+    }
+
+    /// Finds or creates the ticket for one `(kind, subjectID)`. An existing
+    /// ticket -- pending, in flight, or already terminal -- is returned
+    /// unchanged; this is a find-or-insert, not a reset. A new ticket's
+    /// `requestSequence` is `max(requestSequence) + 1` computed inside the
+    /// same fetch-then-save as the insert, so sequence numbers are
+    /// monotonic by construction and never assigned by a separate counter
+    /// row.
+    @discardableResult
+    public func issueWorkTicket(
+        kind: WorkTicketKind, subjectID: String, resolvedItemID: String? = nil,
+        policySnapshot: Data? = nil, processingPolicy: Data? = nil, requestedAt: Timestamp
+    ) throws -> WorkTicket {
+        let context = ModelContext(container)
+        let id = "\(kind.rawValue)|\(subjectID)"
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+        if let existing = records.first(where: { $0.id == id }) {
+            guard let decoded = Self.decodeWorkTicket(existing) else {
+                throw LocalLibraryStoreError.invalidPodcastState("corrupt work ticket row")
+            }
+            return decoded
+        }
+        let nextSequence = (records.map(\.requestSequence).max() ?? 0) + 1
+        let ticket = WorkTicket(
+            kind: kind, subjectID: subjectID, resolvedItemID: resolvedItemID,
+            requestSequence: nextSequence, state: .pending, attemptCount: 0,
+            policySnapshot: policySnapshot, processingPolicy: processingPolicy,
+            requestedAt: requestedAt, updatedAt: requestedAt
+        )
+        context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
+        try context.save()
+        return ticket
     }
 
     /// Checkpoints the source WAL and verifies a complete V5 rollback copy before
@@ -1936,6 +2145,28 @@ public actor LocalLibraryStore {
         try context.save()
     }
 
+    /// Builds a frozen V11 store for the V12 work-ticket migration test: a
+    /// handful of pre-existing download and preparation-journal rows that
+    /// must still read back correctly once the work-ticket table is layered
+    /// on top by a lightweight migration.
+    nonisolated internal static func createV11MigrationFixture(
+        at url: URL, downloads: [PodcastDownload], preparationEntries: [PreparationJournalEntry]
+    ) throws {
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV11.self)
+        let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
+        let container = try ModelContainer(for: schema, configurations: [configuration])
+        let context = ModelContext(container)
+        for download in downloads {
+            context.insert(LocalLibrarySchemaV10Models.PodcastDownloadRecord(download))
+        }
+        for entry in preparationEntries {
+            context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(entry))
+        }
+        try context.save()
+    }
+
     /// Corrupts repository metadata for deterministic decoder-failure tests.
     nonisolated internal static func corruptRepositoryStateFixture(at url: URL, data: Data) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -2002,6 +2233,23 @@ public actor LocalLibraryStore {
             createdAt: createdAt,
             schemaVersion: schemaVersion
         )
+    }
+
+    /// Test-only seam: inserts a work-ticket row directly against a fresh
+    /// `ModelContext` on this store's container, bypassing
+    /// `issueWorkTicket`'s find-or-insert check entirely. `nonisolated`, so a
+    /// caller on any isolation domain -- including the main actor -- can run
+    /// this genuinely concurrently with an actor-isolated `issueWorkTicket`
+    /// call, to observe how a conflicting insert against `id`'s
+    /// `@Attribute(.unique)` constraint actually behaves when the two race.
+    nonisolated internal func seedRawWorkTicket(
+        kind: WorkTicketKind, subjectID: String, requestSequence: Int, requestedAt: Timestamp
+    ) throws {
+        let context = ModelContext(container)
+        let ticket = WorkTicket(kind: kind, subjectID: subjectID, requestSequence: requestSequence,
+                                requestedAt: requestedAt, updatedAt: requestedAt)
+        context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
+        try context.save()
     }
     #endif
 

@@ -2570,6 +2570,98 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(model.preparationRequestSequence, higher)
     }
 
+    /// The test above drives the gate directly, so it never exercises whether
+    /// the *model* itself would hold the higher-numbered run back for the
+    /// lower one -- a gate that always admits when free proves nothing about
+    /// a model that refuses to ask it to. This one runs the real path: a
+    /// still-downloading episode's request is registered and left pending,
+    /// then a downloaded, later-numbered episode is sent through
+    /// `retryProcessorRun`, the same entry point a reader's click uses. It
+    /// must reach the gate and be admitted immediately rather than being
+    /// entered into `preparationQueue` to wait for a lower number that has
+    /// not arrived.
+    func testAModelDrivenLaterEligibleRequestIsAdmittedRatherThanQueuedForALowerNumber() async throws {
+        let directory = temporaryDirectory("later-eligible-not-queued-for-lower")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = BlockingPodcastPipelineRunner()
+        let feedURL = try XCTUnwrap(URL(string: "https://example.test/later-eligible.xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://example.test/later-eligible.mp3"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let higherItemID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "later-eligible-1", enclosureURL: enclosureURL
+        )
+        let higherID = higherItemID.rawValue
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                // A real, downloaded-with-audio-on-disk episode: `prepare`
+                // refuses anything less before it ever reaches the runner
+                // below, and a fixture row alone (`installEpisodeForTesting`)
+                // does not satisfy that -- it fails the pipeline's own
+                // "is this actually downloaded" guard before the gate's
+                // admission decision is observable.
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Fixtures", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    higherItemID, guid: "later-eligible-1", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: enclosureURL, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                return store
+            },
+            podcastPipelineRunnerFactory: { runner },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        XCTAssertEqual(model.episodes.map(\.id), [higherID])
+
+        let lowerID = "episode-still-downloading"
+        let lower = model.registerPreparationRequest(for: lowerID)
+        let higher = model.registerPreparationRequest(for: higherID)
+        XCTAssertEqual([lower, higher], [1, 2])
+
+        model.retryProcessorRun(WiltedMacProcessorRun(
+            id: WiltedMacModel.podcastRequestPrefix + higherID,
+            itemID: higherID, isPodcast: true, title: "Downloaded", source: "Fixtures",
+            stage: "failed", detail: "previous failure", fraction: nil, outcome: .failed, updatedAt: Date()
+        ))
+
+        XCTAssertTrue(model.episodes.first(where: { $0.id == higherID })?.preparationState.isRunning == true,
+                      "the later, eligible request starts rather than sitting queued")
+        XCTAssertFalse(model.preparationQueue.entries.contains { $0.id == higherID },
+                       "a free slot is not held open for the lower number still downloading")
+        XCTAssertEqual(model.preparationRequestSequences, [lowerID: lower],
+                       "the still-downloading request keeps its original pending place")
+
+        // The decision above is made synchronously, before the run's task body
+        // ever reaches `gate.admit` -- that happens one main-actor hop later.
+        // The runner blocks once the pipeline actually calls it, so settling
+        // here lands the run at a deterministic point: admitted and running
+        // if the gate let it through, or still queued if a gate reserved the
+        // free slot for the lower, still-outstanding sequence instead.
+        try await settle(model, iterations: 20)
+        XCTAssertTrue(model.preparationGateForTesting.isBusy,
+                      "the later request reached and was admitted by the gate, not left waiting on it")
+        XCTAssertEqual(model.preparationGateForTesting.queueDepth, 0)
+
+        // Unstick the run however it actually ended up: released from the
+        // pipeline if it was admitted, or cancelled out of the queue if the
+        // assertion above already caught it stuck waiting. Either path
+        // resolves quickly, so a failing assertion above reports as a clean
+        // test failure rather than a hang.
+        if model.preparationGateForTesting.isBusy {
+            await runner.resume(throwing: CancellationError())
+        } else {
+            model.cancelEpisodePreparation(model.episodes.first(where: { $0.id == higherID })!)
+        }
+        await model.waitForPodcastPreparationOperationsForTesting()
+    }
+
     /// Article text-to-speech and podcast preparation share one GPU. The
     /// article path used to start its coordinator without asking the gate, so
     /// both could hold the device at once.
@@ -6755,6 +6847,14 @@ final class WiltedMacModelTests: XCTestCase {
         ] {
             XCTAssertTrue(view.contains(fragment), "\(fragment) must be in the sidebar's totals")
         }
+        // The totals are a standing readout, so they sit below the navigation
+        // List rather than inside it, where a growing destination list would
+        // scroll them out of sight.
+        let listEnd = try XCTUnwrap(view.range(of: ".scrollContentBackground(.hidden)"))
+        let totals = try XCTUnwrap(view.range(of: "sidebarTotals\n"))
+        XCTAssertTrue(totals.lowerBound > listEnd.upperBound,
+                      "the totals must be pinned below the navigation List, not scroll with it")
+        XCTAssertTrue(view.contains("wilted-sidebar-totals"))
     }
 
     // MARK: Menu row controls
@@ -7731,6 +7831,26 @@ private struct CancellingPodcastPipelineRunner: PodcastPipelineRunning {
         onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> Data {
         throw CancellationError()
+    }
+}
+
+/// Suspends once the pipeline actually invokes it, and stays suspended until
+/// `resume` is called. Used where a test needs to observe a run at the exact
+/// moment it is admitted -- before it does any work -- without racing a
+/// timer against however long the pipeline takes to fail on its own.
+private actor BlockingPodcastPipelineRunner: PodcastPipelineRunning {
+    private var continuation: CheckedContinuation<Data, Error>?
+
+    func run(
+        request: Data,
+        onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void
+    ) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation = $0 }
+    }
+
+    func resume(throwing error: Error) {
+        continuation?.resume(throwing: error)
+        continuation = nil
     }
 }
 

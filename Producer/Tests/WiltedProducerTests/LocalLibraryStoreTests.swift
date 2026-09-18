@@ -262,7 +262,7 @@ final class LocalLibraryStoreTests: XCTestCase {
         let migratedTranscript = try await migrated.transcript(for: item.itemID, revisionID: rev.revisionID)
         let migratedInspection = try await migrated.inspect()
         XCTAssertNil(migratedTranscript)
-        XCTAssertEqual(migratedInspection.schemaVersion, .v11)
+        XCTAssertEqual(migratedInspection.schemaVersion, .v12)
     }
 
     /// The V4 -> V5 stage renames the deletion column. A read-back inside one
@@ -1496,7 +1496,7 @@ final class LocalLibraryStoreTests: XCTestCase {
                                                        playback: try playback(for: item, revision: rev, position: 23))
         let migrated = try LocalLibraryStore(url: url)
         let inspection = try await migrated.inspect()
-        XCTAssertEqual(inspection.schemaVersion, .v11)
+        XCTAssertEqual(inspection.schemaVersion, .v12)
         XCTAssertEqual(inspection.articleCount, 1)
         XCTAssertEqual(inspection.revisionCount, 1)
         XCTAssertEqual(inspection.transcriptCount, 1)
@@ -1697,7 +1697,7 @@ final class LocalLibraryStoreTests: XCTestCase {
 
         let migrated = try LocalLibraryStore(url: url)
         let inspection = try await migrated.inspect()
-        XCTAssertEqual(inspection.schemaVersion, .v11, "the migration plan must carry a V9 store all the way to V11")
+        XCTAssertEqual(inspection.schemaVersion, .v12, "the migration plan must carry a V9 store all the way to V12")
 
         // Fix 4: prove the migrated store's live call sites actually see the
         // V9 fixture's rows through the new V10 classes end-to-end, not just
@@ -3539,6 +3539,134 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertEqual(results[wellFormedArticle2.itemID.rawValue]?.revision.revisionID, wellFormedRev2.revisionID)
         XCTAssertEqual(results[wellFormedArticle2.itemID.rawValue]?.mediaURL, mediaURL2)
         XCTAssertNil(results[malformedItemID])
+    }
+
+    // MARK: - V12 work tickets
+
+    /// Step 1 done-condition: a V11 fixture opens at V12 and every prior row
+    /// reads back intact -- the new work-ticket table must be purely
+    /// additive.
+    func testV11FixtureOpensAtV12WithPriorRowsIntact() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let episodeID = try ItemID(rawValue: "item-" + String(repeating: "7", count: 64))
+        let revisionID = try RevisionID(rawValue: "rev-v11-fixture")
+        let download = try PodcastDownload(
+            episodeID: episodeID, status: .completed, bytesReceived: 512, expectedByteCount: 512,
+            localURL: URL(fileURLWithPath: "/tmp/v11-fixture.m4a"),
+            contentHash: "sha256:" + String(repeating: "7", count: 64),
+            updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_002_000))
+        )
+        let journalEntry = try succeededPreparationEntry(
+            itemID: episodeID, revisionID: revisionID, requestID: "podcast-prepare|\(episodeID.rawValue)",
+            fingerprint: "fp-v11-fixture", at: 1_700_002_100
+        )
+
+        try LocalLibraryStore.createV11MigrationFixture(at: url, downloads: [download], preparationEntries: [journalEntry])
+
+        let migrated = try LocalLibraryStore(url: url)
+        let inspection = try await migrated.inspect()
+        XCTAssertEqual(inspection.schemaVersion, .v12, "the new stage must carry a V11 store to V12")
+
+        let migratedDownload = try await migrated.download(for: episodeID)
+        XCTAssertEqual(migratedDownload, download, "the pre-existing download row must survive the lightweight migration")
+
+        let migratedJournal = try await migrated.preparationJournal(for: journalEntry.requestID)
+        XCTAssertEqual(migratedJournal.count, 1, "the pre-existing preparation journal row must survive the lightweight migration")
+        XCTAssertEqual(migratedJournal.first?.id, journalEntry.id)
+
+        let tickets = try await migrated.workTickets()
+        XCTAssertTrue(tickets.isEmpty, "a freshly migrated V11 store must not fabricate any work tickets")
+    }
+
+    /// Step 2 done-conditions: two issues against one store return 1 then 2,
+    /// and a re-issue for the same subject returns the existing row rather
+    /// than a second one. `upsertWorkTicket` is exercised separately for the
+    /// state-transition path it is meant for.
+    func testIssueWorkTicketAllocatesMonotonicSequenceAndReissueReturnsExistingRow() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let requestedAt = Timestamp(Date(timeIntervalSince1970: 1_700_003_000))
+
+        let first = try await store.issueWorkTicket(kind: .podcastDownload, subjectID: "episode-1", requestedAt: requestedAt)
+        let second = try await store.issueWorkTicket(kind: .podcastPreparation, subjectID: "episode-1", requestedAt: requestedAt)
+        XCTAssertEqual(first.requestSequence, 1)
+        XCTAssertEqual(second.requestSequence, 2)
+        XCTAssertNotEqual(first.id, second.id, "different kinds for the same subject are different tickets")
+
+        let reissued = try await store.issueWorkTicket(kind: .podcastDownload, subjectID: "episode-1", requestedAt: requestedAt)
+        XCTAssertEqual(reissued.requestSequence, first.requestSequence, "a re-issue must return the existing row, not allocate a new sequence number")
+        XCTAssertEqual(reissued, first)
+
+        let tickets = try await store.workTickets()
+        XCTAssertEqual(tickets.count, 2, "the re-issue must not have inserted a duplicate row")
+
+        // upsertWorkTicket drives the state-transition path: caller-supplied
+        // fields overwrite in place, keyed by id, without touching sequence
+        // allocation.
+        var running = first
+        running.state = .running
+        running.attemptCount = 1
+        running.runID = "run-1"
+        running.updatedAt = Timestamp(Date(timeIntervalSince1970: 1_700_003_100))
+        try await store.upsertWorkTicket(running)
+        let afterTransition = try await store.workTickets()
+        XCTAssertEqual(afterTransition.count, 2, "upserting an existing ticket must update in place, not insert a third row")
+        let updated = afterTransition.first { $0.id == first.id }
+        XCTAssertEqual(updated?.state, .running)
+        XCTAssertEqual(updated?.attemptCount, 1)
+        XCTAssertEqual(updated?.runID, "run-1")
+        XCTAssertFalse(updated?.state.isTerminal ?? true)
+
+        var succeeded = running
+        succeeded.state = .succeeded
+        try await store.upsertWorkTicket(succeeded)
+        let afterCompletion = try await store.workTickets()
+        XCTAssertEqual(afterCompletion.first { $0.id == first.id }?.state, .succeeded)
+        XCTAssertTrue(WorkTicketState.succeeded.isTerminal)
+        XCTAssertTrue(WorkTicketState.failed.isTerminal)
+        XCTAssertTrue(WorkTicketState.cancelled.isTerminal)
+        XCTAssertFalse(WorkTicketState.pending.isTerminal)
+        XCTAssertFalse(WorkTicketState.deferred.isTerminal)
+    }
+
+    /// REQUIRED EMPIRICAL CHECK: establishes what this repo's SwiftData
+    /// version actually does when a main-actor write and a store-actor write
+    /// race a conflicting insert against `WorkTicketRecord.id`'s
+    /// `@Attribute(.unique)`. `issueWorkTicket`'s find-or-insert pattern is
+    /// only safe if one write wins deterministically (either by throwing or
+    /// by the constraint rejecting/merging the loser) -- silent duplication
+    /// would mean two live tickets for the same subject, which later steps
+    /// must not build on.
+    func testConcurrentUniqueInsertAcrossStoreActorAndMainActorContexts() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let requestedAt = Timestamp(Date(timeIntervalSince1970: 1_700_004_000))
+
+        async let storeActorWrite: WorkTicket = store.issueWorkTicket(
+            kind: .podcastDownload, subjectID: "race-subject", requestedAt: requestedAt
+        )
+        async let mainActorWrite: Void = MainActor.run {
+            try store.seedRawWorkTicket(
+                kind: .podcastDownload, subjectID: "race-subject", requestSequence: 999, requestedAt: requestedAt
+            )
+        }
+
+        var storeActorError: Error?
+        var mainActorError: Error?
+        do { _ = try await storeActorWrite } catch { storeActorError = error }
+        do { _ = try await mainActorWrite } catch { mainActorError = error }
+
+        let tickets = try await store.workTickets()
+        let matching = tickets.filter { $0.kind == .podcastDownload && $0.subjectID == "race-subject" }
+
+        // This assertion IS the empirical finding: it records, via the
+        // failure message if it fails, exactly what this SwiftData version
+        // did with the race. See HISTORY.md / the task report for the
+        // observed outcome; do not "fix" this test to force it green without
+        // updating that report.
+        XCTAssertEqual(matching.count, 1,
+            "expected exactly one surviving row for a raced unique insert, found \(matching.count) " +
+            "(storeActorError=\(String(describing: storeActorError)), mainActorError=\(String(describing: mainActorError)))")
     }
 }
 

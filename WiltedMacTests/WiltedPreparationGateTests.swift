@@ -129,6 +129,33 @@ final class WiltedPreparationGateTests: XCTestCase {
         XCTAssertFalse(gate.isBusy)
     }
 
+    func testAFreeSlotAdmitsAHigherSequenceWithoutWaitingForALowerOneToArrive() async throws {
+        // Every existing test here calls `admit()` at its default `sequence: 0`,
+        // so none of them exercise a free slot receiving a non-zero sequence
+        // while a lower one is still outstanding. The gate has no visibility
+        // into a sequence that never calls `admit`, so a free slot goes to
+        // whichever eligible caller reaches it -- sequence only orders the
+        // waiters already at the gate, it does not hold the slot open for a
+        // number that has not shown up yet.
+        let gate = WiltedPreparationGate()
+        try await gate.admit(sequence: 5)
+        XCTAssertTrue(gate.isBusy)
+        XCTAssertEqual(gate.queueDepth, 0, "the higher sequence took the free slot immediately")
+
+        var admitted: [Int] = []
+        let lower = Task { @MainActor in
+            try await gate.admit(sequence: 1)
+            admitted.append(1)
+        }
+        await settle()
+        XCTAssertEqual(gate.queueDepth, 1, "the lower sequence queues behind the one already admitted")
+        XCTAssertTrue(admitted.isEmpty)
+
+        gate.release()
+        try await lower.value
+        XCTAssertEqual(admitted, [1])
+    }
+
     /// Lets every already-spawned task reach its suspension point.
     private func settle() async {
         for _ in 0..<20 { await Task.yield() }
