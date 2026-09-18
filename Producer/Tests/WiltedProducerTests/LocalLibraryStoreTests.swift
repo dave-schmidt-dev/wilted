@@ -262,7 +262,7 @@ final class LocalLibraryStoreTests: XCTestCase {
         let migratedTranscript = try await migrated.transcript(for: item.itemID, revisionID: rev.revisionID)
         let migratedInspection = try await migrated.inspect()
         XCTAssertNil(migratedTranscript)
-        XCTAssertEqual(migratedInspection.schemaVersion, .v12)
+        XCTAssertEqual(migratedInspection.schemaVersion, .v13)
     }
 
     /// The V4 -> V5 stage renames the deletion column. A read-back inside one
@@ -1496,7 +1496,7 @@ final class LocalLibraryStoreTests: XCTestCase {
                                                        playback: try playback(for: item, revision: rev, position: 23))
         let migrated = try LocalLibraryStore(url: url)
         let inspection = try await migrated.inspect()
-        XCTAssertEqual(inspection.schemaVersion, .v12)
+        XCTAssertEqual(inspection.schemaVersion, .v13)
         XCTAssertEqual(inspection.articleCount, 1)
         XCTAssertEqual(inspection.revisionCount, 1)
         XCTAssertEqual(inspection.transcriptCount, 1)
@@ -1697,7 +1697,7 @@ final class LocalLibraryStoreTests: XCTestCase {
 
         let migrated = try LocalLibraryStore(url: url)
         let inspection = try await migrated.inspect()
-        XCTAssertEqual(inspection.schemaVersion, .v12, "the migration plan must carry a V9 store all the way to V12")
+        XCTAssertEqual(inspection.schemaVersion, .v13, "the migration plan must carry a V9 store all the way to V13")
 
         // Fix 4: prove the migrated store's live call sites actually see the
         // V9 fixture's rows through the new V10 classes end-to-end, not just
@@ -2033,8 +2033,8 @@ final class LocalLibraryStoreTests: XCTestCase {
         _ = try await store.retireEpisode(episode.itemID, at: Timestamp(Date(timeIntervalSince1970: 1_700_000_600)))
 
         try await store.dismissPodcastEpisode(episode.itemID, at: Timestamp(Date(timeIntervalSince1970: 1_700_000_700)))
-        let restoreResult = try await store.restorePodcastEpisode(episode, from: [episode])
-        XCTAssertTrue(restoreResult.restored)
+        let restored = try await store.restoreEpisode(episode.itemID)
+        XCTAssertTrue(restored)
 
         let listeningAfterRestore = try await store.listeningState(for: episode.itemID)
         XCTAssertEqual(listeningAfterRestore?.completedAt, completedAt, "restore keeps the listening history intact")
@@ -2450,8 +2450,11 @@ final class LocalLibraryStoreTests: XCTestCase {
 
     /// The bug this covers: removing an episode used to hide it in memory only,
     /// so the next refresh -- which re-reads the same feed -- put it straight
-    /// back, and so did the next launch.
-    func testDismissedEpisodeIsDeletedAndNeverReadmittedByRefresh() async throws {
+    /// back, and so did the next launch. Dismissal now keeps the row (carrying
+    /// a removal state) rather than deleting it, but the guarantee this test
+    /// exists to prove is the same one: a refresh must never silently
+    /// re-admit a dismissed episode, and the dismissal must survive relaunch.
+    func testDismissedEpisodeKeepsItsRowAndIsNeverReadmittedByRefresh() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let origin = Date(timeIntervalSince1970: 1_700_000_000)
         let feedURL = URL(string: "https://podcasts.example.test/dismiss/feed.xml")!
@@ -2465,21 +2468,26 @@ final class LocalLibraryStoreTests: XCTestCase {
         let deleted = try await store.dismissPodcastEpisode(unwanted.itemID, at: Timestamp(origin))
         XCTAssertTrue(deleted)
         var stored = try await store.podcastEpisodes(for: feed.itemID).compactMap(\.rssGUID).sorted()
-        XCTAssertEqual(stored, ["day-1", "day-3"], "the row is gone, not merely filtered")
+        XCTAssertEqual(stored, ["day-1", "day-2", "day-3"], "the row survives, carrying a dismissed state")
+        var kind = try await store.removalKind(for: unwanted.itemID)
+        XCTAssertEqual(kind, .dismissed)
 
-        // The feed still lists it, which is the whole problem: a refresh offers
-        // the same three episodes again.
+        // The feed still lists it, which used to be the whole problem: a
+        // refresh must not treat the dismissed row as missing and re-admit it.
         let refreshed = try await store.savePodcastEpisodes(all, admission: .incremental)
         XCTAssertFalse(refreshed.saved.contains(unwanted.itemID))
         XCTAssertEqual(refreshed.skipped, 1)
         stored = try await store.podcastEpisodes(for: feed.itemID).compactMap(\.rssGUID).sorted()
-        XCTAssertEqual(stored, ["day-1", "day-3"])
+        XCTAssertEqual(stored, ["day-1", "day-2", "day-3"], "no duplicate row from the refresh")
+        kind = try await store.removalKind(for: unwanted.itemID)
+        XCTAssertEqual(kind, .dismissed)
 
-        // And it survives the process, because it is a row rather than a set.
+        // And it survives the process, because it is a row rather than an
+        // in-memory set.
         let reopened = try LocalLibraryStore(url: url)
         try await reopened.savePodcastEpisodes(all, admission: .incremental)
         stored = try await reopened.podcastEpisodes(for: feed.itemID).compactMap(\.rssGUID).sorted()
-        XCTAssertEqual(stored, ["day-1", "day-3"])
+        XCTAssertEqual(stored, ["day-1", "day-2", "day-3"])
         let log = try await reopened.dismissedPodcastEpisodes()
         XCTAssertEqual(log.count, 1)
         XCTAssertEqual(log.first?.episodeID, unwanted.itemID)
@@ -2697,10 +2705,12 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertEqual(stored, ["day-1", "day-2"], "resubscribing starts from the feed, not from the old blocklist")
     }
 
-    /// Restore is one transaction backed by fresh feed evidence. The exact old
-    /// target bypasses the subscription horizon while another genuinely new
-    /// entry from the same response still follows incremental admission.
-    func testRestoreReadmitsTheExactOldTargetAndIncrementallyAdmitsOtherEntries() async throws {
+    /// A dismissed episode keeps its row rather than being deleted, so
+    /// restoring it needs nothing from a feed -- the store already has
+    /// everything the row remembered. A normal admission afterwards
+    /// (unrelated to the restore itself) still reaches a genuinely new
+    /// sibling entry.
+    func testDismissKeepsTheRowAndRestoreNeedsNoFeedEvidence() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let origin = Date(timeIntervalSince1970: 1_700_000_000)
         let feedURL = URL(string: "https://podcasts.example.test/restore/feed.xml")!
@@ -2723,18 +2733,31 @@ final class LocalLibraryStoreTests: XCTestCase {
         try await store.save(episode: target)
         try await store.dismissPodcastEpisode(target.itemID, at: Timestamp(origin))
 
-        let result = try await store.restorePodcastEpisode(target, from: [target, newEpisode])
-        XCTAssertTrue(result.restored)
-        XCTAssertEqual(Set(result.saved), [target.itemID, newEpisode.itemID])
-        XCTAssertEqual(result.skipped, 0)
+        // Still present, carrying the dismissed state, and excluded from the
+        // feed-facing episode list while dismissed.
+        let dismissedList = try await store.dismissedPodcastEpisodes()
+        XCTAssertEqual(dismissedList.map(\.episodeID), [target.itemID])
+        let whileDismissed = try await store.podcastEpisodes(for: feed.itemID)
+        XCTAssertTrue(whileDismissed.contains { $0.itemID == target.itemID },
+                      "the row survives; only its removal state hides it from the active list")
+
+        let restored = try await store.restoreEpisode(target.itemID)
+        XCTAssertTrue(restored)
+        let dismissalsAfterRestore = try await store.dismissedPodcastEpisodes()
+        XCTAssertTrue(dismissalsAfterRestore.isEmpty)
+        let removalKindAfterRestore = try await store.removalKind(for: target.itemID)
+        XCTAssertNil(removalKindAfterRestore)
+
+        // Unrelated to the restore: a normal incremental admission still
+        // reaches a genuinely new sibling entry from the same feed.
+        try await store.savePodcastEpisodes([target, newEpisode], admission: .incremental)
         let stored = try await store.podcastEpisodes(for: feed.itemID)
         XCTAssertEqual(Set(stored.compactMap(\.rssGUID)), ["day-500", "new-entry"])
-        let dismissals = try await store.dismissedPodcastEpisodes()
-        XCTAssertTrue(dismissals.isEmpty)
     }
 
-    /// Evidence for the wrong identity must not clear the durable dismissal.
-    func testRestoreWithoutMatchingFeedEvidencePreservesDismissalAcrossRelaunch() async throws {
+    /// A feed refresh offering the same episode again must not re-admit a
+    /// dismissed one back into view, and the dismissal survives a relaunch.
+    func testFeedRefreshDoesNotReadmitADismissedEpisodeAndDismissalSurvivesRelaunch() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let origin = Date(timeIntervalSince1970: 1_700_000_000)
         let feedURL = URL(string: "https://podcasts.example.test/restore-miss/feed.xml")!
@@ -2743,16 +2766,20 @@ final class LocalLibraryStoreTests: XCTestCase {
         let store = try LocalLibraryStore(url: url)
         try await store.save(feed: feed)
         try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
-        try await store.save(episode: target)
+        try await store.savePodcastEpisodes(all, admission: .backfill)
         try await store.dismissPodcastEpisode(target.itemID, at: Timestamp(origin))
 
-        let result = try await store.restorePodcastEpisode(target, from: [all[1]])
-        XCTAssertFalse(result.restored)
+        // The feed still lists both entries on its next refresh.
+        try await store.savePodcastEpisodes(all, admission: .incremental)
+        let afterRefresh = try await store.podcastEpisodes(for: feed.itemID)
+            .filter { $0.itemID == target.itemID }
+        XCTAssertEqual(afterRefresh.count, 1, "no duplicate row from the refresh")
+        let kindAfterRefresh = try await store.removalKind(for: target.itemID)
+        XCTAssertEqual(kindAfterRefresh, .dismissed, "the refresh must not clear the dismissal")
+
         let reopened = try LocalLibraryStore(url: url)
         let dismissals = try await reopened.dismissedPodcastEpisodes()
-        let restoredEpisodes = try await reopened.podcastEpisodes(for: feed.itemID)
         XCTAssertEqual(dismissals.map(\.episodeID), [target.itemID])
-        XCTAssertTrue(restoredEpisodes.isEmpty)
     }
 
     // MARK: - Automation claims
@@ -3565,7 +3592,7 @@ final class LocalLibraryStoreTests: XCTestCase {
 
         let migrated = try LocalLibraryStore(url: url)
         let inspection = try await migrated.inspect()
-        XCTAssertEqual(inspection.schemaVersion, .v12, "the new stage must carry a V11 store to V12")
+        XCTAssertEqual(inspection.schemaVersion, .v13, "the new stage must carry a V11 store to V13")
 
         let migratedDownload = try await migrated.download(for: episodeID)
         XCTAssertEqual(migratedDownload, download, "the pre-existing download row must survive the lightweight migration")
@@ -3739,6 +3766,98 @@ final class LocalLibraryStoreTests: XCTestCase {
 
         let secondSnapshot = try await store.workTickets().sorted { $0.id < $1.id }
         XCTAssertEqual(firstSnapshot, secondSnapshot, "a second reconcile must change nothing")
+    }
+
+    // MARK: - V13 episode removals
+
+    /// Task 4.5 done-condition 2: a V12 store seeded with a bare `retiredAt`
+    /// row and two standalone dismissal tombstones -- one whose episode row
+    /// still exists, one whose row is already gone, the ordinary case since
+    /// dismissal used to delete it -- reconciles so every removal becomes a
+    /// `removalKind` on an episode row, nothing lost or duplicated, and a
+    /// second run changes nothing further.
+    func testReconcileEpisodeRemovalsFoldsPreV13RemovalsOntoTheEpisodeRow() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_004_000)
+        let feedURL = URL(string: "https://podcasts.example.test/v13-removals/feed.xml")!
+        let (_, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 2])
+        let retiredEpisode = all[0]
+        let dismissedWithSurvivingRow = all[1]
+        let goneEnclosure = URL(string: "https://podcasts.example.test/v13-removals/gone.mp3")!
+        let goneEpisodeID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "gone", enclosureURL: goneEnclosure
+        )
+
+        try LocalLibraryStore.createV12MigrationFixture(
+            at: url, episodes: [retiredEpisode, dismissedWithSurvivingRow],
+            retiredEpisodeIDs: [retiredEpisode.itemID.rawValue],
+            dismissals: [
+                (episodeID: dismissedWithSurvivingRow.itemID.rawValue, feedID: dismissedWithSurvivingRow.feedID.rawValue,
+                 title: dismissedWithSurvivingRow.title, dismissedAt: origin.addingTimeInterval(100)),
+                (episodeID: goneEpisodeID.rawValue, feedID: nil, title: "Gone episode",
+                 dismissedAt: origin.addingTimeInterval(200)),
+            ]
+        )
+
+        let migrated = try LocalLibraryStore(url: url)
+        let inspection = try await migrated.inspect()
+        XCTAssertEqual(inspection.schemaVersion, .v13, "the new stage must carry a V12 store to V13")
+
+        let first = try await migrated.reconcileEpisodeRemovals()
+        XCTAssertEqual(first.backfilledRetirementCount, 1)
+        XCTAssertEqual(first.convertedDismissalCount, 2)
+
+        var retiredKind = try await migrated.removalKind(for: retiredEpisode.itemID)
+        var dismissedKind = try await migrated.removalKind(for: dismissedWithSurvivingRow.itemID)
+        var goneKind = try await migrated.removalKind(for: goneEpisodeID)
+        XCTAssertEqual(retiredKind, .retired)
+        XCTAssertEqual(dismissedKind, .dismissed)
+        XCTAssertEqual(goneKind, .dismissed,
+                       "a tombstone whose row was already gone gets a placeholder row, not silent loss")
+
+        let dismissed = try await migrated.dismissedPodcastEpisodes().map(\.episodeID).sorted { $0.rawValue < $1.rawValue }
+        XCTAssertEqual(dismissed, [dismissedWithSurvivingRow.itemID, goneEpisodeID].sorted { $0.rawValue < $1.rawValue })
+
+        let second = try await migrated.reconcileEpisodeRemovals()
+        XCTAssertEqual(second.backfilledRetirementCount, 0, "a second run finds nothing left to backfill")
+        XCTAssertEqual(second.convertedDismissalCount, 0, "the tombstones are gone after the first run")
+        retiredKind = try await migrated.removalKind(for: retiredEpisode.itemID)
+        dismissedKind = try await migrated.removalKind(for: dismissedWithSurvivingRow.itemID)
+        goneKind = try await migrated.removalKind(for: goneEpisodeID)
+        XCTAssertEqual(retiredKind, .retired)
+        XCTAssertEqual(dismissedKind, .dismissed)
+        XCTAssertEqual(goneKind, .dismissed)
+    }
+
+    /// A retired episode and a dismissed one both come back through the same
+    /// store operation.
+    func testRestoreEpisodeReversesBothRetirementAndDismissalThroughOneOperation() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_005_000)
+        let feedURL = URL(string: "https://podcasts.example.test/v13-restore/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 2])
+        let retiredEpisode = all[0]
+        let dismissedEpisode = all[1]
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+        try await store.savePodcastEpisodes(all, admission: .backfill)
+        _ = try await store.retireEpisode(retiredEpisode.itemID, at: Timestamp(origin))
+        try await store.dismissPodcastEpisode(dismissedEpisode.itemID, at: Timestamp(origin))
+
+        let restoredRetired = try await store.restoreEpisode(retiredEpisode.itemID)
+        let restoredDismissed = try await store.restoreEpisode(dismissedEpisode.itemID)
+        XCTAssertTrue(restoredRetired)
+        XCTAssertTrue(restoredDismissed)
+
+        let retiredKindAfter = try await store.removalKind(for: retiredEpisode.itemID)
+        let dismissedKindAfter = try await store.removalKind(for: dismissedEpisode.itemID)
+        let retiredAtAfterRetired = try await store.retiredAt(for: retiredEpisode.itemID)
+        let retiredAtAfterDismissed = try await store.retiredAt(for: dismissedEpisode.itemID)
+        XCTAssertNil(retiredKindAfter)
+        XCTAssertNil(dismissedKindAfter)
+        XCTAssertNil(retiredAtAfterRetired)
+        XCTAssertNil(retiredAtAfterDismissed)
     }
 }
 

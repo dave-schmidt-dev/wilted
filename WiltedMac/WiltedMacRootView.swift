@@ -430,9 +430,10 @@ private struct WiltedMacFeedsView: View {
         }
     }
 
-    /// Reversing the one decision Feeds owns lives here: a skipped row
-    /// (retired, records intact) restores without touching the network, while a
-    /// removed row still checks its feed because removal deleted its records.
+    /// Reversing the one decision Feeds owns lives here. Skipped (retired) and
+    /// removed (dismissed) rows both survive in the store under the same
+    /// removal column, so both restore directly from the row with no network
+    /// involved -- there is no feed to check either way.
     @ViewBuilder private var restorableEpisodes: some View {
         if !model.skippedFeedEpisodes.isEmpty || !model.dismissedEpisodes.isEmpty {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {

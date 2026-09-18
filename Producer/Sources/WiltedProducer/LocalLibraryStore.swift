@@ -19,8 +19,9 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     case v10 = 10
     case v11 = 11
     case v12 = 12
+    case v13 = 13
 
-    public static let current: LocalLibrarySchemaVersion = .v12
+    public static let current: LocalLibrarySchemaVersion = .v13
 }
 
 /// The local ownership state used by generation-based remote reconciliation.
@@ -503,6 +504,16 @@ public struct WorkTicketReconciliation: Equatable, Sendable {
         self.collapsedDuplicateCount = collapsedDuplicateCount
         self.prunedCount = prunedCount
     }
+}
+
+/// What one `reconcileEpisodeRemovals` pass did, so a caller (and a test) can
+/// tell a real migration from a no-op rerun.
+public struct EpisodeRemovalReconciliation: Equatable, Sendable {
+    /// Pre-V13 rows with `retiredAt` set now also carry `removalKind = .retired`.
+    public let backfilledRetirementCount: Int
+    /// Dismissal tombstones folded onto an episode row (existing or placeholder)
+    /// and then deleted.
+    public let convertedDismissalCount: Int
 }
 
 public struct PodcastArtwork: Codable, Equatable, Sendable {
@@ -1682,12 +1693,118 @@ private enum LocalLibrarySchemaV12: VersionedSchema {
     }
 }
 
+private enum LocalLibrarySchemaV13Models {
+    /// The episode entity as of store version 13: version ten's columns
+    /// verbatim, plus `removalKind`. Retirement and dismissal used to be two
+    /// mechanisms -- a nullable `retiredAt` column on this same row, and a
+    /// deletion of the row paired with a tombstone in a standalone table.
+    /// This column folds them into one state so un-retire and un-dismiss are
+    /// the same store operation. `retiredAt` keeps its name and shape on
+    /// purpose: SwiftData's lightweight migration matches columns by name, so
+    /// renaming it would read as a brand-new nullable column and silently
+    /// drop every existing retirement instead of carrying it forward. It is
+    /// reused, unrenamed, as the removal timestamp for both kinds.
+    @Model final class PodcastEpisodeRecord {
+        @Attribute(.unique) var id: String
+        var feedID: String
+        var feedURL: String
+        var rssGUID: String?
+        var title: String
+        var author: String?
+        var publishedTime: Date?
+        var enclosureURL: String
+        var enclosureMediaType: String
+        var enclosureByteCount: Int64?
+        var durationSeconds: Double?
+        var artworkURL: String?
+        var transcriptSources: Data?
+        var notes: String?
+        var createdAt: Date
+        var retiredAt: Date?
+        /// Nullable: a pre-V13 row migrates to "neither" (nil), matching what
+        /// was true of it -- a dismissal never survived as a row before this
+        /// version, so reconciliation (not this lightweight stage) is what
+        /// turns a tombstone into a dismissed row here. Values are
+        /// `PodcastEpisodeRemovalKind.rawValue`. Lifecycle-owned like
+        /// `retiredAt` -- `apply(_:to:)` must never write this column from
+        /// feed data.
+        var removalKind: String?
+
+        init(_ value: PodcastEpisode) throws {
+            id = value.itemID.rawValue; feedID = value.feedID.rawValue; feedURL = value.feedURL.absoluteString
+            rssGUID = value.rssGUID; title = value.title; author = value.author
+            publishedTime = value.publishedTime?.date; enclosureURL = value.enclosureURL.absoluteString
+            enclosureMediaType = value.enclosureMediaType; enclosureByteCount = value.enclosureByteCount
+            durationSeconds = value.durationSeconds; artworkURL = value.artworkURL?.absoluteString
+            transcriptSources = try Self.encode(value.transcriptSources)
+            notes = value.notes
+            createdAt = value.createdAt.date
+            retiredAt = nil
+            removalKind = nil
+        }
+
+        /// A stand-in row for a dismissal tombstone whose episode row is
+        /// already gone -- the ordinary case, since dismissal used to delete
+        /// it. Carries exactly what the tombstone knew: an identity, a
+        /// removal timestamp, and optionally a feed and a title. Every other
+        /// column gets an inert sentinel rather than a guess, and a later
+        /// feed refresh's `apply(_:to:)` overwrites the sentinel content in
+        /// place if the feed still lists the episode -- `id` is what admission
+        /// matches on, not any of these fields.
+        init(
+            placeholderForDismissalID id: String, feedID: String?, title: String?, dismissedAt: Date
+        ) {
+            self.id = id
+            self.feedID = feedID ?? "removed-episode-unknown-feed"
+            self.feedURL = "https://wilted.invalid/removed-episode"
+            self.title = title ?? "Removed podcast episode"
+            self.enclosureURL = "https://wilted.invalid/removed-episode"
+            self.enclosureMediaType = "application/octet-stream"
+            self.createdAt = dismissedAt
+            self.retiredAt = dismissedAt
+            self.removalKind = PodcastEpisodeRemovalKind.dismissed.rawValue
+        }
+
+        static func encode(_ sources: [PodcastTranscriptSource]) throws -> Data? {
+            try LocalLibrarySchemaV7Models.PodcastEpisodeRecord.encode(sources)
+        }
+
+        static func decode(_ payload: Data?) throws -> [PodcastTranscriptSource] {
+            try LocalLibrarySchemaV7Models.PodcastEpisodeRecord.decode(payload)
+        }
+    }
+}
+
+/// Version 13 replaces the episode entity with one that also carries
+/// `removalKind`. Lightweight: the addition is nullable and no existing
+/// column changes shape. `PodcastEpisodeDismissalRecord` stays in the model
+/// list unchanged -- dropping it here would make it unfetchable before
+/// `reconcileEpisodeRemovals` gets a chance to read and retire the tombstones
+/// it holds, the same reason `reconcileWorkTickets` runs as a post-open pass
+/// rather than a migration stage.
+private enum LocalLibrarySchemaV13: VersionedSchema {
+    static let versionIdentifier = Schema.Version(13, 0, 0)
+    static var models: [any PersistentModel.Type] {
+        LocalLibrarySchemaV12.models.filter { $0 != LocalLibrarySchemaV10Models.PodcastEpisodeRecord.self }
+            + [LocalLibrarySchemaV13Models.PodcastEpisodeRecord.self]
+    }
+}
+
+/// One episode's removal state: retired by finishing it, dismissed by the
+/// listener removing it, or neither. Replaces the pair of mechanisms
+/// `retiredAt` (alone) and `PodcastEpisodeDismissalRecord` used to express.
+public enum PodcastEpisodeRemovalKind: String, Codable, Equatable, Sendable {
+    case retired
+    case dismissed
+}
+
 private enum LocalLibraryMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
         [LocalLibrarySchemaV1.self, LocalLibrarySchemaV2.self, LocalLibrarySchemaV3.self,
          LocalLibrarySchemaV4.self, LocalLibrarySchemaV5.self, LocalLibrarySchemaV6.self,
          LocalLibrarySchemaV7.self, LocalLibrarySchemaV8.self, LocalLibrarySchemaV9.self,
-         LocalLibrarySchemaV10.self, LocalLibrarySchemaV11.self, LocalLibrarySchemaV12.self]
+         LocalLibrarySchemaV10.self, LocalLibrarySchemaV11.self, LocalLibrarySchemaV12.self,
+         LocalLibrarySchemaV13.self]
     }
     static var stages: [MigrationStage] {
         [.lightweight(fromVersion: LocalLibrarySchemaV1.self, toVersion: LocalLibrarySchemaV2.self),
@@ -1700,7 +1817,8 @@ private enum LocalLibraryMigrationPlan: SchemaMigrationPlan {
          .lightweight(fromVersion: LocalLibrarySchemaV8.self, toVersion: LocalLibrarySchemaV9.self),
          .lightweight(fromVersion: LocalLibrarySchemaV9.self, toVersion: LocalLibrarySchemaV10.self),
          .lightweight(fromVersion: LocalLibrarySchemaV10.self, toVersion: LocalLibrarySchemaV11.self),
-         .lightweight(fromVersion: LocalLibrarySchemaV11.self, toVersion: LocalLibrarySchemaV12.self)]
+         .lightweight(fromVersion: LocalLibrarySchemaV11.self, toVersion: LocalLibrarySchemaV12.self),
+         .lightweight(fromVersion: LocalLibrarySchemaV12.self, toVersion: LocalLibrarySchemaV13.self)]
     }
 }
 
@@ -1757,7 +1875,7 @@ public actor LocalLibraryStore {
             try migrationFailure?()
         }
         migrationBackupURL = retainedURL
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV12.self)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV13.self)
         let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         if migrate {
             container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
@@ -1779,7 +1897,7 @@ public actor LocalLibraryStore {
             retainedURL = try Self.migrationPreflight(at: url).retainedURL
         }
         migrationBackupURL = retainedURL
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV12.self)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV13.self)
         let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         if migrate {
             container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
@@ -2235,6 +2353,68 @@ public actor LocalLibraryStore {
         )
     }
 
+    /// Idempotent post-open reconciliation folding the pre-V13 removal
+    /// representations onto the V13 `removalKind` column.
+    ///
+    /// Deliberately not a `LocalLibraryMigrationPlan` stage, for the same
+    /// reason `reconcileWorkTickets` is not: the V13 stage is `.lightweight`
+    /// and cannot transform row values, and this must run on every launch --
+    /// an interrupted run can happen on any launch, not just the one that
+    /// first opens V13. Each sub-step commits its own `save()` before the
+    /// next begins, so a crash partway through leaves already-saved
+    /// sub-steps durable, and a second call after a partial or complete
+    /// prior one changes nothing further.
+    @discardableResult
+    public func reconcileEpisodeRemovals() throws -> EpisodeRemovalReconciliation {
+        let context = ModelContext(container)
+
+        // 1. A pre-V13 row's only removal evidence was `retiredAt`, so every
+        // row that carries one without a `removalKind` yet was retired, not
+        // dismissed -- dismissal never left a row behind before this version.
+        var backfilledCount = 0
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+        where record.retiredAt != nil && record.removalKind == nil {
+            record.removalKind = PodcastEpisodeRemovalKind.retired.rawValue
+            backfilledCount += 1
+        }
+        try context.save()
+
+        // 2. Fold every dismissal tombstone onto an episode row. Find first,
+        // write second, delete the tombstone last in the same save as the
+        // write it depends on -- a conflicting insert on this row's
+        // `@Attribute(.unique) id` neither throws nor duplicates, it just
+        // silently keeps one side, so this never blind-inserts against an id
+        // that might already have a row.
+        var convertedCount = 0
+        let tombstones = try context.fetch(FetchDescriptor<LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord>())
+        if !tombstones.isEmpty {
+            let existingByID = Dictionary(
+                uniqueKeysWithValues: try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+                    .map { ($0.id, $0) }
+            )
+            for tombstone in tombstones {
+                if let existing = existingByID[tombstone.id] {
+                    if existing.removalKind == nil {
+                        existing.removalKind = PodcastEpisodeRemovalKind.dismissed.rawValue
+                        existing.retiredAt = tombstone.dismissedAt
+                    }
+                } else {
+                    context.insert(LocalLibrarySchemaV13Models.PodcastEpisodeRecord(
+                        placeholderForDismissalID: tombstone.id, feedID: tombstone.feedID,
+                        title: tombstone.title, dismissedAt: tombstone.dismissedAt
+                    ))
+                }
+                context.delete(tombstone)
+                convertedCount += 1
+            }
+            try context.save()
+        }
+
+        return EpisodeRemovalReconciliation(
+            backfilledRetirementCount: backfilledCount, convertedDismissalCount: convertedCount
+        )
+    }
+
     /// Checkpoints the source WAL and verifies a complete V5 rollback copy before
     /// the live V6 migration is allowed to open the source database.
     public nonisolated static func migrationPreflight(at sourceURL: URL, retainingAt destinationURL: URL? = nil) throws -> LocalLibraryMigrationPreflight {
@@ -2488,6 +2668,36 @@ public actor LocalLibraryStore {
         }
         for entry in preparationEntries {
             context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(entry))
+        }
+        try context.save()
+    }
+
+    /// Builds a frozen V12 store for the V13 episode-removal reconciliation
+    /// test: episode rows (some already carrying a bare `retiredAt`) plus
+    /// standalone dismissal tombstones, exactly the shape `reconcileEpisodeRemovals`
+    /// must fold onto `removalKind` without losing or duplicating anything.
+    nonisolated internal static func createV12MigrationFixture(
+        at url: URL, episodes: [PodcastEpisode], retiredEpisodeIDs: Set<String>,
+        dismissals: [(episodeID: String, feedID: String?, title: String?, dismissedAt: Date)]
+    ) throws {
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV12.self)
+        let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
+        let container = try ModelContainer(for: schema, configurations: [configuration])
+        let context = ModelContext(container)
+        for episode in episodes {
+            let record = try LocalLibrarySchemaV10Models.PodcastEpisodeRecord(episode)
+            if retiredEpisodeIDs.contains(episode.itemID.rawValue) {
+                record.retiredAt = Date()
+            }
+            context.insert(record)
+        }
+        for dismissal in dismissals {
+            context.insert(LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord(
+                episodeID: dismissal.episodeID, feedID: dismissal.feedID, title: dismissal.title,
+                dismissedAt: dismissal.dismissedAt
+            ))
         }
         try context.save()
     }
@@ -3321,6 +3531,10 @@ public actor LocalLibraryStore {
         public let preparationOutcomes: [String: PodcastPreparationOutcome]
         public let listeningStates: [ItemID: PodcastListeningState]
         public let retiredAtByEpisode: [ItemID: Timestamp]
+        /// Which removal kind, if any, wrote `retiredAtByEpisode`'s
+        /// timestamp -- what distinguishes a retired row from a dismissed one
+        /// once both survive as episode rows.
+        public let removalKindByEpisode: [ItemID: PodcastEpisodeRemovalKind]
         /// Every recorded preparation run, uncapped -- see `allPreparationRunSummaries`.
         public let preparationRuns: [PreparationRunSummary]
     }
@@ -3332,13 +3546,17 @@ public actor LocalLibraryStore {
         let articleValues = try articles()
 
         podcastLibrarySnapshotFetchCount += 1
-        let episodeRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
+        let episodeRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
             .sorted { ($0.publishedTime ?? $0.createdAt) > ($1.publishedTime ?? $1.createdAt) }
         let episodeValues = episodeRecords.compactMap(Self.decodePodcastEpisode)
         var retiredAtByEpisode: [ItemID: Timestamp] = [:]
+        var removalKindByEpisode: [ItemID: PodcastEpisodeRemovalKind] = [:]
         for record in episodeRecords {
             guard let itemID = try? ItemID(rawValue: record.id), let retiredAt = record.retiredAt else { continue }
             retiredAtByEpisode[itemID] = Timestamp(retiredAt)
+            if let kind = record.removalKind.flatMap(PodcastEpisodeRemovalKind.init(rawValue:)) {
+                removalKindByEpisode[itemID] = kind
+            }
         }
 
         podcastLibrarySnapshotFetchCount += 1
@@ -3409,7 +3627,8 @@ public actor LocalLibraryStore {
             articles: articleValues, episodes: episodeValues, feeds: feeds, subscriptions: subscriptionValues,
             downloads: downloads, readyRevisions: readyRevisions, playbackStates: playbackStates,
             transcripts: transcripts, preparationOutcomes: preparationOutcomes, listeningStates: listeningStates,
-            retiredAtByEpisode: retiredAtByEpisode, preparationRuns: preparationRuns
+            retiredAtByEpisode: retiredAtByEpisode, removalKindByEpisode: removalKindByEpisode,
+            preparationRuns: preparationRuns
         )
     }
 
@@ -3800,10 +4019,10 @@ public actor LocalLibraryStore {
 
     public func save(episode: PodcastEpisode) throws {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
         if let existing = records.first(where: { $0.id == episode.itemID.rawValue }) {
             try Self.apply(episode, to: existing)
-        } else { context.insert(try LocalLibrarySchemaV10Models.PodcastEpisodeRecord(episode)) }
+        } else { context.insert(try LocalLibrarySchemaV13Models.PodcastEpisodeRecord(episode)) }
         try context.save()
     }
 
@@ -3811,7 +4030,7 @@ public actor LocalLibraryStore {
 
     public func podcastEpisode(for episodeID: ItemID) throws -> PodcastEpisode? {
         let context = ModelContext(container)
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>()).first(where: { $0.id == episodeID.rawValue }),
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>()).first(where: { $0.id == episodeID.rawValue }),
               let feedID = try? ItemID(rawValue: record.feedID), let feedURL = URL(string: record.feedURL),
               let enclosureURL = URL(string: record.enclosureURL) else { return nil }
         return try PodcastEpisode(itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: record.rssGUID,
@@ -3819,26 +4038,26 @@ public actor LocalLibraryStore {
                                   enclosureURL: enclosureURL, enclosureMediaType: record.enclosureMediaType,
                                   enclosureByteCount: record.enclosureByteCount, durationSeconds: record.durationSeconds,
                                   artworkURL: record.artworkURL.flatMap(URL.init),
-                                  transcriptSources: try LocalLibrarySchemaV10Models.PodcastEpisodeRecord.decode(record.transcriptSources),
+                                  transcriptSources: try LocalLibrarySchemaV13Models.PodcastEpisodeRecord.decode(record.transcriptSources),
                                   notes: record.notes, createdAt: Timestamp(record.createdAt))
     }
 
     public func podcastEpisodes(for feedID: ItemID? = nil) throws -> [PodcastEpisode] {
         let context = ModelContext(container)
-        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
             .filter { feedID == nil || $0.feedID == feedID!.rawValue }
             .sorted { ($0.publishedTime ?? $0.createdAt) > ($1.publishedTime ?? $1.createdAt) }
             .compactMap(Self.decodePodcastEpisode)
     }
 
-    private static func decodePodcastEpisode(_ record: LocalLibrarySchemaV10Models.PodcastEpisodeRecord) -> PodcastEpisode? {
+    private static func decodePodcastEpisode(_ record: LocalLibrarySchemaV13Models.PodcastEpisodeRecord) -> PodcastEpisode? {
         guard let id = try? ItemID(rawValue: record.id), let fid = try? ItemID(rawValue: record.feedID),
               let feedURL = URL(string: record.feedURL), let enclosureURL = URL(string: record.enclosureURL) else { return nil }
         return try? PodcastEpisode(itemID: id, feedID: fid, feedURL: feedURL, rssGUID: record.rssGUID, title: record.title,
                                    author: record.author, publishedTime: record.publishedTime.map(Timestamp.init), enclosureURL: enclosureURL,
                                    enclosureMediaType: record.enclosureMediaType, enclosureByteCount: record.enclosureByteCount,
                                    durationSeconds: record.durationSeconds, artworkURL: record.artworkURL.flatMap(URL.init),
-                                   transcriptSources: (try? LocalLibrarySchemaV10Models.PodcastEpisodeRecord.decode(record.transcriptSources)) ?? [],
+                                   transcriptSources: (try? LocalLibrarySchemaV13Models.PodcastEpisodeRecord.decode(record.transcriptSources)) ?? [],
                                    notes: record.notes, createdAt: Timestamp(record.createdAt))
     }
 
@@ -3880,12 +4099,6 @@ public actor LocalLibraryStore {
         public let saved: [ItemID]
         /// IDs inserted by this exact admission, excluding rows refreshed in place.
         public let newlyAdmitted: [ItemID]
-        public let skipped: Int
-    }
-
-    public struct PodcastEpisodeRestoreResult: Equatable, Sendable {
-        public let restored: Bool
-        public let saved: [ItemID]
         public let skipped: Int
     }
 
@@ -3968,7 +4181,7 @@ public actor LocalLibraryStore {
         }
         let context = ModelContext(container)
         let existing = Set(
-            try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>()).map(\.id)
+            try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>()).map(\.id)
         )
         let admitted = try admittedPodcastEpisodes(episodes, admission: admission, in: context)
         try upsertPodcastEpisodes(admitted, in: context)
@@ -4097,61 +4310,15 @@ public actor LocalLibraryStore {
         return true
     }
 
-    /// Re-admits one exact feed entry and forgets its dismissal in the same save.
-    ///
-    /// `offeredEpisodes` must be fresh feed evidence. Only `target` bypasses the
-    /// incremental horizon; every other entry is admitted exactly as a normal
-    /// refresh would admit it. The dismissal is deleted last and the context is
-    /// saved once, so a decode or store failure cannot turn a retryable restore
-    /// into a permanent loss of the Removed row.
-    @discardableResult
-    public func restorePodcastEpisode(
-        _ target: PodcastEpisode,
-        from offeredEpisodes: [PodcastEpisode]
-    ) throws -> PodcastEpisodeRestoreResult {
-        let context = ModelContext(container)
-        let identifier = target.itemID.rawValue
-        let dismissals = try context.fetch(
-            FetchDescriptor<LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord>()
-        )
-        guard let dismissal = dismissals.first(where: { $0.id == identifier }) else {
-            return PodcastEpisodeRestoreResult(restored: false, saved: [], skipped: offeredEpisodes.count)
-        }
-        guard let offeredTarget = offeredEpisodes.first(where: { $0.itemID == target.itemID }) else {
-            return PodcastEpisodeRestoreResult(restored: false, saved: [], skipped: offeredEpisodes.count)
-        }
-
-        var admitted = try admittedPodcastEpisodes(
-            offeredEpisodes.filter { $0.itemID != target.itemID }, admission: .incremental, in: context
-        )
-        admitted.append(offeredTarget)
-        try upsertPodcastEpisodes(admitted, in: context)
-        context.delete(dismissal)
-        // Clearing `lastRevisionID` (not `completedAt`) keeps "I listened to
-        // this" intact while defeating the bootstrap sweep's exact-revision
-        // match: a re-download that lands on the same content-addressed
-        // revision would otherwise get silently re-retired on next launch,
-        // undoing the restore the user just asked for.
-        if let listening = try context.fetch(
-            FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>()
-        ).first(where: { $0.id == identifier }) {
-            listening.lastRevisionID = nil
-        }
-        try context.save()
-        return PodcastEpisodeRestoreResult(
-            restored: true,
-            saved: admitted.map(\.itemID),
-            skipped: offeredEpisodes.count - admitted.count
-        )
-    }
-
     private func admittedPodcastEpisodes(
         _ episodes: [PodcastEpisode],
         admission: PodcastEpisodeAdmission,
         in context: ModelContext
     ) throws -> [PodcastEpisode] {
         let dismissed = Set(
-            try context.fetch(FetchDescriptor<LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord>()).map(\.id)
+            try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+                .filter { $0.removalKind == PodcastEpisodeRemovalKind.dismissed.rawValue }
+                .map(\.id)
         )
         let candidates = episodes.filter { !dismissed.contains($0.itemID.rawValue) }
         guard !candidates.isEmpty else { return [] }
@@ -4161,7 +4328,7 @@ public actor LocalLibraryStore {
             uniquingKeysWith: { first, _ in first }
         )
         let existing = Set(
-            try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>()).map(\.id)
+            try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>()).map(\.id)
         )
         var admitted: [PodcastEpisode] = []
         for (feedID, group) in Dictionary(grouping: candidates, by: \.feedID.rawValue) {
@@ -4188,13 +4355,13 @@ public actor LocalLibraryStore {
     private func upsertPodcastEpisodes(
         _ episodes: [PodcastEpisode], in context: ModelContext
     ) throws {
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
         var byID = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for episode in episodes {
             if let record = byID[episode.itemID.rawValue] {
                 try Self.apply(episode, to: record)
             } else {
-                let record = try LocalLibrarySchemaV10Models.PodcastEpisodeRecord(episode)
+                let record = try LocalLibrarySchemaV13Models.PodcastEpisodeRecord(episode)
                 context.insert(record)
                 byID[episode.itemID.rawValue] = record
             }
@@ -4238,47 +4405,50 @@ public actor LocalLibraryStore {
         public let dismissedAt: Timestamp
     }
 
-    /// Removes one episode from the Larder and remembers that it was removed.
+    /// Marks one episode dismissed and reclaims its per-revision artifacts.
     ///
-    /// Both halves are needed. Deleting the row alone lasts until the next
-    /// refresh, which parses the same episode out of the same feed and inserts
-    /// it again; recording the dismissal alone leaves the row on screen. So the
-    /// record is written, and the episode, queue, download, speed, artwork,
-    /// revision, transcript, and playback records go. `savePodcastEpisodes`
-    /// declines to re-admit the identity afterwards.
+    /// The row itself survives, carrying `removalKind = .dismissed` --
+    /// `restoreEpisode` is what reverses this, the same store operation that
+    /// reverses `retireEpisode`. Deleting the row used to be the other half
+    /// of dismissal, paired with a tombstone in a standalone table so the
+    /// next refresh would not silently re-admit what was just removed; the
+    /// state column makes that unnecessary, because a row a refresh already
+    /// sees as "existing" is left alone regardless of its removal state.
     ///
-    /// The preparation journal stays. It is what lets the Removed list say a
-    /// preparation happened for this episode, and restoring the episode should
-    /// not resurrect a finished cut that no longer has a revision or transcript
-    /// behind it.
+    /// The queue, download, speed, artwork, revision, and transcript records
+    /// still go -- dismissal keeps reclaiming those artifacts, only the state
+    /// representation changed. The preparation journal stays, so the Removed
+    /// list can still say a preparation happened for this episode, and
+    /// restoring should not resurrect a finished cut with no revision or
+    /// transcript behind it. Downloaded media stays on disk for the reason
+    /// `unsubscribeFromPodcast` gives: a `RevisionID` is derived from
+    /// content, so two episodes with identical bytes share one audio
+    /// revision and deleting the file here could break an episode that
+    /// survives this call.
     ///
-    /// Downloaded media stays on disk for the reason `unsubscribeFromPodcast`
-    /// gives: a `RevisionID` is derived from content, so two episodes with
-    /// identical bytes share one audio revision and deleting the file here
-    /// could break an episode that survives this call.
-    ///
-    /// Idempotent. Removing something already removed keeps the first
-    /// dismissal's timestamp and returns false.
+    /// Idempotent against a second dismissal, which keeps the first
+    /// dismissal's timestamp and returns false. Dismissing an episode that
+    /// is currently retired is allowed and overwrites the retirement --
+    /// dismissal was always the stronger of the two removals.
     @discardableResult
     public func dismissPodcastEpisode(_ episodeID: ItemID, at dismissedAt: Timestamp = Timestamp(Date())) throws -> Bool {
         let context = ModelContext(container)
         let identifier = episodeID.rawValue
-        let episode = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
-            .first { $0.id == identifier }
-        let dismissals = try context.fetch(FetchDescriptor<LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord>())
-        if let existing = dismissals.first(where: { $0.id == identifier }) {
-            // A dismissal written when the row was already gone carries no feed
-            // or title. Fill them in if this call can see them.
-            existing.feedID = existing.feedID ?? episode?.feedID
-            existing.title = existing.title ?? episode?.title
-        } else {
-            context.insert(LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord(
-                episodeID: identifier, feedID: episode?.feedID, title: episode?.title,
-                dismissedAt: dismissedAt.date
+        let existing = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+            .first(where: { $0.id == identifier })
+        guard let episode = existing else {
+            // No row for this id at all -- a legacy or never-admitted episode.
+            // Dismissal must still stick, the same way it did when a separate
+            // tombstone table could record a removal with no matching row.
+            context.insert(LocalLibrarySchemaV13Models.PodcastEpisodeRecord(
+                placeholderForDismissalID: identifier, feedID: nil, title: nil, dismissedAt: dismissedAt.date
             ))
+            try context.save()
+            return true
         }
-        guard let episode else { try context.save(); return false }
-        context.delete(episode)
+        guard episode.removalKind != PodcastEpisodeRemovalKind.dismissed.rawValue else { return false }
+        episode.removalKind = PodcastEpisodeRemovalKind.dismissed.rawValue
+        episode.retiredAt = dismissedAt.date
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
         where record.episodeID == identifier { context.delete(record) }
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
@@ -4297,18 +4467,19 @@ public actor LocalLibraryStore {
         return true
     }
 
-    /// Every episode removed from the Larder, newest removal first.
+    /// Every episode currently dismissed, newest removal first.
     public func dismissedPodcastEpisodes() throws -> [PodcastEpisodeDismissal] {
         let context = ModelContext(container)
-        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord>())
-            .sorted { $0.dismissedAt > $1.dismissedAt }
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+            .filter { $0.removalKind == PodcastEpisodeRemovalKind.dismissed.rawValue }
+            .sorted { ($0.retiredAt ?? $0.createdAt) > ($1.retiredAt ?? $1.createdAt) }
             .compactMap { record in
                 guard let episodeID = try? ItemID(rawValue: record.id) else { return nil }
                 return PodcastEpisodeDismissal(
                     episodeID: episodeID,
-                    feedID: record.feedID.flatMap { try? ItemID(rawValue: $0) },
+                    feedID: try? ItemID(rawValue: record.feedID),
                     title: record.title,
-                    dismissedAt: Timestamp(record.dismissedAt)
+                    dismissedAt: Timestamp(record.retiredAt ?? record.createdAt)
                 )
             }
     }
@@ -4327,7 +4498,7 @@ public actor LocalLibraryStore {
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastFeedRecord>())
         where record.id == feed { context.delete(record) }
 
-        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
+        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
             .filter { $0.feedID == feed }
         let episodeIDs = Set(episodes.map(\.id))
         for record in episodes { context.delete(record) }
@@ -4346,18 +4517,17 @@ public actor LocalLibraryStore {
         where episodeIDs.contains(record.itemID) { context.delete(record) }
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
         where episodeIDs.contains(record.itemID) { context.delete(record) }
-        // Dismissals are records Wilted stored on the feed's behalf too, so
-        // resubscribing starts clean rather than inheriting a blocklist the
-        // listener can no longer see anywhere.
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV8Models.PodcastEpisodeDismissalRecord>())
-        where record.feedID == feed || episodeIDs.contains(record.id) { context.delete(record) }
+        // A dismissal is now a state on the episode row itself, deleted with
+        // it above, so resubscribing starts clean rather than inheriting a
+        // blocklist the listener can no longer see anywhere -- no separate
+        // tombstone table to sweep here any more.
         try context.save()
         return episodeIDs.count
     }
 
     private static func apply(
         _ episode: PodcastEpisode,
-        to record: LocalLibrarySchemaV10Models.PodcastEpisodeRecord
+        to record: LocalLibrarySchemaV13Models.PodcastEpisodeRecord
     ) throws {
         record.feedID = episode.feedID.rawValue
         record.feedURL = episode.feedURL.absoluteString
@@ -4370,7 +4540,7 @@ public actor LocalLibraryStore {
         record.enclosureByteCount = episode.enclosureByteCount
         record.durationSeconds = episode.durationSeconds
         record.artworkURL = episode.artworkURL?.absoluteString
-        record.transcriptSources = try LocalLibrarySchemaV10Models.PodcastEpisodeRecord.encode(episode.transcriptSources)
+        record.transcriptSources = try LocalLibrarySchemaV13Models.PodcastEpisodeRecord.encode(episode.transcriptSources)
         record.notes = episode.notes
         record.createdAt = episode.createdAt.date
     }
@@ -4666,31 +4836,58 @@ public actor LocalLibraryStore {
         )
     }
 
-    /// Idempotent: retiring an already-retired episode is a no-op returning `false`.
+    /// Idempotent: retiring an episode already retired or dismissed is a
+    /// no-op returning `false`. Retiring cannot override a dismissal --
+    /// dismissal is the stronger of the two removals; see `dismissPodcastEpisode`.
     @discardableResult
     public func retireEpisode(_ episodeID: ItemID, at retiredAt: Timestamp = Timestamp(Date())) throws -> Bool {
         let context = ModelContext(container)
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
-            .first(where: { $0.id == episodeID.rawValue }), record.retiredAt == nil else { return false }
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+            .first(where: { $0.id == episodeID.rawValue }), record.removalKind == nil else { return false }
         record.retiredAt = retiredAt.date
+        record.removalKind = PodcastEpisodeRemovalKind.retired.rawValue
         try context.save()
         return true
     }
 
+    /// The removal timestamp, whichever removal kind wrote it -- `nil` for
+    /// an episode still on the shelf.
     public func retiredAt(for episodeID: ItemID) throws -> Timestamp? {
         let context = ModelContext(container)
-        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
             .first(where: { $0.id == episodeID.rawValue })?.retiredAt.map(Timestamp.init)
     }
 
-    /// Reverses `retireEpisode`, returning a skipped episode to the library.
-    /// Idempotent: an episode with no retirement record returns `false`.
-    @discardableResult
-    public func restoreRetiredEpisode(_ episodeID: ItemID) throws -> Bool {
+    /// The removal state itself -- `nil` for an episode still on the shelf.
+    public func removalKind(for episodeID: ItemID) throws -> PodcastEpisodeRemovalKind? {
         let context = ModelContext(container)
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
-            .first(where: { $0.id == episodeID.rawValue }), record.retiredAt != nil else { return false }
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+            .first(where: { $0.id == episodeID.rawValue })?.removalKind
+            .flatMap(PodcastEpisodeRemovalKind.init(rawValue:))
+    }
+
+    /// Reverses `retireEpisode` or `dismissPodcastEpisode`, returning an
+    /// episode to the library regardless of which removal it carried -- the
+    /// one control both a retired and a dismissed row offer to come back.
+    /// Idempotent: an episode with no removal recorded returns `false`.
+    @discardableResult
+    public func restoreEpisode(_ episodeID: ItemID) throws -> Bool {
+        let context = ModelContext(container)
+        let identifier = episodeID.rawValue
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+            .first(where: { $0.id == identifier }), record.removalKind != nil else { return false }
+        record.removalKind = nil
         record.retiredAt = nil
+        // Clearing `lastRevisionID` (not `completedAt`) keeps "I listened to
+        // this" intact while defeating the bootstrap sweep's exact-revision
+        // match: a re-download that lands on the same content-addressed
+        // revision would otherwise get silently re-retired on next launch,
+        // undoing the restore the user just asked for.
+        if let listening = try context.fetch(
+            FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>()
+        ).first(where: { $0.id == identifier }) {
+            listening.lastRevisionID = nil
+        }
         try context.save()
         return true
     }
@@ -4752,15 +4949,16 @@ public actor LocalLibraryStore {
         let listeningRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>())
             .filter { $0.completedAt != nil }
         guard !listeningRecords.isEmpty else { return }
-        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
+        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
         let readyRevisions = try newestReadyRevisionsByItemID(in: context)
         var changed = false
         for listening in listeningRecords {
-            guard let episode = episodes.first(where: { $0.id == listening.id }), episode.retiredAt == nil,
+            guard let episode = episodes.first(where: { $0.id == listening.id }), episode.removalKind == nil,
                   let episodeID = try? ItemID(rawValue: listening.id),
                   let ready = readyRevisions[episodeID.rawValue],
                   listening.lastRevisionID == ready.revision.revisionID.rawValue else { continue }
             episode.retiredAt = Date()
+            episode.removalKind = PodcastEpisodeRemovalKind.retired.rawValue
             changed = true
         }
         if changed { try context.save() }
@@ -4773,7 +4971,7 @@ public actor LocalLibraryStore {
     /// playable.
     private func backfillPreparationOutcomesForV10Reconciliation(in context: ModelContext) throws {
         let decoder = JSONDecoder()
-        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
+        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
         let existingOutcomeIDs = Set(
             try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>()).map(\.id)
         )
@@ -4829,7 +5027,7 @@ public actor LocalLibraryStore {
     /// and no listening row yet gets one, so "I finished this" survives the
     /// migration that introduced the item-scoped fact.
     private func backfillListeningRecordsForV10Reconciliation(in context: ModelContext) throws {
-        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
+        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
         let existingListeningIDs = Set(
             try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>()).map(\.id)
         )

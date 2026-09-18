@@ -4991,9 +4991,12 @@ final class WiltedMacModelTests: XCTestCase {
         }
     }
 
-    /// Restore fetches the known feed first, then commits the old target and
-    /// the feed's genuinely new entry while removing the durable dismissal.
-    func testKnownFeedRestoreReappearsInLarderAndClearsRemovedAfterEvidence() async throws {
+    /// The row never left the store under the unified removal column, so
+    /// restore needs no feed fetch and no re-matched evidence -- it commits
+    /// the old target directly and clears the durable dismissal. (Until this
+    /// task, dismissal deleted the row and restore had to re-fetch the known
+    /// feed to reconstruct it; that path no longer exists.)
+    func testKnownFeedRestoreReappearsInLarderAndClearsRemovedWithoutAnyFetch() async throws {
         let directory = temporaryDirectory("restore-known-feed")
         defer { try? FileManager.default.removeItem(at: directory) }
         let libraryURL = directory.appendingPathComponent("library.sqlite")
@@ -5025,17 +5028,12 @@ final class WiltedMacModelTests: XCTestCase {
             )
         ))
         try await store.dismissPodcastEpisode(targetID)
-        let xml = """
-        <rss><channel><title>Restore Show</title>
-        <item><title>Old episode</title><guid>old</guid><pubDate>Sun, 13 Sep 2020 12:26:40 GMT</pubDate><enclosure url="https://cdn.example.test/old.mp3" type="audio/mpeg" /></item>
-        <item><title>New episode</title><guid>new</guid><pubDate>Tue, 14 Nov 2023 22:14:20 GMT</pubDate><enclosure url="https://cdn.example.test/new.mp3" type="audio/mpeg" /></item>
-        </channel></rss>
-        """
+        // No feed loader is wired up: a loader failing this test would prove
+        // restore reached the network at all, which it must not.
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory,
-            podcastFeedClient: PodcastFeedClient(
-                loader: FixedBodyLoader(body: Data(xml.utf8)), now: { Date(timeIntervalSince1970: 1_700_000_100) }
-            ), preferences: WiltedMacTestPreferences.ephemeral()
+            podcastFeedClient: PodcastFeedClient(loader: FailingLoader(), now: { Date(timeIntervalSince1970: 1_700_000_100) }),
+            preferences: WiltedMacTestPreferences.ephemeral()
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
@@ -5049,12 +5047,16 @@ final class WiltedMacModelTests: XCTestCase {
         await model.waitForPodcastOperations()
 
         XCTAssertTrue(model.dismissedEpisodes.isEmpty)
-        XCTAssertEqual(Set(model.episodes.map(\.title)), ["Old episode", "New episode"])
+        XCTAssertEqual(Set(model.episodes.map(\.title)), ["Old episode"])
+        let restoredEpisode = try XCTUnwrap(model.episodes.first { $0.id == targetID.rawValue })
+        XCTAssertNil(restoredEpisode.removalKind)
         XCTAssertEqual(model.podcastOperationMessage, "Restored Old episode to Feeds.")
         XCTAssertEqual(model.withheldPodcastEpisodeCount, 7, "restore must not replace the last full-refresh summary")
         let reopened = try LocalLibraryStore(url: libraryURL)
         let persistedDismissals = try await reopened.dismissedPodcastEpisodes()
         XCTAssertTrue(persistedDismissals.isEmpty)
+        let removalKind = try await reopened.removalKind(for: targetID)
+        XCTAssertNil(removalKind)
     }
 
     /// The reported bug (2026-09-05): skipping the Waveform episode, then
@@ -5280,120 +5282,40 @@ final class WiltedMacModelTests: XCTestCase {
                        "Undo must actually bring the episode back to the Larder")
     }
 
-    /// A legacy dismissal without a feed searches subscriptions sequentially;
-    /// one broken feed does not prevent a later feed from restoring the item.
-    func testFeedlessRestoreToleratesAnIndividualFeedFailure() async throws {
+    /// A legacy or never-admitted dismissal -- an id with no episode row at
+    /// all -- still sticks: the store backs it with a placeholder row rather
+    /// than refusing it, the same guarantee the old separate tombstone table
+    /// gave for free. Restoring it needs no feed and no network, because the
+    /// row (placeholder or not) is what restore reads and clears; there is no
+    /// re-fetch-and-match path left to tolerate a broken feed or a missing
+    /// episode on.
+    func testDismissingAnEpisodeWithNoRowStillCreatesADismissalAndRestoresWithoutAnyFetch() async throws {
         let directory = temporaryDirectory("restore-feedless")
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
-        let badURL = URL(string: "https://podcasts.example.test/bad.xml")!
-        let goodURL = URL(string: "https://podcasts.example.test/good.xml")!
-        for (url, title) in [(badURL, "Broken"), (goodURL, "Working")] {
-            let feed = try PodcastFeed(
-                itemID: ItemID.derivePodcastFeed(from: url), canonicalURL: url, title: title,
-                createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
-            )
-            try await store.save(feed: feed)
-            try await store.save(subscription: PodcastSubscription(
-                feedID: feed.itemID, subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_600_000_000))
-            ))
-        }
-        let enclosure = URL(string: "https://cdn.example.test/legacy.mp3")!
-        let targetID = try ItemID.derivePodcastEpisode(feedURL: goodURL, rssGUID: "legacy", enclosureURL: enclosure)
-        try await store.dismissPodcastEpisode(targetID)
-        let goodXML = "<rss><channel><title>Working</title><item><title>Legacy episode</title><guid>legacy</guid><enclosure url=\"https://cdn.example.test/legacy.mp3\" type=\"audio/mpeg\" /></item></channel></rss>"
-        let loader = RoutingPodcastFeedLoader(documents: [goodURL: Data(goodXML.utf8)])
+        let episodeID = try ItemID(rawValue: "legacy-" + String(repeating: "1", count: 64))
+        let created = try await store.dismissPodcastEpisode(episodeID)
+        XCTAssertTrue(created, "a dismissal with no matching row must still stick")
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory,
-            podcastFeedClient: PodcastFeedClient(loader: loader, now: { Date(timeIntervalSince1970: 1_700_000_000) }),
+            podcastFeedClient: PodcastFeedClient(loader: FailingLoader()),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
-        model.restoreEpisode(try XCTUnwrap(model.dismissedEpisodes.first))
-        await model.waitForPodcastOperations()
 
-        XCTAssertEqual(model.episodes.map(\.title), ["Legacy episode"])
-        XCTAssertTrue(model.dismissedEpisodes.isEmpty)
-        let requestedURLs = await loader.requestedURLs()
-        XCTAssertEqual(Set(requestedURLs), [badURL, goodURL])
-    }
-
-    func testFeedlessRestoreWithNoSubscriptionsIsVisibleAndPreservesDismissal() async throws {
-        let directory = temporaryDirectory("restore-no-subscriptions")
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
-        let episodeID = try ItemID(rawValue: "legacy-" + String(repeating: "1", count: 64))
-        try await store.dismissPodcastEpisode(episodeID)
-        let model = WiltedMacModel(
-            arguments: [], stateDirectoryOverride: directory, preferences: WiltedMacTestPreferences.ephemeral()
-        )
-        model.startStoreBootstrap()
-        await model.waitForStoreBootstrap()
-        model.restoreEpisode(try XCTUnwrap(model.dismissedEpisodes.first))
-        await model.waitForPodcastOperations()
-
-        XCTAssertTrue(model.podcastOperationMessage?.contains("No subscribed feed") == true)
         XCTAssertEqual(model.dismissedEpisodes.map(\.id), [episodeID.rawValue])
         let reopened = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
         let persisted = try await reopened.dismissedPodcastEpisodes()
         XCTAssertEqual(persisted.map(\.episodeID), [episodeID])
-    }
 
-    func testKnownFeedFailureIsRetryableAndMissingEpisodeRemainsRemoved() async throws {
-        func seededModel(
-            suffix: String, client: PodcastFeedClient
-        ) async throws -> (URL, WiltedMacModel, ItemID) {
-            let directory = temporaryDirectory(suffix)
-            let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
-            let feedURL = URL(string: "https://podcasts.example.test/\(suffix).xml")!
-            let feedID = try ItemID.derivePodcastFeed(from: feedURL)
-            let enclosure = URL(string: "https://cdn.example.test/\(suffix).mp3")!
-            let episodeID = try ItemID.derivePodcastEpisode(
-                feedURL: feedURL, rssGUID: suffix, enclosureURL: enclosure
-            )
-            try await store.save(feed: PodcastFeed(
-                itemID: feedID, canonicalURL: feedURL, title: "Restore Show",
-                createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
-            ))
-            try await store.save(subscription: PodcastSubscription(
-                feedID: feedID, subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
-            ))
-            try await store.save(episode: PodcastEpisode(
-                itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: suffix,
-                title: "Missing episode", enclosureURL: enclosure, enclosureMediaType: "audio/mpeg",
-                createdAt: Timestamp(Date(timeIntervalSince1970: 1_600_000_000))
-            ))
-            try await store.dismissPodcastEpisode(episodeID)
-            let model = WiltedMacModel(
-                arguments: [], stateDirectoryOverride: directory, podcastFeedClient: client,
-                preferences: WiltedMacTestPreferences.ephemeral()
-            )
-            model.startStoreBootstrap()
-            await model.waitForStoreBootstrap()
-            return (directory, model, episodeID)
-        }
+        model.restoreEpisode(try XCTUnwrap(model.dismissedEpisodes.first))
+        await model.waitForPodcastOperations()
 
-        let failed = try await seededModel(
-            suffix: "restore-failed", client: PodcastFeedClient(loader: FailingLoader())
-        )
-        defer { try? FileManager.default.removeItem(at: failed.0) }
-        failed.1.restoreEpisode(try XCTUnwrap(failed.1.dismissedEpisodes.first))
-        await failed.1.waitForPodcastOperations()
-        XCTAssertTrue(failed.1.podcastOperationMessage?.contains("Retry Restore") == true)
-        XCTAssertEqual(failed.1.dismissedEpisodes.map(\.id), [failed.2.rawValue])
-
-        let missing = try await seededModel(
-            suffix: "restore-missing",
-            client: PodcastFeedClient(loader: FixedBodyLoader(
-                body: Data("<rss><channel><title>Restore Show</title></channel></rss>".utf8)
-            ))
-        )
-        defer { try? FileManager.default.removeItem(at: missing.0) }
-        missing.1.restoreEpisode(try XCTUnwrap(missing.1.dismissedEpisodes.first))
-        await missing.1.waitForPodcastOperations()
-        XCTAssertTrue(missing.1.podcastOperationMessage?.contains("no longer published") == true)
-        XCTAssertEqual(missing.1.dismissedEpisodes.map(\.id), [missing.2.rawValue])
+        XCTAssertTrue(model.dismissedEpisodes.isEmpty)
+        XCTAssertEqual(model.podcastOperationMessage, "Restored Removed podcast episode to Feeds.")
+        let removalKind = try await reopened.removalKind(for: episodeID)
+        XCTAssertNil(removalKind)
     }
 
     func testRetryForRemovedPrepRunPublishesActionableProcessorMessage() {
@@ -6959,6 +6881,72 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertTrue(view.contains("wilted-feeds-restorable"))
     }
 
+    /// Task 4.5: retirement and dismissal are one idea expressed two ways, so
+    /// restoring either must land on the same store operation and leave the
+    /// same durable state -- `removalKind` cleared, read back from the store
+    /// itself, not inferred from the in-memory projection. One episode is
+    /// retired (Feeds' Skip), the other dismissed (Menu's Remove), each
+    /// restored through its own surface control.
+    func testRetiredAndDismissedEpisodesBothRestoreThroughTheSameStoreOperation() async throws {
+        let directory = temporaryDirectory("unified-restore")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let libraryURL = directory.appendingPathComponent("library.sqlite")
+        let store = try LocalLibraryStore(url: libraryURL)
+        let feedURL = URL(string: "https://podcasts.example.test/unified-restore.xml")!
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        try await store.save(feed: try PodcastFeed(
+            itemID: feedID, canonicalURL: feedURL, title: "Unified Show",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        ))
+        try await store.save(subscription: PodcastSubscription(
+            feedID: feedID, subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        ))
+        let retiredURL = URL(string: "https://cdn.example.test/unified-retired.mp3")!
+        let retiredID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "retired", enclosureURL: retiredURL)
+        let dismissedURL = URL(string: "https://cdn.example.test/unified-dismissed.mp3")!
+        let dismissedID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "dismissed", enclosureURL: dismissedURL)
+        try await store.save(episode: try PodcastEpisode(
+            itemID: retiredID, feedID: feedID, feedURL: feedURL, rssGUID: "retired", title: "Retired episode",
+            enclosureURL: retiredURL, enclosureMediaType: "audio/mpeg",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_600_000_000))
+        ))
+        try await store.save(episode: try PodcastEpisode(
+            itemID: dismissedID, feedID: feedID, feedURL: feedURL, rssGUID: "dismissed", title: "Dismissed episode",
+            enclosureURL: dismissedURL, enclosureMediaType: "audio/mpeg",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_600_000_000))
+        ))
+        let retired = try await store.retireEpisode(retiredID)
+        XCTAssertTrue(retired)
+        let dismissed = try await store.dismissPodcastEpisode(dismissedID)
+        XCTAssertTrue(dismissed)
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { _ in store },
+            podcastFeedClient: PodcastFeedClient(loader: FailingLoader()),
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let skipped = try XCTUnwrap(model.skippedFeedEpisodes.first { $0.id == retiredID.rawValue })
+        let removed = try XCTUnwrap(model.dismissedEpisodes.first { $0.id == dismissedID.rawValue })
+
+        model.restoreSkippedFeedEpisode(skipped)
+        try await settle(model)
+        model.restoreEpisode(removed)
+        await model.waitForPodcastOperations()
+
+        // Read the durable outcome back from the store, not the in-memory
+        // projection: both restores must clear the same column the same way.
+        let retiredKind = try await store.removalKind(for: retiredID)
+        let dismissedKind = try await store.removalKind(for: dismissedID)
+        XCTAssertNil(retiredKind, "restoring the retired episode must clear removalKind")
+        XCTAssertNil(dismissedKind, "restoring the dismissed episode must clear removalKind through the same operation")
+        XCTAssertTrue(model.skippedFeedEpisodes.isEmpty)
+        XCTAssertTrue(model.dismissedEpisodes.isEmpty)
+    }
+
     // MARK: Phase 0 — the two-destination restructure
 
     func testNavigationHasExactlyTheThreeSurvivingDestinations() {
@@ -8383,21 +8371,6 @@ private struct FailingLoader: PodcastFeedLoading {
     func load(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
         throw URLError(.cannotConnectToHost)
     }
-}
-
-private actor RoutingPodcastFeedLoader: PodcastFeedLoading {
-    let documents: [URL: Data]
-    private var requests: [URL] = []
-
-    init(documents: [URL: Data]) { self.documents = documents }
-
-    func load(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
-        requests.append(url)
-        guard let document = documents[url] else { throw URLError(.cannotConnectToHost) }
-        return PodcastFeedHTTPResponse(url: url, statusCode: 200, data: document)
-    }
-
-    func requestedURLs() -> [URL] { requests }
 }
 
 /// Replays a fixed event sequence instead of opening a real network connection.

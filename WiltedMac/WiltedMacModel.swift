@@ -720,10 +720,15 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     /// end and still be finished, and an episode marked finished by hand never
     /// reached the end at all.
     var isPlayed: Bool = false
-    /// When the store's `retiredAt` says this episode left the Larder on its
-    /// own, as opposed to a dismiss. `nil` for an episode still on the shelf,
-    /// or for one restored after a dismiss that cleared it.
+    /// When the store says this episode left the Larder -- by retirement or
+    /// by dismissal, `removalKind` says which. `nil` for an episode still on
+    /// the shelf, or for one restored after either removal cleared it.
     var retiredAt: Date? = nil
+    /// Which of the two removals took the episode off the shelf, or `nil` if
+    /// it is still there. Retirement and dismissal both set `retiredAt`; this
+    /// is what distinguishes "finished on its own" rows from "the user
+    /// dismissed it" rows now that they share one timestamp.
+    var removalKind: PodcastEpisodeRemovalKind? = nil
     var downloadState: WiltedMacEpisodeDownloadState
     var preparationState: WiltedMacEpisodePreparationState = .notPrepared
     /// Whether the ready revision's media file was found on disk the last
@@ -751,7 +756,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         lhs.id == rhs.id && lhs.title == rhs.title && lhs.feedTitle == rhs.feedTitle &&
             lhs.summary == rhs.summary && lhs.notes == rhs.notes && lhs.artworkURL == rhs.artworkURL && lhs.releasedAt == rhs.releasedAt &&
             lhs.durationSeconds == rhs.durationSeconds && lhs.playbackSeconds == rhs.playbackSeconds &&
-            lhs.isPlayed == rhs.isPlayed && lhs.retiredAt == rhs.retiredAt &&
+            lhs.isPlayed == rhs.isPlayed && lhs.retiredAt == rhs.retiredAt && lhs.removalKind == rhs.removalKind &&
             lhs.downloadState == rhs.downloadState && lhs.preparationState == rhs.preparationState &&
             lhs.isReadyMediaAvailable == rhs.isReadyMediaAvailable
     }
@@ -3623,13 +3628,15 @@ final class WiltedMacModel {
     }
 #endif
 
-    /// Restores a removed episode only after a current feed proves the exact identity still exists.
+    /// Restores a removed episode. The row never left the store, so this
+    /// needs no feed evidence -- unlike the old dismiss-deleted-the-row
+    /// design, there is nothing to re-match against a re-fetched feed.
     func restoreEpisode(_ dismissal: WiltedMacDismissedEpisode) {
 #if canImport(WiltedProducer)
         guard podcastRestoreTasks[dismissal.id] == nil,
               let store, let episodeID = try? ItemID(rawValue: dismissal.id) else { return }
         undoableRemoval = nil
-        podcastOperationMessage = "Checking feeds for \(dismissal.title)…"
+        podcastOperationMessage = "Restoring \(dismissal.title)…"
         podcastRestoreTasks[dismissal.id] = Task { [weak self] in
             guard let self else { return }
             defer { self.podcastRestoreTasks[dismissal.id] = nil }
@@ -3651,56 +3658,17 @@ final class WiltedMacModel {
     /// row was no longer hidden. Both branches below -- the store reporting a
     /// fresh restore, and the store reporting the episode was already
     /// restored on an earlier attempt -- have to clear the id, because either
-    /// one means the store no longer considers the episode dismissed.
+    /// one means the store no longer considers the episode removed.
+    ///
+    /// The row never left the store under dismissal or retirement, so unlike
+    /// the old design, restoring needs no re-fetched feed to prove identity --
+    /// it is the same store operation `restoreSkippedFeedEpisode` uses.
     private func restoreEpisode(
         _ dismissal: WiltedMacDismissedEpisode, episodeID: ItemID, store: LocalLibraryStore
     ) async {
-        var checkedFeedCount = 0
-        var loadedMatch: LoadedPodcastFeed?
-        if let rawFeedID = dismissal.feedID, let feedID = try? ItemID(rawValue: rawFeedID) {
-            guard let feed = try? await store.podcastFeed(for: feedID) else {
-                podcastOperationMessage = "\(dismissal.title) has no known feed to check. It remains skipped in Feeds."
-                return
-            }
-            do {
-                let loaded = try await podcastFeedClient.load(feed.canonicalURL)
-                checkedFeedCount = 1
-                if loaded.episodes.contains(where: { $0.itemID == episodeID }) { loadedMatch = loaded }
-            } catch {
-                podcastOperationMessage = "Could not check \(feed.title). Retry Restore when you are online."
-                return
-            }
-        } else {
-            let subscriptions = (try? await store.subscriptions()) ?? []
-            guard !subscriptions.isEmpty else {
-                podcastOperationMessage = "No subscribed feed can resolve \(dismissal.title). It remains skipped in Feeds."
-                return
-            }
-            for subscription in subscriptions {
-                guard let feed = try? await store.podcastFeed(for: subscription.feedID) else { continue }
-                do {
-                    let loaded = try await podcastFeedClient.load(feed.canonicalURL)
-                    checkedFeedCount += 1
-                    if loaded.episodes.contains(where: { $0.itemID == episodeID }) {
-                        loadedMatch = loaded
-                        break
-                    }
-                } catch {
-                    continue
-                }
-            }
-        }
-
-        guard let loadedMatch,
-              let target = loadedMatch.episodes.first(where: { $0.itemID == episodeID }) else {
-            podcastOperationMessage = checkedFeedCount == 0
-                ? "No podcast feed could be checked. Retry Restore when you are online."
-                : "\(dismissal.title) is no longer published by the feeds checked. It remains skipped in Feeds."
-            return
-        }
         do {
-            let result = try await store.restorePodcastEpisode(target, from: loadedMatch.episodes)
-            guard result.restored else {
+            let restored = try await store.restoreEpisode(episodeID)
+            guard restored else {
                 hiddenEpisodeIDs.remove(dismissal.id)
                 dismissedEpisodes = try await loadDismissedEpisodes(from: store)
                 podcastOperationMessage = "\(dismissal.title) was already restored."
@@ -4698,13 +4666,14 @@ final class WiltedMacModel {
     /// still in place. Feeds renders these with a Restore control, because
     /// reversing the one decision the surface owns belongs there.
     var skippedFeedEpisodes: [WiltedMacEpisode] {
-        episodes.filter { $0.retiredAt != nil }
+        episodes.filter { $0.removalKind == .retired }
             .sorted { $0.releasedAt > $1.releasedAt }
     }
 
     /// Reverses `skipFeedEpisode`: clears the retirement so the next reload
     /// puts the row back in the Feeds list. Nothing was deleted, so no feed is
-    /// consulted and no network is needed.
+    /// consulted and no network is needed. Dismissal reverses through the same
+    /// store operation -- see `restoreEpisode(_ dismissal:)`.
     func restoreSkippedFeedEpisode(_ episode: WiltedMacEpisode) {
 #if canImport(WiltedProducer)
         guard let store, let id = try? ItemID(rawValue: episode.id) else { return }
@@ -4712,7 +4681,7 @@ final class WiltedMacModel {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await store.restoreRetiredEpisode(id)
+                _ = try await store.restoreEpisode(id)
                 await self.reloadLibraryRows()
                 self.podcastOperationMessage = "Restored \(episode.title) to Feeds."
             } catch {
@@ -6054,6 +6023,13 @@ final class WiltedMacModel {
             // this launch's invalidation pass writes new ones.
             announceStartupStep(.updatingLibraryFormat)
             try await configuredStore.reconcilePodcastStateV10()
+            // Before the completion sweep below: a V12 store's pre-migration
+            // retirements carry a bare `retiredAt` with no `removalKind` yet,
+            // which is exactly the shape the sweep's own guard is looking
+            // for. Folding the tombstone table onto `removalKind` first keeps
+            // an already-retired row out of the sweep, so its original
+            // timestamp is not clobbered with this launch's.
+            _ = try? await configuredStore.reconcileEpisodeRemovals()
             // After reconcile, so this sees the listening rows step 2 just
             // backfilled from legacy playback records, and before the
             // library is read, so retirement is reflected in the first
@@ -6643,7 +6619,15 @@ final class WiltedMacModel {
                 .filter { $0.requestID.hasPrefix(Self.podcastRequestPrefix) }
                 .map { ($0.itemID, $0) }
         )
-        for episode in snapshot.episodes where subscribed.contains(episode.feedID) {
+        // A dismissed episode keeps its row in the store (that is the whole
+        // point of the unified removal column), but `episodes` is still the
+        // "in the library" projection: `dismissedEpisodes` is the separate
+        // list that surfaces it in the Removed popover. A retired episode
+        // stays here -- `skippedFeedEpisodes` and the Larder filters read it
+        // out of this same array by `removalKind`/`retiredAt`.
+        for episode in snapshot.episodes
+        where subscribed.contains(episode.feedID)
+            && snapshot.removalKindByEpisode[episode.itemID] != .dismissed {
             let revision = snapshot.readyRevisions[episode.itemID]
             let playbackState: PlaybackState?
             if let revision {
@@ -6666,6 +6650,7 @@ final class WiltedMacModel {
             // would otherwise forget that it was ever finished.
             let listeningState = snapshot.listeningStates[episode.itemID]
             let retiredAt = snapshot.retiredAtByEpisode[episode.itemID]
+            let removalKind = snapshot.removalKindByEpisode[episode.itemID]
             let downloadState: WiltedMacEpisodeDownloadState
             switch downloads[episode.itemID]?.status {
             case .queued: downloadState = .queued
@@ -6691,7 +6676,8 @@ final class WiltedMacModel {
                 releasedAt: (episode.publishedTime ?? episode.createdAt).date,
                 durationSeconds: revision?.revision.durationSeconds ?? episode.durationSeconds,
                 playbackSeconds: playbackState?.positionSeconds ?? 0,
-                isPlayed: listeningState?.completedAt != nil, retiredAt: retiredAt?.date, downloadState: downloadState,
+                isPlayed: listeningState?.completedAt != nil, retiredAt: retiredAt?.date, removalKind: removalKind,
+                downloadState: downloadState,
                 preparationState: Self.preparationState(
                     outcome: outcome,
                     run: runs[episode.itemID],
