@@ -3668,6 +3668,78 @@ final class LocalLibraryStoreTests: XCTestCase {
             "expected exactly one surviving row for a raced unique insert, found \(matching.count) " +
             "(storeActorError=\(String(describing: storeActorError)), mainActorError=\(String(describing: mainActorError)))")
     }
+
+    /// Step 3 done-condition: a second `reconcileWorkTickets` pass must be a
+    /// no-op. A run where the second call has nothing left to import, adopt,
+    /// or close would pass trivially and prove nothing about the
+    /// find-or-insert paths reconciliation depends on, so this seeds a
+    /// still-pending ticket, a running ticket belonging to a dead process,
+    /// and a retryable orphan download *before either call*, then compares
+    /// a full sorted snapshot of every column across both passes.
+    func testReconcilingWorkTicketsASecondTimeChangesNothing() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/reconcile/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 2])
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+        _ = try await store.admitPodcastEpisodes(all, admission: .incremental, claimingNewest: 2)
+
+        // An orphan retryable download with no ticket yet -- step 2 should adopt it once.
+        let retryableEpisode = all[0].itemID
+        try await store.save(download: PodcastDownload(
+            episodeID: retryableEpisode, status: .failed, updatedAt: Timestamp(origin), failureKind: .retryable
+        ))
+
+        let requestedAt = Timestamp(origin)
+        // A ticket already in the queue that neither step should touch.
+        let untouched = try await store.issueWorkTicket(
+            kind: .articlePreparation, subjectID: "article-untouched", requestedAt: requestedAt
+        )
+
+        // A running ticket this process did not start -- step 3 should close it.
+        var running = try await store.issueWorkTicket(
+            kind: .podcastPreparation, subjectID: "episode-running", requestedAt: requestedAt
+        )
+        running.state = .running
+        running.attemptCount = 1
+        running.runID = "dead-run"
+        running.updatedAt = requestedAt
+        try await store.upsertWorkTicket(running)
+
+        let deferral = WorkTicketImportedDeferral(
+            subjectID: "episode-deferred",
+            policySnapshot: Data("snapshot".utf8), processingPolicy: Data("policy".utf8)
+        )
+
+        let firstNow = Timestamp(origin.addingTimeInterval(3_600))
+        let first = try await store.reconcileWorkTickets(
+            now: firstNow, sequenceFloor: 0, importedDeferrals: [deferral]
+        )
+        XCTAssertEqual(first.importedDeferralCount, 1)
+        XCTAssertEqual(first.adoptedDownloadCount, 1)
+        XCTAssertEqual(first.closedRunCount, 1)
+        XCTAssertEqual(first.prunedCount, 0)
+
+        let firstSnapshot = try await store.workTickets().sorted { $0.id < $1.id }
+        XCTAssertTrue(firstSnapshot.contains { $0.id == untouched.id && $0.state == .pending },
+                      "the pre-existing pending ticket must be left alone")
+        XCTAssertTrue(firstSnapshot.contains { $0.id == running.id && $0.state == .pending && $0.attemptCount == 2 },
+                      "the interrupted running ticket retries: pending with attemptCount+1")
+
+        let secondNow = Timestamp(origin.addingTimeInterval(3_660))
+        let second = try await store.reconcileWorkTickets(
+            now: secondNow, sequenceFloor: 0, importedDeferrals: [deferral]
+        )
+        XCTAssertEqual(second.importedDeferralCount, 0, "the deferral already has a ticket")
+        XCTAssertEqual(second.adoptedDownloadCount, 0, "the download already has a ticket")
+        XCTAssertEqual(second.closedRunCount, 0, "nothing is running any more")
+        XCTAssertEqual(second.prunedCount, 0)
+
+        let secondSnapshot = try await store.workTickets().sorted { $0.id < $1.id }
+        XCTAssertEqual(firstSnapshot, secondSnapshot, "a second reconcile must change nothing")
+    }
 }
 
 private func collectPreparationStatuses(

@@ -193,8 +193,9 @@ struct WiltedMacRootView: View {
     /// waiting, not another row to scroll past. No heading: each row names
     /// itself, so a label over them only repeats what they already say.
     private var sidebarTotals: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             Divider()
+                .padding(.bottom, WiltedTheme.Spacing.small)
             sidebarTotal(
                 "Ready to play",
                 summary: model.menuGroupAudioSummary(.playable),

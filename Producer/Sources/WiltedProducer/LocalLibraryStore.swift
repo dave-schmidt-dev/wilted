@@ -191,6 +191,7 @@ public enum LocalLibraryStoreError: Error, Equatable, Sendable {
     case invalidPreparationStatus(String)
     case invalidPodcastState(String)
     case migrationPreflightFailed(String)
+    case invalidWorkTicketTransition(from: String, to: String)
 }
 
 /// The media files writers own before any record names them.
@@ -366,7 +367,7 @@ public struct PodcastListeningState: Codable, Equatable, Sendable {
 }
 
 /// What kind of background work a `WorkTicket` tracks.
-public enum WorkTicketKind: String, Codable, Equatable, Sendable {
+public enum WorkTicketKind: String, Codable, Equatable, Sendable, CaseIterable {
     case podcastDownload
     case podcastPreparation
     case articlePreparation
@@ -388,6 +389,31 @@ public enum WorkTicketState: String, Codable, Equatable, Sendable {
         case .succeeded, .failed, .cancelled: return true
         case .pending, .deferred, .running: return false
         }
+    }
+
+    /// This state's tier in the ticket's forward lifecycle: admitted (0),
+    /// running (1), terminal (2). Two writers racing to record the same
+    /// subject's transitions (e.g. `registerPreparationRequest`'s `.pending`
+    /// and `consumePreparationRequest`'s `.running`, dispatched from separate
+    /// `Task`s with no ordering guarantee between them) must not let
+    /// whichever call happens to land second drag the ticket backward.
+    private var tier: Int {
+        switch self {
+        case .pending, .deferred: return 0
+        case .running: return 1
+        case .succeeded, .failed, .cancelled: return 2
+        }
+    }
+
+    /// Whether a ticket may move from `self` to `next`. Same-state writes are
+    /// always a no-op-safe idempotent duplicate. Otherwise a transition is
+    /// only legal if it does not move the ticket to an earlier tier than the
+    /// one it already occupies -- a terminal ticket (tier 2) never leaves,
+    /// and a `.running` ticket (tier 1) cannot be dragged back to `.pending`
+    /// or `.deferred` (tier 0) by a late-arriving admission write.
+    public func canTransition(to next: WorkTicketState) -> Bool {
+        if next == self { return true }
+        return next.tier >= tier
     }
 }
 
@@ -427,6 +453,50 @@ public struct WorkTicket: Codable, Equatable, Sendable {
         self.nextEligibleAt = nextEligibleAt; self.policySnapshot = policySnapshot
         self.processingPolicy = processingPolicy; self.runID = runID
         self.requestedAt = requestedAt; self.updatedAt = updatedAt
+    }
+}
+
+/// Named reasons `reconcileWorkTickets` can fail a ticket outright, distinct
+/// from `PodcastDownloadFailureKind`: that vocabulary classifies why a
+/// download's bytes stopped; this one names why reconciliation itself gave
+/// up on a ticket rather than retrying it.
+public enum WorkTicketFailure: String, Codable, Equatable, Sendable {
+    case interrupted
+}
+
+/// One preferences-held deferred automatic preparation, translated into the
+/// store's vocabulary by the caller before it crosses into the actor.
+/// `policySnapshot`/`processingPolicy` are pre-encoded because their source
+/// types (`WiltedAutomationProcessingPolicy`, and whatever the caller pairs
+/// with `PodcastPreparationPolicySnapshot`) are not something this package
+/// -- or, for the former, any package below the app target -- necessarily
+/// knows how to decode; `WorkTicket` already carries both fields as opaque
+/// `Data`, so reconciliation only needs to carry them the same way.
+public struct WorkTicketImportedDeferral: Sendable {
+    public let subjectID: String
+    public let policySnapshot: Data?
+    public let processingPolicy: Data?
+
+    public init(subjectID: String, policySnapshot: Data? = nil, processingPolicy: Data? = nil) {
+        self.subjectID = subjectID
+        self.policySnapshot = policySnapshot
+        self.processingPolicy = processingPolicy
+    }
+}
+
+/// What one `reconcileWorkTickets` pass did, so a caller (and a test) can
+/// see the counts without re-deriving them from a full `workTickets()` diff.
+public struct WorkTicketReconciliation: Equatable, Sendable {
+    public let importedDeferralCount: Int
+    public let adoptedDownloadCount: Int
+    public let closedRunCount: Int
+    public let prunedCount: Int
+
+    public init(importedDeferralCount: Int, adoptedDownloadCount: Int, closedRunCount: Int, prunedCount: Int) {
+        self.importedDeferralCount = importedDeferralCount
+        self.adoptedDownloadCount = adoptedDownloadCount
+        self.closedRunCount = closedRunCount
+        self.prunedCount = prunedCount
     }
 }
 
@@ -1859,6 +1929,12 @@ public actor LocalLibraryStore {
             .compactMap(Self.decodeWorkTicket)
     }
 
+    /// The persisted ticket for one `(kind, subjectID)`, or nil if none exists.
+    public func workTicket(kind: WorkTicketKind, subjectID: String) throws -> WorkTicket? {
+        let id = "\(kind.rawValue)|\(subjectID)"
+        return try workTickets().first { $0.id == id }
+    }
+
     /// Overwrites the ticket matching `ticket.id`, or inserts it if absent.
     /// Unlike `issueWorkTicket`, the caller supplies `requestSequence`
     /// directly -- this is the path state transitions (running, succeeded,
@@ -1883,11 +1959,17 @@ public actor LocalLibraryStore {
     /// `requestSequence` is `max(requestSequence) + 1` computed inside the
     /// same fetch-then-save as the insert, so sequence numbers are
     /// monotonic by construction and never assigned by a separate counter
-    /// row.
+    /// row -- unless `requestSequence` is supplied, in which case the caller
+    /// already reserved that number (from the same in-memory high-water mark
+    /// this store seeded at bootstrap) and it is used as-is. This is what
+    /// lets a preparation request's place in line be decided synchronously,
+    /// on the click, while the durable ticket that records it is written
+    /// later, from an async context, without a second numbering scheme.
     @discardableResult
     public func issueWorkTicket(
         kind: WorkTicketKind, subjectID: String, resolvedItemID: String? = nil,
-        policySnapshot: Data? = nil, processingPolicy: Data? = nil, requestedAt: Timestamp
+        policySnapshot: Data? = nil, processingPolicy: Data? = nil, requestedAt: Timestamp,
+        requestSequence: Int? = nil
     ) throws -> WorkTicket {
         let context = ModelContext(container)
         let id = "\(kind.rawValue)|\(subjectID)"
@@ -1898,7 +1980,7 @@ public actor LocalLibraryStore {
             }
             return decoded
         }
-        let nextSequence = (records.map(\.requestSequence).max() ?? 0) + 1
+        let nextSequence = requestSequence ?? ((records.map(\.requestSequence).max() ?? 0) + 1)
         let ticket = WorkTicket(
             kind: kind, subjectID: subjectID, resolvedItemID: resolvedItemID,
             requestSequence: nextSequence, state: .pending, attemptCount: 0,
@@ -1908,6 +1990,212 @@ public actor LocalLibraryStore {
         context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
         try context.save()
         return ticket
+    }
+
+    /// Finds-or-inserts the ticket for `(kind, subjectID)` and applies one
+    /// state transition to it, in a single actor hop -- the fetch, the
+    /// mutation, and the save share no `await` between them. That is what
+    /// actually serializes two concurrent transitions for the same subject:
+    /// this actor is re-entrant across a suspension point, so a caller that
+    /// splits find/mutate/write across separate awaited calls (as
+    /// `issueWorkTicket` + `upsertWorkTicket` composed by hand would) lets a
+    /// second transition interleave between them and overwrite the first.
+    /// Composing the whole thing into one actor call is the fix; relying on
+    /// `Task` submission order is not an option, since Swift makes no
+    /// ordering guarantee between detached `Task`s.
+    ///
+    /// Immutable-at-admission fields (`policySnapshot`, `processingPolicy`,
+    /// `resolvedItemID`) are only ever set when currently nil, matching
+    /// `issueWorkTicket`'s and the caller's existing immutability contract.
+    /// `attemptCount` increments only when the transition's destination is
+    /// `.running`, once per call -- a duplicate `.running` write (two retries
+    /// racing to report the same attempt) still only counts once, because the
+    /// second call sees `state == .running` already and `canTransition`
+    /// allows the no-op but the caller is expected not to call it twice for
+    /// one attempt.
+    ///
+    /// Throws `.invalidWorkTicketTransition` rather than silently applying or
+    /// silently doing nothing when the requested transition is illegal per
+    /// `WorkTicketState.canTransition(to:)` -- e.g. a `.pending` arriving
+    /// after the ticket is already `.cancelled`. The caller decides what a
+    /// rejection means (typically: log it and move on), but it is never
+    /// swallowed inside the store.
+    @discardableResult
+    public func applyWorkTicketTransition(
+        kind: WorkTicketKind,
+        subjectID: String,
+        requestSequence: Int? = nil,
+        resolvedItemID: String? = nil,
+        policySnapshot: Data? = nil,
+        processingPolicy: Data? = nil,
+        to state: WorkTicketState,
+        failureKind: String? = nil,
+        lastFailureMessage: String? = nil,
+        at now: Timestamp
+    ) throws -> WorkTicket {
+        let context = ModelContext(container)
+        let id = "\(kind.rawValue)|\(subjectID)"
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+        let existingRecord = records.first(where: { $0.id == id })
+
+        var ticket: WorkTicket
+        if let existingRecord {
+            guard let decoded = Self.decodeWorkTicket(existingRecord) else {
+                throw LocalLibraryStoreError.invalidPodcastState("corrupt work ticket row")
+            }
+            ticket = decoded
+        } else {
+            let nextSequence = requestSequence ?? ((records.map(\.requestSequence).max() ?? 0) + 1)
+            ticket = WorkTicket(
+                kind: kind, subjectID: subjectID, resolvedItemID: nil,
+                requestSequence: nextSequence, state: .pending, attemptCount: 0,
+                requestedAt: now, updatedAt: now
+            )
+        }
+
+        guard ticket.state.canTransition(to: state) else {
+            throw LocalLibraryStoreError.invalidWorkTicketTransition(from: ticket.state.rawValue, to: state.rawValue)
+        }
+
+        if ticket.policySnapshot == nil, let policySnapshot { ticket.policySnapshot = policySnapshot }
+        if ticket.processingPolicy == nil, let processingPolicy { ticket.processingPolicy = processingPolicy }
+        if ticket.resolvedItemID == nil, let resolvedItemID { ticket.resolvedItemID = resolvedItemID }
+        if state == .running { ticket.attemptCount += 1 }
+        ticket.state = state
+        if let failureKind { ticket.failureKind = failureKind }
+        if let lastFailureMessage { ticket.lastFailureMessage = lastFailureMessage }
+        ticket.updatedAt = now
+
+        if let existingRecord {
+            existingRecord.apply(ticket)
+        } else {
+            context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
+        }
+        try context.save()
+        return ticket
+    }
+
+    /// Idempotent post-open bootstrap for the work-ticket queue.
+    ///
+    /// Deliberately not a `LocalLibraryMigrationPlan` stage: every stage there
+    /// is `.lightweight` and cannot transform row values, and this must run on
+    /// *every* launch rather than once per schema version -- an interrupted
+    /// run can happen on any launch, not just the one that first opens V12.
+    /// Mirrors `reconcilePodcastStateV10`'s shape: each numbered sub-step below
+    /// commits its own `save()` before the next begins, so a crash partway
+    /// through leaves already-saved sub-steps durable instead of rolled back
+    /// together, and a second call after a partial (or complete) prior one
+    /// changes nothing further.
+    ///
+    /// `sequenceFloor` is the caller's own pre-V12 request-sequence counter,
+    /// read once from preferences before this call. Every ticket this pass
+    /// issues gets a `requestSequence` above both the highest existing ticket
+    /// row and this floor, so a number already handed out under the old
+    /// counter is never reissued to a new ticket.
+    @discardableResult
+    public func reconcileWorkTickets(
+        now: Timestamp,
+        sequenceFloor: Int,
+        importedDeferrals: [WorkTicketImportedDeferral]
+    ) throws -> WorkTicketReconciliation {
+        let context = ModelContext(container)
+
+        // 1. Import deferrals. Find-or-insert, exactly like `issueWorkTicket`:
+        // an existing ticket for the subject wins unchanged, so re-running
+        // this against preferences the caller has not yet cleared (because an
+        // earlier attempt saved this step and then failed a later one) is a
+        // no-op rather than a duplicate.
+        var importedCount = 0
+        for deferral in importedDeferrals {
+            let id = "\(WorkTicketKind.podcastPreparation.rawValue)|\(deferral.subjectID)"
+            let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+            guard !records.contains(where: { $0.id == id }) else { continue }
+            let nextSequence = max(records.map(\.requestSequence).max() ?? 0, sequenceFloor) + 1
+            let ticket = WorkTicket(
+                kind: .podcastPreparation, subjectID: deferral.subjectID,
+                requestSequence: nextSequence, state: .pending, attemptCount: 0,
+                policySnapshot: deferral.policySnapshot, processingPolicy: deferral.processingPolicy,
+                requestedAt: now, updatedAt: now
+            )
+            context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
+            importedCount += 1
+        }
+        try context.save()
+
+        // 2. Adopt orphan downloads. A subject that already has a ticket is
+        // left untouched -- this only fills a gap left by a pre-ticket launch
+        // or a launch that died before it could issue one.
+        var adoptedCount = 0
+        var seenSubjects: Set<String> = []
+        for download in try unfinishedPodcastDownloads() + resumablePodcastDownloads() {
+            let subjectID = download.episodeID.rawValue
+            guard seenSubjects.insert(subjectID).inserted else { continue }
+            let id = "\(WorkTicketKind.podcastDownload.rawValue)|\(subjectID)"
+            let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+            guard !records.contains(where: { $0.id == id }) else { continue }
+            let nextSequence = max(records.map(\.requestSequence).max() ?? 0, sequenceFloor) + 1
+            let ticket = WorkTicket(
+                kind: .podcastDownload, subjectID: subjectID,
+                requestSequence: nextSequence, state: .pending, attemptCount: 0,
+                failureKind: download.failureKind?.rawValue,
+                requestedAt: now, updatedAt: now
+            )
+            context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
+            adoptedCount += 1
+        }
+        try context.save()
+
+        // 3. Close interrupted runs. Every ticket at `running` belonged to a
+        // process this one is not -- this process has started none -- the
+        // same argument `closeInterruptedPreparationRuns` already makes for
+        // the preparation journal. A run left `.retryable` or unclassified
+        // gets another attempt; one already marked `.terminal`, or that has
+        // now exhausted the retry bound, is closed as failed instead.
+        var closedCount = 0
+        let runningRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+            .filter { $0.state == WorkTicketState.running.rawValue }
+        for record in runningRecords {
+            let attemptCount = record.attemptCount + 1
+            let isTerminalClassification = record.failureKind == PodcastDownloadFailureKind.terminal.rawValue
+            if isTerminalClassification || attemptCount > 3 {
+                record.state = WorkTicketState.failed.rawValue
+                record.failureKind = WorkTicketFailure.interrupted.rawValue
+            } else {
+                record.state = WorkTicketState.pending.rawValue
+            }
+            record.attemptCount = attemptCount
+            record.updatedAt = now.date
+            closedCount += 1
+        }
+        try context.save()
+
+        // 4. Prune terminal tickets older than 30 days, per kind, always
+        // keeping at least the newest 50 of that kind regardless of age.
+        var prunedCount = 0
+        let cutoff = now.date.addingTimeInterval(-30 * 24 * 60 * 60)
+        let allRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+        for kind in WorkTicketKind.allCases {
+            let terminalRecords = allRecords
+                .filter { $0.kind == kind.rawValue && (WorkTicketState(rawValue: $0.state)?.isTerminal ?? false) }
+                .sorted { $0.updatedAt > $1.updatedAt }
+            guard terminalRecords.count > 50 else { continue }
+            for record in terminalRecords.dropFirst(50) where record.updatedAt < cutoff {
+                context.delete(record)
+                prunedCount += 1
+            }
+        }
+        try context.save()
+
+        // 5. The sequence floor itself is reseeded by construction: every new
+        // ticket issued in steps 1-2 above already took `sequenceFloor` into
+        // account when allocating its `requestSequence`, so no further store
+        // action is needed here. Reading the preferences counter once and
+        // deleting it afterward is the caller's job -- it is process-local
+        // preferences state, not library content this actor owns.
+        return WorkTicketReconciliation(
+            importedDeferralCount: importedCount, adoptedDownloadCount: adoptedCount,
+            closedRunCount: closedCount, prunedCount: prunedCount
+        )
     }
 
     /// Checkpoints the source WAL and verifies a complete V5 rollback copy before

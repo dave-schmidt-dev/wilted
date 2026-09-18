@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import AppKit
+import os
 
 #if canImport(WiltedProducer)
 import WiltedDomain
@@ -1131,6 +1132,7 @@ enum WiltedMacStartupStep: String, Equatable, Sendable {
     case retiringFinishedEpisodes = "Tidying finished episodes"
     case checkingPreparationFingerprint = "Checking preparation fingerprints"
     case closingInterruptedRuns = "Closing interrupted preparations"
+    case reconcilingWork = "Reconciling background work"
     case loadingLibrary = "Loading saved episodes and articles"
     case restoringPlayback = "Restoring playback"
 
@@ -1215,14 +1217,21 @@ final class WiltedMacModel {
     static let larderSortPreferenceKey = "wilted.queue.larder.sort"
     static let menuSortPreferenceKey = "wilted.queue.menu.sort"
     /// The highest preparation request sequence issued so far. Persisted on
-    /// every issue, so a relaunch continues the same ordering.
+    /// every issue as a fallback (see `preparationRequestSequencePreferenceKey`
+    /// below), but reseeded from the ticket table's own high-water mark at
+    /// every successful `reconcileWorkTickets(in:)`, which is the writer of
+    /// record once a store exists.
     private(set) var preparationRequestSequence: Int = 0
     /// Requests that have been made but whose preparation run has not started
-    /// yet, keyed by episode id. This is the in-memory face of the click order:
-    /// a download registers on request and the run consumes its number when it
-    /// is admitted. In-memory by design -- an unrunnable request cannot
-    /// survive the process that made it, and a fresh request takes a fresh
-    /// number.
+    /// yet, keyed by episode (or article) id. This is the in-memory PROJECTION
+    /// of the click order: a download or article request registers on request
+    /// and the run consumes its number when it is admitted. The durable copy
+    /// is a `WorkTicket` row (`.pending`/`.deferred`) written through
+    /// `recordWorkTicketTransition`; this dictionary is rebuilt from that
+    /// table at every successful bootstrap reconcile (see
+    /// `reconcileWorkTickets(in:)`), so a request pending at relaunch keeps
+    /// its number and its place. Only a store-less run (no ticket table to
+    /// rebuild from) loses an in-flight request across a relaunch.
     private(set) var preparationRequestSequences: [String: Int] = [:]
     /// The selected destination. Persisted so a relaunch returns the reader to
     /// where they were; a stored retired name resolves through
@@ -1244,12 +1253,26 @@ final class WiltedMacModel {
     static let forwardSkipSeconds: Double = 30
     static let automationSettingsPreferenceKey = "wilted.automation.settings"
     static let deferredAutomaticPreparationsPreferenceKey = "wilted.automation.deferredPreparations"
-    /// The monotonic preparation request sequence, persisted so the click
-    /// order survives a relaunch. It lives in preferences rather than the
-    /// library store because it is this process's ordering of requests, not
-    /// library content: it is a small scalar written on a click, it must not
-    /// fail or block on a store transaction, and losing it costs only the
-    /// relative order of requests made before the loss.
+    /// The monotonic preparation request sequence's fallback home.
+    ///
+    /// The ticket table (`WorkTicketRecord`, via `LocalLibraryStore`) is now
+    /// the writer of record for a request's place in line: a number without a
+    /// durable ticket behind it is exactly the bug a relaunch used to hit,
+    /// because an unrunnable in-memory request could not survive the process
+    /// that made it. Issuing a ticket is already a store write -- the request
+    /// it is for already implied one, in the form of the download claim or
+    /// the preparation admission it is ordering -- so there is nothing left
+    /// for a preferences-only counter to save the reader from.
+    ///
+    /// This key still exists for the moment before that write lands: a click
+    /// must not fail or block waiting on a store transaction, so
+    /// `nextPreparationRequestSequence()` still stamps the scalar here
+    /// synchronously, and `reconcileWorkTickets(in:)` reads it once as
+    /// `sequenceFloor` and clears it once every ticket it names is durable.
+    /// A store-less launch has no ticket table to reconcile into, so its
+    /// requests live here, in memory and in this preference, for exactly as
+    /// long as the process that made them -- the documented degrade, not a
+    /// crash.
     static let preparationRequestSequencePreferenceKey = "wilted.preparation.requestSequence"
     static let textScalePreferenceKey = "wilted.appearance.textScale"
     /// When automation last completed a refresh.
@@ -2398,6 +2421,15 @@ final class WiltedMacModel {
         // taken now, so a later download that finishes first still queues
         // behind it.
         registerPreparationRequest(for: episode.id)
+        // A distinct ticket from the preparation one above -- downloads are
+        // not ordered against each other (`registerPreparationRequest`'s
+        // number is for the preparation gate only), so this one's sequence
+        // is whatever the store allocates next.
+        Task { [weak self] in
+            await self?.recordWorkTicketTransition(
+                kind: .podcastDownload, subjectID: episode.id, state: .pending
+            )
+        }
         updateEpisode(episode.id) { $0.downloadState = .queued }
         podcastOperationMessage = "Queued \(episode.title) for download."
         podcastDownloadTasks[episode.id] = Task { [weak self] in
@@ -2426,6 +2458,9 @@ final class WiltedMacModel {
                     throw PodcastClaimAlreadyHeld()
                 }
             }
+            await self.recordWorkTicketTransition(
+                kind: .podcastDownload, subjectID: episode.id, state: .running
+            )
             do {
                 guard let store = self.store else { throw CancellationError() }
                 let result = try await coordinator.download(episodeID: itemID,
@@ -2492,14 +2527,34 @@ final class WiltedMacModel {
                     self.subscriptions = values.subscriptions
                     self.dismissedEpisodes = try await self.loadDismissedEpisodes(from: store)
                 } catch {}
+                await self.recordWorkTicketTransition(
+                    kind: .podcastDownload, subjectID: episode.id, state: .succeeded
+                )
                 return result
             } catch PodcastDownloadCoordinatorError.cancelled {
                 self.updateEpisode(episode.id) { $0.downloadState = .cancelled }
                 self.podcastOperationMessage = "Download cancelled."
+                await self.recordWorkTicketTransition(
+                    kind: .podcastDownload, subjectID: episode.id, state: .cancelled
+                )
                 throw PodcastDownloadCoordinatorError.cancelled
             } catch {
                 self.updateEpisode(episode.id) { $0.downloadState = .failed }
                 self.podcastOperationMessage = "Download failed. Retry when you are online."
+                // This is the across-attempt seam: `withRetries` (unchanged,
+                // in `WiltedAutomationCoordinator`) retries a `.retryable`
+                // failure in-process up to its own bound before this throw
+                // ever escapes back out to it; a `.terminal` one is wrapped
+                // non-retryable one call up, in `startClaimedDownload`, so
+                // `withRetries` never sees it twice. Either way, by the time
+                // this catch runs the ticket is the durable record of that
+                // attempt's outcome, independent of whether automation or a
+                // deliberate click made it.
+                let failureKind = (error as? PodcastDownloadCoordinatorError)?.failureKind ?? .retryable
+                await self.recordWorkTicketTransition(
+                    kind: .podcastDownload, subjectID: episode.id, state: .failed,
+                    failureKind: failureKind.rawValue, lastFailureMessage: String(describing: error)
+                )
                 throw error
             }
         }
@@ -2708,6 +2763,12 @@ final class WiltedMacModel {
         if let existing = preparationRequestSequences[episodeID] { return existing }
         let sequence = nextPreparationRequestSequence()
         preparationRequestSequences[episodeID] = sequence
+        Task { [weak self] in
+            await self?.recordWorkTicketTransition(
+                kind: .podcastPreparation, subjectID: episodeID,
+                requestSequence: sequence, state: .pending
+            )
+        }
         return sequence
     }
 
@@ -2723,15 +2784,112 @@ final class WiltedMacModel {
     /// Falls back to a fresh number when the request did not come through a
     /// download (a manual Prepare on an already-downloaded episode).
     @discardableResult
-    func consumePreparationRequest(for episodeID: String) -> Int {
-        if let existing = preparationRequestSequences.removeValue(forKey: episodeID) { return existing }
-        return nextPreparationRequestSequence()
+    func consumePreparationRequest(
+        for episodeID: String,
+        kind: WorkTicketKind = .podcastPreparation,
+        policySnapshot: Data? = nil,
+        processingPolicy: Data? = nil
+    ) -> Int {
+        let sequence: Int
+        if let existing = preparationRequestSequences.removeValue(forKey: episodeID) {
+            sequence = existing
+        } else {
+            sequence = nextPreparationRequestSequence()
+        }
+        // One write for this transition, carrying whatever policy is already
+        // known at admission time in the same call: two separate fire-and-
+        // forget writes here (one for the state, one for the policy) would
+        // race each other's read-modify-write against the same ticket row.
+        Task { [weak self] in
+            await self?.recordWorkTicketTransition(
+                kind: kind, subjectID: episodeID, requestSequence: sequence, state: .running,
+                policySnapshot: policySnapshot, processingPolicy: processingPolicy
+            )
+        }
+        return sequence
     }
 
     /// Gives up a request's place, for a row that can no longer run: a retired,
     /// hidden, or removed episode. The sequence itself is not reused.
     func withdrawPreparationRequest(for episodeID: String) {
         preparationRequestSequences.removeValue(forKey: episodeID)
+        Task { [weak self] in
+            await self?.recordWorkTicketTransition(
+                kind: .podcastPreparation, subjectID: episodeID, state: .cancelled
+            )
+        }
+    }
+
+    /// Crosses one work-ticket state transition into the store's actor-isolated
+    /// ticket table. Best-effort and fire-and-forget by design: the in-memory
+    /// projection (`preparationRequestSequences`) is already what the reader
+    /// sees and what orders the gate, so a store-less model or a call that
+    /// throws must not fail or block the caller -- it only fails to make this
+    /// one transition durable yet. A ticket a launch could not write here is
+    /// recreated (as `.pending`) by the next successful
+    /// `reconcileWorkTickets(in:)` pass instead, which is what keeps a
+    /// store-less request from being lost outright rather than merely
+    /// delayed.
+    ///
+    /// `issueWorkTicket` is a find-or-insert: calling this for a ticket that
+    /// already exists never resets its `requestSequence` or overwrites a
+    /// `policySnapshot`/`processingPolicy` already captured. That is what
+    /// makes the immutable-policy-at-admission guarantee hold even though
+    /// this same helper is called more than once across one request's
+    /// lifetime (pending, then running, then a terminal state).
+    /// The work-ticket durability log. A rejected or failed transition write
+    /// is not silent: it lands here at `.warning`, retrievable with
+    /// `log show --predicate 'subsystem == "com.zerodelta.wilted.mac"'`.
+    private static let workTicketLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "WorkTicket")
+
+    /// Records one state transition for a work ticket, find-or-inserting it
+    /// first if this is its first write.
+    ///
+    /// The actual find/validate/mutate/save happens in a single call to
+    /// `LocalLibraryStore.applyWorkTicketTransition` -- one actor hop, no
+    /// `await` in the middle -- because that is what serializes two
+    /// concurrent transitions for the same subject. This method is called
+    /// from detached `Task`s at nine call sites (register/consume/withdraw,
+    /// download, article and podcast preparation), and Swift gives no
+    /// ordering guarantee between those Tasks: a `.running` written by one
+    /// can race a `.pending` written by another for the same subject. Doing
+    /// the whole transition inside one actor-isolated store call, rather than
+    /// composing `issueWorkTicket` + local mutation + `upsertWorkTicket`
+    /// across two awaits, is what closes that window -- the actor itself
+    /// orders the two calls, whichever arrives second simply sees the first
+    /// one's result already applied.
+    ///
+    /// Errors are never swallowed. An illegal transition (a terminal ticket
+    /// dragged back open) and any store-level failure are both logged at
+    /// `.warning` with the subject and the attempted state; a lost or
+    /// rejected ticket write has to be observable somewhere, given the
+    /// store's own measured behavior that a conflicting unique-constraint
+    /// insert already throws on neither side.
+    private func recordWorkTicketTransition(
+        kind: WorkTicketKind,
+        subjectID: String,
+        requestSequence: Int? = nil,
+        state: WorkTicketState,
+        resolvedItemID: String? = nil,
+        policySnapshot: Data? = nil,
+        processingPolicy: Data? = nil,
+        failureKind: String? = nil,
+        lastFailureMessage: String? = nil
+    ) async {
+        guard let store else { return }
+        let now = Timestamp(Date())
+        do {
+            _ = try await store.applyWorkTicketTransition(
+                kind: kind, subjectID: subjectID, requestSequence: requestSequence,
+                resolvedItemID: resolvedItemID, policySnapshot: policySnapshot,
+                processingPolicy: processingPolicy, to: state,
+                failureKind: failureKind, lastFailureMessage: lastFailureMessage, at: now
+            )
+        } catch {
+            Self.workTicketLog.warning(
+                "work ticket transition failed: kind=\(kind.rawValue, privacy: .public) subject=\(subjectID, privacy: .public) attemptedState=\(state.rawValue, privacy: .public) error=\(String(describing: error), privacy: .public)"
+            )
+        }
     }
 
     /// Removes the advertisements and synchronises the transcript.
@@ -2811,7 +2969,14 @@ final class WiltedMacModel {
         // The request sequence was issued when the reader asked for the
         // episode, so the gate can order this run against requests that have
         // not finished downloading yet.
-        let requestSequence = consumePreparationRequest(for: episode.id)
+        // Encoded once here, at admission, and never re-derived: the ticket
+        // this becomes carries this exact snapshot verbatim through to run
+        // start, even if `automationSettings` changes while the run sits
+        // queued behind another one on the gate.
+        let admittedPolicyData = try? JSONEncoder().encode(policySnapshot)
+        let requestSequence = consumePreparationRequest(
+            for: episode.id, policySnapshot: admittedPolicyData
+        )
         podcastPreparationTasks[episode.id] = Task { [weak self] in
             defer {
                 self?.podcastPreparationTasks[episode.id] = nil
@@ -2826,6 +2991,9 @@ final class WiltedMacModel {
             } catch {
                 self?.updateEpisode(episode.id) { $0.preparationState = .notPrepared }
                 self?.podcastOperationMessage = "Preparation cancelled."
+                await self?.recordWorkTicketTransition(
+                    kind: .podcastPreparation, subjectID: episode.id, state: .cancelled
+                )
                 return
             }
             defer { gate.release() }
@@ -2835,11 +3003,25 @@ final class WiltedMacModel {
                 self?.updateEpisode(episode.id) { $0.preparationState = .preparing(stage: Self.preparingStage) }
                 self?.podcastOperationMessage = "Preparing \(episode.title)…"
             }
+            // Decoded verbatim from the ticket written at admission, never
+            // re-derived from live settings at run start. Falls back to the
+            // locally-captured snapshot only when there is no store (fixture
+            // mode, or a store-less test) to have written the ticket at all.
+            var runPolicySnapshot = policySnapshot
+            if let self, let store = self.store,
+               let ticket = try? await store.workTicket(kind: .podcastPreparation, subjectID: episode.id),
+               let data = ticket.policySnapshot,
+               let decoded = try? JSONDecoder().decode(PodcastPreparationPolicySnapshot.self, from: data) {
+                runPolicySnapshot = decoded
+            }
             do {
-                let result = try await pipeline.prepare(episodeID: itemID, policy: policySnapshot)
+                let result = try await pipeline.prepare(episodeID: itemID, policy: runPolicySnapshot)
                 guard let self else { return }
                 let summary = result.summary
                 self.podcastOperationMessage = "\(episode.title): \(summary)"
+                await self.recordWorkTicketTransition(
+                    kind: .podcastPreparation, subjectID: episode.id, state: .succeeded
+                )
                 if let store = self.store {
                     let values = try await self.loadLibrary(from: store)
                     self.articles = values.articles
@@ -2864,10 +3046,24 @@ final class WiltedMacModel {
             } catch is CancellationError {
                 self?.updateEpisode(episode.id) { $0.preparationState = .notPrepared }
                 self?.podcastOperationMessage = "Preparation cancelled."
+                await self?.recordWorkTicketTransition(
+                    kind: .podcastPreparation, subjectID: episode.id, state: .cancelled
+                )
             } catch {
                 // The reason is on Prep, with the log that led to it.
                 self?.updateEpisode(episode.id) { $0.preparationState = .failed(Self.preparationFailedLabel) }
                 self?.podcastOperationMessage = "\(episode.title): \(Self.preparationFailedLabel)"
+                // `PreparationCoordinator` classifies every terminal failure
+                // into a `ProducerError` with its own `retryable` flag before
+                // it ever reaches here; anything else reaching this catch
+                // (a decode fault, a thrown non-`ProducerError`) has no
+                // classification to trust and is conservatively terminal.
+                let failureKind: PodcastDownloadFailureKind =
+                    (error as? ProducerError)?.retryable == true ? .retryable : .terminal
+                await self?.recordWorkTicketTransition(
+                    kind: .podcastPreparation, subjectID: episode.id, state: .failed,
+                    failureKind: failureKind.rawValue, lastFailureMessage: String(describing: error)
+                )
             }
         }
         return true
@@ -4187,7 +4383,9 @@ final class WiltedMacModel {
         // The place in line is taken here, where the reader asked, so an article
         // orders against podcast requests by intent rather than by whichever
         // task happened to reach the gate first.
-        let requestSequence = consumePreparationRequest(for: preparedItemID.rawValue)
+        let requestSequence = consumePreparationRequest(
+            for: preparedItemID.rawValue, kind: .articlePreparation
+        )
         // Decided now, so the composer can say so now rather than sitting on
         // "Validating article URL" for as long as the run ahead takes. A run
         // becomes the gate's business only when its task body reaches `admit()`,
@@ -4212,6 +4410,9 @@ final class WiltedMacModel {
                 self?.preparation = WiltedMacPreparation(
                     phase: .cancelled, detail: "Preparation cancelled.", fraction: nil, cancellable: false
                 )
+                await self?.recordWorkTicketTransition(
+                    kind: .articlePreparation, subjectID: preparedItemID.rawValue, state: .cancelled
+                )
                 return
             }
             defer { gate.release() }
@@ -4228,11 +4429,32 @@ final class WiltedMacModel {
                 self.update(status)
                 if status.terminal { break }
             }
-            if self.preparation?.phase == .completed {
+            switch self.preparation?.phase {
+            case .completed:
                 await self.refreshLifetimeStatistics()
                 if await self.queuePreparedPublication(itemID: preparedItemID) {
                     self.syncLifecycle?.startAutomaticUpload()
                 }
+                await self.recordWorkTicketTransition(
+                    kind: .articlePreparation, subjectID: preparedItemID.rawValue, state: .succeeded
+                )
+            case .cancelled:
+                await self.recordWorkTicketTransition(
+                    kind: .articlePreparation, subjectID: preparedItemID.rawValue, state: .cancelled
+                )
+            default:
+                // The failure detail already carries whatever the status
+                // stream reported; no `ProducerError` is available at this
+                // boundary to classify further, so this is conservatively
+                // `.retryable` -- unlike a podcast run, there is no bounded
+                // in-process retry upstream of this ticket at all, so
+                // marking it terminal would only ever hide a retry option
+                // the reader could otherwise take from Prep.
+                await self.recordWorkTicketTransition(
+                    kind: .articlePreparation, subjectID: preparedItemID.rawValue, state: .failed,
+                    failureKind: PodcastDownloadFailureKind.retryable.rawValue,
+                    lastFailureMessage: self.preparation?.detail
+                )
             }
             self.preparationRun = nil
             self.refresh()
@@ -5786,6 +6008,11 @@ final class WiltedMacModel {
             // that tells the truth about what is running: nothing, yet.
             announceStartupStep(.closingInterruptedRuns)
             await closeInterruptedPreparationRuns(in: configuredStore)
+            // After the close, so the journal already says failed and the
+            // ticket queue agrees rather than contradicts it; before the
+            // library load, so the first rows drawn are already reconciled.
+            announceStartupStep(.reconcilingWork)
+            await reconcileWorkTickets(in: configuredStore)
             announceStartupStep(.loadingLibrary)
             let library = try await loadLibrary(from: configuredStore)
             articles = library.articles
@@ -5929,6 +6156,70 @@ final class WiltedMacModel {
         return PreparationJournalEntry(
             id: run.requestID + "|interrupted", itemID: run.itemID, requestID: run.requestID, status: status
         )
+    }
+
+    /// Drives the store's idempotent work-ticket bootstrap and, only after it
+    /// saves without throwing, deletes the preferences this launch imported
+    /// from. Deleting first would lose the deferrals if the save failed;
+    /// deleting only after a clean return means a failed pass leaves the
+    /// preferences in place for the next launch to import again, which the
+    /// store's own find-or-insert makes harmless.
+    ///
+    /// `deferredAutomaticPreparations` and `preparationRequestSequence` are
+    /// already the in-memory values loaded from preferences at `init` --
+    /// this does not re-read preferences, it just crosses what init already
+    /// read into the store actor's vocabulary.
+    ///
+    /// After the store's own idempotent pass returns, `preparationRequestSequences`
+    /// and `preparationRequestSequence` are rebuilt from `store.workTickets()`
+    /// -- the ticket table, not this launch's preferences -- which is what
+    /// lets a request still pending at relaunch keep its number and its
+    /// place: rebuilding here, after the store's import/adopt steps above,
+    /// means an imported deferral or an in-memory request carried over from
+    /// this same launch (the store-less fallback below) is already a row by
+    /// the time the projection reads it back.
+    private func reconcileWorkTickets(in store: LocalLibraryStore) async {
+        let encoder = JSONEncoder()
+        var importedDeferrals = deferredAutomaticPreparations.map { job in
+            WorkTicketImportedDeferral(
+                subjectID: job.episodeID,
+                policySnapshot: try? encoder.encode(job.policySnapshot),
+                processingPolicy: try? encoder.encode(job.processingPolicy)
+            )
+        }
+        // The store-less fallback: a preparation request issued while `store`
+        // was nil (or before this launch's bootstrap reached this point) has
+        // only ever lived in `preparationRequestSequences`, in memory. Rather
+        // than lose it outright, it is carried into the next successful
+        // reconcile as an imported deferral, same as a preferences-held
+        // off-peak job -- degrading to "picked up a beat late" instead of
+        // "silently dropped". `WorkTicketImportedDeferral` only knows one
+        // kind (`.podcastPreparation`, matching `reconcileWorkTickets`'s own
+        // step 1); an article request carried this way would be misclassified,
+        // but a store-less model never reaches `addArticle`'s admission point
+        // at all (it returns at the coordinator guard), so no article subject
+        // can appear in this dictionary in practice.
+        let alreadyImported = Set(deferredAutomaticPreparations.map(\.episodeID))
+        for subjectID in preparationRequestSequences.keys where !alreadyImported.contains(subjectID) {
+            importedDeferrals.append(WorkTicketImportedDeferral(subjectID: subjectID))
+        }
+        do {
+            _ = try await store.reconcileWorkTickets(
+                now: Timestamp(Date()), sequenceFloor: preparationRequestSequence,
+                importedDeferrals: importedDeferrals
+            )
+        } catch {
+            return
+        }
+        preferences.removeObject(forKey: Self.deferredAutomaticPreparationsPreferenceKey)
+        preferences.removeObject(forKey: Self.preparationRequestSequencePreferenceKey)
+
+        guard let tickets = try? await store.workTickets() else { return }
+        preparationRequestSequence = max(preparationRequestSequence, tickets.map(\.requestSequence).max() ?? 0)
+        preparationRequestSequences = tickets
+            .filter { ($0.kind == .podcastPreparation || $0.kind == .articlePreparation)
+                && ($0.state == .pending || $0.state == .deferred) }
+            .reduce(into: [String: Int]()) { result, ticket in result[ticket.subjectID] = ticket.requestSequence }
     }
 
     private func configureStoreDependencies(_ configuredStore: LocalLibraryStore?) {

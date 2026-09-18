@@ -2765,6 +2765,314 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(rebuilt.registerPreparationRequest(for: "episode-three"), 3)
     }
 
+    /// Step 4's done-condition: a request pending at relaunch keeps its
+    /// number and its place, because the ticket table -- not preferences --
+    /// is now the writer of record. Two requests are registered and their
+    /// distinct numbers asserted (the in-memory face, live) *before*
+    /// teardown, proving the pre-relaunch half is not just assumed; the
+    /// rebuilt model's projection and a raw store read afterward both prove
+    /// the post-relaunch half.
+    func testAPendingRequestKeepsItsPlaceAcrossARelaunch() async throws {
+        let directory = temporaryDirectory("ticket-relaunch")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let libraryURL = directory.appendingPathComponent("library.sqlite")
+        let storeCapture = StoreCapture()
+
+        let first = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                await storeCapture.capture(store)
+                return store
+            },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        first.startStoreBootstrap()
+        await first.waitForStoreBootstrap()
+        XCTAssertEqual(first.startupState, .ready)
+
+        let lowerSequence = first.registerPreparationRequest(for: "episode-alpha")
+        let higherSequence = first.registerPreparationRequest(for: "episode-beta")
+        XCTAssertNotEqual(lowerSequence, higherSequence, "two distinct requests, two distinct numbers")
+        XCTAssertEqual(first.preparationRequestSequences["episode-alpha"], lowerSequence,
+                       "live, in-memory, before teardown")
+        XCTAssertEqual(first.preparationRequestSequences["episode-beta"], higherSequence,
+                       "live, in-memory, before teardown")
+
+        // `registerPreparationRequest`'s ticket write is fire-and-forget from
+        // an async context it does not itself await; poll the durable table
+        // rather than assume a fixed number of yields is enough.
+        let capturedStoreOrNil = await storeCapture.store
+        let capturedStore = try XCTUnwrap(capturedStoreOrNil)
+        func pendingTicketCount() async throws -> Int {
+            try await capturedStore.workTickets().filter {
+                $0.kind == .podcastPreparation && $0.state == .pending
+            }.count
+        }
+        var attempts = 0
+        while attempts < 50, try await pendingTicketCount() < 2 {
+            try await Task.sleep(nanoseconds: 20_000_000)
+            attempts += 1
+        }
+        let finalCount = try await pendingTicketCount()
+        XCTAssertEqual(finalCount, 2, "both requests must have become durable tickets")
+
+        let second = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in try LocalLibraryStore(url: url) },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        second.startStoreBootstrap()
+        await second.waitForStoreBootstrap()
+        XCTAssertEqual(second.startupState, .ready)
+
+        XCTAssertEqual(second.preparationRequestSequences["episode-alpha"], lowerSequence,
+                       "the still-pending request kept its original number across the relaunch")
+        XCTAssertEqual(second.preparationRequestSequences["episode-beta"], higherSequence,
+                       "the still-pending request kept its original number across the relaunch")
+
+        let reopenedStore = try LocalLibraryStore(url: libraryURL)
+        let alphaTicket = try await reopenedStore.workTicket(kind: .podcastPreparation, subjectID: "episode-alpha")
+        XCTAssertEqual(alphaTicket?.requestSequence, lowerSequence)
+        XCTAssertEqual(alphaTicket?.state, .pending)
+        let betaTicket = try await reopenedStore.workTicket(kind: .podcastPreparation, subjectID: "episode-beta")
+        XCTAssertEqual(betaTicket?.requestSequence, higherSequence)
+        XCTAssertEqual(betaTicket?.state, .pending)
+    }
+
+    /// Regression for a lost-update race: `registerPreparationRequest`
+    /// (writes `.pending`) and `consumePreparationRequest` (writes
+    /// `.running`) both dispatch detached `Task`s into
+    /// `recordWorkTicketTransition`, and Swift gives no ordering guarantee
+    /// between them. Calling both back-to-back with no `await` in between --
+    /// no quiescence wait, unlike every other test in this file -- is exactly
+    /// the shape that let the two writes interleave and the later one
+    /// silently clobber the earlier one's `state`/`attemptCount`.
+    ///
+    /// Whichever of the two `Task`s actually lands first at the store, the
+    /// ticket must settle on `.running` with `attemptCount == 1`: consume
+    /// logically follows register (it was called second, on the same
+    /// actor-isolated caller, and it already removed the sequence from
+    /// `preparationRequestSequences`), so `.running` is the only correct
+    /// final state -- a `.pending` win would mean the transition that
+    /// happened later in real dispatch order got discarded.
+    func testInterleavedRegisterAndConsumeSettleOnTheLaterTransition() async throws {
+        let directory = temporaryDirectory("ticket-interleave")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let libraryURL = directory.appendingPathComponent("library.sqlite")
+        let storeCapture = StoreCapture()
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                await storeCapture.capture(store)
+                return store
+            },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        XCTAssertEqual(model.startupState, .ready)
+
+        // No `await` between these two calls: both fire their transition
+        // `Task`s into flight before either has a chance to land.
+        let sequence = model.registerPreparationRequest(for: "episode-interleaved")
+        let consumedSequence = model.consumePreparationRequest(for: "episode-interleaved")
+        XCTAssertEqual(sequence, consumedSequence, "consume claims the exact number register reserved")
+
+        let capturedStoreOrNil = await storeCapture.store
+        let capturedStore = try XCTUnwrap(capturedStoreOrNil)
+        func settledTicket() async throws -> WorkTicket? {
+            try await capturedStore.workTicket(kind: .podcastPreparation, subjectID: "episode-interleaved")
+        }
+        var attempts = 0
+        var fetched = try await settledTicket()
+        while attempts < 50, fetched?.state != .running {
+            try await Task.sleep(nanoseconds: 20_000_000)
+            fetched = try await settledTicket()
+            attempts += 1
+        }
+        let ticket = try XCTUnwrap(fetched)
+        XCTAssertEqual(ticket.state, .running, "the later (running) transition must win, never the earlier pending")
+        XCTAssertEqual(ticket.attemptCount, 1, "exactly one attempt recorded, not zero and not double-counted")
+        XCTAssertEqual(ticket.requestSequence, sequence)
+
+        // Reopen the store directly, independent of the live model, to prove
+        // this is durable and not just an in-memory read.
+        let reopenedStore = try LocalLibraryStore(url: libraryURL)
+        let reopenedTicket = try await reopenedStore.workTicket(kind: .podcastPreparation, subjectID: "episode-interleaved")
+        XCTAssertEqual(reopenedTicket?.state, .running)
+        XCTAssertEqual(reopenedTicket?.attemptCount, 1)
+    }
+
+    /// Step 5's done-condition: a download that exhausts `withRetries`'
+    /// bounded backoff and a preparation that fails outright both settle on
+    /// a `.failed` ticket naming a `PodcastDownloadFailureKind`, read back
+    /// from the store -- not inferred from in-memory model state.
+    func testAFailingDownloadAndAFailingPreparationBothSettleOnANamedTerminalTicket() async throws {
+        let directory = temporaryDirectory("ticket-failure-classification")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/ticket-failure.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let downloadEnclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/ticket-failure-download.mp3"))
+        let downloadEpisodeID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "ticket-failure-download", enclosureURL: downloadEnclosureURL
+        )
+        let prepEnclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/ticket-failure-prep.mp3"))
+        let prepEpisodeID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "ticket-failure-prep", enclosureURL: prepEnclosureURL
+        )
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let counter = DownloadAttemptCounter()
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Ticket failure feed", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await store.save(episode: try PodcastEpisode(
+                    itemID: downloadEpisodeID, feedID: feedID, feedURL: feedURL, rssGUID: "ticket-failure-download",
+                    title: "Failing download", publishedTime: created, enclosureURL: downloadEnclosureURL,
+                    enclosureMediaType: "audio/mpeg", createdAt: created
+                ))
+                // A stranded claim: automation's reconcile drains it with
+                // `alreadyClaimed: true`, exactly as a relaunch after a crash
+                // mid-download would, and the transport below always
+                // answers 503 -- retryable, and `withRetries` exhausts its
+                // bound rather than succeeding.
+                try await store.save(download: PodcastDownload(
+                    episodeID: downloadEpisodeID, status: .queued, updatedAt: created
+                ))
+                try await store.save(episode: try PodcastEpisode(
+                    itemID: prepEpisodeID, feedID: feedID, feedURL: feedURL, rssGUID: "ticket-failure-prep",
+                    title: "Failing preparation", publishedTime: created, enclosureURL: prepEnclosureURL,
+                    enclosureMediaType: "audio/mpeg", createdAt: created
+                ))
+                // Deliberately no download row for this one: `pipeline.prepare`
+                // refuses an episode with nothing downloaded before it ever
+                // reaches a worker, which is a real, deterministic failure.
+                return store
+            },
+            podcastDownloadTransportFactory: {
+                CountingFailingPodcastDownloadTransport(enclosureURL: downloadEnclosureURL, statusCode: 503, counter: counter)
+            },
+            podcastMediaValidatorFactory: { StubPodcastMediaValidator(duration: 12) },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        XCTAssertEqual(model.startupState, .ready)
+        // Drains the stranded claim above through the real bounded retry
+        // schedule; by the time this returns the download's ticket write
+        // already happened inside the same task `withRetries` awaited.
+        await model.waitForAutomation()
+
+        let prepEpisode = WiltedMacEpisode(
+            id: prepEpisodeID.rawValue, title: "Failing preparation", feedTitle: "Ticket failure feed",
+            summary: "", artworkURL: nil, releasedAt: created.date, durationSeconds: nil,
+            playbackSeconds: 0, downloadState: .notDownloaded
+        )
+        model.installEpisodeForTesting(prepEpisode)
+        model.prepareEpisode(prepEpisode)
+        await model.waitForPodcastPreparationOperationsForTesting()
+
+        let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        let downloadTicket = try await store.workTicket(kind: .podcastDownload, subjectID: downloadEpisodeID.rawValue)
+        XCTAssertEqual(downloadTicket?.state, .failed)
+        XCTAssertEqual(downloadTicket?.failureKind, PodcastDownloadFailureKind.retryable.rawValue,
+                       "a 503 is `.invalidResponse`, classified retryable")
+
+        let prepTicket = try await store.workTicket(kind: .podcastPreparation, subjectID: prepEpisodeID.rawValue)
+        XCTAssertEqual(prepTicket?.state, .failed)
+        XCTAssertNotNil(prepTicket?.failureKind, "a failed ticket must name a failure kind")
+    }
+
+    /// Step 5's other done-condition: the ticket's `policySnapshot` is the
+    /// one captured when the run was admitted, not whatever `automationSettings`
+    /// says by the time the run actually starts. The gate is held closed so
+    /// the mutation below provably lands in the window between admission and
+    /// run start rather than before either.
+    func testTheAdmittedPolicyEqualsTheSnapshotCapturedAtRequest() async throws {
+        let directory = temporaryDirectory("ticket-admitted-policy")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/ticket-policy.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/ticket-policy.mp3"))
+        let episodeID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "ticket-policy", enclosureURL: enclosureURL
+        )
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Ticket policy feed", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    episodeID, guid: "ticket-policy", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: enclosureURL, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                return store
+            },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        XCTAssertEqual(model.startupState, .ready)
+
+        // Holds the gate closed so `prepareEpisode` below admits, is issued
+        // a ticket, and then sits queued rather than starting immediately.
+        let gate = model.preparationGateForTesting
+        try await gate.admit(sequence: 1)
+
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .immediate,
+            transcriptPolicy: .bestAvailable, removeAds: false
+        ))
+        let episode = try XCTUnwrap(model.episodes.first(where: { $0.id == episodeID.rawValue }))
+        model.prepareEpisode(episode)
+
+        let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        func admittedTicket() async throws -> WorkTicket? {
+            try await store.workTicket(kind: .podcastPreparation, subjectID: episodeID.rawValue)
+        }
+        var pollAttempts = 0
+        while pollAttempts < 50, try await admittedTicket()?.policySnapshot == nil {
+            try await Task.sleep(nanoseconds: 20_000_000)
+            pollAttempts += 1
+        }
+        let fetchedAtAdmission = try await admittedTicket()
+        let ticketAtAdmission = try XCTUnwrap(fetchedAtAdmission)
+        let snapshotAtAdmission = try XCTUnwrap(ticketAtAdmission.policySnapshot)
+        let decodedAtAdmission = try JSONDecoder().decode(PodcastPreparationPolicySnapshot.self, from: snapshotAtAdmission)
+        XCTAssertEqual(decodedAtAdmission.removeAds, false, "captured from the settings in effect at admission")
+
+        // Mutated only now, after admission -- while the run still sits
+        // queued behind the gate held above.
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .immediate,
+            transcriptPolicy: .bestAvailable, removeAds: true
+        ))
+
+        let ticketAfterMutation = try await admittedTicket()
+        let snapshotAfterMutation = try XCTUnwrap(ticketAfterMutation?.policySnapshot)
+        let decodedAfterMutation = try JSONDecoder().decode(PodcastPreparationPolicySnapshot.self, from: snapshotAfterMutation)
+        XCTAssertEqual(decodedAfterMutation.removeAds, false,
+                       "the ticket's policy is immutable once admitted -- a later settings change must not reach it")
+
+        // Unstick the run so the task does not outlive the test.
+        gate.release()
+        await model.waitForPodcastPreparationOperationsForTesting()
+    }
+
     /// Ordering preparations must not order downloads. Two ordinary downloads
     /// still overlap, and the peak is asserted so this diff cannot silently
     /// serialize transfers.
@@ -3646,6 +3954,73 @@ final class WiltedMacModelTests: XCTestCase {
                        "the target run should have been pushed out of Prep's cap by the 200 newer filler runs")
     }
 
+    /// Step 3 done-condition. A model built WITHOUT `storeBootstrap:` never
+    /// reaches `performStoreBootstrap` at all -- `addArticle` and friends
+    /// return early at the coordinator guard -- so asserting only against
+    /// the model's own published state here would pass even if reconcile
+    /// were never wired in. Every assertion below instead reads a ticket row
+    /// back from the store the bootstrap closure captured, and the
+    /// preferences key is checked on the same `UserDefaults` instance the
+    /// model was built with, not a fresh one.
+    func testBootstrapImportsDeferredPreparationsFromPreferencesIntoTickets() async throws {
+        let directory = temporaryDirectory("reconcile-imports-deferrals")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let feedURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/reconcile-bootstrap/feed.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let enclosureURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/reconcile-bootstrap/episode.mp3"))
+        let episodeID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "reconcile-bootstrap", enclosureURL: enclosureURL
+        )
+        let created = Timestamp(Date(timeIntervalSince1970: 1_650_000_000))
+
+        let preferences = WiltedMacTestPreferences.ephemeral()
+        let window = try XCTUnwrap(WiltedAutomationOffPeakWindow(
+            start: try XCTUnwrap(WiltedAutomationLocalTime(hour: 1, minute: 0)),
+            end: try XCTUnwrap(WiltedAutomationLocalTime(hour: 2, minute: 0))
+        ))
+        WiltedMacModel.persistDeferredAutomaticPreparations([
+            WiltedMacModel.DeferredAutomaticPreparation(
+                episodeID: episodeID.rawValue,
+                processingPolicy: .offPeak(window),
+                policySnapshot: PodcastPreparationPolicySnapshot(transcriptPolicy: .noLocalSTT, removeAds: false)
+            )
+        ], to: preferences)
+        preferences.set(41, forKey: WiltedMacModel.preparationRequestSequencePreferenceKey)
+
+        let storeCapture = StoreCapture()
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Reconcile bootstrap show", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                await storeCapture.capture(store)
+                return store
+            },
+            preferences: preferences
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        XCTAssertEqual(model.startupState, .ready)
+
+        let capturedStoreOrNil = await storeCapture.store
+        let capturedStore = try XCTUnwrap(capturedStoreOrNil)
+        let tickets = try await capturedStore.workTickets()
+        let imported = try XCTUnwrap(
+            tickets.first { $0.kind == .podcastPreparation && $0.subjectID == episodeID.rawValue },
+            "the deferral read from preferences at launch must have become a durable work ticket"
+        )
+        XCTAssertEqual(imported.state, .pending)
+        XCTAssertGreaterThan(imported.requestSequence, 41,
+                             "a newly imported ticket's sequence must be above the imported pre-V12 floor")
+        XCTAssertNotNil(imported.policySnapshot, "the deferral's policy snapshot must have crossed into the ticket")
+        XCTAssertNotNil(imported.processingPolicy, "the deferral's processing policy must have crossed into the ticket")
+
+        XCTAssertNil(preferences.data(forKey: WiltedMacModel.deferredAutomaticPreparationsPreferenceKey),
+                    "the deferred-preparations preference key must be cleared once the tickets it named are durable")
+    }
 
     // MARK: Transcript synchronisation
 
@@ -6031,6 +6406,7 @@ final class WiltedMacModelTests: XCTestCase {
             .retiringFinishedEpisodes,
             .checkingPreparationFingerprint,
             .closingInterruptedRuns,
+            .reconcilingWork,
             .loadingLibrary,
             .restoringPlayback,
         ])
