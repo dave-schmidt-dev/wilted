@@ -727,7 +727,7 @@ private enum LocalLibrarySchemaV2Models {
     }
 }
 
-private enum LocalLibrarySchemaV3Models {
+internal enum LocalLibrarySchemaV3Models {
     @Model final class ArticleRecord {
         @Attribute(.unique) var id: String
         var canonicalURL: String
@@ -765,6 +765,28 @@ private enum LocalLibrarySchemaV3Models {
             durationSeconds = revision.durationSeconds; byteCount = revision.byteCount
             contentHash = revision.contentHash; mediaType = revision.mediaType
             self.mediaURL = mediaURL.absoluteString; createdAt = revision.createdAt.date
+            self.schemaVersion = schemaVersion
+        }
+
+        init(
+            id: String,
+            itemID: String,
+            durationSeconds: Double = 42,
+            byteCount: Int64 = 128,
+            contentHash: String = "sha256:" + String(repeating: "a", count: 64),
+            mediaType: String = "audio/mp4",
+            mediaURL: String? = "file:///tmp/media.mp4",
+            createdAt: Date = Date(),
+            schemaVersion: Int = 3
+        ) {
+            self.id = id
+            self.itemID = itemID
+            self.durationSeconds = durationSeconds
+            self.byteCount = byteCount
+            self.contentHash = contentHash
+            self.mediaType = mediaType
+            self.mediaURL = mediaURL
+            self.createdAt = createdAt
             self.schemaVersion = schemaVersion
         }
     }
@@ -1497,7 +1519,7 @@ public actor LocalLibraryStore {
     public let cloudKitDatabase: String? = nil
     public let migrationBackupURL: URL?
 
-    private let container: ModelContainer
+    nonisolated internal let container: ModelContainer
 
     /// Number of `context.fetch` calls made by `podcastLibrarySnapshot()` since
     /// this store opened. Test-only: proves the snapshot's read cost stays
@@ -1924,6 +1946,63 @@ public actor LocalLibraryStore {
         context.insert(LocalLibrarySchemaV3Models.RepositoryStateRecord(stateData: data))
         try context.save()
     }
+
+    /// Seeds a raw revision record directly into the store without domain validation,
+    /// enabling regression tests for malformed persisted rows.
+    nonisolated internal func seedRevisionRecord(
+        in context: ModelContext? = nil,
+        id: String,
+        itemID: String,
+        durationSeconds: Double = 42,
+        byteCount: Int64 = 128,
+        contentHash: String = "sha256:" + String(repeating: "a", count: 64),
+        mediaType: String = "audio/mp4",
+        mediaURL: String? = "file:///tmp/media.mp4",
+        createdAt: Date = Date(),
+        schemaVersion: Int = 3
+    ) throws {
+        let ctx = context ?? ModelContext(container)
+        let record = LocalLibrarySchemaV3Models.RevisionRecord(
+            id: id,
+            itemID: itemID,
+            durationSeconds: durationSeconds,
+            byteCount: byteCount,
+            contentHash: contentHash,
+            mediaType: mediaType,
+            mediaURL: mediaURL,
+            createdAt: createdAt,
+            schemaVersion: schemaVersion
+        )
+        ctx.insert(record)
+        try ctx.save()
+    }
+
+    /// Convenience for seeding a malformed revision record.
+    nonisolated internal func seedMalformedRevision(
+        in context: ModelContext? = nil,
+        id: String = "malformed-revision",
+        itemID: String,
+        durationSeconds: Double = -1,
+        byteCount: Int64 = 128,
+        contentHash: String = "sha256:" + String(repeating: "a", count: 64),
+        mediaType: String = "audio/mp4",
+        mediaURL: String? = "file:///tmp/malformed.mp4",
+        createdAt: Date = Date(),
+        schemaVersion: Int = 3
+    ) throws {
+        try seedRevisionRecord(
+            in: context,
+            id: id,
+            itemID: itemID,
+            durationSeconds: durationSeconds,
+            byteCount: byteCount,
+            contentHash: contentHash,
+            mediaType: mediaType,
+            mediaURL: mediaURL,
+            createdAt: createdAt,
+            schemaVersion: schemaVersion
+        )
+    }
     #endif
 
     public func save(article: Article) throws {
@@ -2158,7 +2237,7 @@ public actor LocalLibraryStore {
     /// call sites resolved a single item's revision with `try?` and must
     /// keep processing the rest of the library on a malformed row, not abort
     /// reconciliation for every item because one is bad.
-    private func newestReadyRevisionsByItemID(in context: ModelContext) throws -> [String: StoredAudioRevision] {
+    nonisolated internal func newestReadyRevisionsByItemID(in context: ModelContext) throws -> [String: StoredAudioRevision] {
         let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
         var newestByItemID: [String: LocalLibrarySchemaV3Models.RevisionRecord] = [:]
         for record in records {
@@ -2176,6 +2255,10 @@ public actor LocalLibraryStore {
             result[itemIDRaw] = StoredAudioRevision(revision: revision, mediaURL: mediaURL)
         }
         return result
+    }
+
+    nonisolated internal func newestReadyRevisionsByItemID() throws -> [String: StoredAudioRevision] {
+        try newestReadyRevisionsByItemID(in: ModelContext(container))
     }
 
     /// Resolves one podcast revision without migrating any existing identity.

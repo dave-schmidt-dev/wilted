@@ -1,4 +1,6 @@
 import CryptoKit
+import Foundation
+import SwiftData
 import XCTest
 import WiltedDomain
 import WiltedSync
@@ -3383,6 +3385,55 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertGreaterThan(costAt3, 0)
         XCTAssertEqual(costAt30 - costAt3, costAt3,
                        "a 10x increase in episode count must not change the snapshot's fetch count")
+    }
+
+    func testNewestReadyRevisionsByItemIDSkipsMalformedRowAndReturnsWellFormedRows() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+
+        // Seed well-formed rows
+        let wellFormedArticle1 = try article()
+        let wellFormedRev1 = try revision(for: wellFormedArticle1, id: "rev-well-formed-1", at: 1_700_000_001)
+        let mediaURL1 = URL(fileURLWithPath: "/tmp/media-1.m4a")
+        try await store.save(article: wellFormedArticle1)
+        try await store.saveReadyRevision(wellFormedRev1, mediaURL: mediaURL1)
+
+        let article2URL = URL(string: "https://example.test/library/article-2")!
+        let wellFormedArticle2 = try Article(
+            itemID: ItemID.derive(from: article2URL),
+            canonicalURL: article2URL,
+            title: "Article Two",
+            source: "example.test",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_002))
+        )
+        let wellFormedRev2 = try revision(for: wellFormedArticle2, id: "rev-well-formed-2", at: 1_700_000_003)
+        let mediaURL2 = URL(fileURLWithPath: "/tmp/media-2.m4a")
+        try await store.save(article: wellFormedArticle2)
+        try await store.saveReadyRevision(wellFormedRev2, mediaURL: mediaURL2)
+
+        // Seed a malformed row that fails AudioRevision validation (e.g. non-positive duration)
+        let malformedItemID = "malformed-item"
+        try store.seedRevisionRecord(
+            id: "rev-malformed",
+            itemID: malformedItemID,
+            durationSeconds: -5.0,
+            byteCount: 128,
+            contentHash: "sha256:" + String(repeating: "f", count: 64),
+            mediaType: "audio/mp4",
+            mediaURL: "file:///tmp/malformed.m4a",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_010),
+            schemaVersion: 3
+        )
+
+        let context = ModelContext(store.container)
+        let results = try store.newestReadyRevisionsByItemID(in: context)
+
+        XCTAssertEqual(results.count, 2)
+        XCTAssertEqual(results[wellFormedArticle1.itemID.rawValue]?.revision.revisionID, wellFormedRev1.revisionID)
+        XCTAssertEqual(results[wellFormedArticle1.itemID.rawValue]?.mediaURL, mediaURL1)
+        XCTAssertEqual(results[wellFormedArticle2.itemID.rawValue]?.revision.revisionID, wellFormedRev2.revisionID)
+        XCTAssertEqual(results[wellFormedArticle2.itemID.rawValue]?.mediaURL, mediaURL2)
+        XCTAssertNil(results[malformedItemID])
     }
 }
 
