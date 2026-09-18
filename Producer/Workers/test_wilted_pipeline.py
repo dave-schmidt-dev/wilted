@@ -1130,6 +1130,28 @@ class AdDetectionTests(unittest.TestCase):
         self.assertIn("ads.detect.refused", details)
         self.assertIn("keeping the episode whole", details["ads.detect.refused"])
 
+    def test_a_short_mostly_advertising_episode_still_prepares_the_confirmed_cut(self):
+        # Six minutes with 53% of it one reviewed sponsor read: the removal
+        # is inside both the absolute programme floor and the total ceiling,
+        # so the run has to prepare and report exactly the span the review
+        # vouched for. This is the case the tighter unconfirmed bound exists
+        # to leave alone: a short news-alert episode that really is mostly
+        # advertising.
+        segments = [FakeSegment(index * 20.0, index * 20.0 + 20.0, f"segment {index}") for index in range(28)]
+        llm = FakeLLM(preroll_program_start_id=0)
+        install_fake_ads(llm, detections=[FakeAd(6.72, 250.0, label="sponsor_read")])
+        stream = io.StringIO()
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=459.0):
+            path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
+        self.assertEqual(
+            (path, [(span["startSeconds"], span["endSeconds"]) for span in spans], keeps),
+            (self.audio, [(6.72, 250.0)], []),
+        )
+        stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
+        self.assertNotIn("ads.detect.span.rejected", stages)
+        self.assertNotIn("ads.detect.refused", stages)
+        self.assertIn("ads.cut.refused", stages)
+
     # A short episode's whole programme, bracketed as one advertisement. The
     # advertising is genuinely at the front; everything from segment 9 on is
     # the news, and the detector's absolute pod bounds swallowed all of it.
@@ -1283,6 +1305,46 @@ class AdDetectionTests(unittest.TestCase):
             )
         self.assertEqual([(ad.start_s, ad.end_s) for ad in kept], [(6.72, 250.0)])
         self.assertIn("ads.detect.refused", stream.getvalue())
+
+    def test_the_unconfirmed_bound_fires_inside_the_total_cap(self):
+        # Additional to the overall cap, not a replacement for it. The
+        # combined removal here sits exactly on the total ceiling, so the
+        # total cap leaves it alone; the unreviewed half is over the tighter
+        # bound on its own, and that is what keeps everything but the
+        # vouched-for span.
+        confirmed = frozenset({(0.0, 30.0)})
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            kept = wp.reject_implausible_ad_spans(
+                [FakeAd(0.0, 30.0), FakeAd(60.0, 200.0), FakeAd(240.0, 430.0)],
+                600.0,
+                confirmed,
+            )
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in kept], [(0.0, 30.0)])
+        details = {
+            json.loads(line)["stage"]: json.loads(line)["detail"]
+            for line in stream.getvalue().splitlines()
+        }
+        self.assertIn("without review", details["ads.detect.refused"])
+        self.assertIn("only the spans a review vouched for", details["ads.detect.refused"])
+
+    def test_the_unconfirmed_bound_with_nothing_vouched_keeps_the_episode_whole(self):
+        # The same tighter net with no verdict to fall back on: there is no
+        # vouched-for set to keep, so the correct disposition is the whole
+        # episode, and the refusal has to say so rather than name a set that
+        # does not exist.
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            kept = wp.reject_implausible_ad_spans(
+                [FakeAd(0.0, 180.0), FakeAd(220.0, 360.0)], 600.0
+            )
+        self.assertEqual(kept, [])
+        details = {
+            json.loads(line)["stage"]: json.loads(line)["detail"]
+            for line in stream.getvalue().splitlines()
+        }
+        self.assertIn("without review", details["ads.detect.refused"])
+        self.assertIn("keeping the episode whole", details["ads.detect.refused"])
 
     def test_an_unplaceable_span_is_rescanned_for_evidence_it_was_ever_an_ad(self):
         # The first review found programme content inside the span, so it could
