@@ -956,7 +956,7 @@ def detect_ads(
     backend: LLMBackend,
     chunk_minutes: float = 10.0,
     overlap_minutes: float = 2.0,
-    confidence_threshold: float = 0.7,
+    confidence_threshold: float = COARSE_CONFIDENCE_FLOOR,
 ) -> list[AdSegment]:
     """Detect advertisements in a transcript using LLM-based sliding window analysis.
 
@@ -965,16 +965,20 @@ def detect_ads(
         backend: A loaded LLM backend for inference.
         chunk_minutes: Size of each analysis window in minutes.
         overlap_minutes: Overlap between consecutive windows.
-        confidence_threshold: Minimum confidence to keep a detection. The old
-            0.8 was calibrated against a quantity that was always exactly 1.0,
-            so it carried no information and filtered nothing. Against the
-            corroboration band it would silently drop every detection a single
-            window saw -- which, at the default geometry, is precisely the
-            transcript's first and last segments, where preroll and postroll
-            live. 0.7 keeps them, preserving today's behaviour. The dial is
-            real now: under the default 10/2 geometry an uncorroborated
-            segment scores 0.775, so a threshold above that is the way to ask
-            for two agreeing windows.
+        confidence_threshold: Minimum confidence to keep a detection. It is
+            compared against the RUN mean, not against any one segment, which
+            is what makes the old 0.8 unsafe here: that value was calibrated
+            against a quantity that was always exactly 1.0, so it carried no
+            information and filtered nothing. The default is the band's floor
+            so that nothing the majority rule already passed is dropped -- a
+            run can average arbitrarily close to the floor, because
+            `_complete_trailing_disclaimer_decisions` folds in segments with
+            no ad votes at all, and a disclaimer tail of three such segments
+            behind one corroborated head already averages 0.6875. Raising
+            this is a real dial, but read it as a mean: a run of nine
+            corroborated segments plus one uncorroborated averages about
+            0.93, so a threshold set from the single-segment figure (0.775)
+            will not filter the runs its setter expects.
 
     Returns:
         Sorted list of AdSegment detections, merged and filtered.

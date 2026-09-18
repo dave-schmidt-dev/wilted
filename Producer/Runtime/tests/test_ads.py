@@ -7,6 +7,8 @@ import math
 from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
 
+import inspect
+
 import pytest
 
 from wilted.ads import (
@@ -1200,6 +1202,22 @@ class TestCoarseConfidence:
             round((coarse_confidence(1, 2) + coarse_confidence(2, 2)) / 2, 4)
         ]
         assert coarse_confidence(1, 2) < COARSE_CONFIDENCE_CEILING
+
+    def test_the_default_threshold_cannot_drop_a_run_the_majority_rule_passed(self):
+        # The threshold is compared against the RUN mean, and a run can average
+        # arbitrarily close to the floor: `_complete_trailing_disclaimer_decisions`
+        # folds in segments with no ad votes at all, and each of those scores the
+        # floor. A default above the floor silently drops long disclaimer tails --
+        # 0.7 would have dropped a three-segment one, which no other test reaches.
+        head, floor = coarse_confidence(2, 2), COARSE_CONFIDENCE_FLOOR
+        means = [round((head + floor * tail) / (tail + 1), 4) for tail in range(1, 8)]
+
+        assert min(means) >= COARSE_CONFIDENCE_FLOOR
+        assert any(mean < 0.7 for mean in means), "the 0.7 default really was reachable"
+        assert all(
+            mean >= inspect.signature(detect_ads).parameters["confidence_threshold"].default
+            for mean in means
+        )
 
     def test_a_transcript_that_fits_one_window_is_fully_corroborated(self):
         # The target is read off the votes, so a transcript short enough for a
