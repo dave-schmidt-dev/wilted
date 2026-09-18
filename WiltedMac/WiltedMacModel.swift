@@ -1435,6 +1435,11 @@ final class WiltedMacModel {
     /// have to rebuild the pipeline to mean anything, and none exists yet.
     private let removesAdvertisements = true
     private var hiddenEpisodeIDs: Set<String> = []
+    /// Whether an article preparation is started but has not yet finished.
+    ///
+    /// `preparationTask` cannot answer this: it is never cleared, so it stays
+    /// non-nil for the rest of the session after the first article.
+    private var articlePreparationIsPending = false
     private var fixtureDownloadFailuresRemaining = 0
     /// The podcast fixture episode starts out prepared, so the UI test can
     /// prove a prepared row still offers a way to prepare again.
@@ -2709,6 +2714,7 @@ final class WiltedMacModel {
         // turns out to be leaving, this one is admitted immediately and the
         // row is corrected below rather than left waiting.
         let queued = preparationGate.isBusy || !podcastPreparationTasks.isEmpty
+            || articlePreparationIsPending
         updateEpisode(episode.id) {
             $0.preparationState = .preparing(stage: queued ? Self.preparationQueuedStage : Self.preparingStage)
         }
@@ -2841,6 +2847,11 @@ final class WiltedMacModel {
     /// What a row says while it waits for the run ahead of it to finish. The
     /// GPU admits one preparation, so the rest queue instead of failing.
     nonisolated static let preparationQueuedStage = "Queued"
+
+    /// The article composer's equivalent of `preparationQueuedStage`. An
+    /// article has one detail line rather than a row stage, so it says the
+    /// whole sentence.
+    nonisolated static let articlePreparationQueuedDetail = "Queued behind the preparation in flight."
 
     /// Runs a podcast preparation again from its row on Prep. A failed run's
     /// retry lives next to the failure rather than in the Larder, where the
@@ -4095,10 +4106,47 @@ final class WiltedMacModel {
             return
         }
         preparationTask?.cancel()
+        // Article text-to-speech and podcast preparation share one GPU, so they
+        // share the admission gate. This path used to start the coordinator
+        // directly: two runs could hold the device at once, which is the thing
+        // the gate exists to prevent.
+        //
+        // The place in line is taken here, where the reader asked, so an article
+        // orders against podcast requests by intent rather than by whichever
+        // task happened to reach the gate first.
+        let requestSequence = consumePreparationRequest(for: preparedItemID.rawValue)
+        // Decided now, so the composer can say so now rather than sitting on
+        // "Validating article URL" for as long as the run ahead takes. A run
+        // becomes the gate's business only when its task body reaches `admit()`,
+        // one main-actor hop later, so an already-tracked podcast task counts as
+        // ahead of this one even while the gate still reads free.
+        let queued = preparationGate.isBusy || !podcastPreparationTasks.isEmpty
         preparation = WiltedMacPreparation(
-            phase: .preparing, detail: "Validating article URL", fraction: 0, cancellable: true
+            phase: .preparing,
+            detail: queued ? Self.articlePreparationQueuedDetail : "Validating article URL",
+            fraction: queued ? nil : 0,
+            cancellable: true
         )
+        articlePreparationIsPending = true
         preparationTask = Task { [weak self] in
+            defer { self?.articlePreparationIsPending = false }
+            guard let gate = self?.preparationGate else { return }
+            do {
+                try await gate.admit(sequence: requestSequence)
+            } catch {
+                // Cancelled while queued: there is no status stream to carry a
+                // terminal state, so this path reports its own.
+                self?.preparation = WiltedMacPreparation(
+                    phase: .cancelled, detail: "Preparation cancelled.", fraction: nil, cancellable: false
+                )
+                return
+            }
+            defer { gate.release() }
+            if queued {
+                self?.preparation = WiltedMacPreparation(
+                    phase: .preparing, detail: "Validating article URL", fraction: 0, cancellable: true
+                )
+            }
             let run = await coordinator.start(url: url)
             guard let self else { await run.cancel(); return }
             self.preparationRun = run
@@ -4130,6 +4178,11 @@ final class WiltedMacModel {
             return
         }
 #if canImport(WiltedProducer)
+        // Cancel the task as well as the run. While the article is queued on the
+        // admission gate there is no run yet, and cancelling the task is what
+        // makes the gate drop its waiter -- otherwise Cancel did nothing until
+        // the preparation ahead of it finished.
+        preparationTask?.cancel()
         let run = preparationRun
         Task { await run?.cancel() }
 #endif

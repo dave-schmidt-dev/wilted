@@ -2481,6 +2481,62 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(model.preparationRequestSequence, higher)
     }
 
+    /// Article text-to-speech and podcast preparation share one GPU. The
+    /// article path used to start its coordinator without asking the gate, so
+    /// both could hold the device at once.
+    func testAnArticleAsksTheSameAdmissionGateAsAPodcast() async throws {
+        let directory = temporaryDirectory("article-admission")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in try LocalLibraryStore(url: url) },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let gate = model.preparationGateForTesting
+        try await gate.admit(sequence: 1)
+        XCTAssertTrue(gate.isBusy, "the slot is held before the article asks for it")
+
+        model.urlDraft = "https://example.test/an-article"
+        model.addArticle()
+
+        XCTAssertEqual(model.preparation?.phase, .preparing)
+        XCTAssertEqual(model.preparation?.detail, WiltedMacModel.articlePreparationQueuedDetail,
+                       "a queued article says so rather than sitting on a stale step label")
+        XCTAssertTrue(model.preparation?.cancellable ?? false,
+                      "a queued article can still be cancelled")
+    }
+
+    /// Cancel used to reach only the run, which does not exist yet while the
+    /// article is queued -- so it did nothing until the work ahead finished.
+    func testCancellingAQueuedArticleLeavesTheLineImmediately() async throws {
+        let directory = temporaryDirectory("article-admission-cancel")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in try LocalLibraryStore(url: url) },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let gate = model.preparationGateForTesting
+        try await gate.admit(sequence: 1)
+        model.urlDraft = "https://example.test/an-article"
+        model.addArticle()
+        XCTAssertEqual(model.preparation?.detail, WiltedMacModel.articlePreparationQueuedDetail)
+
+        model.cancelPreparation()
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(model.preparation?.phase, .cancelled,
+                       "the queued article reports its own terminal state; no status stream ever opened")
+        gate.release()
+        XCTAssertFalse(gate.isBusy, "the cancelled article left no waiter holding the slot")
+    }
+
     /// A run that consumed its place must not leave one behind: if it did, a
     /// later request for the same episode would inherit the old, too-low
     /// number and jump the queue ahead of everything asked for since.
