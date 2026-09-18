@@ -1852,6 +1852,149 @@ final class WiltedMacModelTests: XCTestCase {
         model.stopAutomationTicker()
     }
 
+    /// `checkpointForBackground` stops the open-window tick, which used to be
+    /// the only thing that re-evaluated an off-peak window opening. The
+    /// ticket-drain ticker is the fix, and it has to survive exactly the call
+    /// that stops the other one -- a background tick that stops the moment
+    /// the window hides is not a fix at all.
+    func testTheTicketDrainTickerSurvivesGoingToBackground() async throws {
+        let preferences = try automationSettingsPreferences()
+        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
+        let directory = temporaryDirectory("ticket-drain-ticker-restart")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
+        XCTAssertFalse(model.ticketDrainTickerIsRunning, "nothing ticks before a store is loaded")
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        await model.waitForAutomation()
+        XCTAssertTrue(model.ticketDrainTickerIsRunning, "the ready transition starts it")
+
+        model.checkpointForBackground()
+        XCTAssertFalse(model.automationTickerIsRunning, "the open-window tick still stops")
+        XCTAssertTrue(model.ticketDrainTickerIsRunning,
+                      "the drain ticker is not scene-phase-gated the way the open-window tick is")
+
+        model.pauseForQuit()
+        XCTAssertFalse(model.ticketDrainTickerIsRunning, "actual termination is the one moment stopping it is right")
+    }
+
+    /// Step 7's done-condition. `checkpointForBackground` used to leave an
+    /// off-peak-deferred episode stuck: the only ticker that re-evaluated
+    /// `deferredAutomaticPreparations` was the one it stops. The window here
+    /// is constructed to be eligible for all but two minutes out of the day
+    /// (00:00 and 23:59), so the deliberately-chosen admission date below
+    /// (fixed at 00:00) is reliably ineligible while the live ticker's own
+    /// real-clock check, moments later, is eligible with overwhelming
+    /// probability -- this is a real-clock ticker, so the assertion is
+    /// necessarily a poll rather than a single deterministic instant.
+    func testAPendingTicketAdvancesWhileTheWindowIsNotFrontmost() async throws {
+        let directory = temporaryDirectory("ticket-drain-background-progress")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let feedURL = try XCTUnwrap(URL(string: "https://example.test/ticket-drain.xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://example.test/ticket-drain.mp3"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let episodeItemID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "ticket-drain-1", enclosureURL: enclosureURL
+        )
+        let episodeID = episodeItemID.rawValue
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let storeCapture = StoreCapture()
+        let runner = BlockingPodcastPipelineRunner()
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                await storeCapture.capture(store)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Fixtures", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    episodeItemID, guid: "ticket-drain-1", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: enclosureURL, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                return store
+            },
+            podcastPipelineRunnerFactory: { runner },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        XCTAssertEqual(model.episodes.map(\.id), [episodeID])
+
+        let almostAllDay = try XCTUnwrap(WiltedAutomationOffPeakWindow(
+            start: try XCTUnwrap(WiltedAutomationLocalTime(hour: 0, minute: 1)),
+            end: try XCTUnwrap(WiltedAutomationLocalTime(hour: 23, minute: 59))
+        ))
+        let reliablyIneligibleNow = try localDate(hour: 0, minute: 0)
+
+        // Mirrors `downloadEpisode`'s own sequence: the place in line is taken
+        // before admission is decided, so there is already a durable, pending
+        // ticket for this episode's preparation by the time deferral happens.
+        let sequence = model.registerPreparationRequest(for: episodeID)
+        XCTAssertEqual(sequence, 1)
+
+        let capturedStoreOrNil = await storeCapture.store
+        let capturedStore = try XCTUnwrap(capturedStoreOrNil)
+        func fetchedTicket() async throws -> WorkTicket? {
+            try await capturedStore.workTicket(kind: .podcastPreparation, subjectID: episodeID)
+        }
+        var attempts = 0
+        var pending = try await fetchedTicket()
+        while attempts < 50, pending == nil {
+            try await Task.sleep(nanoseconds: 20_000_000)
+            pending = try await fetchedTicket()
+            attempts += 1
+        }
+        let priorTicket = try XCTUnwrap(pending, "the register call's ticket write must have landed")
+        XCTAssertEqual(priorTicket.state, .pending)
+        let priorAttemptCount = priorTicket.attemptCount
+
+        // The stored policy travels with the deferred job from admission,
+        // not read again from live settings later (`startEligibleAutomaticPreparations`'s
+        // own doc comment): it has to be the near-all-day window from the
+        // start, so the one `admitAutomaticPreparation` call below both defers
+        // (against the deliberately-ineligible fixed date) and leaves the
+        // later real-clock re-check eligible.
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual,
+            processingPolicy: .offPeak(almostAllDay),
+            transcriptPolicy: .alwaysTranscribe, removeAds: false
+        ))
+
+        let episode = try XCTUnwrap(model.episodes.first(where: { $0.id == episodeID }))
+        model.admitAutomaticPreparation(for: episode, at: reliablyIneligibleNow)
+        XCTAssertTrue(model.isDeferredForOffPeak(episodeID), "the deliberately-ineligible date defers it")
+
+        model.checkpointForBackground()
+        XCTAssertFalse(model.automationTickerIsRunning, "the window is not frontmost")
+        XCTAssertTrue(model.ticketDrainTickerIsRunning, "started automatically at bootstrap and untouched by backgrounding")
+
+        // Bootstrap already started this ticker at its production interval;
+        // restart it at a fast one so the poll below does not have to wait
+        // out that real interval.
+        model.stopTicketDrainTicker()
+        model.startTicketDrainTicker(interval: 0.05)
+
+        attempts = 0
+        var current = try await fetchedTicket()
+        while attempts < 100, (current?.attemptCount ?? priorAttemptCount) <= priorAttemptCount {
+            try await Task.sleep(nanoseconds: 20_000_000)
+            current = try await fetchedTicket()
+            attempts += 1
+        }
+        let advanced = try XCTUnwrap(current)
+        XCTAssertGreaterThan(advanced.attemptCount, priorAttemptCount,
+                             "admission ran and the ticket's attempt count -- its progress -- advanced "
+                             + "while the window was not frontmost")
+
+        model.stopTicketDrainTicker()
+        await runner.resume(throwing: CancellationError())
+    }
+
     /// Hiding the window, minimising it, or closing the last one must not stop
     /// the audio. It did: the scene-phase handler called a method that paused,
     /// because one call was serving both "not frontmost" and "quitting". David
@@ -2716,6 +2859,83 @@ final class WiltedMacModelTests: XCTestCase {
                        "the queued article reports its own terminal state; no status stream ever opened")
         gate.release()
         XCTAssertFalse(gate.isBusy, "the cancelled article left no waiter holding the slot")
+    }
+
+    /// Step 6's done-condition. An article's ticket is keyed by the draft
+    /// URL's `ItemID` -- a stable request key, computed without ever
+    /// reaching the network -- from the moment the reader asks for it, the
+    /// same way `registerPreparationRequest` keys a podcast's. Holding the
+    /// gate busy means this article's run never reaches the coordinator at
+    /// all: admission is taken (the ticket becomes `.running`), but nothing
+    /// in this process ever finishes the run or records a terminal outcome
+    /// -- exactly what "interrupted by relaunch" means here. A second model
+    /// opened against the same store must find the ticket table already
+    /// resolved by `reconcileWorkTickets(in:)`'s interrupted-run pass:
+    /// resumable (`.pending`) or a named terminal state, never stuck at
+    /// `.running` forever.
+    func testAnArticleInterruptedByRelaunchEmergesResumableOrTerminal() async throws {
+        let directory = temporaryDirectory("article-ticket-relaunch")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let libraryURL = directory.appendingPathComponent("library.sqlite")
+        let storeCapture = StoreCapture()
+        let draftURL = try XCTUnwrap(URL(string: "https://example.test/an-interrupted-article"))
+        let subjectID = try ItemID.derive(from: draftURL).rawValue
+
+        let first = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                await storeCapture.capture(store)
+                return store
+            },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        first.startStoreBootstrap()
+        await first.waitForStoreBootstrap()
+
+        let gate = first.preparationGateForTesting
+        try await gate.admit(sequence: 1)
+        first.urlDraft = draftURL.absoluteString
+        first.addArticle()
+        XCTAssertEqual(first.preparation?.detail, WiltedMacModel.articlePreparationQueuedDetail,
+                       "queued behind the gate -- the run never reaches the coordinator")
+
+        let capturedStoreOrNil = await storeCapture.store
+        let capturedStore = try XCTUnwrap(capturedStoreOrNil)
+        func fetchedTicket() async throws -> WorkTicket? {
+            try await capturedStore.workTicket(kind: .articlePreparation, subjectID: subjectID)
+        }
+        var attempts = 0
+        var ticket = try await fetchedTicket()
+        while attempts < 50, ticket == nil {
+            try await Task.sleep(nanoseconds: 20_000_000)
+            ticket = try await fetchedTicket()
+            attempts += 1
+        }
+        let interruptedTicket = try XCTUnwrap(ticket, "request creation must be durable before any relaunch")
+        XCTAssertEqual(interruptedTicket.state, .running,
+                       "admission was taken; the run itself never started because the gate is held")
+        gate.release()
+
+        // The process ends here, with the ticket stuck at `.running` --
+        // nothing in it ever finished the run or recorded a terminal outcome.
+        let second = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in try LocalLibraryStore(url: url) },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        second.startStoreBootstrap()
+        await second.waitForStoreBootstrap()
+        XCTAssertEqual(second.startupState, .ready)
+
+        let reopenedStore = try LocalLibraryStore(url: libraryURL)
+        let reopenedTicket = try await reopenedStore.workTicket(kind: .articlePreparation, subjectID: subjectID)
+        let resumed = try XCTUnwrap(reopenedTicket)
+        XCTAssertTrue(
+            resumed.state == .pending || resumed.state.isTerminal,
+            "an article interrupted by relaunch emerges resumable (.pending) or in a named terminal state, "
+            + "never stuck at .running -- got \(resumed.state)"
+        )
     }
 
     /// A run that consumed its place must not leave one behind: if it did, a

@@ -1415,6 +1415,7 @@ final class WiltedMacModel {
     private var automationTask: Task<Void, Never>?
     private var automationTicker: Task<Void, Never>?
     private var playbackCheckpointTicker: Task<Void, Never>?
+    private var ticketDrainTicker: Task<Void, Never>?
 #endif
     private var podcastDownloadTasks: [String: Task<PodcastDownloadResult, Error>] = [:]
     private var podcastDownloadCoordinator: PodcastDownloadCoordinator?
@@ -1739,6 +1740,15 @@ final class WiltedMacModel {
     /// still notices the next due refresh.
     static let automationTickInterval: TimeInterval = 900
 
+    /// How often the ticket-drain tick evaluates admission for whatever
+    /// non-terminal work tickets exist -- currently, off-peak-deferred
+    /// automatic preparation. Shorter than `automationTickInterval` on
+    /// purpose: this is the only evaluation left running while the window is
+    /// hidden (see `startTicketDrainTicker`), so a window that opens and
+    /// closes without ever coming to the foreground should not leave an
+    /// eligible off-peak job waiting a full 15 minutes to be noticed.
+    static let ticketDrainTickInterval: TimeInterval = 120
+
     /// How often playback progress is written to the store while audio runs.
     ///
     /// Progress was persisted only on an explicit transport press or a clean
@@ -1802,6 +1812,65 @@ final class WiltedMacModel {
         false
 #endif
     }
+
+    /// Starts the ticket-drain tick. Idempotent, like the other tickers.
+    ///
+    /// `checkpointForBackground` stops `automationTicker` (the open-window
+    /// tick) when the window is hidden, but download bytes are not stopped
+    /// with it -- their `Task`s keep running, so bytes already keep growing
+    /// while hidden. Admission did not have the same guarantee: nothing
+    /// re-evaluated an off-peak window opening while hidden, because the only
+    /// ticker that did so was the one `checkpointForBackground` stops. This
+    /// ticker is that missing evaluation, kept deliberately separate from
+    /// `automationTicker` rather than folded into it, and deliberately never
+    /// stopped by `checkpointForBackground` -- only by actual termination
+    /// (`pauseForQuit`), the one moment stopping every ticker is correct.
+    ///
+    /// A tick with no non-terminal ticket in the store is a no-op: there is
+    /// nothing to admit, so `startEligibleAutomaticPreparations` is not even
+    /// called.
+    func startTicketDrainTicker(interval: TimeInterval = WiltedMacModel.ticketDrainTickInterval) {
+#if canImport(WiltedProducer)
+        guard !fixtureMode, ticketDrainTicker == nil, store != nil else { return }
+        ticketDrainTicker = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                } catch {
+                    return
+                }
+                guard let self else { return }
+                guard await self.hasNonTerminalWorkTicket() else { continue }
+                self.startEligibleAutomaticPreparations()
+            }
+        }
+#endif
+    }
+
+    func stopTicketDrainTicker() {
+#if canImport(WiltedProducer)
+        ticketDrainTicker?.cancel()
+        ticketDrainTicker = nil
+#endif
+    }
+
+    /// Read by tests: the one thing distinguishing "hidden and still
+    /// draining" from "hidden and stalled."
+    var ticketDrainTickerIsRunning: Bool {
+#if canImport(WiltedProducer)
+        ticketDrainTicker != nil
+#else
+        false
+#endif
+    }
+
+#if canImport(WiltedProducer)
+    private func hasNonTerminalWorkTicket() async -> Bool {
+        guard let store else { return false }
+        guard let tickets = try? await store.workTickets() else { return false }
+        return tickets.contains { !$0.state.isTerminal }
+    }
+#endif
 
     /// Starts the playback progress tick. Idempotent.
     ///
@@ -4429,6 +4498,12 @@ final class WiltedMacModel {
                 self.update(status)
                 if status.terminal { break }
             }
+            // Present the moment a terminal status is observed, whenever
+            // extraction reached the canonical URL first -- including a
+            // cancelled or failed run, so a request that fails after
+            // extraction still leaves the resolution on its ticket rather
+            // than only recording it on success.
+            let resolvedItemID = await coordinator.resolvedItemID(forRun: run.runID)?.rawValue
             switch self.preparation?.phase {
             case .completed:
                 await self.refreshLifetimeStatistics()
@@ -4436,11 +4511,13 @@ final class WiltedMacModel {
                     self.syncLifecycle?.startAutomaticUpload()
                 }
                 await self.recordWorkTicketTransition(
-                    kind: .articlePreparation, subjectID: preparedItemID.rawValue, state: .succeeded
+                    kind: .articlePreparation, subjectID: preparedItemID.rawValue, state: .succeeded,
+                    resolvedItemID: resolvedItemID
                 )
             case .cancelled:
                 await self.recordWorkTicketTransition(
-                    kind: .articlePreparation, subjectID: preparedItemID.rawValue, state: .cancelled
+                    kind: .articlePreparation, subjectID: preparedItemID.rawValue, state: .cancelled,
+                    resolvedItemID: resolvedItemID
                 )
             default:
                 // The failure detail already carries whatever the status
@@ -4452,6 +4529,7 @@ final class WiltedMacModel {
                 // the reader could otherwise take from Prep.
                 await self.recordWorkTicketTransition(
                     kind: .articlePreparation, subjectID: preparedItemID.rawValue, state: .failed,
+                    resolvedItemID: resolvedItemID,
                     failureKind: PodcastDownloadFailureKind.retryable.rawValue,
                     lastFailureMessage: self.preparation?.detail
                 )
@@ -5372,6 +5450,7 @@ final class WiltedMacModel {
     /// that was gone.
     func pauseForQuit() {
         stopAutomationTicker()
+        stopTicketDrainTicker()
 #if canImport(WiltedProducer)
         guard let playback else { return }
         playbackOperationTask = Task { [weak self] in
@@ -6076,6 +6155,7 @@ final class WiltedMacModel {
             startAutomationOnLaunch()
             startAutomationTicker()
             startPlaybackCheckpointTicker()
+            startTicketDrainTicker()
         } catch let invalidationFailure as WiltedMacStaleInvalidationFailure {
             configureStoreDependencies(nil)
             startupState = .failed(WiltedMacStartupFailure(

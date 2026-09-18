@@ -3,10 +3,16 @@ import Foundation
 import WiltedDomain
 
 public struct PreparationRun: Sendable {
+    /// Identifies this run to the coordinator that issued it, so a caller can
+    /// ask for the canonical `ItemID` this run resolved once extraction
+    /// completes -- unknown at `start(url:)` time, since the draft URL a
+    /// reader pastes is not necessarily the canonical one extraction returns.
+    public let runID: UUID
     public let statuses: AsyncStream<PreparationStatus>
     private let cancellation: @Sendable () async -> Void
 
-    init(statuses: AsyncStream<PreparationStatus>, cancellation: @escaping @Sendable () async -> Void) {
+    init(runID: UUID, statuses: AsyncStream<PreparationStatus>, cancellation: @escaping @Sendable () async -> Void) {
+        self.runID = runID
         self.statuses = statuses
         self.cancellation = cancellation
     }
@@ -44,6 +50,14 @@ public actor PreparationCoordinator {
     private let saveOperation: SaveOperation?
     private var activeTask: Task<Void, Never>?
     private var activeRunID: UUID?
+    /// The canonical `ItemID` extraction resolved for a run, keyed by that
+    /// run's ID. Set once, right after extraction returns the canonical URL
+    /// (before the article is ever saved), and read back by the caller so it
+    /// can stamp a work ticket's `resolvedItemID` even for a run that never
+    /// reaches a terminal status. Cleared at the start of the next run: this
+    /// coordinator only ever runs one preparation at a time, so nothing
+    /// beyond the run a caller is currently holding needs to survive here.
+    private var resolvedItemIDsByRun: [UUID: ItemID] = [:]
 
     public init(
         store: LocalLibraryStore,
@@ -81,6 +95,7 @@ public actor PreparationCoordinator {
 
     public func start(url: URL) -> PreparationRun {
         activeTask?.cancel()
+        resolvedItemIDsByRun.removeAll()
         let runID = UUID()
         let (stream, continuation) = AsyncStream<PreparationStatus>.makeStream()
         let task = Task { [weak self] in
@@ -89,10 +104,17 @@ public actor PreparationCoordinator {
         }
         activeRunID = runID
         activeTask = task
-        return PreparationRun(statuses: stream) { [weak self] in await self?.cancel() }
+        return PreparationRun(runID: runID, statuses: stream) { [weak self] in await self?.cancel() }
     }
 
     public func cancel() { activeTask?.cancel() }
+
+    /// The canonical `ItemID` a run resolved, if extraction has reached that
+    /// point yet. `nil` before extraction completes, or for an unrecognized
+    /// run ID.
+    public func resolvedItemID(forRun runID: UUID) -> ItemID? {
+        resolvedItemIDsByRun[runID]
+    }
 
     /// Maps the speech client's `stream.audio samples=N` line to produced audio seconds.
     /// The live rate is unknown until the terminal frame, so the contracted stream rate
@@ -127,6 +149,7 @@ public actor PreparationCoordinator {
             }
             try Task.checkCancellation()
             let itemID = try ItemID.derive(from: extracted.canonicalURL)
+            resolvedItemIDsByRun[runID] = itemID
             await emitter.setItemID(itemID)
             let article = try Article(
                 itemID: itemID, canonicalURL: extracted.canonicalURL, title: extracted.title,

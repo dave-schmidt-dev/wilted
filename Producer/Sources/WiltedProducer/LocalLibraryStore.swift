@@ -490,12 +490,17 @@ public struct WorkTicketReconciliation: Equatable, Sendable {
     public let importedDeferralCount: Int
     public let adoptedDownloadCount: Int
     public let closedRunCount: Int
+    public let collapsedDuplicateCount: Int
     public let prunedCount: Int
 
-    public init(importedDeferralCount: Int, adoptedDownloadCount: Int, closedRunCount: Int, prunedCount: Int) {
+    public init(
+        importedDeferralCount: Int, adoptedDownloadCount: Int, closedRunCount: Int,
+        collapsedDuplicateCount: Int = 0, prunedCount: Int
+    ) {
         self.importedDeferralCount = importedDeferralCount
         self.adoptedDownloadCount = adoptedDownloadCount
         self.closedRunCount = closedRunCount
+        self.collapsedDuplicateCount = collapsedDuplicateCount
         self.prunedCount = prunedCount
     }
 }
@@ -2169,6 +2174,38 @@ public actor LocalLibraryStore {
         }
         try context.save()
 
+        // 3.5. Collapse article-preparation duplicates that share a resolved
+        // identity. `subjectID` is the draft URL's `ItemID` -- a stable
+        // request key at intake, before extraction has run -- so two
+        // requests pasted from different draft URLs (a redirect, tracking
+        // parameters, an advertised-feed link and the article link it
+        // advertises) can both resolve to the same canonical article and end
+        // up as two distinct tickets once `resolvedItemID` is known. Only one
+        // of those is doing real work; the rest are closed here rather than
+        // left to run the GPU pipeline twice for one article. The ticket with
+        // the highest `requestSequence` (the most recently requested, and by
+        // construction the one whose in-process run -- if any -- is still
+        // live) is kept; every other non-terminal duplicate is cancelled. A
+        // duplicate already terminal is left alone: it already stopped doing
+        // work, and step 4 below prunes it in due course.
+        var collapsedCount = 0
+        let articleRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+            .filter { $0.kind == WorkTicketKind.articlePreparation.rawValue }
+        let groupedByResolution = Dictionary(grouping: articleRecords.filter { $0.resolvedItemID != nil }) {
+            $0.resolvedItemID!
+        }
+        for (_, group) in groupedByResolution where group.count > 1 {
+            let canonical = group.max { $0.requestSequence < $1.requestSequence }
+            for record in group where record.id != canonical?.id {
+                guard let state = WorkTicketState(rawValue: record.state), !state.isTerminal,
+                      state.canTransition(to: .cancelled) else { continue }
+                record.state = WorkTicketState.cancelled.rawValue
+                record.updatedAt = now.date
+                collapsedCount += 1
+            }
+        }
+        try context.save()
+
         // 4. Prune terminal tickets older than 30 days, per kind, always
         // keeping at least the newest 50 of that kind regardless of age.
         var prunedCount = 0
@@ -2194,7 +2231,7 @@ public actor LocalLibraryStore {
         // preferences state, not library content this actor owns.
         return WorkTicketReconciliation(
             importedDeferralCount: importedCount, adoptedDownloadCount: adoptedCount,
-            closedRunCount: closedCount, prunedCount: prunedCount
+            closedRunCount: closedCount, collapsedDuplicateCount: collapsedCount, prunedCount: prunedCount
         )
     }
 
