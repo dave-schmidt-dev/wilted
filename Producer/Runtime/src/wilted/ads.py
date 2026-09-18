@@ -201,6 +201,40 @@ Return a JSON object: {"promo_indices": [0, 5, 12]} listing the 0-based paragrap
 that are promotional. If none, return {"promo_indices": []}."""
 
 _VALID_LABELS = {"sponsor_read", "self_promo", "ad_break", "newsletter_pitch"}
+
+# The coarse path's confidence band.
+#
+# The vote ratio it replaced could only ever be 1.0. `detect_ads` defaults to a
+# 10-minute window with 2 minutes of overlap, so the step is 8 minutes and a
+# segment falls inside at most two windows; `_resolve_overlaps` then requires a
+# strict majority, which leaves 1-of-1 and 2-of-2 as the only surviving states
+# and makes a 1-of-2 split content. Both survivors are ratio 1.0, so every
+# coarse run reported full confidence and `confidence_threshold` was dead.
+#
+# What varies, and what a reader actually wants to know, is how much
+# corroboration a detection got: a segment two windows both called an ad is
+# better evidence than one only a single window ever saw. That is the same
+# question `recovered_confidence` answers for the recovery passes, so the band
+# has the same shape. It sits above the recovery band because a classification
+# is stronger evidence than a review, and it still never reaches 1.0.
+COARSE_CONFIDENCE_FLOOR = 0.6
+COARSE_CONFIDENCE_CEILING = 0.95
+
+
+def coarse_confidence(observed: int, expected: int) -> float:
+    """Map observed corroboration onto the coarse-detection confidence band.
+
+    `observed` is how many windows called the segment an ad; `expected` is how
+    many windows the geometry gives a fully covered segment. The result is a
+    receipt of that share, never a literal 1.0.
+    """
+    if expected <= 0:
+        return COARSE_CONFIDENCE_FLOOR
+    share = min(1.0, max(0.0, observed / expected))
+    return round(
+        COARSE_CONFIDENCE_FLOOR + (COARSE_CONFIDENCE_CEILING - COARSE_CONFIDENCE_FLOOR) * share,
+        4,
+    )
 _AD_DETECT_RESPONSE_FORMAT: dict[str, Any] = {
     "type": "json_object",
     "schema": {
@@ -922,7 +956,7 @@ def detect_ads(
     backend: LLMBackend,
     chunk_minutes: float = 10.0,
     overlap_minutes: float = 2.0,
-    confidence_threshold: float = 0.8,
+    confidence_threshold: float = 0.7,
 ) -> list[AdSegment]:
     """Detect advertisements in a transcript using LLM-based sliding window analysis.
 
@@ -931,7 +965,16 @@ def detect_ads(
         backend: A loaded LLM backend for inference.
         chunk_minutes: Size of each analysis window in minutes.
         overlap_minutes: Overlap between consecutive windows.
-        confidence_threshold: Minimum confidence to keep a detection.
+        confidence_threshold: Minimum confidence to keep a detection. The old
+            0.8 was calibrated against a quantity that was always exactly 1.0,
+            so it carried no information and filtered nothing. Against the
+            corroboration band it would silently drop every detection a single
+            window saw -- which, at the default geometry, is precisely the
+            transcript's first and last segments, where preroll and postroll
+            live. 0.7 keeps them, preserving today's behaviour. The dial is
+            real now: under the default 10/2 geometry an uncorroborated
+            segment scores 0.775, so a threshold above that is the way to ask
+            for two agreeing windows.
 
     Returns:
         Sorted list of AdSegment detections, merged and filtered.
@@ -1004,14 +1047,21 @@ def _resolve_overlaps(
         for segment_id, is_ad, label in chunk:
             votes[segment_id].append((is_ad, label))
 
+    # How many windows a fully covered segment gets under this geometry, read
+    # off the votes rather than recomputed from the chunk arithmetic: a caller
+    # that widens the overlap raises the target without touching this code, and
+    # a segment at the very start or end of the transcript is short of it by
+    # construction rather than by disagreement.
+    corroboration_target = max((len(segment_votes) for segment_votes in votes), default=1) or 1
+
     decisions: list[tuple[bool, float, str]] = []
     for segment_votes in votes:
         ad_votes = [(is_ad, label) for is_ad, label in segment_votes if is_ad]
-        ratio = len(ad_votes) / len(segment_votes) if segment_votes else 0.0
+        confidence = coarse_confidence(len(ad_votes), corroboration_target)
         is_ad = bool(segment_votes) and len(ad_votes) > len(segment_votes) - len(ad_votes)
         labels = [label for _is_ad, label in ad_votes if label is not None]
         dominant_label = max(sorted(set(labels)), key=labels.count) if labels else "ad_break"
-        decisions.append((is_ad, ratio, dominant_label))
+        decisions.append((is_ad, confidence, dominant_label))
     decisions = _complete_trailing_disclaimer_decisions(decisions, segments)
 
     result: list[_CoarseAdRun] = []
@@ -1029,7 +1079,10 @@ def _resolve_overlaps(
             _CoarseAdRun(
                 start_id=start_id,
                 end_id=index - 1,
-                confidence=sum(confidences) / len(confidences),
+                # Rounded like the band itself: averaging rounded values
+                # reintroduces float noise, and a run's receipt should not
+                # read 0.9499999999999998.
+                confidence=round(sum(confidences) / len(confidences), 4),
                 label=max(sorted(set(labels)), key=labels.count),
             )
         )

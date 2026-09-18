@@ -22,6 +22,8 @@ from wilted.ads import (
     _TRUNCATION_MARKER,
     AdSegment,
     _chunk_segments,
+    COARSE_CONFIDENCE_CEILING,
+    COARSE_CONFIDENCE_FLOOR,
     _CoarseAdRun,
     _compute_keep_segments,
     _id_response_format,
@@ -32,6 +34,7 @@ from wilted.ads import (
     _resolve_overlaps,
     _truncate_head_tail,
     _verify_ad_boundaries,
+    coarse_confidence,
     cut_ads,
     detect_ads,
     remove_promos,
@@ -205,7 +208,7 @@ class TestDetectAds:
         segs = _make_segments([(0, 10, "content"), (10, 20, "Visit acme.com today.")])
         backend = _mock_backend(['{"ads":[[1,"sponsor_read"]]}'])
 
-        assert detect_ads(segs, backend) == [AdSegment(10, 20, 1.0, "sponsor_read")]
+        assert detect_ads(segs, backend) == [AdSegment(10, 20, COARSE_CONFIDENCE_CEILING, "sponsor_read")]
         call = backend.generate.call_args_list[0]
         assert "content_ids" not in _AD_DETECT_SYSTEM_PROMPT
         assert '[[1,"sponsor_read"]]' in _AD_DETECT_SYSTEM_PROMPT
@@ -227,7 +230,7 @@ class TestDetectAds:
         )
         backend = _mock_backend([self._classifications(list(range(6)), {1, 2}), '{"include":false}'])
 
-        assert detect_ads(segs, backend) == [AdSegment(10, 41, 1.0, "sponsor_read")]
+        assert detect_ads(segs, backend) == [AdSegment(10, 41, COARSE_CONFIDENCE_CEILING, "sponsor_read")]
 
     def test_trailing_disclaimer_completion_does_not_absorb_editorial_legal_discussion(self):
         segs = _make_segments(
@@ -242,7 +245,7 @@ class TestDetectAds:
             [self._classifications(list(range(4)), {1}), '{"include":false}', '{"content_start_id":2}']
         )
 
-        assert detect_ads(segs, backend) == [AdSegment(10, 20, 1.0, "sponsor_read")]
+        assert detect_ads(segs, backend) == [AdSegment(10, 20, COARSE_CONFIDENCE_CEILING, "sponsor_read")]
 
     def test_trailing_disclaimer_completion_runs_after_overlapping_vote_tie(self):
         segs = _make_segments(
@@ -257,7 +260,7 @@ class TestDetectAds:
             [(0, True, "sponsor_read"), (1, False, None), (2, False, None)],
         ]
 
-        assert _resolve_overlaps(overlapping_votes, segs) == [_CoarseAdRun(0, 2, 1.0, "sponsor_read")]
+        assert _resolve_overlaps(overlapping_votes, segs) == [_CoarseAdRun(0, 2, COARSE_CONFIDENCE_CEILING, "sponsor_read")]
 
     def test_post_vote_completion_keeps_adjacent_editorial_legal_discussion_as_content(self):
         segs = _make_segments(
@@ -268,7 +271,7 @@ class TestDetectAds:
         )
         votes = [[(0, True, "sponsor_read"), (1, False, None)]]
 
-        assert _resolve_overlaps(votes, segs) == [_CoarseAdRun(0, 0, 1.0, "sponsor_read")]
+        assert _resolve_overlaps(votes, segs) == [_CoarseAdRun(0, 0, COARSE_CONFIDENCE_CEILING, "sponsor_read")]
 
     def test_two_argument_test_double_remains_compatible_without_constraints(self):
         segs = _make_segments([(0, 10, "content")])
@@ -291,7 +294,7 @@ class TestDetectAds:
         backend = MagicMock()
         backend.generate = MagicMock(wraps=generate)
 
-        assert detect_ads(segs, backend) == [AdSegment(0, 10, 1.0, "sponsor_read")]
+        assert detect_ads(segs, backend) == [AdSegment(0, 10, COARSE_CONFIDENCE_CEILING, "sponsor_read")]
         assert all(call.kwargs == {} for call in backend.generate.call_args_list)
 
     def test_fenced_responses_preserve_golden_pod_and_intro_acknowledgement(self):
@@ -340,7 +343,7 @@ class TestDetectAds:
         segs = _make_segments([(0, 10, "This episode is brought to you by Acme. Visit acme.example today.")])
         backend = _mock_backend(['{"ads":[[0,"ad_break"]]}'])
 
-        assert detect_ads(segs, backend) == [AdSegment(0, 10, 1.0, "ad_break")]
+        assert detect_ads(segs, backend) == [AdSegment(0, 10, COARSE_CONFIDENCE_CEILING, "ad_break")]
 
     @pytest.mark.parametrize(
         "text",
@@ -360,7 +363,7 @@ class TestDetectAds:
         segs = _make_segments([(0, 10, text)])
         backend = _mock_backend([self._classifications([0], {0})])
 
-        assert detect_ads(segs, backend) == [AdSegment(0, 10, 1.0, "sponsor_read")]
+        assert detect_ads(segs, backend) == [AdSegment(0, 10, COARSE_CONFIDENCE_CEILING, "sponsor_read")]
         assert backend.generate.call_count == 1
 
     @pytest.mark.parametrize(
@@ -396,7 +399,7 @@ class TestDetectAds:
         )
         backend = _mock_backend([self._classifications(list(range(5)), {0}), '{"content_start_id":3}'])
 
-        assert detect_ads(segs, backend) == [AdSegment(0, 20, 1.0, "sponsor_read")]
+        assert detect_ads(segs, backend) == [AdSegment(0, 20, COARSE_CONFIDENCE_CEILING, "sponsor_read")]
         verifier_call = backend.generate.call_args_list[1]
         assert verifier_call.args[0] == _SPARSE_CONTENT_VERIFY_SYSTEM_PROMPT
         assert verifier_call.kwargs["response_format"] == _id_response_format("content_start_id", [1, 2, 3, 4])
@@ -435,7 +438,7 @@ class TestDetectAds:
         )
         response = json.dumps({"ads": [[index, "self_promo"] for index in range(3)]})
 
-        assert detect_ads(segs, _mock_backend([response])) == [AdSegment(0, 30, 1.0, "self_promo")]
+        assert detect_ads(segs, _mock_backend([response])) == [AdSegment(0, 30, COARSE_CONFIDENCE_CEILING, "self_promo")]
 
     def test_jre_ford_editorial_false_positive_is_discarded_before_boundary_calls(self):
         prior_count = 1075
@@ -525,7 +528,7 @@ class TestDetectAds:
         segs = _make_segments([(0, 10, "content"), (10, 20, "This episode is brought to you by Acme.")])
         valid = self._classifications([0, 1], {1})
         backend = _mock_backend([invalid, valid, '{"include": false}'])
-        assert detect_ads(segs, backend) == [AdSegment(10, 20, 1.0, "sponsor_read")]
+        assert detect_ads(segs, backend) == [AdSegment(10, 20, COARSE_CONFIDENCE_CEILING, "sponsor_read")]
         assert backend.generate.call_count == 3
 
     def test_persistently_invalid_singleton_fails_closed(self):
@@ -655,7 +658,7 @@ class TestDetectAds:
         classification = self._classifications([0, 1, 2, 3, 4], {2})
         backend = _mock_backend([classification, '{"include": false}', '{"content_start_id":3}'])
 
-        assert detect_ads(segs, backend) == [AdSegment(10, 30, 1.0, "sponsor_read")]
+        assert detect_ads(segs, backend) == [AdSegment(10, 30, COARSE_CONFIDENCE_CEILING, "sponsor_read")]
         assert "CANDIDATE_ID=1" in backend.generate.call_args_list[1].args[1]
         assert "CANDIDATE_CONTENT_MAX_ID=4" in backend.generate.call_args_list[2].args[1]
 
@@ -672,7 +675,7 @@ class TestDetectAds:
         response = json.dumps({"ads": [[1, "sponsor_read"], [2, "sponsor_read"], [3, "sponsor_read"]]})
         backend = _mock_backend([response, '{"include": false}'])
 
-        assert detect_ads(segs, backend) == [AdSegment(10, 40, 1.0, "sponsor_read")]
+        assert detect_ads(segs, backend) == [AdSegment(10, 40, COARSE_CONFIDENCE_CEILING, "sponsor_read")]
 
     def test_below_threshold_run_skips_boundary_verification(self):
         segs = _make_segments([(0, 1000, "possible ad")])
@@ -1135,7 +1138,7 @@ class TestDetectAds:
         classification = self._classifications(list(range(len(segs))), {5})
         backend = _mock_backend([classification, '{"start_id":0}', '{"content_start_id":8}'])
 
-        assert detect_ads(segs, backend) == [AdSegment(0, 80, 1.0, "sponsor_read")]
+        assert detect_ads(segs, backend) == [AdSegment(0, 80, COARSE_CONFIDENCE_CEILING, "sponsor_read")]
         assert backend.generate.call_args_list[1].args[0] == _POD_START_VERIFY_SYSTEM_PROMPT
         assert "CANDIDATE_START_MIN_ID=0" in backend.generate.call_args_list[1].args[1]
         assert backend.generate.call_args_list[1].kwargs["response_format"] == _id_response_format(
@@ -1152,7 +1155,7 @@ class TestDetectAds:
         classification = self._classifications(list(range(len(segs))), {0, 1, 2, 3})
         backend = _mock_backend([classification, '{"content_start_id":29}'])
 
-        assert detect_ads(segs, backend) == [AdSegment(0, 290, 1.0, "sponsor_read")]
+        assert detect_ads(segs, backend) == [AdSegment(0, 290, COARSE_CONFIDENCE_CEILING, "sponsor_read")]
         assert backend.generate.call_args_list[1].args[0] == _PREROLL_CONTENT_VERIFY_SYSTEM_PROMPT
         assert "[ID 29]" in backend.generate.call_args_list[1].args[1]
         assert backend.generate.call_args_list[1].kwargs["response_format"] == _id_response_format(
@@ -1163,6 +1166,49 @@ class TestDetectAds:
 # ---------------------------------------------------------------------------
 # _merge_adjacent
 # ---------------------------------------------------------------------------
+
+
+class TestCoarseConfidence:
+    """The coarse path reports corroboration, not a constant."""
+
+    def test_the_band_is_bounded_and_monotonic(self):
+        assert coarse_confidence(0, 2) == COARSE_CONFIDENCE_FLOOR
+        assert coarse_confidence(2, 2) == COARSE_CONFIDENCE_CEILING
+        assert coarse_confidence(1, 2) < coarse_confidence(2, 2)
+        assert coarse_confidence(0, 2) < coarse_confidence(1, 2)
+        # More agreement than the geometry can give is still just full.
+        assert coarse_confidence(9, 2) == COARSE_CONFIDENCE_CEILING
+        # A caller that asks for corroboration no window can supply gets the
+        # floor rather than a ZeroDivisionError.
+        assert coarse_confidence(1, 0) == COARSE_CONFIDENCE_FLOOR
+
+    def test_the_band_never_claims_certainty(self):
+        assert COARSE_CONFIDENCE_CEILING < 1.0
+        assert coarse_confidence(5, 5) < 1.0
+
+    def test_a_segment_only_one_window_saw_scores_below_one_two_windows_agreed_on(self):
+        # Two windows; the first sees both segments, the second only the last.
+        # Both call what they see an ad, so both survive the majority rule --
+        # the difference the old vote ratio could not express is that the
+        # second segment was corroborated and the first never could be.
+        segs = _make_segments([(0, 10, "Visit acme.com."), (10, 20, "Use offer code SHOW.")])
+        votes = [[(0, True, "sponsor_read"), (1, True, "sponsor_read")], [(1, True, "sponsor_read")]]
+
+        runs = _resolve_overlaps(votes, segs)
+
+        assert [run.confidence for run in runs] == [
+            round((coarse_confidence(1, 2) + coarse_confidence(2, 2)) / 2, 4)
+        ]
+        assert coarse_confidence(1, 2) < COARSE_CONFIDENCE_CEILING
+
+    def test_a_transcript_that_fits_one_window_is_fully_corroborated(self):
+        # The target is read off the votes, so a transcript short enough for a
+        # single window is not penalised for a second one that never existed.
+        segs = _make_segments([(0, 10, "Visit acme.com.")])
+
+        runs = _resolve_overlaps([[(0, True, "sponsor_read")]], segs)
+
+        assert [run.confidence for run in runs] == [COARSE_CONFIDENCE_CEILING]
 
 
 class TestMergeAdjacent:
