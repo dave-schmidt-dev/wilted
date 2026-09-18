@@ -231,7 +231,7 @@ validate_pixel_snapshot_baselines() {
     "$root/WiltedMacTests/WiltedVisualSystemTests.swift" ||
     fail 'Mac podcast/article sync-isolation model selector is missing'
   grep -Fq 'testPodcastCompactPlayerPersistsAcrossDestinationsAndExposesCompleteControls' \
-    "$root/WiltedMacUITests/WiltedMacSmokeUITests.swift" ||
+    "$repo_root/WiltedMacUITests/WiltedMacSmokeUITests.swift" ||
     fail 'Mac persistent compact-player real-window selector is missing'
 
   expected_count=162
@@ -375,7 +375,7 @@ expected_test_count_floor() {
   fi
   case "$1" in
     macos-unit-tests) printf '30\n' ;;
-    macos-ui-tests) printf '16\n' ;;
+    macos-ui-tests) printf '17\n' ;;
     ios-pixel-snapshot-tests) printf '11\n' ;;
     *) printf '1\n' ;;
   esac
@@ -385,8 +385,14 @@ assert_mac_ui_selector_floor_contract() {
   local focused='WiltedMacUITests/WiltedMacSmokeUITests/testFocusedSelector'
   [[ "$(WILTED_MAC_UI_SELECTOR="$focused" expected_test_count_floor macos-ui-tests)" == "1" ]] ||
     fail 'validated focused Mac UI selector must require exactly one test'
-  [[ "$(unset WILTED_MAC_UI_SELECTOR; expected_test_count_floor macos-ui-tests)" == "16" ]] ||
-    fail 'default Mac UI suite must retain its sixteen-test floor'
+  [[ "$(unset WILTED_MAC_UI_SELECTOR; expected_test_count_floor macos-ui-tests)" == "17" ]] ||
+    fail 'default Mac UI suite must retain its seventeen-test floor'
+  # A floor is a minimum, not a named set: an unrelated new test keeps the
+  # suite above it while a named one quietly disappears. Tests whose absence
+  # would not be caught by the count alone are asserted by identifier.
+  grep -q 'testMenuOverridesAnOffPeakDeferralWithPrepareNow' \
+    "$repo_root/WiltedMacUITests/WiltedMacSmokeUITests.swift" ||
+    fail 'the off-peak Prepare now journey must stay in the Mac UI suite'
   # `fail` exits, so the rejecting probe runs in a subshell: the contract is
   # that an invalid selector must not SUCCEED here, not that it must return.
   if ( WILTED_MAC_UI_SELECTOR='WiltedMacUITests/OtherTests/testNope' \
@@ -413,7 +419,7 @@ assert_result_bundle_tests() {
     elif [[ "$label" == "macos-unit-tests" ]]; then
       printf '%s\n' '{"totalTestCount":30}' >"$summary_file"
     elif [[ "$label" == "macos-ui-tests" ]]; then
-      printf '%s\n' '{"totalTestCount":16}' >"$summary_file"
+      printf '%s\n' '{"totalTestCount":17}' >"$summary_file"
     elif [[ "$label" == "ios-pixel-snapshot-tests" ]]; then
       printf '%s\n' '{"totalTestCount":11}' >"$summary_file"
     else

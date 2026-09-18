@@ -1455,6 +1455,9 @@ final class WiltedMacModel {
     /// The podcast fixture episode starts out prepared, so the UI test can
     /// prove a prepared row still offers a way to prepare again.
     private var fixtureEpisodeIsPrepared = false
+    /// Seeds one episode deferred to off-peak, so the UI leg has a row whose
+    /// only way forward is the override.
+    private var fixtureEpisodeIsDeferred = false
     private let podcastFeedClient: PodcastFeedClient
     private let mediaAvailabilityChecker: any WiltedMacMediaAvailabilityChecking
     private let pastedLinkClassifier: PastedLinkClassifier
@@ -1527,6 +1530,7 @@ final class WiltedMacModel {
         self.pastedLinkClassifier = pastedLinkClassifier
         fixtureDownloadFailuresRemaining = arguments.contains("--wilted-ui-fixture-download-failure") ? 1 : 0
         fixtureEpisodeIsPrepared = arguments.contains("--wilted-ui-fixture-prepared")
+        fixtureEpisodeIsDeferred = arguments.contains("--wilted-ui-fixture-deferred")
 
         if usesFixtureMode {
             let configuredStore = try? LocalLibraryStore(url: self.libraryURL)
@@ -2593,6 +2597,44 @@ final class WiltedMacModel {
             updateEpisode(episode.id) { $0.preparationState = .preparing(stage: Self.preparationQueuedStage) }
             podcastOperationMessage = "\(episode.title) is queued for off-peak preparation."
         }
+    }
+
+    /// Whether this episode is waiting for an off-peak window rather than
+    /// being prepared right now.
+    ///
+    /// The two are indistinguishable from `preparationState` alone: a deferred
+    /// job is stored as `.preparing(stage: "Queued")` so the row shows it is
+    /// spoken for, which also makes `isRunning` true. A reader looking at a
+    /// deferred row sees "Preparing…" and a Stop button for work that has not
+    /// started and will not start for hours.
+    func isDeferredForOffPeak(_ episodeID: String) -> Bool {
+        deferredAutomaticPreparations.contains { $0.episodeID == episodeID }
+    }
+
+    /// Prepares a deferred episode now, overriding its off-peak window.
+    ///
+    /// The window is a default, not a rule: a listener who wants this episode
+    /// on the walk they are about to take should not have to change a Settings
+    /// policy and wait for the next re-evaluation. The stored policy snapshot
+    /// is reused rather than re-read, so overriding one episode does not
+    /// quietly re-policy it under settings edited since it was admitted.
+    ///
+    /// Returns false when the episode is not deferred or the gate refuses it,
+    /// and in the refusal case the deferral is left in place so the off-peak
+    /// pass still owns it.
+    @discardableResult
+    func prepareDeferredEpisodeNow(_ episode: WiltedMacEpisode) -> Bool {
+        guard let deferred = deferredAutomaticPreparations.first(where: { $0.episodeID == episode.id })
+        else { return false }
+        preparationQueue.leave(episode.id)
+        guard prepareEpisode(episode, policySnapshot: deferred.policySnapshot) else {
+            preparationQueue.enter(WiltedMacWaitingPreparation(
+                id: episode.id, title: episode.title, source: episode.feedTitle
+            ))
+            return false
+        }
+        removeDeferredAutomaticPreparation(episode.id, leaveQueue: false)
+        return true
     }
 
     /// Re-evaluates only already-admitted off-peak jobs. Later Settings edits
@@ -6508,8 +6550,22 @@ final class WiltedMacModel {
             notes: Self.fixtureEpisodeNotes, artworkURL: nil, releasedAt: episode.createdAt.date,
             durationSeconds: episode.durationSeconds, playbackSeconds: 0,
             downloadState: fixtureDownloadFailuresRemaining > 0 ? .notDownloaded : .completed,
-            preparationState: fixtureEpisodeIsPrepared ? .prepared(summary: Self.fixturePreparedSummary) : .notPrepared
+            preparationState: fixtureEpisodeIsPrepared
+                ? .prepared(summary: Self.fixturePreparedSummary)
+                : (fixtureEpisodeIsDeferred ? .preparing(stage: Self.preparationQueuedStage) : .notPrepared)
         )]
+        if fixtureEpisodeIsDeferred {
+            // The same shape `admitAutomaticPreparation` writes when the
+            // off-peak window is shut, minus the download that produced it.
+            deferredAutomaticPreparations = [DeferredAutomaticPreparation(
+                episodeID: episodeID.rawValue,
+                processingPolicy: automationSettings.processingPolicy,
+                policySnapshot: Self.preparationPolicySnapshot(from: automationSettings)
+            )]
+            preparationQueue.enter(WiltedMacWaitingPreparation(
+                id: episodeID.rawValue, title: episode.title, source: feed.title
+            ))
+        }
         // The Feeds card reads `subscriptions`, which only the store-backed load
         // path populates. Fixture mode assigns the library directly, so it has
         // to supply the same rows -- including a feed the listener has hidden,

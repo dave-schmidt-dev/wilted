@@ -1322,7 +1322,20 @@ private struct WiltedMacMenuView: View {
                     .accessibilityIdentifier("wilted-menu-play-\(episode.id)")
             }
         case .downloaded:
-            if episode.preparationState.isRunning {
+            if model.isDeferredForOffPeak(episode.id) {
+                // A deferred job is stored as `.preparing(stage: "Queued")`, so
+                // without this branch the row reads "Preparing…" beside a Stop
+                // button for work that has not started and will not start for
+                // hours. The window is a default, not a rule.
+                HStack(spacing: WiltedTheme.Spacing.small) {
+                    Text("Waiting for off-peak")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    Button("Prepare now") { model.prepareDeferredEpisodeNow(episode) }
+                        .accessibilityLabel("Prepare \(episode.title) now")
+                        .accessibilityIdentifier("wilted-menu-prepare-now-\(episode.id)")
+                }
+            } else if episode.preparationState.isRunning {
                 HStack(spacing: WiltedTheme.Spacing.small) {
                     Text("Preparing…")
                         .wiltedFont(.utility)

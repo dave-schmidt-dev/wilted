@@ -308,7 +308,10 @@ assert_macos_ui_leg_is_executed() {
   assert_contains 'leg_macos_ui_tests()' "$gate"
   assert_contains 'run_leg "${leg_names[7]}" "${leg_reports[7]}" leg_macos_ui_tests' "$gate"
   assert_contains '  macos-ui-tests' "$gate"
-  assert_contains "macos-ui-tests) printf '16" "$gate"
+  assert_contains "macos-ui-tests) printf '17" "$gate"
+  # A floor is a minimum, so a named journey can vanish while an unrelated new
+  # test holds the count up. The gate asserts this one by identifier too.
+  assert_contains 'testMenuOverridesAnOffPeakDeferralWithPrepareNow' "$gate"
   assert_contains '-only-testing:WiltedMacUITests' "$gate"
   for method in \
     testEachDestinationExclusivelyOccupiesTheDetailRegion \
@@ -359,7 +362,7 @@ assert_snapshot_contract() {
   assert_contains 'expected_test_count_floor' "$gate"
   assert_contains 'macos-unit-tests) printf' "$gate"
   assert_contains 'ios-pixel-snapshot-tests) printf' "$gate"
-  assert_contains "printf '%s\\n' '{\"totalTestCount\":16}'" "$gate"
+  assert_contains "printf '%s\\n' '{\"totalTestCount\":17}'" "$gate"
   for method in \
     testEveryPreviewStateHasLightAndDarkPixelBaselines \
     testPixelSnapshotSelectorsAreUniqueAndComplete \

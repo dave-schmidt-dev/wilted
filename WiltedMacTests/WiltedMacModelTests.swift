@@ -1361,6 +1361,60 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertTrue(model.preparationQueue.isEmpty)
     }
 
+    /// A deferred job is stored as `.preparing(stage: "Queued")`, which makes
+    /// `isRunning` true, so the row is indistinguishable from one actually
+    /// being prepared unless something else answers the question.
+    func testADeferredEpisodeIsDistinguishableFromOneBeingPrepared() throws {
+        let (directory, model, episode) = try automationFixture("deferred-is-distinguishable")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual,
+            processingPolicy: .offPeak(try offPeakWindow()),
+            transcriptPolicy: .alwaysTranscribe, removeAds: false
+        ))
+        XCTAssertFalse(model.isDeferredForOffPeak(episode.id))
+
+        model.admitAutomaticPreparation(for: episode, at: try localDate(hour: 12))
+
+        XCTAssertTrue(model.isDeferredForOffPeak(episode.id))
+        XCTAssertEqual(model.episodes.first(where: { $0.id == episode.id })?.preparationState,
+                       .preparing(stage: WiltedMacModel.preparationQueuedStage),
+                       "the stored state alone still reads as running, which is why the row "
+                       + "needs isDeferredForOffPeak rather than preparationState")
+    }
+
+    /// The off-peak window is a default, not a rule: a listener about to leave
+    /// should not have to edit a Settings policy and wait for the next
+    /// re-evaluation to get this one episode prepared.
+    func testPreparingADeferredEpisodeNowTakesItOutOfTheOffPeakQueue() throws {
+        let (directory, model, episode) = try automationFixture("prepare-now-overrides")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual,
+            processingPolicy: .offPeak(try offPeakWindow()),
+            transcriptPolicy: .alwaysTranscribe, removeAds: false
+        ))
+        model.admitAutomaticPreparation(for: episode, at: try localDate(hour: 12))
+        XCTAssertEqual(model.preparationQueue.entries.map(\.id), [episode.id])
+
+        XCTAssertTrue(model.prepareDeferredEpisodeNow(episode))
+
+        XCTAssertFalse(model.isDeferredForOffPeak(episode.id),
+                       "the episode is being prepared now, so nothing should still be holding "
+                       + "it for a window hours away")
+        XCTAssertTrue(model.deferredAutomaticPreparations.isEmpty)
+    }
+
+    /// An episode nothing deferred has no deferral to override, and saying so
+    /// keeps the control from appearing to do something on a row it cannot act on.
+    func testPreparingANonDeferredEpisodeNowReportsThatItDidNothing() throws {
+        let (directory, model, episode) = try automationFixture("prepare-now-no-deferral")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        XCTAssertFalse(model.prepareDeferredEpisodeNow(episode))
+        XCTAssertTrue(model.preparationQueue.isEmpty)
+    }
+
     func testSkippingAnEpisodeGivesUpItsPlaceInThePreparationQueue() throws {
         let (directory, model, episode) = try automationFixture("skip-leaves-queue")
         defer { try? FileManager.default.removeItem(at: directory) }

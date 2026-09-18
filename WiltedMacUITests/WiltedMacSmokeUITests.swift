@@ -377,6 +377,45 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(app.buttons["wilted-menu-play-first"].isEnabled)
     }
 
+    /// A deferred episode's only way forward is the override, so the leg has
+    /// to prove the control exists and that pressing it actually starts the
+    /// work rather than just changing the copy.
+    ///
+    /// The deferred state is stored as `.preparing(stage: "Queued")`, so
+    /// asserting on "Preparing…" alone would pass whether or not the override
+    /// did anything. The assertion is that the deferral is gone: the row stops
+    /// offering "Prepare now".
+    func testMenuOverridesAnOffPeakDeferralWithPrepareNow() {
+        let app = launch(arguments: [
+            "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-deferred"
+        ])
+        let navFeeds = app.descendants(matching: .any)["wilted-navigation-feeds"]
+        XCTAssertTrue(navFeeds.waitForExistence(timeout: 8))
+        navFeeds.click()
+        let keep = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-keep-'")
+        ).firstMatch
+        XCTAssertTrue(keep.waitForExistence(timeout: 8))
+        keep.click()
+
+        let navMenu = app.descendants(matching: .any)["wilted-navigation-menu"]
+        XCTAssertTrue(navMenu.waitForExistence(timeout: 5))
+        navMenu.click()
+
+        let prepareNow = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-prepare-now-'")
+        ).firstMatch
+        XCTAssertTrue(prepareNow.waitForExistence(timeout: 8),
+                      "a deferred episode must offer a way past its off-peak window")
+        prepareNow.click()
+
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: prepareNow
+        )
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation], timeout: 10), .completed,
+                       "pressing Prepare now left the episode deferred")
+    }
+
     func testMenuBulkActionsAreDisabledWithHonestEmptyState() {
         let app = launch(arguments: ["--wilted-ui-fixture-ready"])
         let navMenu = app.descendants(matching: .any)["wilted-navigation-menu"]
