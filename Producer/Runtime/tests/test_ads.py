@@ -892,7 +892,7 @@ class TestDetectAds:
         )
         backend = self._content_backend()
 
-        assert detect_ads(segs, backend) == [AdSegment(10, 50, 1.0, "ad_break")]
+        assert detect_ads(segs, backend) == [AdSegment(10, 50, 0.5, "ad_break")]
 
     def test_bracketed_pod_preserves_panel_chatter_before_sponsor_opening(self):
         segs = _make_segments(
@@ -906,7 +906,7 @@ class TestDetectAds:
             ]
         )
 
-        assert detect_ads(segs, self._content_backend()) == [AdSegment(20, 50, 1.0, "ad_break")]
+        assert detect_ads(segs, self._content_backend()) == [AdSegment(20, 50, 0.5, "ad_break")]
 
     def test_bracketed_pod_semantically_recovers_story_ad_before_sponsor_anchor(self):
         segs = _make_segments(
@@ -926,7 +926,7 @@ class TestDetectAds:
             segs,
             backend,
             [_CoarseAdRun(2, 2, 1.0, "sponsor_read")],
-        ) == [AdSegment(10, 60, 1.0, "ad_break")]
+        ) == [AdSegment(10, 60, 0.8, "ad_break")]
         assert backend.generate.call_args_list[0].args[0] == _BRACKETED_SEED_VERIFY_SYSTEM_PROMPT
         assert backend.generate.call_args_list[1].args[0] == _POD_START_VERIFY_SYSTEM_PROMPT
         assert backend.generate.call_args_list[2].kwargs["response_format"] == _BOUNDARY_VERIFY_RESPONSE_FORMAT
@@ -948,7 +948,7 @@ class TestDetectAds:
             segs,
             backend,
             [_CoarseAdRun(1, 1, 1.0, "sponsor_read")],
-        ) == [AdSegment(20, 50, 1.0, "ad_break")]
+        ) == [AdSegment(20, 50, 0.6, "ad_break")]
         assert backend.generate.call_count == 1
 
     def test_explicit_anchor_preserves_delayed_panel_chatter_before_sponsor_read(self):
@@ -963,7 +963,7 @@ class TestDetectAds:
         )
         backend = _mock_backend([self._classifications(list(range(5)), {3}), '{"content_start_id":4}'])
 
-        assert detect_ads(segs, backend) == [AdSegment(20, 40, 1.0, "sponsor_read")]
+        assert detect_ads(segs, backend) == [AdSegment(20, 40, 0.7, "sponsor_read")]
         assert backend.generate.call_args_list[1].args[0] == _SPONSOR_ANCHOR_VERIFY_SYSTEM_PROMPT
 
     def test_explicit_anchor_replaces_partial_coarse_run_and_advances_past_sponsor_tail(self):
@@ -988,7 +988,7 @@ class TestDetectAds:
         )
         backend = _mock_backend([self._classifications(list(range(6)), {3}), '{"content_start_id":4}'])
 
-        assert detect_ads(segs, backend) == [AdSegment(14, 50, 1.0, "sponsor_read")]
+        assert detect_ads(segs, backend) == [AdSegment(14, 50, 0.7, "sponsor_read")]
         anchor_call = backend.generate.call_args_list[1]
         assert anchor_call.kwargs["response_format"] == _id_response_format("content_start_id", [2, 3, 4, 5])
         assert backend.generate.call_count == 2
@@ -1047,7 +1047,7 @@ class TestDetectAds:
         backend.generate = MagicMock(wraps=generate)
 
         assert _recover_explicit_sponsor_pods(segs, backend, [_CoarseAdRun(1, 1, 1.0, "sponsor_read")]) == (
-            [AdSegment(0, 20, 1.0, "sponsor_read")],
+            [AdSegment(0, 20, 0.7, "sponsor_read")],
             [(0, 1)],
         )
         assert backend.generate.call_args.kwargs == {}
@@ -1065,7 +1065,7 @@ class TestDetectAds:
         backend = _mock_backend(['{"content_start_id":4}'])
 
         assert _recover_explicit_sponsor_pods(segs, backend, [_CoarseAdRun(1, 3, 1.0, "sponsor_read")]) == (
-            [AdSegment(0, 40, 1.0, "sponsor_read")],
+            [AdSegment(0, 40, 0.7, "sponsor_read")],
             [(0, 3)],
         )
         assert backend.generate.call_count == 1

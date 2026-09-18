@@ -692,6 +692,36 @@ struct PodcastPreparationPipelineTests {
         #expect(progress.evidence?.fields["confidence"]?.contains("inf") == true)
     }
 
+    /// Task 5.7, fourth clause. Every span's readout must be that span's own
+    /// number: while the detector reported a constant 1.0 the percentage was
+    /// true by accident, and a reader had no way to tell a corroborated span
+    /// from a bare one.
+    @Test func adProgressRendersEachSpansOwnConfidenceAsItsPercentage() {
+        for confidence in [0.5, 0.6, 0.7, 0.775, 0.8, 0.95, 1.0] {
+            let progress = PodcastPreparationPipeline.adProgress(
+                PodcastAdSegment(startSeconds: 12, endSeconds: 24, label: "host read",
+                                 confidence: confidence),
+                ordinal: 1
+            )
+            let expected = "\(Int((confidence * 100).rounded()))%"
+            #expect(progress.detail.hasSuffix("· " + expected),
+                    "\(confidence) rendered as \(progress.detail)")
+            #expect(progress.evidence?.fields["confidence"] == String(format: "%.4f", confidence))
+        }
+
+        // Two spans from one run must not render the same figure.
+        let weak = PodcastPreparationPipeline.adProgress(
+            PodcastAdSegment(startSeconds: 0, endSeconds: 10, label: "ad_break", confidence: 0.775),
+            ordinal: 1
+        )
+        let strong = PodcastPreparationPipeline.adProgress(
+            PodcastAdSegment(startSeconds: 20, endSeconds: 30, label: "ad_break", confidence: 0.95),
+            ordinal: 2
+        )
+        #expect(weak.detail.hasSuffix("78%"))
+        #expect(strong.detail.hasSuffix("95%"))
+    }
+
     @Test func adProgressBoundsAnOversizedWorkerLabelWithoutDroppingEvidence() {
         let progress = PodcastPreparationPipeline.adProgress(
             PodcastAdSegment(startSeconds: 12, endSeconds: 24,

@@ -235,6 +235,34 @@ def coarse_confidence(observed: int, expected: int) -> float:
         COARSE_CONFIDENCE_FLOOR + (COARSE_CONFIDENCE_CEILING - COARSE_CONFIDENCE_FLOOR) * share,
         4,
     )
+
+
+# What a recovery review can claim, as a receipt rather than a probability.
+#
+# A recovery pass asks one bounded question and gets back an ID or -1, so it
+# has no classifier probability behind the span it builds. What it does have
+# is a countable share of its own corroboration contract: a positive seed
+# classification overlapping the span, a bounded verifier agreeing on where
+# content resumes or where the pod starts, a neighbour probe agreeing on the
+# edge. That share maps onto this band -- the same shape the worker's
+# `recovered_confidence` gives its own recovery passes, and like it, never
+# 1.0, because a review is not a classification.
+RECOVERED_CONFIDENCE_FLOOR = 0.5
+RECOVERED_CONFIDENCE_CEILING = 0.9
+
+
+def recovered_confidence(observed: int, expected: int) -> float:
+    """Map observed corroboration onto the recovery-review confidence band."""
+    if expected <= 0:
+        return RECOVERED_CONFIDENCE_FLOOR
+    share = min(1.0, max(0.0, observed / expected))
+    return round(
+        RECOVERED_CONFIDENCE_FLOOR
+        + (RECOVERED_CONFIDENCE_CEILING - RECOVERED_CONFIDENCE_FLOOR) * share,
+        4,
+    )
+
+
 _AD_DETECT_RESPONSE_FORMAT: dict[str, Any] = {
     "type": "json_object",
     "schema": {
@@ -604,9 +632,14 @@ def _recover_bracketed_ad_pods(
                 for run in positive_runs
                 if run.end_id > outgoing_id and run.start_id < sponsor_id and run.start_id < return_id
             ]
+            seed_agreement = bool(earlier_positive_runs)
+            seed_verified = False
+            probe_agreements = 0
+            recovered_start_id = sponsor_id
             if earlier_positive_runs:
                 first_positive = min(earlier_positive_runs, key=lambda run: run.start_id)
                 if _verify_bracketed_early_seed(first_positive, outgoing_id, sponsor_id, segments, backend):
+                    seed_verified = True
                     recovered_start_id = max(
                         outgoing_id + 1,
                         _verify_pod_start(first_positive, segments, backend),
@@ -627,19 +660,27 @@ def _recover_bracketed_ad_pods(
                         ):
                             break
                         recovered_start_id = candidate_id
-                else:
-                    recovered_start_id = sponsor_id
-            else:
-                recovered_start_id = sponsor_id
+                        probe_agreements += 1
             content_id = return_id + 1
             while content_id < len(segments) and not re.search(r"[A-Za-z0-9]{2,}", segments[content_id].text):
                 content_id += 1
             end_id = content_id - 1 if content_id < len(segments) else len(segments) - 1
+            # The receipt is the share of this pass's corroboration contract
+            # that was actually observed: an independent coarse classification
+            # inside the bracket, the bounded early-seed review accepting it,
+            # and each neighbour probe that agreed on the left edge. A pod
+            # resting only on the mandatory bumpers, sponsor opening and
+            # commercial cue reports the band's floor; one with all four
+            # corroborations reports its ceiling.
+            confidence = recovered_confidence(
+                sum((seed_agreement, seed_verified, probe_agreements)),
+                4,
+            )
             recovered.append(
                 AdSegment(
                     _refine_ad_start_from_tokens(segments[recovered_start_id]),
                     segments[end_id].end_s,
-                    1.0,
+                    confidence,
                     "ad_break",
                 )
             )
@@ -716,11 +757,25 @@ def _recover_explicit_sponsor_pods(
             logger.warning("Sponsor-anchor verifier for ID %d did not overlap a positive classification", anchor_id)
             continue
 
+        # The receipt is the share of this pass's corroboration contract that
+        # was actually observed: the positive coarse run(s) that seeded the
+        # anchor, a review context that was not truncated at its bound, and a
+        # content resumption the verifier placed inside the reviewed window
+        # rather than at its edge. Never 1.0: the verifier answers an ID, not a
+        # probability.
+        confidence = recovered_confidence(
+            sum((
+                min(len(context_runs), 2),
+                not context_truncated,
+                content_start_id < window_max,
+            )),
+            4,
+        )
         recovered.append(
             AdSegment(
                 _refine_ad_start_from_tokens(anchor, _EXPLICIT_HOST_READ_OPENING_RE),
                 _last_meaningful_ad_end(content_start_id, anchor_id, segments),
-                1.0,
+                confidence,
                 "sponsor_read",
             )
         )
