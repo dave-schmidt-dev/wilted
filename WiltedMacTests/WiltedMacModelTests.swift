@@ -7285,6 +7285,98 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(model.podcastQueueIDs, before, "the order is left exactly as it was")
     }
 
+    // MARK: Removal kinds (Task 5.5)
+
+    /// A prepared row must say what was removed, not just how much: two
+    /// sponsor reads and a show plugging its own newsletter are different
+    /// removals, and collapsing them into "3 ads removed" tells a listener
+    /// the show ran three adverts when it ran two.
+    func testPreparedSummaryReportsASeparateFigureForEachRemovalKind() throws {
+        let run = try preparationRun(withRemovalKinds: [
+            "paid advertising", "paid advertising", "house promotion", "credits"
+        ])
+        let summary = WiltedMacModel.preparedSummary(of: run, timing: .aligned)
+
+        XCTAssertTrue(summary.contains("2 paid advertising"), summary)
+        XCTAssertTrue(summary.contains("1 house promotion"), summary)
+        XCTAssertTrue(summary.contains("1 credits"), summary)
+        // The taxonomy's own order, so the removal a listener cares about
+        // leads rather than being buried under credits.
+        let paid = try XCTUnwrap(summary.range(of: "2 paid advertising"))
+        let house = try XCTUnwrap(summary.range(of: "1 house promotion"))
+        let credits = try XCTUnwrap(summary.range(of: "1 credits"))
+        XCTAssertTrue(paid.lowerBound < house.lowerBound)
+        XCTAssertTrue(house.lowerBound < credits.lowerBound)
+        XCTAssertFalse(summary.contains("4 ads removed"),
+                       "four removals of three kinds must not collapse to one figure")
+    }
+
+    /// Every journal written before kinds existed has no kind to report, and
+    /// inventing one would claim a breakdown the run never recorded.
+    func testPreparedSummaryKeepsItsPreviousWordingWhenNoRemovalCarriesAKind() throws {
+        let run = try preparationRun(withRemovalKinds: [])
+        XCTAssertNil(WiltedMacModel.removalKindSummary(of: run))
+        XCTAssertEqual(WiltedMacModel.preparedSummary(of: run, timing: .aligned),
+                       WiltedMacModel.recordedSummary(of: run)
+                       ?? "Ready · \(PodcastPreparationResult.transcriptStep(.aligned))")
+    }
+
+    /// A run retried inside one request journals its spans twice. The summary
+    /// counts the removals the episode has, not the attempts it took.
+    func testPreparedSummaryCountsARetriedRunsSpansOnce() throws {
+        let run = try preparationRun(withRemovalKinds: ["paid advertising", "house promotion"],
+                                     attempts: 3)
+        let summary = try XCTUnwrap(WiltedMacModel.removalKindSummary(of: run))
+        XCTAssertEqual(summary, "1 paid advertising, 1 house promotion removed")
+    }
+
+    /// Builds a succeeded run whose entries journal one `advertisement`
+    /// evidence per removal, the shape `adProgress` writes.
+    private func preparationRun(
+        withRemovalKinds kinds: [String], attempts: Int = 1
+    ) throws -> PreparationRunSummary {
+        let itemID = try ItemID(rawValue: "kind-summary-episode")
+        let requestID = "podcast-prepare|kind-summary-episode"
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        var entries: [PreparationJournalEntry] = []
+        var emitted = 0
+        for attempt in 0..<max(1, attempts) {
+            for (index, kind) in kinds.enumerated() {
+                let ordinal = index + 1
+                entries.append(PreparationJournalEntry(
+                    id: "\(requestID)|ads.detect.span.\(ordinal)#\(attempt)",
+                    itemID: itemID, requestID: requestID,
+                    status: try PreparationStatus(
+                        stage: .assembling, detail: "span \(ordinal)", fraction: 0.5, cancellable: true,
+                        emittedAt: Timestamp(origin.addingTimeInterval(Double(emitted))),
+                        evidence: try PreparationEvidence(kind: "advertisement", fields: [
+                            "ordinal": String(ordinal), "startSeconds": "10.000",
+                            "endSeconds": "40.000", "label": "sponsor", "confidence": "0.9000",
+                            "removalKind": kind
+                        ])
+                    )
+                ))
+                emitted += 1
+            }
+        }
+        let terminal = try PreparationStatus(
+            stage: .completed, detail: "Prepared.", fraction: 1, cancellable: false,
+            terminalResult: try PreparationTerminalResult(
+                outcome: .succeeded, revisionID: RevisionID(rawValue: "rev-kind-summary")
+            ),
+            emittedAt: Timestamp(origin.addingTimeInterval(Double(emitted)))
+        )
+        entries.append(PreparationJournalEntry(
+            id: "\(requestID)|pipeline.complete", itemID: itemID, requestID: requestID, status: terminal
+        ))
+        return PreparationRunSummary(
+            requestID: requestID, itemID: itemID,
+            startedAt: Timestamp(origin), updatedAt: terminal.emittedAt,
+            stage: .completed, detail: "Prepared.", fraction: 1, isTerminal: true,
+            outcome: .succeeded, failure: nil, entries: entries
+        )
+    }
+
     // MARK: Measurement (Task 3.2)
 
     /// Reports what the Prep poll and the queue lists cost on a library the

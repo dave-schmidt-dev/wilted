@@ -251,6 +251,58 @@ struct PodcastPreparationPipelineTests {
         #expect(result.transcript.timing == .aligned)
     }
 
+    /// The worker names a removal's kind separately from its detector label,
+    /// and the two deliberately disagree: a merged span takes the *first*
+    /// overlapping nomination's label while its kind is the strongest of the
+    /// union. Reading the kind off the label here would put the first-label
+    /// attribution back that the merge fix removed.
+    @Test func adSegmentsCarryTheWorkersRemovalKindRatherThanDerivingItFromTheLabel() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let cutBody = Data("shorter-audio-bytes".utf8)
+        let stub = WorkerStub(response: [
+            "ok": true, "timing": "aligned", "audioChanged": true, "durationSeconds": 7.5,
+            "text": "Kept words.", "cues": [["startSeconds": 0.0, "endSeconds": 3.0, "text": "Kept words."]],
+            "removedSeconds": 4.5,
+            // `self_promo` maps to a house promotion, but this span merged a
+            // paid read in, so the worker reports paid. The label still names
+            // the first nomination.
+            "adSegments": [["startSeconds": 3.0, "endSeconds": 7.5, "label": "self_promo",
+                            "confidence": 0.91, "kind": "paid advertising"]],
+            "keepIntervals": [["startSeconds": 0.0, "endSeconds": 3.0, "outputStartSeconds": 0.0],
+                              ["startSeconds": 7.5, "endSeconds": 12.0, "outputStartSeconds": 3.0]],
+        ], writesCutAudio: cutBody)
+
+        let result = try await fixture.pipeline(stub).prepare(episodeID: fixture.episodeID)
+
+        #expect(result.adSegments.first?.label == "self_promo")
+        #expect(result.adSegments.first?.kind == "paid advertising")
+    }
+
+    /// A kind is a display string from an external process. An unrecognised
+    /// one reads as paid -- the conservative reading of an unknown removal --
+    /// rather than failing a preparation whose audio is already finished.
+    @Test func anUnrecognisedOrAbsentRemovalKindReadsAsPaidRatherThanFailingThePreparation() async throws {
+        for supplied in [["kind": "sponsored content"], [:]] as [[String: String]] {
+            let fixture = try await Fixture()
+            defer { fixture.remove() }
+            let cutBody = Data("shorter-audio-bytes".utf8)
+            var span: [String: Any] = ["startSeconds": 3.0, "endSeconds": 7.5,
+                                       "label": "host read", "confidence": 0.91]
+            for (key, value) in supplied { span[key] = value }
+            let stub = WorkerStub(response: [
+                "ok": true, "timing": "aligned", "audioChanged": true, "durationSeconds": 7.5,
+                "text": "Kept words.", "cues": [["startSeconds": 0.0, "endSeconds": 3.0, "text": "Kept words."]],
+                "removedSeconds": 4.5, "adSegments": [span],
+                "keepIntervals": [["startSeconds": 0.0, "endSeconds": 3.0, "outputStartSeconds": 0.0],
+                                  ["startSeconds": 7.5, "endSeconds": 12.0, "outputStartSeconds": 3.0]],
+            ], writesCutAudio: cutBody)
+
+            let result = try await fixture.pipeline(stub).prepare(episodeID: fixture.episodeID)
+            #expect(result.adSegments.first?.kind == PodcastAdSegment.defaultKind)
+        }
+    }
+
     /// The whole point of the pipeline: cut audio is different audio, so it
     /// takes a new revision identity, replaces the download, and the remapped
     /// cues bind to the revision they actually describe.

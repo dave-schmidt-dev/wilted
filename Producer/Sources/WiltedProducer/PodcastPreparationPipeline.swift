@@ -34,6 +34,39 @@ public struct PodcastAdSegment: Equatable, Sendable {
     public let endSeconds: Double
     public let label: String
     public let confidence: Double
+    /// Paid advertising, house promotion, or credits -- what was removed, not
+    /// which detector rule found it. A merged span reports the strongest kind
+    /// present, so a paid read absorbed into a house promotion stays paid.
+    ///
+    /// The worker labels a span and names its kind separately, and the two do
+    /// not agree: `effective_ad_spans` attributes a merged span the *first*
+    /// overlapping nomination's label while taking the union of their kinds.
+    /// Deriving the kind from the label here would put the first-label
+    /// attribution back.
+    public let kind: String
+
+    /// What the worker reports for a span no nomination overlapped, and what
+    /// a journal written before kinds existed decodes as. Both are unknown
+    /// removals, and the conservative reading of an unknown removal is paid.
+    public static let defaultKind = "paid advertising"
+    public static let houseKind = "house promotion"
+    public static let creditsKind = "credits"
+
+    /// The taxonomy the worker publishes, strongest first. Ordering is the
+    /// display order too: a summary that led with credits would bury the
+    /// removal a listener actually cares about.
+    public static let recognisedKinds = [defaultKind, houseKind, creditsKind]
+
+    public init(
+        startSeconds: Double, endSeconds: Double, label: String, confidence: Double,
+        kind: String = PodcastAdSegment.defaultKind
+    ) {
+        self.startSeconds = startSeconds
+        self.endSeconds = endSeconds
+        self.label = label
+        self.confidence = confidence
+        self.kind = kind
+    }
 
     public var durationSeconds: Double { max(0, endSeconds - startSeconds) }
 }
@@ -475,7 +508,7 @@ public actor PodcastPreparationPipeline {
     /// This file's own source hash is computed with this value normalized out;
     /// it makes a semantic edit fail the coverage test until this fingerprint
     /// block is deliberately updated.
-    public static let pipelineSourceHash = "sha256:f5734d8ed7b0713d420fb44abb64806f5e2c7a43d1ec673edc5cd5673198b362"
+    public static let pipelineSourceHash = "sha256:dceeab96d8062b0a29ec7973ee44f0d132ecbf04c1bf80dee326d0beab9d1954"
 
     /// Includes the external Python packages imported by the worker. The
     /// runtime itself now lives in this repository under `Producer/Runtime`,
@@ -907,6 +940,13 @@ public actor PodcastPreparationPipeline {
             cues.append(cue)
         }
         let rawAds = try intervalObjects(named: "adSegments", in: object)
+        // The worker's kind is external input, so an unrecognised one reads as
+        // paid rather than throwing: refusing a prepared episode over a
+        // display string would discard finished audio work.
+        let adKinds = rawAds.map { raw -> String in
+            let reported = raw["kind"] as? String ?? ""
+            return PodcastAdSegment.recognisedKinds.contains(reported) ? reported : PodcastAdSegment.defaultKind
+        }
         let removed = try rawAds.map { raw -> PreparationStatus.PreparationTimeline.RemovedInterval in
             guard let start = raw["startSeconds"] as? Double, let end = raw["endSeconds"] as? Double,
                   let label = raw["label"] as? String, let confidence = raw["confidence"] as? Double else {
@@ -969,8 +1009,11 @@ public actor PodcastPreparationPipeline {
             audioPath: audioPath,
             audioChanged: changed,
             durationSeconds: durationSeconds,
-            adSegments: removed.map { PodcastAdSegment(startSeconds: $0.originalStartSeconds, endSeconds: $0.originalEndSeconds,
-                                                       label: $0.label, confidence: $0.confidence) },
+            adSegments: removed.enumerated().map { index, interval in
+                PodcastAdSegment(startSeconds: interval.originalStartSeconds, endSeconds: interval.originalEndSeconds,
+                                 label: interval.label, confidence: interval.confidence,
+                                 kind: adKinds.indices.contains(index) ? adKinds[index] : PodcastAdSegment.defaultKind)
+            },
             removedSeconds: removedSeconds,
             keepIntervals: kept.map { PodcastKeepInterval(startSeconds: $0.originalStartSeconds, endSeconds: $0.originalEndSeconds,
                                                           outputStartSeconds: $0.outputStartSeconds) },
@@ -1209,7 +1252,7 @@ public actor PodcastPreparationPipeline {
         let evidence = try? PreparationEvidence(kind: "advertisement", fields: [
             "ordinal": String(ordinal), "startSeconds": String(format: "%.3f", ad.startSeconds),
             "endSeconds": String(format: "%.3f", ad.endSeconds), "label": label,
-            "confidence": String(format: "%.4f", ad.confidence)
+            "confidence": String(format: "%.4f", ad.confidence), "removalKind": ad.kind
         ])
         let confidence: String
         if ad.confidence.isFinite, (0...1).contains(ad.confidence) {

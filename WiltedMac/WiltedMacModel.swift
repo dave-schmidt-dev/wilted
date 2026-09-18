@@ -5600,6 +5600,54 @@ final class WiltedMacModel {
         return "\(PodcastPreparationResult.readyLabel) · \(ads) · \(PodcastPreparationResult.transcriptStep(.aligned))"
     }
 
+    /// What a finished preparation removed, counted per kind.
+    ///
+    /// Three kinds are not one number. A listener who sees "3 ads removed"
+    /// cannot tell a show that ran two sponsor reads from one that ran its own
+    /// trailer twice, and those are different enough that the second is not
+    /// really an ad removal at all. Each removal journals its kind alongside
+    /// its boundaries, so the summary counts them separately rather than
+    /// collapsing them.
+    ///
+    /// Returns nil when no removal in the run carries a kind, which is every
+    /// journal written before kinds existed -- the caller keeps its previous
+    /// wording rather than claiming a breakdown it does not have.
+    nonisolated static func removalKindSummary(of run: PreparationRunSummary?) -> String? {
+        guard let run, run.isTerminal, run.outcome == .succeeded else { return nil }
+        // A run that was retried inside one request journals its spans twice.
+        // Keying by ordinal keeps the latest attempt's count rather than the
+        // sum of every attempt.
+        var kindByOrdinal: [String: String] = [:]
+        for entry in run.entries {
+            guard let evidence = entry.status.evidence, evidence.kind == "advertisement",
+                  let ordinal = evidence.fields["ordinal"] else { continue }
+            kindByOrdinal[ordinal] = evidence.fields["removalKind"] ?? PodcastAdSegment.defaultKind
+        }
+        guard !kindByOrdinal.isEmpty else { return nil }
+
+        var counts: [String: Int] = [:]
+        for kind in kindByOrdinal.values { counts[kind, default: 0] += 1 }
+        // Recognised kinds lead, in the taxonomy's own order, so a paid read
+        // is never buried under credits. Anything else is a worker the app is
+        // newer than; it is still shown, sorted, rather than dropped.
+        let known = PodcastAdSegment.recognisedKinds.filter { counts[$0] != nil }
+        let unknown = counts.keys.filter { !PodcastAdSegment.recognisedKinds.contains($0) }.sorted()
+        let figures = (known + unknown).map { "\(counts[$0] ?? 0) \($0)" }
+        return figures.joined(separator: ", ") + " removed"
+    }
+
+    /// The prepared-row summary: a per-kind removal breakdown when the run
+    /// journalled one, and the previous wording when it did not.
+    nonisolated static func preparedSummary(
+        of run: PreparationRunSummary?, timing: TranscriptTiming
+    ) -> String {
+        let step = PodcastPreparationResult.transcriptStep(timing)
+        if let kinds = removalKindSummary(of: run) {
+            return "\(PodcastPreparationResult.readyLabel) · \(kinds) · \(step)"
+        }
+        return recordedSummary(of: run) ?? "\(PodcastPreparationResult.readyLabel) · \(step)"
+    }
+
     /// Where a cut lands in the prepared audio: the end of the last kept
     /// interval before it, carried onto the output clock. Zero when the cut
     /// starts the episode, because nothing was kept ahead of it.
@@ -6291,20 +6339,16 @@ final class WiltedMacModel {
             return .notPrepared
         }
 
-        let ready = PodcastPreparationResult.readyLabel
         if transcript == nil || transcript?.availability == .absent || transcript?.timing == TranscriptTiming.none {
             return .prepared(summary: "Audio ready · Transcript unavailable")
         }
         switch transcript?.timing {
         case .published:
-            return .prepared(summary: recordedSummary(of: run)
-                             ?? "\(ready) · \(PodcastPreparationResult.transcriptStep(.published))")
+            return .prepared(summary: preparedSummary(of: run, timing: .published))
         case .aligned:
-            return .prepared(summary: recordedSummary(of: run)
-                             ?? "\(ready) · \(PodcastPreparationResult.transcriptStep(.aligned))")
+            return .prepared(summary: preparedSummary(of: run, timing: .aligned))
         case nil, .some(.none):
-            return .prepared(summary: recordedSummary(of: run)
-                             ?? "\(ready) · \(PodcastPreparationResult.transcriptStep(.none))")
+            return .prepared(summary: preparedSummary(of: run, timing: .none))
         }
     }
 
