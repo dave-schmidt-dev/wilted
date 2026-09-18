@@ -2628,9 +2628,16 @@ final class WiltedMacModel {
     @discardableResult
     func registerPreparationRequest(for episodeID: String) -> Int {
         if let existing = preparationRequestSequences[episodeID] { return existing }
+        let sequence = nextPreparationRequestSequence()
+        preparationRequestSequences[episodeID] = sequence
+        return sequence
+    }
+
+    /// Advances and persists the counter without recording a pending request.
+    /// A run that is already starting has no place to keep.
+    private func nextPreparationRequestSequence() -> Int {
         preparationRequestSequence += 1
         preferences.set(preparationRequestSequence, forKey: Self.preparationRequestSequencePreferenceKey)
-        preparationRequestSequences[episodeID] = preparationRequestSequence
         return preparationRequestSequence
     }
 
@@ -2640,7 +2647,7 @@ final class WiltedMacModel {
     @discardableResult
     func consumePreparationRequest(for episodeID: String) -> Int {
         if let existing = preparationRequestSequences.removeValue(forKey: episodeID) { return existing }
-        return registerPreparationRequest(for: episodeID)
+        return nextPreparationRequestSequence()
     }
 
     /// Gives up a request's place, for a row that can no longer run: a retired,

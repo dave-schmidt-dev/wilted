@@ -2481,6 +2481,22 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(model.preparationRequestSequence, higher)
     }
 
+    /// A run that consumed its place must not leave one behind: if it did, a
+    /// later request for the same episode would inherit the old, too-low
+    /// number and jump the queue ahead of everything asked for since.
+    func testAskingAgainAfterARunTakesAFreshPlaceInLine() async throws {
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        let first = model.consumePreparationRequest(for: "episode")
+        XCTAssertEqual(model.preparationRequestSequences, [:],
+                       "a consumed request holds no place")
+
+        let other = model.registerPreparationRequest(for: "other-episode")
+        let second = model.registerPreparationRequest(for: "episode")
+        XCTAssertGreaterThan(second, other,
+                             "asking again queues behind what was asked for in between")
+        XCTAssertGreaterThan(second, first)
+    }
+
     /// The counter is persisted, so the click order outlives the process.
     func testPreparationRequestSequenceSurvivesAModelRebuild() throws {
         let suite = "com.zerodelta.wilted.mac.preparation-sequence-tests"
