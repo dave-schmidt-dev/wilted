@@ -330,7 +330,7 @@
       "kind": "judgement",
       "reported": "Episode 955's cuts drifted: the publisher transcript described a shorter advertising rendering than the audio actually carried, and similar duration was accepted as identity.",
       "missing": "The exact historical aligned-STT cache entry is gone. A dynamically inserted break is re-rolled per download, so re-fetching the episode does not recover the input that failed.",
-      "closes": "Aligned-STT timing is now required for a destructive cut, which removes the mechanism. A labelled case would need the exact aligned-STT cache entry the 2026-09-05 run consumed -- a dynamically inserted break is re-rolled per download, so a fresh fetch of the same episode is a different input, not the one that failed. Nothing on this machine retains that cache entry."
+      "closes": "Aligned-STT timing is now required for a destructive cut, which removes the mechanism. A labelled case would need the exact aligned-STT cache entry the 2026-09-05 run consumed -- a dynamically inserted break is re-rolled per download, so a fresh fetch of the same episode is a different input, not the one that failed. Nothing on this machine retains that cache entry, and no sourceHash or itemID for it is recorded, so no specific input can be named."
     },
     {
       "id": "video-game-town-unanchored-host-read",
@@ -338,7 +338,7 @@
       "kind": "judgement",
       "reported": "A host read survived: the coarse pass called it conversation, and the spoken domain name lacked the spelling the anchor expected.",
       "missing": "No retained input for this episode has been identified, and no hand-timed interval exists for it. The mechanism it exhibits is no longer unlabelled, though: the Practical AI case carries two host reads that open soft and close on a spoken domain, and the detector left both whole.",
-      "closes": "The episode's retained aligned-STT cache entry plus hand-timed host-read boundaries, if this input is ever recovered. The anchor-plus-CTA recovery is no longer covered only by synthetic cues -- practical-ai-two-host-reads-left-whole measures it on real audio -- so what remains open here is this show's specific failure, not the class of failure."
+      "closes": "The episode's retained aligned-STT cache entry plus hand-timed host-read boundaries, if this input is ever recovered. The anchor-plus-CTA recovery is no longer covered only by synthetic cues -- practical-ai-two-host-reads-left-whole measures it on real audio -- so what remains open here is this show's specific failure, not the class of failure. No sourceHash has been identified for the episode, so no specific input can be named; `missing` records that absence."
     },
     {
       "id": "daily-chase-sapphire-sparse-spot",
@@ -354,7 +354,7 @@
       "kind": "judgement",
       "reported": "A nine-minute-twenty-three-second episode was overcut: two reads bracketed almost the whole news programme.",
       "missing": "The original short episode's input is unavailable. Other TechCrunch entries in the local cache are different episodes and cannot stand in for it; using one would be inventing the case.",
-      "closes": "Proportional rejection and bounded resize cover the mechanism under synthetic cues. A labelled case needs a retained copy of the original nine-minute-twenty-three-second episode with its own provenance and hand-timed boundaries; the TechCrunch entries still in the local cache are different episodes and would be inventing the case."
+      "closes": "Proportional rejection and bounded resize cover the mechanism under synthetic cues. A labelled case needs a retained copy of the original nine-minute-twenty-three-second episode with its own provenance and hand-timed boundaries; the TechCrunch entries still in the local cache are different episodes and would be inventing the case. That episode is known only by its duration, and no sourceHash or itemID for it is recorded, so no specific input can be named."
     },
     {
       "id": "mixed-cue-and-partial-postroll",
@@ -362,7 +362,7 @@
       "kind": "judgement",
       "reported": "Coarse cue boundaries held advertising and real content in one cue, and a postroll was removed only in part.",
       "missing": "Half of this is now carried: the Practical AI case labels two cues that straddle an advertising boundary, cue 111 and cue 185, each opening on a read's closing words and continuing into programme. What is still missing is a retained episode with a partially removed postroll; neither straddle here is at the end of the file.",
-      "closes": "The straddling-cue half is closed by practical-ai-two-host-reads-left-whole. The partial postroll needs a retained episode whose kept tail begins inside an appended postroll, with hand-timed boundaries for the partial cut; until then it is covered only by synthetic cues."
+      "closes": "The straddling-cue half is closed by practical-ai-two-host-reads-left-whole. The partial postroll needs a retained episode whose kept tail begins inside an appended postroll, with hand-timed boundaries for the partial cut; until then it is covered only by synthetic cues. No specific retained episode has been identified for the partial-postroll half, so no specific input can be named."
     },
     {
       "id": "duplicate-transcription-passes",

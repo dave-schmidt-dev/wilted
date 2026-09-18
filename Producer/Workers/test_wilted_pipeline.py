@@ -4485,17 +4485,32 @@ class AdCorpusManifestTests(unittest.TestCase):
 
     def test_every_remaining_gap_names_the_input_that_would_close_it(self):
         # The inventory is only actionable if a reader knows what to go and
-        # find. Every judgement gap names the retained artifact that would turn
-        # it into a case; every runtime gap says no corpus input can, because
-        # the defect is not a judgement on audio.
+        # find. Every judgement gap either names the retained artifact by its
+        # source hash or says plainly that no specific input can be named,
+        # which is what keeps a reader from going to look for something the
+        # manifest never identifies; every runtime gap says no corpus input
+        # can, because the defect is not a judgement on audio.
         judgement = [gap for gap in self.manifest["gaps"] if gap["kind"] == "judgement"]
         self.assertTrue(judgement)
-        for gap in judgement:
-            named = gap["closes"] + " " + gap["missing"]
-            self.assertTrue(
-                "cache entry" in named or "sha256:" in named or "episode" in named,
-                f"{gap['id']}: no input is named as what would close it",
-            )
+        named = {
+            gap["id"] for gap in judgement
+            if "sha256:" in gap["closes"] + " " + gap["missing"]
+        }
+        unnamed = {
+            gap["id"] for gap in judgement
+            if "no specific input can be named" in gap["closes"] + " " + gap["missing"]
+        }
+        every_gap = {gap["id"] for gap in judgement}
+        self.assertEqual(
+            named | unnamed, every_gap,
+            "every judgement gap must name a source hash or say no specific input can be named",
+        )
+        self.assertEqual(
+            named & unnamed, set(),
+            "a gap that names a hash does not also claim no input can be named",
+        )
+        self.assertIn("daily-chase-sapphire-sparse-spot", named)
+        self.assertIn("smartless-steve-zahn-brought-to-you-in-part-by", named)
         runtime = [gap for gap in self.manifest["gaps"] if gap["kind"] == "runtime"]
         self.assertTrue(runtime)
         for gap in runtime:
