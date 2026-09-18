@@ -343,10 +343,14 @@ assert_snapshot_contract() {
   assert_contains 'validate_ios_pixel_snapshot_baselines "$integration_root"' "$gate"
   assert_contains 'NATIVE_FORCE_SNAPSHOT_BASELINE' "$gate"
   assert_contains 'test_host_pattern' "$gate"
-  assert_contains 'native.cleanup mac-test-hosts=' "$gate"
+  assert_contains "test_host_pattern='wilted-native-gate" "$gate"
+  assert_contains 'native.cleanup mac-test-hosts-killed=' "$gate"
+  assert_contains 'kill -KILL "$test_host_pid"' "$gate"
   assert_contains 'trap cleanup EXIT' "$gate"
   assert_contains 'WILTED_XCODE_TEST_TIMEOUT_SECONDS' "$gate"
   assert_contains 'native.timeout label=$label seconds=$xcode_test_timeout_seconds' "$gate"
+  assert_contains 'phase=$timeout_phase' "$gate"
+  assert_contains "grep -q 'Testing started' \"\$tmp_root/\$label.log\"" "$gate"
   assert_contains 'native.heartbeat label=$label elapsed_seconds=$elapsed_seconds' "$gate"
   assert_contains 'cleanup_mac_test_hosts' "$gate"
 
@@ -421,6 +425,8 @@ assert_ios_ui_clean_simulator_contract() {
   assert_contains 'ios_ui_baseline_geometry' "$gate"
   assert_contains 'name == device_name' "$gate"
   assert_contains 'native.simulator.clean-shutdown' "$gate"
+  assert_contains 'native.simulator.clean-shutdown.busy' "$gate"
+  assert_contains 'pgrep -f "$udid"' "$gate"
   assert_contains 'geometry=%s' "$gate"
   assert_contains 'xcrun simctl shutdown "$udid"' "$gate"
   assert_contains 'trap cleanup_ios_ui_simulator EXIT' "$gate"
@@ -459,6 +465,40 @@ assert_ios_ui_clean_simulator_contract() {
 }
 
 assert_ios_ui_clean_simulator_contract
+
+assert_fail_stops_its_leg_contract() {
+  local fail_block
+  fail_block="$(sed -n '/^fail()/,/^}$/p' "$gate")"
+  assert_block_contains 'exit 1' "$fail_block"
+  # run_leg runs each leg as one pipeline element, so an exit inside the leg
+  # ends that leg while PIPESTATUS still carries its status back to run_leg.
+  assert_contains 'command_status="${PIPESTATUS[0]}"' "$gate"
+  assert_contains 'udid="$(find_simulator_udid)" || return 1' "$gate"
+  assert_contains 'udid="$(find_shutdown_iphone_udid)" || return 1' "$gate"
+  assert_contains 'project="$(find_project)" || return 1' "$gate"
+}
+
+assert_fail_stops_its_leg_contract
+
+assert_stray_host_cleanup_contract() {
+  local xcode_leg_block mac_ui_block cleanup_line xcodebuild_line
+  xcode_leg_block="$(sed -n '/^xcode_test_leg()/,/^}$/p' "$gate")"
+  cleanup_line="$(printf '%s\n' "$xcode_leg_block" | rg -n 'cleanup_mac_test_hosts' | head -1 | cut -d: -f1)"
+  xcodebuild_line="$(printf '%s\n' "$xcode_leg_block" | rg -n 'xcodebuild test' | head -1 | cut -d: -f1)"
+  [[ -n "$cleanup_line" && -n "$xcodebuild_line" && "$cleanup_line" -lt "$xcodebuild_line" ]] || {
+    printf '%s\n' 'assertion failed: xcode test leg must sweep stray hosts before starting xcodebuild' >&2
+    exit 1
+  }
+  mac_ui_block="$(sed -n '/^leg_macos_ui_tests()/,/^}$/p' "$gate")"
+  cleanup_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'cleanup_mac_test_hosts' | head -1 | cut -d: -f1)"
+  xcodebuild_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'xcodebuild build-for-testing' | head -1 | cut -d: -f1)"
+  [[ -n "$cleanup_line" && -n "$xcodebuild_line" && "$cleanup_line" -lt "$xcodebuild_line" ]] || {
+    printf '%s\n' 'assertion failed: macOS UI leg must sweep stray hosts before starting xcodebuild' >&2
+    exit 1
+  }
+}
+
+assert_stray_host_cleanup_contract
 
 assert_ios_mvp_journey_contract() {
   local fixture="$repo_root/WiltediOS/ListenerMVPFixture.swift"

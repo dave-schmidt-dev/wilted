@@ -44,13 +44,29 @@ macos_ui_failure_diagnostics_dir="${WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR:-$repo
 mkdir -p "$derived_data"
 
 cleanup_mac_test_hosts() {
-  local test_host_pattern test_host_pids
-  test_host_pattern="$derived_data/.*/WiltedMac.app/Contents/MacOS/WiltedMac"
+  local test_host_pattern test_host_pid test_host_pids alive_pids="" killed=0
+  test_host_pattern='wilted-native-gate\.[A-Za-z0-9]+/DerivedData/.*/WiltedMac\.app/Contents/MacOS/WiltedMac'
   test_host_pids="$(pgrep -f "$test_host_pattern" 2>/dev/null || true)"
-  if [[ -n "$test_host_pids" ]]; then
-    kill $test_host_pids 2>/dev/null || true
-    status "native.cleanup mac-test-hosts=$(printf '%s\n' "$test_host_pids" | wc -l | tr -d ' ')"
-  fi
+  for test_host_pid in $test_host_pids; do
+    if kill -0 "$test_host_pid" 2>/dev/null; then
+      alive_pids="$alive_pids $test_host_pid"
+    fi
+  done
+  [[ -n "$alive_pids" ]] || return 0
+  kill $alive_pids 2>/dev/null || true
+  sleep 1
+  for test_host_pid in $alive_pids; do
+    if kill -0 "$test_host_pid" 2>/dev/null; then
+      kill -KILL "$test_host_pid" 2>/dev/null || true
+    fi
+  done
+  sleep 1
+  for test_host_pid in $alive_pids; do
+    if ! kill -0 "$test_host_pid" 2>/dev/null; then
+      killed=$((killed + 1))
+    fi
+  done
+  status "native.cleanup mac-test-hosts-killed=$killed"
 }
 
 cleanup() {
@@ -87,7 +103,7 @@ status() {
 
 fail() {
   printf 'native.error %s\n' "$1" >&2
-  return 1
+  exit 1
 }
 
 # Xcode 27's SwiftPM writes test bundles to `<scratch>/out/Products/Debug` and
@@ -371,8 +387,10 @@ assert_mac_ui_selector_floor_contract() {
     fail 'validated focused Mac UI selector must require exactly one test'
   [[ "$(unset WILTED_MAC_UI_SELECTOR; expected_test_count_floor macos-ui-tests)" == "16" ]] ||
     fail 'default Mac UI suite must retain its sixteen-test floor'
-  if WILTED_MAC_UI_SELECTOR='WiltedMacUITests/OtherTests/testNope' \
-    expected_test_count_floor macos-ui-tests >/dev/null 2>&1; then
+  # `fail` exits, so the rejecting probe runs in a subshell: the contract is
+  # that an invalid selector must not SUCCEED here, not that it must return.
+  if ( WILTED_MAC_UI_SELECTOR='WiltedMacUITests/OtherTests/testNope' \
+    expected_test_count_floor macos-ui-tests ) >/dev/null 2>&1; then
     fail 'invalid Mac UI selector lowered the test-count floor'
   fi
 }
@@ -808,6 +826,19 @@ find_shutdown_iphone_udid() {
     }')"
   [[ -n "$udid" ]] || fail "no available $ios_ui_device_name simulator for $ios_ui_baseline_geometry geometry"
   if [[ "$state" == "Booted" ]]; then
+    local busy_pids busy_list
+    # Match a CLIENT driving the device, not the device itself. Every booted
+    # simulator runs a launchd_sim whose command line carries its own UDID, so
+    # a bare `pgrep -f "$udid"` matches unconditionally here -- this branch only
+    # runs when the device is Booted -- and refuses every shutdown. An
+    # xcodebuild aimed at the device names it after `-destination`.
+    busy_pids="$(pgrep -f -- "-destination[^ ]*$udid|id=$udid" 2>/dev/null || true)"
+    busy_list="$(printf '%s' "$busy_pids" | tr '\n' ',')"
+    if [[ -n "$busy_list" ]]; then
+      printf 'native.simulator.clean-shutdown.busy name=%s udid=%s pids=%s\n' \
+        "$ios_ui_device_name" "$udid" "$busy_list" >&2
+      fail "$ios_ui_device_name simulator $udid is in use by pids $busy_list; refusing to shut it down"
+    fi
     printf 'native.simulator.clean-shutdown name=%s udid=%s state=Booted\n' \
       "$ios_ui_device_name" "$udid" >&2
     xcrun simctl shutdown "$udid" >&2
@@ -838,9 +869,10 @@ xcode_test_leg() {
   require_tool jq
   require_tool xmllint
   assert_test_sources "$label" "$source_dir"
-  project="$(find_project)"
+  project="$(find_project)" || return 1
   [[ "$xcode_test_timeout_seconds" =~ ^[1-9][0-9]*$ ]] ||
     fail 'WILTED_XCODE_TEST_TIMEOUT_SECONDS must be a positive integer'
+  cleanup_mac_test_hosts
   xcodebuild test \
     -project "$project" \
     -scheme "$scheme" \
@@ -855,12 +887,16 @@ xcode_test_leg() {
   local xcode_status
   while kill -0 "$xcode_pid" 2>/dev/null; do
     if (( elapsed_seconds >= xcode_test_timeout_seconds )); then
-      status "native.timeout label=$label seconds=$xcode_test_timeout_seconds"
       kill -TERM "$xcode_pid" 2>/dev/null || true
       cleanup_mac_test_hosts
       set +e
       wait "$xcode_pid"
       set -e
+      local timeout_phase=build
+      if grep -q 'Testing started' "$tmp_root/$label.log" 2>/dev/null; then
+        timeout_phase=test
+      fi
+      status "native.timeout label=$label seconds=$xcode_test_timeout_seconds phase=$timeout_phase"
       return 124
     fi
     if (( elapsed_seconds > 0 && elapsed_seconds % 30 == 0 )); then
@@ -882,7 +918,7 @@ leg_macos_unit_tests() {
 
 leg_ios_unit_tests() {
   local udid
-  udid="$(find_simulator_udid)"
+  udid="$(find_simulator_udid)" || return 1
   xcode_test_leg ios-unit-tests "$integration_root/WiltediOSTests" WiltediOS "platform=iOS Simulator,id=$udid" WiltediOSTests
 }
 
@@ -930,6 +966,7 @@ leg_macos_ui_tests() {
     return 1
   fi
 
+  cleanup_mac_test_hosts
   if ! xcodebuild build-for-testing \
     -project "$project" \
     -scheme WiltedMac \
@@ -1034,7 +1071,7 @@ leg_ios_ui_tests() (
   }
   trap cleanup_ios_ui_simulator EXIT
 
-  udid="$(find_shutdown_iphone_udid)"
+  udid="$(find_shutdown_iphone_udid)" || return 1
   printf 'native.simulator.boot udid=%s purpose=ios-ui-tests\n' "$udid" >&2
   xcrun simctl boot "$udid" >&2
   simulator_started=1
