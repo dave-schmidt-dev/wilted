@@ -1405,6 +1405,41 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertTrue(model.deferredAutomaticPreparations.isEmpty)
     }
 
+    /// The Mac UI suite reaches Prepare now only through a fixture launch, so
+    /// the deferral the fixture seeds has to survive initialisation. It did not:
+    /// `installFixture` runs before the stored preferences are read, and a
+    /// fixture host has nothing stored, so the load emptied the seed before the
+    /// first render and the control never appeared.
+    func testADeferredFixtureLaunchStillHoldsItsDeferralAfterInitialisation() throws {
+        let directory = temporaryDirectory("deferred-fixture-survives-init")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts",
+                        "--wilted-ui-fixture-deferred"],
+            stateDirectoryOverride: directory, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        let deferredID = try XCTUnwrap(model.deferredAutomaticPreparations.first?.episodeID,
+                                       "a --wilted-ui-fixture-deferred launch must reach the "
+                                       + "first render still holding its deferral, or Prepare "
+                                       + "now has nothing to override")
+        let episode = try XCTUnwrap(model.episodes.first { $0.id == deferredID })
+        XCTAssertTrue(model.isDeferredForOffPeak(episode.id))
+        XCTAssertEqual(WiltedMacModel.menuGroup(for: episode), .downloaded,
+                       "the deferred row sits in the group whose control offers Prepare now")
+
+        // The UI leg does not reach the Menu directly: it opens Feeds and
+        // presses the first Keep. Replaying that here keeps this a proxy for
+        // the journey rather than for initialisation alone.
+        let kept = try XCTUnwrap(model.feedsEpisodes.first,
+                                 "Feeds must offer the row the leg keeps")
+        model.keepEpisode(kept)
+        XCTAssertEqual(kept.id, deferredID,
+                       "the leg keeps the first Feeds row, so that row has to be the deferred "
+                       + "one or the Menu never draws a Prepare now control")
+        XCTAssertTrue(model.isDeferredForOffPeak(deferredID),
+                      "keeping the episode must not clear its deferral")
+    }
+
     /// An episode nothing deferred has no deferral to override, and saying so
     /// keeps the control from appearing to do something on a row it cannot act on.
     func testPreparingANonDeferredEpisodeNowReportsThatItDidNothing() throws {

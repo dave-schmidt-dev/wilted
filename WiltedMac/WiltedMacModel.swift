@@ -1498,6 +1498,10 @@ final class WiltedMacModel {
         // the app bundle itself, so a defaulted `.standard` let tests write
         // into the daily driver's own preferences.
         self.preferences = usesFixtureMode ? Self.fixturePreferences() : preferences
+        // Read before the fixture install below, which builds its deferral's
+        // policy snapshot from these settings; the rest of the stored
+        // preferences are read after it.
+        automationSettings = Self.loadAutomationSettings(from: self.preferences)
 
 #if canImport(WiltedProducer)
         let stateDirectory = stateDirectoryOverride ?? Self.stateDirectory(fixtureMode: usesFixtureMode)
@@ -1583,8 +1587,14 @@ final class WiltedMacModel {
         if self.preferences.object(forKey: Self.playbackRatePreferenceKey) != nil {
             playbackRate = Self.clampPlaybackRate(self.preferences.double(forKey: Self.playbackRatePreferenceKey))
         }
-        automationSettings = Self.loadAutomationSettings(from: self.preferences)
-        deferredAutomaticPreparations = Self.loadDeferredAutomaticPreparations(from: self.preferences)
+        // `installFixture` above seeds the deferral a fixture launch is meant
+        // to show, and a fixture host has nothing stored under this key, so
+        // reading the preference here would erase the seed before the first
+        // render. `automationSettings` is read before the fixture install
+        // instead, because the fixture builds its policy snapshot from it.
+        if deferredAutomaticPreparations.isEmpty {
+            deferredAutomaticPreparations = Self.loadDeferredAutomaticPreparations(from: self.preferences)
+        }
         textScale = Self.loadTextScale(from: self.preferences)
 #if canImport(WiltedProducer)
         // Fixture launches build their controller above, before the stored
