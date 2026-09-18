@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
 from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
-
-import inspect
 
 import pytest
 
@@ -22,10 +21,10 @@ from wilted.ads import (
     _SPARSE_CONTENT_VERIFY_SYSTEM_PROMPT,
     _SPONSOR_ANCHOR_VERIFY_SYSTEM_PROMPT,
     _TRUNCATION_MARKER,
-    AdSegment,
-    _chunk_segments,
     COARSE_CONFIDENCE_CEILING,
     COARSE_CONFIDENCE_FLOOR,
+    AdSegment,
+    _chunk_segments,
     _CoarseAdRun,
     _compute_keep_segments,
     _id_response_format,
@@ -262,7 +261,9 @@ class TestDetectAds:
             [(0, True, "sponsor_read"), (1, False, None), (2, False, None)],
         ]
 
-        assert _resolve_overlaps(overlapping_votes, segs) == [_CoarseAdRun(0, 2, COARSE_CONFIDENCE_CEILING, "sponsor_read")]
+        assert _resolve_overlaps(overlapping_votes, segs) == [
+            _CoarseAdRun(0, 2, COARSE_CONFIDENCE_CEILING, "sponsor_read")
+        ]
 
     def test_post_vote_completion_keeps_adjacent_editorial_legal_discussion_as_content(self):
         segs = _make_segments(
@@ -440,7 +441,9 @@ class TestDetectAds:
         )
         response = json.dumps({"ads": [[index, "self_promo"] for index in range(3)]})
 
-        assert detect_ads(segs, _mock_backend([response])) == [AdSegment(0, 30, COARSE_CONFIDENCE_CEILING, "self_promo")]
+        assert detect_ads(segs, _mock_backend([response])) == [
+            AdSegment(0, 30, COARSE_CONFIDENCE_CEILING, "self_promo")
+        ]
 
     def test_jre_ford_editorial_false_positive_is_discarded_before_boundary_calls(self):
         prior_count = 1075

@@ -652,3 +652,46 @@ class TestLaunchdLogCapture:
         assert mkdir_launchd < first_symlink, (
             "~/.launchd/scripts must be created before the wrappers are symlinked into it"
         )
+
+    def test_install_launchd_boots_out_before_each_bootstrap_and_fails_loudly(self) -> None:
+        """Every ``launchctl bootstrap`` must be preceded by a ``bootout`` of the
+        same label, and must not be suffixed with ``|| true``.
+
+        ``bootstrap`` refuses a label that is already loaded. With ``|| true`` the
+        target reported success while the previously loaded — and now stale —
+        definition kept running, so a changed plist never took effect and nothing
+        said so. The only ignorable ``bootout`` status is 3 ("No such process"),
+        which is the nothing-was-loaded case.
+
+        This asserts command construction in the Makefile text only. It does not
+        call ``launchctl``: the suite runs where no agent is installed, so the
+        missing evidence is a ``launchctl print`` of the loaded definition on a
+        host that has the agent. Task 6.3's third clause is unverified here for
+        that reason.
+        """
+        makefile = nightly_plist_path().parent.parent / "Makefile"
+        target = _install_launchd_target(makefile.read_text(encoding="utf-8"))
+
+        lines = [line.strip() for line in target.splitlines()]
+        bootstraps = [i for i, line in enumerate(lines) if line.startswith("launchctl bootstrap")]
+        assert len(bootstraps) == 2, f"expected one bootstrap per agent, found {len(bootstraps)}"
+
+        for index in bootstraps:
+            line = lines[index]
+            assert not line.endswith("|| true"), (
+                f"a swallowed bootstrap failure leaves the stale definition loaded: {line}"
+            )
+            label = line.rsplit("/", 1)[-1].removesuffix(".plist")
+            preceding = lines[:index]
+            assert any(
+                item.startswith("launchctl bootout") and label in item for item in preceding
+            ), f"no bootout of {label} precedes its bootstrap"
+
+        for index, line in enumerate(lines):
+            if not line.startswith("launchctl bootout"):
+                continue
+            guard = " ".join(lines[index : index + 2])
+            assert "-eq 3" in guard, (
+                f"bootout must ignore only status 3 (not loaded), not every failure: {line}"
+            )
+            assert "|| true" not in guard, f"bootout must not swallow every failure: {line}"

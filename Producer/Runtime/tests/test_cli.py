@@ -5,10 +5,9 @@ import os
 import subprocess
 import sys
 import types
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
-
-from contextlib import contextmanager
 
 import pytest
 from speech_stack import client

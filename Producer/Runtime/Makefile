@@ -83,10 +83,24 @@ install-launchd:
 	mkdir -p $(HOME)/Library/Logs/homelab/wilted-scheduler
 	ln -sf $(CURDIR)/scripts/wilted-nightly.sh $(HOME)/.launchd/scripts/wilted_nightly.sh
 	sed 's|__HOME__|$(HOME)|g' scripts/local.wilted-nightly.plist > $(HOME)/Library/LaunchAgents/local.wilted-nightly.plist
-	launchctl bootstrap gui/$$(id -u) $(HOME)/Library/LaunchAgents/local.wilted-nightly.plist || true
+	@# `bootstrap` refuses a label that is already loaded, so tear the old
+	@# definition down first. `bootout` exits 3 ("No such process") when nothing
+	@# is loaded; that is the only status we ignore. Every other failure — and
+	@# every bootstrap failure — now stops the target instead of being swallowed
+	@# by `|| true`, which left a stale definition loaded and reported success.
+	launchctl bootout gui/$$(id -u)/local.wilted-nightly 2>/dev/null; \
+	  status=$$?; [ $$status -eq 0 ] || [ $$status -eq 3 ] || exit $$status
+	launchctl bootstrap gui/$$(id -u) $(HOME)/Library/LaunchAgents/local.wilted-nightly.plist
 	ln -sf $(CURDIR)/scripts/wilted-scheduler.sh $(HOME)/.launchd/scripts/wilted_scheduler.sh
 	sed 's|__HOME__|$(HOME)|g' scripts/local.wilted-scheduler.plist > $(HOME)/Library/LaunchAgents/local.wilted-scheduler.plist
-	launchctl bootstrap gui/$$(id -u) $(HOME)/Library/LaunchAgents/local.wilted-scheduler.plist || true
+	@# `bootstrap` refuses a label that is already loaded, so tear the old
+	@# definition down first. `bootout` exits 3 ("No such process") when nothing
+	@# is loaded; that is the only status we ignore. Every other failure — and
+	@# every bootstrap failure — now stops the target instead of being swallowed
+	@# by `|| true`, which left a stale definition loaded and reported success.
+	launchctl bootout gui/$$(id -u)/local.wilted-scheduler 2>/dev/null; \
+	  status=$$?; [ $$status -eq 0 ] || [ $$status -eq 3 ] || exit $$status
+	launchctl bootstrap gui/$$(id -u) $(HOME)/Library/LaunchAgents/local.wilted-scheduler.plist
 	@echo "Installed: wilted nightly at 2:00 AM and hourly scheduler tick via launchd"
 
 uninstall-launchd:
