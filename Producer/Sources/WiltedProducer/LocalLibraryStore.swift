@@ -3911,6 +3911,18 @@ public actor LocalLibraryStore {
             .first(where: { $0.id == episodeID.rawValue })?.retiredAt.map(Timestamp.init)
     }
 
+    /// Reverses `retireEpisode`, returning a skipped episode to the library.
+    /// Idempotent: an episode with no retirement record returns `false`.
+    @discardableResult
+    public func restoreRetiredEpisode(_ episodeID: ItemID) throws -> Bool {
+        let context = ModelContext(container)
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastEpisodeRecord>())
+            .first(where: { $0.id == episodeID.rawValue }), record.retiredAt != nil else { return false }
+        record.retiredAt = nil
+        try context.save()
+        return true
+    }
+
     /// Stable identifiers recorded on an outcome row translated from a legacy
     /// `podcast-invalidation|` or `podcast-reset-preparation|` marker by
     /// `reconcilePodcastStateV10()`.

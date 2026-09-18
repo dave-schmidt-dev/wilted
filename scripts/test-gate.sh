@@ -191,7 +191,8 @@ validate_pixel_snapshot_baselines() {
     wilted-player-volume wilted-player-scrubber wilted-player-previous \
     wilted-player-next wilted-player-restart wilted-player-keyboard-transports \
     wilted-player-status wilted-player-transcript-expanded \
-    wilted-mac-menu-detail wilted-menu-clear-upcoming wilted-menu-remove- wilted-menu-row-; do
+    wilted-mac-menu-detail wilted-menu-clear-ready wilted-menu-clear-downloaded \
+    wilted-menu-clear-available wilted-menu-skip- wilted-menu-remove- wilted-menu-row-; do
     grep -Fq "$identifier" \
       "$root/WiltedMac/WiltedMacRootView.swift" "$root/Shared/WiltedRootView.swift" ||
       fail "Mac compact player identifier is missing: $identifier"
@@ -213,7 +214,7 @@ validate_pixel_snapshot_baselines() {
   grep -Fq 'testPodcastPlaybackStaysOutOfArticleSyncWhileArticleQueuesOneCheckpoint' \
     "$root/WiltedMacTests/WiltedVisualSystemTests.swift" ||
     fail 'Mac podcast/article sync-isolation model selector is missing'
-  grep -Fq 'testPodcastCompactPlayerPersistsAcrossLarderScrollAndExposesCompleteControls' \
+  grep -Fq 'testPodcastCompactPlayerPersistsAcrossDestinationsAndExposesCompleteControls' \
     "$root/WiltedMacUITests/WiltedMacSmokeUITests.swift" ||
     fail 'Mac persistent compact-player real-window selector is missing'
 

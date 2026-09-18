@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wilted Menu queue semantics</title>
+<style>
+:root{color-scheme:dark;--page:#0d110f;--sidebar:#101612;--card:#151b17;--strong:#1a221d;--line:#2a382f;--text:#ecf2ed;--muted:#92a398;--leaf:#7fd48c;--amber:#e8c468;--red:#f08585}
+*{box-sizing:border-box}html,body{height:100%}body{margin:0;min-width:920px;background:#080b09;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;display:grid;place-items:center}
+button,select{font:inherit}button{cursor:pointer}button:focus-visible,select:focus-visible{outline:2px solid var(--leaf);outline-offset:2px}
+.note{position:fixed;right:18px;top:14px;z-index:10;color:var(--muted);font:600 10px ui-monospace,monospace;letter-spacing:.06em}
+.window{width:min(1240px,calc(100vw - 48px));height:min(820px,calc(100vh - 48px));display:grid;grid-template-columns:1fr;overflow:hidden;border:1px solid #344339;border-radius:14px;background:var(--page);box-shadow:0 25px 80px #0009}
+aside{display:flex;flex-direction:column;gap:18px;padding:26px 12px;background:var(--sidebar);border-right:1px solid var(--line)}
+.brand{margin:0 10px;font-size:19px;font-weight:750}.brand span{color:var(--leaf)}
+.nav{display:grid;gap:4px}.nav button{padding:10px 12px;border:0;border-radius:8px;background:transparent;color:var(--muted);text-align:left}.nav button.active{background:#294834;color:var(--text)}
+.aside-note{margin:auto 10px 0;color:var(--muted);font-size:11px;line-height:1.55}
+main{overflow:auto;padding:34px 40px 60px}.page{display:none;max-width:980px}.page.active{display:block}
+h1{margin:0;font-size:30px;letter-spacing:-.03em}h2{margin:0;font-size:16px}
+.lede{max-width:790px;margin:8px 0 20px;color:var(--muted);font-size:14px;line-height:1.55}
+.lede code{color:#ccefd1;font:600 12px ui-monospace,monospace}
+.legend{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 18px}
+.toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin:0 0 18px}
+.summary{display:flex;gap:8px;flex-wrap:wrap}
+.pill{padding:5px 8px;border:1px solid var(--line);border-radius:999px;background:#162019;color:var(--muted);font:600 11px ui-monospace,monospace}
+.pill strong{color:var(--text)}.pill.leaf{color:var(--leaf)}.pill.amber{color:var(--amber)}
+.controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.controls label{color:var(--muted);font:600 10px ui-monospace,monospace;letter-spacing:.05em}
+select{height:32px;border:1px solid var(--line);border-radius:8px;background:#202a22;color:var(--text);padding:0 9px}
+.btn{padding:6px 11px;border:1px solid #3b4b42;border-radius:7px;background:#202922;color:var(--text);font-size:12px}
+.btn.primary{border-color:var(--leaf);background:var(--leaf);color:#0d150f;font-weight:700}
+.btn.quiet{border-color:transparent;background:transparent;color:var(--muted)}
+.btn.danger{border-color:#5a3a3a;color:var(--red)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{padding:7px 11px;border:0;background:#182019;color:var(--muted);font-size:12px}
+.seg button.active{background:#294834;color:var(--text)}
+.group{margin:22px 0}.group-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0 0 8px}
+.group-head h2{font-size:16px}.group-head .sub{color:var(--muted);font:11px ui-monospace,monospace}
+.list{overflow:hidden;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.row{display:grid;grid-template-columns:24px 34px 38px minmax(0,1fr) auto auto;gap:12px;align-items:center;padding:12px 14px;border-bottom:1px solid var(--line)}
+.grip{cursor:grab;color:#55685c;font-size:15px;line-height:1;text-align:center;user-select:none}
+.grip:active{cursor:grabbing}
+.row.dragging{opacity:.4}
+.row.drop-before{box-shadow:inset 0 3px 0 0 var(--leaf)}
+.row.drop-after{box-shadow:inset 0 -3px 0 0 var(--leaf)}
+.tail{height:30px;margin:-1px 0 0;border:1px dashed transparent;border-radius:8px}
+.tail.armed{border-color:var(--leaf);background:#16241b}
+.foreign{display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border:1px dashed #5a3a3a;border-radius:8px;background:#1a1212;color:var(--red);font:600 11px ui-monospace,monospace;cursor:grab}
+.row:last-child{border:0}
+.ord{color:var(--muted);font:600 11px ui-monospace,monospace;text-align:center}
+.art{width:36px;height:36px;display:grid;place-items:center;border:1px solid #385340;border-radius:7px;background:#1c3022;color:var(--leaf);font-size:15px}
+.title{font-weight:680;line-height:1.3}.meta{margin-top:2px;color:var(--muted);font-size:11.5px}
+.assets{margin-top:3px;color:var(--muted);font:600 10.5px ui-monospace,monospace}
+.badge{padding:4px 7px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font:600 10px ui-monospace,monospace;white-space:nowrap}
+.badge.played{color:var(--muted)}
+.badge.current{color:var(--leaf);border-color:#3f6449}
+.badge.upcoming{color:#b9c9be}
+.badge.skipped{color:var(--amber);border-color:#5c4a2a}
+.row.played{background:#121713}
+.row.current{border-left:3px solid var(--leaf);background:var(--strong)}
+.row.skipped{background:#161710}
+.row.stranded{background:#1a1410;border-color:#5c3a2a}
+.badge.stranded{color:var(--red);border-color:#5c3a2a}
+.actions{display:flex;gap:6px;justify-content:flex-end}
+.row.will-go{border-left:3px solid var(--red);background:#1a1212}
+.row.stays{border-left:3px solid var(--leaf)}
+.flag{font:600 10px ui-monospace,monospace}.flag.go{color:var(--red)}.flag.keep{color:var(--leaf)}
+.banner{margin:0 0 16px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:#141b16;color:var(--muted);font-size:12.5px;line-height:1.5}
+.banner strong{color:var(--text)}
+.banner.warn{border-color:#5c4a2a}.banner.warn strong{color:var(--amber)}
+.banner.good{border-color:#3f6449}.banner.good strong{color:var(--leaf)}
+.banner .btn{margin-left:8px}
+.callout{margin:18px 0;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:#121814}
+.callout h3{margin:0 0 6px;font-size:13px;letter-spacing:.02em}
+.callout p{margin:5px 0;color:var(--muted);font-size:12.5px;line-height:1.55}
+.callout.today{border-color:#5a3a3a}.callout.proposed{border-color:#3f6449}
+.compare{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:18px 0}
+.compare .callout{margin:0}
+.switch{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
+.switch input{width:auto}
+.receipt{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.receipt span{padding:4px 7px;border:1px solid #3f6449;border-radius:999px;background:#162019;color:var(--leaf);font:600 10px ui-monospace,monospace}
+.empty{padding:26px;text-align:center;color:var(--muted);font-size:13px}
+.empty strong{display:block;margin-bottom:4px;color:var(--text)}
+.hint{margin:12px 0 0;color:var(--muted);font-size:12px;line-height:1.5}
+@media(max-width:980px){body{min-width:0;display:block}.window{width:100%;height:100%;border:0;border-radius:0;grid-template-columns:1fr}main{padding:26px 22px 50px}.compare{grid-template-columns:1fr}}
+</style>
+
+</head>
+<body>
+<div class="note">MOCKUP — NOT THE SHIPPING APP</div>
+<div class="window">
+  <main id="main">
+    <h1>Menu</h1>
+    <p class="lede">The Menu is the list of episodes still <strong>to be played</strong> — one list, one set of actions, nothing shown twice. Finish an episode and it leaves. Skip it and it leaves. An episode started and left unfinished has not been played, so it stays in place and resumes where it stopped. Everything here is reachable and removable; nothing is hidden behind a playback position.</p>
+
+    <div class="legend">
+      <span class="badge upcoming">To be played</span>
+      <span class="badge current">Playing now &middot; unfinished</span>
+      <span class="badge stranded">Finished &middot; removal failed</span>
+    </div>
+
+    <div class="toolbar">
+      <div class="summary" id="summary"></div>
+      <div class="controls">
+        <label for="sort">SORT</label>
+        <select id="sort">
+          <option value="custom">Menu order</option>
+          <option value="newest">Date added &middot; newest</option>
+          <option value="oldest">Date added &middot; oldest</option>
+        </select>
+        <button class="btn" id="clear">Clear upcoming</button>
+      </div>
+    </div>
+
+    <div class="banner" id="banner"></div>
+    <div id="list"></div>
+
+    <p class="hint">Every action on this screen is reversible from the banner above it. Nothing here deletes audio, a prepared cut, a transcript, or a listening record.</p>
+
+    <div class="toolbar" style="margin-top:22px">
+      <div class="controls">
+        <label>INSPECT</label>
+        <label class="switch"><input type="checkbox" id="stranded"> Simulate a failed retire</label>
+        <label class="switch"><input type="checkbox" id="offline"> Offline &mdash; no feed reachable</label>
+        <span class="foreign" id="foreign" draggable="true" title="Drag this onto the list">&#10697; a file from the Finder</span>
+        <button class="btn quiet" id="reset">Reset</button>
+      </div>
+    </div>
+
+    <div class="compare">
+      <div class="callout proposed">
+        <h3>PROPOSED</h3>
+        <p><strong>One list.</strong> Every episode still to be played, in Menu order, each with the same single action. Sorting reorders the list; the episode playing now holds its place because you are in the middle of it.</p>
+        <p><strong>Skip removes it from the Menu and nothing else.</strong> The episode keeps its identity, downloaded media, prepared cut, transcript and listening record. Undo is local, so it works with no network.</p>
+        <p><strong>Clear upcoming</strong> empties the list but leaves the unfinished episode you are listening to, and offers one Undo that restores the whole set in its original order.</p>
+        <p><strong>Drag the grip to reorder</strong>, including onto the strip below the last row, which is a real destination. A drag is an explicit order, so it drops any calculated sort rather than being erased by the next redraw. A payload that is not one of this Menu's episodes is refused and the order is left alone.</p>
+      </div>
+      <div class="callout today">
+        <h3>TODAY</h3>
+        <p><strong>The list is truncated at the playing episode.</strong> <code>menuUpcomingEpisodeIDs</code> returns only entries after the current index, so starting the fifth of ten hides four episodes you never heard and cannot reach to remove.</p>
+        <p><strong>Skip deletes.</strong> The Skip button calls <code>removeEpisode</code>: playback stops, the store drops the episode's records, and Restore has to re-check the feed. Offline, or after the feed rotates the entry, it is unrecoverable &mdash; while the audio is still on disk.</p>
+        <p><strong>Clear takes everything when playback is stopped.</strong> <code>menuUpcomingEpisodeIDs</code> falls back to the whole queue, so <code>clearUpcomingMenu</code> removes the episode you were listening to along with the rest.</p>
+        <p><strong>The last position is unreachable.</strong> <code>moveMenuEpisode(_:before:)</code> names its destination by the ID of the row to insert before, and there is no row after the last one, so nothing can be dragged to the end. <code>menuInsertionIndex</code> has no end-of-list convention, and no drop handler checks that the payload is a known episode ID.</p>
+      </div>
+    </div>
+
+    <div class="callout today" id="stranded-note">
+      <h3>A STRANDED ENTRY IS A FAULT, NOT A SEMANTIC</h3>
+      <p>A played episode should never be on the Menu. When one is, <code>removePodcastQueueEpisode</code> failed and <code>try?</code> swallowed the error, or <code>refreshPodcastQueueState</code> returned early on an unreadable store. The episode is retired and hidden, yet still holds a Menu slot.</p>
+      <p>The code already compensates: <code>nextMenuEpisodeToPlay</code> skips the just-finished ID rather than trusting the head of the queue. That guard is a workaround for this fault. Fixing it is error handling, and it is not a reason to change what the Menu shows.</p>
+    </div>
+  </main>
+</div>
+
+<script>
+const episodes=[
+ {id:'bombcast',title:'Giant Bombcast 956: The Cow Situation',show:'Giant Bombcast',min:112,added:6,assets:'Downloaded \u00b7 prepared \u00b7 4 ads removed \u00b7 transcript kept'},
+ {id:'waveform',title:'Did Apple Actually Duo It?',show:'Waveform',min:46,added:5,assets:'Downloaded \u00b7 prepared \u00b7 2 ads removed \u00b7 transcript kept'},
+ {id:'mpu',title:'The future of local AI',show:'Mac Power Users',min:78,added:4,assets:'Downloaded \u00b7 prepared \u00b7 3 ads removed \u00b7 transcript kept'},
+ {id:'daily',title:'The Friday briefing',show:'The Daily',min:31,added:2,assets:'Downloaded \u00b7 prepared \u00b7 1 ad removed \u00b7 transcript kept'},
+ {id:'techcrunch',title:'AI browsers are everywhere',show:'TechCrunch Daily',min:9,added:1,assets:'Downloaded \u00b7 prepared \u00b7 2 ads removed \u00b7 transcript kept'},
+ {id:'twit',title:'TWiT 1100: Marked Safe from Buying M5 Ultra',show:'This Week in Tech',min:126,added:3,assets:'Downloaded \u00b7 prepared \u00b7 no ads detected \u00b7 transcript kept'}
+];
+const CURRENT='mpu', STRANDED_ID='daily';
+let currentID=CURRENT, sort='custom', offline=false, stranded=false;
+let order=episodes.map(e=>e.id);   // the durable Menu order a drag rewrites
+let dragging=null, dropAt=null, rejected=null;
+let removed=new Set();          // off the Menu: skipped or cleared
+let undoAction=null;            // {kind:'skip'|'clear', ids:[...], at:index}
+
+const byId=id=>episodes.find(e=>e.id===id);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt=n=>{const h=Math.floor(n/60),m=Math.round(n%60);return h?`${h} hr ${m} min`:`${m} min`};
+const sum=list=>list.reduce((n,e)=>n+e.min,0);
+const isStranded=e=>stranded&&e.id===STRANDED_ID;
+
+// The one derivation: what is still to be played.
+const menu=()=>{
+  const live=order.map(byId).filter(e=>!removed.has(e.id)&&!isStranded(e));
+  if(sort==='custom') return live;
+  const held=live.findIndex(e=>e.id===currentID);
+  const rest=live.filter(e=>e.id!==currentID);
+  rest.sort((a,b)=>sort==='newest'?a.added-b.added:b.added-a.added);
+  if(held<0) return rest;
+  const out=[...rest]; out.splice(held,0,byId(currentID)); return out;
+};
+const strandedRows=()=>stranded&&!removed.has(STRANDED_ID)?[byId(STRANDED_ID)]:[];
+const clearable=()=>menu().filter(e=>e.id!==currentID);
+
+const pill=(t,tone='')=>`<span class="pill ${tone}"><strong>${t}</strong></span>`;
+const ord=n=>String(n).padStart(2,'0');
+
+function rowHTML(e,status,{mark='',actions='',detail=''}={}){
+  const labels={current:'Playing now \u00b7 unfinished',upcoming:'To be played',stranded:'Finished \u00b7 removal failed'};
+  return `<div class="row ${status}" data-id="${e.id}" draggable="true">
+    <span class="grip" title="Drag to reorder">\u283f</span>
+    <span class="ord">${mark||'\u2014'}</span>
+    <div class="art">\u266a</div>
+    <div class="grow">
+      <div class="title">${esc(e.title)}</div>
+      <div class="meta">${esc(e.show)} \u00b7 ${fmt(e.min)} \u00b7 added ${e.added}d ago</div>
+      <div class="assets">${esc(detail||e.assets)}</div>
+    </div>
+    <span class="badge ${status}">${labels[status]}</span>
+    <div class="actions">${actions}</div>
+  </div>`;
+}
+const group=(title,sub,rows,tail='')=>`<section class="group"><div class="group-head"><h2>${title}</h2><span class="sub">${sub}</span></div><div class="list">${rows}</div>${tail}</section>`;
+
+function render(){
+  const list=menu();
+  document.getElementById('summary').innerHTML=
+    pill(`${list.length} to be played`)+pill(`${fmt(sum(list))} audio`)+
+    (removed.size?pill(`${removed.size} off the Menu`,'amber'):'')+
+    (strandedRows().length?pill(`${strandedRows().length} stranded`,'amber'):'');
+
+  const parts=[];
+  if(list.length){
+    const note={custom:'Menu order',newest:'sorted by date added \u00b7 newest first',oldest:'sorted by date added \u00b7 oldest first'}[sort];
+    parts.push(group('To be played',`${list.length} \u00b7 ${note} \u00b7 the episode playing now holds its place`,
+      list.map((e,i)=>rowHTML(e,e.id===currentID?'current':'upcoming',{
+        mark:e.id===currentID?'\u25b6':ord(i+1),
+        actions:`<button class="btn danger" data-skip="${e.id}">Skip</button>`,
+        detail:e.id===currentID?'started and unfinished, so it is still to be played':''
+      })).join(''),
+      `<div class="tail" id="tail" title="Drop here to move an episode to the end"></div>`));
+  }else{
+    parts.push(`<section class="group"><div class="list empty"><strong>The Menu is empty</strong>Nothing is waiting to be played.</div></section>`);
+  }
+  if(strandedRows().length){
+    parts.push(group('Finished \u00b7 removal failed',
+      'played, so it should be gone \u2014 it is still holding a Menu slot',
+      strandedRows().map(e=>rowHTML(e,'stranded',{mark:'!',detail:'removePodcastQueueEpisode failed and try? swallowed it'})).join('')));
+  }
+  document.getElementById('list').innerHTML=parts.join('');
+
+  const banner=document.getElementById('banner');
+  if(rejected){
+    banner.className='banner warn';
+    banner.innerHTML=`Refused a drop carrying <strong>${esc(rejected)}</strong>. It is not one of this Menu's episode IDs, so the order is unchanged. <button class="btn quiet" id="dismiss">Dismiss</button>`;
+  }else if(undoAction){
+    const names=undoAction.ids.map(id=>byId(id).title.split(':')[0]).join(', ');
+    const what=undoAction.kind==='skip'
+      ? `Skipped <strong>${esc(names)}</strong>. It is off the Menu. Its media, prepared cut, transcript and listening record are untouched.`
+      : `Cleared <strong>${undoAction.ids.length}</strong> ${undoAction.ids.length===1?'episode':'episodes'} from the Menu. The unfinished episode you are listening to stayed.`;
+    banner.className='banner good';
+    banner.innerHTML=`${what} Undo works ${offline?'with no network, because nothing left this Mac':'locally, with or without a network'}. <button class="btn primary" id="undo">Undo</button>`;
+  }else{
+    banner.className='banner';
+    banner.innerHTML=`Skip and Clear both remove episodes from this list and nothing else. ${offline?'<strong>Offline:</strong> both stay reversible, because neither deletes anything that would have to be fetched back.':'Try one \u2014 the Undo appears here.'}`;
+  }
+  document.getElementById('clear').disabled=clearable().length===0;
+}
+
+document.getElementById('list').addEventListener('click',event=>{
+  const id=event.target.getAttribute?.('data-skip');
+  if(!id) return;
+  const at=episodes.findIndex(e=>e.id===id);
+  removed.add(id);
+  if(id===currentID) currentID=null;
+  undoAction={kind:'skip',ids:[id],at};
+  render();
+});
+document.getElementById('clear').addEventListener('click',()=>{
+  const ids=clearable().map(e=>e.id);
+  ids.forEach(id=>removed.add(id));
+  undoAction={kind:'clear',ids};
+  render();
+});
+document.getElementById('banner').addEventListener('click',event=>{
+  if(event.target.id==='dismiss'){rejected=null;render();return}
+  if(event.target.id!=='undo') return;
+  undoAction.ids.forEach(id=>removed.delete(id));
+  if(undoAction.kind==='skip'&&undoAction.ids[0]===CURRENT) currentID=CURRENT;
+  undoAction=null;
+  render();
+});
+// A drag is an explicit order. The end of the list is a real destination --
+// index === count -- which is exactly what today's `before: destinationID`
+// signature cannot express, since there is no row after the last one to name.
+function moveTo(id,index){
+  const from=order.indexOf(id);
+  if(from<0) return;
+  const next=order.filter(x=>x!==id);
+  const clamped=Math.max(0,Math.min(index>from?index-1:index,next.length));
+  next.splice(clamped,0,id);
+  order=next;
+  sort='custom';
+  document.getElementById('sort').value='custom';
+  undoAction=null; rejected=null;
+}
+
+const KNOWN=new Set(episodes.map(e=>e.id));
+
+const list=document.getElementById('list');
+list.addEventListener('dragstart',event=>{
+  const row=event.target.closest?.('.row');
+  if(!row){return}
+  dragging=row.dataset.id;
+  event.dataTransfer.setData('text/plain',dragging);
+  event.dataTransfer.effectAllowed='move';
+  row.classList.add('dragging');
+});
+list.addEventListener('dragend',()=>{dragging=null;dropAt=null;render()});
+list.addEventListener('dragover',event=>{
+  event.preventDefault();
+  const tail=event.target.closest?.('#tail');
+  document.querySelectorAll('.row.drop-before,.row.drop-after').forEach(r=>r.classList.remove('drop-before','drop-after'));
+  document.getElementById('tail')?.classList.remove('armed');
+  if(tail){ dropAt={end:true}; tail.classList.add('armed'); return; }
+  const row=event.target.closest?.('.row');
+  if(!row||!row.dataset.id) return;
+  const box=row.getBoundingClientRect();
+  const after=event.clientY>box.top+box.height/2;
+  row.classList.add(after?'drop-after':'drop-before');
+  dropAt={id:row.dataset.id,after};
+});
+list.addEventListener('drop',event=>{
+  event.preventDefault();
+  const payload=event.dataTransfer.getData('text/plain');
+  // Guard the drop on membership of the known episode-ID set. A payload from
+  // anywhere else is refused and the order is left exactly as it was.
+  if(!KNOWN.has(payload)){
+    rejected=payload||'(an unnamed payload)';
+    dragging=null; dropAt=null; render(); return;
+  }
+  if(!dropAt){dragging=null;render();return}
+  const visible=menu().map(e=>e.id);
+  const index=dropAt.end
+    ? order.length
+    : order.indexOf(dropAt.id)+(dropAt.after?1:0);
+  moveTo(payload,index);
+  dragging=null; dropAt=null; render();
+});
+
+document.getElementById('sort').addEventListener('change',e=>{sort=e.target.value;render()});
+document.getElementById('foreign').addEventListener('dragstart',event=>{
+  event.dataTransfer.setData('text/plain','file:///Users/dave/Downloads/invoice.pdf');
+  event.dataTransfer.effectAllowed='copy';
+});
+document.getElementById('stranded').addEventListener('change',e=>{stranded=e.target.checked;render()});
+document.getElementById('offline').addEventListener('change',e=>{offline=e.target.checked;render()});
+document.getElementById('reset').addEventListener('click',()=>{
+  currentID=CURRENT;sort='custom';offline=false;stranded=false;removed=new Set();undoAction=null;
+  order=episodes.map(e=>e.id);rejected=null;dragging=null;dropAt=null;
+  document.getElementById('sort').value='custom';
+  document.getElementById('stranded').checked=false;
+  document.getElementById('offline').checked=false;
+  render();
+});
+render();
+</script>
+</body>
+</html>

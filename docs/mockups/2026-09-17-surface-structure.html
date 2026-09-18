@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wilted surface structure</title>
+<style>
+:root{color-scheme:dark;--page:#0d110f;--sidebar:#101612;--card:#151b17;--strong:#1a221d;--line:#2a382f;--text:#ecf2ed;--muted:#92a398;--leaf:#7fd48c;--amber:#e8c468;--red:#f08585}
+*{box-sizing:border-box}html,body{height:100%}body{margin:0;min-width:920px;background:#080b09;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;display:grid;place-items:center}
+button,select{font:inherit}button{cursor:pointer}button:focus-visible,select:focus-visible{outline:2px solid var(--leaf);outline-offset:2px}
+.note{position:fixed;right:18px;top:14px;z-index:10;color:var(--muted);font:600 10px ui-monospace,monospace;letter-spacing:.06em}
+.window{width:min(1240px,calc(100vw - 48px));height:min(820px,calc(100vh - 48px));display:grid;grid-template-columns:212px 1fr;overflow:hidden;border:1px solid #344339;border-radius:14px;background:var(--page);box-shadow:0 25px 80px #0009}
+aside{display:flex;flex-direction:column;gap:18px;padding:26px 12px;background:var(--sidebar);border-right:1px solid var(--line)}
+.brand{margin:0 10px;font-size:19px;font-weight:750}.brand span{color:var(--leaf)}
+.nav{display:grid;gap:4px}.nav button{padding:10px 12px;border:0;border-radius:8px;background:transparent;color:var(--muted);text-align:left}.nav button.active{background:#294834;color:var(--text)}
+.aside-note{margin:0 10px;color:var(--muted);font-size:11px;line-height:1.55}
+.asidefoot{margin:auto 0 0;display:flex;flex-direction:column;gap:14px}
+.stats{display:flex;flex-direction:column;gap:1px;padding:10px;border:1px solid var(--line);border-radius:9px;background:rgba(255,255,255,.02)}
+.stats h4{margin:0 0 6px;color:var(--muted);font:600 9.5px ui-monospace,monospace;letter-spacing:.07em;text-transform:uppercase}
+.stat{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:3px 0}
+.stat span{color:var(--muted);font-size:11.5px}
+.stat b{color:var(--text);font:600 12px ui-monospace,monospace}
+.stat.lead b{color:var(--leaf)}
+.opt{display:flex;gap:10px;align-items:flex-start;padding:13px 14px;border-bottom:1px solid var(--line)}
+.opt:last-child{border-bottom:0}
+.opt input{margin-top:3px}
+.opt b{display:block;color:var(--text);font-size:13px;font-weight:600}
+.opt span{display:block;margin-top:3px;color:var(--muted);font-size:11.5px;line-height:1.55}
+main{overflow:auto;padding:34px 40px 60px}.page{display:none;max-width:980px}.page.active{display:block}
+h1{margin:0;font-size:30px;letter-spacing:-.03em}h2{margin:0;font-size:16px}
+.lede{max-width:790px;margin:8px 0 20px;color:var(--muted);font-size:14px;line-height:1.55}
+.lede code{color:#ccefd1;font:600 12px ui-monospace,monospace}
+.legend{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 18px}
+.toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin:0 0 18px}
+.summary{display:flex;gap:8px;flex-wrap:wrap}
+.pill{padding:5px 8px;border:1px solid var(--line);border-radius:999px;background:#162019;color:var(--muted);font:600 11px ui-monospace,monospace}
+.pill strong{color:var(--text)}.pill.leaf{color:var(--leaf)}.pill.amber{color:var(--amber)}
+.controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.controls label{color:var(--muted);font:600 10px ui-monospace,monospace;letter-spacing:.05em}
+select{height:32px;border:1px solid var(--line);border-radius:8px;background:#202a22;color:var(--text);padding:0 9px}
+.btn{padding:6px 11px;border:1px solid #3b4b42;border-radius:7px;background:#202922;color:var(--text);font-size:12px}
+.btn.primary{border-color:var(--leaf);background:var(--leaf);color:#0d150f;font-weight:700}
+.btn.quiet{border-color:transparent;background:transparent;color:var(--muted)}
+.btn.danger{border-color:#5a3a3a;color:var(--red)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{padding:7px 11px;border:0;background:#182019;color:var(--muted);font-size:12px}
+.seg button.active{background:#294834;color:var(--text)}
+.group{margin:22px 0}.group-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0 0 8px}
+.group-head h2{font-size:16px}.group-head .sub{color:var(--muted);font:11px ui-monospace,monospace}
+.list{overflow:hidden;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.row{display:grid;grid-template-columns:38px 38px minmax(0,1fr) auto auto;gap:12px;align-items:center;padding:12px 14px;border-bottom:1px solid var(--line)}
+.row:last-child{border:0}
+.ord{color:var(--muted);font:600 11px ui-monospace,monospace;text-align:center}
+.art{width:36px;height:36px;display:grid;place-items:center;border:1px solid #385340;border-radius:7px;background:#1c3022;color:var(--leaf);font-size:15px}
+.title{font-weight:680;line-height:1.3}.meta{margin-top:2px;color:var(--muted);font-size:11.5px}
+.assets{margin-top:3px;color:var(--muted);font:600 10.5px ui-monospace,monospace}
+.badge{padding:4px 7px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font:600 10px ui-monospace,monospace;white-space:nowrap}
+.badge.played{color:var(--muted)}
+.badge.current{color:var(--leaf);border-color:#3f6449}
+.badge.upcoming{color:#b9c9be}
+.badge.skipped{color:var(--amber);border-color:#5c4a2a}
+.row.played{background:#121713}
+.row.current{border-left:3px solid var(--leaf);background:var(--strong)}
+.row.skipped{background:#161710}
+.row.stranded{background:#1a1410;border-color:#5c3a2a}
+.badge.stranded{color:var(--red);border-color:#5c3a2a}
+.actions{display:flex;gap:6px;justify-content:flex-end}
+.row.will-go{border-left:3px solid var(--red);background:#1a1212}
+.row.stays{border-left:3px solid var(--leaf)}
+.flag{font:600 10px ui-monospace,monospace}.flag.go{color:var(--red)}.flag.keep{color:var(--leaf)}
+.banner{margin:0 0 16px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:#141b16;color:var(--muted);font-size:12.5px;line-height:1.5}
+.banner strong{color:var(--text)}
+.banner.warn{border-color:#5c4a2a}.banner.warn strong{color:var(--amber)}
+.banner.good{border-color:#3f6449}.banner.good strong{color:var(--leaf)}
+.banner .btn{margin-left:8px}
+.callout{margin:18px 0;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:#121814}
+.callout h3{margin:0 0 6px;font-size:13px;letter-spacing:.02em}
+.callout p{margin:5px 0;color:var(--muted);font-size:12.5px;line-height:1.55}
+.callout.today{border-color:#5a3a3a}.callout.proposed{border-color:#3f6449}
+.compare{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:18px 0}
+.compare .callout{margin:0}
+.switch{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
+.switch input{width:auto}
+.receipt{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.receipt span{padding:4px 7px;border:1px solid #3f6449;border-radius:999px;background:#162019;color:var(--leaf);font:600 10px ui-monospace,monospace}
+.empty{padding:26px;text-align:center;color:var(--muted);font-size:13px}
+.empty strong{display:block;margin-bottom:4px;color:var(--text)}
+.hint{margin:12px 0 0;color:var(--muted);font-size:12px;line-height:1.5}
+@media(max-width:980px){body{min-width:0;display:block}.window{width:100%;height:100%;border:0;border-radius:0;grid-template-columns:180px 1fr}main{padding:26px 22px 50px}.compare{grid-template-columns:1fr}}
+
+.surfacebar{display:flex;gap:6px;margin:0 0 16px;flex-wrap:wrap}
+.surfacebar button{padding:8px 13px;border:1px solid var(--line);border-radius:9px;background:#182019;color:var(--muted);font-size:13px}
+.surfacebar button.active{background:#294834;border-color:#3f6449;color:var(--text)}
+.surfacebar button .n{margin-left:7px;color:var(--muted);font:600 10px ui-monospace,monospace}
+.surfacedesc{margin:0 0 16px;color:var(--muted);font-size:13px;line-height:1.55}
+.row{grid-template-columns:24px 34px 38px minmax(0,1fr) auto auto}
+.actionset{display:flex;gap:6px;justify-content:flex-end;flex-wrap:nowrap}
+.actionset .btn{padding:5px 9px;font-size:11.5px}
+.dupe{margin:18px 0;border:1px solid #5a3a3a;border-radius:10px;overflow:hidden}
+.dupe table{width:100%;border-collapse:collapse;font-size:12px}
+.dupe th,.dupe td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;color:var(--muted)}
+.dupe th{background:#1a1212;color:var(--text);font:600 11px ui-monospace,monospace}
+.dupe td.y{color:var(--red);font-weight:700}
+.dupe caption{padding:10px;background:#1a1212;color:var(--red);font:600 11px ui-monospace,monospace;text-align:left}
+.detail{margin:16px 0;border:1px solid #3f6449;border-radius:10px;background:#121814;padding:16px}
+.detail h3{margin:0 0 4px;font-size:15px}
+.detail .meta{color:var(--muted);font-size:12px;margin-bottom:12px}
+.detail .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 18px;font-size:12px;color:var(--muted)}
+.detail .grid b{color:var(--text);font-weight:640}
+.progress{height:5px;border-radius:3px;background:#22302704;border:1px solid var(--line);overflow:hidden;margin-top:5px}
+.progress i{display:block;height:100%;background:var(--leaf)}
+
+#nav{display:flex;flex-direction:column;gap:2px}
+#nav button{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:9px 11px;border:0;border-radius:8px;background:transparent;color:var(--muted);font-size:13.5px;text-align:left}
+#nav button.active{background:rgba(127,212,140,.24);color:var(--text)}
+#nav button .n{color:var(--muted);font:600 10px ui-monospace,monospace}
+#nav button.disabled{opacity:.5}
+</style>
+
+</head>
+<body>
+<div class="note">MOCKUP &mdash; NOT THE SHIPPING APP</div>
+<div class="window">
+  <aside>
+    <div style="padding:0 10px 4px;color:var(--muted);font:600 10px ui-monospace,monospace;letter-spacing:.06em">WILTED</div>
+    <nav id="nav"></nav>
+    <div class="asidefoot">
+      <div>
+        <p class="aside-note"><strong style="color:var(--text)">Proposed sidebar.</strong> Three items where there are five today. Larder is gone because it was the Menu under another name, and Prep is gone because preparing is a state an episode is in, not a place it goes.</p>
+        <p class="aside-note" style="margin-top:6px"><span style="color:var(--red)">Today:</span> Larder, Feeds, Prep, Menu, Settings.</p>
+      </div>
+      <div class="stats" id="stats"></div>
+    </div>
+  </aside>
+  <main id="main">
+    <h1 id="pagetitle">Menu</h1>
+    <p class="lede">The Larder and the Menu are the same thing: <strong>a place for episodes to wait</strong>. So there is one waiting place. Prep is not a third place either &mdash; an episode being prepared is an episode waiting, so preparation is a <em>state</em>, not a destination that owns its own buttons. That leaves <strong>Feeds</strong>, what arrived and is not yours yet, and <strong>Menu</strong>, everything waiting for you.</p>
+    <p class="lede"><strong>Feeds asks one question:</strong> keep this or skip it. That is the whole surface. Every other decision &mdash; download, process, play &mdash; is about an episode you already kept, so it belongs on the Menu and appears nowhere else.</p>
+    <p class="lede">The Menu reads in one fixed order: <strong>Ready</strong> first, because that is what you can play right now; <strong>Downloaded</strong> next, one step away; <strong>Available</strong> last, two steps away. Filters at the top jump to a single group, and every group carries its own bulk action &mdash; so showing or acting on a whole group is one click, and the two you reach for most, <em>Download all new</em> and <em>Prepare all downloaded</em>, sit in the toolbar where the filter does not hide them.</p>
+
+    <div class="surfacebar" id="surfaces"></div>
+    <p class="surfacedesc" id="desc"></p>
+
+    <div class="toolbar">
+      <div class="summary" id="summary"></div>
+      <div class="controls" id="globals">
+        <button class="btn primary" data-bulk="dl-all" data-group="available" id="g-dl">Download all new</button>
+        <button class="btn primary" data-bulk="prep-all" data-group="downloaded" id="g-prep">Prepare all downloaded</button>
+        <label class="switch"><input type="checkbox" id="showtoday"> Show today&rsquo;s buttons</label>
+        <button class="btn quiet" id="reset">Reset</button>
+      </div>
+    </div>
+
+    <div class="banner" id="banner"></div>
+    <div id="list"></div>
+    <div id="detail"></div>
+
+    <div class="compare">
+      <div class="callout proposed">
+        <h3>PROPOSED &mdash; two destinations</h3>
+        <p><strong>Feeds</strong> is the inbox. Episodes arrive here from subscriptions. Nothing here is yours yet; the only decision is whether you want it.</p>
+        <p><strong>Menu</strong> is where episodes wait, in order. Saving and queueing were never two things &mdash; an episode you keep is an episode you intend to hear. Preparing, ready, and not-yet-downloaded are filters across that one list, because they are states of waiting, not separate rooms.</p>
+        <p><strong>One decision per surface.</strong> Feeds offers Keep and Skip, nothing else. The Menu offers the single step a row is waiting for &mdash; Download, then Prepare, then Play &mdash; plus a way to take it off the list. A row never shows three greyed-out buttons, because its group already says which step it is on.</p>
+        <p><strong>Skip becomes Completed once you have started an episode.</strong> Removing something you never began is skipping it; removing something you are part-way through is finishing with it. Same position, honest word, and neither deletes anything.</p>
+      </div>
+      <div class="callout today">
+        <h3>TODAY &mdash; four destinations</h3>
+        <p><strong>Feeds carries 15 buttons</strong> &mdash; Download, Prepare, Stop preparation, Retry, Play now, Add to Menu, Skip, Remove, Unsubscribe and more &mdash; so the inbox asks for every decision at once about episodes you have not even chosen to keep. Larder has 3, Prep 7, Menu 3. Play now is on three surfaces; Add to Menu, Prepare, Stop preparation and Retry are on two each.</p>
+        <p><strong>Larder and Menu already overlap</strong> and neither name says which one an episode waits in, so the same episode is listed twice with different actions and no statement of which list is authoritative.</p>
+        <p><strong>Skip on Feeds deletes the episode's records; Remove on Menu takes it out of the queue.</strong> Two words, two behaviours, nothing on screen distinguishing them. Neither says anything about whether you had started listening.</p>
+      </div>
+    </div>
+
+    <div class="dupe" id="dupe"></div>
+  </main>
+</div>
+
+<script>
+const SURFACES=[
+  {id:'feeds', name:'Feeds', desc:'New episodes from your subscriptions. One decision only: keep it or skip it. Nothing is downloaded, processed or played from here.'},
+  {id:'menu',  name:'Menu',  desc:'Everything you kept, in the order you will hear it. Downloading, processing and playing are all decided here. Drag to reorder.'},
+  {id:'settings', name:'Settings', desc:'Standing answers to the Menu\u2019s two questions, so you stop being asked them. Everything here is an override: turn one on and that step stops waiting for a click.'}
+];
+// A fixed reading order, not a chooser. What you can play right now is at the
+// top, what needs one more step is next, what needs two is last.
+const GROUPS=[
+  {id:'ready',      name:'Ready',      sub:'downloaded and processed \u2014 playable right now'},
+  {id:'downloaded', name:'Downloaded', sub:'on this Mac, still to be processed'},
+  {id:'available',  name:'Available',  sub:'in the feed, not downloaded yet'}
+];
+const episodes=[
+ {id:'bombcast',  title:'Giant Bombcast 956: The Cow Situation', show:'Giant Bombcast',  min:112, added:6, downloaded:true,  prepared:true,  prepping:0,    onMenu:true,  playing:false},
+ {id:'waveform',  title:'Did Apple Actually Duo It?',            show:'Waveform',         min:46,  added:5, downloaded:true,  prepared:true,  prepping:0,    onMenu:true,  playing:false},
+ {id:'mpu',       title:'The future of local AI',                show:'Mac Power Users',  min:78,  added:4, downloaded:true,  prepared:true,  prepping:0,    onMenu:true,  playing:true},
+ {id:'daily',     title:'The Friday briefing',                   show:'The Daily',        min:31,  added:2, downloaded:true,  prepared:false, prepping:0.62, onMenu:true,  playing:false},
+ {id:'techcrunch',title:'AI browsers are everywhere',            show:'TechCrunch Daily', min:9,   added:1, downloaded:true,  prepared:false, prepping:0,    onMenu:false, playing:false},
+ {id:'twit',      title:'TWiT 1100: Marked Safe from Buying M5 Ultra', show:'This Week in Tech', min:126, added:3, downloaded:false, prepared:false, prepping:0,    onMenu:true,  playing:false},
+ {id:'atp',       title:'ATP 618: A Rounded Rectangle Too Far',   show:'Accidental Tech',  min:98,  added:7, downloaded:false, prepared:false, prepping:0,    onMenu:true,  playing:false},
+ {id:'hardfork',  title:'Hard Fork: The agent bubble',            show:'Hard Fork',        min:64,  added:8, downloaded:false, prepared:false, prepping:0,    onMenu:false, playing:false}
+];
+episodes.forEach(e=>{e.started=e.playing});
+const SEED=JSON.parse(JSON.stringify(episodes));
+let order=episodes.map(e=>e.id);
+let surface='menu', filter='all', selected=null, showToday=false, note=null;
+// Settings holds no decisions of its own. Each switch says "take this Menu step
+// without asking me", so an override only ever does what a Menu button does.
+const auto={download:false, prepare:false};
+let dragging=null, dropAt=null;
+
+const byId=id=>episodes.find(e=>e.id===id);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt=n=>{const h=Math.floor(n/60),m=Math.round(n%60);return h?`${h} hr ${m} min`:`${m} min`};
+const pill=(t,tone='')=>`<span class="pill ${tone}"><strong>${t}</strong></span>`;
+const ordn=n=>String(n).padStart(2,'0');
+
+// An episode preparing right now is still Downloaded: it has the audio and not
+// the processed cut. Progress is shown on the row, not by moving it.
+const stateOf=e=>!e.downloaded?'available':(e.prepared?'ready':'downloaded');
+const waiting=()=>order.map(byId).filter(e=>e.onMenu);
+const inGroup=id=>waiting().filter(e=>stateOf(e)===id);
+const shown=()=>surface==='feeds' ? episodes.filter(e=>!e.onMenu) : waiting();
+const needDownload=()=>waiting().filter(e=>stateOf(e)==='available');
+const needPrepare=()=>waiting().filter(e=>stateOf(e)==='downloaded'&&!e.prepping);
+const mins=list=>list.reduce((t,e)=>t+e.min,0);
+
+// Run the overrides before anything renders, so what the Menu shows is already
+// the settled state rather than a queue of work the app has promised to do.
+function applyAutomation(){
+  if(auto.download) waiting().filter(e=>stateOf(e)==='available').forEach(e=>{e.downloaded=true});
+  if(auto.prepare) needPrepare().forEach(e=>{e.prepping=0.05});
+}
+
+// Feeds asks one question -- do you want this -- so it offers exactly two
+// answers. Every other decision is about an episode you already kept, so it
+// lives on the Menu. On the Menu each row shows the one step it is actually
+// waiting for, because its group already says what that step is.
+function actionsFor(e){
+  if(surface==='feeds'){
+    return [{key:'keep',label:'Keep',on:true,primary:true},{key:'skip',label:'Skip',on:true}];
+  }
+  const next={
+    available:  {key:'download',label:'Download'},
+    downloaded: e.prepping?{key:'none',label:`Preparing ${Math.round(e.prepping*100)}%`,off:true}:{key:'prepare',label:'Prepare'},
+    ready:      {key:'play',label:e.playing?'Playing':'Play',off:e.playing}
+  }[stateOf(e)];
+  // Removing something you never began is skipping it. Removing something you
+  // are part-way through is finishing with it. Same slot, honest word.
+  const leave=e.started?{key:'complete',label:'Completed'}:{key:'skip',label:'Skip'};
+  return [{...next,on:!next.off,primary:true},{...leave,on:true}];
+}
+const TODAY={feeds:['Play now','Download','Add to Menu','Prepare','Stop preparation','Retry','Skip','Remove','Unsubscribe'],menu:['Play now','Remove','Clear upcoming']};
+const DUPE_ROWS=[['Play now',1,1,1,1],['Add to Menu',1,0,1,0],['Prepare',1,0,1,0],['Stop preparation',1,0,1,0],['Retry',1,0,1,0],['Download',1,0,0,0],['Skip / Remove',1,0,0,1],['Restore',0,1,0,0]];
+
+function rowHTML(e,i){
+  const acts=actionsFor(e).map(a=>`<button class="btn ${a.key==='skip'?'danger':(a.primary?'primary':'')}" data-act="${a.key}" data-id="${e.id}" ${a.on?'':'disabled'}>${esc(a.label)}</button>`).join('');
+  const today=TODAY[surface].map(b=>`<button class="btn" disabled>${esc(b)}</button>`).join('');
+  const badge=e.playing?'Playing now':(e.prepping?`Preparing ${Math.round(e.prepping*100)}%`:(e.prepared?'Ready':(e.downloaded?'Downloaded':'Not downloaded')));
+  const bar=e.prepping?`<div class="progress"><i style="width:${Math.round(e.prepping*100)}%"></i></div>`:'';
+  const drag=surface==='menu'&&filter==='all';
+  return `<div class="row ${e.playing?'current':'upcoming'}" data-row="${e.id}" ${drag?'draggable="true"':''}>
+    <span class="grip" style="${drag?'':'opacity:.2'}" title="${drag?'Drag to reorder':'Order is the Menu\u2019s, and only in All waiting'}">\u283f</span>
+    <span class="ord">${e.playing?'\u25b6':(surface==='menu'?ordn(i+1):'')}</span>
+    <div class="art">\u266a</div>
+    <div class="grow"><div class="title">${esc(e.title)}</div>
+      <div class="meta">${esc(e.show)} \u00b7 ${fmt(e.min)} \u00b7 added ${e.added}d ago</div>${bar}</div>
+    <span class="badge ${e.playing?'current':'upcoming'}">${badge}</span>
+    <div class="actionset">${showToday?today:acts}</div>
+  </div>`;
+}
+
+function render(){
+  applyAutomation();
+  const count={feeds:()=>episodes.filter(e=>!e.onMenu).length, menu:()=>waiting().length, settings:()=>null};
+  document.getElementById('nav').innerHTML=
+    SURFACES.map(s=>{const n=count[s.id]();
+      return `<button class="${s.id===surface?'active':''}" data-surface="${s.id}">${s.name}${n===null?'':`<span class="n">${n}</span>`}</button>`}).join('');
+  const chips=[{id:'all',name:'All waiting'}].concat(GROUPS.map(g=>({id:g.id,name:g.name})));
+  document.getElementById('globals').style.display=surface==='settings'?'none':'';
+  document.getElementById('surfaces').innerHTML=
+    surface==='menu'
+      ? `<span class="sub" style="align-self:center;margin-right:6px;color:var(--muted);font:600 10px ui-monospace,monospace;letter-spacing:.05em">FILTER</span>`+chips.map(c=>`<button class="${c.id===filter?'active':''}" data-filter="${c.id}">${c.name}<span class="n">${c.id==='all'?waiting().length:inGroup(c.id).length}</span></button>`).join('')
+      : '';
+  document.getElementById('pagetitle').textContent=SURFACES.find(s=>s.id===surface).name;
+  document.getElementById('desc').textContent=SURFACES.find(s=>s.id===surface).desc;
+
+  const list=shown();
+  const gdl=document.getElementById('g-dl'), gprep=document.getElementById('g-prep');
+  if(gdl){gdl.textContent=auto.download?'Downloading automatically':`Download all new (${needDownload().length})`; gdl.disabled=auto.download||!needDownload().length}
+  if(gprep){gprep.textContent=auto.prepare?'Preparing automatically':`Prepare all downloaded (${needPrepare().length})`; gprep.disabled=auto.prepare||!needPrepare().length}
+  document.getElementById('summary').innerHTML=
+    surface==='settings' ? pill('2 overrides')+pill(`${(auto.download?1:0)+(auto.prepare?1:0)} on`, (auto.download||auto.prepare)?'leaf':'')
+    : pill(`${list.length} shown`)+pill(`${waiting().length} waiting in all`)+
+      (showToday?pill(`${(TODAY[surface]||[]).length} buttons today`,'amber'):pill('4 actions, both surfaces','leaf'));
+
+  // Time, not episode count: what is actually left to hear. The same three
+  // states the Menu groups by, so the sidebar and the list never disagree.
+  document.getElementById('stats').innerHTML=
+    `<h4>Waiting for you</h4>`+
+    `<div class="stat lead"><span>Ready to play</span><b>${fmt(mins(inGroup('ready')))}</b></div>`+
+    `<div class="stat"><span>Downloaded</span><b>${fmt(mins(inGroup('downloaded')))}</b></div>`+
+    `<div class="stat"><span>On the Menu</span><b>${fmt(mins(waiting()))}</b></div>`;
+
+  if(surface==='settings'){
+    const opt=(k,title,desc)=>`<label class="opt"><input type="checkbox" data-auto="${k}" ${auto[k]?'checked':''}><div><b>${title}</b><span>${desc}</span></div></label>`;
+    document.getElementById('list').innerHTML=`<div class="list">
+      ${opt('download','Download everything on the Menu','Anything you keep is fetched as soon as it lands on the Menu, so <strong>Available</strong> stays empty and <em>Download</em> never has to be pressed. Off by default, because downloads cost disk and bandwidth.')}
+      ${opt('prepare','Prepare everything downloaded','Every downloaded episode starts processing on its own, so <strong>Downloaded</strong> drains into <strong>Ready</strong> without a click. Turn both on and the Menu only ever offers Play.')}
+    </div>
+    <p class="lede" style="margin-top:14px">Neither switch is a new capability, and neither invents a fourth destination. Each one is the Menu\u2019s own button held down: with an override on, that group empties itself and its bulk action greys out, because there is nothing left for you to decide.</p>`;
+  }else if(surface==='feeds'){
+    document.getElementById('list').innerHTML=list.length
+      ? `<div class="list">${list.map(rowHTML).join('')}</div>`
+      : `<div class="list empty"><strong>Nothing new</strong>Every episode from your feeds is already waiting on the Menu.</div>`;
+  }else{
+    const groups=GROUPS.filter(g=>filter==='all'||filter===g.id);
+    const parts=groups.map(g=>{
+      const rows=inGroup(g.id);
+      if(!rows.length) return '';
+      const n=rows.length;
+      // Some rows here may have been started, and those are completed rather
+      // than skipped. One button cannot claim both, so it claims neither.
+      const clear=rows.some(e=>e.started)?`Clear all ${n}`:`Skip all ${n}`;
+      const bulk=({
+        ready:      [{a:'play-all',   l:`Play the first`,      p:true},{a:'skip-all',l:clear}],
+        downloaded: [{a:'prep-all',   l:auto.prepare?'Preparing automatically':`Prepare all ${needPrepare().length}`, p:true, off:auto.prepare||!needPrepare().length},{a:'skip-all',l:clear}],
+        available:  [{a:'dl-all',     l:auto.download?'Downloading automatically':`Download all ${n}`, p:true, off:auto.download},{a:'skip-all',l:clear}]
+      })[g.id].map(b=>`<button class="btn ${b.p?'primary':''}" data-bulk="${b.a}" data-group="${g.id}" ${b.off?'disabled':''}>${b.l}</button>`).join('');
+      return `<section class="group">
+        <div class="group-head">
+          <h2>${g.name} <span class="sub" style="margin-left:6px">${n}</span></h2>
+          <div class="actionset">${bulk}</div>
+        </div>
+        <p class="sub" style="margin:0 0 8px;color:var(--muted);font:11px ui-monospace,monospace">${g.sub}</p>
+        <div class="list">${rows.map((e,i)=>rowHTML(e,i)).join('')}</div>
+        ${g.id==='ready'&&filter==='all'?'<div class="tail" id="tail"></div>':''}
+      </section>`;
+    }).join('');
+    document.getElementById('list').innerHTML=parts||`<div class="list empty"><strong>Nothing here</strong>No episode is in this state right now.</div>`;
+  }
+
+  const banner=document.getElementById('banner');
+  if(showToday&&TODAY[surface]){banner.className='banner warn';banner.innerHTML=`Today\u2019s buttons for this surface: <strong>${TODAY[surface].length}</strong>, and they change entirely when you switch. Disabled here because this is the problem, not the proposal.`}
+  else if(note){banner.className='banner good';banner.innerHTML=note}
+  else{banner.className='banner';banner.innerHTML=`Switch between Feeds and Menu. The rows change; <strong>the four actions do not</strong>.`}
+
+  const d=document.getElementById('detail');
+  if(selected&&byId(selected)){
+    const e=byId(selected);
+    d.innerHTML=`<div class="detail"><h3>${esc(e.title)}</h3>
+      <div class="meta">${esc(e.show)} \u00b7 ${fmt(e.min)} \u00b7 added ${e.added} days ago</div>
+      <div class="grid">
+        <div>Downloaded <b>${e.downloaded?'yes':'no'}</b></div>
+        <div>Prepared <b>${e.prepared?'yes':(e.prepping?Math.round(e.prepping*100)+'% in progress':'no')}</b></div>
+        <div>Waiting on the Menu <b>${e.onMenu?'yes':'no'}</b></div>
+        <div>Position <b>${e.onMenu?ordn(waiting().findIndex(x=>x.id===e.id)+1):'\u2014'}</b></div>
+      </div>
+      <p style="margin:12px 0 0;color:var(--muted);font-size:12px;line-height:1.55">The same panel on both surfaces. An episode has one state, so one place tells you all of it.</p></div>`;
+  }else{d.innerHTML=''}
+
+  document.getElementById('dupe').innerHTML=`<table>
+    <caption>Today: the same action on more than one destination</caption>
+    <tr><th>Action</th><th>Feeds</th><th>Larder</th><th>Prep</th><th>Menu</th></tr>
+    ${DUPE_ROWS.map(r=>`<tr><td style="color:var(--text)">${r[0]}</td>${r.slice(1).map(v=>`<td class="${v?'y':''}">${v?'\u25cf':'\u2014'}</td>`).join('')}</tr>`).join('')}</table>`;
+}
+
+document.getElementById('nav').addEventListener('click',ev=>{
+  const s=ev.target.closest('[data-surface]')?.dataset.surface;
+  if(!s) return; surface=s; filter='all'; note=null; selected=null; render();
+});
+document.getElementById('surfaces').addEventListener('click',ev=>{
+  const f=ev.target.closest('[data-filter]')?.dataset.filter;
+  if(f){filter=f;note=null;render()}
+});
+function runBulk(act,group){
+  const set=()=>waiting().filter(e=>stateOf(e)===group);
+  const n=set().length;
+  if(act==='dl-all'){set().forEach(e=>{e.downloaded=true});note=`Downloaded <strong>${n}</strong> ${n===1?'episode':'episodes'}. They moved up into <strong>Downloaded</strong>; nothing changed place on the Menu except its group.`}
+  if(act==='prep-all'){const t=needPrepare();t.forEach(e=>{e.prepping=0.05});note=`Started preparing <strong>${t.length}</strong> ${t.length===1?'episode':'episodes'}. They stay in <strong>Downloaded</strong> with progress on the row, because preparing is a state, not a place.`}
+  if(act==='play-all'){const first=set()[0];if(first){episodes.forEach(x=>x.playing=false);first.playing=true;note=`Playing <strong>${esc(first.title)}</strong>, the first thing that is ready.`}}
+  if(act==='skip-all'){
+    const done=set().filter(e=>e.started).length;
+    set().forEach(e=>{e.onMenu=false;e.playing=false});
+    note=done
+      ? `Cleared all <strong>${n}</strong> in that group: <strong>${done}</strong> you had started counted as completed, the rest as skipped. Nothing was deleted.`
+      : `Skipped all <strong>${n}</strong> in that group. They left the Menu. No download, prepared cut or transcript was touched.`;
+  }
+  render();
+}
+document.getElementById('globals').addEventListener('click',ev=>{
+  const b=ev.target.closest('[data-bulk]'); if(!b) return;
+  surface='menu'; filter='all'; runBulk(b.dataset.bulk,b.dataset.group);
+});
+document.getElementById('list').addEventListener('change',ev=>{
+  const k=ev.target.closest('[data-auto]')?.dataset.auto; if(!k) return;
+  auto[k]=ev.target.checked;
+  const copy={
+    download:['Downloading everything you keep. <strong>Available</strong> empties as it fills, and its bulk action greys out because there is nothing left to ask you.',
+              'Downloads are yours to start again. <strong>Available</strong> will hold what you keep until you press Download.'],
+    prepare: ['Preparing everything downloaded. <strong>Downloaded</strong> drains into <strong>Ready</strong> on its own.',
+              'Preparation waits for you again. Downloaded episodes stay put until you press Prepare.']
+  }[k];
+  note=copy[auto[k]?0:1]; render();
+});
+document.getElementById('list').addEventListener('click',ev=>{
+  const bulk=ev.target.closest('[data-bulk]');
+  if(bulk){runBulk(bulk.dataset.bulk,bulk.dataset.group);return}
+  const btn=ev.target.closest('[data-act]');
+  if(btn){
+    const e=byId(btn.dataset.id),act=btn.dataset.act;
+    if(act==='keep'){e.onMenu=true;if(!order.includes(e.id))order.push(e.id);note=`Kept <strong>${esc(e.title)}</strong>. It is waiting on the Menu, under <strong>Available</strong>. Downloading, processing and playing are decided there.`}
+    if(act==='download'){e.downloaded=true;note=`Downloaded <strong>${esc(e.title)}</strong>. It moved up to <strong>Downloaded</strong>, one step from playable.`}
+    if(act==='play'){episodes.forEach(x=>x.playing=false);e.playing=true;e.started=true;note=`Playing <strong>${esc(e.title)}</strong>. Its Skip has become <strong>Completed</strong>, because you have begun it.`}
+    if(act==='prepare'){e.prepping=0.05;note=`Preparing <strong>${esc(e.title)}</strong>. It stays in <strong>Downloaded</strong> with progress on the row: preparing is a state, not a place.`}
+    if(act==='skip'){e.onMenu=false;e.playing=false;note=`Skipped <strong>${esc(e.title)}</strong>. You never started it, so it is simply off the list. Its download, prepared cut and transcript are untouched.`}
+    if(act==='complete'){e.onMenu=false;e.playing=false;note=`Marked <strong>${esc(e.title)}</strong> completed. You had started it, so it is finished rather than skipped, and it counts as listened. Nothing was deleted.`}
+    render();return;
+  }
+  const row=ev.target.closest('[data-row]');
+  if(row){selected=selected===row.dataset.row?null:row.dataset.row;render()}
+});
+const listEl=document.getElementById('list');
+listEl.addEventListener('dragstart',ev=>{const r=ev.target.closest?.('.row');if(!r)return;dragging=r.dataset.row;ev.dataTransfer.setData('text/plain',dragging);r.classList.add('dragging')});
+listEl.addEventListener('dragend',()=>{dragging=null;dropAt=null;render()});
+listEl.addEventListener('dragover',ev=>{
+  ev.preventDefault();
+  document.querySelectorAll('.row.drop-before,.row.drop-after').forEach(r=>r.classList.remove('drop-before','drop-after'));
+  document.getElementById('tail')?.classList.remove('armed');
+  if(ev.target.closest?.('#tail')){dropAt={end:true};document.getElementById('tail').classList.add('armed');return}
+  const r=ev.target.closest?.('.row'); if(!r?.dataset.row) return;
+  const b=r.getBoundingClientRect(), after=ev.clientY>b.top+b.height/2;
+  r.classList.add(after?'drop-after':'drop-before'); dropAt={id:r.dataset.row,after};
+});
+const KNOWN=new Set(episodes.map(e=>e.id));
+listEl.addEventListener('drop',ev=>{
+  ev.preventDefault();
+  const payload=ev.dataTransfer.getData('text/plain');
+  if(!KNOWN.has(payload)){note='Refused a drop that is not one of this Menu\u2019s episodes. The order is unchanged.';dragging=null;dropAt=null;render();return}
+  if(!dropAt){dragging=null;render();return}
+  const index=dropAt.end?order.length:order.indexOf(dropAt.id)+(dropAt.after?1:0);
+  const from=order.indexOf(payload), next=order.filter(x=>x!==payload);
+  next.splice(Math.max(0,Math.min(index>from?index-1:index,next.length)),0,payload);
+  order=next; note='Menu order changed. Order belongs to the Menu, and nowhere else.';
+  dragging=null;dropAt=null;render();
+});
+document.getElementById('showtoday').addEventListener('change',e=>{showToday=e.target.checked;note=null;render()});
+document.getElementById('reset').addEventListener('click',()=>{
+  SEED.forEach((s,i)=>Object.assign(episodes[i],JSON.parse(JSON.stringify(s))));
+  order=episodes.map(e=>e.id);surface='menu';filter='all';selected=null;showToday=false;note=null;
+  auto.download=false;auto.prepare=false;
+  document.getElementById('showtoday').checked=false;render();
+});
+render();
+</script>
+</body>
+</html>

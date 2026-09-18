@@ -138,11 +138,11 @@ final class WiltedTextScaleTests: XCTestCase {
     }
 }
 
-/// The Larder's search field sits above rows that each show a line of the
+/// The Menu's search field sits above rows that each show a line of the
 /// episode's show notes, and it matched only the title and the show -- so the
 /// words a reader could see on the row were the words that found nothing.
 @MainActor
-final class WiltedLibrarySearchTests: XCTestCase {
+final class WiltedMenuSearchTests: XCTestCase {
     func testAnEmptyQueryKeepsEverything() {
         XCTAssertTrue(WiltedMacModel.matches(episode(notes: nil), query: ""))
         XCTAssertTrue(WiltedMacModel.matches(article(), query: "   ".trimmingCharacters(in: .whitespaces)))

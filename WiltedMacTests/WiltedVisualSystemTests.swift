@@ -39,22 +39,8 @@ final class WiltedVisualSystemTests: XCTestCase {
         }
     }
 
-    func testLarderRemainingHeaderIsGlobalAndAccessible() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
-        let source = try String(contentsOf: root)
-
-        XCTAssertTrue(source.contains("model.larderRemaining.label"))
-        XCTAssertTrue(source.contains("wilted-larder-remaining"))
-        XCTAssertTrue(source.contains("Text(\"Saved articles and episodes\")"))
-        XCTAssertLessThan(
-            try XCTUnwrap(source.range(of: "model.larderRemaining.label")?.lowerBound),
-            try XCTUnwrap(source.range(of: "if model.larderQueueItems.isEmpty")?.lowerBound)
-        )
-    }
-
     @MainActor
-    func testStoredArticlesAndSubscribedEpisodesProduceStableMixedSearchOrderAndFilters() async throws {
+    func testStoredArticlesAndSubscribedEpisodesLoadIntoOneLibrary() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -125,20 +111,13 @@ final class WiltedVisualSystemTests: XCTestCase {
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral())
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
-        XCTAssertEqual(model.libraryItems.map(\.id), episodeIDs.reversed().map(\.rawValue) + [article.itemID.rawValue])
 
-        model.librarySearchQuery = "Second"
-        XCTAssertEqual(model.libraryItems.map(\.id), [episodeIDs[1].rawValue])
-        model.librarySearchQuery = ""
-        model.libraryOrder = .oldest
-        XCTAssertEqual(model.libraryItems.first?.id, article.itemID.rawValue)
-
-        model.libraryFilter = .unplayed
-        XCTAssertEqual(Set(model.libraryItems.map(\.id)), [article.itemID.rawValue, episodeIDs[0].rawValue])
-        model.libraryFilter = .inProgress
-        XCTAssertEqual(model.libraryItems.map(\.id), [episodeIDs[1].rawValue])
-        model.libraryFilter = .finished
-        XCTAssertEqual(model.libraryItems.map(\.id), [episodeIDs[2].rawValue])
+        // Articles and episodes load into one library; nothing is kept yet, so
+        // every visible episode is a Feeds arrival and none waits on the Menu.
+        XCTAssertEqual(model.articles.map(\.id), [article.itemID.rawValue])
+        XCTAssertEqual(Set(model.larderVisibleEpisodes.map(\.id)), Set(episodeIDs.map(\.rawValue)))
+        XCTAssertEqual(model.feedsEpisodes.count, 3)
+        XCTAssertTrue(model.menuWaitingEpisodes.isEmpty)
     }
 
     func testEpisodeDownloadPresentationCoversEveryLifecycleState() {
@@ -154,23 +133,24 @@ final class WiltedVisualSystemTests: XCTestCase {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
         let source = try String(contentsOf: root)
-        let rowStart = try XCTUnwrap(source.range(of: "private struct WiltedMacEpisodeRow")?.lowerBound)
-        let start = try XCTUnwrap(source.range(of: "@ViewBuilder private var downloadControl")?.lowerBound)
-        let end = try XCTUnwrap(source.range(of: "private var relativeAge", range: start..<source.endIndex)?.lowerBound)
+        let rowStart = try XCTUnwrap(source.range(of: "private func menuRow")?.lowerBound)
+        let start = try XCTUnwrap(source.range(of: "@ViewBuilder private func nextStepControl")?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "private var addArticleButton", range: start..<source.endIndex)?.lowerBound)
         let row = source[rowStart..<start]
         let control = source[start..<end]
 
-        XCTAssertTrue(row.contains("episode.preparationState.isPrepared"))
-        XCTAssertTrue(row.contains("\"Ready to play\""))
-        XCTAssertTrue(row.contains("episode.lifecyclePresentation.detailLabel"))
-        XCTAssertTrue(row.contains("wilted-episode-lifecycle-\\(episode.id)"))
-        XCTAssertTrue(row.contains("wilted-episode-outcome-\\(episode.id)"))
-        XCTAssertTrue(row.contains("model.episodePlaybackIndicators(for: episode.id)"))
-        XCTAssertTrue(row.contains("wilted-episode-playback-indicators-\\(episode.id)"))
+        // One dedicated state line: the row names the step it is waiting for,
+        // derived from the model's single group accessor.
+        XCTAssertTrue(row.contains("WiltedMacModel.menuGroup(for: episode)"))
+        XCTAssertTrue(row.contains("Text(\"\\(episode.feedTitle) · \\(group.rawValue)\")"))
+        XCTAssertTrue(row.contains("wilted-menu-progress-\\(episode.id)"))
+        XCTAssertTrue(row.contains("wilted-menu-row-\\(episode.id)"))
 
-        XCTAssertTrue(control.contains("case .failed:"))
-        XCTAssertTrue(control.contains("case .cancelled:"))
+        XCTAssertTrue(control.contains("case .failed, .cancelled:"))
         XCTAssertEqual(control.components(separatedBy: "Button(\"Retry\")").count - 1, 2)
+        XCTAssertTrue(control.contains("wilted-menu-stop-\\(episode.id)"))
+        XCTAssertTrue(control.contains("wilted-menu-retry-\\(episode.id)"))
+        XCTAssertTrue(control.contains("wilted-menu-prepare-\\(episode.id)"))
         XCTAssertFalse(control.contains("Text(\"Download failed\")"))
         XCTAssertFalse(control.contains("Text(\"Download cancelled\")"))
         XCTAssertFalse(control.contains("accessibilityLabel(\"Available offline\")"))
@@ -571,7 +551,7 @@ final class WiltedVisualSystemTests: XCTestCase {
             return XCTFail("retry must complete")
         }
         model.removeEpisode(try XCTUnwrap(model.episodes.first))
-        XCTAssertFalse(model.libraryItems.contains { $0.id == episode.id })
+        XCTAssertFalse(model.larderVisibleEpisodes.contains { $0.id == episode.id })
 
         let cancelled = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"], preferences: WiltedMacTestPreferences.ephemeral())
         let cancellingEpisode = try XCTUnwrap(cancelled.episodes.first)
@@ -706,8 +686,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         for symbol in WiltedSymbol.allCases {
             XCTAssertNotNil(NSImage(named: symbol.rawValue), symbol.rawValue)
         }
-        XCTAssertEqual(WiltedMacNavigation.library.symbolName, WiltedSymbol.larder.rawValue)
-        XCTAssertEqual(WiltedMacNavigation.processor.symbolName, WiltedSymbol.prep.rawValue)
+        XCTAssertEqual(WiltedMacNavigation.menu.symbolName, "list.number")
         XCTAssertEqual(WiltedMacNavigation.feeds.symbolName, WiltedSymbol.broccoli.rawValue)
         XCTAssertEqual(WiltedPreviewState.preparing(.synthesizing).symbolName, WiltedSymbol.processor.rawValue)
         XCTAssertEqual(WiltedPreviewState.emptyLibrary.symbolName, WiltedSymbol.larder.rawValue)
@@ -762,8 +741,8 @@ final class WiltedVisualSystemTests: XCTestCase {
     }
 
     func testNativeInteractionContract() {
-        XCTAssertEqual(WiltedNavigation.allCases.map(\.title), ["Larder", "Now Playing", "Downloads", "Settings"])
-        XCTAssertEqual(WiltedMacNavigation.allCases.map(\.title), ["Larder", "Podcast feeds", "Prep", "Menu", "Settings"])
+        XCTAssertEqual(WiltedNavigation.allCases.map(\.title), [WiltedScreenCopy.library, WiltedScreenCopy.nowPlaying, WiltedScreenCopy.downloads, WiltedScreenCopy.settings])
+        XCTAssertEqual(WiltedMacNavigation.allCases.map(\.title), ["Podcast feeds", "Menu", "Settings"])
         XCTAssertFalse(WiltedMacNavigation.allCases.map(\.rawValue).contains("nowPlaying"))
         XCTAssertEqual(WiltedScreenCopy.libraryEmpty, "Your larder is empty")
         XCTAssertEqual(WiltedScreenCopy.noArticles, "No articles yet")
@@ -808,8 +787,9 @@ final class WiltedVisualSystemTests: XCTestCase {
         )
     }
 
-    /// Prep cards keep their facts and controls in predictable regions. This
-    /// source contract catches a visual regression without changing snapshots.
+    /// Prep controls live in the Menu row that owns the run, and the player's
+    /// facts keep their predictable regions. This source contract catches a
+    /// visual regression without changing snapshots.
     func testPrepRunAndCompactPlayerPresentationContracts() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
@@ -821,29 +801,14 @@ final class WiltedVisualSystemTests: XCTestCase {
             return source[startIndex..<endIndex]
         }
 
-        let activeCard = try section("private func activeRunCard", before: "private func runRow")
-        let recentCard = try section("private func runRow", before: "private func runMetadata")
-        XCTAssertTrue(activeCard.contains("runMetadata(run)"))
-        XCTAssertTrue(recentCard.contains("runMetadata(run)"))
-        XCTAssertLessThan(
-            try XCTUnwrap(activeCard.range(of: "Text(run.narrative)")?.lowerBound),
-            try XCTUnwrap(activeCard.range(of: "runActions(run, canStop: true)")?.lowerBound)
-        )
-        XCTAssertLessThan(
-            try XCTUnwrap(recentCard.range(of: "Text(run.narrative)")?.lowerBound),
-            try XCTUnwrap(recentCard.range(of: "runActions(run, canStop: false)")?.lowerBound)
-        )
-        XCTAssertTrue(source.contains("wilted-processor-actions-\\(run.id)"))
-        XCTAssertTrue(source.contains("wilted-processor-stop-\\(run.id)"))
-        XCTAssertTrue(source.contains("wilted-processor-retry-\\(run.id)"))
+        let row = try section("private func menuRow", before: "@ViewBuilder private func nextStepControl")
+        XCTAssertTrue(row.contains("nextStepControl(episode, group: group)"))
+        XCTAssertTrue(row.contains("wilted-menu-progress-\\(episode.id)"))
 
-        let log = try section("private func eventLog", before: "// MARK: - Menu")
-        XCTAssertTrue(log.contains("ScrollView(.vertical)"))
-        XCTAssertTrue(log.contains("maxHeight: 176"))
-        XCTAssertTrue(log.contains(".monospaced()"))
-        XCTAssertTrue(log.contains(".textSelection(.enabled)"))
-        XCTAssertTrue(log.contains("wilted-processor-log-\\(run.id)"))
-        XCTAssertTrue(log.contains("wilted-processor-event-\\(event.id)"))
+        let control = try section("@ViewBuilder private func nextStepControl", before: "private var addArticleButton")
+        XCTAssertTrue(control.contains("wilted-menu-stop-\\(episode.id)"))
+        XCTAssertTrue(control.contains("wilted-menu-retry-\\(episode.id)"))
+        XCTAssertTrue(control.contains("wilted-menu-prepare-\\(episode.id)"))
 
         XCTAssertTrue(source.contains("Text(model.playbackStatusMessage)"))
         XCTAssertTrue(source.contains("if model.playbackStatusMessage != \"Playing\""))
@@ -907,21 +872,26 @@ final class WiltedVisualSystemTests: XCTestCase {
             ".accessibilityHidden(playerPresentation != nil && model.selectedNavigation != .menu)"))
         XCTAssertTrue(source.contains(
             ".disabled(playerPresentation != nil && model.selectedNavigation != .menu)"))
-        XCTAssertTrue(source.contains("playerPresentation = nil\n                        playerFocusRequest = nil\n                        model.selectedNavigation = destination"))
+        // The sidebar no longer clears the presentation itself: every
+        // navigation change is retired by the detail's onChange, while
+        // collapsing keeps its own clear.
+        XCTAssertTrue(source.contains("playerFocusRequest = nil\n                        model.selectedNavigation = destination"))
+        XCTAssertTrue(source.contains(".onChange(of: model.selectedNavigation) {"))
+        XCTAssertTrue(source.contains("playerPresentation = nil\n                            playerFocusRequest = section"))
         XCTAssertTrue(source.contains("case .menu:"))
         XCTAssertTrue(source.contains("WiltedMacMenuView("))
         XCTAssertTrue(source.contains("presentation: $playerPresentation"))
         XCTAssertTrue(source.contains("presentation: $presentation"))
         XCTAssertTrue(source.contains("wilted-mac-menu-detail"))
-        XCTAssertTrue(source.contains(".draggable(episodeID)"))
+        XCTAssertTrue(source.contains(".draggable(episode.id)"))
         XCTAssertTrue(source.contains(".dropDestination(for: String.self)"))
-        XCTAssertTrue(source.contains("Button(\"Prepare all (\\(model.preparationEligibleEpisodes.count))\")"))
-        XCTAssertTrue(source.contains("Text(\"Ready to play\")"))
-        XCTAssertTrue(source.contains("model.readyToPlayEpisodes"))
-        XCTAssertTrue(source.contains("model.preparedEpisodesReadyForMenu"))
-        XCTAssertTrue(source.contains("Button(readyCount == 0"))
-        XCTAssertTrue(source.contains("model.addAllPreparedEpisodesToMenu()"))
-        XCTAssertTrue(source.contains("wilted-menu-add-all-prepared"))
+        XCTAssertTrue(source.contains("Button(\"Prepare all downloaded (\\(model.menuPreparableEpisodes.count))\")"))
+        XCTAssertTrue(source.contains("\"Ready to play\""))
+        XCTAssertTrue(source.contains("model.menuEpisodes(in: .playable)"))
+        XCTAssertTrue(source.contains("model.menuPreparableEpisodes"))
+        XCTAssertTrue(source.contains(".disabled(model.menuPreparableEpisodes.isEmpty || model.isSearchingMenu)"))
+        XCTAssertTrue(source.contains("model.prepareAllDownloadedMenuEpisodes()"))
+        XCTAssertTrue(source.contains("wilted-menu-prepare-all"))
         XCTAssertFalse(source.contains("expansionButton(\"Up Next\""))
     }
 
@@ -974,77 +944,10 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertEqual(removed.id, "episode-id", "Restore identity must remain stable across renders")
     }
 
-    /// The Removed rows must reach the popover root with no accessibility
-    /// container between them, because an intermediate one swallows them.
-    ///
-    /// Two fixes were tried on the Feeds card and neither worked. Marking the
-    /// section `.accessibilityElement(children: .contain)` made the section
-    /// vend but left its rows hoisted into it; adding a content shape to the
-    /// row changed nothing. The 2026-09-04 hierarchy snapshot settled it: the
-    /// feed rows sit directly inside the same card with no container between,
-    /// and they vend `wilted-podcast-feed-row-*` normally. The container was
-    /// the only difference.
-    ///
-    /// On 2026-09-05 the section moved a second time, off a collapsed
-    /// `DisclosureGroup` and into a popover behind a header button. 26 removed
-    /// episodes in that card were taking the Larder's prime space above
-    /// "Saved articles and episodes" -- the section whose job is to show what
-    /// is still there to play, not what came off the shelf. The Removed list
-    /// is consulted only right after a mistake, so it now costs one button in
-    /// the list header (or, when the Larder is empty, one button under the
-    /// empty state) rather than the top of the page. The same accessibility
-    /// rule applies to the popover: nothing between the rows and the popover's
-    /// root may claim to be an accessibility element or carry an identifier.
-    func testTheRemovedRowsReachTheCardWithNoAccessibilityContainerBetween() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
-        let source = try String(contentsOf: root)
-
-        // The row is the element the UI journey queries, so it keeps its own
-        // container and identifier.
-        let row = try XCTUnwrap(
-            source.range(of: ".accessibilityIdentifier(\"wilted-podcast-removed-row-\\(dismissal.id)\")")
-        )
-        let rowModifiers = source[source.range(of: "private func dismissedRow")!.lowerBound..<row.lowerBound]
-        XCTAssertTrue(rowModifiers.contains(".accessibilityElement(children: .contain)"))
-        XCTAssertFalse(
-            rowModifiers.contains(".contentShape("),
-            "the row needs no shape to vend a group; the feed rows vend with a clear background"
-        )
-        XCTAssertTrue(source.contains("wilted-podcast-restore-\\(dismissal.id)"))
-
-        // The disclosure card is gone: the collapsible section that used to
-        // hold these rows at the top of the Larder no longer exists.
-        XCTAssertFalse(source.contains("removedDisclosure"), "the disclosure card was replaced by a popover")
-        XCTAssertFalse(
-            source.contains("DisclosureGroup(isExpanded: $showsRemoved"),
-            "the disclosure card was replaced by a popover"
-        )
-        XCTAssertTrue(
-            source.contains(".popover(isPresented: $showsRemoved"),
-            "the Removed list now opens from a popover, not a disclosure"
-        )
-
-        // The rows render in exactly one place: inside removedPopover.
-        XCTAssertEqual(source.components(separatedBy: "dismissedRow(dismissal)").count, 2,
-                       "the Removed rows render in exactly one place")
-        let sectionStart = try XCTUnwrap(source.range(of: "dismissedRow(dismissal)")).upperBound
-        // Anchored forward from the rows to a comment marking the close of
-        // removedPopover's body; everything in between is the path a row's
-        // identifier has to travel to reach the popover root.
-        let sectionEnd = try XCTUnwrap(
-            source.range(of: "// end removedPopover", range: sectionStart..<source.endIndex)
-        ).lowerBound
-        let between = source[sectionStart..<sectionEnd]
-        XCTAssertFalse(
-            between.contains(".accessibilityElement("),
-            "an accessibility container between the Removed rows and the popover root stops the rows vending"
-        )
-        XCTAssertFalse(
-            between.contains(".accessibilityIdentifier("),
-            "an identifier between the Removed rows and the popover root makes it an implicit element that absorbs its rows"
-        )
-    }
+    // The removed-episodes card and its rows were deleted with the Larder in
+    // Phase 0b; the accessibility-containment assertion that lived here is
+    // waiting on Task 2.4 to decide where restore lives. Reinstate it against
+    // that surface rather than reconstructing the old one.
 
     /// The producer window has no Downloads destination, so its copy must not
     /// send the reader to one. This was shipped: the Mac empty player told the
@@ -1052,7 +955,7 @@ final class WiltedVisualSystemTests: XCTestCase {
     /// the Mac baselines always render the player, never the empty state.
     func testProducerCopyNamesOnlyProducerDestinations() {
         let producerDestinations = WiltedMacNavigation.allCases
-        XCTAssertEqual(producerDestinations.map(\.title), ["Larder", "Podcast feeds", "Prep", "Menu", "Settings"])
+        XCTAssertEqual(producerDestinations.map(\.title), ["Podcast feeds", "Menu", "Settings"])
 
         XCTAssertFalse(
             WiltedScreenCopy.nowPlayingEmptyDetailProducer.contains(WiltedScreenCopy.downloads),
