@@ -4718,7 +4718,7 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
         )
         return response
 
-    def analysis(self, detector, responses, *, auto_cover=True, **kwargs):
+    def analysis(self, detector, responses, *, auto_cover=True, total_seconds=100.0, **kwargs):
         class Backend:
             def __init__(inner):
                 inner.responses = iter(responses)
@@ -4741,7 +4741,7 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
             return result
 
         return wp.analyze_ad_detections(
-            self.ads(detector_with_coverage), backend, self.segments, 100.0, **kwargs
+            self.ads(detector_with_coverage), backend, self.segments, total_seconds, **kwargs
         ), backend
 
     def test_the_render_budget_is_installed_before_the_classifier_runs(self):
@@ -4951,6 +4951,55 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
         self.assertEqual(analysis.detections, ())
         self.assertIsNone(analysis.audit.near_empty)
         self.assertIsNone(wp.serialize_ad_audit(analysis.audit)["nearEmpty"])
+
+    def test_near_empty_needs_both_floors_not_either(self):
+        # The marker is a conjunction. A nomination above the seconds floor
+        # is not near-empty even when its share of a long episode is a trace,
+        # and a nomination above the share floor is not near-empty even when
+        # it is small in absolute terms, so each floor has to be able to hold
+        # the marker back on its own.
+        def generous_seconds(_segments, _backend):
+            return [FakeAd(0.0, 20.0)]
+
+        long_episode, _backend = self.analysis(
+            generous_seconds, [], total_seconds=10_000.0
+        )
+        self.assertIsNone(long_episode.audit.near_empty)
+
+        def generous_share(_segments, _backend):
+            return [FakeAd(0.0, 10.0)]
+
+        dense_episode, _backend = self.analysis(
+            generous_share, [], total_seconds=1_000.0
+        )
+        self.assertIsNone(dense_episode.audit.near_empty)
+
+    def test_the_near_empty_floors_are_strict(self):
+        # The floors sit at the corpus minimum rather than under it, so a
+        # nomination exactly on both floors is not near-empty by one epsilon,
+        # and a nomination a hair under both is.
+        floor_total = wp.NOMINATED_SECONDS_FLOOR / wp.NOMINATED_SHARE_FLOOR
+
+        def on_the_floors(_segments, _backend):
+            return [FakeAd(0.0, wp.NOMINATED_SECONDS_FLOOR)]
+
+        at_floor, _backend = self.analysis(on_the_floors, [], total_seconds=floor_total)
+        self.assertIsNone(at_floor.audit.near_empty)
+
+        def under_the_floors(_segments, _backend):
+            return [FakeAd(0.0, wp.NOMINATED_SECONDS_FLOOR - 1.0)]
+
+        under, _backend = self.analysis(under_the_floors, [], total_seconds=floor_total)
+        self.assertIsNotNone(under.audit.near_empty)
+        self.assertIn("under both", under.audit.near_empty)
+        self.assertIsNotNone(wp.serialize_ad_audit(under.audit)["nearEmpty"])
+
+    def test_a_run_without_a_usable_duration_carries_no_near_empty_note(self):
+        # The marker is a share as well as a size, so without a denominator
+        # there is no note to add; the caller has already failed the run for
+        # the missing timing, and a second, invented complaint helps nobody.
+        self.assertIsNone(wp._near_empty_nominations([FakeAd(0.0, 1.0)], 0.0))
+        self.assertIsNone(wp._near_empty_nominations([FakeAd(0.0, 1.0)], float("inf")))
 
     def test_unknown_classifier_shape_and_schema_fail_closed(self):
         def unknown_prompt(_segments, backend):
