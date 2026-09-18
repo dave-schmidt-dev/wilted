@@ -32,9 +32,12 @@ struct WiltedMacApp: App {
             // owner's normal library. Tests inject a fingerprint into their
             // own isolated model when exercising migration; the host must
             // never rewrite that daily-driver store or start bulk recovery.
-            pipelineFingerprint: Self.pipelineFingerprintForLaunch(
-                hostsTests: hostsTests,
-                resolvedFingerprint: PodcastPreparationPipeline.semanticFingerprintResolution
+            // Resolution is deliberately not forced here. It memory-maps the
+            // worker and hashes two Python source trees; doing that in `init`
+            // put it on the main thread ahead of the first frame. The model
+            // awaits this at its fingerprint step instead.
+            pipelineFingerprintResolution: Self.pipelineFingerprintResolutionForLaunch(
+                hostsTests: hostsTests
             ),
             nowPlayingSink: ownsSystemPlayback ? MediaPlayerNowPlayingSink() : nil,
             remoteCommandSource: ownsSystemPlayback ? MediaPlayerRemoteCommandSource() : nil,
@@ -49,6 +52,17 @@ struct WiltedMacApp: App {
         resolvedFingerprint: String?
     ) -> String? {
         hostsTests ? nil : resolvedFingerprint
+    }
+
+    /// The same rule, deferred: a hosted test run resolves nothing at all, so
+    /// it neither migrates the owner's store nor pays for the hash.
+    static func pipelineFingerprintResolutionForLaunch(
+        hostsTests: Bool
+    ) -> @Sendable () async -> String? {
+        if hostsTests {
+            return { nil }
+        }
+        return { await PodcastPreparationPipeline.resolveSemanticFingerprintOffMainPath() }
     }
 
     var body: some Scene {

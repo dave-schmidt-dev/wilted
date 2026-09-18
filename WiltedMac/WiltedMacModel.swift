@@ -1112,7 +1112,13 @@ struct WiltedMacStartupFailure: Equatable, Sendable {
 /// Marks a bootstrap failure that happened in the stale-preparation pass, so
 /// it can report itself as its own condition instead of "could not open your
 /// larder" when the store opened perfectly well.
-private struct WiltedMacStaleInvalidationFailure: Error {
+private /// Thrown where a durable write needs a fingerprint and none resolved.
+///
+/// Not a failure of the work it interrupts: the download succeeded, only its
+/// recovery checkpoint is withheld until a launch can resolve the pipeline.
+struct WiltedMacUnresolvedFingerprint: Error {}
+
+struct WiltedMacStaleInvalidationFailure: Error {
     let underlying: Error
 }
 #endif
@@ -1356,6 +1362,11 @@ final class WiltedMacModel {
     private let assetResolver: LocalLibraryAssetResolver
     private let storeBootstrap: WiltedMacStoreBootstrap
     private let pipelineFingerprint: String?
+    /// Awaited at the fingerprint step, never on the launch path.
+    ///
+    /// Tests inject a value through `pipelineFingerprint` and get a resolution
+    /// that returns it immediately; the app injects the real resolver.
+    private let pipelineFingerprintResolution: @Sendable () async -> String?
     private let invalidateStalePreparations: WiltedMacStaleInvalidation
     private let invalidationRules: [PodcastPreparationInvalidationRule]
     private let retainedArtifactPresenter: (URL) -> Void
@@ -1466,6 +1477,7 @@ final class WiltedMacModel {
          podcastMediaValidatorFactory: WiltedMacPodcastMediaValidatorFactory? = nil,
          podcastPipelineRunnerFactory: WiltedMacPodcastPipelineRunnerFactory? = nil,
          pipelineFingerprint: String? = nil,
+         pipelineFingerprintResolution: (@Sendable () async -> String?)? = nil,
          staleInvalidationOverride: WiltedMacStaleInvalidation? = nil,
          invalidationRules: [PodcastPreparationInvalidationRule] = PodcastPreparationPipeline.invalidationRules,
          retainedArtifactPresenter: ((URL) -> Void)? = nil,
@@ -1499,6 +1511,7 @@ final class WiltedMacModel {
         self.podcastMediaValidatorFactory = podcastMediaValidatorFactory
         self.podcastPipelineRunnerFactory = podcastPipelineRunnerFactory
         self.pipelineFingerprint = pipelineFingerprint
+        self.pipelineFingerprintResolution = pipelineFingerprintResolution ?? { pipelineFingerprint }
         self.invalidationRules = invalidationRules
         let rules = invalidationRules
         self.invalidateStalePreparations = staleInvalidationOverride ?? { store, fingerprint in
@@ -2414,10 +2427,18 @@ final class WiltedMacModel {
                 }
                 let recoveryCheckpointSaved: Bool
                 do {
+                    // The marker is durable, so an unresolved fingerprint must
+                    // not write one: the sentinel would read as a different
+                    // pipeline once a real fingerprint resolves. Leaving the
+                    // forced marker in place is the same conservative outcome
+                    // as a failed write below.
+                    guard let fingerprint = self.pipelineFingerprint
+                        ?? PodcastPreparationPipeline.semanticFingerprintResolution else {
+                        throw WiltedMacUnresolvedFingerprint()
+                    }
                     try await store.markForcedRedownloadCompleted(
                         for: itemID,
-                        currentFingerprint: self.pipelineFingerprint
-                            ?? PodcastPreparationPipeline.semanticFingerprint
+                        currentFingerprint: fingerprint
                     )
                     recoveryCheckpointSaved = true
                 } catch {
@@ -5639,8 +5660,11 @@ final class WiltedMacModel {
             announceStartupStep(.retiringFinishedEpisodes)
             try await configuredStore.retireCompletedEpisodesMissingRetirement()
             let invalidation: PodcastPreparationInvalidationResult
+            // The step is announced before the await, so the readout names
+            // fingerprinting while resolution is still in flight rather than
+            // after it finishes.
             announceStartupStep(.checkingPreparationFingerprint)
-            if let fingerprint = pipelineFingerprint {
+            if let fingerprint = await pipelineFingerprintResolution() {
                 do {
                     invalidation = try await invalidateStalePreparations(configuredStore, fingerprint)
                 } catch {

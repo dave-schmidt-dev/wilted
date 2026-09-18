@@ -471,11 +471,11 @@ public actor PodcastPreparationPipeline {
     /// The worker is part of the semantic pipeline even though it lives in a
     /// separate Python source tree. Update this alongside the fingerprint when
     /// that worker changes.
-    public static let workerSourceHash = "sha256:2612743ff2603b2a9373810c5e2802a9f445b4099a94ecc4c9bd75bc8756f290"
+    public static let workerSourceHash = "sha256:560c2d7a6b3c0b6b7aa0aa9ec45b47f7a156d42cb634a290df3a794f81be7b3e"
     /// This file's own source hash is computed with this value normalized out;
     /// it makes a semantic edit fail the coverage test until this fingerprint
     /// block is deliberately updated.
-    public static let pipelineSourceHash = "sha256:fa975d43a087b55a5b22ee64f8bad95de98c5beae4fc44d970b7b441f5dc8532"
+    public static let pipelineSourceHash = "sha256:f5734d8ed7b0713d420fb44abb64806f5e2c7a43d1ec673edc5cd5673198b362"
 
     /// Includes the external Python packages imported by the worker. The
     /// runtime itself now lives in this repository under `Producer/Runtime`,
@@ -483,8 +483,28 @@ public actor PodcastPreparationPipeline {
     /// so a constant-only fingerprint would miss a detector or transcription
     /// change made between app builds.
     public static let semanticFingerprintResolution = resolvedSemanticFingerprint()
+    /// The sentinel a caller sees when resolution failed.
+    ///
+    /// Nothing durable may carry it. A stored outcome stamped `-unresolved`
+    /// becomes false provenance the moment a real fingerprint resolves: the
+    /// comparison then reads as semantic drift and invalidates work that was
+    /// never stale. Every stamping site takes the optional resolution and
+    /// omits the field instead, so this exists for display and for tests.
     public static let semanticFingerprint = semanticFingerprintResolution
         ?? semanticVersion + "-unresolved"
+
+    /// Resolution off the launch path.
+    ///
+    /// `semanticFingerprintResolution` memory-maps the worker and hashes two
+    /// Python source trees. It is a lazy `static let`, so whichever caller
+    /// touches it first pays for it — and that caller used to be
+    /// `WiltedMacApp.init`, on the main thread, before the first frame.
+    /// Awaiting this instead moves the work to a utility thread while keeping
+    /// the `static let` as the single source of the value, so it still runs
+    /// exactly once and still returns exactly what the synchronous path does.
+    public static func resolveSemanticFingerprintOffMainPath() async -> String? {
+        await Task.detached(priority: .utility) { semanticFingerprintResolution }.value
+    }
 
     /// Reprocessing-eligibility rules for `invalidateStalePodcastPreparations`.
     /// Starts empty: a fingerprint drift with no rule here invalidates
@@ -628,15 +648,22 @@ public actor PodcastPreparationPipeline {
               let stored = try await store.readyRevision(for: episodeID) else {
             await journalTerminal(episodeID: episodeID, requestID: requestID,
                                   error: PodcastPreparationError.episodeNotDownloaded, revisionID: nil,
-                                  fingerprint: Self.semanticFingerprint)
+                                  fingerprint: Self.semanticFingerprintResolution)
             throw PodcastPreparationError.episodeNotDownloaded
         }
 
-        let provenance = try? PreparationEvidence(kind: LocalLibraryStore.pipelineProvenanceEvidenceKind, fields: [
-            "fingerprint": Self.semanticFingerprint,
+        var provenanceFields = [
             "sourceRevisionID": stored.revision.revisionID.rawValue,
             "sourceHash": stored.revision.contentHash,
-        ])
+        ]
+        // Omitted rather than stamped with the sentinel: an absent fingerprint
+        // reads as "not recorded", which is true, where `-unresolved` would
+        // later read as a different pipeline.
+        if let fingerprint = Self.semanticFingerprintResolution {
+            provenanceFields["fingerprint"] = fingerprint
+        }
+        let provenance = try? PreparationEvidence(kind: LocalLibraryStore.pipelineProvenanceEvidenceKind,
+                                                  fields: provenanceFields)
         report(PodcastPreparationProgress(stage: "pipeline.start", detail: episode.title, evidence: provenance))
         do {
             var request: [String: Any] = [
@@ -649,8 +676,12 @@ public actor PodcastPreparationPipeline {
                 "allowSpeechToText": policy.transcriptPolicy != .noLocalSTT,
                 "sourceHash": stored.revision.contentHash,
                 "alignedTranscriptModel": Self.alignedTranscriptModel,
-                "pipelineFingerprint": Self.semanticFingerprint,
             ]
+            // The worker echoes this back into the result it stores. Sending
+            // the sentinel would persist it one layer further out.
+            if let fingerprint = Self.semanticFingerprintResolution {
+                request["pipelineFingerprint"] = fingerprint
+            }
             if !policy.removeAds, policy.transcriptPolicy != .alwaysTranscribe,
                let published = await fetchPublishedTranscript(for: episode, onStatus: report) {
                 request["publishedTranscript"] = published
@@ -673,7 +704,7 @@ public actor PodcastPreparationPipeline {
             await writes.drain()
             await journalTerminal(episodeID: episodeID, requestID: requestID, error: nil,
                                   revisionID: result.revision.revisionID, summary: result.summary,
-                                  fingerprint: Self.semanticFingerprint,
+                                  fingerprint: Self.semanticFingerprintResolution,
                                   sourceRevisionID: stored.revision.revisionID,
                                   sourceHash: stored.revision.contentHash,
                                   sourceURL: audioURL,
@@ -682,7 +713,7 @@ public actor PodcastPreparationPipeline {
         } catch {
             await writes.drain()
             await journalTerminal(episodeID: episodeID, requestID: requestID, error: error, revisionID: nil,
-                                  fingerprint: Self.semanticFingerprint,
+                                  fingerprint: Self.semanticFingerprintResolution,
                                   sourceRevisionID: stored.revision.revisionID,
                                   sourceHash: stored.revision.contentHash,
                                   sourceURL: audioURL)
@@ -1008,7 +1039,8 @@ public actor PodcastPreparationPipeline {
                                                  updatedAt: Timestamp(now()))
             let outcome = PodcastPreparationOutcome(
                 episodeID: episode.itemID, revisionID: downloadedRevision.revisionID,
-                policyDigest: Self.policyDigest(policy), pipelineFingerprint: Self.semanticFingerprint,
+                policyDigest: Self.policyDigest(policy),
+                pipelineFingerprint: Self.semanticFingerprintResolution,
                 semanticVersion: Self.semanticVersion, producedAt: Timestamp(now())
             )
             try await store.saveReadyRevision(downloadedRevision, mediaURL: audioURL, transcript: transcript,
@@ -1060,7 +1092,8 @@ public actor PodcastPreparationPipeline {
                                                 keeps: payload.keepIntervals, duration: duration)
         let outcome = PodcastPreparationOutcome(
             episodeID: episode.itemID, revisionID: revisionID,
-            policyDigest: Self.policyDigest(policy), pipelineFingerprint: Self.semanticFingerprint,
+            policyDigest: Self.policyDigest(policy),
+            pipelineFingerprint: Self.semanticFingerprintResolution,
             semanticVersion: Self.semanticVersion, producedAt: Timestamp(now())
         )
 

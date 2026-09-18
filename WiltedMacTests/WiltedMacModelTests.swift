@@ -5880,6 +5880,149 @@ final class WiltedMacModelTests: XCTestCase {
                        "the fixed sentence must be gone")
     }
 
+    // MARK: Fingerprint resolution off the launch path (Task 3.1)
+
+    /// Polls until `condition` holds, so a test can observe a bootstrap that is
+    /// deliberately parked mid-step rather than racing it with a fixed sleep.
+    private func awaitCondition(
+        timeout: TimeInterval = 5,
+        _ condition: @MainActor () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await MainActor.run(body: condition) { return }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTFail("condition never held within \(timeout)s")
+    }
+
+    func testNoCallerForcesTheSourceTreeHashOnTheLaunchPath() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let app = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacApp.swift"))
+
+        // `semanticFingerprintResolution` is a lazy static let that memory-maps
+        // the worker and hashes two Python source trees. Whoever touches it
+        // first pays for it; in `init` that was the main thread, before the
+        // first frame.
+        XCTAssertFalse(app.contains("PodcastPreparationPipeline.semanticFingerprintResolution"),
+                       "the composition root must not force resolution during init")
+        XCTAssertTrue(app.contains("pipelineFingerprintResolutionForLaunch"),
+                      "the app must hand the model a resolver, not a resolved value")
+
+        let model = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacModel.swift"))
+        XCTAssertTrue(model.contains("await pipelineFingerprintResolution()"),
+                      "the model must await resolution rather than read a stored value")
+    }
+
+    func testHostedTestAppResolvesNoFingerprintAtAll() async {
+        let hosted = WiltedMacApp.pipelineFingerprintResolutionForLaunch(hostsTests: true)
+        let resolved = await hosted()
+        XCTAssertNil(resolved, "a hosted test run must not migrate the owner's store")
+    }
+
+    func testTheReadoutNamesFingerprintingWhileResolutionIsStillInFlight() async throws {
+        let directory = temporaryDirectory("fingerprint-in-flight")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let released = FingerprintGate()
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in try LocalLibraryStore(url: url) },
+            pipelineFingerprintResolution: { await released.wait(); return "build-fingerprint" },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        var steps: [WiltedMacStartupStep] = []
+        model.startupStepObserverForTesting = { steps.append($0) }
+        model.startStoreBootstrap()
+
+        // The step must be announced before resolution returns, not after.
+        try await awaitCondition { steps.contains(.checkingPreparationFingerprint) }
+        XCTAssertFalse(steps.contains(.closingInterruptedRuns),
+                       "bootstrap must still be waiting on the fingerprint")
+        await released.open()
+        await model.waitForStoreBootstrap()
+        XCTAssertEqual(model.startupState, .ready)
+    }
+
+    func testBootstrapAwaitsAResolvedFingerprintBeforeInvalidating() async throws {
+        let directory = temporaryDirectory("fingerprint-await")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let released = FingerprintGate()
+        let invalidated = FingerprintRecorder()
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in try LocalLibraryStore(url: url) },
+            pipelineFingerprintResolution: { await released.wait(); return "resolved-fingerprint" },
+            staleInvalidationOverride: { _, fingerprint in
+                await invalidated.record(fingerprint)
+                return PodcastPreparationInvalidationResult()
+            },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        try await awaitCondition { model.startupState.loadingStep == .checkingPreparationFingerprint }
+        let beforeRelease = await invalidated.values
+        XCTAssertEqual(beforeRelease, [], "invalidation ran before the fingerprint resolved")
+        await released.open()
+        await model.waitForStoreBootstrap()
+
+        let afterRelease = await invalidated.values
+        XCTAssertEqual(afterRelease, ["resolved-fingerprint"],
+                       "invalidation must see the resolved value, exactly once")
+    }
+
+    func testAFailedResolutionSkipsInvalidationAndNeverPassesTheSentinel() async throws {
+        let directory = temporaryDirectory("fingerprint-failed")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let invalidated = FingerprintRecorder()
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in try LocalLibraryStore(url: url) },
+            pipelineFingerprintResolution: { nil },
+            staleInvalidationOverride: { _, fingerprint in
+                await invalidated.record(fingerprint)
+                return PodcastPreparationInvalidationResult()
+            },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let attempted = await invalidated.values
+        XCTAssertEqual(attempted, [],
+                       "a failed resolution must invalidate nothing, not compare the sentinel")
+        XCTAssertEqual(model.startupState, .ready,
+                       "an unresolved fingerprint is not a startup failure")
+    }
+
+    func testNoDurableWriteCarriesTheUnresolvedSentinel() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let pipeline = try String(
+            contentsOf: root.appendingPathComponent("Producer/Sources/WiltedProducer/PodcastPreparationPipeline.swift")
+        )
+        // `semanticFingerprint` is the sentinel-bearing value. Every stamping
+        // site must take the optional resolution and omit the field instead:
+        // a stored `-unresolved` becomes false provenance once a real
+        // fingerprint resolves, and reads as drift that invalidates good work.
+        XCTAssertFalse(pipeline.contains("Self.semanticFingerprint,"),
+                       "a stamping site still passes the sentinel-bearing value")
+        XCTAssertFalse(pipeline.contains("Self.semanticFingerprint)"),
+                       "a stamping site still passes the sentinel-bearing value")
+        XCTAssertFalse(pipeline.contains("\"pipelineFingerprint\": Self.semanticFingerprint"),
+                       "the worker request still carries the sentinel")
+
+        let model = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacModel.swift"))
+        XCTAssertFalse(model.contains("?? PodcastPreparationPipeline.semanticFingerprint\n"),
+                       "the recovery checkpoint still falls back to the sentinel")
+        XCTAssertTrue(model.contains("WiltedMacUnresolvedFingerprint"),
+                      "the recovery checkpoint must withhold the marker instead")
+    }
+
+    func testTheResolvedFingerprintEqualsTheSynchronousPathsValue() async {
+        let asynchronous = await PodcastPreparationPipeline.resolveSemanticFingerprintOffMainPath()
+        XCTAssertEqual(asynchronous, PodcastPreparationPipeline.semanticFingerprintResolution,
+                       "deferring the work must not change the value it produces")
+    }
+
     /// One downloaded, prepared episode with its media on disk and a store,
     /// for the skip tests.
     private func skipFixture(
@@ -7372,4 +7515,29 @@ private final class ConcurrencyTrackingPodcastDownloadTransport: PodcastDownload
             }
         }
     }
+}
+
+
+/// Holds a resolution open until the test releases it.
+private actor FingerprintGate {
+    private var opened = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if opened { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        opened = true
+        let resumed = waiters
+        waiters = []
+        for continuation in resumed { continuation.resume() }
+    }
+}
+
+/// Records every fingerprint invalidation was asked to compare against.
+private actor FingerprintRecorder {
+    private(set) var values: [String] = []
+    func record(_ value: String) { values.append(value) }
 }
