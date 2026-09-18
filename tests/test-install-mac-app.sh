@@ -55,6 +55,7 @@ printf '%s\n' '#!/usr/bin/env bash' \
     'mkdir -p "$app/Contents"' \
     '/usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.zerodelta.wilted.mac" "$app/Contents/Info.plist" >/dev/null' \
     '[[ "${WILTED_TEST_ACTIVATE_DURING_BUILD:-0}" == 1 ]] && : >"$WILTED_TEST_ACTIVE_MARKER"' \
+    'exit 0' \
     >"$guard_bin/xcodebuild"
 printf '%s\n' '#!/usr/bin/env bash' \
     '[[ "${WILTED_TEST_PIPELINE_RUNNING:-0}" == 1 || -e "$WILTED_TEST_ACTIVE_MARKER" ]]' \
@@ -162,6 +163,38 @@ elif [[ -e "$tmp_root/quit" || -e "$tmp_root/replaced" ]]; then
     fail 'late activation was detected only after app quit or bundle replacement began'
 else
     pass 'preparation activated during build stops before quit or replacement'
+fi
+
+# A preparation the installer DID kill: the app is running, no preparation is
+# active, so the guard passes and the quit/kill path runs. The installer must
+# leave the library exactly as it found it.
+#
+# It deliberately does not terminalize the journal or delete media. Two reasons.
+# A non-terminal run is retained on purpose — LocalLibraryStore.swift:2675, "a
+# process that died mid-synthesis is exactly the run a reader most wants to
+# see" — so erasing it here would destroy the only evidence of the kill. And
+# reclaiming media is the store's audit (`MediaInFlightRegistry`,
+# LocalLibraryStore.swift:3942), which reads the library through SwiftData; a
+# shell script writing the same CoreData store with sqlite3 would be a second
+# owner of one invariant. Both properties are proven in Swift, against the
+# store, not here.
+rm -rf "$tmp_root/derived"
+rm -f "$tmp_root/generated" "$tmp_root/active" "$tmp_root/quit" "$tmp_root/replaced"
+library_before="$(shasum -a 256 "$journal" | awk '{print $1}')"
+nonterminal_before="$(sqlite3 "$journal" \
+    "SELECT count(*) FROM ZPREPARATIONRECORD WHERE json_type(CAST(ZSTATUSDATA AS TEXT), '\$.terminalResult') IS NULL;")"
+run_guard "$tmp_root/killed-preparation.out" 0 1 1 0 || true
+library_after="$(shasum -a 256 "$journal" | awk '{print $1}')"
+nonterminal_after="$(sqlite3 "$journal" \
+    "SELECT count(*) FROM ZPREPARATIONRECORD WHERE json_type(CAST(ZSTATUSDATA AS TEXT), '\$.terminalResult') IS NULL;")"
+if [[ ! -e "$tmp_root/quit" ]]; then
+    fail 'kill path did not run, so the library assertion proves nothing'
+elif [[ "$library_after" != "$library_before" ]]; then
+    fail 'installer wrote to the library while stopping a running copy'
+elif [[ "$nonterminal_after" != "$nonterminal_before" ]]; then
+    fail "installer changed the non-terminal run count: $nonterminal_before -> $nonterminal_after"
+else
+    pass 'stopping a running copy leaves the library untouched'
 fi
 
 plant_bundle() {
