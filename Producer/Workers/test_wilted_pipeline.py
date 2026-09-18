@@ -1785,6 +1785,84 @@ class AdDetectionTests(unittest.TestCase):
         self.assertIn("3 of 4", str(raised.exception))
 
 
+class StraddlingSpanTailTests(unittest.TestCase):
+    """Every span ends on a cue edge; only some of those cues are all advertising."""
+
+    # Twenty-second cues, so a span ending at 200.0 ends on cue 9's edge and
+    # trimming it hands back 180.0-200.0. The shape of TechCrunch Daily's
+    # failure, where cue 9 held the sponsor sign-off and then the host's
+    # lead-in to the episode.
+    SEGMENTS = [FakeSegment(index * 20.0, index * 20.0 + 20.0, f"segment {index}") for index in range(28)]
+
+    def trim(self, llm, *ads):
+        ads_module = install_fake_ads(llm)
+        llm.load()  # `detect_and_cut` does this; a direct call has to say so.
+        pattern = wp.explicit_sponsor_opening_pattern(ads_module)
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            trimmed = wp.trim_straddling_span_tails(
+                ads_module, llm, self.SEGMENTS, list(ads), pattern
+            )
+        details = {
+            json.loads(line)["stage"]: json.loads(line)["detail"]
+            for line in stream.getvalue().splitlines()
+        }
+        return [(ad.start_s, ad.end_s) for ad in trimmed], details
+
+    def test_a_tail_cue_holding_the_program_start_is_handed_back(self):
+        llm = FakeLLM(boundary_starts_program=True)
+        trimmed, details = self.trim(llm, FakeAd(6.72, 200.0))
+        self.assertEqual(trimmed, [(6.72, 180.0)])
+        self.assertIn("the program starts inside segment 9", details["ads.detect.tail.shortened"])
+
+    def test_a_tail_cue_that_is_advertising_throughout_is_left_alone(self):
+        # The safeguard has to be able to answer "no". A span whose last cue is
+        # all advertising keeps its full length, or every correct cut loses its
+        # final cue to a safeguard meant for a rarer failure.
+        llm = FakeLLM(boundary_starts_program=False)
+        trimmed, details = self.trim(llm, FakeAd(6.72, 200.0))
+        self.assertEqual(trimmed, [(6.72, 200.0)])
+        self.assertNotIn("ads.detect.tail.shortened", details)
+
+    def test_an_unanswerable_probe_leaves_the_span_exactly_as_it_was(self):
+        # The one place this safeguard does NOT inherit the usual "no answer is
+        # not permission" rule. It screens every span in the episode rather than
+        # one boundary already nominated, so trimming on silence would let a
+        # single bad response shave the tail off every correct cut in the file.
+        llm = FakeLLM(answer="not json")
+        trimmed, details = self.trim(llm, FakeAd(6.72, 200.0))
+        self.assertEqual(trimmed, [(6.72, 200.0)])
+        self.assertIn("ads.detect.tail.unanswered", details)
+        self.assertNotIn("ads.detect.tail.shortened", details)
+
+    def test_a_span_ending_mid_cue_is_not_a_straddle_and_is_untouched(self):
+        # Already refined off a cue edge by something upstream, so there is no
+        # tail cue to hand back and nothing to ask about.
+        llm = FakeLLM(boundary_starts_program=True)
+        trimmed, details = self.trim(llm, FakeAd(6.72, 193.4))
+        self.assertEqual(trimmed, [(6.72, 193.4)])
+        self.assertNotIn("ads.detect.tail.shortened", details)
+
+    def test_trimming_never_empties_a_span_confined_to_one_cue(self):
+        # The cut lives entirely inside cue 9, so stopping at that cue's start
+        # would invert the span. Leave it whole instead.
+        llm = FakeLLM(boundary_starts_program=True)
+        trimmed, details = self.trim(llm, FakeAd(185.0, 200.0))
+        self.assertEqual(trimmed, [(185.0, 200.0)])
+        self.assertNotIn("ads.detect.tail.shortened", details)
+
+    def test_the_probe_count_is_bounded_across_many_spans(self):
+        # One probe per span tail, but a transcript of many short spans must
+        # not turn the safeguard into a second unbounded pass over the episode.
+        llm = FakeLLM(boundary_starts_program=True)
+        spans = [FakeAd(index * 20.0, index * 20.0 + 40.0) for index in range(0, 24, 2)]
+        trimmed, _details = self.trim(llm, *spans)
+        shortened = sum(
+            1 for (start, end), ad in zip(trimmed, spans) if end != ad.end_s
+        )
+        self.assertEqual(shortened, wp.STRADDLING_TAIL_MAX_PROBES)
+
+
 class LegacySponsorOpeningCompatibilityTests(unittest.TestCase):
     def test_observed_openings_match_both_legacy_anchor_patterns(self):
         ads = install_fake_ads(FakeLLM())
@@ -3030,7 +3108,15 @@ class LegacySponsorRecoveryTests(unittest.TestCase):
             spans,
             [{"startSeconds": 212.25, "endSeconds": 248.75, "label": "sponsor", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.97}],
         )
-        self.assertEqual(llm.requests, [ads._AD_DETECT_RESPONSE_FORMAT, {"type": "json_object"}])
+        # Three calls: the classifier, the resumption probe, and the tail
+        # straddle probe the span-tail safeguard asks about segment 1, whose
+        # end the recovered span lands on. That probe cannot read this
+        # fixture's seed answer, so it returns no verdict and the boundary
+        # above is the untrimmed one.
+        self.assertEqual(
+            llm.requests,
+            [ads._AD_DETECT_RESPONSE_FORMAT, {"type": "json_object"}, {"type": "json_object"}],
+        )
 
     def test_positive_seed_without_sponsor_opening_is_editorial_content(self):
         llm = FakeLLM(answer=json.dumps({"ads": [{"confidence": 0.97}]}))

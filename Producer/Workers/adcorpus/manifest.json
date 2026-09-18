@@ -282,7 +282,18 @@
         }
       ],
       "transcriptEndSeconds": 386.52,
-      "audioDurationSeconds": 390.269387755102
+      "audioDurationSeconds": 390.269387755102,
+      "closedBy": {
+        "date": "2026-09-18",
+        "verdict": "pass -- every labelled span is where it should be; keepLossSeconds 0.0, unknownCutSeconds 0.0, labelledCoverage 0.9476",
+        "before": "The detector cut 6.72-187.48 as one span, taking all 8.48s of the labelled must-keep at 179.00-187.48 plus the 11.68s of unlabelled cue-9 tail. The delivered file opened mid-sentence on 'after weeks of swirling rumors'.",
+        "after": "The detector cuts 6.72-167.32. The must-cut block is still 100% removed and no programme is touched.",
+        "change": "A new worker safeguard, trim_straddling_span_tails in Producer/Workers/wilted_pipeline.py, asks _program_starts_inside about the cue a span ends on and stops at that cue's start when the programme resumes inside it. The archive detector is unchanged: it produced 6.72-187.48 before and after, and every other worker recovery stage left that span alone, so the safeguard is the whole of the fix. It reuses the probe the oversized-span resize has always used for this question; what was missing was asking it on a span that no size bound ever flagged, because 180.76s of 390.27s is 46.3% and the single-span ceiling is 50%.",
+        "failDirection": "Only an affirmative answer trims, which is the opposite of the resize path's rule and deliberately so. That caller has already been told the programme resumes nearby and is only choosing how far to stop short, so it reads an unreadable answer as a yes. This safeguard screens every span in the episode with no such warrant, and trimming on silence would let one bad model response shave the tail off every correct cut in the file -- a defect the listener meets every episode, traded against one they meet rarely. First written the other way, which broke 22 of the worker suite's 371 tests: in each the probe was unanswerable and every span lost its final cue. On this case the model answers an explicit true, so the trim rests on a verdict rather than on a fallback.",
+        "coverage": "Scored on 1 of the 4 manifest cases. The other three -- waveform-two-preroll-sponsor-reads, pchh-preroll-swallowed-the-premise and practical-ai-two-host-reads-left-whole -- are unrunnable: their aligned-STT inputs were evicted from the 32-entry preparation cache before the pinned store existed (see decision corpus-inputs-are-pinned-not-cached), and on 2026-09-18 a search of the pinned store, the preparation cache, the repository and both temp roots found none of the three sourceHashes anywhere on disk. This matters more than usual here, because two of the three are themselves preroll over-cut cases and so are the nearest thing to a regression test for this edge. Until an input for one of them is recovered or relabelled from a fresh capture, this fix is validated on one episode.",
+        "reproduce": "~/.venvs/wilted/bin/python Producer/Workers/ad_corpus.py --mode replay --json  (non-strict, because --strict fails the three unrunnable cases rather than skipping them; under --strict the corpus cannot pass at all while their inputs are missing)",
+        "unitTests": "StraddlingSpanTailTests in Producer/Workers/test_wilted_pipeline.py -- six cases covering the straddle, the advertising-throughout tail that must be left alone, the unanswerable probe that must change nothing, a span already refined off a cue edge, a span confined to one cue, and the probe budget. Mutation-checked: forcing the trim unconditionally fails three of them. The full worker suite is 377 tests green, up from 371; the one pre-existing test that changed is the superhuman-boundary call-sequence assertion, which now names the third model call this safeguard adds."
+      }
     }
   ],
   "decisions": [

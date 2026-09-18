@@ -339,6 +339,9 @@ COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_IDS = 3
 COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_SECONDS = 90.0
 COMMERCIAL_RECOVERY_MAX_CANDIDATES = 4
 COMMERCIAL_RECOVERY_MAX_ADDITIONAL_CALLS = 12
+# One straddle probe per span tail, capped so a transcript of many short spans
+# cannot turn the safeguard into an unbounded second pass over the episode.
+STRADDLING_TAIL_MAX_PROBES = 8
 # A support anchor in the first minute may be the second half of a consecutive
 # produced preroll. Only its immediate left neighbor is eligible, and only the
 # existing contextual boundary verifier can claim it.
@@ -3229,6 +3232,90 @@ def _program_starts_inside(ads_module, backend, segments, segment_id):
         return True
 
 
+def _program_start_inside_answer(ads_module, backend, segments, segment_id):
+    """True, False, or None when the question could not be answered.
+
+    `_program_starts_inside` folds the third case into True, which is right
+    where the caller has already been told a boundary is near and is only
+    deciding how far to stop short. A safeguard that screens every span has no
+    such warrant, so it needs the three answers apart.
+    """
+    try:
+        response, _tokens = ads_module._generate_constrained_response(  # noqa: SLF001
+            backend,
+            BOUNDARY_SEGMENT_PROMPT,
+            ads_module._render_segments_bounded([segment_id], segments),  # noqa: SLF001
+            {"type": "json_object"},
+        )
+        parsed = json.loads(response)
+        if set(parsed) != {"starts_program"} or not isinstance(parsed["starts_program"], bool):
+            raise ValueError("starts_program response must contain exactly one boolean")
+        return parsed["starts_program"]
+    except Exception as error:  # noqa: BLE001 - an unreadable answer is not a verdict
+        progress("ads.detect.tail.unanswered", f"{type(error).__name__}: {error}")
+        return None
+
+
+def trim_straddling_span_tails(ads_module, backend, segments, detections, opening_pattern):
+    """Pull a span's end back when the programme resumes inside its final cue.
+
+    Every span the detector emits ends on a cue edge, which is correct only
+    while the cue is advertising end to end. A produced read that signs off
+    partway through a cue leaves the rest of it to the host, and taking the
+    whole cue then removes the programme's own opening words. TechCrunch Daily
+    is the corpus case: cue 9 carries the ODSC sign-off and then "i'm imran
+    shake and your daily crunch for friday", so a cut to 187.48 rather than
+    167.32 delivered a file opening mid-sentence on "after weeks of swirling
+    rumors".
+
+    Only an affirmative answer trims. That is a deliberate departure from the
+    resize path, which treats an unreadable answer as a yes: that caller has
+    already been told the programme resumes nearby and is only deciding how far
+    to stop short, while this one screens every span in the episode with no
+    such warrant. Shortening on silence here would let one bad model response
+    shave the tail off every correct cut in the file -- a failure the listener
+    meets on every episode, traded against one they meet rarely.
+
+    A cue that opens its own sponsor read is never trimmed away: it is
+    advertising rather than a straddle, and trimming it would uncover an anchor
+    the recovery audit expects the span to hold.
+    """
+    if not detections or not segments:
+        return detections
+    anchor_ids = set(explicit_sponsor_anchor_ids(segments, opening_pattern))
+    ends = {}
+    for segment_id, segment in enumerate(segments):
+        ends.setdefault(round(float(segment.end_s), 6), segment_id)
+    trimmed = []
+    probes = 0
+    for ad in detections:
+        boundary_id = ends.get(round(float(ad.end_s), 6))
+        if (
+            boundary_id is None
+            or boundary_id in anchor_ids
+            or probes >= STRADDLING_TAIL_MAX_PROBES
+            or float(segments[boundary_id].start_s) <= float(ad.start_s)
+        ):
+            trimmed.append(ad)
+            continue
+        probes += 1
+        if _program_start_inside_answer(ads_module, backend, segments, boundary_id) is not True:
+            trimmed.append(ad)
+            continue
+        end_s = float(segments[boundary_id].start_s)
+        progress(
+            "ads.detect.tail.shortened",
+            f"the program starts inside segment {boundary_id}, so the cut ending "
+            f"{float(ad.end_s):.3f} stops at {end_s:.3f}",
+        )
+        trimmed.append(
+            ads_module.AdSegment(  # noqa: SLF001 - preserve legacy detection result type
+                float(ad.start_s), end_s, float(ad.confidence), ad.label
+            )
+        )
+    return trimmed
+
+
 def _tail_carries_program(ads_module, backend, segments, segment_id):
     """Answer whether the program is still running inside one segment.
 
@@ -4040,6 +4127,13 @@ def analyze_ad_detections(
     )
     detections = recover_transcript_end_postroll(
         ads_module, auditing_backend, segments, detections, total_seconds
+    )
+    detections = trim_straddling_span_tails(
+        ads_module,
+        auditing_backend,
+        segments,
+        detections,
+        explicit_sponsor_opening_pattern(ads_module),
     )
     detections, confirmed_spans = resize_oversized_ad_spans(
         ads_module, auditing_backend, segments, detections, total_seconds
