@@ -52,9 +52,17 @@ public struct AudioAssembler: Sendable {
     private static let chunkFrameCount = 4_096
 
     private let maxBytes: Int64
+    /// The store's in-flight registry, when the caller will commit the
+    /// assembled file into one. The temporary transfer file exists before any
+    /// revision does, so a reclaim sweep must see it while it is written.
+    private let inFlightMedia: MediaInFlightRegistry?
 
-    public init(maxRevisionAssetBytes: Int64 = Self.maxRevisionAssetBytes) {
+    public init(
+        maxRevisionAssetBytes: Int64 = Self.maxRevisionAssetBytes,
+        inFlightMedia: MediaInFlightRegistry? = nil
+    ) {
         self.maxBytes = maxRevisionAssetBytes
+        self.inFlightMedia = inFlightMedia
     }
 
     /// Encodes an array of mono Float32 samples and atomically publishes its ready revision.
@@ -119,9 +127,11 @@ public struct AudioAssembler: Sendable {
         let temporaryURL = parent.appendingPathComponent(
             ".\(destinationURL.lastPathComponent).tmp-\(UUID().uuidString)"
         )
+        inFlightMedia?.begin(temporaryURL)
         var published = false
         defer {
             if !published { try? fileManager.removeItem(at: temporaryURL) }
+            inFlightMedia?.end(temporaryURL)
         }
 
         onStatus("stage=encode-m4a-aac")

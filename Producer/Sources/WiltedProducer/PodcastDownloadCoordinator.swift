@@ -265,9 +265,11 @@ public actor PodcastDownloadCoordinator {
             throw PodcastDownloadCoordinatorError.transport(String(describing: error))
         }
         var hasher = SHA256()
+        store.inFlightMedia.begin(stagingURL)
         defer {
             try? handle.close()
             try? FileManager.default.removeItem(at: stagingURL)
+            store.inFlightMedia.end(stagingURL)
         }
 
         do {
@@ -364,6 +366,11 @@ public actor PodcastDownloadCoordinator {
             let finalURL = existingRevision?.mediaURL
                 ?? finalDirectory.appendingPathComponent(revisionID.rawValue + "." + extensionName)
             try FileManager.default.createDirectory(at: finalDirectory, withIntermediateDirectories: true)
+            // The final file exists before its revision record does. Register it
+            // until the commit lands so a sweep cannot reclaim a download that
+            // is still being published.
+            store.inFlightMedia.begin(finalURL)
+            defer { store.inFlightMedia.end(finalURL) }
             onStatus(.init(stage: .publishing, bytesReceived: received, expectedByteCount: expected))
             if FileManager.default.fileExists(atPath: finalURL.path) {
                 guard try await verificationHash(of: finalURL, onStatus: onStatus) == contentHash else {

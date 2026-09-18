@@ -17,6 +17,10 @@ import Foundation
 final class WiltedPreparationGate {
     private struct Waiter {
         let id: UUID
+        /// The request's persisted place in the click order. Waiters are kept
+        /// sorted by this, so a run admitted after a relaunch still yields to
+        /// the requests that were clicked before it.
+        let sequence: Int
         let continuation: CheckedContinuation<Bool, Never>
     }
 
@@ -31,10 +35,17 @@ final class WiltedPreparationGate {
 
     /// Suspends until this caller owns the only slot.
     ///
+    /// `sequence` is the preparation request's persisted number. The waiting
+    /// set is kept ordered by it rather than by arrival, because arrival here
+    /// is download-completion order and the reader's requests were made in
+    /// click order. A free slot still admits the first caller to reach it: the
+    /// sequence orders the waiters, it does not reserve the slot for a request
+    /// that is not eligible yet.
+    ///
     /// Throws `CancellationError` if the caller is cancelled while queued, and
     /// leaves the queue at that moment rather than when the run ahead of it
     /// finishes: a cancelled row must clear now, not in ten minutes.
-    func admit() async throws {
+    func admit(sequence: Int = 0) async throws {
         try Task.checkCancellation()
         if !admitted {
             admitted = true
@@ -43,7 +54,11 @@ final class WiltedPreparationGate {
         let id = UUID()
         let granted = await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-                waiters.append(Waiter(id: id, continuation: continuation))
+                let waiter = Waiter(id: id, sequence: sequence, continuation: continuation)
+                // Stable insertion: a later arrival with an equal sequence
+                // queues behind the ones already waiting.
+                let index = waiters.firstIndex { $0.sequence > sequence } ?? waiters.endIndex
+                waiters.insert(waiter, at: index)
             }
         } onCancel: {
             Task { @MainActor [weak self] in self?.abandon(id) }

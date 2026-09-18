@@ -2435,6 +2435,146 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertTrue(model.processorRuns.filter { $0.outcome == .running }.isEmpty)
     }
 
+    // MARK: Task 4.1 — preparation request sequence
+
+    /// The gate admits the eligible set in request order, not in the order the
+    /// runs reached it. Downloads finishing in a different order from the
+    /// clicks is the defect this orders away.
+    func testPreparationGateAdmitsWaitersInRequestSequenceOrder() async throws {
+        let gate = WiltedPreparationGate()
+        var admitted: [Int] = []
+        try await gate.admit(sequence: 0)  // the holder
+
+        let arrivals = [30, 20, 10]
+        let tasks = arrivals.map { sequence in
+            Task { @MainActor in
+                try await gate.admit(sequence: sequence)
+                admitted.append(sequence)
+            }
+        }
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(gate.queueDepth, arrivals.count)
+
+        for _ in 0..<arrivals.count {
+            gate.release()
+            for _ in 0..<10 { await Task.yield() }
+        }
+        for task in tasks { try await task.value }
+        XCTAssertEqual(admitted, [10, 20, 30],
+                       "the request sequence decides, not the order the runs reached the gate")
+    }
+
+    /// Eligibility gates admission: a request still downloading is not at the
+    /// gate, so a later eligible request takes the free slot; the lower-numbered
+    /// request keeps its pending place.
+    func testAnIneligibleRequestKeepsItsPendingPlaceWhileALaterEligibleRequestRuns() async throws {
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        let lower = model.registerPreparationRequest(for: "episode-still-downloading")
+        let higher = model.consumePreparationRequest(for: "episode-downloaded")
+        XCTAssertEqual([lower, higher], [1, 2])
+
+        try await model.preparationGateForTesting.admit(sequence: higher)
+        XCTAssertTrue(model.preparationGateForTesting.isBusy)
+
+        XCTAssertEqual(model.preparationRequestSequences, ["episode-still-downloading": lower],
+                       "the ineligible request is still pending, in its original place")
+        XCTAssertEqual(model.preparationRequestSequence, higher)
+    }
+
+    /// The counter is persisted, so the click order outlives the process.
+    func testPreparationRequestSequenceSurvivesAModelRebuild() throws {
+        let suite = "com.zerodelta.wilted.mac.preparation-sequence-tests"
+        guard let preferences = UserDefaults(suiteName: suite) else {
+            return XCTFail("Unable to open a preferences suite for the test")
+        }
+        preferences.removePersistentDomain(forName: suite)
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let directory = temporaryDirectory("preparation-sequence")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let first = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory, preferences: preferences
+        )
+        XCTAssertEqual(first.preparationRequestSequence, 0)
+        let one = first.registerPreparationRequest(for: "episode-one")
+        let repeated = first.registerPreparationRequest(for: "episode-one")
+        let two = first.registerPreparationRequest(for: "episode-two")
+        XCTAssertEqual([one, repeated, two], [1, 1, 2],
+                       "a repeated request keeps its original place")
+
+        let rebuilt = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory, preferences: preferences
+        )
+        XCTAssertEqual(rebuilt.preparationRequestSequence, 2,
+                       "the restored sequence equals the one written")
+        XCTAssertTrue(rebuilt.preparationRequestSequences.isEmpty,
+                      "in-flight requests do not survive the process that made them")
+        XCTAssertEqual(rebuilt.registerPreparationRequest(for: "episode-three"), 3)
+    }
+
+    /// Ordering preparations must not order downloads. Two ordinary downloads
+    /// still overlap, and the peak is asserted so this diff cannot silently
+    /// serialize transfers.
+    func testTwoOrdinaryDownloadsStillOverlapAfterPreparationOrderingLanded() async throws {
+        let directory = temporaryDirectory("download-overlap")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/overlap.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let downloads = try (0..<2).map { index -> (enclosure: URL, id: ItemID) in
+            let enclosure = try XCTUnwrap(
+                URL(string: "https://media.example.test/overlap-\(index).mp3")
+            )
+            return (enclosure, try ItemID.derivePodcastEpisode(
+                feedURL: feedURL, rssGUID: "overlap-\(index)", enclosureURL: enclosure
+            ))
+        }
+        let enclosures = downloads.map(\.enclosure)
+        let episodeIDs = downloads.map(\.id)
+        let eventsByURL = Dictionary(uniqueKeysWithValues: enclosures.map { url in
+            (url, [
+                PodcastDownloadEvent.response(.init(
+                    url: url, statusCode: 200, mediaType: "audio/mpeg", expectedByteCount: 4
+                )),
+                PodcastDownloadEvent.data(Data("body".utf8))
+            ])
+        })
+        let transport = ConcurrencyTrackingPodcastDownloadTransport(eventsByURL: eventsByURL)
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Overlap feed", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                for (index, id) in episodeIDs.enumerated() {
+                    try await store.save(episode: try PodcastEpisode(
+                        itemID: id, feedID: feedID, feedURL: feedURL, rssGUID: "overlap-\(index)",
+                        title: "Overlap episode \(index)", publishedTime: created,
+                        enclosureURL: enclosures[index], enclosureMediaType: "audio/mpeg", createdAt: created
+                    ))
+                }
+                return store
+            },
+            podcastDownloadTransportFactory: { transport },
+            podcastMediaValidatorFactory: { StubPodcastMediaValidator(duration: 12) },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        let episodes = episodeIDs.compactMap { id in
+            model.episodes.first(where: { $0.id == id.rawValue })
+        }
+        XCTAssertEqual(episodes.count, 2)
+        for episode in episodes { model.downloadEpisode(episode) }
+        await model.waitForPodcastOperations()
+
+        let peak = await transport.maxObservedInFlight
+        XCTAssertEqual(peak, 2,
+                       "ordinary downloads overlap; ordering preparations must not serialize them")
+    }
+
     func testMenuAndLarderIndicatorsShareTheCurrentQueueSnapshot() throws {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],

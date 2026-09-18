@@ -298,8 +298,476 @@ final class LocalLibraryStoreTests: XCTestCase {
             try await store.saveReadyRevision(old, mediaURL: URL(fileURLWithPath: "/tmp/changed.m4a"))
             XCTFail("Expected immutable revision error")
         } catch {
-            XCTAssertEqual(error as? LocalLibraryStoreError, .immutableRevision(old.revisionID))
+            XCTAssertEqual(
+                error as? LocalLibraryStoreError,
+                .immutableRevision(old.revisionID, site: .readyRevision)
+            )
         }
+    }
+
+    // MARK: Immutable-revision site attribution (Task 4.2)
+
+    /// One podcast revision with a matching download, transcript, and outcome,
+    /// for driving a single immutable-revision path.
+    private func immutableRevisionFixture(
+        itemID: ItemID, id: String, hashCharacter: Character, path: String, bytes: Int64 = 64
+    ) throws -> (
+        revision: AudioRevision, mediaURL: URL, download: PodcastDownload,
+        transcript: Transcript, outcome: PodcastPreparationOutcome
+    ) {
+        let when = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let hash = "sha256:" + String(repeating: String(hashCharacter), count: 64)
+        let revisionID = try RevisionID(rawValue: id)
+        let mediaURL = URL(fileURLWithPath: path)
+        let revision = try AudioRevision(
+            itemID: itemID, revisionID: revisionID, durationSeconds: 60, byteCount: bytes,
+            contentHash: hash, mediaType: "audio/mpeg", createdAt: when, schemaVersion: 3
+        )
+        let download = try PodcastDownload(
+            episodeID: itemID, status: .completed, bytesReceived: bytes, expectedByteCount: bytes,
+            localURL: mediaURL, contentHash: hash, updatedAt: when
+        )
+        let transcript = try Transcript(
+            itemID: itemID, revisionID: revisionID, availability: .available,
+            text: "Transcript for \(id).", updatedAt: when
+        )
+        let outcome = PodcastPreparationOutcome(
+            episodeID: itemID, revisionID: revisionID, policyDigest: "d",
+            pipelineFingerprint: "f", semanticVersion: "v", producedAt: when
+        )
+        return (revision, mediaURL, download, transcript, outcome)
+    }
+
+    private func immutableRevisionItemID(_ guid: String) throws -> ItemID {
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/immutable-\(guid).xml"))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://cdn.example.test/immutable-\(guid).mp3"))
+        return try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: guid, enclosureURL: enclosureURL)
+    }
+
+    private func immutableRevisionError(_ body: () async throws -> Void) async -> LocalLibraryStoreError? {
+        do {
+            try await body()
+            return nil
+        } catch let error as LocalLibraryStoreError {
+            return error
+        } catch {
+            return nil
+        }
+    }
+
+    func testImmutableRevisionSiteNamesThePlainReadyRevisionSave() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let itemID = try immutableRevisionItemID("plain")
+        let fixture = try immutableRevisionFixture(
+            itemID: itemID, id: "rev-site-plain", hashCharacter: "a", path: "/tmp/site/plain.mp3"
+        )
+        try await store.saveReadyRevision(fixture.revision, mediaURL: fixture.mediaURL)
+
+        let error = await immutableRevisionError {
+            try await store.saveReadyRevision(
+                fixture.revision, mediaURL: URL(fileURLWithPath: "/tmp/site/changed.mp3")
+            )
+        }
+        XCTAssertEqual(
+            error,
+            .immutableRevision(fixture.revision.revisionID, site: .readyRevision),
+            "the plain revision save names its own site and the finalized revision"
+        )
+    }
+
+    func testImmutableRevisionSiteNamesTheTranscriptReadyRevisionSave() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let itemID = try immutableRevisionItemID("transcript")
+        let fixture = try immutableRevisionFixture(
+            itemID: itemID, id: "rev-site-transcript", hashCharacter: "b", path: "/tmp/site/transcript.m4a"
+        )
+        try await store.saveReadyRevision(
+            fixture.revision, mediaURL: fixture.mediaURL, transcript: fixture.transcript
+        )
+
+        let error = await immutableRevisionError {
+            try await store.saveReadyRevision(
+                fixture.revision, mediaURL: URL(fileURLWithPath: "/tmp/site/changed.m4a"),
+                transcript: fixture.transcript
+            )
+        }
+        XCTAssertEqual(
+            error,
+            .immutableRevision(fixture.revision.revisionID, site: .readyRevisionWithTranscript)
+        )
+    }
+
+    func testImmutableRevisionSiteNamesTheOutcomeReadyRevisionSave() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let itemID = try immutableRevisionItemID("outcome")
+        let fixture = try immutableRevisionFixture(
+            itemID: itemID, id: "rev-site-outcome", hashCharacter: "c", path: "/tmp/site/outcome.m4a"
+        )
+        try await store.saveReadyRevision(
+            fixture.revision, mediaURL: fixture.mediaURL, transcript: fixture.transcript,
+            outcome: fixture.outcome
+        )
+
+        let error = await immutableRevisionError {
+            try await store.saveReadyRevision(
+                fixture.revision, mediaURL: URL(fileURLWithPath: "/tmp/site/changed.m4a"),
+                transcript: fixture.transcript, outcome: fixture.outcome
+            )
+        }
+        XCTAssertEqual(
+            error,
+            .immutableRevision(fixture.revision.revisionID, site: .readyRevisionWithOutcome)
+        )
+    }
+
+    func testImmutableRevisionSiteNamesTheSyncCommit() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let itemID = try immutableRevisionItemID("sync")
+        let base = try immutableRevisionFixture(
+            itemID: itemID, id: "rev-site-sync", hashCharacter: "d", path: "/tmp/site/sync.mp3"
+        )
+        try await store.saveReadyRevision(base.revision, mediaURL: base.mediaURL)
+        let conflicting = try immutableRevisionFixture(
+            itemID: itemID, id: base.revision.revisionID.rawValue, hashCharacter: "e", path: "/tmp/site/sync-conflict.mp3"
+        )
+
+        let error = await immutableRevisionError {
+            try await store.applySyncCommit(LocalLibrarySyncCommit(
+                state: SyncRepositoryState(),
+                revisions: [.init(revision: conflicting.revision, mediaURL: conflicting.mediaURL)]
+            ))
+        }
+        XCTAssertEqual(
+            error,
+            .immutableRevision(base.revision.revisionID, site: .syncCommit)
+        )
+    }
+
+    func testImmutableRevisionSiteNamesTheFinalizedDownload() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let itemID = try immutableRevisionItemID("finalized")
+        let base = try immutableRevisionFixture(
+            itemID: itemID, id: "rev-site-finalized", hashCharacter: "f", path: "/tmp/site/finalized.mp3"
+        )
+        try await store.finalizePodcastDownload(
+            revision: base.revision, mediaURL: base.mediaURL, download: base.download
+        )
+        let conflicting = try immutableRevisionFixture(
+            itemID: itemID, id: base.revision.revisionID.rawValue,
+            hashCharacter: "0", path: "/tmp/site/finalized-conflict.mp3"
+        )
+
+        let error = await immutableRevisionError {
+            try await store.finalizePodcastDownload(
+                revision: conflicting.revision, mediaURL: conflicting.mediaURL, download: conflicting.download
+            )
+        }
+        XCTAssertEqual(
+            error,
+            .immutableRevision(base.revision.revisionID, site: .finalizedDownload)
+        )
+    }
+
+    func testImmutableRevisionSiteNamesAReplacementThatSupersedesItself() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let itemID = try immutableRevisionItemID("self-supersede")
+        let fixture = try immutableRevisionFixture(
+            itemID: itemID, id: "rev-site-self", hashCharacter: "1", path: "/tmp/site/self.m4a"
+        )
+
+        let error = await immutableRevisionError {
+            try await store.replaceReadyRevision(
+                fixture.revision, mediaURL: fixture.mediaURL, transcript: fixture.transcript,
+                download: fixture.download, superseding: fixture.revision.revisionID,
+                outcome: fixture.outcome
+            )
+        }
+        XCTAssertEqual(
+            error,
+            .immutableRevision(fixture.revision.revisionID, site: .replacementSupersedesItself)
+        )
+    }
+
+    func testImmutableRevisionSiteNamesAReplacementIdentityMismatch() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let itemID = try immutableRevisionItemID("replacement")
+        let base = try immutableRevisionFixture(
+            itemID: itemID, id: "rev-site-replacement", hashCharacter: "2", path: "/tmp/site/replacement.m4a"
+        )
+        try await store.saveReadyRevision(base.revision, mediaURL: base.mediaURL)
+        let conflicting = try immutableRevisionFixture(
+            itemID: itemID, id: base.revision.revisionID.rawValue,
+            hashCharacter: "3", path: "/tmp/site/replacement-conflict.m4a"
+        )
+        let superseded = try RevisionID(rawValue: "rev-not-written-" + String(repeating: "4", count: 48))
+
+        let error = await immutableRevisionError {
+            try await store.replaceReadyRevision(
+                conflicting.revision, mediaURL: conflicting.mediaURL,
+                transcript: conflicting.transcript, download: conflicting.download,
+                superseding: superseded, outcome: conflicting.outcome
+            )
+        }
+        XCTAssertEqual(
+            error,
+            .immutableRevision(base.revision.revisionID, site: .replacement)
+        )
+    }
+
+    func testTheSevenImmutableRevisionSitesProducePairwiseDistinctErrors() throws {
+        let revision = try RevisionID(rawValue: "rev-distinct-" + String(repeating: "5", count: 50))
+        let errors = ImmutableRevisionSite.allCases.map {
+            LocalLibraryStoreError.immutableRevision(revision, site: $0)
+        }
+        XCTAssertEqual(errors.count, 7, "each immutable-revision site has a value")
+        for (index, lhs) in errors.enumerated() {
+            for rhs in errors[(index + 1)...] {
+                XCTAssertNotEqual(lhs, rhs, "\(lhs) must not equal \(rhs)")
+            }
+        }
+    }
+
+    // MARK: Orphan media audit and reclaim (Task 4.4)
+
+    /// A store and a dedicated media root, so the audit never scans the store's
+    /// own files.
+    private func mediaSweepRoot(_ name: String) throws -> (root: URL, media: URL, store: LocalLibraryStore) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wilted-media-sweep-\(name)-\(UUID().uuidString)")
+        let media = root.appendingPathComponent("media", isDirectory: true)
+        try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: root.appendingPathComponent("library.sqlite"))
+        return (root, media, store)
+    }
+
+    func testMediaAuditCountsOnlyFilesNothingReachableNames() async throws {
+        let fixture = try mediaSweepRoot("audit")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let itemID = try immutableRevisionItemID("audit")
+        let named = try immutableRevisionFixture(
+            itemID: itemID, id: "rev-audit", hashCharacter: "6",
+            path: fixture.media.appendingPathComponent("named.m4a").path
+        )
+        try Data("named".utf8).write(to: named.mediaURL)
+        try await fixture.store.saveReadyRevision(named.revision, mediaURL: named.mediaURL)
+
+        let downloadURL = fixture.media.appendingPathComponent("download.mp3")
+        try Data("download".utf8).write(to: downloadURL)
+        try await fixture.store.save(download: try PodcastDownload(
+            episodeID: itemID, status: .completed, bytesReceived: 8, expectedByteCount: 8,
+            localURL: downloadURL, contentHash: "sha256:" + String(repeating: "7", count: 64),
+            updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        ))
+
+        let inFlight = fixture.media.appendingPathComponent("candidate-inflight.m4a")
+        try Data("candidate".utf8).write(to: inFlight)
+        fixture.store.inFlightMedia.begin(inFlight)
+
+        let orphan = fixture.media.appendingPathComponent("orphan.m4a")
+        try Data("orphan".utf8).write(to: orphan)
+
+        let unreferenced = try await fixture.store.unreferencedMediaFiles(in: [fixture.media])
+        XCTAssertEqual(
+            unreferenced.map(\.lastPathComponent), ["orphan.m4a"],
+            "the audit counts a file no record names and no writer holds"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: orphan.path),
+                      "the audit is a read; it deletes nothing")
+    }
+
+    func testTheSweepStillReclaimsTheSupersededSourceAfterAReplacement() async throws {
+        let fixture = try mediaSweepRoot("superseded")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let itemID = try immutableRevisionItemID("superseded")
+        let source = try immutableRevisionFixture(
+            itemID: itemID, id: "rev-source", hashCharacter: "8",
+            path: fixture.media.appendingPathComponent("source.mp3").path
+        )
+        let prepared = try immutableRevisionFixture(
+            itemID: itemID, id: "rev-prepared", hashCharacter: "9",
+            path: fixture.media.appendingPathComponent("prepared.m4a").path
+        )
+        try Data("source".utf8).write(to: source.mediaURL)
+        try Data("prepared".utf8).write(to: prepared.mediaURL)
+        try await fixture.store.saveReadyRevision(source.revision, mediaURL: source.mediaURL)
+
+        try await fixture.store.replaceReadyRevision(
+            prepared.revision, mediaURL: prepared.mediaURL, transcript: prepared.transcript,
+            download: prepared.download, superseding: source.revision.revisionID,
+            outcome: prepared.outcome
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.mediaURL.path))
+
+        let reclaimed = try await fixture.store.reclaimUnreferencedMedia(in: [fixture.media])
+        XCTAssertEqual(reclaimed, 1, "the superseded source is the one file nothing names")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.mediaURL.path),
+                       "a re-download/replacement still reclaims the superseded source")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: prepared.mediaURL.path))
+    }
+
+    func testAnInFlightMediaFileSurvivesTheSweepAndIsReclaimedWhenReleased() async throws {
+        let fixture = try mediaSweepRoot("in-flight")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let candidate = fixture.media.appendingPathComponent("candidate-holding.m4a")
+        try Data("candidate".utf8).write(to: candidate)
+        fixture.store.inFlightMedia.begin(candidate)
+
+        let whileInFlight = try await fixture.store.reclaimUnreferencedMedia(in: [fixture.media])
+        XCTAssertEqual(whileInFlight, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: candidate.path),
+                      "a download or synthesis whose revision has not committed survives")
+
+        fixture.store.inFlightMedia.end(candidate)
+        let afterRelease = try await fixture.store.reclaimUnreferencedMedia(in: [fixture.media])
+        XCTAssertEqual(afterRelease, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: candidate.path))
+    }
+
+    func testASynthesisCandidateSurvivesASweepWhileItIsInFlight() async throws {
+        let fixture = try mediaSweepRoot("synthesis")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        // `makeStream()` returns (stream, continuation) in that order.
+        let (enteredStream, entered) = AsyncStream<Void>.makeStream()
+        let (releaseStream, release) = AsyncStream<Void>.makeStream()
+        let articleURL = try XCTUnwrap(URL(string: "https://example.test/sweep-candidate"))
+        let coordinator = PreparationCoordinator(
+            store: fixture.store,
+            mediaDirectory: fixture.media,
+            extraction: { url in
+                ExtractedArticle(
+                    sourceURL: url, canonicalURL: url, title: "Sweep", source: "example.test",
+                    author: nil, body: "Fixture body."
+                )
+            },
+            synthesis: { _ in
+                SpeechSynthesisResult(requestID: "sweep", samples: [0, 0.1, -0.1], sampleRate: 24_000)
+            },
+            assembly: { _, itemID, destination, _ in
+                try Data("candidate".utf8).write(to: destination)
+                entered.yield()
+                for await _ in releaseStream { break }
+                let revision = try AudioRevision(
+                    itemID: itemID, revisionID: RevisionID(rawValue: "rev-sweep"),
+                    durationSeconds: 1, byteCount: 9,
+                    contentHash: "sha256:" + String(repeating: "b", count: 64),
+                    mediaType: "audio/mp4", createdAt: Timestamp(Date(timeIntervalSince1970: 1)),
+                    schemaVersion: 1
+                )
+                return AudioAssemblyResult(revision: revision, mediaURL: destination)
+            }
+        )
+        let run = await coordinator.start(url: articleURL)
+        let statusesTask = Task { await collectPreparationStatuses(run.statuses) }
+        var iterator = enteredStream.makeAsyncIterator()
+        await iterator.next()
+
+        let duringSynthesis = try await fixture.store.reclaimUnreferencedMedia(in: [fixture.media])
+        XCTAssertEqual(duringSynthesis, 0,
+                       "the candidate is registered in flight before it exists")
+        XCTAssertTrue(
+            try FileManager.default.contentsOfDirectory(atPath: fixture.media.path)
+                .contains { $0.hasPrefix("candidate-") }
+        )
+
+        release.yield()
+        let statuses = await statusesTask.value
+        XCTAssertEqual(try XCTUnwrap(statuses.last, "the run emitted no status").stage, .completed)
+        let afterCommit = try await fixture.store.reclaimUnreferencedMedia(in: [fixture.media])
+        XCTAssertEqual(afterCommit, 0,
+                       "the committed revision names the candidate, so it is no longer an orphan")
+    }
+
+    func testTheAssemblerHoldsItsTemporaryMediaInFlightWhileItWrites() throws {
+        let fixture = try mediaSweepRoot("assembler")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let registry = MediaInFlightRegistry()
+        let seen = InFlightObservation()
+        let destination = fixture.media.appendingPathComponent("assembled.m4a")
+        _ = try AudioAssembler(inFlightMedia: registry).assemble(
+            samples: (0..<4_410).map { Float(0.1 * sin(Double($0))) },
+            itemID: try immutableRevisionItemID("assembler"),
+            destinationURL: destination,
+            isCancelled: {
+                seen.observe(registry.inFlightPaths)
+                return false
+            }
+        )
+
+        XCTAssertTrue(seen.paths.contains { $0.contains(".tmp-") },
+                      "the temporary transfer file is in flight while it is written")
+        XCTAssertTrue(registry.inFlightPaths.isEmpty,
+                      "the temporary registration ends when the file is published")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    func testDismissalWithASurvivingRevisionSharingAContentHashKeepsTheFile() async throws {
+        let fixture = try mediaSweepRoot("shared-hash")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let dismissedItem = try immutableRevisionItemID("dismissed")
+        let survivingItem = try immutableRevisionItemID("surviving")
+        let shared = fixture.media.appendingPathComponent("shared.m4a")
+        try Data("shared".utf8).write(to: shared)
+        let hash = "sha256:" + String(repeating: "a", count: 64)
+        let when = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let dismissed = try AudioRevision(
+            itemID: dismissedItem, revisionID: RevisionID(rawValue: "rev-dismissed"),
+            durationSeconds: 60, byteCount: 6, contentHash: hash, mediaType: "audio/mpeg",
+            createdAt: when, schemaVersion: 3
+        )
+        let surviving = try AudioRevision(
+            itemID: survivingItem, revisionID: RevisionID(rawValue: "rev-surviving"),
+            durationSeconds: 60, byteCount: 6, contentHash: hash, mediaType: "audio/mpeg",
+            createdAt: when, schemaVersion: 3
+        )
+        try await fixture.store.saveReadyRevision(dismissed, mediaURL: shared)
+        try await fixture.store.saveReadyRevision(surviving, mediaURL: shared)
+
+        try await fixture.store.dismissPodcastEpisode(dismissedItem)
+
+        let reclaimed = try await fixture.store.reclaimUnreferencedMedia(in: [fixture.media])
+        XCTAssertEqual(reclaimed, 0,
+                       "a surviving revision with the same content hash still names the file")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: shared.path))
+    }
+
+    func testAReDownloadSupersedingARevisionLeavesTheSupersededFileGone() async throws {
+        let fixture = try mediaSweepRoot("redownload")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let itemID = try immutableRevisionItemID("redownload")
+        let first = try immutableRevisionFixture(
+            itemID: itemID, id: "rev-redownload-first", hashCharacter: "c",
+            path: fixture.media.appendingPathComponent("first.mp3").path
+        )
+        let second = try immutableRevisionFixture(
+            itemID: itemID, id: "rev-redownload-second", hashCharacter: "d",
+            path: fixture.media.appendingPathComponent("second.m4a").path
+        )
+        try Data("first".utf8).write(to: first.mediaURL)
+        try Data("second".utf8).write(to: second.mediaURL)
+        try await fixture.store.finalizePodcastDownload(
+            revision: first.revision, mediaURL: first.mediaURL, download: first.download
+        )
+
+        // The superseding write removes the old revision record, so the old
+        // file is the one thing nothing names.
+        try await fixture.store.replaceReadyRevision(
+            second.revision, mediaURL: second.mediaURL, transcript: second.transcript,
+            download: second.download, superseding: first.revision.revisionID,
+            outcome: second.outcome
+        )
+        let survivors = try await fixture.store.revisions(for: itemID)
+        XCTAssertEqual(survivors.map(\.revision.revisionID), [second.revision.revisionID])
+        let reclaimed = try await fixture.store.reclaimUnreferencedMedia(in: [fixture.media])
+        XCTAssertEqual(reclaimed, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.mediaURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.mediaURL.path))
     }
 
     func testTranscriptPersistsWithRevisionAndSurvivesRelaunch() async throws {
@@ -2916,4 +3384,21 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertEqual(costAt30 - costAt3, costAt3,
                        "a 10x increase in episode count must not change the snapshot's fetch count")
     }
+}
+
+private func collectPreparationStatuses(
+    _ stream: AsyncStream<PreparationStatus>
+) async -> [PreparationStatus] {
+    var statuses: [PreparationStatus] = []
+    for await status in stream { statuses.append(status) }
+    return statuses
+}
+
+/// Records what the assembler's synchronous cancellation probe observed.
+private final class InFlightObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Set<String> = []
+
+    func observe(_ paths: Set<String>) { lock.withLock { value.formUnion(paths) } }
+    var paths: Set<String> { lock.withLock { value } }
 }

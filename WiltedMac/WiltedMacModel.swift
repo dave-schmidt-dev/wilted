@@ -1208,6 +1208,16 @@ final class WiltedMacModel {
     }
     static let larderSortPreferenceKey = "wilted.queue.larder.sort"
     static let menuSortPreferenceKey = "wilted.queue.menu.sort"
+    /// The highest preparation request sequence issued so far. Persisted on
+    /// every issue, so a relaunch continues the same ordering.
+    private(set) var preparationRequestSequence: Int = 0
+    /// Requests that have been made but whose preparation run has not started
+    /// yet, keyed by episode id. This is the in-memory face of the click order:
+    /// a download registers on request and the run consumes its number when it
+    /// is admitted. In-memory by design -- an unrunnable request cannot
+    /// survive the process that made it, and a fresh request takes a fresh
+    /// number.
+    private(set) var preparationRequestSequences: [String: Int] = [:]
     /// The selected destination. Persisted so a relaunch returns the reader to
     /// where they were; a stored retired name resolves through
     /// `WiltedMacNavigation.restored(from:)`.
@@ -1228,6 +1238,13 @@ final class WiltedMacModel {
     static let forwardSkipSeconds: Double = 30
     static let automationSettingsPreferenceKey = "wilted.automation.settings"
     static let deferredAutomaticPreparationsPreferenceKey = "wilted.automation.deferredPreparations"
+    /// The monotonic preparation request sequence, persisted so the click
+    /// order survives a relaunch. It lives in preferences rather than the
+    /// library store because it is this process's ordering of requests, not
+    /// library content: it is a small scalar written on a click, it must not
+    /// fail or block on a store transaction, and losing it costs only the
+    /// relative order of requests made before the loss.
+    static let preparationRequestSequencePreferenceKey = "wilted.preparation.requestSequence"
     static let textScalePreferenceKey = "wilted.appearance.textScale"
     /// When automation last completed a refresh.
     ///
@@ -1538,6 +1555,9 @@ final class WiltedMacModel {
            let sort = WiltedMacMenuSort(rawValue: stored) {
             menuSort = sort
         }
+        preparationRequestSequence = self.preferences.integer(
+            forKey: Self.preparationRequestSequencePreferenceKey
+        )
         if self.preferences.object(forKey: Self.playbackRatePreferenceKey) != nil {
             playbackRate = Self.clampPlaybackRate(self.preferences.double(forKey: Self.playbackRatePreferenceKey))
         }
@@ -2342,6 +2362,10 @@ final class WiltedMacModel {
         guard podcastDownloadTasks[episode.id] == nil,
               let coordinator = podcastDownloadCoordinator,
               let itemID = try? ItemID(rawValue: episode.id) else { return }
+        // The download is the request: its place in the preparation line is
+        // taken now, so a later download that finishes first still queues
+        // behind it.
+        registerPreparationRequest(for: episode.id)
         updateEpisode(episode.id) { $0.downloadState = .queued }
         podcastOperationMessage = "Queued \(episode.title) for download."
         podcastDownloadTasks[episode.id] = Task { [weak self] in
@@ -2597,6 +2621,34 @@ final class WiltedMacModel {
         startEligibleAutomaticPreparations(at: date)
     }
 
+    /// Issues this episode's preparation request sequence, or returns the one
+    /// it already holds. Called when the reader asks for the episode -- the
+    /// Download button or an automation download -- so the place in line is
+    /// the click's, not the download completion's.
+    @discardableResult
+    func registerPreparationRequest(for episodeID: String) -> Int {
+        if let existing = preparationRequestSequences[episodeID] { return existing }
+        preparationRequestSequence += 1
+        preferences.set(preparationRequestSequence, forKey: Self.preparationRequestSequencePreferenceKey)
+        preparationRequestSequences[episodeID] = preparationRequestSequence
+        return preparationRequestSequence
+    }
+
+    /// Takes this episode's request sequence for the run that is starting.
+    /// Falls back to a fresh number when the request did not come through a
+    /// download (a manual Prepare on an already-downloaded episode).
+    @discardableResult
+    func consumePreparationRequest(for episodeID: String) -> Int {
+        if let existing = preparationRequestSequences.removeValue(forKey: episodeID) { return existing }
+        return registerPreparationRequest(for: episodeID)
+    }
+
+    /// Gives up a request's place, for a row that can no longer run: a retired,
+    /// hidden, or removed episode. The sequence itself is not reused.
+    func withdrawPreparationRequest(for episodeID: String) {
+        preparationRequestSequences.removeValue(forKey: episodeID)
+    }
+
     /// Removes the advertisements and synchronises the transcript.
     ///
     /// Runs automatically once a download lands, and manually from the row for
@@ -2669,6 +2721,11 @@ final class WiltedMacModel {
         // The row says only that the episode is preparing. Every status the
         // worker emits is journalled by the pipeline, and Prep reads that
         // journal back as the narrative and, on request, the full log.
+        //
+        // The request sequence was issued when the reader asked for the
+        // episode, so the gate can order this run against requests that have
+        // not finished downloading yet.
+        let requestSequence = consumePreparationRequest(for: episode.id)
         podcastPreparationTasks[episode.id] = Task { [weak self] in
             defer {
                 self?.podcastPreparationTasks[episode.id] = nil
@@ -2679,7 +2736,7 @@ final class WiltedMacModel {
             }
             guard let gate = self?.preparationGate else { return }
             do {
-                try await gate.admit()
+                try await gate.admit(sequence: requestSequence)
             } catch {
                 self?.updateEpisode(episode.id) { $0.preparationState = .notPrepared }
                 self?.podcastOperationMessage = "Preparation cancelled."
@@ -3054,6 +3111,7 @@ final class WiltedMacModel {
             podcastOperationMessage = "\(episode.title) was not started, so nothing was skipped."
             return
         }
+        withdrawPreparationRequest(for: episode.id)
         undoableRemoval = nil
         let wasPlaying = currentPodcastEpisodeID == episode.id
         undoableSkip = episode
@@ -3171,6 +3229,7 @@ final class WiltedMacModel {
     private func hideEpisode(_ episode: WiltedMacEpisode) {
         podcastDownloadTasks[episode.id]?.cancel()
         podcastPreparationTasks[episode.id]?.cancel()
+        withdrawPreparationRequest(for: episode.id)
         removeDeferredAutomaticPreparation(episode.id)
         // A removed episode has no business holding a run slot. Cancelling the
         // task is not enough on its own: an episode still waiting on the gate
@@ -4186,6 +4245,7 @@ final class WiltedMacModel {
     func skipFeedEpisode(_ episode: WiltedMacEpisode) {
 #if canImport(WiltedProducer)
         guard let store, let id = try? ItemID(rawValue: episode.id) else { return }
+        withdrawPreparationRequest(for: episode.id)
         undoableSkip = nil
         podcastOperationMessage =
             "Skipped \(episode.title). Its download, prepared cut and transcript are untouched."
@@ -5080,6 +5140,10 @@ final class WiltedMacModel {
     func installMenuAdmissionForTesting(_ operation: (@Sendable (ItemID) async throws -> Void)?) {
         menuAdmissionForTesting = operation
     }
+
+    /// Test seam: the one preparation slot, so ordering can be driven without
+    /// a worker.
+    var preparationGateForTesting: WiltedPreparationGate { preparationGate }
 
     /// Awaits one library reload and the automatic Menu admission it may have
     /// started, so a retry can be asserted after it settles.

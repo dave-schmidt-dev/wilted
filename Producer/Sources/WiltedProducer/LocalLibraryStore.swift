@@ -161,12 +161,53 @@ public struct LocalLibrarySyncCommit: Sendable {
     }
 }
 
+/// Where an immutable-revision violation was detected.
+///
+/// Seven call sites raise the same invariant failure, and without this a
+/// reproduction can only say "some identity mismatch", never which write was
+/// refused. The raw values are stable names for diagnostics; nothing persists
+/// them.
+public enum ImmutableRevisionSite: String, CaseIterable, Equatable, Sendable {
+    /// `saveReadyRevision(_:mediaURL:)` found an existing record that differs.
+    case readyRevision
+    /// `saveReadyRevision(_:mediaURL:transcript:)` found an existing record that differs.
+    case readyRevisionWithTranscript
+    /// `saveReadyRevision(_:mediaURL:transcript:outcome:)` found an existing record that differs.
+    case readyRevisionWithOutcome
+    /// `applySyncCommit(_:)` tried to write a revision identity the store holds differently.
+    case syncCommit
+    /// `finalizePodcastDownload(revision:mediaURL:download:)` found an existing record that differs.
+    case finalizedDownload
+    /// `replaceReadyRevision` was asked to supersede the revision it is writing.
+    case replacementSupersedesItself
+    /// `replaceReadyRevision` found an existing record for the new revision that differs.
+    case replacement
+}
+
 public enum LocalLibraryStoreError: Error, Equatable, Sendable {
-    case immutableRevision(RevisionID)
+    case immutableRevision(RevisionID, site: ImmutableRevisionSite)
     case revisionBelongsToDifferentItem
     case invalidPreparationStatus(String)
     case invalidPodcastState(String)
     case migrationPreflightFailed(String)
+}
+
+/// The media files writers own before any record names them.
+///
+/// A download's staging file, a synthesis candidate, and an assembler's
+/// temporary file all exist on disk while the store still has no revision for
+/// them. The reclaim audit consults this registry, so a sweep can only delete
+/// files that no writer holds and no record names.
+public final class MediaInFlightRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var paths: Set<String> = []
+
+    public init() {}
+
+    public func begin(_ url: URL) { lock.withLock { _ = paths.insert(url.standardizedFileURL.path) } }
+    public func end(_ url: URL) { lock.withLock { _ = paths.remove(url.standardizedFileURL.path) } }
+    public func isInFlight(_ url: URL) -> Bool { lock.withLock { paths.contains(url.standardizedFileURL.path) } }
+    public var inFlightPaths: Set<String> { lock.withLock { paths } }
 }
 
 public enum PodcastDownloadStatus: String, Codable, Equatable, Sendable {
@@ -1927,7 +1968,7 @@ public actor LocalLibraryStore {
             guard existing.itemID == revision.itemID.rawValue,
                   existing.contentHash == revision.contentHash,
                   existing.mediaURL == mediaURL.absoluteString else {
-                throw LocalLibraryStoreError.immutableRevision(revision.revisionID)
+                throw LocalLibraryStoreError.immutableRevision(revision.revisionID, site: .readyRevision)
             }
             return
         }
@@ -1954,7 +1995,7 @@ public actor LocalLibraryStore {
             guard existing.itemID == revision.itemID.rawValue,
                   existing.contentHash == revision.contentHash,
                   existing.mediaURL == mediaURL.absoluteString else {
-                throw LocalLibraryStoreError.immutableRevision(revision.revisionID)
+                throw LocalLibraryStoreError.immutableRevision(revision.revisionID, site: .readyRevisionWithTranscript)
             }
         } else {
             context.insert(LocalLibrarySchemaV3Models.RevisionRecord(revision, mediaURL: mediaURL))
@@ -1986,7 +2027,7 @@ public actor LocalLibraryStore {
             guard existing.itemID == revision.itemID.rawValue,
                   existing.contentHash == revision.contentHash,
                   existing.mediaURL == mediaURL.absoluteString else {
-                throw LocalLibraryStoreError.immutableRevision(revision.revisionID)
+                throw LocalLibraryStoreError.immutableRevision(revision.revisionID, site: .readyRevisionWithOutcome)
             }
         } else {
             context.insert(LocalLibrarySchemaV3Models.RevisionRecord(revision, mediaURL: mediaURL))
@@ -2986,7 +3027,7 @@ public actor LocalLibraryStore {
                 guard existing.itemID == applied.revision.itemID.rawValue,
                       existing.contentHash == applied.revision.contentHash,
                       existing.mediaURL == applied.mediaURL.absoluteString else {
-                    throw LocalLibraryStoreError.immutableRevision(applied.revision.revisionID)
+                    throw LocalLibraryStoreError.immutableRevision(applied.revision.revisionID, site: .syncCommit)
                 }
             } else {
                 context.insert(LocalLibrarySchemaV3Models.RevisionRecord(applied.revision, mediaURL: applied.mediaURL))
@@ -3706,7 +3747,7 @@ public actor LocalLibraryStore {
             guard existing.itemID == revision.itemID.rawValue,
                   existing.contentHash == revision.contentHash,
                   existing.mediaURL == mediaURL.absoluteString else {
-                throw LocalLibraryStoreError.immutableRevision(revision.revisionID)
+                throw LocalLibraryStoreError.immutableRevision(revision.revisionID, site: .finalizedDownload)
             }
         } else {
             context.insert(LocalLibrarySchemaV3Models.RevisionRecord(revision, mediaURL: mediaURL))
@@ -3763,7 +3804,7 @@ public actor LocalLibraryStore {
             throw LocalLibraryStoreError.revisionBelongsToDifferentItem
         }
         guard superseded != revision.revisionID else {
-            throw LocalLibraryStoreError.immutableRevision(revision.revisionID)
+            throw LocalLibraryStoreError.immutableRevision(revision.revisionID, site: .replacementSupersedesItself)
         }
         let context = ModelContext(container)
         let revisions = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
@@ -3771,7 +3812,7 @@ public actor LocalLibraryStore {
             guard existing.itemID == revision.itemID.rawValue,
                   existing.contentHash == revision.contentHash,
                   existing.mediaURL == mediaURL.absoluteString else {
-                throw LocalLibraryStoreError.immutableRevision(revision.revisionID)
+                throw LocalLibraryStoreError.immutableRevision(revision.revisionID, site: .replacement)
             }
         } else {
             context.insert(LocalLibrarySchemaV3Models.RevisionRecord(revision, mediaURL: mediaURL))
@@ -3808,6 +3849,81 @@ public actor LocalLibraryStore {
         try upsertPreparationOutcome(outcome, in: context)
         try appendLifetimeStatistics(lifetimeStatistics, in: context)
         try context.save()
+    }
+
+    // MARK: - Orphan media audit and reclaim (Task 4.4)
+
+    /// Files a writer owns before its record commits. `nonisolated` because a
+    /// download, synthesis, or assembly registers from its own actor without a
+    /// hop through the store.
+    public nonisolated let inFlightMedia = MediaInFlightRegistry()
+
+    /// The paths any reachable record still names: revisions, downloads, and
+    /// artwork. A file not in this set and not in flight is an orphan.
+    private func reachableMediaPaths() throws -> Set<String> {
+        let context = ModelContext(container)
+        var paths: Set<String> = []
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>()) {
+            if let value = record.mediaURL, let url = URL(string: value) {
+                paths.insert(url.standardizedFileURL.path)
+            }
+        }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>()) {
+            if let value = record.localURL, let url = URL(string: value) {
+                paths.insert(url.standardizedFileURL.path)
+            }
+        }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>()) {
+            if let value = record.localURL, let url = URL(string: value) {
+                paths.insert(url.standardizedFileURL.path)
+            }
+        }
+        return paths
+    }
+
+    /// The media files under `directories` that no reachable record names and no
+    /// in-flight writer holds. Read-only: the audit deletes nothing, and it is
+    /// what every reclaim sweep starts from.
+    public func unreferencedMediaFiles(in directories: [URL]) throws -> [URL] {
+        let reachable = try reachableMediaPaths()
+        let inFlight = inFlightMedia.inFlightPaths
+        let manager = FileManager.default
+        var unreferenced: [URL] = []
+        for directory in directories {
+            guard let walker = manager.enumerator(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [],
+                errorHandler: { _, _ in true }
+            ) else { continue }
+            for case let url as URL in walker {
+                guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+                    continue
+                }
+                let path = url.standardizedFileURL.path
+                guard !reachable.contains(path), !inFlight.contains(path) else { continue }
+                unreferenced.append(url)
+            }
+        }
+        return unreferenced.sorted { $0.path < $1.path }
+    }
+
+    /// Deletes only what the audit reports. The audit runs first, in this
+    /// method, so no deletion can precede it; the in-flight set is consulted
+    /// again immediately before each removal so a writer that registered in
+    /// between keeps its file.
+    @discardableResult
+    public func reclaimUnreferencedMedia(in directories: [URL]) throws -> Int {
+        let unreferenced = try unreferencedMediaFiles(in: directories)
+        var reclaimed = 0
+        for url in unreferenced {
+            guard !inFlightMedia.isInFlight(url) else { continue }
+            do {
+                try FileManager.default.removeItem(at: url)
+                reclaimed += 1
+            } catch {}
+        }
+        return reclaimed
     }
 
     public func download(for episodeID: ItemID) throws -> PodcastDownload? {

@@ -164,13 +164,17 @@ public actor PreparationCoordinator {
             try FileManager.default.createDirectory(at: mediaDirectory, withIntermediateDirectories: true)
             let destination = mediaDirectory.appending(path: "candidate-\(requestID).m4a")
             candidateURL = destination
+            // The candidate exists before the revision does; a sweep that runs
+            // during synthesis must not reclaim it.
+            store.inFlightMedia.begin(destination)
             let textHash = SHA256.hash(data: Data(extracted.body.utf8)).map { String(format: "%02x", $0) }.joined()
             let result: AudioAssemblyResult
             if let assemblyOperation {
                 result = try await assemblyOperation(speech.samples, itemID, destination, textHash)
             } else {
+                let inFlightMedia = store.inFlightMedia
                 let assemblyTask = Task.detached {
-                    try AudioAssembler().assemble(
+                    try AudioAssembler(inFlightMedia: inFlightMedia).assemble(
                         pcm: speech.samples, itemID: itemID, destinationURL: destination,
                         sourceSampleRate: speech.sampleRate,
                         extractedTextSHA256: textHash, isCancelled: { Task.isCancelled }
@@ -236,8 +240,13 @@ public actor PreparationCoordinator {
             let terminal = producerError.flatMap { try? PreparationTerminalResult(outcome: .failed, error: $0) }
             await emitter.emit(.failed, producerError?.message ?? "Preparation failed", terminal: terminal)
         }
-        if !candidateCommitted, let candidateURL {
-            try? FileManager.default.removeItem(at: candidateURL)
+        if let candidateURL {
+            if !candidateCommitted {
+                try? FileManager.default.removeItem(at: candidateURL)
+            }
+            // A committed candidate is named by its revision now, so releasing
+            // it is safe; an abandoned one is gone before the release.
+            store.inFlightMedia.end(candidateURL)
         }
         await emitter.finishIfNeeded()
         if activeRunID == runID {
