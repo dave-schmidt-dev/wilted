@@ -72,5 +72,7 @@ reject missing-caption perl -0pi -e 's/<figcaption>.*?<\/figcaption>//s'
 reject figure-image-mismatch perl -0pi -e 's/<img\b[^>]*>//s'
 reject pending-with-image perl -0pi -e 's/data-capture-status="verified-content-viewport"/data-capture-status="pending-content-viewport"/'
 reject release-claim perl -0pi -e 's/owner acceptance remains pending/owner acceptance approved/'
+reject missing-deferred-frame perl -0pi -e 's#<figure id="fig-menu-deferred-prepare-now">.*?</figure>##s'
+reject missing-deferred-control perl -0pi -e 's/wilted-menu-prepare-now-&lt;id&gt;/missing-prepare-now-control/g'
 
 printf '%s\n' "test.stage=complete cases=$cases" >&2

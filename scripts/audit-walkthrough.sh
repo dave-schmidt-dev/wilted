@@ -18,6 +18,7 @@ for token in '<html' 'data-candidate-commit=' 'data-gate-receipt=' 'data-capture
   'always-visible bottom rail' 'Feeds' 'Menu' 'Settings' 'Transcript' 'Notes' 'Escape' 'focus' \
   'download' 'recovery' 'Finder' 'system-owned' 'Accessibility tree' 'content viewport' \
   'id="onboarding"' 'id="roles"' 'id="limits"' 'onboarding' 'role' 'disabled' \
+  'id="fig-menu-deferred-prepare-now"' 'Prepare now' 'wilted-menu-prepare-now-&lt;id&gt;' \
   'XCUIElement.screenshot()' 'NSApp.mainWindow.contentView' 'systemAttachmentLifetime' \
   'Production CloudKit is not claimed' \
   'physical-device is not claimed' 'App Store Connect is not claimed' 'TestFlight is not claimed' \
@@ -55,6 +56,12 @@ fi
 
 [[ "$candidate" =~ ^[0-9a-f]{40}$ ]] || fail 'verified report needs exact candidate commit'
 [[ "$gate" == current-native-ui-receipt ]] || fail 'verified report needs current gate receipt'
+deferred_figure="$(printf '%s' "$html" | perl -0777 -ne 'if (/<figure id="fig-menu-deferred-prepare-now">.*?<\/figure>/s) { print $& }')"
+[[ -n "$deferred_figure" ]] || fail 'missing deferred Prepare now frame'
+[[ "$deferred_figure" == *'content viewport'* ]] || fail 'deferred Prepare now frame missing content-viewport caption'
+[[ "$deferred_figure" == *'data:image/png;base64,'* ]] || fail 'deferred Prepare now frame missing image evidence'
+[[ "$deferred_figure" == *'Prepare now'* ]] || fail 'deferred Prepare now frame missing control copy'
+[[ "$deferred_figure" == *'wilted-menu-prepare-now-&lt;id&gt;'* ]] || fail 'deferred Prepare now frame missing control identifier'
 figure_count="$(printf '%s' "$html" | perl -ne '$count += () = /<figure\b/g; END { print $count }')"
 [[ "$figure_count" -gt 0 ]] || fail 'missing content-viewport image evidence'
 printf '%s' "$html" | perl -0777 -ne 'while(/<figure\b.*?<\/figure>/sg){my $f = $&; exit 1 unless $f =~ /<figcaption\b/ && $f =~ /content viewport/ && $f =~ /data:image\/png;base64,/} exit 0' || fail 'missing content-viewport caption'

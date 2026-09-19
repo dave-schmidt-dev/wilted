@@ -129,8 +129,8 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
     }
 
     /// Menu: the episode queue Larder and Prep were folded into, the article
-    /// composer that moved here with it, a prepared episode's row, and the
-    /// one place Transcript/Notes expand inline rather than into the
+    /// composer that moved here with it, deferred and prepared episode rows,
+    /// and the one place Transcript/Notes expand inline rather than into the
     /// full-window overlay.
     private func captureMenu(into root: URL) throws {
         let app = launch(["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
@@ -221,6 +221,40 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         XCTAssertTrue(element(prepared, "wilted-player-transcript-expanded").waitForExistence(timeout: 10))
         try write(prepared, "5.4-menu-transcript-inline", into: root)
         prepared.terminate()
+
+        // The off-peak fixture keeps its preparation deferred until the
+        // listener overrides that window. Capture the row before activating
+        // the control so the walkthrough shows both the reason for waiting
+        // and the available "Prepare now" action.
+        let deferred = launch([
+            "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-deferred"
+        ])
+        XCTAssertTrue(element(deferred, "wilted-mac-menu-detail").waitForExistence(timeout: 15))
+        element(deferred, "wilted-navigation-feeds").click()
+        XCTAssertTrue(element(deferred, "wilted-mac-feeds-detail").waitForExistence(timeout: 15))
+        let keepDeferred = deferred.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-keep-'")
+        ).firstMatch
+        XCTAssertTrue(keepDeferred.waitForExistence(timeout: 10))
+        keepDeferred.click()
+        element(deferred, "wilted-navigation-menu").click()
+        XCTAssertTrue(element(deferred, "wilted-mac-menu-detail").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(deferred, "wilted-menu-group-downloaded").waitForExistence(timeout: 10))
+        let waitingForOffPeak = deferred.staticTexts["Waiting for off-peak"]
+        XCTAssertTrue(waitingForOffPeak.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitingForOffPeak.isHittable)
+
+        let deferredRow = deferred.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-row-'")
+        ).firstMatch
+        XCTAssertTrue(deferredRow.waitForExistence(timeout: 10))
+        let prepareNow = deferred.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-prepare-now-'")
+        ).firstMatch
+        XCTAssertTrue(prepareNow.waitForExistence(timeout: 10))
+        XCTAssertTrue(prepareNow.isEnabled)
+        try write(deferred, "5.5-menu-deferred-prepare-now", into: root)
+        deferred.terminate()
     }
 
     /// Playback: the always-visible bottom rail, and the full-window

@@ -238,6 +238,16 @@ def build(captures, commit, date_iso, date_human, previous):
             "keeps Menu's inline player mounted and only disables the underlying destination's hit testing when "
             "another destination presents the overlay. This state exists nowhere else in the app.",
             captures),
+        "menu-deferred": figure(
+            "fig-menu-deferred-prepare-now", "5.5-menu-deferred-prepare-now",
+            "The Menu's Downloaded group showing a deferred episode row with its Prepare now control",
+            "<strong>5.5 Menu, an off-peak deferral.</strong> The deferred fixture is kept from Feeds and "
+            "lands in the Downloaded group (<code>wilted-menu-group-downloaded</code>, "
+            "<code>wilted-menu-row-&lt;id&gt;</code>) with the row's off-peak state visible as &ldquo;Waiting for "
+            "off-peak&rdquo;. The row offers Prepare now (<code>wilted-menu-prepare-now-&lt;id&gt;</code>) so the "
+            "listener can override the window without changing Settings. This frame captures the control before "
+            "it is activated; the Mac smoke test drives the activation and verifies that the deferral is removed.",
+            captures),
         "playback-rail": figure(
             "fig-playback-rail", "6.1-playback-rail",
             "The bottom rail in its playing state with the full transport row, shown from a non-Menu destination",
@@ -380,7 +390,7 @@ def build(captures, commit, date_iso, date_human, previous):
 <table><thead><tr><th>Property</th><th>Observed value</th></tr></thead><tbody>
 <tr><td>Bundle identifier</td><td><code>com.zerodelta.wilted.mac</code></td></tr>
 <tr><td>Signature</td><td><code>CODE_SIGN_IDENTITY=Apple Development</code>, <code>DEVELOPMENT_TEAM=4CJ49V6QHW</code>; the gate verifies the runner with <code>codesign --verify --deep --strict</code> and refuses quarantine or FinderInfo metadata on either bundle</td></tr>
-<tr><td>Captured processes</td><td>Eight launches across five capture scenarios &mdash; Menu and Playback each launch twice, and Recovery launches twice, once for the download failure and once for the quarantine notice. Each frame is scoped to its own launch's window, or, for the two popover frames, to the popover that launch opened.</td></tr>
+<tr><td>Captured processes</td><td>Nine launches across five capture scenarios &mdash; Menu launches three times, Playback twice, and Recovery twice, once for the download failure and once for the quarantine notice. Each frame is scoped to its own launch's window, or, for the two popover frames, to the popover that launch opened.</td></tr>
 <tr><td>Window geometry</td><td>{geometry_line}</td></tr>
 <tr><td>Reproducing this report</td><td><code>scripts/record-walkthrough-frames.sh</code> writes the frames and a geometry sidecar beside each one, by setting <code>WILTED_WALKTHROUGH_CAPTURE=1</code> inside the generated scheme's TestAction and running <code>-only-testing:WiltedMacUITests/WiltedMacWalkthroughCapture</code>; <code>scripts/build-mac-walkthrough.py</code> assembles this document from that directory</td></tr>
 </tbody></table>
@@ -421,6 +431,7 @@ def build(captures, commit, date_iso, date_human, previous):
 {figures["menu-add"]}
 {figures["menu-prepared"]}
 {figures["menu-transcript-inline"]}
+{figures["menu-deferred"]}
 <p>Per-episode controls carry the episode's own id rather than a content hash: <code>wilted-menu-row-&lt;id&gt;</code> for the row, with the next-step control, Skip, and Remove each keyed the same way. These identifiers are present in the Accessibility tree for every captured Menu frame.</p>
 </section>
 
@@ -462,7 +473,7 @@ def build(captures, commit, date_iso, date_human, previous):
 <ul>
 <li>No frame shows a real feed. Every capture runs against a UI fixture, so titles, counts, and durations are fixture values.</li>
 <li>The address boxes are captured open and idle (4.2, 5.2). Their outcomes &mdash; feed, article, and article-advertising-a-feed &mdash; are covered by automated tests rather than by pixels here, because each needs a live fetch the capture session does not perform.</li>
-<li>Preparation is captured only in its recorded, terminal state (5.3). No frame shows advertisement removal running, and no frame shows an in-progress preparation's row beyond the static progress control 5.3 describes. Placement is covered by tests; that it reads correctly beside real speech is an owner observation, listed in section 13.</li>
+<li>Preparation is captured in its recorded, terminal state (5.3) and in the deferred off-peak state that offers Prepare now (5.5). No frame shows advertisement removal running, and no frame shows an in-progress preparation's row beyond the static progress control 5.3 describes. Placement is covered by tests; that it reads correctly beside real speech is an owner observation, listed in section 13.</li>
 <li>Transcript synchronisation against real audio is not captured. The panel is shown expanded; a timed transcript following the playback clock is covered by tests, not by a frame.</li>
 <li>The sidebar in these frames is the real one, but pixel snapshot baselines cannot see it: a <code>NavigationSplitView</code> navigation column is hosted in a separate AppKit hierarchy that offscreen rendering does not draw. Sidebar behaviour is owned by the XCUITest suite instead.</li>
 <li>Off the list's Removed kind is not captured (4.3). Task 4.5 folded Skipped (retired) and Removed (dismissed) episodes onto one <code>removalKind</code> column with the same Restore control, but the only UI control this report can drive that touches removal, the Menu's Remove button, calls <code>model.removeEpisodeFromUpNext</code>, which unqueues the episode back to the Feeds inbox rather than dismissing it. The operation that actually sets <code>removalKind == .dismissed</code>, <code>model.removeEpisode(_:)</code>, has no call site in <code>WiltedMacRootView.swift</code> at all &mdash; it is exercised only by <code>WiltedMacModelTests</code> and <code>WiltedVisualSystemTests</code>. So 4.3 shows the Skipped kind only; the Removed kind's restore is evidenced by those model tests, not by a pixel here.</li>
