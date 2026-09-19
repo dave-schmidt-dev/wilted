@@ -111,219 +111,222 @@ def build(captures, commit, date_iso, date_human, previous):
                       f"1x display and these frames are not Retina-native. Text legibility, not layout, is what "
                       f"that costs.")
     figures = {
-        "larder": figure(
-            "fig-larder-idle", "4.1-larder-idle",
-            "Wilted Larder in its idle state showing the list header with Add article and the order control, "
-            "the saved-item list, the search field, and the bottom rail",
-            "<strong>4.1 Larder, idle.</strong> The always-visible bottom rail is present with nothing playing. "
-            "The list header holds everything that changes what the list contains: Add article "
-            "(<code>wilted-add-article-button</code>) opens the address box in a popover (4.3), Removed appears "
-            "beside it once an episode has been skipped or finished (4.4, 4.5), and the ordering control "
-            "(<code>wilted-library-order</code>) sits at the end. The toolbar's search field filters the list by "
-            "title, show, notes, and transcript text, so a phrase heard in an episode finds the episode. There "
-            "is no address field in the page body and no feed card on this route; feeds live on Podcast feeds. "
-            "The idle rail (<code>wilted-player-idle</code>) reads &ldquo;Nothing is playing&rdquo;. The text "
-            "and icon size is Large here, which is the setting a fresh install starts at; System is one step smaller.",
+        "feeds-inbox": figure(
+            "fig-feeds-inbox", "4.1-feeds-inbox",
+            "The Feeds destination showing the New episodes inbox with Keep and Skip on each row",
+            "<strong>4.1 Feeds, the inbox.</strong> The destination reached by <code>wilted-navigation-feeds</code>; "
+            "its detail pane is <code>wilted-mac-feeds-detail</code>. New episodes "
+            "(<code>wilted-feeds-count</code>) is the one question this page asks about anything it lists: Keep "
+            "or Skip, nothing else. Each row (<code>wilted-feeds-row-&lt;id&gt;</code>) offers both as buttons "
+            "(<code>wilted-feeds-keep-&lt;id&gt;</code>, <code>wilted-feeds-skip-&lt;id&gt;</code>); Keep sends "
+            "the episode to the Menu, where downloading, preparing, and playing happen, and Skip retires it "
+            "without either. An inbox with nothing new reads &ldquo;Nothing new&rdquo; at "
+            "<code>wilted-feeds-empty</code> instead of an empty list.",
             captures),
-        "larder-prepared": figure(
-            "fig-larder-prepared", "4.2-larder-prepared-episode",
-            "Wilted Larder showing a prepared episode's recorded completion summary and no Prepare button",
-            "<strong>4.2 Larder, a prepared episode.</strong> A successful terminal preparation journal "
-            "matching the audio revision ready to play supplies the row's Ready, transcript, and advertisement-removal summary. "
-            "A downloaded episode with only a transcript, or a journal for an older revision, stays unlabeled. "
-            "A prepared row offers Play and Up Next but no Prepare; "
-            "the row's &hellip; menu holds &ldquo;Download again, then prepare&rdquo; for any downloaded episode "
-            "and &ldquo;Prepare this copy again&rdquo; for a prepared one "
-            "(<code>wilted-episode-actions-item-&lt;hash&gt;</code>), under a line that reads &ldquo;Preparing "
-            "writes the cut audio over the download.&rdquo; Download again is first because it is the "
-            "one that can undo a bad run: the copy on disk is the cut, so an episode cut from a transcript "
-            "that did not describe it has no source left to prepare again from, and the labels name which "
-            "file each route starts from. A row "
-            "that is not downloaded has no &hellip; at all. The row's title is itself a control "
-            "(<code>wilted-episode-notes-item-&lt;hash&gt;</code>): pressing it opens the episode's whole "
-            "show notes in a scrolling popover with every address clickable, so what an episode is about "
-            "is readable without playing it. The title underlines under the pointer rather than colouring "
-            "every row, and a row whose feed published no notes is plain text with nothing to press. "
-            "Skipping is "
-            "a row button beside Download (<code>wilted-episode-skip-item-&lt;hash&gt;</code>): it is the one "
-            "action a reader repeats down a feed, and it is permanent in the sense that a refresh will not "
-            "bring the episode back, though it is listed under Removed in the Larder header with a Restore "
-            "beside it (4.4, 4.5). A row whose durable record says the episode is finished reads &ldquo;Played &middot; "
-            "&lt;length&gt;&rdquo; in place of its progress line. Every row leads with a produce tile where "
-            "there is no artwork: lettuce for an article, cabbage for an episode.",
+        "feeds-add": figure(
+            "fig-feeds-add", "4.2-feeds-add-feed",
+            "The subscribe-composer popover with its feed address field and Subscribe button",
+            "<strong>4.2 Feeds, subscribing.</strong> Add feed (<code>wilted-add-feed-button</code>) opens this "
+            "popover, a window of its own: one field (<code>wilted-podcast-feed-url</code>) and one button "
+            "(<code>wilted-podcast-subscribe</code>), which becomes "
+            "<code>wilted-podcast-subscribe-progress</code> and "
+            "<code>wilted-podcast-subscribe-cancel</code> while classifying the address, with the result stated "
+            "in <code>wilted-podcast-subscribe-status</code>. A page that advertises a feed of its own offers it "
+            "separately at <code>wilted-podcast-advertised-feed</code> rather than following it silently. This "
+            "frame is the popover's own window, captured at its own size.",
             captures),
-        "larder-add": figure(
-            "fig-larder-add-article", "4.3-larder-add-article",
-            "The Add article popover with its address field and Add button",
-            "<strong>4.3 Add article.</strong> The popover the header button opens: one field "
-            "(<code>wilted-link-url</code>) and one button (<code>wilted-add-link</code>), with the card stating "
-            "that Wilted works out for itself whether the address is an article or a podcast feed. It stays open "
-            "after Add so the answer, and the offer to follow a feed the page advertises, arrive where the "
-            "address was typed; Escape or a click elsewhere closes it. This frame is the popover's own window, "
-            "captured at its own size.",
+        "feeds-off-the-list": figure(
+            "fig-feeds-off-the-list", "4.3-feeds-off-the-list",
+            "The Off the list region showing a skipped episode with its Restore button",
+            "<strong>4.3 Feeds, Off the list.</strong> Task 4.5 folded retirement and dismissal onto one "
+            "<code>removalKind</code> column, so this region (<code>wilted-feeds-restorable</code>) is built to "
+            "list both kinds together: an episode Skip retired from this inbox, reading &ldquo;Skipped&rdquo; "
+            "behind <code>wilted-feeds-restore-skipped-&lt;id&gt;</code>, and an episode dismissed elsewhere, "
+            "reading &ldquo;Removed&rdquo; behind <code>wilted-feeds-restore-removed-&lt;id&gt;</code> once one "
+            "exists. Both buttons read Restore and both call the same store operation with no network involved "
+            "&mdash; nothing was ever deleted, so nothing needs fetching back. This frame captures only the "
+            "Skipped kind: the Menu's own Remove button calls "
+            "<code>model.removeEpisodeFromUpNext</code>, which only unqueues the episode and returns it to the "
+            "Feeds inbox, and the operation that actually produces a dismissed row, "
+            "<code>model.removeEpisode(_:)</code>, is exercised only by <code>WiltedMacModelTests</code> and "
+            "<code>WiltedVisualSystemTests</code> &mdash; two of those tests assert the call does not appear in "
+            "<code>WiltedMacRootView.swift</code> at all. Before Task 4.5 a dismissed episode had no restore "
+            "path even at the model level; that gap is closed, but no shipping control currently reaches it, so "
+            "the Removed kind is evidenced by the model tests rather than by a pixel here.",
             captures),
-        "larder-skipped": figure(
-            "fig-larder-skipped-undo", "4.4-larder-skipped-undo",
-            "Larder after Skip, with the removal message offering Undo and Removed in the list header",
-            "<strong>4.4 Larder after Skip.</strong> Skip (<code>wilted-episode-skip-item-&lt;hash&gt;</code>) "
-            "is one press. The episode leaves the list, the message above the list says so and offers Undo "
-            "(<code>wilted-podcast-undo-removal</code>), and the header gains Removed with its count "
-            "(<code>wilted-podcast-removed-title</code>). Skipping the episode that is playing stops the audio. "
-            "A skipped episode does not come back on a feed refresh; Undo or Restore is how it returns.",
+        "feeds-management": figure(
+            "fig-feeds-management", "4.4-feeds-management",
+            "The Feeds destination listing subscribed feeds with per-feed controls",
+            "<strong>4.4 Feeds, feed upkeep.</strong> Refresh (<code>wilted-podcast-refresh</code>) sits on the "
+            "list it refreshes and becomes <code>wilted-podcast-refresh-cancel</code> beside a progress "
+            "indicator while a refresh is running. The policy line "
+            "(<code>wilted-podcast-feeds-policy</code>) states the refresh and download policy, and the list "
+            "holds one <code>wilted-podcast-feed-row-&lt;id&gt;</code> per subscription, each with a count line, "
+            "a show-in-Menu switch (<code>wilted-podcast-feed-enabled-&lt;id&gt;</code>), and an unsubscribe "
+            "control. A feed list with nothing subscribed reads its own empty state at "
+            "<code>wilted-podcast-feeds-empty</code>.",
             captures),
-        "larder-removed": figure(
-            "fig-larder-removed", "4.5-larder-removed",
-            "The Removed popover listing the skipped episode with a Restore button",
-            "<strong>4.5 Removed.</strong> The popover behind the header button lists skipped and finished "
-            "episodes, each as <code>wilted-podcast-removed-row-&lt;id&gt;</code> with its show and, where a "
-            "run was recorded, &ldquo;Prep history available&rdquo;. Restore "
-            "(<code>wilted-podcast-restore-&lt;id&gt;</code>) checks the feed and brings the episode back to "
-            "the list in the same session, without its old cut: the revision, transcript, and playback "
-            "position went with the removal, so a restored episode reads as not prepared until it is prepared "
-            "again. This frame is the popover's own window.",
+        "feeds-feed-hidden": figure(
+            "fig-feeds-feed-hidden", "4.5-feeds-feed-hidden",
+            "The Feeds destination after one show's switch was turned off",
+            "<strong>4.5 Feeds, one show hidden.</strong> The switch on the first row "
+            "(<code>wilted-podcast-feed-enabled-&lt;id&gt;</code>) was activated during the capture. The row's "
+            "count line (<code>wilted-podcast-feed-count-&lt;id&gt;</code>) changes to state the episode is kept "
+            "but hidden, and the switch reads off. Hiding a feed does not delete anything: its episodes stay in "
+            "the library and return to the inbox when the switch goes back on.",
             captures),
-        "feeds": figure(
-            "fig-feeds-page", "5.1-feeds-page",
-            "The Podcast feeds destination listing subscribed feeds with per-feed controls",
-            "<strong>5.1 Podcast feeds.</strong> The destination reached by <code>wilted-navigation-feeds</code>; "
-            "its detail pane is <code>wilted-mac-feeds-detail</code>. Refresh "
-            "(<code>wilted-podcast-refresh</code>) sits in the Subscriptions header, on the list it "
-            "refreshes, and becomes <code>wilted-podcast-refresh-cancel</code> beside a progress "
-            "indicator while a refresh is running. "
-            "<code>wilted-podcast-feeds</code> states the refresh and download policy in "
-            "<code>wilted-podcast-feeds-policy</code> and lists one "
-            "<code>wilted-podcast-feed-row-&lt;id&gt;</code> per subscription, each with a count line, a "
-            "show-in-Larder switch, and an unsubscribe control.",
+        "menu-idle": figure(
+            "fig-menu-idle", "5.1-menu-idle",
+            "The Menu destination showing Now Playing idle, the sort and filter controls, and the three groups",
+            "<strong>5.1 Menu, idle.</strong> The default destination at launch, restoring here even from a "
+            "stored selection that named a retired route. Its detail pane is <code>wilted-mac-menu-detail</code>, "
+            "and Now Playing embeds the compact player (<code>wilted-compact-player</code>) directly in the "
+            "destination rather than in a separate rail, because Menu is the one destination that expands "
+            "Transcript and Notes inline (5.4) instead of into the full-window overlay. Audio on Menu "
+            "(<code>wilted-menu-audio-total</code>) and Waiting for you "
+            "(<code>wilted-menu-waiting-count</code>) sit beside Sort (<code>wilted-menu-sort</code>). Filter "
+            "chips (<code>wilted-menu-filter-all</code> and one per "
+            "<code>wilted-menu-filter-&lt;group&gt;</code>) jump to a group's rows, and Download all new "
+            "(<code>wilted-menu-download-all</code>) and Prepare all downloaded "
+            "(<code>wilted-menu-prepare-all</code>) act across whichever rows are currently visible. The three "
+            "groups &mdash; Ready, Downloaded, Available &mdash; are the episode steps in order; each carries "
+            "its own bulk action and clear (<code>wilted-menu-group-&lt;group&gt;</code>, "
+            "<code>wilted-menu-clear-ready</code>, <code>wilted-menu-clear-downloaded</code>, "
+            "<code>wilted-menu-clear-available</code>). A row can be dragged to reorder, and a strip below the "
+            "last row (<code>wilted-menu-drop-tail</code>) accepts a drop to move an entry to the end. An empty "
+            "Menu reads &ldquo;Nothing is waiting&rdquo; at <code>wilted-menu-empty</code> instead of a blank "
+            "list.",
             captures),
-        "feed-hidden": figure(
-            "fig-feeds-feed-hidden", "5.2-feeds-feed-hidden",
-            "The Podcast feeds destination after one show was hidden from Larder",
-            "<strong>5.2 Podcast feeds, one show hidden.</strong> The switch on the first row was activated "
-            "during the capture. The row's count line changes from &ldquo;1 episode in Larder&rdquo; to "
-            "&ldquo;1 episode kept, hidden from Larder&rdquo; and the switch reads off. Hiding a feed does not "
-            "delete anything: the episodes stay in the library and return when the switch goes back on.",
+        "menu-add": figure(
+            "fig-menu-add-article", "5.2-menu-add-article",
+            "The Add article popover with its address field and Add button, now reached from the Menu",
+            "<strong>5.2 Menu, adding an article.</strong> Add article "
+            "(<code>wilted-add-article-button</code>) moved here from the retired Larder, opening the same "
+            "popover: one field (<code>wilted-link-url</code>) and one button (<code>wilted-add-link</code>), "
+            "with <code>wilted-link-status</code> reporting the fetch while Wilted works out for itself whether "
+            "the address is an article or a podcast feed. It stays open after Add so a feed the page advertises "
+            "(<code>wilted-advertised-feed</code>) arrives where the address was typed. This frame is the "
+            "popover's own window, captured at its own size.",
             captures),
-        "rail": figure(
+        "menu-prepared": figure(
+            "fig-menu-prepared", "5.3-menu-prepared-episode",
+            "The Menu's Ready group showing a prepared episode's row",
+            "<strong>5.3 Menu, a prepared episode.</strong> A successful terminal preparation journal matching "
+            "the audio revision ready to play places the episode in the Ready group "
+            "(<code>wilted-menu-group-ready</code>, <code>wilted-menu-row-&lt;id&gt;</code>), subtitled "
+            "&ldquo;&lt;show&gt; &middot; Ready&rdquo;. The row does not yet carry the completion summary "
+            "(&ldquo;5 ads removed (7:22) &middot; transcript synced&rdquo;) the retired Larder row used to: "
+            "that text is read from <code>WiltedMacEpisodeLifecyclePresentation.primaryLabel</code>, which only "
+            "the Feeds inbox row still consults, and carrying it onto the Menu row is its own re-queued item "
+            "rather than something this rewrite already did. A row in this state offers Play now "
+            "(<code>wilted-menu-play-&lt;id&gt;</code>) and, once finished, reads Played "
+            "(<code>wilted-menu-played-&lt;id&gt;</code>) in place of the button. Every row carries the retiring "
+            "control this walkthrough calls Skip (<code>wilted-menu-skip-&lt;id&gt;</code>, labelled from "
+            "whether the episode was ever started) beside Remove (<code>wilted-menu-remove-&lt;id&gt;</code>), "
+            "which only takes the episode off the Menu's queue and returns it to the Feeds inbox &mdash; it is "
+            "neither the retirement Skip performs nor the dismissal 4.3 describes. A running preparation shows "
+            "its progress at <code>wilted-menu-progress-&lt;id&gt;</code>, drawn in the Downloaded group so the "
+            "row does not change groups mid-run.",
+            captures),
+        "menu-transcript-inline": figure(
+            "fig-menu-transcript-inline", "5.4-menu-transcript-inline",
+            "The Menu's own compact player with the transcript expanded inline, still inside the Menu destination",
+            "<strong>5.4 Menu, Transcript expanded inline.</strong> Activating "
+            "<code>wilted-player-transcript</code> while the Menu destination is selected opens "
+            "<code>wilted-player-transcript-expanded</code> inside the Menu's own compact player rather than the "
+            "full-window overlay every other destination uses for the same toggle (6.2) &mdash; the root view "
+            "keeps Menu's inline player mounted and only disables the underlying destination's hit testing when "
+            "another destination presents the overlay. This state exists nowhere else in the app.",
+            captures),
+        "playback-rail": figure(
             "fig-playback-rail", "6.1-playback-rail",
-            "The bottom rail in its playing state with the full transport row",
-            "<strong>6.1 Playback, bottom rail.</strong> The rail has switched from idle to the transport row. "
-            "Controls present: <code>wilted-player-status</code>, <code>wilted-player-speed</code>, "
+            "The bottom rail in its playing state with the full transport row, shown from a non-Menu destination",
+            "<strong>6.1 Playback, bottom rail.</strong> Captured from Settings, where the compact player "
+            "(<code>wilted-compact-player</code>) renders as the always-visible rail rather than inline, because "
+            "only Menu embeds it in the destination itself. Controls present: "
+            "<code>wilted-player-status</code>, <code>wilted-player-speed</code>, "
             "<code>wilted-player-previous</code>, <code>wilted-player-rewind</code>, "
             "<code>wilted-player-play-pause</code>, <code>wilted-player-forward</code>, "
             "<code>wilted-player-next</code>, <code>wilted-player-restart</code>, "
             "<code>wilted-player-mark-completed</code>, and <code>wilted-player-scrubber</code>. Restart and "
             "Mark completed sit together because they are the same kind of decision about the whole episode "
-            "rather than about the playhead: start it over, or close it out. Marking does two things: it writes "
-            "the same finished record that reaching the end writes, and it retires the episode from the "
-            "Larder. It deliberately does not advance to the next episode. The button reads Completed and "
-            "is unavailable only once both have happened -- an episode marked finished but still on the "
-            "shelf, which is what a failed dismissal or a completion synced from the iPhone leaves behind, "
-            "keeps reading Mark completed and stays live, and pressing it retires the row without "
-            "rewriting the record. An article settles on the record alone, having no Larder retirement. "
-            "The speed control opens at the last chosen rate, 1.25x on a fresh install, and keeps whatever is "
-            "chosen across relaunch. Where the item has no artwork the rail shows the produce tile its row "
-            "does.",
+            "rather than about the playhead: start it over, or close it out. Marking writes the same finished "
+            "record that reaching the end writes and retires the episode from the Menu, without advancing to "
+            "the next one. An article settles on the record alone, having no Menu retirement of its own. The "
+            "speed control opens at the last chosen rate and keeps whatever is chosen across relaunch. Where "
+            "the item has no artwork the rail shows the produce tile its row does.",
             captures),
-        "transcript": figure(
-            "fig-playback-transcript", "6.2-transcript-expanded",
+        "playback-transcript": figure(
+            "fig-playback-transcript", "6.2-playback-fullwindow-transcript",
             "The full-window player showing the transcript while preserving the transport row",
-            "<strong>6.2 Transcript, full-window player.</strong> Activating <code>wilted-player-transcript</code> "
-            "opens <code>wilted-player-full-window</code> with <code>wilted-player-transcript-expanded</code> "
-            "and the same transport state as the rail. Collapse or Escape returns focus to the Transcript "
-            "toggle; choosing a sidebar destination dismisses the player without stopping playback. What the panel shows depends on "
-            "the item: an episode whose feed publishes a timed transcript reads &ldquo;synced from the feed&rdquo; "
-            "and follows the audio, and the fixture article here carries no transcript at all. "
-            "A prepared episode also shows what preparation cut: each removed span appears in place at the "
-            "seam, reading &ldquo;Ad removed &middot; 1:00 &middot; original 34:12&ndash;35:12&rdquo;, "
-            "stamped on the prepared clock the surrounding lines use and naming the original span, which "
-            "is what Prep reports for the same run. It is not selectable, because the audio it describes "
-            "is not in the file. Untimed prose has nowhere to put a marker in place, so the same cuts are "
-            "listed under the text instead.",
+            "<strong>6.2 Transcript, full-window player.</strong> Off Menu, activating "
+            "<code>wilted-player-transcript</code> opens <code>wilted-player-full-window</code> with "
+            "<code>wilted-player-transcript-expanded</code> and the same transport state as the rail. Collapse "
+            "or Escape returns focus to the Transcript toggle; choosing a sidebar destination dismisses the "
+            "player without stopping playback. What the panel shows depends on the item: an episode whose feed "
+            "publishes a timed transcript reads &ldquo;synced from the feed&rdquo; and follows the audio, and "
+            "the fixture article here carries no transcript at all. A prepared episode also shows what "
+            "preparation cut: each removed span appears in place at the seam, reading &ldquo;Ad removed "
+            "&middot; 1:00 &middot; original 34:12&ndash;35:12&rdquo;, stamped on the prepared clock the "
+            "surrounding lines use and naming the original span. It is not selectable, because the audio it "
+            "describes is not in the file. Untimed prose has nowhere to put a marker in place, so the same cuts "
+            "are listed under the text instead.",
             captures),
-        "upnext": figure(
-            "fig-playback-upnext", "6.3-up-next-expanded",
-            "The full-window player showing Up Next with the transport row retained",
-            "<strong>6.3 Up Next, full-window player.</strong> Activating <code>wilted-player-up-next</code> opens "
-            "<code>wilted-player-up-next-expanded</code> in the same full-window surface, with the transport "
-            "row still reachable. The queue reads &ldquo;Nothing queued&rdquo; because the fixture queues nothing.",
+        "playback-menu-from-player": figure(
+            "fig-playback-menu-from-player", "6.3-playback-menu-from-player",
+            "The Menu destination reached by pressing the full-window player's own Menu shortcut",
+            "<strong>6.3 The full-window player's Menu shortcut.</strong> "
+            "<code>wilted-player-menu</code> is drawn only while a destination other than Menu is selected, "
+            "labelled with the Menu's own waiting count. Pressing it both dismisses the overlay and switches "
+            "the selected destination to Menu in one action, landing on the same route 5.1 shows &mdash; the "
+            "one control on this player that changes navigation rather than just the player's own state.",
             captures),
-        "notes": figure(
-            "fig-playback-notes", "6.4-notes-expanded",
+        "playback-notes": figure(
+            "fig-playback-notes", "6.4-playback-fullwindow-notes",
             "The full-window player showing episode notes while preserving playback",
             "<strong>6.4 Notes, full-window player.</strong> With the fixture episode playing, "
-            "<code>wilted-player-notes</code> appears between Transcript and Up Next (it is absent for an "
-            "article, which has its own text) and opens <code>wilted-player-notes-expanded</code>: the feed's "
-            "show notes as plain text at <code>wilted-player-notes-text</code>, every address a link. The Larder "
-            "row for the same episode leads with these notes' opening sentence instead of the author.",
+            "<code>wilted-player-notes</code> appears beside Transcript (it is absent for an article, which has "
+            "its own text) and opens <code>wilted-player-notes-expanded</code>: the feed's show notes as plain "
+            "text at <code>wilted-player-notes-text</code>, every address a link, or "
+            "<code>wilted-player-notes-unavailable</code> where the feed published none.",
             captures),
-        "speakers": figure(
-            "fig-playback-speakers", "6.5-transcript-speakers",
+        "playback-speakers": figure(
+            "fig-playback-speakers", "6.5-playback-transcript-speakers",
             "The synchronised transcript labelling each speaker where the voice changes",
             "<strong>6.5 Transcript, who is speaking.</strong> The episode's transcript is the publisher's own "
-            "WebVTT, so it carries voice spans naming who is talking. The name is drawn where the voice "
-            "changes, not on every line: an interview alternating two people would otherwise repeat both names "
-            "down the whole transcript. A line the publisher credited to nobody carries no name and does not "
-            "end the previous speaker&rsquo;s run. The heading is hidden from VoiceOver and the name is folded "
-            "into the cue&rsquo;s own spoken label instead, so it is announced once rather than twice. "
-            "Text-to-speech names nobody, so an article&rsquo;s transcript shows none of this.",
-            captures),
-        "prep": figure(
-            "fig-prep-frame", "7.1-prep-with-playback",
-            "The Prep destination with the bottom rail still carrying its playing state",
-            "<strong>7.1 Prep, with playback retained.</strong> Switching destination did not remove the rail or "
-            "its current-item state, which is the behaviour the always-visible bottom rail is meant to produce. "
-            "Prep reports &ldquo;Nothing is preparing&rdquo;, an empty Waiting region "
-            "(<code>wilted-processor-waiting-empty</code>), and &ldquo;0 recorded&rdquo;: no fixture starts a "
-            "run, so this is the empty Prep route, not an idle one. One preparation runs at a time; the "
-            "others wait in the Waiting region with a Stop of their own, so a queue of downloads has "
-            "somewhere to say it is queued rather than reading as stuck.",
-            captures),
-        "prep-run": figure(
-            "fig-prep-recorded-run", "7.2-prep-recorded-run",
-            "The Prep destination listing one recorded preparation run with its outcome and Show log control",
-            "<strong>7.2 Prep, a recorded run.</strong> The prepared fixture's run appears under Recent runs as "
-            "<code>wilted-processor-run-podcast-prepare|&lt;id&gt;</code> with the episode title, Succeeded, "
-            "the &ldquo;Ready &middot; 5 ads removed (7:22) &middot; transcript synced&rdquo; completion sentence, "
-            "and Show log (<code>wilted-processor-log-toggle-&lt;id&gt;</code>). A "
-            "failed run shows its reason here with Retry beside it; the Larder row for a failure says only "
-            "&ldquo;Preparation failed. See Prep.&rdquo; A run the app quit in the middle of (an install "
-            "over a running app, for one) is closed at the next launch as a failure that reads &ldquo;Wilted "
-            "quit while this was preparing&rdquo;, with the same Retry, rather than staying Preparing for "
-            "good. A running podcast preparation appears under Active with the latest worker stage as a "
-            "sentence, a progress bar, Stop, and the food-processor symbol.",
-            captures),
-        "prep-log": figure(
-            "fig-prep-run-log", "7.3-prep-run-log",
-            "The same recorded run with its log expanded, listing every journalled worker status",
-            "<strong>7.3 Prep, the run's log.</strong> Show log lists every journalled status of that run in "
-            "the worker's own words (<code>ads.detect.calls &middot; 50 requests, 0 failed</code>, "
-            "<code>transcript.stt.start</code>), one line per stage with its time. The log is per run and "
-            "opt-in; Hide log collapses it. Two of those stages read on their own: "
-            "<code>transcript.published.aligned</code> records how closely the feed's transcript matched "
-            "the downloaded audio, and <code>transcript.published.misaligned</code> is why a run that had "
-            "a published transcript transcribed the episode anyway &mdash; the file carried advertising the "
-            "transcript does not describe. <code>ads.detect.preroll</code> records an advertisement cut from "
-            "the start of the episode, before the show's own opening.",
+            "WebVTT, so it carries voice spans naming who is talking. The name is drawn where the voice changes, "
+            "not on every line: an interview alternating two people would otherwise repeat both names down the "
+            "whole transcript. A line the publisher credited to nobody carries no name and does not end the "
+            "previous speaker&rsquo;s run. The heading is hidden from VoiceOver and the name is folded into the "
+            "cue&rsquo;s own spoken label instead, so it is announced once rather than twice. Text-to-speech "
+            "names nobody, so an article&rsquo;s transcript shows none of this.",
             captures),
         "settings": figure(
-            "fig-settings-frame", "8.1-settings-with-playback",
+            "fig-settings-frame", "7.1-settings-with-playback",
             "The Settings destination with the bottom rail still carrying its playing state",
-            "<strong>8.1 Settings, with playback retained.</strong> As on Prep, the rail survives the route "
-            "change with its current-item state intact. Appearance (<code>wilted-appearance-controls</code>) "
-            "comes first: Text and icon size offers System, Large, Larger, and Largest, applies to every "
-            "screen including the sidebar, the controls, and the search field, and survives relaunch. Podcast "
-            "automation separately configures refresh timing, bounded automatic downloads, immediate/manual/off-peak "
-            "processing, transcript preference, and ad removal; the off-peak window appears "
-            "only for that processing choice. Sync "
-            "reads Disabled with the detail &ldquo;Sync is not configured.&rdquo;, producer identity "
-            "Unavailable, and last fetch and last send Not yet. Refresh and Upload are rendered disabled in "
-            "this state.",
+            "<strong>7.1 Settings, with playback retained.</strong> As on Feeds and Menu, the rail survives the "
+            "route change with its current-item state intact. Appearance "
+            "(<code>wilted-appearance-controls</code>) comes first: Text and icon size "
+            "(<code>wilted-text-scale</code>) offers System, Large, Larger, and Largest, applies to every screen "
+            "including the sidebar, the controls, and the search field, and survives relaunch. Podcast "
+            "automation (<code>wilted-automation-controls</code>) separately configures refresh timing "
+            "(<code>wilted-automation-refresh-policy</code>), bounded automatic downloads "
+            "(<code>wilted-automation-download-policy</code>), immediate/manual/off-peak processing "
+            "(<code>wilted-automation-processing-policy</code>), transcript preference "
+            "(<code>wilted-automation-transcript-policy</code>), and ad removal "
+            "(<code>wilted-automation-remove-ads</code>); the off-peak window "
+            "(<code>wilted-automation-off-peak-start</code>, <code>wilted-automation-off-peak-end</code>) "
+            "appears only for that processing choice. Sync (<code>wilted-sync-controls</code>) reads Disabled "
+            "with the detail &ldquo;Sync is not configured.&rdquo; at <code>wilted-sync-detail</code>, producer "
+            "identity Unavailable (<code>wilted-sync-producer-identity</code>), and last fetch and last send Not "
+            "yet. Refresh (<code>wilted-sync-refresh</code>) and Upload (<code>wilted-sync-upload</code>) are "
+            "rendered disabled in this state.",
             captures),
         "settings-conflict": figure(
-            "fig-settings-transcript-conflict", "8.2-settings-transcript-conflict",
+            "fig-settings-transcript-conflict", "7.2-settings-transcript-conflict",
             "Podcast automation showing the transcript source set to No local speech-to-text with Remove ads on, "
             "and the notice that explains why nothing will prepare",
-            "<strong>8.2 Settings, the one automation pair that refuses work.</strong> Ad removal is timed from a "
+            "<strong>7.2 Settings, the one automation pair that refuses work.</strong> Ad removal is timed from a "
             "local pass aligned to this audio and never from a publisher's cues, so choosing "
             "<em>No local speech-to-text</em> while <em>Remove ads</em> is on makes the worker refuse every "
             "preparation before it spends any model time. Neither control is disabled and neither is silently "
@@ -332,22 +335,25 @@ def build(captures, commit, date_iso, date_human, previous):
             "<code>wilted-automation-transcript-conflict</code> appears under the toggle for that pair only, "
             "naming the effect first and then both ways out.",
             captures),
-        "download": figure(
-            "fig-download-recovery", "9.1-download-failure-retry",
-            "An episode row reporting a failed download and offering retry",
-            "<strong>9.1 Download failure and retry.</strong> The download-failure fixture drives "
-            "<code>wilted-episode-download-item-&lt;hash&gt;</code> to fail. The status line reads "
-            "&ldquo;Download failed. Retry when you are online.&rdquo; and the episode row offers "
-            "<code>wilted-episode-retry-item-&lt;hash&gt;</code>.",
+        "recovery-download": figure(
+            "fig-recovery-download", "8.1-recovery-download-retry",
+            "A Menu row in the Available group reporting a failed download and offering retry",
+            "<strong>8.1 Download failure and retry.</strong> The download-failure fixture drives a row in the "
+            "Menu's Available group to fail its download at <code>wilted-menu-download-&lt;id&gt;</code>. The "
+            "row's next-step control becomes Retry at <code>wilted-menu-retry-&lt;id&gt;</code>, the same "
+            "control an interrupted or cancelled download shows; a download still in flight shows Cancel at "
+            "<code>wilted-menu-cancel-&lt;id&gt;</code> instead. Neither the row nor any other control is "
+            "disabled by the failure &mdash; the rest of the Menu keeps working while this one row waits to be "
+            "retried.",
             captures),
-        "quarantine": figure(
-            "fig-settings-recovery", "9.2-sync-quarantine",
+        "recovery-quarantine": figure(
+            "fig-recovery-quarantine", "8.2-recovery-sync-quarantine",
             "Settings showing sync quarantined with an account-review recovery control",
-            "<strong>9.2 Sync quarantine and account recovery.</strong> The quarantined fixture puts sync into "
-            "its blocked state: status reads Quarantined in amber and the detail explains that sync is held "
-            "until the current iCloud account is reviewed. "
-            "<code>wilted-use-current-account</code> is the recovery control, and it is the only enabled action "
-            "in that state.",
+            "<strong>8.2 Sync quarantine and account recovery.</strong> The quarantined fixture puts sync into "
+            "its blocked state: status (<code>wilted-sync-status</code>) reads Quarantined in amber and the "
+            "detail (<code>wilted-sync-detail</code>) explains that sync is held until the current iCloud "
+            "account is reviewed. <code>wilted-sync-use-current-account</code> is the recovery control, and "
+            "Refresh and Upload are disabled alongside it &mdash; it is the only enabled action in that state.",
             captures),
     }
 
@@ -365,8 +371,8 @@ def build(captures, commit, date_iso, date_human, previous):
 <p class="eyebrow">Wilted &middot; Mac daily-driver walkthrough &middot; {date_human} &middot; candidate evidence</p>
 <h1>Mac daily-driver review.<br><em>Signed content-viewport evidence.</em></h1>
 <p>This report is a screen-by-screen review of the Wilted Mac app as built from the candidate commit below. Every image is an app-owned, window-scoped capture of the Wilted process itself, taken during a signed local XCUITest session. It is candidate evidence for owner review. It is not owner acceptance, not a release record, and not evidence of any production, device, or store state.</p>
-<p>It supersedes the {previous} report, which predates the Larder list header, the Removed popover, and the text-size setting. Every frame here was retaken; none is carried over.</p>
-<nav class="toc" aria-label="Contents"><a href="#current">Current state</a><a href="#method">Method</a><a href="#onboarding">Onboarding</a><a href="#library">Larder</a><a href="#feeds">Podcast feeds</a><a href="#playback">Playback</a><a href="#prep">Prep</a><a href="#settings">Settings</a><a href="#recovery">Recovery</a><a href="#roles">Roles</a><a href="#system-boundaries">System boundaries</a><a href="#limits">Coverage limits</a><a href="#non-claims">Non-claims</a><a href="#owner-checklist">Owner checklist</a></nav>
+<p>It supersedes the {previous} report, which was captured against Larder and Prep as destinations. Task 0.1 retired both: the app now has three destinations &mdash; Feeds, Menu, Settings &mdash; with Larder's episode queue and Prep's preparation reporting folded into Menu. Every frame here was retaken against the current routes; none is carried over.</p>
+<nav class="toc" aria-label="Contents"><a href="#current">Current state</a><a href="#method">Method</a><a href="#onboarding">Onboarding</a><a href="#feeds">Feeds</a><a href="#menu">Menu</a><a href="#playback">Playback</a><a href="#settings">Settings</a><a href="#recovery">Recovery</a><a href="#roles">Roles</a><a href="#system-boundaries">System boundaries</a><a href="#limits">Coverage limits</a><a href="#non-claims">Non-claims</a><a href="#owner-checklist">Owner checklist</a></nav>
 </header>
 
 <section id="current"><h2>1. Current state</h2>
@@ -374,11 +380,11 @@ def build(captures, commit, date_iso, date_human, previous):
 <table><thead><tr><th>Property</th><th>Observed value</th></tr></thead><tbody>
 <tr><td>Bundle identifier</td><td><code>com.zerodelta.wilted.mac</code></td></tr>
 <tr><td>Signature</td><td><code>CODE_SIGN_IDENTITY=Apple Development</code>, <code>DEVELOPMENT_TEAM=4CJ49V6QHW</code>; the gate verifies the runner with <code>codesign --verify --deep --strict</code> and refuses quarantine or FinderInfo metadata on either bundle</td></tr>
-<tr><td>Captured processes</td><td>Seven launches across six capture scenarios &mdash; the recovery scenario launches twice, once for the download failure and once for the quarantine notice. Each frame is scoped to its own launch's window, or, for the two popover frames, to the popover that launch opened.</td></tr>
+<tr><td>Captured processes</td><td>Eight launches across five capture scenarios &mdash; Menu and Playback each launch twice, and Recovery launches twice, once for the download failure and once for the quarantine notice. Each frame is scoped to its own launch's window, or, for the two popover frames, to the popover that launch opened.</td></tr>
 <tr><td>Window geometry</td><td>{geometry_line}</td></tr>
 <tr><td>Reproducing this report</td><td><code>scripts/record-walkthrough-frames.sh</code> writes the frames and a geometry sidecar beside each one, by setting <code>WILTED_WALKTHROUGH_CAPTURE=1</code> inside the generated scheme's TestAction and running <code>-only-testing:WiltedMacUITests/WiltedMacWalkthroughCapture</code>; <code>scripts/build-mac-walkthrough.py</code> assembles this document from that directory</td></tr>
 </tbody></table>
-<div class="warning"><strong>What changed since the {previous} report.</strong> The routes remain the same four. Transcript, Notes, and Up Next now open into a full-window player with the transport preserved, Collapse and Escape focus return, and destination navigation that dismisses the player without interrupting playback. Settings now exposes podcast refresh, bounded automatic download, immediate/manual/off-peak processing, transcript preference, and ad-removal in addition to Appearance and Sync. Automatic work keeps the policy snapshot captured when it was admitted. Every frame was retaken at this commit.</div>
+<div class="warning"><strong>What changed since the {previous} report.</strong> Larder and Prep no longer exist as destinations; the app now has three &mdash; Feeds, Menu, Settings. Feeds is a one-decision inbox (Keep or Skip) plus feed upkeep; Menu is where Larder's episode queue and Prep's preparation reporting landed together, and it is now the one destination that expands Transcript and Notes inline rather than into the full-window overlay every other destination uses. Skip (retirement) and Remove (dismissal) both now restore through the same &ldquo;Off the list&rdquo; control on Feeds, where a dismissed episode previously had no restore path at all. Every frame was retaken at this commit.</div>
 </section>
 
 <section id="method"><h2>2. Method and evidence labels</h2>
@@ -394,105 +400,100 @@ def build(captures, commit, date_iso, date_human, previous):
 </section>
 
 <section id="onboarding"><h2>3. Onboarding and first run</h2>
-<p>Wilted has no account creation, sign-in, or welcome sequence. First run opens directly on Larder with an empty saved list and the Add article button under it; the app is usable without configuring anything. Sync is opt-in and lives in Settings; it is not part of first run and does not gate any Larder function.</p>
-<p>Subscribing to a podcast is likewise not an onboarding step, and it is not a separate skill to learn: the same box that saves an article takes a feed address. The Podcast feeds destination is empty until the listener adds one, and it says so in place rather than hiding.</p>
+<p>Wilted has no account creation, sign-in, or welcome sequence. First run opens directly on Menu with an empty queue and the Add article button reachable from it; the app is usable without configuring anything. Sync is opt-in and lives in Settings; it is not part of first run and does not gate any Menu function.</p>
+<p>Subscribing to a podcast is likewise not an onboarding step, and it is not a separate skill to learn: the same box that saves an article, now on Menu, takes a feed address, and Feeds carries a composer of its own for the same purpose. The Feeds destination is empty until the listener adds a subscription, and it says so in place rather than hiding.</p>
 <p class="muted">No separate onboarding screen exists in this build, so none is captured. If one is added, this report must be refreshed.</p>
 </section>
 
-<section id="library"><h2>4. Larder</h2>
-<p>Larder is the primary library destination and the default route at launch. The sidebar (<code>wilted-mac-sidebar</code>) holds the wordmark and four destinations: <code>wilted-navigation-library</code>, <code>wilted-navigation-feeds</code>, <code>wilted-navigation-processor</code>, and <code>wilted-navigation-settings</code>, drawn with the larder, broccoli, cutting-board, and gear symbols; the first three are Wilted&rsquo;s own, compiled from <code>Shared/WiltedSymbols.xcassets</code>. The detail pane is <code>wilted-mac-library-detail</code>.</p>
-<p>Larder is for the things worth reading and listening to. Adding something is one button, one field, and one more button; there is no second box, and nothing asks the reader to say in advance whether an address is an article or a podcast. An address ending <code>.xml</code>, <code>.rss</code>, or <code>.atom</code> is taken as a feed without a fetch. Anything else is fetched once, bounded, and read: a document whose root element is <code>&lt;rss&gt;</code>, <code>&lt;feed&gt;</code>, or <code>&lt;rdf:RDF&gt;</code> is a feed, and a page is an article. A page that publishes a feed of its own is still saved as the article that was pasted, with the feed offered as an explicit Subscribe action rather than followed silently. While the fetch is in flight the box says so in <code>wilted-link-status</code>, and an address that cannot be reached is reported there rather than guessed at.</p>
-{figures["larder"]}
-{figures["larder-add"]}
-{figures["larder-prepared"]}
-{figures["larder-skipped"]}
-{figures["larder-removed"]}
-<p>Per-item controls carry a stable content hash in their identifier: <code>wilted-article-row-item-&lt;hash&gt;</code> and <code>wilted-episode-row-item-&lt;hash&gt;</code> for the rows, with <code>wilted-article-actions-item-&lt;hash&gt;</code> and <code>wilted-episode-actions-item-&lt;hash&gt;</code> for their action menus. These identifiers are present in the Accessibility tree for every captured route.</p>
+<section id="feeds"><h2>4. Feeds</h2>
+<p>Feeds answers one question, once, per new episode: keep it or skip it. Downloading, preparing, and playing all happen on the Menu, which is where Larder's episode queue landed once Larder was retired. Feed upkeep &mdash; subscribing, refreshing, hiding, unsubscribing &mdash; and the restorable list for anything taken off the Menu share the same destination, reached by <code>wilted-navigation-feeds</code> with detail pane <code>wilted-mac-feeds-detail</code>.</p>
+{figures["feeds-inbox"]}
+{figures["feeds-add"]}
+{figures["feeds-off-the-list"]}
+{figures["feeds-management"]}
+{figures["feeds-feed-hidden"]}
+<p>Nothing on this page runs on a schedule, and the card says so rather than letting an absent schedule read as a hidden one: feeds refresh when Refresh is chosen, and no feed downloads audio on its own. Download on an individual episode is what keeps it offline. When a refresh keeps fewer episodes than the feed published &mdash; because the feed exceeds the client's episode ceiling, or because they predate the subscription &mdash; the withheld count is stated in <code>wilted-podcast-feeds-withheld</code>, so a truncated back catalogue is never presented as the whole feed. Unsubscribing is the destructive action on this page and is driven, not merely rendered, by the shipping UI suite.</p>
 </section>
 
-<section id="feeds"><h2>5. Podcast feeds</h2>
-<p>Feed upkeep is its own destination. It answers a different question from Larder &mdash; which sources supply the library, rather than what is in it &mdash; and while it sat on top of Larder it pushed the saved items below the fold.</p>
-{figures["feeds"]}
-<p>Nothing on this page runs on a schedule, and the card says so rather than letting an absent schedule read as a hidden one: feeds refresh when Refresh is chosen, and no feed downloads audio on its own. Download on an individual episode is what keeps it offline. When a refresh keeps fewer episodes than the feed published &mdash; because the feed exceeds the client's episode ceiling, or because they predate the subscription &mdash; the withheld count is stated in <code>wilted-podcast-feeds-withheld</code>, so a truncated back catalogue is never presented as the whole feed.</p>
-{figures["feed-hidden"]}
-<p>Unsubscribing is the destructive action on this page and is driven, not merely rendered, by the shipping UI suite: <code>testFeedsPageListsPodcastFeedsWithPerFeedControls</code> clicks it and asserts the row count drops.</p>
+<section id="menu"><h2>5. Menu</h2>
+<p>Menu is the primary destination and the default route at launch, including a restore of a stored selection that names a retired destination: <code>WiltedMacNavigation.restored(from:)</code> resolves an unreadable, absent, or retired value to Menu, because it is now the one place episodes wait. The sidebar (<code>wilted-mac-sidebar</code>) holds the wordmark and the three surviving destinations &mdash; <code>wilted-navigation-feeds</code>, <code>wilted-navigation-menu</code>, <code>wilted-navigation-settings</code> &mdash; drawn with the broccoli, numbered-list, and gear symbols, pinned above the standing sidebar totals (<code>wilted-sidebar-ready-total</code>, <code>wilted-sidebar-downloaded-total</code>, <code>wilted-sidebar-menu-total</code>).</p>
+{figures["menu-idle"]}
+{figures["menu-add"]}
+{figures["menu-prepared"]}
+{figures["menu-transcript-inline"]}
+<p>Per-episode controls carry the episode's own id rather than a content hash: <code>wilted-menu-row-&lt;id&gt;</code> for the row, with the next-step control, Skip, and Remove each keyed the same way. These identifiers are present in the Accessibility tree for every captured Menu frame.</p>
 </section>
 
 <section id="playback"><h2>6. Bottom rail and full-window player</h2>
-<p>Now Playing is not a destination. Its always-visible bottom rail keeps playback state within a glance; Transcript, Notes, and Up Next expand into a full-window player that retains the same transport state.</p>
-{figures["rail"]}
-{figures["transcript"]}
-{figures["upnext"]}
-{figures["notes"]}
-{figures["speakers"]}
-<p>Keyboard handling: the transport row is reachable by Tab, Collapse and Escape return focus to the originating rail toggle, and the underlying destination is disabled and hidden from accessibility while the full-window player is open.</p>
-<p>The same transport is reachable without the app in front of you. What is playing is published to the system, so the episode appears in the menu bar's Now Playing widget and on the lock screen, with its show, artwork, elapsed time, and speed. The keyboard's media keys and the widget's own buttons drive the identical model the on-screen rail drives: play and pause, next and previous episode, a 15-second step back and a 30-second step forward, scrubbing, and the six speeds the rate control offers. Next and previous are greyed out at the ends of Up Next rather than drawn as buttons that do nothing.</p>
+<p>Now Playing is not a destination of its own. Off Menu, its always-visible bottom rail keeps playback state within a glance; Transcript and Notes expand into a full-window player that retains the same transport state, and a Menu shortcut on that player switches destinations without losing playback. On Menu itself the same compact player is embedded inline and the same two toggles expand in place (5.4) instead.</p>
+{figures["playback-rail"]}
+{figures["playback-transcript"]}
+{figures["playback-menu-from-player"]}
+{figures["playback-notes"]}
+{figures["playback-speakers"]}
+<p>Keyboard handling: the transport row is reachable by Tab, Collapse and Escape return focus to the originating toggle, and the underlying destination is disabled and hidden from accessibility while the full-window player is open.</p>
+<p>The same transport is reachable without the app in front of you. What is playing is published to the system, so the episode appears in the menu bar's Now Playing widget and on the lock screen, with its show, artwork, elapsed time, and speed. The keyboard's media keys and the widget's own buttons drive the identical model the on-screen rail drives: play and pause, next and previous episode, a 15-second step back and a 30-second step forward, scrubbing, and the six speeds the rate control offers.</p>
 </section>
 
-<section id="prep"><h2>7. Prep</h2>
-<p>Prep is where preparation runs are reported: what is running now, and what has been recorded. Preparation is the step that removes advertisements from a downloaded episode and produces the audio the player uses.</p>
-{figures["prep"]}
-{figures["prep-run"]}
-{figures["prep-log"]}
-</section>
-
-<section id="settings"><h2>8. Settings</h2>
-<p>Settings holds appearance, podcast automation policy, opt-in sync, and the account-review recovery path.</p>
+<section id="settings"><h2>7. Settings</h2>
+<p>Settings holds appearance, podcast automation policy, opt-in sync, and the account-review recovery path. Preparation reporting that used to have its own Prep destination is gone as a route; a run's outcome now shows directly on its Menu row (5.3), and this section covers what remains a destination of its own.</p>
 {figures["settings"]}
 {figures["settings-conflict"]}
 </section>
 
-<section id="recovery"><h2>9. Download and recovery states</h2>
-<p>Two states are captured here rather than described: a failed download that offers retry, and sync held in quarantine with the recovery control that releases it.</p>
-{figures["download"]}
-{figures["quarantine"]}
+<section id="recovery"><h2>8. Download and recovery states</h2>
+<p>Two states are captured here rather than described: a failed download that offers retry from the Menu's Available group, and sync held in quarantine with the recovery control that releases it.</p>
+{figures["recovery-download"]}
+{figures["recovery-quarantine"]}
 </section>
 
-<section id="roles"><h2>10. Roles and permission differences</h2>
+<section id="roles"><h2>9. Roles and permission differences</h2>
 <p>Wilted has one local role on the Mac: the producer. There is no second account type, no administrator mode, and no per-user permission surface, so no role-dependent route or control differs between users of the same machine. The one role-shaped distinction in the product is between the Mac producer and the iPhone listener, and it is a device distinction rather than a permission one: the Mac prepares audio and owns the library, and the listener reads it. That boundary is not exercised in this report.</p>
-<p>The permissions that do vary are system-granted, not app-granted: iCloud account availability decides whether sync is offered or quarantined, and the file-access consent the system grants the app decides whether a chosen folder can be read. Both are captured as states, in sections 8 and 9, rather than as roles.</p>
+<p>The permissions that do vary are system-granted, not app-granted: iCloud account availability decides whether sync is offered or quarantined, and the file-access consent the system grants the app decides whether a chosen folder can be read. Both are captured as states, in sections 7 and 8, rather than as roles.</p>
 </section>
 
-<section id="system-boundaries"><h2>11. System-owned boundaries</h2>
+<section id="system-boundaries"><h2>10. System-owned boundaries</h2>
 <p>Four system-owned surfaces can appear over or outside the app, none of which Wilted draws or controls: the open panel used when choosing a file, the Finder reveal that a retained-artifact action performs, the system share and permission prompts, and the menu bar's Now Playing widget. Each is an OS surface; the app's own state at the moment of handoff is what this report can evidence, and it does not capture the system sheets themselves.</p>
 <p>The Now Playing widget differs from the other three in that Wilted feeds it rather than merely hands off to it. The app publishes the current episode to the system and installs handlers for the media keys, and the system decides how to draw that and when to deliver a key press. Because it is process-global, a fixture run is given neither: a capture session would otherwise leave its fixture episode sitting in the menu bar after the run, pointing the machine's media keys at a process that has exited.</p>
 </section>
 
-<section id="limits"><h2>12. Coverage limits</h2>
+<section id="limits"><h2>11. Coverage limits</h2>
 <p>What this report does not cover, stated rather than implied:</p>
 <ul>
 <li>No frame shows a real feed. Every capture runs against a UI fixture, so titles, counts, and durations are fixture values.</li>
-<li>The address box is captured open and idle (4.3). Its three outcomes &mdash; feed, article, and article-advertising-a-feed &mdash; are covered by automated tests rather than by pixels here, because each needs a live fetch the capture session does not perform.</li>
-<li>Preparation is captured empty. No frame shows advertisement removal running or a prepared summary, and therefore no frame shows a removed-advertisement marker in the transcript either. Placement is covered by tests; that it reads correctly beside real speech is an owner observation, listed in section 14.</li>
+<li>The address boxes are captured open and idle (4.2, 5.2). Their outcomes &mdash; feed, article, and article-advertising-a-feed &mdash; are covered by automated tests rather than by pixels here, because each needs a live fetch the capture session does not perform.</li>
+<li>Preparation is captured only in its recorded, terminal state (5.3). No frame shows advertisement removal running, and no frame shows an in-progress preparation's row beyond the static progress control 5.3 describes. Placement is covered by tests; that it reads correctly beside real speech is an owner observation, listed in section 13.</li>
 <li>Transcript synchronisation against real audio is not captured. The panel is shown expanded; a timed transcript following the playback clock is covered by tests, not by a frame.</li>
 <li>The sidebar in these frames is the real one, but pixel snapshot baselines cannot see it: a <code>NavigationSplitView</code> navigation column is hosted in a separate AppKit hierarchy that offscreen rendering does not draw. Sidebar behaviour is owned by the XCUITest suite instead.</li>
-<li>No system-owned sheet is captured, as section 11 states.</li>
-<li>The menu bar's Now Playing widget and the media keys are not captured and cannot be. They are outside the content viewport this report photographs, and the capture session deliberately does not own them. That the app publishes the right thing and that each remote command reaches the model are covered by tests; that the widget draws and the keys arrive is an owner observation, listed in section 14.</li>
+<li>Off the list's Removed kind is not captured (4.3). Task 4.5 folded Skipped (retired) and Removed (dismissed) episodes onto one <code>removalKind</code> column with the same Restore control, but the only UI control this report can drive that touches removal, the Menu's Remove button, calls <code>model.removeEpisodeFromUpNext</code>, which unqueues the episode back to the Feeds inbox rather than dismissing it. The operation that actually sets <code>removalKind == .dismissed</code>, <code>model.removeEpisode(_:)</code>, has no call site in <code>WiltedMacRootView.swift</code> at all &mdash; it is exercised only by <code>WiltedMacModelTests</code> and <code>WiltedVisualSystemTests</code>. So 4.3 shows the Skipped kind only; the Removed kind's restore is evidenced by those model tests, not by a pixel here.</li>
+<li>No system-owned sheet is captured, as section 10 states.</li>
+<li>The menu bar's Now Playing widget and the media keys are not captured and cannot be. They are outside the content viewport this report photographs, and the capture session deliberately does not own them. That the app publishes the right thing and that each remote command reaches the model are covered by tests; that the widget draws and the keys arrive is an owner observation, listed in section 13.</li>
 </ul>
 </section>
 
-<section id="non-claims"><h2>13. Non-claims</h2><div class="card">Production CloudKit is not claimed. physical-device is not claimed. App Store Connect is not claimed. TestFlight is not claimed. deployment is not claimed. publication is not claimed. owner acceptance remains pending. This report is candidate evidence produced from a local signed build; it establishes what the app rendered on this machine at this commit and nothing beyond that.</div></section>
+<section id="non-claims"><h2>12. Non-claims</h2><div class="card">Production CloudKit is not claimed. physical-device is not claimed. App Store Connect is not claimed. TestFlight is not claimed. deployment is not claimed. publication is not claimed. owner acceptance remains pending. This report is candidate evidence produced from a local signed build; it establishes what the app rendered on this machine at this commit and nothing beyond that.</div></section>
 
-<section id="owner-checklist"><h2>14. Owner acceptance checklist</h2><ol>
-<li>Paste an article address into Larder's one box and confirm it is saved as an article.</li>
-<li>Paste a podcast address into the same box and confirm it subscribes, and that the feed appears on Podcast feeds.</li>
+<section id="owner-checklist"><h2>13. Owner acceptance checklist</h2><ol>
+<li>Paste an article address into the Menu's Add article box and confirm it is saved as an article.</li>
+<li>Paste a podcast address into the same box, or into Feeds' Add feed box, and confirm it subscribes, and that the feed appears on Feeds.</li>
+<li>Keep an episode from the Feeds inbox and confirm it appears on the Menu; skip another and confirm it leaves the inbox for Off the list.</li>
 <li>Download an episode, prepare it, and confirm the prepared audio plays from the position you were at.</li>
 <li>Expand Transcript on a prepared episode and confirm the text follows the audio.</li>
-<li>On that same episode, confirm each removed advertisement is marked in the transcript where the audio jumps, and that the original times it names match what Prep reports for the run.</li>
-<li>Hide a feed from Larder, confirm its episodes leave the list, and switch it back on.</li>
+<li>On that same episode, confirm each removed advertisement is marked in the transcript where the audio jumps, and that the original times it names match what Prep reported before it was retired (Menu's row does not yet carry that summary; see 5.3).</li>
+<li>Hide a feed on Feeds, confirm its episodes leave the Menu, and switch it back on.</li>
 <li>Unsubscribe from a feed and confirm the row goes.</li>
 <li>Switch destinations while playing and confirm the rail keeps its state.</li>
 <li>Quit and relaunch mid-episode and confirm playback resumes where it stopped.</li>
 <li>Start an episode, switch to another app, and confirm Wilted appears in the menu bar's Now Playing widget with the right show and artwork, and that the elapsed time advances.</li>
 <li>Press the keyboard's play/pause key with Wilted in the background and confirm the audio stops and starts, and that the widget agrees.</li>
-<li>Use the widget's skip controls and confirm they move by the same 15 and 30 seconds the on-screen rail does, and that next and previous are unavailable at the ends of Up Next.</li>
+<li>Use the widget's skip controls and confirm they move by the same 15 and 30 seconds the on-screen rail does.</li>
 <li>Let an episode reach its end with the window closed and confirm the widget stops claiming to be playing.</li>
-<li>Press Mark completed part way through an episode and confirm the audio stops, the button reads Completed, the queue stays on the same episode, and the Larder row changes to &ldquo;Played&rdquo;.</li>
-<li>Skip an episode from its row button in one press, confirm it leaves Larder and the message offers Undo, then open Removed in the Larder header and confirm Restore brings it back without its old cut.</li>
+<li>Press Mark completed part way through an episode and confirm the audio stops, the button reads Completed, the queue stays on the same episode, and the Menu row changes to &ldquo;Played&rdquo;.</li>
+<li>Skip an episode from its Feeds inbox or Menu row in one press, confirm it appears on Feeds' Off the list as Skipped, and confirm Restore brings it back with no network call. Separately, confirm the Menu's Remove button only unqueues the episode back to the Feeds inbox rather than dismissing it &mdash; it is not the same act as Skip.</li>
 <li>Change Text and icon size in Settings and confirm the sidebar, the rows, the search field, and the rail all follow, and that the choice survives relaunch.</li>
 <li>Choose each podcast processing policy in Settings, confirm the off-peak window appears only for Off-peak, and confirm the choice survives relaunch.</li>
-<li>Open Transcript, Notes, and Up Next, confirm each uses the full-window player without losing transport state, and confirm Collapse, Escape, and sidebar navigation dismiss it correctly.</li>
-<li>Quit Wilted while an episode is preparing, relaunch, and confirm Prep shows the run as failed with the reason and a Retry, and that Retry prepares it.</li>
+<li>Open Transcript and Notes off Menu, confirm each uses the full-window player without losing transport state, and confirm Collapse, Escape, and sidebar navigation dismiss it correctly; open the same toggles on Menu and confirm they expand inline instead.</li>
+<li>Quit Wilted while an episode is preparing, relaunch, and confirm its Menu row shows the run as failed with the reason and a Retry, and that Retry prepares it.</li>
 </ol></section>
 
 </main></body></html>

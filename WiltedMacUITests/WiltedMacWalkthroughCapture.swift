@@ -10,6 +10,11 @@ import XCTest
 /// each frame is inset by 8pt per edge because the window's rounded corners are
 /// partly transparent and an uncropped frame can contain fragments of whatever
 /// is behind it.
+///
+/// Task 0.1 retired Larder and Prep as destinations: `WiltedMacNavigation` now
+/// has only `feeds`, `menu`, and `settings` (`WiltedMac/WiltedMacModel.swift`).
+/// The sections below follow that -- Feeds, Menu, Playback, Settings,
+/// Recovery -- rather than the old Larder/Podcast feeds/Prep/Settings shape.
 @MainActor
 final class WiltedMacWalkthroughCapture: XCTestCase {
     func testCaptureWalkthroughFrames() throws {
@@ -20,11 +25,10 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         let root = try Self.captureRoot()
         print("walkthrough.capture.root=\(root.path)")
 
-        try captureLarder(into: root)
         try captureFeeds(into: root)
+        try captureMenu(into: root)
         try capturePlayback(into: root)
-        try captureRoutes(into: root)
-        try capturePrep(into: root)
+        try captureSettings(into: root)
         try captureRecovery(into: root)
     }
 
@@ -58,54 +62,59 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
 
     // MARK: - Scenarios
 
-    private func captureLarder(into root: URL) throws {
-        let app = launch(["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
-        XCTAssertTrue(element(app, "wilted-library-order").waitForExistence(timeout: 15))
-        XCTAssertTrue(element(app, "wilted-player-idle").waitForExistence(timeout: 10))
-        try write(app, "4.1-larder-idle", into: root)
-
-        // The address box is behind Add article now, and a popover is its
-        // own window, so the main window's frame cannot show it: the popover
-        // is captured as itself.
-        element(app, "wilted-add-article-button").click()
-        XCTAssertTrue(element(app, "wilted-link-url").waitForExistence(timeout: 10))
-        try write(popover: app.popovers.firstMatch, "4.3-larder-add-article", into: root)
-        app.typeKey(.escape, modifierFlags: [])
-
-        // Skip is one press, and the message it leaves offers Undo; Removed
-        // then appears in the list header and opens the removed list.
-        let skip = app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-skip-'")
-        ).firstMatch
-        XCTAssertTrue(skip.waitForExistence(timeout: 10))
-        skip.click()
-        XCTAssertTrue(element(app, "wilted-podcast-undo-removal").waitForExistence(timeout: 10))
-        try write(app, "4.4-larder-skipped-undo", into: root)
-
-        let removed = element(app, "wilted-podcast-removed-title")
-        XCTAssertTrue(removed.waitForExistence(timeout: 10))
-        removed.click()
-        let removedRow = app.descendants(matching: .any).matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-removed-row-'")
-        ).firstMatch
-        if !removedRow.waitForExistence(timeout: 3) { removed.click() }
-        XCTAssertTrue(removedRow.waitForExistence(timeout: 10))
-        try write(popover: app.popovers.firstMatch, "4.5-larder-removed", into: root)
-        app.typeKey(.escape, modifierFlags: [])
-        app.terminate()
-    }
-
+    /// Feeds: the one-decision inbox (Keep/Skip), the subscribe composer, the
+    /// restorable list, and per-feed upkeep.
+    ///
+    /// "Off the list" now lists both removal kinds Task 4.5 folded onto one
+    /// `removalKind` column -- a Skip from this inbox (retirement) and a
+    /// Remove from the Menu -- each with the same Restore control, once both
+    /// are present. Only the Skip (retirement) kind is driven from a UI
+    /// control here: the Menu's own Remove button
+    /// (`model.removeEpisodeFromUpNext`) only unqueues an episode and sends
+    /// it back to the Feeds inbox, and the store operation that actually
+    /// produces a dismissed (`removalKind == .dismissed`) row --
+    /// `model.removeEpisode(_:)` -- is called only from
+    /// `WiltedMacModelTests`/`WiltedVisualSystemTests`; two tests
+    /// (`testTheSkipButtonCallsTheReversibleExclusionNotRemoval`,
+    /// `testTheStartedPredicateLivesOnceInTheModelAndTheViewReadsIt`) assert
+    /// it does not appear in `WiltedMacRootView.swift` at all. So this frame
+    /// captures the Skipped kind only; the Removed kind's restore is
+    /// evidenced by the model tests, not by a pixel here.
     private func captureFeeds(into root: URL) throws {
         let app = launch(["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
         let navigate = element(app, "wilted-navigation-feeds")
         XCTAssertTrue(navigate.waitForExistence(timeout: 15))
         navigate.click()
-        let card = element(app, "wilted-podcast-feeds")
-        XCTAssertTrue(card.waitForExistence(timeout: 15))
-        try write(app, "5.1-feeds-page", into: root)
-        // The page frame above shows the feeds as found. This one records what
-        // the switch actually does, so the report is not left asserting an
-        // effect it never captured.
+        XCTAssertTrue(element(app, "wilted-mac-feeds-detail").waitForExistence(timeout: 15))
+        try write(app, "4.1-feeds-inbox", into: root)
+
+        // Subscribing sits behind Add feed; the composer is a popover and a
+        // window of its own, so the main window's frame cannot show it.
+        element(app, "wilted-add-feed-button").click()
+        XCTAssertTrue(element(app, "wilted-podcast-feed-url").waitForExistence(timeout: 10))
+        try write(popover: app.popovers.firstMatch, "4.2-feeds-add-feed", into: root)
+        app.typeKey(.escape, modifierFlags: [])
+
+        // Skip retires one inbox episode outright, which is the one
+        // UI-reachable action that lands a row in Off the list.
+        let skip = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-skip-'")
+        ).firstMatch
+        XCTAssertTrue(skip.waitForExistence(timeout: 10))
+        skip.click()
+
+        XCTAssertTrue(element(app, "wilted-feeds-restorable").waitForExistence(timeout: 10))
+        try write(app, "4.3-feeds-off-the-list", into: root)
+
+        let feedRow = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-row-'")
+        ).firstMatch
+        XCTAssertTrue(feedRow.waitForExistence(timeout: 10))
+        try write(app, "4.4-feeds-management", into: root)
+
+        // The page frame above shows the feeds as found. This one records
+        // what the switch actually does, so the report is not left asserting
+        // an effect it never captured.
         let toggle = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-enabled-'")
         ).firstMatch
@@ -115,79 +124,190 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-count-'")
         ).firstMatch
         XCTAssertTrue(count.waitForExistence(timeout: 10))
-        try write(app, "5.2-feeds-feed-hidden", into: root)
+        try write(app, "4.5-feeds-feed-hidden", into: root)
         app.terminate()
     }
 
-    private func capturePlayback(into root: URL) throws {
-        let app = launch(["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts"])
-        XCTAssertTrue(element(app, "wilted-player-play-pause").waitForExistence(timeout: 15))
-        try write(app, "6.1-playback-rail", into: root)
+    /// Menu: the episode queue Larder and Prep were folded into, the article
+    /// composer that moved here with it, a prepared episode's row, and the
+    /// one place Transcript/Notes expand inline rather than into the
+    /// full-window overlay.
+    private func captureMenu(into root: URL) throws {
+        let app = launch(["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
+        XCTAssertTrue(element(app, "wilted-compact-player").waitForExistence(timeout: 15))
+        XCTAssertTrue(element(app, "wilted-mac-menu-detail").waitForExistence(timeout: 10))
 
-        let transcript = element(app, "wilted-player-transcript")
-        if transcript.exists {
-            transcript.click()
-            XCTAssertTrue(element(app, "wilted-player-transcript-expanded").waitForExistence(timeout: 10))
-            try write(app, "6.2-transcript-expanded", into: root)
-            transcript.click()
-        }
+        // `groupList` (`WiltedMacRootView.swift`) draws only
+        // `wilted-menu-empty` when nothing is on the Menu -- no group
+        // header, no per-group clear button, none of the group chrome 5.1's
+        // caption names. The podcast fixture episode starts in the Feeds
+        // inbox (see the Keep step in the prepared-episode block below), so
+        // it has to be kept here too or this frame would show an empty
+        // Menu under a caption describing groups that are not on screen.
+        element(app, "wilted-navigation-feeds").click()
+        XCTAssertTrue(element(app, "wilted-mac-feeds-detail").waitForExistence(timeout: 15))
+        let keepIdle = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-keep-'")
+        ).firstMatch
+        XCTAssertTrue(keepIdle.waitForExistence(timeout: 10))
+        keepIdle.click()
+        element(app, "wilted-navigation-menu").click()
+        XCTAssertTrue(element(app, "wilted-mac-menu-detail").waitForExistence(timeout: 10))
+        let idleRow = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-row-'")
+        ).firstMatch
+        XCTAssertTrue(idleRow.waitForExistence(timeout: 10))
+        try write(app, "5.1-menu-idle", into: root)
 
-        let menu = element(app, "wilted-player-menu")
-        if menu.exists {
-            menu.click()
-            XCTAssertTrue(element(app, "wilted-mac-menu-detail").waitForExistence(timeout: 10))
-            try write(app, "6.3-menu", into: root)
-        }
-
+        // The address box moved from the Larder's header to here; the
+        // popover keeps its own identifier and is captured at its own size.
+        element(app, "wilted-add-article-button").click()
+        XCTAssertTrue(element(app, "wilted-link-url").waitForExistence(timeout: 10))
+        try write(popover: app.popovers.firstMatch, "5.2-menu-add-article", into: root)
+        app.typeKey(.escape, modifierFlags: [])
         app.terminate()
 
-        // Notes exist only for an episode, so this frame comes from the
-        // podcast fixture's episode rather than the playing article -- and from
-        // a launch of its own. Clicking a Larder row after the panels above
-        // have been expanded and collapsed did not work: the play button
-        // reported hittable and the click landed on nothing after a full-window
-        // pane transition. Relaunching keeps the episode capture independent.
-        let episodeApp = launch([
-            "--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"
+        // The Menu row does not yet show the prepared completion summary
+        // ("Ready · 5 ads removed (7:22) · transcript synced") the retired
+        // Larder row used to: `WiltedMacEpisodeLifecyclePresentation
+        // .primaryLabel`/`.larderLabel` back that summary, and only the
+        // Feeds row reads it (`WiltedMacRootView.swift`, the
+        // `feedsEpisodeRow` line using `episode.lifecyclePresentation
+        // .primaryLabel`) -- the Menu row's own subtitle is plainly
+        // `feedTitle · group.rawValue`. Task 7.4 re-queues carrying that
+        // summary onto the Menu row as its own future row, so this frame
+        // asserts only what the row currently shows.
+        let prepared = launch([
+            "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"
         ])
-        XCTAssertTrue(element(episodeApp, "wilted-player-play-pause").waitForExistence(timeout: 15))
-        let playEpisode = episodeApp.descendants(matching: .any).matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-play-'")
+        XCTAssertTrue(element(prepared, "wilted-mac-menu-detail").waitForExistence(timeout: 15))
+
+        // A podcast fixture episode arrives in the Feeds inbox, not on the
+        // Menu: `feedsEpisodes` is every episode whose id is absent from
+        // `podcastQueueIDs`, and only Feeds' own Keep
+        // (`model.keepEpisode(_:)`, bound to `wilted-feeds-keep-<id>`) adds
+        // an id to that queue. `installPodcastFixture` never seeds
+        // `podcastQueueIDs`, so the row has to be kept before it exists on
+        // the Menu at all -- confirmed against
+        // `WiltedMacSmokeUITests.testPodcastCompactPlayerPersistsAcrossDestinationsAndExposesCompleteControls`,
+        // which drives this same launch/keep sequence.
+        element(prepared, "wilted-navigation-feeds").click()
+        XCTAssertTrue(element(prepared, "wilted-mac-feeds-detail").waitForExistence(timeout: 15))
+        let keep = prepared.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-keep-'")
+        ).firstMatch
+        XCTAssertTrue(keep.waitForExistence(timeout: 10))
+        keep.click()
+        element(prepared, "wilted-navigation-menu").click()
+
+        let preparedRow = prepared.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-row-'")
+        ).firstMatch
+        XCTAssertTrue(preparedRow.waitForExistence(timeout: 10))
+        try write(prepared, "5.3-menu-prepared-episode", into: root)
+
+        // Menu is the one destination that expands Transcript and Notes
+        // inline, inside its own compact player, instead of handing off to
+        // the full-window overlay every other destination uses -- so this
+        // state exists nowhere else and needs its own frame.
+        let playEpisode = prepared.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-play-'")
         ).firstMatch
         XCTAssertTrue(playEpisode.waitForExistence(timeout: 10))
         playEpisode.click()
+        let transcript = element(prepared, "wilted-player-transcript")
+        XCTAssertTrue(transcript.waitForExistence(timeout: 10))
+        transcript.click()
+        XCTAssertTrue(element(prepared, "wilted-player-transcript-expanded").waitForExistence(timeout: 10))
+        try write(prepared, "5.4-menu-transcript-inline", into: root)
+        prepared.terminate()
+    }
+
+    /// Playback: the always-visible bottom rail, and the full-window
+    /// overlay Transcript/Notes/the Menu shortcut open into everywhere
+    /// except Menu itself.
+    private func capturePlayback(into root: URL) throws {
+        // The full-window player only appears off Menu, so this drives it
+        // from Settings. The article fixture plays immediately at launch.
+        let app = launch(["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts"])
+        XCTAssertTrue(element(app, "wilted-mac-menu-detail").waitForExistence(timeout: 15))
+        element(app, "wilted-navigation-settings").click()
+        XCTAssertTrue(element(app, "wilted-compact-player").waitForExistence(timeout: 10))
+        try write(app, "6.1-playback-rail", into: root)
+
+        let transcript = element(app, "wilted-player-transcript")
+        XCTAssertTrue(transcript.waitForExistence(timeout: 10))
+        transcript.click()
+        XCTAssertTrue(element(app, "wilted-player-full-window").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "wilted-player-transcript-expanded").waitForExistence(timeout: 10))
+        try write(app, "6.2-playback-fullwindow-transcript", into: root)
+
+        // The full-window player's own Menu shortcut is only drawn while
+        // off Menu; pressing it is the one control that both dismisses
+        // the overlay and changes the selected destination at once.
+        let openMenu = element(app, "wilted-player-menu")
+        XCTAssertTrue(openMenu.waitForExistence(timeout: 10))
+        openMenu.click()
+        XCTAssertTrue(element(app, "wilted-mac-menu-detail").waitForExistence(timeout: 10))
+        try write(app, "6.3-playback-menu-from-player", into: root)
+        app.terminate()
+
+        // Notes and the speaker-labelled transcript need an episode, not the
+        // article fixture, and get a launch of their own: clicking a Menu
+        // row after the panels above have been expanded and collapsed did
+        // not work reliably in earlier captures of this same player.
+        let episodeApp = launch([
+            "--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"
+        ])
+        XCTAssertTrue(element(episodeApp, "wilted-mac-menu-detail").waitForExistence(timeout: 15))
+
+        // Same reason as the Menu scenario above: the podcast fixture
+        // episode starts in the Feeds inbox, and only Feeds' Keep puts it
+        // on the Menu where `wilted-menu-play-` can find it.
+        element(episodeApp, "wilted-navigation-feeds").click()
+        XCTAssertTrue(element(episodeApp, "wilted-mac-feeds-detail").waitForExistence(timeout: 15))
+        let keepEpisode = episodeApp.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-keep-'")
+        ).firstMatch
+        XCTAssertTrue(keepEpisode.waitForExistence(timeout: 10))
+        keepEpisode.click()
+        element(episodeApp, "wilted-navigation-menu").click()
+        XCTAssertTrue(element(episodeApp, "wilted-mac-menu-detail").waitForExistence(timeout: 10))
+
+        let playEpisode = episodeApp.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-play-'")
+        ).firstMatch
+        XCTAssertTrue(playEpisode.waitForExistence(timeout: 10))
+        playEpisode.click()
+        element(episodeApp, "wilted-navigation-settings").click()
+
         let notes = element(episodeApp, "wilted-player-notes")
         XCTAssertTrue(notes.waitForExistence(timeout: 10))
         notes.click()
         XCTAssertTrue(element(episodeApp, "wilted-player-notes-expanded").waitForExistence(timeout: 10))
-        try write(episodeApp, "6.4-notes-expanded", into: root)
+        try write(episodeApp, "6.4-playback-fullwindow-notes", into: root)
         notes.click()
 
         // The episode's transcript is the publisher's own, so it is the one
         // surface that names who is speaking. The article fixture cannot show
         // this: text-to-speech has one voice and credits nobody.
         let episodeTranscript = element(episodeApp, "wilted-player-transcript")
-        if episodeTranscript.waitForExistence(timeout: 5) {
-            episodeTranscript.click()
-            XCTAssertTrue(element(episodeApp, "wilted-now-playing-synced-transcript-cue-0")
-                .waitForExistence(timeout: 10))
-            try write(episodeApp, "6.5-transcript-speakers", into: root)
-            episodeTranscript.click()
-        }
+        XCTAssertTrue(episodeTranscript.waitForExistence(timeout: 10))
+        episodeTranscript.click()
+        XCTAssertTrue(element(episodeApp, "wilted-now-playing-synced-transcript-cue-0")
+            .waitForExistence(timeout: 10))
+        try write(episodeApp, "6.5-playback-transcript-speakers", into: root)
         episodeApp.terminate()
     }
 
-    private func captureRoutes(into root: URL) throws {
+    /// Settings: appearance, podcast automation, sync, and the one
+    /// automation pair that refuses to run.
+    private func captureSettings(into root: URL) throws {
         let app = launch(["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts"])
-        XCTAssertTrue(element(app, "wilted-player-play-pause").waitForExistence(timeout: 15))
-
-        element(app, "wilted-navigation-processor").click()
-        XCTAssertTrue(element(app, "wilted-mac-processor-detail").waitForExistence(timeout: 10))
-        try write(app, "7.1-prep-with-playback", into: root)
-
+        XCTAssertTrue(element(app, "wilted-mac-menu-detail").waitForExistence(timeout: 15))
         element(app, "wilted-navigation-settings").click()
         XCTAssertTrue(element(app, "wilted-sync-controls").waitForExistence(timeout: 10))
-        try write(app, "8.1-settings-with-playback", into: root)
+        try write(app, "7.1-settings-with-playback", into: root)
 
         // The one settings state that refuses work. Ad removal is timed from
         // an aligned local pass, so pairing it with No local speech-to-text
@@ -203,54 +323,44 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         XCTAssertTrue(noLocalSTT.waitForExistence(timeout: 10))
         noLocalSTT.click()
         XCTAssertTrue(element(app, "wilted-automation-transcript-conflict").waitForExistence(timeout: 10))
-        try write(app, "8.2-settings-transcript-conflict", into: root)
+        try write(app, "7.2-settings-transcript-conflict", into: root)
         app.terminate()
     }
 
-    /// The prepared fixture journals a finished run, so this is the Larder row
-    /// and the Prep page as they read after preparation, and the run's log
-    /// once asked for.
-    private func capturePrep(into root: URL) throws {
-        let app = launch(["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"])
-        XCTAssertTrue(element(app, "wilted-library-order").waitForExistence(timeout: 15))
-        let row = app.descendants(matching: .any).matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-row-'")
-        ).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Ready · 5 ads removed (7:22) · transcript synced"].exists)
-        try write(app, "4.2-larder-prepared-episode", into: root)
-
-        element(app, "wilted-navigation-processor").click()
-        let run = app.descendants(matching: .any).matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-processor-run-podcast-prepare|'")
-        ).firstMatch
-        XCTAssertTrue(run.waitForExistence(timeout: 10))
-        try write(app, "7.2-prep-recorded-run", into: root)
-
-        let showLog = app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-processor-log-toggle-'")
-        ).firstMatch
-        XCTAssertTrue(showLog.waitForExistence(timeout: 5))
-        showLog.click()
-        XCTAssertTrue(app.staticTexts["ads.detect.calls · 50 requests, 0 failed"].waitForExistence(timeout: 5))
-        try write(app, "7.3-prep-run-log", into: root)
-        app.terminate()
-    }
-
+    /// Recovery: a failed download offering retry from the Menu's Available
+    /// group, and sync held in quarantine with its account-review control.
     private func captureRecovery(into root: URL) throws {
         let failure = launch(["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts",
                               "--wilted-ui-fixture-download-failure"])
-        let download = failure.descendants(matching: .any).matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-download-'")
+        XCTAssertTrue(element(failure, "wilted-mac-menu-detail").waitForExistence(timeout: 15))
+
+        // Same reason as the Menu and Playback scenarios: the fixture
+        // episode starts in the Feeds inbox until Keep puts it on the Menu.
+        element(failure, "wilted-navigation-feeds").click()
+        XCTAssertTrue(element(failure, "wilted-mac-feeds-detail").waitForExistence(timeout: 15))
+        let keepFailed = failure.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-keep-'")
         ).firstMatch
-        if download.waitForExistence(timeout: 15) {
-            download.click()
-            let retry = failure.descendants(matching: .any).matching(
-                NSPredicate(format: "identifier BEGINSWITH 'wilted-episode-retry-'")
-            ).firstMatch
-            _ = retry.waitForExistence(timeout: 20)
-        }
-        try write(failure, "9.1-download-failure-retry", into: root)
+        XCTAssertTrue(keepFailed.waitForExistence(timeout: 10))
+        keepFailed.click()
+        element(failure, "wilted-navigation-menu").click()
+        XCTAssertTrue(element(failure, "wilted-mac-menu-detail").waitForExistence(timeout: 10))
+
+        // `testUnpreparedEpisodeHasNoListeningActionAndTheMenuOwnsItsStep`
+        // proves `wilted-menu-download-` exists after Keep under this same
+        // fixture, so a miss here is a real regression, not a timing
+        // question -- hardened to match the other scenarios rather than
+        // silently writing a frame that never actually failed a download.
+        let download = failure.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-download-'")
+        ).firstMatch
+        XCTAssertTrue(download.waitForExistence(timeout: 15))
+        download.click()
+        let retry = failure.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-retry-'")
+        ).firstMatch
+        XCTAssertTrue(retry.waitForExistence(timeout: 20))
+        try write(failure, "8.1-recovery-download-retry", into: root)
         failure.terminate()
 
         let quarantined = launch(["--wilted-ui-fixture-ready", "--wilted-ui-fixture-quarantined"])
@@ -258,7 +368,7 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         XCTAssertTrue(settings.waitForExistence(timeout: 15))
         settings.click()
         XCTAssertTrue(element(quarantined, "wilted-sync-controls").waitForExistence(timeout: 10))
-        try write(quarantined, "9.2-sync-quarantine", into: root)
+        try write(quarantined, "8.2-recovery-sync-quarantine", into: root)
         quarantined.terminate()
     }
 

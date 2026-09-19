@@ -10,7 +10,7 @@ set -Eeuo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 audit="$root/scripts/audit-walkthrough.sh"
-report="$root/docs/2026-09-01-mac-daily-driver-walkthrough.html"
+report="$root/docs/2026-09-19-mac-daily-driver-walkthrough.html"
 tmp="$(mktemp -d -t wilted-walkthrough-tests.XXXXXX)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -51,8 +51,8 @@ reject() {
 }
 
 reject missing-anchor perl -0pi -e 's/id="settings"/id="settings-removed"/'
-reject broken-fragment perl -0pi -e 's/href="#prep"/href="#not-present"/'
-reject duplicate-anchor perl -0pi -e 's/id="prep"/id="library"/'
+reject broken-fragment perl -0pi -e 's/href="#menu"/href="#not-present"/'
+reject duplicate-anchor perl -0pi -e 's/id="menu"/id="feeds"/'
 reject missing-rail-contract perl -0pi -e 's/always-visible bottom rail/conditional rail/g'
 reject missing-onboarding perl -0pi -e 's/onboarding/ONBOARDING_REMOVED/g'
 reject missing-roles perl -0pi -e 's/id="roles"/id="roles-removed"/; s/\brole/ROLE_REMOVED/g'
