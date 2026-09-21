@@ -15,7 +15,7 @@ say "audit.stage=structure path=$report"
 for token in '<html' 'data-candidate-commit=' 'data-gate-receipt=' 'data-capture-status=' \
   'id="setup"' 'id="current"' 'id="method"' 'id="feeds"' 'id="menu"' 'id="playback"' \
   'id="settings"' 'id="recovery"' 'id="system-boundaries"' 'id="non-claims"' 'id="owner-checklist"' \
-  'always-visible bottom rail' 'Feeds' 'Menu' 'Settings' 'Transcript' 'Notes' 'Escape' 'focus' \
+  'always-visible bottom rail' 'Feeds' 'Larder' 'Settings' 'Transcript' 'Notes' 'Escape' 'focus' \
   'download' 'recovery' 'Finder' 'system-owned' 'Accessibility tree' 'content viewport' \
   'id="onboarding"' 'id="roles"' 'id="limits"' 'onboarding' 'role' 'disabled' \
   'id="fig-menu-deferred-prepare-now"' 'Prepare now' 'wilted-menu-prepare-now-&lt;id&gt;' \

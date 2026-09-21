@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wilted — Feeds and Larder</title>
+<style>
+  :root { color-scheme: dark; --bg:#101512; --panel:#18201b; --line:#344238; --ink:#edf1ed; --muted:#a8b5aa; --leaf:#83bd8d; --soft:#223027; }
+  * { box-sizing:border-box } body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif }
+  .app { min-height:100vh; display:grid; grid-template-columns:210px minmax(0,1fr) } aside { padding:24px 14px; border-right:1px solid var(--line); background:#141a16 }
+  .brand { font-weight:700; font-size:20px; padding:0 10px 20px } nav button { width:100%; text-align:left; border:0; border-radius:7px; padding:10px; margin:2px 0; background:transparent; color:var(--muted); font:inherit; cursor:pointer } nav button.active { background:var(--soft); color:var(--ink) }
+  main { max-width:940px; width:100%; padding:32px; margin:0 auto } h1,h2 { margin:0 } h1 { font-size:28px } h2 { font-size:17px } .sub,.muted { color:var(--muted) } .header,.row,.section-head { display:flex; gap:14px; align-items:center } .header { justify-content:space-between; margin-bottom:8px } .header-actions { display:flex; gap:10px; align-items:center; min-height:32px }
+  .card { margin-top:20px; padding:16px; border:1px solid var(--line); background:var(--panel); border-radius:10px } .row { padding:13px 0; border-top:1px solid var(--line) } .row:first-of-type { border-top:0 } .title { flex:1; min-width:0 } .title strong,.title span { display:block } .title span { color:var(--muted); font-size:13px }
+  button { border:1px solid var(--line); border-radius:6px; background:#202a23; color:var(--ink); padding:6px 10px; font:inherit; cursor:pointer } button.primary { background:#4c8d59; border-color:#68a875 } button:disabled { opacity:.55; cursor:default } .progress { display:flex; gap:8px; align-items:center; color:var(--muted); font-size:13px } .bar { width:94px; height:6px; overflow:hidden; border-radius:99px; background:#314137 } .bar i { display:block; width:48%; height:100%; background:var(--leaf); animation:slide 1.2s ease-in-out infinite alternate } @keyframes slide { from { transform:translateX(-35%) } to { transform:translateX(110%) } }
+  .disclosure { width:100%; display:flex; align-items:center; gap:9px; padding:0; border:0; background:none; text-align:left } .disclosure .count { margin-left:auto; color:var(--muted); font-size:13px } .off-list { margin-top:20px } .empty { padding:26px 0; color:var(--muted) } .larder-note { margin:0 0 16px; color:var(--muted) } .toolbar { display:flex; gap:12px; align-items:center; flex-wrap:wrap } .totals { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:16px } .total { padding:10px; background:var(--soft); border-radius:7px } .insertion { height:2px; background:var(--leaf); margin:0 0 4px } .hidden { display:none }
+  @media (max-width:650px) { .app { grid-template-columns:1fr } aside { border-right:0; border-bottom:1px solid var(--line); padding:12px; display:flex; align-items:center; gap:12px } .brand { padding:0; font-size:16px } nav { display:flex; flex:1 } nav button { text-align:center } main { padding:20px 14px } .header { align-items:flex-start; flex-direction:column } }
+</style>
+<body>
+<div class="app">
+  <aside><div class="brand">Wilted</div><nav id="nav"><button data-page="larder">Larder</button><button class="active" data-page="feeds">Feeds</button><button data-page="settings">Settings</button></nav></aside>
+  <main id="view"></main>
+</div>
+<script>
+  const state = { page: 'feeds', refreshing: false, lastUpdated: null, offListOpen: false,
+    feeds: [{ id:'field-notes', title:'Field Notes: Autumn Walk', source:'Quiet Season · Undecided' }],
+    larder: [
+      { id:'ready', title:'Morning Brief', source:'Daily Field · Ready', group:'Ready' },
+      { id:'deferred', title:'Night Garden', source:'Quiet Season · Deferred until off-peak', group:'Needs preparation', deferred:true },
+      { id:'available', title:'City Trees', source:'Field Audio', group:'Not downloaded' }
+    ], offList:[{ id:'previously-skipped', title:'Last Week’s Dispatch', source:'Quiet Season · Skipped' }] };
+  const stamp = () => state.lastUpdated ? state.lastUpdated.toLocaleString() : 'Never';
+  const esc = text => text.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  function render() {
+    document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.page === state.page));
+    const view = document.querySelector('#view');
+    if (state.page === 'feeds') {
+      const refresh = state.refreshing
+        ? '<div class="header-actions"><div class="progress"><span class="bar"><i></i></span>Refreshing feeds</div><button data-action="cancel">Cancel</button></div>'
+        : '<div class="header-actions"><span class="muted">Last updated: '+stamp()+'</span><button class="primary" data-action="refresh">Refresh</button></div>';
+      const rows = state.feeds.length ? state.feeds.map(e => `<div class="row"><div class="title"><strong>${esc(e.title)}</strong><span>${esc(e.source)}</span></div><button class="primary" data-keep="${e.id}">Keep</button><button data-skip="${e.id}">Skip</button></div>`).join('') : '<div class="empty">Nothing new. Every episode has a decision.</div>';
+      const offRows = state.offList.map(e => `<div class="row"><div class="title"><strong>${esc(e.title)}</strong><span>${esc(e.source)}</span></div><button data-restore="${e.id}">Restore</button></div>`).join('');
+      view.innerHTML = `<div class="header"><div><h1>Feeds</h1><p class="sub">Refresh admits metadata only. Episodes stay undecided until you choose Keep or Skip.</p></div>${refresh}</div><section class="card"><h2>New episodes <span class="muted">(${state.feeds.length})</span></h2>${rows}</section><section class="card off-list"><button class="disclosure" data-action="toggle-off"><span>${state.offListOpen ? '▾' : '▸'}</span><h2>Off the list</h2><span class="count">${state.offList.length}</span></button>${state.offListOpen ? offRows : ''}</section><section class="card"><h2>Subscriptions</h2><p class="sub">Refresh schedules are allowed; automatic download policy is inactive until an episode is kept in Larder.</p></section>`;
+    } else if (state.page === 'larder') {
+      const deferred = state.larder.filter(e => e.deferred || e.group === 'Needs preparation');
+      const rows = state.larder.length ? state.larder.map((e,i) => `<div class="insertion" title="Leaf-colored insertion gap"></div><div class="row"><div class="title"><strong>${esc(e.title)}</strong><span>${esc(e.source)} · ${esc(e.group || 'Not downloaded')}</span></div>${e.group === 'Ready' ? '<button>Play</button>' : e.group === 'Needs preparation' ? `<button data-prepare="${e.id}">Prepare now</button>` : '<button>Download</button>'}</div>`).join('') : '<div class="empty">Keep an episode in Feeds to add it here.</div>';
+      view.innerHTML = `<div class="header"><div><h1>Larder</h1><p class="larder-note">Playback follows Ready episodes from top to bottom and skips rows that are not ready.</p></div><div class="toolbar"><label>Sort: <select><option>Custom order</option><option>Newest</option><option>Oldest</option></select></label><button class="primary" data-action="prepare-all" ${deferred.length ? '' : 'disabled'}>Prepare all now (${deferred.length})</button></div></div><div class="totals"><div class="total">Ready · 28 min</div><div class="total">Needs preparation · 44 min</div><div class="total">In Larder · 1 hr 31 min</div></div><section class="card"><h2>Ready / Needs preparation / Not downloaded</h2>${rows}<p class="muted">The insertion line marks the exact custom-order gap.</p><button data-action="remove-all">Remove all from Larder</button><p class="muted">Removes rows only. Audio, prepared cuts, transcripts, and listening history stay saved.</p></section>`;
+    } else view.innerHTML = '<h1>Settings</h1><p class="sub">Feed refresh may run automatically. Automatic downloads remain inactive for undecided Feeds episodes.</p>';
+  }
+  document.addEventListener('click', event => {
+    const target = event.target.closest('button'); if (!target) return;
+    if (target.dataset.page) { state.page = target.dataset.page; render(); return; }
+    if (target.dataset.action === 'refresh') { state.refreshing = true; render(); return; }
+    if (target.dataset.action === 'cancel') { state.refreshing = false; render(); return; }
+    if (target.dataset.action === 'toggle-off') { state.offListOpen = !state.offListOpen; render(); return; }
+    if (target.dataset.keep) { const [episode] = state.feeds.splice(state.feeds.findIndex(e => e.id === target.dataset.keep), 1); state.larder.push({...episode, source:'Quiet Season', group:'Not downloaded'}); state.page = 'larder'; render(); return; }
+    if (target.dataset.action === 'prepare-all') { state.larder.forEach(e => { if (e.group === 'Needs preparation') { e.group='Ready'; e.source='Quiet Season · Prepared now'; e.deferred=false; } }); render(); return; }
+    if (target.dataset.prepare) { const e=state.larder.find(x => x.id === target.dataset.prepare); e.group='Ready'; e.source='Quiet Season · Prepared now'; e.deferred=false; render(); return; }
+    if (target.dataset.action === 'remove-all') { state.larder=[]; render(); return; }
+    if (target.dataset.skip) { const [episode] = state.feeds.splice(state.feeds.findIndex(e => e.id === target.dataset.skip), 1); state.offList.push({...episode, source:'Quiet Season · Skipped'}); render(); return; }
+    if (target.dataset.restore) { const [episode] = state.offList.splice(state.offList.findIndex(e => e.id === target.dataset.restore), 1); state.feeds.push({...episode, source:'Quiet Season · Undecided'}); state.offListOpen = false; render(); }
+  });
+  // Simulate a successful network refresh without admitting download or preparation work.
+  setInterval(() => { if (state.refreshing) { state.refreshing = false; state.lastUpdated = new Date(); render(); } }, 1800);
+  render();
+</script>
+</body>
+</html>

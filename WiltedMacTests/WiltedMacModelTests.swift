@@ -619,6 +619,7 @@ final class WiltedMacModelTests: XCTestCase {
                 // and drains it with `alreadyClaimed: true`, exactly as a
                 // relaunch after a crash mid-download would.
                 try await store.save(download: PodcastDownload(episodeID: episodeID, status: .queued, updatedAt: created))
+                try await store.addPodcastQueueEpisode(episodeID)
                 return store
             },
             podcastDownloadTransportFactory: {
@@ -680,6 +681,7 @@ final class WiltedMacModelTests: XCTestCase {
                 // A stranded claim, exactly as in the retryable-propagation
                 // test above, so this exercises the same automation path.
                 try await store.save(download: PodcastDownload(episodeID: episodeID, status: .queued, updatedAt: created))
+                try await store.addPodcastQueueEpisode(episodeID)
                 return store
             },
             podcastDownloadTransportFactory: {
@@ -747,6 +749,7 @@ final class WiltedMacModelTests: XCTestCase {
                 try await store.save(download: PodcastDownload(
                     episodeID: episodeID, status: .failed, updatedAt: created, failureKind: .retryable
                 ))
+                try await store.addPodcastQueueEpisode(episodeID)
                 return store
             },
             podcastDownloadTransportFactory: {
@@ -3167,6 +3170,7 @@ final class WiltedMacModelTests: XCTestCase {
                 try await store.save(download: PodcastDownload(
                     episodeID: downloadEpisodeID, status: .queued, updatedAt: created
                 ))
+                try await store.addPodcastQueueEpisode(downloadEpisodeID)
                 try await store.save(episode: try PodcastEpisode(
                     itemID: prepEpisodeID, feedID: feedID, feedURL: feedURL, rssGUID: "ticket-failure-prep",
                     title: "Failing preparation", publishedTime: created, enclosureURL: prepEnclosureURL,
@@ -3376,8 +3380,8 @@ final class WiltedMacModelTests: XCTestCase {
 
         XCTAssertEqual(model.menuUpcomingEpisodeIDs, [current.id, queued.id])
         XCTAssertEqual(model.episodePlaybackIndicators(for: current.id), ["Playing"])
-        XCTAssertEqual(model.episodePlaybackIndicators(for: queued.id), ["On Menu"])
-        XCTAssertFalse(model.episodePlaybackIndicators(for: current.id).contains("On Menu"))
+        XCTAssertEqual(model.episodePlaybackIndicators(for: queued.id), ["In Larder"])
+        XCTAssertFalse(model.episodePlaybackIndicators(for: current.id).contains("In Larder"))
     }
 
     /// The journal stores the coarse stage every pipeline shares; the worker's
@@ -3749,7 +3753,7 @@ final class WiltedMacModelTests: XCTestCase {
             queue: [current.id, queuedID]
         )
         XCTAssertEqual(model.episodePlaybackIndicators(for: current.id), ["Playing"])
-        XCTAssertEqual(model.episodePlaybackIndicators(for: queuedID), ["On Menu"])
+        XCTAssertEqual(model.episodePlaybackIndicators(for: queuedID), ["In Larder"])
 
         model.installPlaybackStateForTesting(
             episode: current,
@@ -3759,7 +3763,7 @@ final class WiltedMacModelTests: XCTestCase {
             queue: [current.id, queuedID]
         )
         XCTAssertEqual(model.episodePlaybackIndicators(for: current.id), ["Now Playing"])
-        XCTAssertFalse(model.episodePlaybackIndicators(for: current.id).contains("On Menu"))
+        XCTAssertFalse(model.episodePlaybackIndicators(for: current.id).contains("In Larder"))
     }
 
     func testPreparedLifecycleSeparatesStatusFromExplicitOutcomes() {
@@ -3830,7 +3834,7 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(model.menuDisplayEpisodeIDs, [earlier.id, current.id, next.id, later.id],
                        "the sort projection keeps the entries around the playing one too")
         XCTAssertEqual(model.episodePlaybackIndicators(for: current.id), ["Playing"])
-        XCTAssertEqual(model.episodePlaybackIndicators(for: next.id), ["On Menu"])
+        XCTAssertEqual(model.episodePlaybackIndicators(for: next.id), ["In Larder"])
     }
 
     /// The regression: `retireFinishedEpisode` swallows a failed queue removal
@@ -4079,7 +4083,7 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(model.podcastQueueIDs, [prepared.id])
         XCTAssertEqual(model.menuDisplayEpisodeIDs, [prepared.id])
         XCTAssertEqual(model.menuWaitingEpisodes.map(\.id), [prepared.id])
-        XCTAssertEqual(model.episodePlaybackIndicators(for: prepared.id), ["On Menu"])
+        XCTAssertEqual(model.episodePlaybackIndicators(for: prepared.id), ["In Larder"])
     }
 
     func testMenuDownwardBeforeMoveUsesPostRemovalIndexAndPersists() async throws {
@@ -5332,11 +5336,10 @@ final class WiltedMacModelTests: XCTestCase {
         model.retryProcessorRun(run)
         XCTAssertEqual(
             model.processorOperationMessage,
-            "Vanished episode is no longer in Podcast feeds. Add it again before retrying preparation."
+            "Vanished episode is no longer in Feeds. Add it again before retrying preparation."
         )
         let message = model.processorOperationMessage ?? ""
-        XCTAssertTrue(message.contains("Podcast feeds"))
-        XCTAssertFalse(message.contains("Larder"))
+        XCTAssertTrue(message.contains("Feeds"))
         XCTAssertFalse(message.contains("Removed"))
     }
 
@@ -6478,11 +6481,10 @@ final class WiltedMacModelTests: XCTestCase {
         model.retryProcessorRun(run)
         XCTAssertEqual(
             model.processorOperationMessage,
-            "Restore Dismissed episode from Podcast feeds before retrying preparation."
+            "Restore Dismissed episode from Feeds before retrying preparation."
         )
         let message = model.processorOperationMessage ?? ""
-        XCTAssertTrue(message.contains("Podcast feeds"))
-        XCTAssertFalse(message.contains("Larder"))
+        XCTAssertTrue(message.contains("Feeds"))
         XCTAssertFalse(message.contains("Removed"))
     }
 
@@ -6879,6 +6881,9 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertTrue(view.contains("model.skippedFeedEpisodes"))
         XCTAssertTrue(view.contains("model.dismissedEpisodes"))
         XCTAssertTrue(view.contains("wilted-feeds-restorable"))
+        XCTAssertTrue(view.contains("@State private var isOffListExpanded = false"))
+        XCTAssertTrue(view.contains("wilted-feeds-off-list-toggle"))
+        XCTAssertTrue(view.contains("if isOffListExpanded"))
     }
 
     /// Task 4.5: retirement and dismissal are one idea expressed two ways, so
@@ -6950,8 +6955,16 @@ final class WiltedMacModelTests: XCTestCase {
     // MARK: Phase 0 — the two-destination restructure
 
     func testNavigationHasExactlyTheThreeSurvivingDestinations() {
-        XCTAssertEqual(WiltedMacNavigation.allCases, [.feeds, .menu, .settings],
-                       "Larder and Prep are retired; only Feeds, Menu and Settings remain")
+        XCTAssertEqual(WiltedMacNavigation.allCases, [.menu, .feeds, .settings])
+        XCTAssertEqual(WiltedMacNavigation.allCases.map(\.title), ["Larder", "Feeds", "Settings"])
+    }
+
+    func testOnlyKeptEpisodesMayResumeDurableDownloadClaims() {
+        let claims: Set<String> = ["kept", "undecided", "skipped"]
+        XCTAssertEqual(
+            WiltedMacModel.keptDownloadClaims(claims, queueIDs: ["kept", "another-kept"]),
+            ["kept"]
+        )
     }
 
     func testARestoredSelectionNamingARetiredDestinationResolvesToTheMenu() {
@@ -7276,12 +7289,11 @@ final class WiltedMacModelTests: XCTestCase {
             model.keepEpisode(value)
         }
 
-        XCTAssertEqual(model.menuGroupClearLabel(.downloaded), "Clear all 2",
-                       "one button may not claim every row is being skipped when one will be completed")
-        XCTAssertEqual(model.menuGroupClearLabel(.playable), "Skip all 1")
+        XCTAssertEqual(model.menuGroupClearLabel(.downloaded), "Remove all 2 from Larder")
+        XCTAssertEqual(model.menuGroupClearLabel(.playable), "Remove all 1 from Larder")
     }
 
-    func testAClearReportsStartedRowsAsCompletedAndTheRestSkipped() throws {
+    func testAGroupRemovalDoesNotMarkStartedRowsCompletedOrSkipped() throws {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         var started = destinationEpisode("report-started", download: .completed, preparation: .notPrepared)
         started.playbackSeconds = 12
@@ -7294,19 +7306,19 @@ final class WiltedMacModelTests: XCTestCase {
         model.clearMenuGroup(.downloaded)
 
         let message = try XCTUnwrap(model.podcastOperationMessage)
-        XCTAssertTrue(message.contains("1 you had started counted as completed"), message)
-        XCTAssertTrue(message.contains("the rest as skipped"), message)
-        XCTAssertTrue(message.contains("Nothing was deleted"), message)
+        XCTAssertEqual(message,
+                       "Removed all 2 in Downloaded from Larder. No download, prepared cut, transcript, or listening history was touched.")
+        XCTAssertFalse(model.episodes.first { $0.id == started.id }?.isPlayed == true)
         XCTAssertNil(model.undoableSkip, "a bulk clear leaves nothing single for Undo Skip")
 
-        // A group no row of which was started says skipped and nothing more.
+        // The same queue-only contract applies when no row was started.
         let freshModel = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let neverStarted = destinationEpisode("report-never", download: .completed, preparation: .notPrepared)
         freshModel.installEpisodeForTesting(neverStarted)
         freshModel.keepEpisode(neverStarted)
         freshModel.clearMenuGroup(.downloaded)
         XCTAssertEqual(freshModel.podcastOperationMessage,
-                       "Skipped all 1 in Downloaded. They left the Menu. No download, prepared cut or transcript was touched.")
+                       "Removed all 1 in Downloaded from Larder. No download, prepared cut, transcript, or listening history was touched.")
     }
 
     func testTheToolbarBulkActionsActOnTheSetTheirCountNames() throws {
@@ -7380,6 +7392,26 @@ final class WiltedMacModelTests: XCTestCase {
                        "an Available row is not prepared")
         XCTAssertEqual(model.episodes.first { $0.id == ready.id }?.preparationState,
                        .prepared(summary: "Ready"), "a Ready row is not touched")
+    }
+
+    func testPrepareAllNowOverridesDeferredRowsWithoutDuplicatingRunningWork() throws {
+        let (directory, model, deferred) = try automationFixture("prepare-all-now-deferred")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual,
+            processingPolicy: .offPeak(try offPeakWindow()),
+            transcriptPolicy: .alwaysTranscribe, removeAds: false
+        ))
+        model.keepEpisode(deferred)
+        model.admitAutomaticPreparation(for: deferred, at: try localDate(hour: 12))
+        XCTAssertEqual(model.menuPreparableEpisodes.map(\.id), [deferred.id])
+
+        model.prepareAllDownloadedMenuEpisodes()
+
+        XCTAssertFalse(model.isDeferredForOffPeak(deferred.id))
+        XCTAssertTrue(model.episodes.first(where: { $0.id == deferred.id })?.preparationState.isRunning == true)
+        XCTAssertTrue(model.menuPreparableEpisodes.isEmpty,
+                      "a genuinely running preparation must not be offered or started twice")
     }
 
     // MARK: Sidebar totals
@@ -7831,7 +7863,7 @@ final class WiltedMacModelTests: XCTestCase {
         await model.performAutoAddPreparedEpisodesToMenu([episode.id])
 
         XCTAssertTrue(
-            model.podcastOperationMessage?.contains("could not be added to the Menu") == true,
+            model.podcastOperationMessage?.contains("could not be added to Larder") == true,
             "a raised admission must reach the status line: \(model.podcastOperationMessage ?? "nil")"
         )
     }
@@ -7895,7 +7927,7 @@ final class WiltedMacModelTests: XCTestCase {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
         XCTAssertTrue(view.contains("model.menuUpcomingEpisodeIDs.count"))
-        XCTAssertTrue(view.contains("Open Menu with \\(model.menuUpcomingEpisodeIDs.count) episodes"))
+        XCTAssertTrue(view.contains("Open Larder with \\(model.menuUpcomingEpisodeIDs.count) episodes"))
         XCTAssertTrue(view.contains("model.menuAudioSummary"))
     }
 

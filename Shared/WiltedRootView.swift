@@ -61,10 +61,10 @@ public enum WiltedScreenCopy {
     /// before pasting it, which is work Wilted can do from the document itself.
     public static let addLink = "Add article"
     public static let addLinkTitle = "Add an article"
-    public static let addLinkDetail = "Paste an HTTPS article address. If Wilted detects a podcast feed, it hands it to Podcast feeds instead. "
+    public static let addLinkDetail = "Paste an HTTPS article address. If Wilted detects a podcast feed, it hands it to Feeds instead. "
         + "Saved articles, episodes, and audio stay on this Mac."
     public static let savedArticles = "Saved articles"
-    public static let feeds = "Podcast feeds"
+    public static let feeds = "Feeds"
     public static let feedsIdentifier = "wilted-podcast-feeds"
     public static let feedsEmpty = "No podcast feeds yet"
     public static let feedsEmptyDetail = "Subscribe with a direct RSS or Atom address, or a show page that advertises one feed."
@@ -73,8 +73,8 @@ public enum WiltedScreenCopy {
     /// Wilted refreshes only when asked and downloads only what the listener
     /// picks, so the Feeds card says so rather than letting an absent schedule
     /// read as a hidden one.
-    public static let feedsPolicy = "Feeds refresh when you choose Refresh. No feed downloads audio on its own; "
-        + "use Download on an episode to keep it offline."
+    public static let feedsPolicy = "Refresh admits episode metadata. An episode remains undecided until you Keep it in Larder; "
+        + "only then can Larder automation download or prepare it."
     public static let addArticleIdentifier = "wilted-add-article"
     public static let openPlayer = "Open Now Playing"
     public static let openPlayerIdentifier = "wilted-open-player"

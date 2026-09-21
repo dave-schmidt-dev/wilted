@@ -102,8 +102,14 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         ).firstMatch
         XCTAssertTrue(skip.waitForExistence(timeout: 10))
         skip.click()
-
-        XCTAssertTrue(element(app, "wilted-feeds-restorable").waitForExistence(timeout: 10))
+        let offList = element(app, "wilted-feeds-off-list-toggle")
+        XCTAssertTrue(offList.waitForExistence(timeout: 10))
+        XCTAssertFalse(element(app, "wilted-feeds-restorable").exists)
+        offList.click()
+        let restore = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-restore-'")
+        ).firstMatch
+        XCTAssertTrue(restore.waitForExistence(timeout: 10))
         try write(app, "4.3-feeds-off-the-list", into: root)
 
         let feedRow = app.descendants(matching: .any).matching(
@@ -157,6 +163,9 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-row-'")
         ).firstMatch
         XCTAssertTrue(idleRow.waitForExistence(timeout: 10))
+        let sort = element(app, "wilted-menu-sort")
+        XCTAssertTrue(sort.waitForExistence(timeout: 5))
+        XCTAssertEqual(sort.label, "Sort Larder: Custom order")
         try write(app, "5.1-menu-idle", into: root)
 
         // The address box moved from the Larder's header to here; the
@@ -340,7 +349,7 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         let app = launch(["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts"])
         XCTAssertTrue(element(app, "wilted-mac-menu-detail").waitForExistence(timeout: 15))
         element(app, "wilted-navigation-settings").click()
-        XCTAssertTrue(element(app, "wilted-sync-controls").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "wilted-mac-settings").waitForExistence(timeout: 10))
         try write(app, "7.1-settings-with-playback", into: root)
 
         // The one settings state that refuses work. Ad removal is timed from
@@ -350,6 +359,7 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         // owner gets, which is why the walkthrough shows it rather than
         // describing it. A fixture launch has its own defaults domain, so
         // driving the picker here cannot reach the owner's own choice.
+        element(app, "wilted-mac-settings").swipeUp()
         let transcriptPolicy = element(app, "wilted-automation-transcript-policy")
         XCTAssertTrue(transcriptPolicy.waitForExistence(timeout: 10))
         transcriptPolicy.click()
@@ -401,7 +411,10 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         let settings = element(quarantined, "wilted-navigation-settings")
         XCTAssertTrue(settings.waitForExistence(timeout: 15))
         settings.click()
-        XCTAssertTrue(element(quarantined, "wilted-sync-controls").waitForExistence(timeout: 10))
+        let settingsRoot = element(quarantined, "wilted-mac-settings")
+        XCTAssertTrue(settingsRoot.waitForExistence(timeout: 10))
+        for _ in 0..<4 { settingsRoot.swipeUp() }
+        XCTAssertTrue(element(quarantined, "wilted-sync-use-current-account").waitForExistence(timeout: 10))
         try write(quarantined, "8.2-recovery-sync-quarantine", into: root)
         quarantined.terminate()
     }

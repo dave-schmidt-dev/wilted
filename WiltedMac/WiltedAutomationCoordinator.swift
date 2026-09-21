@@ -131,7 +131,8 @@ actor WiltedAutomationCoordinator {
 
     // MARK: - Decision
 
-    /// Whether this trigger should refresh, and how much it may download.
+    /// Whether this trigger should refresh. Refresh only admits feed metadata;
+    /// an undecided Feeds episode cannot be claimed, downloaded, or prepared.
     ///
     /// `onLaunch` refreshes on each launch, which is what the setting says. The
     /// persisted timestamp is what stops an interval tick repeating work the
@@ -157,17 +158,10 @@ actor WiltedAutomationCoordinator {
             shouldRefresh = now.timeIntervalSince(last) >= Double(hours) * 3_600
         }
         guard shouldRefresh else { return .idle }
-        let perFeed: Int
-        switch settings.downloadPolicy {
-        case .manual: perFeed = 0
-        case .newestOnePerEnabledFeed: perFeed = 1
-        case .newestThreePerEnabledFeed: perFeed = 3
-        case .allNewlyAdmittedUpToTwenty: perFeed = 20
-        }
         return WiltedAutomationPlan(
             shouldRefresh: true,
-            perFeedDownloadLimit: perFeed,
-            refreshDownloadBudget: settings.downloadPolicy.maximumEpisodesPerRefresh
+            perFeedDownloadLimit: 0,
+            refreshDownloadBudget: nil
         )
     }
 
@@ -219,7 +213,9 @@ actor WiltedAutomationCoordinator {
         running?.cancel()
     }
 
-    /// Resumes claims that outlived the process that made them.
+    /// Resumes the eligible claims supplied by the model. The model filters
+    /// this list to episodes the listener has kept in Larder, so a legacy
+    /// automatic claim cannot turn an undecided Feeds row into work.
     ///
     /// A claim is durable and a running download is not, so a crash mid-transfer
     /// leaves a `queued` or `downloading` record with nothing behind it. The

@@ -15,6 +15,9 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(navFeeds.waitForExistence(timeout: 5))
         XCTAssertTrue(navMenu.waitForExistence(timeout: 5))
         XCTAssertTrue(navSettings.waitForExistence(timeout: 5))
+        XCTAssertEqual(navMenu.label, "Larder")
+        XCTAssertEqual(navFeeds.label, "Feeds")
+        XCTAssertEqual(navSettings.label, "Settings")
         XCTAssertFalse(app.descendants(matching: .any)["wilted-navigation-nowPlaying"].exists)
 
         let compact = app.descendants(matching: .any)["wilted-compact-player"]
@@ -61,6 +64,20 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["wilted-podcast-feeds"].exists)
     }
 
+    func testLarderSortControlNamesItselfAndExposesEveryOrder() {
+        let app = launch(arguments: ["--wilted-ui-fixture-ready"])
+        let sort = app.descendants(matching: .any)["wilted-menu-sort"]
+        XCTAssertTrue(sort.waitForExistence(timeout: 5))
+        XCTAssertEqual(sort.label, "Sort Larder: Custom order")
+
+        sort.click()
+        for choice in ["Custom order", "Newest", "Oldest", "Length · shortest", "Show · A–Z", "Title · A–Z"] {
+            XCTAssertTrue(app.menuItems[choice].exists, "missing Larder sort choice: \(choice)")
+        }
+        app.menuItems["Oldest"].click()
+        XCTAssertEqual(sort.label, "Sort Larder: Oldest")
+    }
+
     func testSettingsAutomationControlsRevealOnlyTheRelevantOffPeakWindow() {
         let app = launch(arguments: ["--wilted-ui-smoke"])
         let navSettings = app.descendants(matching: .any)["wilted-navigation-settings"]
@@ -70,7 +87,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
         let controls = app.descendants(matching: .any)["wilted-automation-controls"]
         XCTAssertTrue(controls.waitForExistence(timeout: 5))
         XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-refresh-policy"].exists)
-        XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-download-policy"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-automation-download-policy"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-feeds-admission-policy"].exists)
         let processing = app.descendants(matching: .any)["wilted-automation-processing-policy"]
         XCTAssertTrue(processing.exists)
         XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-transcript-policy"].exists)
@@ -277,6 +295,10 @@ final class WiltedMacSmokeUITests: XCTestCase {
         ).firstMatch
         XCTAssertTrue(skip.waitForExistence(timeout: 5))
         skip.click()
+        let offList = app.descendants(matching: .any)["wilted-feeds-off-list-toggle"]
+        XCTAssertTrue(offList.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-feeds-restorable"].exists)
+        offList.click()
         let restore = app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-restore-skipped-'")
         ).firstMatch
@@ -448,10 +470,10 @@ final class WiltedMacSmokeUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-row-'")
         ).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 8))
-        XCTAssertTrue(app.staticTexts["Available"].exists)
+        XCTAssertTrue(app.staticTexts["Not downloaded"].exists)
         XCTAssertEqual(
             app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-play-'")).count, 0,
-            "an Available row cannot play before it is downloaded"
+            "a Not downloaded row cannot play before it is downloaded"
         )
         XCTAssertTrue(app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-download-'")

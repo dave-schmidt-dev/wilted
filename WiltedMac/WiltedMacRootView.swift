@@ -196,17 +196,17 @@ struct WiltedMacRootView: View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
             Divider()
             sidebarTotal(
-                "Ready to play",
+                "Ready",
                 summary: model.menuGroupAudioSummary(.playable),
                 identifier: "wilted-sidebar-ready-total"
             )
             sidebarTotal(
-                "Downloaded",
+                "Needs preparation",
                 summary: model.menuGroupAudioSummary(.downloaded),
                 identifier: "wilted-sidebar-downloaded-total"
             )
             sidebarTotal(
-                "On the Menu",
+                "In Larder",
                 summary: model.menuAudioSummary,
                 identifier: "wilted-sidebar-menu-total"
             )
@@ -412,6 +412,7 @@ private struct WiltedMacAdvertisedFeedOffer: View {
 private struct WiltedMacFeedsView: View {
     @Bindable private var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
+    @State private var isOffListExpanded = false
 
     init(model: WiltedMacModel) {
         _model = Bindable(model)
@@ -419,7 +420,8 @@ private struct WiltedMacFeedsView: View {
 
     var body: some View {
         WiltedMacDestination(title: WiltedScreenCopy.feeds, identifier: "wilted-mac-feeds-detail") {
-            Text("New episodes from your subscriptions. One decision only: keep it or skip it. Downloading, preparing and playing all happen on the Menu.")
+            refreshHeader
+            Text("New episodes from your subscriptions are undecided. Refresh only admits metadata; Keep moves an episode to Larder, where its next step becomes available.")
                 .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
@@ -437,10 +439,24 @@ private struct WiltedMacFeedsView: View {
     @ViewBuilder private var restorableEpisodes: some View {
         if !model.skippedFeedEpisodes.isEmpty || !model.dismissedEpisodes.isEmpty {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-                Text("Off the list")
-                    .wiltedFont(.title)
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                VStack(alignment: .leading, spacing: 0) {
+                Button {
+                    isOffListExpanded.toggle()
+                } label: {
+                    HStack {
+                        Label("Off the list", systemImage: isOffListExpanded ? "chevron.down" : "chevron.right")
+                            .wiltedFont(.title)
+                        Spacer()
+                        Text("\(model.skippedFeedEpisodes.count + model.dismissedEpisodes.count)")
+                            .wiltedFont(.utility)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                .accessibilityLabel("Off the list, \(model.skippedFeedEpisodes.count + model.dismissedEpisodes.count) episodes")
+                .accessibilityIdentifier("wilted-feeds-off-list-toggle")
+                if isOffListExpanded {
+                    VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(model.skippedFeedEpisodes.enumerated()), id: \.element.id) { index, episode in
                         if index > 0 { Divider() }
                         restorableRow(
@@ -461,10 +477,11 @@ private struct WiltedMacFeedsView: View {
                             model.restoreEpisode(dismissal)
                         }
                     }
+                    }
+                    .wiltedCard(colorScheme)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("wilted-feeds-restorable")
                 }
-                .wiltedCard(colorScheme)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("wilted-feeds-restorable")
             }
         }
     }
@@ -508,7 +525,7 @@ private struct WiltedMacFeedsView: View {
                     .accessibilityIdentifier("wilted-feeds-count")
             }
             if model.feedsEpisodes.isEmpty {
-                Text("Nothing new. Every episode from your feeds is already waiting on the Menu.")
+                Text("Nothing new. Every episode from your feeds is already in Larder.")
                     .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-feeds-empty")
@@ -629,21 +646,26 @@ private struct WiltedMacFeedsView: View {
         .accessibilityIdentifier("wilted-podcast-subscribe-composer")
     }
 
-    /// Refresh belongs to the list it refreshes. On its own card it was one
-    /// button in a wide empty band, the same defect the Larder order control
-    /// had before it moved into the list header.
+    /// Feeds owns its refresh action at the page header, ahead of either list.
+    /// The same location remains live while network work is in flight.
     private var refreshHeader: some View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
-            // Not "Podcast feeds" again: that is the page's own heading now.
-            Text("Subscriptions")
+            Text("Feeds")
                 .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 .frame(maxWidth: .infinity, alignment: .leading)
             if model.isRefreshingPodcasts {
                 ProgressView().controlSize(.small).accessibilityIdentifier("wilted-podcast-refresh-progress")
-                Button("Cancel Refresh") { model.cancelPodcastRefresh() }
+                Text("Refreshing")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                Button("Cancel") { model.cancelPodcastRefresh() }
                     .accessibilityIdentifier("wilted-podcast-refresh-cancel")
             } else {
+                Text("Last updated: \(model.lastPodcastRefreshText)")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-podcast-last-updated")
                 Button("Refresh") { model.refreshPodcastFeeds() }
                     .accessibilityIdentifier("wilted-podcast-refresh")
             }
@@ -656,7 +678,9 @@ private struct WiltedMacFeedsView: View {
     /// setting the reader cannot find.
     private var feedManagement: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            refreshHeader
+            Text("Subscriptions")
+                .wiltedFont(.title)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             Text(WiltedScreenCopy.feedsPolicy)
                 .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
@@ -968,8 +992,8 @@ private struct WiltedMacMenuView: View {
     @State private var dropTargetID: String?
 
     var body: some View {
-        WiltedMacDestination(title: "Menu", identifier: "wilted-mac-menu-detail") {
-            Text("Everything you kept, in the order you will hear it. Ready plays now; Downloaded needs preparing; Available needs downloading.")
+        WiltedMacDestination(title: "Larder", identifier: "wilted-mac-menu-detail") {
+            Text("Playback follows Ready episodes from top to bottom and skips rows that are not ready. Needs preparation has downloaded audio; Not downloaded needs downloading.")
                 .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
@@ -987,7 +1011,7 @@ private struct WiltedMacMenuView: View {
 
             HStack(alignment: .firstTextBaseline, spacing: WiltedTheme.Spacing.medium) {
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                    Text("Audio on Menu: \(model.menuAudioSummary.detailLabel)")
+                    Text("Audio in Larder: \(model.menuAudioSummary.detailLabel)")
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-menu-audio-total")
@@ -997,13 +1021,19 @@ private struct WiltedMacMenuView: View {
                         .accessibilityIdentifier("wilted-menu-waiting-count")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Picker("Sort", selection: $model.menuSort) {
-                    ForEach(Array(WiltedMacMenuSort.allCases), id: \.id) { option in
-                        Text(option.rawValue).tag(option)
+                Menu {
+                    Picker("Sort order", selection: $model.menuSort) {
+                        ForEach(Array(WiltedMacMenuSort.allCases), id: \.id) { option in
+                            Text(option.displayName).tag(option)
+                        }
                     }
+                } label: {
+                    Label("Sort: \(model.menuSort.displayName)", systemImage: "arrow.up.arrow.down")
+                        .wiltedFont(.utility)
                 }
-                .pickerStyle(.menu)
-                .controlSize(.small)
+                .menuStyle(.button)
+                .controlSize(.regular)
+                .accessibilityLabel("Sort Larder: \(model.menuSort.displayName)")
                 .accessibilityIdentifier("wilted-menu-sort")
             }
 
@@ -1026,7 +1056,7 @@ private struct WiltedMacMenuView: View {
             HStack(spacing: WiltedTheme.Spacing.small) {
                 filterChip(nil, label: "All waiting", count: model.menuSearchResults.count)
                 ForEach(WiltedMacMenuGroup.allCases) { group in
-                    filterChip(group, label: group.rawValue, count: model.menuEpisodes(in: group).count)
+                    filterChip(group, label: group.displayName, count: model.menuEpisodes(in: group).count)
                 }
                 Spacer()
                 Button("Download all new (\(model.menuDownloadableEpisodes.count))") {
@@ -1034,7 +1064,7 @@ private struct WiltedMacMenuView: View {
                 }
                 .disabled(model.menuDownloadableEpisodes.isEmpty || model.isSearchingMenu)
                 .accessibilityIdentifier("wilted-menu-download-all")
-                Button("Prepare all downloaded (\(model.menuPreparableEpisodes.count))") {
+                Button("Prepare all now (\(model.menuPreparableEpisodes.count))") {
                     model.prepareAllDownloadedMenuEpisodes()
                 }
                 .disabled(model.menuPreparableEpisodes.isEmpty || model.isSearchingMenu)
@@ -1077,11 +1107,7 @@ private struct WiltedMacMenuView: View {
         .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 
-    /// A group's own bulk action and its clear.
-    ///
-    /// The bulk button carries the count of the subset it can act on, and the
-    /// clear names what it will do: "Clear all" once any row has been started,
-    /// "Skip all" only when every row will simply be passed on.
+    /// A group's own bulk action and its non-destructive Larder removal.
     @ViewBuilder private func groupActions(_ group: WiltedMacMenuGroup) -> some View {
         switch group {
         case .playable:
@@ -1094,7 +1120,7 @@ private struct WiltedMacMenuView: View {
                       || model.isSearchingMenu)
             .accessibilityIdentifier("wilted-menu-play-first")
         case .downloaded:
-            Button("Prepare all \(model.menuPreparableEpisodes.count)") {
+            Button("Prepare all now \(model.menuPreparableEpisodes.count)") {
                 model.prepareAllDownloadedMenuEpisodes()
             }
             .disabled(model.menuPreparableEpisodes.isEmpty || model.isSearchingMenu)
@@ -1110,7 +1136,9 @@ private struct WiltedMacMenuView: View {
             model.clearMenuGroup(group)
         }
         .disabled(model.isSearchingMenu)
-        .accessibilityLabel("\(model.menuGroupClearLabel(group)) in \(group.rawValue)")
+        .help("Removes these rows from Larder without deleting audio, prepared cuts, transcripts, or listening history.")
+        .accessibilityHint("Does not delete audio, prepared cuts, transcripts, or listening history.")
+        .accessibilityLabel("\(model.menuGroupClearLabel(group)) in \(group.displayName)")
         .accessibilityIdentifier(groupClearIdentifier(group))
     }
 
@@ -1134,7 +1162,7 @@ private struct WiltedMacMenuView: View {
             Text(model.isSearchingMenu
                  ? (model.isSearchingTranscripts ? "Still reading transcripts…" : "No episodes match this search.")
                  : (model.menuWaitingEpisodes.isEmpty
-                    ? "Nothing is waiting on the Menu. Keep an episode from Feeds."
+                    ? "Nothing is in Larder. Keep an episode from Feeds."
                     : "No episode is in this group right now."))
                 .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
@@ -1146,7 +1174,7 @@ private struct WiltedMacMenuView: View {
                     if !episodes.isEmpty {
                         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                             HStack(alignment: .firstTextBaseline) {
-                                Text(group.rawValue)
+                                Text(group.displayName)
                                     .wiltedFont(.title)
                                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                                 Text("\(episodes.count)")
@@ -1181,20 +1209,21 @@ private struct WiltedMacMenuView: View {
     /// the dragged entry. A payload that is not one of the Menu's episodes is
     /// refused and the order left alone.
     private var tailDropTarget: some View {
-        HStack(spacing: WiltedTheme.Spacing.small) {
-            Image(systemName: "arrow.down.to.line")
+        VStack(spacing: 2) {
+            Rectangle()
+                .fill(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                .frame(height: 2)
+                .opacity(dropTargetID == Self.tailDropTargetID ? 1 : 0)
                 .accessibilityHidden(true)
-            Text("Drop here to move to the end")
+            HStack(spacing: WiltedTheme.Spacing.small) {
+                Image(systemName: "arrow.down.to.line")
+                    .accessibilityHidden(true)
+                Text("Drop here to move to the end")
+            }
         }
         .wiltedFont(.utility)
         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
         .frame(maxWidth: .infinity, minHeight: 28)
-        .background(
-            dropTargetID == Self.tailDropTargetID
-                ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.12)
-                : Color.clear,
-            in: RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
-        )
         .contentShape(Rectangle())
         .dropDestination(for: String.self) { draggedIDs, _ in
             guard let draggedID = draggedIDs.first else { return false }
@@ -1240,7 +1269,13 @@ private struct WiltedMacMenuView: View {
 
     private func menuRow(_ episode: WiltedMacEpisode, position: Int, count: Int) -> some View {
         let group = WiltedMacModel.menuGroup(for: episode)
-        return HStack(spacing: WiltedTheme.Spacing.medium) {
+        return VStack(spacing: 0) {
+            Rectangle()
+                .fill(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                .frame(height: 2)
+                .opacity(dropTargetID == episode.id ? 1 : 0)
+                .accessibilityHidden(true)
+            HStack(spacing: WiltedTheme.Spacing.medium) {
             Text(String(format: "%02d", position))
                 .wiltedFont(.utility)
                 .monospacedDigit()
@@ -1251,7 +1286,7 @@ private struct WiltedMacMenuView: View {
                     .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     .lineLimit(1)
-                Text("\(episode.feedTitle) · \(group.rawValue)")
+                Text("\(episode.feedTitle) · \(group.displayName)")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .lineLimit(1)
@@ -1302,15 +1337,11 @@ private struct WiltedMacMenuView: View {
             // returns to Feeds; Skip retires it. The two get separate slots
             // on purpose.
             Button("Remove") { model.removeEpisodeFromUpNext(episode.id) }
-                .accessibilityLabel("Remove \(episode.title) from Menu")
+                .accessibilityLabel("Remove \(episode.title) from Larder")
                 .accessibilityIdentifier("wilted-menu-remove-\(episode.id)")
+            }
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
-        .background(
-            dropTargetID == episode.id
-                ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.12)
-                : Color.clear
-        )
         .dropDestination(for: String.self) { draggedIDs, _ in
             guard let draggedID = draggedIDs.first else { return false }
             return model.moveMenuEpisode(draggedID, before: episode.id)
@@ -1318,7 +1349,7 @@ private struct WiltedMacMenuView: View {
             dropTargetID = targeted ? episode.id : nil
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(episode.title), number \(position) on Menu")
+        .accessibilityLabel("\(episode.title), number \(position) in Larder")
         .accessibilityValue("\(position) of \(count)")
         .accessibilityIdentifier("wilted-menu-row-\(episode.id)")
     }
@@ -1710,11 +1741,11 @@ private struct WiltedMacPlayerContent: View {
                     expansionButton("Notes", expansion: .notes, id: "wilted-player-notes")
                 }
                 if model.selectedNavigation != .menu {
-                    Button("Menu (\(model.menuUpcomingEpisodeIDs.count))") {
+                    Button("Larder (\(model.menuUpcomingEpisodeIDs.count))") {
                         presentation = nil
                         model.openMenu()
                     }
-                        .accessibilityLabel("Open Menu with \(model.menuUpcomingEpisodeIDs.count) episodes")
+                        .accessibilityLabel("Open Larder with \(model.menuUpcomingEpisodeIDs.count) episodes")
                         .accessibilityIdentifier("wilted-player-menu")
                 }
 
@@ -1805,7 +1836,7 @@ private struct WiltedMacPlayerContent: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Nothing is playing")
                     .wiltedFont(.body)
-                Text("Choose an episode or article from the Menu to start playback.")
+                Text("Choose an episode or article from Larder to start playback.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             }
@@ -2158,20 +2189,11 @@ private struct WiltedMacSettingsView: View {
                 }
                 .accessibilityIdentifier("wilted-automation-refresh-policy")
 
-                Divider()
-
-                automationSectionTitle("Downloads")
-                Picker("Download episodes", selection: downloadPolicyBinding) {
-                    ForEach([
-                        WiltedAutomationDownloadPolicy.manual,
-                        .newestOnePerEnabledFeed,
-                        .newestThreePerEnabledFeed,
-                        .allNewlyAdmittedUpToTwenty
-                    ], id: \.rawValue) { policy in
-                        Text(policy.settingsControlLabel).tag(policy.settingsControlLabel)
-                    }
-                }
-                .accessibilityIdentifier("wilted-automation-download-policy")
+                Text("Refresh adds metadata only. Download and preparation begin after Keep moves an episode to Larder.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-automation-feeds-admission-policy")
 
                 Divider()
 
@@ -2223,21 +2245,21 @@ private struct WiltedMacSettingsView: View {
 
                 Divider()
 
-                automationSectionTitle("Menu")
-                Toggle("Add prepared episodes to Menu", isOn: autoAddPreparedToMenuBinding)
+                automationSectionTitle("Larder")
+                Toggle("Add prepared episodes to Larder", isOn: autoAddPreparedToMenuBinding)
                     .accessibilityIdentifier("wilted-automation-auto-add-to-menu")
-                Text("An episode joins the Menu when it finishes preparing. Episodes already "
+                Text("An episode joins Larder when it finishes preparing. Episodes already "
                      + "played, already queued, or now playing are left alone.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("wilted-automation-auto-add-to-menu-explanation")
-                Toggle("Download everything on the Menu", isOn: downloadEverythingBinding)
+                Toggle("Download everything in Larder", isOn: downloadEverythingBinding)
                     .accessibilityIdentifier("wilted-automation-download-everything")
                 Toggle("Prepare everything downloaded", isOn: prepareEverythingBinding)
                     .accessibilityIdentifier("wilted-automation-prepare-everything")
                 Text("Both overrides stay on until you turn them off, and each takes the same "
-                     + "step the matching Menu group action takes. Downloads cost disk and "
+                     + "step the matching Larder group action takes. Downloads cost disk and "
                      + "bandwidth; preparing spends the machine's speech and detection models.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))

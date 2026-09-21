@@ -178,7 +178,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         // One dedicated state line: the row names the step it is waiting for,
         // derived from the model's single group accessor.
         XCTAssertTrue(row.contains("WiltedMacModel.menuGroup(for: episode)"))
-        XCTAssertTrue(row.contains("Text(\"\\(episode.feedTitle) · \\(group.rawValue)\")"))
+        XCTAssertTrue(row.contains("Text(\"\\(episode.feedTitle) · \\(group.displayName)\")"))
         XCTAssertTrue(row.contains("wilted-menu-progress-\\(episode.id)"))
         XCTAssertTrue(row.contains("wilted-menu-row-\\(episode.id)"))
 
@@ -485,7 +485,7 @@ final class WiltedVisualSystemTests: XCTestCase {
 
         model.addEpisodeToUpNext(episode)
         for _ in 0..<100 {
-            if model.playbackOperationStatus == "Added \(episode.title) to Menu." { break }
+            if model.playbackOperationStatus == "Added \(episode.title) to Larder." { break }
             try await Task.sleep(for: .milliseconds(10))
         }
 
@@ -630,6 +630,8 @@ final class WiltedVisualSystemTests: XCTestCase {
         await model.waitForPodcastOperations()
         XCTAssertEqual(model.podcastOperationMessage, "Podcast refresh cancelled.")
         XCTAssertFalse(model.isRefreshingPodcasts)
+        XCTAssertNil(model.lastPodcastRefreshAt)
+        XCTAssertEqual(model.lastPodcastRefreshText, "Never")
 
         model.subscribeToPodcastFeed(URL(string: "https://podcasts.example.test/new.xml")!)
         await model.waitForPodcastOperations()
@@ -666,6 +668,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         await model.waitForPodcastOperations()
         XCTAssertEqual(model.podcastOperationMessage, "Podcast subscription added with 1 episode.")
         XCTAssertEqual(model.episodes.map(\.title), ["Stored first episode"])
+        XCTAssertNil(model.lastPodcastRefreshAt, "subscription is not a successful manual refresh")
         XCTAssertEqual(model.episodes.first?.feedTitle, "Stored show")
 
         let store = try LocalLibraryStore(url: root.appendingPathComponent("library.sqlite"))
@@ -682,6 +685,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         // refresh admitted, so the message reports that number and not the feed.
         XCTAssertEqual(model.podcastOperationMessage, "Added 1 new episode.")
         XCTAssertEqual(model.lastPodcastRefreshNewEpisodeIDs.count, 1)
+        XCTAssertNotNil(model.lastPodcastRefreshAt)
         XCTAssertEqual(Set(model.episodes.map(\.title)), ["Stored first episode", "Stored refreshed episode"])
         let refreshedEpisodes = try await store.podcastEpisodes()
         let refreshedSubscriptions = try await store.subscriptions()
@@ -690,6 +694,50 @@ final class WiltedVisualSystemTests: XCTestCase {
             ["Stored first episode", "Stored refreshed episode"]
         )
         XCTAssertEqual(refreshedSubscriptions.filter(\.enabled).count, 1)
+    }
+
+    @MainActor
+    func testManualRefreshContinuesPastABrokenFeedAndReportsThePartialResult() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let brokenURL = URL(string: "https://podcasts.example.test/broken.xml")!
+        let workingURL = URL(string: "https://podcasts.example.test/working.xml")!
+        let store = try LocalLibraryStore(url: root.appendingPathComponent("library.sqlite"))
+        for (url, title) in [(brokenURL, "Broken show"), (workingURL, "Working show")] {
+            let feedID = try ItemID.derivePodcastFeed(from: url)
+            try await store.save(feed: PodcastFeed(
+                itemID: feedID, canonicalURL: url, title: title,
+                createdAt: Timestamp(Date(timeIntervalSince1970: 1))
+            ))
+            try await store.save(subscription: PodcastSubscription(
+                feedID: feedID, subscribedAt: Timestamp(Date(timeIntervalSince1970: 1))
+            ))
+        }
+        let loader = URLRoutingPodcastFeedLoader(documents: [
+            workingURL: Self.podcastXML(
+                title: "Working episode", guid: "working-1",
+                published: Date().addingTimeInterval(3_600)
+            )
+        ])
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: root,
+            podcastFeedClient: PodcastFeedClient(loader: loader),
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        model.refreshPodcastFeeds()
+        await model.waitForPodcastOperations()
+
+        XCTAssertEqual(model.episodes.map(\.title), ["Working episode"])
+        XCTAssertEqual(model.lastPodcastRefreshNewEpisodeIDs.count, 1)
+        XCTAssertNotNil(model.lastPodcastRefreshAt)
+        XCTAssertEqual(
+            model.podcastOperationMessage,
+            "Added 1 new episode. 1 feed could not be refreshed."
+        )
     }
 
     private static let rfc822: DateFormatter = {
@@ -778,7 +826,7 @@ final class WiltedVisualSystemTests: XCTestCase {
 
     func testNativeInteractionContract() {
         XCTAssertEqual(WiltedNavigation.allCases.map(\.title), [WiltedScreenCopy.library, WiltedScreenCopy.nowPlaying, WiltedScreenCopy.downloads, WiltedScreenCopy.settings])
-        XCTAssertEqual(WiltedMacNavigation.allCases.map(\.title), ["Podcast feeds", "Menu", "Settings"])
+        XCTAssertEqual(WiltedMacNavigation.allCases.map(\.title), ["Larder", "Feeds", "Settings"])
         XCTAssertFalse(WiltedMacNavigation.allCases.map(\.rawValue).contains("nowPlaying"))
         XCTAssertEqual(WiltedScreenCopy.libraryEmpty, "Your larder is empty")
         XCTAssertEqual(WiltedScreenCopy.noArticles, "No articles yet")
@@ -921,8 +969,19 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(source.contains("wilted-mac-menu-detail"))
         XCTAssertTrue(source.contains(".draggable(episode.id)"))
         XCTAssertTrue(source.contains(".dropDestination(for: String.self)"))
-        XCTAssertTrue(source.contains("Button(\"Prepare all downloaded (\\(model.menuPreparableEpisodes.count))\")"))
-        XCTAssertTrue(source.contains("\"Ready to play\""))
+        XCTAssertTrue(source.contains("Button(\"Prepare all now (\\(model.menuPreparableEpisodes.count))\")"))
+        XCTAssertTrue(source.contains("\"Needs preparation\""))
+        XCTAssertTrue(source.contains("Label(\"Sort: \\(model.menuSort.displayName)\""))
+        XCTAssertTrue(source.contains("Picker(\"Sort order\""))
+        XCTAssertTrue(source.contains("Text(option.displayName).tag(option)"))
+        XCTAssertTrue(source.contains(".opacity(dropTargetID == episode.id ? 1 : 0)"))
+        let menuRowStart = try XCTUnwrap(source.range(of: "private func menuRow")?.lowerBound)
+        let menuRowEnd = try XCTUnwrap(source.range(
+            of: "@ViewBuilder private func nextStepControl", range: menuRowStart..<source.endIndex
+        )?.lowerBound)
+        XCTAssertFalse(source[menuRowStart..<menuRowEnd].contains(
+            "WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.12)"
+        ))
         XCTAssertTrue(source.contains("model.menuEpisodes(in: .playable)"))
         XCTAssertTrue(source.contains("model.menuPreparableEpisodes"))
         XCTAssertTrue(source.contains(".disabled(model.menuPreparableEpisodes.isEmpty || model.isSearchingMenu)"))
@@ -940,12 +999,11 @@ final class WiltedVisualSystemTests: XCTestCase {
         let card = source[start..<end]
 
         let feeds = try XCTUnwrap(card.range(of: "automationSectionTitle(\"Feeds\")")?.lowerBound)
-        let downloads = try XCTUnwrap(card.range(of: "automationSectionTitle(\"Downloads\")")?.lowerBound)
         let processing = try XCTUnwrap(card.range(of: "automationSectionTitle(\"Processing\")")?.lowerBound)
-        XCTAssertLessThan(feeds, downloads)
-        XCTAssertLessThan(downloads, processing)
+        XCTAssertLessThan(feeds, processing)
+        XCTAssertFalse(card.contains("wilted-automation-download-policy"))
+        XCTAssertTrue(card.contains("wilted-automation-feeds-admission-policy"))
         XCTAssertTrue(card.contains("wilted-automation-refresh-policy"))
-        XCTAssertTrue(card.contains("wilted-automation-download-policy"))
         XCTAssertTrue(card.contains("wilted-automation-processing-policy"))
         XCTAssertTrue(card.contains("wilted-automation-transcript-policy"))
         XCTAssertTrue(card.contains("wilted-automation-remove-ads"))
@@ -991,7 +1049,7 @@ final class WiltedVisualSystemTests: XCTestCase {
     /// the Mac baselines always render the player, never the empty state.
     func testProducerCopyNamesOnlyProducerDestinations() {
         let producerDestinations = WiltedMacNavigation.allCases
-        XCTAssertEqual(producerDestinations.map(\.title), ["Podcast feeds", "Menu", "Settings"])
+        XCTAssertEqual(producerDestinations.map(\.title), ["Larder", "Feeds", "Settings"])
 
         XCTAssertFalse(
             WiltedScreenCopy.nowPlayingEmptyDetailProducer.contains(WiltedScreenCopy.downloads),
@@ -1072,6 +1130,15 @@ final class WiltedVisualSystemTests: XCTestCase {
 private struct CancelledPodcastFeedLoader: PodcastFeedLoading {
     func load(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
         throw PodcastFeedClientError.cancelled
+    }
+}
+
+private struct URLRoutingPodcastFeedLoader: PodcastFeedLoading {
+    let documents: [URL: Data]
+
+    func load(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
+        guard let body = documents[url] else { throw URLError(.cannotConnectToHost) }
+        return PodcastFeedHTTPResponse(url: url, statusCode: 200, data: body)
     }
 }
 

@@ -141,8 +141,8 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
                             last: origin, at: 23 * 3_600).shouldRefresh)
     }
 
-    /// Every download policy maps to one bounded pair of limits, and a refresh
-    /// that is not happening cannot download anything.
+    /// Legacy download policy values remain decodable, but every automatic
+    /// refresh is inert until a person keeps an episode in Larder.
     func testDownloadLimitsComeFromTheDownloadPolicy() {
         func plan(_ download: WiltedAutomationDownloadPolicy) -> WiltedAutomationPlan {
             WiltedAutomationCoordinator.plan(settings: settings(refresh: .onLaunch, download: download),
@@ -150,21 +150,21 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         }
         XCTAssertEqual(plan(.manual).perFeedDownloadLimit, 0)
         XCTAssertNil(plan(.manual).refreshDownloadBudget)
-        XCTAssertEqual(plan(.newestOnePerEnabledFeed).perFeedDownloadLimit, 1)
-        XCTAssertNil(plan(.newestOnePerEnabledFeed).refreshDownloadBudget)
-        XCTAssertEqual(plan(.newestThreePerEnabledFeed).perFeedDownloadLimit, 3)
-        XCTAssertEqual(plan(.allNewlyAdmittedUpToTwenty).perFeedDownloadLimit, 20)
-        XCTAssertEqual(plan(.allNewlyAdmittedUpToTwenty).refreshDownloadBudget, 20)
+        for legacy in [WiltedAutomationDownloadPolicy.newestOnePerEnabledFeed,
+                       .newestThreePerEnabledFeed, .allNewlyAdmittedUpToTwenty] {
+            XCTAssertEqual(plan(legacy).perFeedDownloadLimit, 0)
+            XCTAssertNil(plan(legacy).refreshDownloadBudget)
+        }
 
         XCTAssertEqual(WiltedAutomationPlan.idle.perFeedDownloadLimit, 0)
         XCTAssertFalse(WiltedAutomationPlan.idle.shouldRefresh)
 
-        // The budget is spent across feeds, never per feed.
+        // No persisted legacy budget can claim an undecided episode.
         let capped = plan(.allNewlyAdmittedUpToTwenty)
-        XCTAssertEqual(capped.limit(remainingBudget: 5), 5)
+        XCTAssertEqual(capped.limit(remainingBudget: 5), 0)
         XCTAssertEqual(capped.limit(remainingBudget: 0), 0)
-        XCTAssertEqual(capped.limit(remainingBudget: nil), 20)
-        XCTAssertEqual(plan(.newestOnePerEnabledFeed).limit(remainingBudget: nil), 1)
+        XCTAssertEqual(capped.limit(remainingBudget: nil), 0)
+        XCTAssertEqual(plan(.newestOnePerEnabledFeed).limit(remainingBudget: nil), 0)
     }
 
     func testPreparationEligibilityUsesTheProcessingPolicyAndInjectedLocalTime() throws {
@@ -200,8 +200,7 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
 
     // MARK: - Running
 
-    /// A per-feed policy asks each feed for its own newest episodes and never
-    /// reaches past the ones that refresh admitted.
+    /// Refresh may admit metadata from every enabled feed but cannot claim it.
     func testAPerFeedPolicyClaimsFromEveryEnabledFeed() async {
         let spy = AutomationSpy(claimsByFeed: [
             "one.example.test": ["a", "b", "c"],
@@ -212,14 +211,12 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         await subject.run(trigger: .launch)
 
         let refreshed = await spy.refreshedFeeds
-        XCTAssertEqual(refreshed.map(\.limit), [1, 1, 1])
+        XCTAssertEqual(refreshed.map(\.limit), [0, 0, 0])
         let started = await spy.startedDownloads
-        XCTAssertEqual(started, ["a", "d"], "one newest per feed, and nothing from the feed with none")
+        XCTAssertTrue(started.isEmpty, "undecided Feeds rows never start downloads")
     }
 
-    /// The twenty-episode ceiling is spent across the whole refresh, so a noisy
-    /// first feed leaves less for the next one rather than every feed taking
-    /// twenty.
+    /// A stored old twenty-episode policy no longer claims any Feeds rows.
     func testTheRefreshBudgetIsSpentAcrossFeedsNotPerFeed() async {
         let spy = AutomationSpy(claimsByFeed: [
             "one.example.test": (1...18).map { "one-\($0)" },
@@ -230,10 +227,9 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         await subject.run(trigger: .launch)
 
         let refreshed = await spy.refreshedFeeds
-        XCTAssertEqual(refreshed.map(\.limit), [20, 2, 0],
-                       "eighteen taken leaves two, and then none")
+        XCTAssertEqual(refreshed.map(\.limit), [0, 0, 0])
         let started = await spy.startedDownloads
-        XCTAssertEqual(started.count, 20)
+        XCTAssertTrue(started.isEmpty)
     }
 
     /// A manual download policy refreshes and claims nothing, so turning
@@ -265,8 +261,8 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
 
     // MARK: - Recovery, admission, and observability
 
-    /// A claim outlives the process that made it. The relaunch resumes it from
-    /// the store rather than from anything automation persisted itself.
+    /// The coordinator resumes the claims the model has already filtered to
+    /// kept Larder episodes.
     func testRelaunchResumesClaimsThatOutlivedTheirProcess() async {
         let spy = AutomationSpy(unfinished: ["stranded-one", "stranded-two"])
         let subject = coordinator(spy: spy, settings: settings(refresh: .manual))
@@ -275,7 +271,7 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         let started = await spy.startedDownloads
         XCTAssertEqual(started, ["stranded-one", "stranded-two"])
         let refreshed = await spy.refreshedFeeds
-        XCTAssertTrue(refreshed.isEmpty, "reconciliation resumes work; it does not start a refresh")
+        XCTAssertTrue(refreshed.isEmpty, "reconciliation is not a refresh")
     }
 
     /// Nothing to resume is the ordinary case and must stay silent.
@@ -297,8 +293,8 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
 
         let statuses = await spy.statuses
         XCTAssertEqual(statuses.first, .refreshing(feedsRemaining: 3))
-        XCTAssertTrue(statuses.contains(.downloading(episode: "a", remaining: 1)))
-        XCTAssertEqual(statuses.last, .finished(refreshed: 3, downloaded: 1))
+        XCTAssertFalse(statuses.contains(.downloading(episode: "a", remaining: 1)))
+        XCTAssertEqual(statuses.last, .finished(refreshed: 3, downloaded: 0))
     }
 
     /// A transient failure is retried with growing waits and a hard ceiling. An
@@ -313,7 +309,7 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         let sleeps = await spy.sleeps
         XCTAssertEqual(sleeps, [2, 4], "two failures, two growing waits, then success")
         let started = await spy.startedDownloads
-        XCTAssertEqual(started, ["a"])
+        XCTAssertTrue(started.isEmpty)
 
         let exhausted = AutomationSpy(claimsByFeed: ["one.example.test": ["a"]],
                                       transientFailures: ["one.example.test": 99])
@@ -338,24 +334,22 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         await subject.run(trigger: .launch)
 
         let sleeps = await spy.sleeps
-        XCTAssertEqual(sleeps, [2, 4], "two failures, two growing waits, then success")
+        XCTAssertTrue(sleeps.isEmpty, "there is no automatic download work to retry")
         let started = await spy.startedDownloads
-        XCTAssertEqual(started, ["a"])
+        XCTAssertTrue(started.isEmpty)
         let attempts = await spy.attempts(for: "a")
-        XCTAssertEqual(attempts, 3, "two failed attempts plus the one that succeeded")
+        XCTAssertEqual(attempts, 0)
 
         let exhausted = AutomationSpy(claimsByFeed: ["one.example.test": ["a"]],
                                       transientDownloadFailures: ["a": 99])
         let giveUp = coordinator(spy: exhausted, settings: settings(refresh: .onLaunch, download: .newestOnePerEnabledFeed))
         await giveUp.run(trigger: .launch)
         let boundedSleeps = await exhausted.sleeps
-        XCTAssertEqual(boundedSleeps.count, WiltedAutomationCoordinator.maximumRetries,
-                       "the ceiling holds; the claim is left for the next launch to reconcile")
+        XCTAssertTrue(boundedSleeps.isEmpty)
         let neverStarted = await exhausted.startedDownloads
         XCTAssertTrue(neverStarted.isEmpty)
         let exhaustedAttempts = await exhausted.attempts(for: "a")
-        XCTAssertEqual(exhaustedAttempts, WiltedAutomationCoordinator.maximumRetries + 1,
-                       "one initial attempt plus every bounded retry")
+        XCTAssertEqual(exhaustedAttempts, 0)
     }
 
     /// A claim-lost or user-cancel outcome (`WiltedAutomationNonRetryable`)
@@ -372,14 +366,13 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         await subject.run(trigger: .launch)
 
         let started = await spy.startedDownloads
-        XCTAssertEqual(started, ["b"], "the failed claim is skipped, not retried, and the pass moves on to the next")
+        XCTAssertTrue(started.isEmpty)
         let attemptsForA = await spy.attempts(for: "a")
-        XCTAssertEqual(attemptsForA, 1, "exactly one attempt -- withRetries must never retry a non-retryable failure")
+        XCTAssertEqual(attemptsForA, 0)
         let sleeps = await spy.sleeps
         XCTAssertTrue(sleeps.isEmpty, "no backoff for a non-retryable failure")
         let statuses = await spy.statuses
-        XCTAssertEqual(statuses.last, .finished(refreshed: 3, downloaded: 1),
-                       "the pass finished rather than reading the failure as its own cancellation")
+        XCTAssertEqual(statuses.last, .finished(refreshed: 3, downloaded: 0))
     }
 
     /// One feed being unreachable is not a reason to abandon the others, and a
@@ -391,7 +384,7 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         await subject.run(trigger: .launch)
 
         let started = await spy.startedDownloads
-        XCTAssertEqual(started, ["b", "c"])
+        XCTAssertTrue(started.isEmpty)
         let successes = await spy.recordedSuccesses
         XCTAssertEqual(successes, [origin], "two feeds succeeded, so the timestamp moves")
 
@@ -413,8 +406,8 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         await subject.run(trigger: .launch)
 
         let started = await spy.startedDownloads
-        XCTAssertEqual(started, ["b"], "the pass continues past the episode that would not start")
+        XCTAssertTrue(started.isEmpty)
         let statuses = await spy.statuses
-        XCTAssertEqual(statuses.last, .finished(refreshed: 3, downloaded: 1))
+        XCTAssertEqual(statuses.last, .finished(refreshed: 3, downloaded: 0))
     }
 }

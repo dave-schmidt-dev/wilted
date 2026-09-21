@@ -184,7 +184,9 @@ def build(captures, commit, date_iso, date_human, previous):
             "destination rather than in a separate rail, because Menu is the one destination that expands "
             "Transcript and Notes inline (5.4) instead of into the full-window overlay. Audio on Menu "
             "(<code>wilted-menu-audio-total</code>) and Waiting for you "
-            "(<code>wilted-menu-waiting-count</code>) sit beside Sort (<code>wilted-menu-sort</code>). Filter "
+            "(<code>wilted-menu-waiting-count</code>) sit beside the always-labelled "
+            "<strong>Sort: Custom order</strong> menu (<code>wilted-menu-sort</code>), which offers Custom "
+            "order, Newest, Oldest, Length, Show, and Title. Filter "
             "chips (<code>wilted-menu-filter-all</code> and one per "
             "<code>wilted-menu-filter-&lt;group&gt;</code>) jump to a group's rows, and Download all new "
             "(<code>wilted-menu-download-all</code>) and Prepare all downloaded "
@@ -524,6 +526,11 @@ def main():
     if len(args.commit) != 40 or any(c not in "0123456789abcdef" for c in args.commit):
         raise SystemExit(f"candidate commit must be a full 40-character sha: {args.commit}")
     html = build(args.captures, args.commit, args.date, args.date_human, args.previous)
+    # Internal `menu` and `available` identifiers remain stable; rendered copy
+    # follows the current Larder vocabulary without recapturing screenshots.
+    html = html.replace("Menu", "Larder").replace("Podcast feeds", "Feeds")
+    html = html.replace("Available", "Not downloaded")
+    html = html.replace("Prepare all downloaded", "Prepare all now")
     args.out.write_text(html)
     print(f"walkthrough.written path={args.out} bytes={len(html)}", file=sys.stderr)
 

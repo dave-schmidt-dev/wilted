@@ -69,6 +69,9 @@ enum WiltedMacMenuGroup: String, CaseIterable, Identifiable, Sendable {
 
     var id: Self { self }
 
+    /// Keep case names stable while using the accepted listener-facing label.
+    var displayName: String { self == .available ? "Not downloaded" : rawValue }
+
     /// The one-line explanation under the group heading.
     var detail: String {
         switch self {
@@ -112,6 +115,9 @@ enum WiltedMacMenuSort: String, CaseIterable, Identifiable, Sendable {
     case title = "Title · A–Z"
 
     var id: Self { self }
+
+    /// Keep the persisted raw value stable while presenting the accepted name.
+    var displayName: String { self == .custom ? "Custom order" : rawValue }
 }
 
 /// A known-duration total for one queue or status group. Unknown durations
@@ -1042,8 +1048,8 @@ struct WiltedMacPreparation: Equatable, Sendable {
 /// worth reading and listening to; which sources supply them is upkeep, and it
 /// was pushing the actual library below the fold.
 enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable {
-    case feeds
     case menu
+    case feeds
     case settings
 
     var id: Self { self }
@@ -1051,7 +1057,7 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
     var title: String {
         switch self {
         case .feeds: WiltedScreenCopy.feeds
-        case .menu: "Menu"
+        case .menu: WiltedScreenCopy.library
         case .settings: WiltedScreenCopy.settings
         }
     }
@@ -1730,6 +1736,15 @@ final class WiltedMacModel {
         preferences.object(forKey: Self.lastAutomationRefreshPreferenceKey) as? Date
     }
 
+    /// The Feeds header's persisted success boundary. `nil` is intentionally
+    /// presented as Never: cancellation and failure never write this value.
+    var lastPodcastRefreshAt: Date? { lastAutomationRefreshAt }
+
+    var lastPodcastRefreshText: String {
+        guard let lastPodcastRefreshAt else { return "Never" }
+        return lastPodcastRefreshAt.formatted(date: .abbreviated, time: .shortened)
+    }
+
     private func setLastAutomationRefresh(_ date: Date) {
         preferences.set(date, forKey: Self.lastAutomationRefreshPreferenceKey)
     }
@@ -2014,24 +2029,32 @@ final class WiltedMacModel {
         // (resumable) are disjoint statuses, but a `Set` costs nothing and
         // means a future status change here can't silently double-claim.
         let resumable = try await store.resumablePodcastDownloads().map(\.episodeID.rawValue)
-        return Array(Set(unfinished + resumable)).sorted()
+        return Self.keptDownloadClaims(Set(unfinished + resumable), queueIDs: podcastQueueIDs)
     }
 
-    /// Refreshes one feed and claims a bounded subset of the episodes that exact
-    /// refresh admitted, in one store save.
+    /// Only Keep grants authority to resume a durable download claim. This
+    /// leaves claims created by the retired automatic-download policy inert
+    /// while still recovering an interrupted download for a Larder episode.
+    static func keptDownloadClaims(_ claims: Set<String>, queueIDs: [String]) -> [String] {
+        let kept = Set(queueIDs)
+        return claims.filter(kept.contains).sorted()
+    }
+
+    /// Refreshes one feed and saves only its metadata. This deliberately uses
+    /// the non-claiming store path: automated refresh has no authority to turn
+    /// an undecided Feeds episode into download or preparation work.
     private func automaticRefresh(_ url: URL, claimingNewest limit: Int) async throws -> [String] {
         guard let store else { throw CancellationError() }
         let loaded = try await podcastFeedClient.load(url)
         try await store.save(feed: loaded.feed)
-        let result = try await store.admitPodcastEpisodes(
-            loaded.episodes, admission: .incremental, claimingNewest: limit
-        )
+        _ = try await store.savePodcastEpisodes(loaded.episodes, admission: .incremental)
         let values = try await loadLibrary(from: store)
         articles = values.articles
         applyEpisodes(values.episodes)
         subscriptions = values.subscriptions
         dismissedEpisodes = try await loadDismissedEpisodes(from: store)
-        return result.claimed.map(\.rawValue)
+        _ = limit // Kept for coordinator ABI compatibility; always zero by policy.
+        return []
     }
 
     /// Wraps a terminal (or cancelled/not-found) download failure so
@@ -2450,9 +2473,13 @@ final class WiltedMacModel {
                 }
                 let result = try await self.refreshPodcastURLs(urls, subscribing: false)
                 self.lastPodcastRefreshNewEpisodeIDs = result.newEpisodeIDs.map(\.rawValue)
-                self.podcastOperationMessage = result.newEpisodeIDs.isEmpty
+                self.setLastAutomationRefresh(Date())
+                let update = result.newEpisodeIDs.isEmpty
                     ? "Podcast episodes are up to date."
                     : "Added \(result.newEpisodeIDs.count) new episode\(result.newEpisodeIDs.count == 1 ? "" : "s")."
+                self.podcastOperationMessage = result.failedFeedCount == 0
+                    ? update
+                    : "\(update) \(result.failedFeedCount) feed\(result.failedFeedCount == 1 ? "" : "s") could not be refreshed."
             } catch is CancellationError {
                 self.podcastOperationMessage = "Podcast refresh cancelled."
             } catch PodcastFeedClientError.cancelled {
@@ -3182,7 +3209,7 @@ final class WiltedMacModel {
 #endif
 
     /// What a row says when its preparation failed. The cause is on Prep.
-    nonisolated static let preparationFailedLabel = "Preparation failed. Retry it from the Menu."
+    nonisolated static let preparationFailedLabel = "Preparation failed. Retry it from Larder."
 
     /// What a row says once its preparation owns the single run slot.
     nonisolated static let preparingStage = "Preparing…"
@@ -3205,8 +3232,8 @@ final class WiltedMacModel {
             // The restore control lives on Feeds, so the sentence has to name
             // the surface the reader can actually press.
             processorOperationMessage = dismissedEpisodes.contains(where: { $0.id == run.itemID })
-                ? "Restore \(run.title) from Podcast feeds before retrying preparation."
-                : "\(run.title) is no longer in Podcast feeds. Add it again before retrying preparation."
+                ? "Restore \(run.title) from Feeds before retrying preparation."
+                : "\(run.title) is no longer in Feeds. Add it again before retrying preparation."
             return
         }
         processorOperationMessage = nil
@@ -3420,7 +3447,7 @@ final class WiltedMacModel {
                 self.subscriptions = values.subscriptions
                 self.podcastOperationMessage = enabled
                     ? "\(subscription.title) is showing in Larder again."
-                    : "\(subscription.title) is hidden from the Menu. Wilted still keeps its episodes."
+                    : "\(subscription.title) is hidden from Larder. Wilted still keeps its episodes."
             } catch {
                 self.podcastOperationMessage = "\(subscription.title) could not be updated."
             }
@@ -3738,7 +3765,11 @@ final class WiltedMacModel {
     private struct PodcastRefreshResult {
         var newEpisodeIDs: [ItemID] = []
         var duplicateSubscription: ItemID?
+        var successfulFeedCount = 0
+        var failedFeedCount = 0
     }
+
+    private struct PodcastRefreshAllFeedsFailed: Error {}
 
     private func refreshPodcastURLs(_ urls: [URL], subscribing: Bool) async throws -> PodcastRefreshResult {
         guard let store else { throw CancellationError() }
@@ -3746,19 +3777,32 @@ final class WiltedMacModel {
         var result = PodcastRefreshResult()
         for url in urls {
             try Task.checkCancellation()
-            let loaded = try await podcastFeedClient.load(url)
-            try await store.save(feed: loaded.feed)
-            if subscribing {
-                let inserted = try await store.subscribeIfNeeded(PodcastSubscription(
-                    feedID: loaded.feed.itemID, subscribedAt: Timestamp(Date())
-                ))
-                if !inserted { result.duplicateSubscription = loaded.feed.itemID }
+            do {
+                let loaded = try await podcastFeedClient.load(url)
+                try await store.save(feed: loaded.feed)
+                if subscribing {
+                    let inserted = try await store.subscribeIfNeeded(PodcastSubscription(
+                        feedID: loaded.feed.itemID, subscribedAt: Timestamp(Date())
+                    ))
+                    if !inserted { result.duplicateSubscription = loaded.feed.itemID }
+                }
+                let admission = try await store.savePodcastEpisodes(
+                    loaded.episodes, admission: subscribing ? .backfill : .incremental
+                )
+                withheld += loaded.droppedEpisodeCount + admission.skipped
+                result.newEpisodeIDs.append(contentsOf: admission.newlyAdmitted)
+                result.successfulFeedCount += 1
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch PodcastFeedClientError.cancelled {
+                throw PodcastFeedClientError.cancelled
+            } catch {
+                guard !subscribing else { throw error }
+                result.failedFeedCount += 1
             }
-            let admission = try await store.savePodcastEpisodes(
-                loaded.episodes, admission: subscribing ? .backfill : .incremental
-            )
-            withheld += loaded.droppedEpisodeCount + admission.skipped
-            result.newEpisodeIDs.append(contentsOf: admission.newlyAdmitted)
+        }
+        if !subscribing, result.successfulFeedCount == 0, result.failedFeedCount > 0 {
+            throw PodcastRefreshAllFeedsFailed()
         }
         withheldPodcastEpisodeCount = withheld
         let values = try await loadLibrary(from: store)
@@ -3876,8 +3920,8 @@ final class WiltedMacModel {
         } else {
             pendingMenuAdditions.formUnion(failed)
             podcastOperationMessage = failed.count == 1
-                ? "An episode could not be added to the Menu. It will be retried."
-                : "\(failed.count) episodes could not be added to the Menu. They will be retried."
+                ? "An episode could not be added to Larder. It will be retried."
+                : "\(failed.count) episodes could not be added to Larder. They will be retried."
         }
 #else
         _ = ids
@@ -3953,7 +3997,7 @@ final class WiltedMacModel {
         if isPodcastPlayback, currentPodcastEpisodeID == episodeID {
             return [isPlaying ? "Playing" : "Now Playing"]
         }
-        return podcastQueueIDs.contains(episodeID) ? ["On Menu"] : []
+        return podcastQueueIDs.contains(episodeID) ? ["In Larder"] : []
     }
 
     /// The Menu entries the badge and its label count: the same visible rows
@@ -4226,7 +4270,7 @@ final class WiltedMacModel {
                 // Reported rather than swallowed: the old code retried forever
                 // and said nothing, so a queue that would not accept the sort
                 // looked like a Menu that simply ignored the picker.
-                self?.podcastOperationMessage = "The Menu order could not be saved."
+                self?.podcastOperationMessage = "The Larder order could not be saved."
             }
             await self?.refreshPodcastQueueState()
             self?.isApplyingMenuSort = false
@@ -4587,15 +4631,15 @@ final class WiltedMacModel {
     func addEpisodeToUpNext(_ episode: WiltedMacEpisode) {
 #if canImport(WiltedProducer)
         guard let playback, let id = try? ItemID(rawValue: episode.id) else { return }
-        playbackOperationStatus = "Adding \(episode.title) to Menu…"
+        playbackOperationStatus = "Adding \(episode.title) to Larder…"
         Task { [weak self] in
             guard let self else { return }
             do {
                 await self.fixturePodcastInstallTask?.value
                 try await playback.addPodcastQueueEpisode(id)
                 await self.refreshPodcastQueueState()
-                self.playbackOperationStatus = "Added \(episode.title) to Menu."
-            } catch { self.playbackOperationStatus = "Menu could not be updated." }
+                self.playbackOperationStatus = "Added \(episode.title) to Larder."
+            } catch { self.playbackOperationStatus = "Larder could not be updated." }
         }
 #endif
     }
@@ -4611,7 +4655,7 @@ final class WiltedMacModel {
         // The optimistic half first: the row moves on the next render even
         // before the durable round trip, exactly as a removal does.
         podcastQueueIDs.append(episode.id)
-        podcastOperationMessage = "Kept \(episode.title). It is waiting on the Menu."
+        podcastOperationMessage = "Kept \(episode.title). It is in Larder."
         if automationSettings.downloadEverythingOnMenu,
            Self.menuGroup(for: episode) == .available {
             // The override fetches what it kept through the same admission the
@@ -4704,7 +4748,7 @@ final class WiltedMacModel {
         // made a multi-episode press look like only its first item queued.
         let requestedIDs = eligible.map(\.id)
         podcastQueueIDs.append(contentsOf: requestedIDs)
-        playbackOperationStatus = "Adding \(eligible.count) prepared episodes to Menu…"
+        playbackOperationStatus = "Adding \(eligible.count) prepared episodes to Larder…"
         playbackOperationTask = Task { [weak self] in
             guard let self else { return }
             var addedCount = 0
@@ -4716,12 +4760,12 @@ final class WiltedMacModel {
                     addedCount += 1
                 }
                 await self.refreshPodcastQueueState()
-                self.playbackOperationStatus = "Added \(addedCount) prepared episode\(addedCount == 1 ? "" : "s") to Menu."
+                self.playbackOperationStatus = "Added \(addedCount) prepared episode\(addedCount == 1 ? "" : "s") to Larder."
             } catch {
                 await self.refreshPodcastQueueState()
                 self.playbackOperationStatus = addedCount == 0
-                    ? "Menu could not be updated."
-                    : "Added \(addedCount) prepared episode\(addedCount == 1 ? "" : "s") to Menu."
+                    ? "Larder could not be updated."
+                    : "Added \(addedCount) prepared episode\(addedCount == 1 ? "" : "s") to Larder."
             }
         }
 #endif
@@ -4774,7 +4818,7 @@ final class WiltedMacModel {
     func removeEpisodeFromUpNext(_ episodeID: String) {
 #if canImport(WiltedProducer)
         guard let playback, let id = try? ItemID(rawValue: episodeID) else { return }
-        playbackOperationStatus = "Updating Menu…"
+        playbackOperationStatus = "Updating Larder…"
         Task { [weak self] in
             try? await playback.removePodcastQueueEpisode(id)
             await self?.refreshPodcastQueueState()
@@ -4791,10 +4835,13 @@ final class WiltedMacModel {
         menuUnfilteredEpisodes(in: .available)
     }
 
-    /// The subset of Downloaded the Prepare action can actually start: an
-    /// episode already preparing or prepared has nothing left to ask for.
+    /// Downloaded rows the bulk override can start now. This includes ordinary
+    /// not-started rows and rows deferred for off-peak, but excludes a genuine
+    /// running preparation so the action cannot duplicate work.
     var menuPreparableEpisodes: [WiltedMacEpisode] {
-        menuUnfilteredEpisodes(in: .downloaded).filter(Self.isEligibleForPreparation)
+        menuUnfilteredEpisodes(in: .downloaded).filter {
+            isDeferredForOffPeak($0.id) || Self.isEligibleForPreparation($0)
+        }
     }
 
     /// The Menu's Available bulk action: the row's Download applied to the
@@ -4809,7 +4856,11 @@ final class WiltedMacModel {
     /// group. Preparing stays in Downloaded with progress on each row.
     func prepareAllDownloadedMenuEpisodes() {
         for episode in menuPreparableEpisodes {
-            prepareEpisode(episode)
+            if isDeferredForOffPeak(episode.id) {
+                _ = prepareDeferredEpisodeNow(episode)
+            } else {
+                prepareEpisode(episode)
+            }
         }
     }
 
@@ -4827,28 +4878,23 @@ final class WiltedMacModel {
         hasStartedEpisode(episode) ? "Completed" : "Skip"
     }
 
-    /// The group clear's label. One button may not claim every row is being
-    /// skipped when some rows will be completed instead.
+    /// The group action names the queue mutation, not the retirement detail.
+    /// Media, prepared cuts, transcripts and listening history are preserved.
     func menuGroupClearLabel(_ group: WiltedMacMenuGroup) -> String {
         let episodes = menuUnfilteredEpisodes(in: group)
-        let anyStarted = episodes.contains { hasStartedEpisode($0) }
-        return "\(anyStarted ? "Clear" : "Skip") all \(episodes.count)"
+        return "Remove all \(episodes.count) from Larder"
     }
 
     /// Removes exactly the rows the group renders from the Menu, and nothing
     /// else: every row's download, prepared cut and transcript stay where they
     /// are.
     ///
-    /// A row the reader had started is completed -- the same durable mark a
-    /// single Skip writes -- while the rest are simply skipped. The whole
-    /// group leaves the Menu on the next render, then the durable queue and
-    /// records are brought in line.
+    /// This is queue removal, not Skip or Completed. The whole group leaves
+    /// Larder on the next render, then the durable queue is brought in line.
     func clearMenuGroup(_ group: WiltedMacMenuGroup) {
 #if canImport(WiltedProducer)
         let episodes = menuUnfilteredEpisodes(in: group)
         guard !episodes.isEmpty else { return }
-        let started = episodes.filter { hasStartedEpisode($0) }
-        let skipped = episodes.count - started.count
         let ids = Set(episodes.map(\.id))
         let wasPlaying = currentPodcastEpisodeID.map(ids.contains) ?? false
         // The optimistic half: the whole group leaves the Menu on the next
@@ -4857,22 +4903,10 @@ final class WiltedMacModel {
         // A bulk clear is not one episode's Skip, so nothing single is left
         // for Undo Skip to restore.
         undoableSkip = nil
-        podcastOperationMessage = started.isEmpty
-            ? "Skipped all \(episodes.count) in \(group.rawValue). They left the Menu. No download, prepared cut or transcript was touched."
-            : "Cleared all \(episodes.count) in \(group.rawValue): \(started.count) you had started counted as completed, the rest as skipped. Nothing was deleted."
+        podcastOperationMessage = "Removed all \(episodes.count) in \(group.displayName) from Larder. No download, prepared cut, transcript, or listening history was touched."
         Task { [weak self] in
             guard let self else { return }
             for episode in episodes {
-                if started.contains(where: { $0.id == episode.id }),
-                   let store = self.store,
-                   let id = try? ItemID(rawValue: episode.id) {
-                    // `lastRevisionID` stays nil for the same reason a single
-                    // Skip leaves it nil: this is not evidence about the audio.
-                    try? await store.saveListening(PodcastListeningState(
-                        episodeID: id, completedAt: Timestamp(Date()),
-                        lastRevisionID: nil, updatedAt: Timestamp(Date())
-                    ))
-                }
                 if let playback = self.playback, let id = try? ItemID(rawValue: episode.id) {
                     try? await playback.removePodcastQueueEpisode(id)
                 }
@@ -4938,7 +4972,7 @@ final class WiltedMacModel {
     func moveEpisodeInUpNext(from source: Int, to destination: Int) {
 #if canImport(WiltedProducer)
         guard let playback else { return }
-        playbackOperationStatus = "Reordering Menu…"
+        playbackOperationStatus = "Reordering Larder…"
         Task { [weak self] in
             try? await playback.movePodcastQueueEpisode(from: source, to: destination)
             await self?.refreshPodcastQueueState()
@@ -6195,7 +6229,7 @@ final class WiltedMacModel {
 
     /// What Prep says about a run its process did not live to finish.
     nonisolated static let preparationInterruptedMessage =
-        "Wilted quit while this was preparing. Retry it from the Menu."
+        "Wilted quit while this was preparing. Retry it from Larder."
 
     /// The terminal entry that closes an interrupted run, or nil for a run
     /// that already has one.
@@ -6394,7 +6428,7 @@ final class WiltedMacModel {
 
     private func restorePodcastPlayback() async {
         guard let playback else { return }
-        playbackOperationStatus = "Restoring Menu…"
+        playbackOperationStatus = "Restoring Larder…"
         await playback.restorePodcastQueue()
         await refreshPodcastQueueState()
         if let itemID = playback.itemID,
