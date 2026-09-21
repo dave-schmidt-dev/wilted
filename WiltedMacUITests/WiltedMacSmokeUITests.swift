@@ -770,6 +770,13 @@ final class WiltedMacSmokeUITests: XCTestCase {
         return (own + children).joined(separator: " ")
     }
 
+    private func waitForHittable(_ element: XCUIElement, timeout: TimeInterval = 10) -> Bool {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "hittable == true"), object: element
+        )
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+    }
+
     /// Walkthrough frame 6.4 has never captured. The model half of this path is
     /// held down in WiltedMacModelTests; this is the view half, in the gate
     /// where it can be iterated without seizing the screen for a full capture.
@@ -869,6 +876,52 @@ final class WiltedMacSmokeUITests: XCTestCase {
                        "a line the publisher credited to nobody carries no name")
         XCTAssertTrue(app.descendants(matching: .any)["\(prefix)3"].label.contains("Angie"),
                       "the voice came back, so the name is announced again")
+    }
+
+    /// Larder is an outer scroll view while this synchronized transcript owns
+    /// the inner one. Existence alone is not enough: an active off-screen cue
+    /// has to be hittable after mount and after its next boundary.
+    func testInlineTranscriptFollowsAnOffscreenActiveCueAcrossABoundary() {
+        let app = launch(arguments: [
+            "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts",
+            "--wilted-ui-fixture-prepared", "--wilted-ui-fixture-long-transcript",
+        ])
+        app.descendants(matching: .any)["wilted-navigation-feeds"].click()
+        let keep = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-keep-'")
+        ).firstMatch
+        XCTAssertTrue(keep.waitForExistence(timeout: 15))
+        keep.click()
+        app.descendants(matching: .any)["wilted-navigation-menu"].click()
+        let playEpisode = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-play-'")
+        ).firstMatch
+        XCTAssertTrue(playEpisode.waitForExistence(timeout: 15))
+        playEpisode.click()
+
+        let scrubber = app.descendants(matching: .any)["wilted-player-scrubber"]
+        XCTAssertTrue(scrubber.waitForExistence(timeout: 15))
+        scrubber.adjust(toNormalizedSliderPosition: 0.685)
+
+        let transcript = app.descendants(matching: .any)["wilted-player-transcript"]
+        XCTAssertTrue(transcript.waitForExistence(timeout: 10))
+        transcript.click()
+
+        let prefix = "wilted-now-playing-synced-transcript-"
+        let startingCue = app.descendants(matching: .any)["\(prefix)cue-67"]
+        XCTAssertTrue(startingCue.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForHittable(startingCue),
+                      "the active cue must be visible when the inline transcript mounts")
+        let nearbyMarker = app.descendants(matching: .any)["\(prefix)removed-5"]
+        XCTAssertTrue(nearbyMarker.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForHittable(nearbyMarker),
+                      "prepared cuts stay in the synchronized transcript's visible rows")
+
+        scrubber.adjust(toNormalizedSliderPosition: 0.81)
+        let advancedCue = app.descendants(matching: .any)["\(prefix)cue-79"]
+        XCTAssertTrue(advancedCue.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForHittable(advancedCue),
+                      "the next active cue must become visible after the cue boundary")
     }
 
     /// The full-window player belongs to the destination that presented it.

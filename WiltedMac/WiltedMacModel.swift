@@ -1490,6 +1490,8 @@ final class WiltedMacModel {
     /// The podcast fixture episode starts out prepared, so the UI test can
     /// prove a prepared row still offers a way to prepare again.
     private var fixtureEpisodeIsPrepared = false
+    /// A long prepared episode used only by the scrolling UI regression.
+    private var fixtureEpisodeHasLongTranscript = false
     /// Seeds one episode deferred to off-peak, so the UI leg has a row whose
     /// only way forward is the override.
     private var fixtureEpisodeIsDeferred = false
@@ -1569,6 +1571,7 @@ final class WiltedMacModel {
         self.pastedLinkClassifier = pastedLinkClassifier
         fixtureDownloadFailuresRemaining = arguments.contains("--wilted-ui-fixture-download-failure") ? 1 : 0
         fixtureEpisodeIsPrepared = arguments.contains("--wilted-ui-fixture-prepared")
+        fixtureEpisodeHasLongTranscript = arguments.contains("--wilted-ui-fixture-long-transcript")
         fixtureEpisodeIsDeferred = arguments.contains("--wilted-ui-fixture-deferred")
 
         if usesFixtureMode {
@@ -1654,6 +1657,7 @@ final class WiltedMacModel {
             || arguments.contains("--wilted-ui-fixture-preparing")
             || arguments.contains("--wilted-ui-fixture-podcasts")
             || arguments.contains("--wilted-ui-fixture-download-failure")
+            || arguments.contains("--wilted-ui-fixture-long-transcript")
     }
 
     /// Whether this process is running the unit tests.
@@ -6902,14 +6906,28 @@ final class WiltedMacModel {
     /// alternating is the case the display rule exists for: the name is drawn
     /// where the voice changes, and the run of lines in between carries none.
     private static func fixtureEpisodeTranscript(
-        episodeID: ItemID, revisionID: RevisionID
+        episodeID: ItemID, revisionID: RevisionID, isLong: Bool
     ) -> Transcript? {
-        let lines: [(Double, Double, String, String?)] = [
-            (0, 6, "Welcome back to Field Notes. Today, the machines that keep the office quiet.", "Angie"),
-            (6, 13, "Thanks for having me. I have opinions about ventilation.", "Chris"),
-            (13, 20, "Everyone does, eventually.", nil),
-            (20, 28, "Let us start with the one under the stairs.", "Angie"),
-        ]
+        let lines: [(Double, Double, String, String?)]
+        if isLong {
+            guard let timeline = fixtureLongTranscriptTimeline else { return nil }
+            lines = (0..<105).compactMap { originalIndex in
+                let originalStart = Double(originalIndex * 14)
+                let originalEnd = originalStart + 14
+                guard let keep = timeline.kept.first(where: {
+                    $0.originalStartSeconds <= originalStart && $0.originalEndSeconds >= originalEnd
+                }) else { return nil }
+                let preparedStart = keep.outputStartSeconds + originalStart - keep.originalStartSeconds
+                return (preparedStart, preparedStart + 14, "Long prepared cue \(originalIndex).", nil)
+            }
+        } else {
+            lines = [
+                (0, 6, "Welcome back to Field Notes. Today, the machines that keep the office quiet.", "Angie"),
+                (6, 13, "Thanks for having me. I have opinions about ventilation.", "Chris"),
+                (13, 20, "Everyone does, eventually.", nil),
+                (20, 28, "Let us start with the one under the stairs.", "Angie"),
+            ]
+        }
         let cues = lines.compactMap {
             try? TranscriptCue(startSeconds: $0.0, endSeconds: $0.1, text: $0.2, speaker: $0.3)
         }
@@ -6920,6 +6938,40 @@ final class WiltedMacModel {
             languageCode: "en", timing: .published, cues: cues,
             updatedAt: Timestamp(Date(timeIntervalSince1970: 1_699_827_200))
         )
+    }
+
+    /// A valid prepared-audio timeline with several cuts. The scrolling
+    /// fixture reads these through the same persisted journal path as a real
+    /// prepared episode, so marker rows are not invented by the view.
+    private static var fixtureLongTranscriptTimeline: PreparationStatus.PreparationTimeline? {
+        let cutBounds: [(Double, Double)] = [
+            (168, 182), (336, 350), (504, 518), (672, 686),
+            (840, 854), (1_008, 1_022), (1_176, 1_190), (1_320, 1_334),
+        ]
+        let removed = cutBounds.compactMap {
+            try? PreparationStatus.PreparationTimeline.RemovedInterval(
+                originalStartSeconds: $0.0, originalEndSeconds: $0.1,
+                label: "advertisement", confidence: 0.9
+            )
+        }
+        guard removed.count == cutBounds.count else { return nil }
+
+        var kept: [PreparationStatus.PreparationTimeline.KeptInterval] = []
+        var originalStart = 0.0
+        var outputStart = 0.0
+        for cut in cutBounds {
+            guard let interval = try? PreparationStatus.PreparationTimeline.KeptInterval(
+                originalStartSeconds: originalStart, originalEndSeconds: cut.0, outputStartSeconds: outputStart
+            ) else { return nil }
+            kept.append(interval)
+            outputStart += cut.0 - originalStart
+            originalStart = cut.1
+        }
+        guard let finalInterval = try? PreparationStatus.PreparationTimeline.KeptInterval(
+            originalStartSeconds: originalStart, originalEndSeconds: 1_482, outputStartSeconds: outputStart
+        ) else { return nil }
+        kept.append(finalInterval)
+        return try? PreparationStatus.PreparationTimeline(removed: removed, kept: kept)
     }
 
     private func installPodcastFixture(in store: LocalLibraryStore) {
@@ -6952,7 +7004,9 @@ final class WiltedMacModel {
             durationSeconds: episode.durationSeconds, playbackSeconds: 0,
             downloadState: fixtureDownloadFailuresRemaining > 0 ? .notDownloaded : .completed,
             preparationState: fixtureEpisodeIsPrepared
-                ? .prepared(summary: Self.fixturePreparedSummary)
+                ? .prepared(summary: fixtureEpisodeHasLongTranscript
+                    ? "Ready · 8 ads removed (1:52) · transcript synced"
+                    : Self.fixturePreparedSummary)
                 : (fixtureEpisodeIsDeferred ? .preparing(stage: Self.preparationQueuedStage) : .notPrepared)
         )]
         if fixtureEpisodeIsDeferred {
@@ -6994,7 +7048,7 @@ final class WiltedMacModel {
         _ = FileManager.default.createFile(atPath: mediaURL.path, contents: Data([0]))
         let revision = try? AudioRevision(
             itemID: episodeID, revisionID: RevisionID(rawValue: "fixture-podcast-revision"),
-            durationSeconds: 1_482, byteCount: 1,
+            durationSeconds: fixtureEpisodeHasLongTranscript ? 1_370 : 1_482, byteCount: 1,
             contentHash: "sha256:" + String(repeating: "9", count: 64), mediaType: "audio/mpeg",
             createdAt: Timestamp(Date(timeIntervalSince1970: 1_699_827_200)), schemaVersion: 1
         )
@@ -7013,7 +7067,8 @@ final class WiltedMacModel {
             }
             if let revision {
                 if let transcript = Self.fixtureEpisodeTranscript(
-                    episodeID: episodeID, revisionID: revision.revisionID
+                    episodeID: episodeID, revisionID: revision.revisionID,
+                    isLong: fixtureEpisodeHasLongTranscript
                 ) {
                     try? await store.saveReadyRevision(
                         revision, mediaURL: mediaURL, transcript: transcript
@@ -7043,7 +7098,8 @@ final class WiltedMacModel {
                     ("transcript.stt.start", .extracting, "transcript.stt.start", nil),
                     ("ads.detect.calls", .assembling, "50 requests, 0 failed", nil),
                     ("ads.detect.span.1", .assembling, "0:01:20–0:02:10 · host read · 91%", nil),
-                    ("ads.cut.complete", .assembling, "442.12 s removed", 0.9),
+                    ("ads.cut.complete", .assembling,
+                     fixtureEpisodeHasLongTranscript ? "112.00 s removed" : "442.12 s removed", 0.9),
                 ]
                 for (offset, (stage, coarse, detail, fraction)) in journalled.enumerated() {
                     guard let status = try? PreparationStatus(
@@ -7056,8 +7112,13 @@ final class WiltedMacModel {
                 }
                 if let terminal = try? PreparationTerminalResult(outcome: .succeeded, revisionID: revision?.revisionID),
                    let status = try? PreparationStatus(
-                    stage: .completed, detail: Self.fixturePreparedSummary, cancellable: false, terminalResult: terminal,
-                    emittedAt: Timestamp(started.addingTimeInterval(300))
+                    stage: .completed,
+                    detail: fixtureEpisodeHasLongTranscript
+                        ? "Ready · 8 ads removed (1:52) · transcript synced"
+                        : Self.fixturePreparedSummary,
+                    cancellable: false, terminalResult: terminal,
+                    emittedAt: Timestamp(started.addingTimeInterval(300)),
+                    timeline: fixtureEpisodeHasLongTranscript ? Self.fixtureLongTranscriptTimeline : nil
                    ) {
                     try? await store.record(preparation: PreparationJournalEntry(
                         id: requestID + "|terminal", itemID: episodeID, requestID: requestID, status: status

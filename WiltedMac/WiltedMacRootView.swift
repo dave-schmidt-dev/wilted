@@ -1499,6 +1499,15 @@ enum WiltedMacPlayerSection: String, Hashable, CaseIterable {
 private enum WiltedMacPlayerLayout: Equatable {
     case rail
     case fullWindow
+
+    /// Larder owns the outer destination scroll view. The inline transcript
+    /// needs its own viewport so it can reveal an off-screen active cue.
+    var synchronizedTranscriptViewportHeight: CGFloat? {
+        switch self {
+        case .rail: 280
+        case .fullWindow: nil
+        }
+    }
 }
 
 struct WiltedMacCompactPlayer: View {
@@ -1924,6 +1933,7 @@ private struct WiltedMacPlayerContent: View {
                     activeCueID: model.activeTranscriptCueID,
                     identifier: "wilted-now-playing-synced-transcript"
                 ) { model.seekToTranscriptCue(transcript.cues[$0.id]) }
+                .frame(height: layout.synchronizedTranscriptViewportHeight)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
