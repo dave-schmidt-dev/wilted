@@ -749,6 +749,9 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     /// loaded library always sets it, which is what lets the Feeds card count
     /// the rows the Larder actually draws for one feed.
     var feedID: String? = nil
+    /// The feed's canonical subscription URL, when the source record carries
+    /// it. Hand-built rows may leave it absent.
+    var feedURL: URL? = nil
 
     var lifecyclePresentation: WiltedMacEpisodeLifecyclePresentation {
         WiltedMacEpisodeLifecyclePresentation(
@@ -764,7 +767,8 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
             lhs.durationSeconds == rhs.durationSeconds && lhs.playbackSeconds == rhs.playbackSeconds &&
             lhs.isPlayed == rhs.isPlayed && lhs.retiredAt == rhs.retiredAt && lhs.removalKind == rhs.removalKind &&
             lhs.downloadState == rhs.downloadState && lhs.preparationState == rhs.preparationState &&
-            lhs.isReadyMediaAvailable == rhs.isReadyMediaAvailable
+            lhs.isReadyMediaAvailable == rhs.isReadyMediaAvailable && lhs.feedID == rhs.feedID &&
+            lhs.feedURL == rhs.feedURL
     }
 
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
@@ -2155,6 +2159,18 @@ final class WiltedMacModel {
         Self.isFinished(
             position: episode.playbackSeconds, duration: episode.durationSeconds, isPlayed: episode.isPlayed
         )
+    }
+
+    /// Whether a visible row has playback underway but is not finished. The
+    /// current engine position wins over the last saved row position so the
+    /// label follows the live playhead, while a zero-position row remains
+    /// unlabelled until audio has actually advanced.
+    func isEpisodeInProgress(_ episode: WiltedMacEpisode) -> Bool {
+        let position = isPodcastPlayback && currentPodcastEpisodeID == episode.id
+            ? playbackPositionSeconds
+            : episode.playbackSeconds
+        guard position > 0 else { return false }
+        return !Self.isFinished(position: position, duration: episode.durationSeconds, isPlayed: episode.isPlayed)
     }
 
     /// How far this episode's running preparation has got, when it has said.
@@ -3994,6 +4010,45 @@ final class WiltedMacModel {
         return episodes.first(where: { $0.id == currentPodcastEpisodeID })
     }
 
+    /// The native URL payload for Now Playing. Articles share their canonical
+    /// URL; podcasts share the subscription feed URL when the source record
+    /// has one. URL values stay URL values so the share sheet receives link
+    /// semantics instead of an ordinary string.
+    var currentPlaybackShareURL: URL? {
+        if let article = currentArticle {
+            return article.url
+        }
+        if let episode = currentEpisode {
+            return episode.feedURL
+        }
+        return nil
+    }
+
+    /// Honest text payload used when the current podcast has no feed URL.
+    var currentPlaybackShareText: String? {
+        if let article = currentArticle {
+            return article.title + " · " + article.source
+        }
+        if let episode = currentEpisode {
+            return episode.title + " — " + episode.feedTitle
+        }
+        return nil
+    }
+
+    var currentPlaybackShareTitle: String {
+        currentArticle?.title ?? currentEpisode?.title ?? "Now Playing"
+    }
+
+    var currentPlaybackShareMessage: String {
+        if let article = currentArticle {
+            return article.title + " · " + article.source
+        }
+        if let episode = currentEpisode {
+            return episode.title + " · " + episode.feedTitle
+        }
+        return "Now Playing"
+    }
+
     /// Compact context beside an episode's primary lifecycle line. Current
     /// playback wins over queue membership because the current item is not an
     /// upcoming item, even though the durable queue contains its identifier.
@@ -4782,15 +4837,13 @@ final class WiltedMacModel {
     func playEpisode(_ episode: WiltedMacEpisode) {
 #if canImport(WiltedProducer)
         guard let playback, let id = try? ItemID(rawValue: episode.id) else { return }
-        let wasQueued = podcastQueueIDs.contains(episode.id)
         playbackOperationStatus = "Opening \(episode.title)…"
         playbackOperationTask = Task { [weak self] in
             guard let self else { return }
             do {
                 await self.fixturePodcastInstallTask?.value
-                try await playback.addPodcastQueueEpisode(id)
                 self.refreshPlaybackReadout()
-                try await playback.selectPodcastQueueEpisode(id, autoplay: true)
+                try await playback.playPodcastQueueEpisodeNow(id)
                 self.selectedArticleID = nil
                 self.currentPodcastEpisodeID = episode.id
                 self.isPodcastPlayback = true
@@ -4802,10 +4855,7 @@ final class WiltedMacModel {
                 self.playbackError = nil
                 self.playbackOperationStatus = nil
             } catch {
-                if !wasQueued {
-                    try? await playback.removePodcastQueueEpisode(id)
-                    await self.refreshPodcastQueueState()
-                }
+                await self.refreshPodcastQueueState()
                 // A manual play throws before `podcastStateHandler` ever runs,
                 // so this is the only place that repairs the flag for this path.
                 if case let PlaybackControllerError.podcastMediaUnavailable(unavailableID) = error,
@@ -5553,6 +5603,22 @@ final class WiltedMacModel {
         self.isPlaying = isPlaying
         playbackPositionSeconds = position
         playbackDurationSeconds = duration
+    }
+
+    /// Simulates article playback while a stale podcast marker still names a
+    /// queue row. The marker must not make that row borrow the article's live
+    /// playhead when deciding whether to show In Progress.
+    func installArticlePlaybackWithPodcastMarkerForTesting(
+        episodeID: String, position: TimeInterval, duration: TimeInterval
+    ) {
+        isNowPlaying = true
+        isPlaying = true
+        currentPodcastEpisodeID = episodeID
+        playbackPositionSeconds = position
+        playbackDurationSeconds = duration
+#if canImport(WiltedProducer)
+        isPodcastPlayback = false
+#endif
     }
 
     func clearPlaybackStateForTesting() {
@@ -6723,7 +6789,8 @@ final class WiltedMacModel {
                     transcript: transcript
                 ),
                 isReadyMediaAvailable: isReadyMediaAvailable,
-                feedID: episode.feedID.rawValue
+                feedID: episode.feedID.rawValue,
+                feedURL: episode.feedURL
             ))
         }
         return (articleValues, episodeValues, subscriptionValues)

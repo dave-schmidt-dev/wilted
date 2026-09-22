@@ -284,6 +284,50 @@ public final class PlaybackController {
         podcastStateHandler?(episodeID, nil)
     }
 
+    /// Plays an episode immediately while preserving the displaced episode's
+    /// place in the listening sequence. This is the Mac "Play Now" operation;
+    /// ordinary Previous/Next selection intentionally keeps its existing
+    /// current-marker-only semantics.
+    public func playPodcastQueueEpisodeNow(_ episodeID: ItemID) async throws {
+        let state = try await store.podcastQueueState()
+        if state.currentEpisodeID == episodeID {
+            if itemID == episodeID, loadedIsPodcastEpisode {
+                if !backend.isPlaying { try play() }
+            } else {
+                try await loadQueuedEpisode(episodeID, playAfterLoad: true)
+            }
+            podcastStateHandler?(episodeID, nil)
+            return
+        }
+
+        // Persist the outgoing playhead before loading another episode. The
+        // queue itself is not touched until the target media loads, so a
+        // missing or unreadable target leaves its durable order and current
+        // identity intact.
+        if itemID == state.currentEpisodeID, currentRevision != nil {
+            try await checkpoint()
+        }
+        try await loadQueuedEpisode(episodeID, playAfterLoad: true)
+
+        var episodeIDs = state.episodeIDs
+        let targetIndex: Int
+        if let queuedIndex = episodeIDs.firstIndex(of: episodeID) {
+            targetIndex = queuedIndex
+        } else {
+            episodeIDs.append(episodeID)
+            targetIndex = episodeIDs.index(before: episodeIDs.endIndex)
+        }
+        if let current = state.currentEpisodeID,
+           let currentIndex = episodeIDs.firstIndex(of: current) {
+            episodeIDs.swapAt(currentIndex, targetIndex)
+        }
+        try await store.replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: episodeIDs,
+            currentEpisodeID: episodeID
+        ))
+        podcastStateHandler?(episodeID, nil)
+    }
+
     /// Selects the queue item before the current episode, if one exists.
     @discardableResult
     public func selectPreviousPodcastQueueEpisode(autoplay: Bool = true) async throws -> Bool {

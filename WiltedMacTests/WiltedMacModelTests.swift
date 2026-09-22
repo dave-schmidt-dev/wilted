@@ -6380,6 +6380,74 @@ final class WiltedMacModelTests: XCTestCase {
                       "the Feeds row must render that count, not the raw snapshot one")
     }
 
+    func testMenuInProgressIndicatorUsesLiveOrSavedPositionAndExcludesFinishedRows() {
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        func episode(_ id: String, position: TimeInterval, played: Bool = false) -> WiltedMacEpisode {
+            WiltedMacEpisode(
+                id: id, title: id, feedTitle: "Show", summary: "",
+                artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                durationSeconds: 100, playbackSeconds: position, isPlayed: played,
+                downloadState: .completed, preparationState: .prepared(summary: "Ready")
+            )
+        }
+
+        let saved = episode("saved", position: 12)
+        let fresh = episode("fresh", position: 0)
+        let finished = episode("finished", position: 99)
+        XCTAssertTrue(model.isEpisodeInProgress(saved))
+        XCTAssertFalse(model.isEpisodeInProgress(fresh))
+        XCTAssertFalse(model.isEpisodeInProgress(finished))
+
+        model.installPlaybackStateForTesting(
+            episode: episode("live", position: 0), isPlaying: true, position: 0, duration: 100
+        )
+        XCTAssertFalse(model.isEpisodeInProgress(episode("live", position: 0)),
+                       "a current row at zero seconds is not yet in progress")
+        model.installPlaybackStateForTesting(
+            episode: episode("live", position: 0), isPlaying: true, position: 12, duration: 100
+        )
+        XCTAssertTrue(model.isEpisodeInProgress(episode("live", position: 0)),
+                      "the live playhead must override the stale saved row position")
+
+        let stalePodcastMarker = episode("stale-podcast-marker", position: 0)
+        model.installEpisodeForTesting(stalePodcastMarker)
+        model.installArticlePlaybackWithPodcastMarkerForTesting(
+            episodeID: stalePodcastMarker.id, position: 12, duration: 100
+        )
+        XCTAssertFalse(model.isEpisodeInProgress(stalePodcastMarker),
+                       "article playback must not lend its live position to a podcast row")
+    }
+
+    func testCurrentPlaybackShareUsesCanonicalOrFeedURLWithTextFallback() {
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        let articleURL = URL(string: "https://example.test/article")!
+        let article = WiltedMacArticle(
+            id: "share-article", title: "An article", source: "A source", url: articleURL,
+            isReady: true, durationSeconds: 100, playbackSeconds: 12
+        )
+        model.installPlaybackStateForTesting(article: article, isPlaying: false, position: 12, duration: 100)
+        XCTAssertEqual(model.currentPlaybackShareURL, articleURL)
+
+        let feedURL = URL(string: "https://example.test/show.xml")!
+        let episode = WiltedMacEpisode(
+            id: "share-episode", title: "An episode", feedTitle: "A show", summary: "",
+            artworkURL: nil, releasedAt: Date(), durationSeconds: 100, playbackSeconds: 12,
+            downloadState: .completed, preparationState: .prepared(summary: "Ready"),
+            feedURL: feedURL
+        )
+        model.installPlaybackStateForTesting(episode: episode, isPlaying: false, position: 12, duration: 100)
+        XCTAssertEqual(model.currentPlaybackShareURL, feedURL)
+
+        let fallback = WiltedMacEpisode(
+            id: "fallback-episode", title: "An episode", feedTitle: "A show", summary: "",
+            artworkURL: nil, releasedAt: Date(), durationSeconds: 100, playbackSeconds: 12,
+            downloadState: .completed, preparationState: .prepared(summary: "Ready")
+        )
+        model.installPlaybackStateForTesting(episode: fallback, isPlaying: false, position: 12, duration: 100)
+        XCTAssertNil(model.currentPlaybackShareURL)
+        XCTAssertEqual(model.currentPlaybackShareText, "An episode — A show")
+    }
+
     /// The Menu row's Played state asks the model's one finished predicate,
     /// including the boundary cases where surfaces used to disagree.
     func testFinishedHasOneDefinitionForTheMenuRow() throws {

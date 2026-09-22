@@ -367,13 +367,21 @@ final class WiltedVisualSystemTests: XCTestCase {
         model.playEpisode(second)
         await model.waitForPlaybackOperationForTesting()
 
+        // Play Now swaps the requested episode into the displaced episode's
+        // slot, so the new current episode is the first queue item here.
         model.previousPlayback()
         await model.waitForPlaybackOperationForTesting()
-        XCTAssertEqual(model.currentEpisode?.id, first.id)
+        XCTAssertEqual(model.currentEpisode?.id, second.id)
         var queue = try await store.podcastQueueState()
-        XCTAssertEqual(queue.currentEpisodeID?.rawValue, first.id)
+        XCTAssertEqual(queue.currentEpisodeID?.rawValue, second.id)
 
         model.previousPlayback()
+        await model.waitForPlaybackOperationForTesting()
+        XCTAssertEqual(model.currentEpisode?.id, second.id)
+        queue = try await store.podcastQueueState()
+        XCTAssertEqual(queue.currentEpisodeID?.rawValue, second.id)
+
+        model.nextPlayback()
         await model.waitForPlaybackOperationForTesting()
         XCTAssertEqual(model.currentEpisode?.id, first.id)
         queue = try await store.podcastQueueState()
@@ -381,15 +389,9 @@ final class WiltedVisualSystemTests: XCTestCase {
 
         model.nextPlayback()
         await model.waitForPlaybackOperationForTesting()
-        XCTAssertEqual(model.currentEpisode?.id, second.id)
+        XCTAssertEqual(model.currentEpisode?.id, first.id)
         queue = try await store.podcastQueueState()
-        XCTAssertEqual(queue.currentEpisodeID?.rawValue, second.id)
-
-        model.nextPlayback()
-        await model.waitForPlaybackOperationForTesting()
-        XCTAssertEqual(model.currentEpisode?.id, second.id)
-        queue = try await store.podcastQueueState()
-        XCTAssertEqual(queue.currentEpisodeID?.rawValue, second.id)
+        XCTAssertEqual(queue.currentEpisodeID?.rawValue, first.id)
     }
 
     @MainActor
@@ -972,8 +974,15 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(source.contains("Button(\"Prepare all now (\\(model.menuPreparableEpisodes.count))\")"))
         XCTAssertTrue(source.contains("\"Needs preparation\""))
         XCTAssertTrue(source.contains("Label(\"Sort: \\(model.menuSort.displayName)\""))
-        XCTAssertTrue(source.contains("Picker(\"Sort order\""))
-        XCTAssertTrue(source.contains("Text(option.displayName).tag(option)"))
+        XCTAssertFalse(source.contains("Picker(\"Sort order\""),
+                       "the Larder sort menu must not nest a Picker submenu")
+        XCTAssertTrue(source.contains("model.menuSort = option"),
+                      "each sort order must be a directly clickable menu action")
+        XCTAssertTrue(source.contains("Button {\n                            model.menuSort = option"))
+        XCTAssertTrue(source.contains("wilted-menu-in-progress-\\(episode.id)"))
+        XCTAssertTrue(source.contains("wilted-player-share"))
+        XCTAssertTrue(source.contains("if let shareURL = model.currentPlaybackShareURL"))
+        XCTAssertTrue(source.contains("else if let shareText = model.currentPlaybackShareText"))
         XCTAssertTrue(source.contains(".opacity(dropTargetID == episode.id ? 1 : 0)"))
         let menuRowStart = try XCTUnwrap(source.range(of: "private func menuRow")?.lowerBound)
         let menuRowEnd = try XCTUnwrap(source.range(

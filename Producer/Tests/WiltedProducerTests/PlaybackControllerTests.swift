@@ -1048,6 +1048,102 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(backend.loadCount, 3, "the restarted run may advance only once")
     }
 
+    func testPlayNowSwapsWithCurrentPreservesCheckpointAndKeepsPreviousNextSemantics() async throws {
+        let path = storeURL(); let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let first = try await queueRevision(index: 1, root: root, store: store)
+        let second = try await queueRevision(index: 2, root: root, store: store)
+        let third = try await queueRevision(index: 3, root: root, store: store)
+        try await store.replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: [first.revision.itemID, second.revision.itemID, third.revision.itemID],
+            currentEpisodeID: first.revision.itemID
+        ))
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        await controller.restorePodcastQueue()
+        try controller.play()
+        backend.currentTime = 17
+
+        try await controller.playPodcastQueueEpisodeNow(second.revision.itemID)
+
+        let swapped = try await store.podcastQueueState()
+        XCTAssertEqual(swapped.episodeIDs, [second.revision.itemID, first.revision.itemID, third.revision.itemID])
+        XCTAssertEqual(swapped.currentEpisodeID, second.revision.itemID)
+        XCTAssertEqual(controller.itemID, second.revision.itemID)
+        XCTAssertTrue(backend.isPlaying)
+        let firstCheckpoint = try await store.playbackState(
+            for: first.revision.itemID, revisionID: first.revision.revisionID
+        )
+        XCTAssertEqual(firstCheckpoint?.positionSeconds, 17, "Play Now must retain the displaced episode's live checkpoint")
+
+        let selectedNext = try await controller.selectNextPodcastQueueEpisode()
+        XCTAssertTrue(selectedNext)
+        XCTAssertEqual(controller.itemID, first.revision.itemID)
+        let selectedPrevious = try await controller.selectPreviousPodcastQueueEpisode()
+        XCTAssertTrue(selectedPrevious)
+        XCTAssertEqual(controller.itemID, second.revision.itemID)
+        let orderBeforeCurrentSelection = try await store.podcastQueueState()
+        try await controller.playPodcastQueueEpisodeNow(second.revision.itemID)
+        let orderAfterCurrentSelection = try await store.podcastQueueState()
+        XCTAssertEqual(orderAfterCurrentSelection, orderBeforeCurrentSelection,
+                       "playing the current episode now must not reorder the queue")
+    }
+
+    func testPlayNowForUnqueuedEpisodeUsesDeterministicSwapFallback() async throws {
+        let path = storeURL(); let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let first = try await queueRevision(index: 4, root: root, store: store)
+        let second = try await queueRevision(index: 5, root: root, store: store)
+        let third = try await queueRevision(index: 6, root: root, store: store)
+        try await store.replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: [first.revision.itemID, third.revision.itemID],
+            currentEpisodeID: first.revision.itemID
+        ))
+        let controller = PlaybackController(store: store, backend: FakeBackend())
+        await controller.restorePodcastQueue()
+
+        try await controller.playPodcastQueueEpisodeNow(second.revision.itemID)
+
+        let state = try await store.podcastQueueState()
+        XCTAssertEqual(state.episodeIDs, [second.revision.itemID, third.revision.itemID, first.revision.itemID])
+        XCTAssertEqual(state.currentEpisodeID, second.revision.itemID)
+        XCTAssertTrue(state.episodeIDs.contains(first.revision.itemID), "the displaced current episode stays queued")
+    }
+
+    func testPlayNowLoadFailureLeavesDurableQueueAndCurrentUnchanged() async throws {
+        let path = storeURL(); let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let first = try await queueRevision(index: 7, root: root, store: store)
+        let missing = try await queueRevision(index: 8, root: root, store: store)
+        let original = try PodcastQueueState(
+            episodeIDs: [first.revision.itemID, missing.revision.itemID],
+            currentEpisodeID: first.revision.itemID
+        )
+        try await store.replacePodcastQueue(original)
+        try FileManager.default.removeItem(at: missing.mediaURL)
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        await controller.restorePodcastQueue()
+        try controller.play()
+
+        await XCTAssertThrowsErrorAsync(
+            try await controller.playPodcastQueueEpisodeNow(missing.revision.itemID)
+        ) { error in
+            XCTAssertEqual(error as? PlaybackControllerError, .podcastMediaUnavailable(missing.revision.itemID))
+        }
+
+        let retained = try await store.podcastQueueState()
+        XCTAssertEqual(retained, original)
+        XCTAssertEqual(controller.itemID, first.revision.itemID)
+        XCTAssertTrue(backend.isPlaying)
+    }
+
     func testPreviousAndNextQueueSelectionPreserveCurrentIdentity() async throws {
         let path = storeURL(); let root = path.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: root) }

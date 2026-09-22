@@ -205,6 +205,7 @@ run_leg_async "test-pipeline-worker" "$repo_root/tests/test-pipeline-worker.sh"
 run_leg_async "test-preparation-runtime" "$repo_root/tests/test-preparation-runtime.sh"
 run_leg_async "test-install-mac-app" "$repo_root/tests/test-install-mac-app.sh"
 run_leg_async "test-temp-sweep" "$repo_root/tests/test-temp-sweep.sh"
+run_leg_async "test-git-hooks" "$repo_root/tests/test-git-hooks.sh"
 if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
   run_leg_async "test-audio-contract-ios-build" "$repo_root/tests/test-audio-contract-ios-build.sh"
 fi

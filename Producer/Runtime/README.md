@@ -132,12 +132,15 @@ Confirm with `ls -lO ~/.venvs/wilted/lib/python*/site-packages/*.pth` — the fl
 
 ```bash
 uv sync --group dev   # install with dev/test deps
-make install-hooks                 # activate pre-commit hooks (ruff + vulture + policy)
+cd ../.. && make install-hooks     # activate the repository-owned Git hooks
 make validate                      # lint + dead-code + full test suite
 ```
 
-Run `make install-hooks` once per clone — without it the `.pre-commit-config.yaml`
-hooks are inert and never fire on `git commit`.
+Run `make install-hooks` once per clone. It sets the installing worktree's
+private `core.hooksPath` to that checkout's `.githooks`; commits run the fast
+lint/dead-code gate and pushes run the full project validation gate.
+If a legacy shared `.githooks` setting is found while linked worktrees exist,
+the installer refuses to migrate it so sibling hooks are not silently removed.
 
 ## Quick start
 

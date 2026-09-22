@@ -44,11 +44,11 @@ test-tui:
 
 validate: lint deadcode test
 
-# Activate the .pre-commit-config.yaml hooks in .git/hooks. Required once per
-# clone — without it the configured hooks (ruff, vulture, policy) never fire on
-# `git commit`. Idempotent.
+# Activate the repository-owned hooks in the root checkout. Required once per
+# clone so `git commit` runs the fast lint/dead-code gate and `git push` runs
+# the full project validation gate. Idempotent.
 install-hooks:
-	uv run --group dev pre-commit install
+	@bash "$(abspath $(CURDIR)/../../scripts/install-git-hooks.sh)"
 
 # Keep the recovery command advertised by the daemon-only TTS error contract
 # in the sibling speech-stack project, where the launchd service is owned.

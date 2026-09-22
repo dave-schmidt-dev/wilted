@@ -2811,10 +2811,6 @@ def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, dete
             f"raw anchor ID {anchor_id} at {float(anchor.start_s):.3f}s",
         )
         claimed = [*detections, *recovered]
-        overlapping = [
-            ad for ad in claimed if ad.start_s < anchor.end_s and ad.end_s > anchor.start_s
-        ]
-
         context_ids = [anchor_id]
         for segment_id in range(anchor_id + 1, len(segments)):
             if (
@@ -2883,6 +2879,16 @@ def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, dete
         try:
             candidate_ids = range(anchor_id + 1, evidence_id + 1)
             for candidate_id in candidate_ids:
+                candidate = segments[candidate_id]
+                previous = segments[verified_end_id]
+                if any(
+                    float(ad.start_s) <= float(candidate.start_s) + 0.5
+                    and float(ad.end_s) >= float(candidate.end_s) - 0.5
+                    and float(ad.start_s) <= float(previous.end_s) + 2.0
+                    for ad in claimed
+                ):
+                    verified_end_id = candidate_id
+                    continue
                 progress(
                     "ads.detect.recovery.reviewing",
                     f"checking explicit candidate ID {candidate_id} before evidence ID {evidence_id}",
@@ -2930,6 +2936,16 @@ def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, dete
         )
         try:
             for candidate_id in range(evidence_id + 1, verifier_end + 1):
+                candidate = segments[candidate_id]
+                previous = segments[verified_end_id]
+                if any(
+                    float(ad.start_s) <= float(candidate.start_s) + 0.5
+                    and float(ad.end_s) >= float(candidate.end_s) - 0.5
+                    and float(ad.start_s) <= float(previous.end_s) + 2.0
+                    for ad in claimed
+                ):
+                    verified_end_id = candidate_id
+                    continue
                 include = ads_module._probe_boundary_candidate(  # noqa: SLF001
                     candidate_id,
                     verified_end_id,
@@ -2949,18 +2965,41 @@ def recover_unclaimed_explicit_sponsor_reads(ads_module, backend, segments, dete
                 f"explicit sponsor verifier failed at {anchor.start_s:.3f}: {type(error).__name__}: {error}",
             )
             continue
+        connected_ending_ads = [
+            ad for ad in claimed
+            if float(ad.start_s) <= float(segments[verified_end_id].end_s) + 2.0
+            and float(ad.end_s) >= float(segments[verified_end_id].start_s)
+        ]
         if content_start_id is None:
-            progress(
-                "ads.detect.recovery.skipped",
-                f"explicit sponsor verifier found no content return after {evidence_id}",
+            if connected_ending_ads:
+                recovered_end = max(float(ad.end_s) for ad in connected_ending_ads)
+            else:
+                progress(
+                    "ads.detect.recovery.skipped",
+                    f"explicit sponsor verifier found no content return after {evidence_id}",
+                )
+                continue
+        else:
+            recovered_end = ads_module._last_meaningful_ad_end(  # noqa: SLF001
+                content_start_id,
+                anchor_id,
+                segments,
             )
-            continue
-        recovered_end = ads_module._last_meaningful_ad_end(  # noqa: SLF001
-            content_start_id,
-            anchor_id,
-            segments,
-        )
-        if overlapping and recovered_end <= max(ad.end_s for ad in overlapping):
+            if connected_ending_ads:
+                recovered_end = max(
+                    recovered_end,
+                    max(float(ad.end_s) for ad in connected_ending_ads),
+                )
+        overlapping_ads = [
+            ad for ad in claimed
+            if float(ad.start_s) < recovered_end + 2.0
+            and float(ad.end_s) > recovered_start - 2.0
+        ]
+        if (
+            overlapping_ads
+            and recovered_start >= min(float(ad.start_s) for ad in overlapping_ads)
+            and recovered_end <= max(float(ad.end_s) for ad in overlapping_ads)
+        ):
             continue
         # The receipt is the share of the recovery contract's corroboration
         # that was actually observed: the call to action that found the
@@ -3355,16 +3394,46 @@ def recover_transcript_end_postroll(ads_module, backend, segments, detections, t
     if not segments or total_seconds <= 0:
         return detections
     end_s = float(segments[-1].end_s)
-    if any(float(ad.end_s) >= end_s - POSTROLL_ALREADY_CLAIMED_SECONDS for ad in detections):
-        progress("ads.detect.postroll.skipped", "the ending is already claimed")
-        return detections
-
     floor_s = end_s - POSTROLL_RECOVERY_MAX_SECONDS
-    window_ids = [
-        segment_id for segment_id, segment in enumerate(segments)
-        if float(segment.end_s) > floor_s
-        and not any(float(ad.end_s) > float(segment.start_s) for ad in detections)
-    ][-POSTROLL_RECOVERY_MAX_SEGMENTS:]
+    terminal_detections = sorted(
+        [ad for ad in detections if float(ad.end_s) > floor_s],
+        key=lambda ad: ad.start_s,
+    )
+    ending_claimed = any(
+        float(ad.end_s) >= end_s - POSTROLL_ALREADY_CLAIMED_SECONDS
+        for ad in detections
+    )
+
+    unclaimed_gap_previous_ad = None
+    unclaimed_gap_next_ad = None
+    if ending_claimed:
+        for previous_ad, next_ad in zip(terminal_detections, terminal_detections[1:]):
+            if float(next_ad.start_s) - float(previous_ad.end_s) <= 2.0:
+                continue
+            if any(
+                float(segment.end_s) > float(previous_ad.end_s)
+                and float(segment.start_s) < float(next_ad.start_s)
+                for segment in segments
+            ):
+                unclaimed_gap_previous_ad = previous_ad
+                unclaimed_gap_next_ad = next_ad
+                break
+        if unclaimed_gap_previous_ad is None:
+            progress("ads.detect.postroll.skipped", "the ending is already claimed")
+            return detections
+
+    if unclaimed_gap_previous_ad is not None:
+        gap_floor_s = float(unclaimed_gap_previous_ad.end_s)
+        window_ids = [
+            segment_id for segment_id, segment in enumerate(segments)
+            if float(segment.end_s) > gap_floor_s
+        ][-POSTROLL_RECOVERY_MAX_SEGMENTS:]
+    else:
+        window_ids = [
+            segment_id for segment_id, segment in enumerate(segments)
+            if float(segment.end_s) > floor_s
+            and not any(float(ad.end_s) > float(segment.start_s) for ad in detections)
+        ][-POSTROLL_RECOVERY_MAX_SEGMENTS:]
     if len(window_ids) < 2:
         return detections
 
@@ -3378,6 +3447,16 @@ def recover_transcript_end_postroll(ads_module, backend, segments, detections, t
         return detections
     if advertising_start_id == -1:
         progress("ads.detect.postroll.skipped", "the program runs to the end")
+        return detections
+    if (
+        unclaimed_gap_next_ad is not None
+        and float(segments[advertising_start_id].start_s)
+        >= float(unclaimed_gap_next_ad.start_s)
+    ):
+        progress(
+            "ads.detect.postroll.skipped",
+            "closing review nominated the already-detected ending rather than the unclaimed gap",
+        )
         return detections
 
     boundary_carries_program = advertising_start_id < window_ids[-1] and _tail_carries_program(
@@ -3393,6 +3472,16 @@ def recover_transcript_end_postroll(ads_module, backend, segments, detections, t
         )
         advertising_start_id += 1
         boundary_carries_program = False
+    if (
+        unclaimed_gap_next_ad is not None
+        and float(segments[advertising_start_id].start_s)
+        >= float(unclaimed_gap_next_ad.start_s)
+    ):
+        progress(
+            "ads.detect.postroll.skipped",
+            "closing boundary shortened onto the already-detected ending rather than the unclaimed gap",
+        )
+        return detections
 
     start_s = float(segments[advertising_start_id].start_s)
     if advertising_start_id > 0:

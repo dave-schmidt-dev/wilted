@@ -1,4 +1,15 @@
-.PHONY: validate native-meta native native-ui install app-icon ad-corpus ad-corpus-replay ad-corpus-adopt
+.PHONY: validate native-meta native native-ui lint deadcode check-fast install-hooks install app-icon ad-corpus ad-corpus-replay ad-corpus-adopt
+
+lint:
+	@$(MAKE) -C Producer/Runtime lint
+
+deadcode:
+	@$(MAKE) -C Producer/Runtime deadcode
+
+check-fast: lint deadcode
+
+install-hooks:
+	@$(MAKE) -C Producer/Runtime install-hooks
 
 validate:
 	@bash tests/test-phase0-aggregate.sh

@@ -23,6 +23,22 @@ On 2026-08-18 an attended Development run published and reconciled the producer-
 3. Privacy and local processing.
 4. Verifiable producer-to-listener delivery.
 
+## Git hooks
+
+Install the repository-owned hooks once per clone:
+
+```bash
+make install-hooks
+```
+
+The `pre-commit` hook runs `make check-fast` (runtime lint and dead-code
+checks). The `pre-push` hook runs `make validate`, the full project gate. The
+installer is idempotent and sets the installing worktree's private
+`core.hooksPath` to its `.githooks`, so installing in one linked worktree does
+not change its siblings. A legacy shared `.githooks` setting is migrated only
+when this is the sole worktree; with linked siblings, installation refuses
+without changing Git configuration.
+
 ## Scope
 
 Larder is the one place kept episodes wait. It groups them as Ready, Needs preparation, and Not downloaded, and shows a completed preparation summary only when a successful terminal journal matches the audio revision currently ready to play. A transcript by itself or a journal for an older revision is not presented as prepared.

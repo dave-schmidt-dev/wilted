@@ -1022,9 +1022,20 @@ private struct WiltedMacMenuView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Menu {
-                    Picker("Sort order", selection: $model.menuSort) {
-                        ForEach(Array(WiltedMacMenuSort.allCases), id: \.id) { option in
-                            Text(option.displayName).tag(option)
+                    // A Picker nested inside this Menu creates a second
+                    // submenu on macOS. Choosing Custom order dismisses that
+                    // submenu before the listener can reach Oldest. Direct
+                    // menu buttons keep every order in one click target while
+                    // retaining the same persisted model binding.
+                    ForEach(Array(WiltedMacMenuSort.allCases), id: \.id) { option in
+                        Button {
+                            model.menuSort = option
+                        } label: {
+                            if model.menuSort == option {
+                                Label(option.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(option.displayName)
+                            }
                         }
                     }
                 } label: {
@@ -1328,6 +1339,12 @@ private struct WiltedMacMenuView: View {
             // episode on. An unstarted episode stays enabled on purpose:
             // pressing it explains that there was nothing to skip.
             let retirementLabel = model.menuRowRetirementLabel(episode)
+            if model.isEpisodeInProgress(episode) {
+                Text("In Progress")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-menu-in-progress-\(episode.id)")
+            }
             Button(retirementLabel) { model.skipEpisode(episode) }
                 .accessibilityLabel("\(retirementLabel) \(episode.title)")
                 .accessibilityIdentifier("wilted-menu-skip-\(episode.id)")
@@ -1670,6 +1687,30 @@ private struct WiltedMacPlayerContent: View {
                 .disabled(!model.hasCurrentPlayback)
                 .accessibilityLabel("Speed")
                 .accessibilityIdentifier("wilted-player-speed")
+
+                if let shareURL = model.currentPlaybackShareURL {
+                    ShareLink(
+                        item: shareURL,
+                        subject: Text(model.currentPlaybackShareTitle),
+                        message: Text(model.currentPlaybackShareMessage)
+                    ) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .help("Share")
+                    .accessibilityLabel("Share")
+                    .accessibilityIdentifier("wilted-player-share")
+                } else if let shareText = model.currentPlaybackShareText {
+                    ShareLink(
+                        item: shareText,
+                        subject: Text(model.currentPlaybackShareTitle),
+                        message: Text(model.currentPlaybackShareMessage)
+                    ) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .help("Share")
+                    .accessibilityLabel("Share")
+                    .accessibilityIdentifier("wilted-player-share")
+                }
 
             }
 

@@ -1561,6 +1561,109 @@ class AdDetectionTests(unittest.TestCase):
         self.assertIn("already claimed", details["ads.detect.postroll.skipped"])
         self.assertEqual(llm.requests, [])
 
+    def test_terminal_window_with_earlier_unclaimed_promo_gap_recovers_across_ending(self):
+        # TWiT 1100 regression: two terminal cuts left a promo fragment between
+        # them. Re-reviewing the bounded ending must be able to join that gap.
+        segments = [
+            FakeSegment(10100.0, 10200.0, "programme reporting and discussion"),
+            FakeSegment(10200.0, 10251.56, "programme wrap-up and sign-off"),
+            FakeSegment(10251.56, 10304.12, "club twit subscription promo"),
+            FakeSegment(10304.12, 10341.28, "unclaimed promo fragment for sister show"),
+            FakeSegment(10341.28, 10380.0, "closing sponsor commercial and music bed"),
+        ]
+        detections = [
+            FakeAd(10251.56, 10304.12, label="self_promo"),
+            FakeAd(10341.28, 10380.0, label="ad_break"),
+        ]
+        llm = FakeLLM(
+            postroll_advertising_start_id=3,
+            tail_carries_program=False,
+            preroll_program_id=-1,
+        )
+        recovered, details = self.postroll(
+            llm, detections=detections, total=10380.0, segments=segments
+        )
+        self.assertEqual(
+            [(ad.start_s, ad.end_s) for ad in recovered],
+            [(10251.56, 10380.0)],
+        )
+        self.assertIn("ads.detect.postroll", details)
+
+    def test_terminal_programme_gap_between_detections_remains_uncut(self):
+        segments = [
+            FakeSegment(10100.0, 10200.0, "programme reporting and discussion"),
+            FakeSegment(10200.0, 10251.56, "programme wrap-up and sign-off"),
+            FakeSegment(10251.56, 10304.12, "club twit subscription promo"),
+            FakeSegment(10304.12, 10341.28, "programme discussion continues"),
+            FakeSegment(10341.28, 10380.0, "closing sponsor commercial and music bed"),
+        ]
+        detections = [
+            FakeAd(10251.56, 10304.12, label="self_promo"),
+            FakeAd(10341.28, 10380.0, label="ad_break"),
+        ]
+        llm = FakeLLM(postroll_advertising_start_id=-1)
+        recovered, details = self.postroll(
+            llm, detections=detections, total=10380.0, segments=segments
+        )
+        self.assertEqual(
+            [(ad.start_s, ad.end_s) for ad in recovered],
+            [(10251.56, 10304.12), (10341.28, 10380.0)],
+        )
+        self.assertIn("runs to the end", details["ads.detect.postroll.skipped"])
+
+    def test_terminal_programme_gap_is_not_given_a_leader_from_the_known_final_ad(self):
+        segments = [
+            FakeSegment(10100.0, 10200.0, "programme reporting and discussion"),
+            FakeSegment(10200.0, 10251.56, "programme wrap-up and sign-off"),
+            FakeSegment(10251.56, 10304.12, "club twit subscription promo"),
+            FakeSegment(10304.12, 10326.28, "programme discussion continues"),
+            FakeSegment(10341.28, 10380.0, "closing sponsor commercial and music bed"),
+        ]
+        detections = [
+            FakeAd(10251.56, 10304.12, label="self_promo"),
+            FakeAd(10341.28, 10380.0, label="ad_break"),
+        ]
+        llm = FakeLLM(postroll_advertising_start_id=4)
+        recovered, details = self.postroll(
+            llm, detections=detections, total=10380.0, segments=segments
+        )
+        self.assertEqual(
+            [(ad.start_s, ad.end_s) for ad in recovered],
+            [(10251.56, 10304.12), (10341.28, 10380.0)],
+        )
+        self.assertIn(
+            "already-detected ending rather than the unclaimed gap",
+            details["ads.detect.postroll.skipped"],
+        )
+
+    def test_terminal_gap_probe_cannot_advance_onto_the_known_final_ad(self):
+        segments = [
+            FakeSegment(10100.0, 10200.0, "programme reporting and discussion"),
+            FakeSegment(10200.0, 10251.56, "programme wrap-up and sign-off"),
+            FakeSegment(10251.56, 10304.12, "club twit subscription promo"),
+            FakeSegment(10304.12, 10341.28, "programme ending mixed with a promo opening"),
+            FakeSegment(10341.28, 10380.0, "closing sponsor commercial and music bed"),
+        ]
+        detections = [
+            FakeAd(10251.56, 10304.12, label="self_promo"),
+            FakeAd(10341.28, 10380.0, label="ad_break"),
+        ]
+        llm = FakeLLM(
+            postroll_advertising_start_id=3,
+            tail_carries_program=True,
+        )
+        recovered, details = self.postroll(
+            llm, detections=detections, total=10380.0, segments=segments
+        )
+        self.assertEqual(
+            [(ad.start_s, ad.end_s) for ad in recovered],
+            [(10251.56, 10304.12), (10341.28, 10380.0)],
+        )
+        self.assertIn(
+            "shortened onto the already-detected ending rather than the unclaimed gap",
+            details["ads.detect.postroll.skipped"],
+        )
+
     def test_a_program_that_runs_to_the_end_is_left_whole(self):
         llm = FakeLLM(postroll_advertising_start_id=-1)
         recovered, details = self.postroll(llm)
@@ -2733,6 +2836,62 @@ class ExplicitSponsorRecoveryTests(unittest.TestCase):
         ]
         spans, _events = self.detect(segments, [FakeAd(99.0, 115.0)], content_start_id=3)
         self.assertEqual((spans[0]["startSeconds"], spans[0]["endSeconds"]), (99.0, 130.0))
+
+    def test_anchor_prefix_adjoining_detected_read_extends_left(self):
+        segments = [
+            FakeSegment(0.0, 100.0, "programme before the ad"),
+            FakeSegment(100.0, 110.0, "this episode is brought to you by simplisafe"),
+            FakeSegment(110.0, 120.0, "simplisafe is advanced home security done right"),
+            FakeSegment(120.0, 130.0, "twenty four seven professional monitoring protects your home"),
+            FakeSegment(130.0, 140.0, "visit simplisafe dot com slash rogan to get started today"),
+            FakeSegment(140.0, 200.0, "back to the conversation with our guest"),
+        ]
+        spans, events = self.detect(
+            segments,
+            [FakeAd(120.0, 140.0, label="sponsor_read")],
+            content_start_id=5,
+        )
+        self.assertEqual(len(spans), 1)
+        self.assertEqual((spans[0]["startSeconds"], spans[0]["endSeconds"]), (100.0, 140.0))
+        self.assertIn("ads.detect.recovered", [event["stage"] for event in events])
+
+    def test_anchor_prefix_overlapping_detected_read_extends_left(self):
+        segments = [
+            FakeSegment(0.0, 100.0, "programme before the ad"),
+            FakeSegment(100.0, 115.0, "this episode is brought to you by shipstation"),
+            FakeSegment(115.0, 130.0, "shipstation makes shipping simple for small businesses"),
+            FakeSegment(130.0, 140.0, "visit shipstation dot com to get a sixty day free trial"),
+            FakeSegment(140.0, 200.0, "programme content resumes here"),
+        ]
+        spans, events = self.detect(
+            segments,
+            [FakeAd(110.0, 140.0, label="sponsor_read")],
+            content_start_id=4,
+        )
+        self.assertEqual(len(spans), 1)
+        self.assertEqual((spans[0]["startSeconds"], spans[0]["endSeconds"]), (100.0, 140.0))
+        self.assertIn("ads.detect.recovered", [event["stage"] for event in events])
+
+    def test_false_editorial_prefix_before_detected_read_remains_uncut(self):
+        segments = [
+            FakeSegment(0.0, 100.0, "programme before the ad"),
+            FakeSegment(100.0, 110.0, "this episode is brought to you by simplisafe"),
+            FakeSegment(110.0, 120.0, "the host discusses an unrelated editorial topic"),
+            FakeSegment(120.0, 130.0, "twenty four seven professional monitoring protects your home"),
+            FakeSegment(130.0, 140.0, "visit simplisafe dot com slash rogan to get started today"),
+            FakeSegment(140.0, 200.0, "back to the conversation with our guest"),
+        ]
+        spans, events = self.detect(
+            segments,
+            [FakeAd(120.0, 140.0, label="sponsor_read")],
+            content_start_id=2,
+        )
+        self.assertEqual(len(spans), 1)
+        self.assertEqual((spans[0]["startSeconds"], spans[0]["endSeconds"]), (120.0, 140.0))
+        self.assertIn(
+            "found programme before evidence",
+            " ".join(event["detail"] for event in events if "detail" in event),
+        )
 
     def test_literal_domain_and_cta_survive_realistic_cue_density(self):
         segments = [FakeSegment(0.0, 2.0, "this week in tech brought to you this week by claud")]
