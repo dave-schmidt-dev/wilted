@@ -1048,7 +1048,7 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(backend.loadCount, 3, "the restarted run may advance only once")
     }
 
-    func testPlayNowSwapsWithCurrentPreservesCheckpointAndKeepsPreviousNextSemantics() async throws {
+    func testPlayNowMovesFarTargetBeforeCurrentPreservesCheckpointAndKeepsPreviousNextSemantics() async throws {
         let path = storeURL(); let root = path.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1056,8 +1056,9 @@ final class PlaybackControllerTests: XCTestCase {
         let first = try await queueRevision(index: 1, root: root, store: store)
         let second = try await queueRevision(index: 2, root: root, store: store)
         let third = try await queueRevision(index: 3, root: root, store: store)
+        let fourth = try await queueRevision(index: 9, root: root, store: store)
         try await store.replacePodcastQueue(try PodcastQueueState(
-            episodeIDs: [first.revision.itemID, second.revision.itemID, third.revision.itemID],
+            episodeIDs: [first.revision.itemID, second.revision.itemID, third.revision.itemID, fourth.revision.itemID],
             currentEpisodeID: first.revision.itemID
         ))
         let backend = FakeBackend()
@@ -1066,12 +1067,14 @@ final class PlaybackControllerTests: XCTestCase {
         try controller.play()
         backend.currentTime = 17
 
-        try await controller.playPodcastQueueEpisodeNow(second.revision.itemID)
+        try await controller.playPodcastQueueEpisodeNow(fourth.revision.itemID)
 
-        let swapped = try await store.podcastQueueState()
-        XCTAssertEqual(swapped.episodeIDs, [second.revision.itemID, first.revision.itemID, third.revision.itemID])
-        XCTAssertEqual(swapped.currentEpisodeID, second.revision.itemID)
-        XCTAssertEqual(controller.itemID, second.revision.itemID)
+        let reordered = try await store.podcastQueueState()
+        XCTAssertEqual(reordered.episodeIDs, [
+            fourth.revision.itemID, first.revision.itemID, second.revision.itemID, third.revision.itemID,
+        ])
+        XCTAssertEqual(reordered.currentEpisodeID, fourth.revision.itemID)
+        XCTAssertEqual(controller.itemID, fourth.revision.itemID)
         XCTAssertTrue(backend.isPlaying)
         let firstCheckpoint = try await store.playbackState(
             for: first.revision.itemID, revisionID: first.revision.revisionID
@@ -1083,15 +1086,15 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(controller.itemID, first.revision.itemID)
         let selectedPrevious = try await controller.selectPreviousPodcastQueueEpisode()
         XCTAssertTrue(selectedPrevious)
-        XCTAssertEqual(controller.itemID, second.revision.itemID)
+        XCTAssertEqual(controller.itemID, fourth.revision.itemID)
         let orderBeforeCurrentSelection = try await store.podcastQueueState()
-        try await controller.playPodcastQueueEpisodeNow(second.revision.itemID)
+        try await controller.playPodcastQueueEpisodeNow(fourth.revision.itemID)
         let orderAfterCurrentSelection = try await store.podcastQueueState()
         XCTAssertEqual(orderAfterCurrentSelection, orderBeforeCurrentSelection,
                        "playing the current episode now must not reorder the queue")
     }
 
-    func testPlayNowForUnqueuedEpisodeUsesDeterministicSwapFallback() async throws {
+    func testPlayNowForUnqueuedEpisodeInsertsBeforeCurrent() async throws {
         let path = storeURL(); let root = path.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1109,7 +1112,7 @@ final class PlaybackControllerTests: XCTestCase {
         try await controller.playPodcastQueueEpisodeNow(second.revision.itemID)
 
         let state = try await store.podcastQueueState()
-        XCTAssertEqual(state.episodeIDs, [second.revision.itemID, third.revision.itemID, first.revision.itemID])
+        XCTAssertEqual(state.episodeIDs, [second.revision.itemID, first.revision.itemID, third.revision.itemID])
         XCTAssertEqual(state.currentEpisodeID, second.revision.itemID)
         XCTAssertTrue(state.episodeIDs.contains(first.revision.itemID), "the displaced current episode stays queued")
     }

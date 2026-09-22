@@ -310,16 +310,15 @@ public final class PlaybackController {
         try await loadQueuedEpisode(episodeID, playAfterLoad: true)
 
         var episodeIDs = state.episodeIDs
-        let targetIndex: Int
-        if let queuedIndex = episodeIDs.firstIndex(of: episodeID) {
-            targetIndex = queuedIndex
-        } else {
-            episodeIDs.append(episodeID)
-            targetIndex = episodeIDs.index(before: episodeIDs.endIndex)
-        }
+        episodeIDs.removeAll { $0 == episodeID }
         if let current = state.currentEpisodeID,
            let currentIndex = episodeIDs.firstIndex(of: current) {
-            episodeIDs.swapAt(currentIndex, targetIndex)
+            // "Play Now" inserts at the current slot. The interrupted episode
+            // remains immediately after it, so Next resumes what was playing
+            // instead of sending it to the target's former queue position.
+            episodeIDs.insert(episodeID, at: currentIndex)
+        } else {
+            episodeIDs.insert(episodeID, at: episodeIDs.startIndex)
         }
         try await store.replacePodcastQueue(try PodcastQueueState(
             episodeIDs: episodeIDs,

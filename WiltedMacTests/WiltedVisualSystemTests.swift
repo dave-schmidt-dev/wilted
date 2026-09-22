@@ -178,7 +178,8 @@ final class WiltedVisualSystemTests: XCTestCase {
         // One dedicated state line: the row names the step it is waiting for,
         // derived from the model's single group accessor.
         XCTAssertTrue(row.contains("WiltedMacModel.menuGroup(for: episode)"))
-        XCTAssertTrue(row.contains("Text(\"\\(episode.feedTitle) · \\(group.displayName)\")"))
+        XCTAssertTrue(row.contains("episode.releasedAt.formatted(date: .abbreviated, time: .omitted)"))
+        XCTAssertTrue(row.contains("· \\(group.displayName)"))
         XCTAssertTrue(row.contains("wilted-menu-progress-\\(episode.id)"))
         XCTAssertTrue(row.contains("wilted-menu-row-\\(episode.id)"))
 
@@ -973,7 +974,9 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(source.contains(".dropDestination(for: String.self)"))
         XCTAssertTrue(source.contains("Button(\"Prepare all now (\\(model.menuPreparableEpisodes.count))\")"))
         XCTAssertTrue(source.contains("\"Needs preparation\""))
-        XCTAssertTrue(source.contains("Label(\"Sort: \\(model.menuSort.displayName)\""))
+        XCTAssertTrue(source.contains("Label(\"Group by: \\(model.menuGrouping.rawValue)\""))
+        XCTAssertTrue(source.contains("Label(\"Sort by: \\(model.menuSort.displayName)\""))
+        XCTAssertTrue(source.contains("wilted-menu-grouping"))
         XCTAssertFalse(source.contains("Picker(\"Sort order\""),
                        "the Larder sort menu must not nest a Picker submenu")
         XCTAssertTrue(source.contains("model.menuSort = option"),

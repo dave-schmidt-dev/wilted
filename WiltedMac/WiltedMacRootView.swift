@@ -1022,6 +1022,26 @@ private struct WiltedMacMenuView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Menu {
+                    ForEach(Array(WiltedMacMenuGrouping.allCases), id: \.id) { option in
+                        Button {
+                            model.menuGrouping = option
+                        } label: {
+                            if model.menuGrouping == option {
+                                Label(option.rawValue, systemImage: "checkmark")
+                            } else {
+                                Text(option.rawValue)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Group by: \(model.menuGrouping.rawValue)", systemImage: "rectangle.3.group")
+                        .wiltedFont(.utility)
+                }
+                .menuStyle(.button)
+                .controlSize(.regular)
+                .accessibilityLabel("Group Larder by: \(model.menuGrouping.rawValue)")
+                .accessibilityIdentifier("wilted-menu-grouping")
+                Menu {
                     // A Picker nested inside this Menu creates a second
                     // submenu on macOS. Choosing Custom order dismisses that
                     // submenu before the listener can reach Oldest. Direct
@@ -1039,7 +1059,7 @@ private struct WiltedMacMenuView: View {
                         }
                     }
                 } label: {
-                    Label("Sort: \(model.menuSort.displayName)", systemImage: "arrow.up.arrow.down")
+                    Label("Sort by: \(model.menuSort.displayName)", systemImage: "arrow.up.arrow.down")
                         .wiltedFont(.utility)
                 }
                 .menuStyle(.button)
@@ -1163,11 +1183,10 @@ private struct WiltedMacMenuView: View {
         }
     }
 
-    /// The three groups in their fixed order. A group with no rows is not
-    /// given an empty heading, and every heading's count comes from
-    /// `menuEpisodes(in:)` -- the same call that produces its rows.
+    /// The selected presentation sections. Status owns the lifecycle actions;
+    /// Feed and Date are neutral views over the same durable listening order.
     @ViewBuilder private var groupList: some View {
-        let groups = model.menuFilter.map { [$0] } ?? WiltedMacMenuGroup.allCases
+        let sections = model.menuSections()
         let total = model.menuWaitingEpisodes.count
         if model.menuFilteredEpisodes.isEmpty {
             Text(model.isSearchingMenu
@@ -1180,40 +1199,57 @@ private struct WiltedMacMenuView: View {
                 .accessibilityIdentifier("wilted-menu-empty")
         } else {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
-                ForEach(groups) { group in
-                    let episodes = model.menuEpisodes(in: group)
-                    if !episodes.isEmpty {
-                        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(group.displayName)
-                                    .wiltedFont(.title)
-                                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                                Text("\(episodes.count)")
+                ForEach(sections) { section in
+                    VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(section.title)
+                                .wiltedFont(.title)
+                                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                            Text("\(section.episodes.count)")
+                                .wiltedFont(.utility)
+                                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                                .accessibilityIdentifier(menuSectionCountIdentifier(section))
+                            Spacer()
+                            if let detail = section.detail {
+                                Text(detail)
                                     .wiltedFont(.utility)
                                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                                    .accessibilityIdentifier("wilted-menu-\(group.rawValue.lowercased())-count")
-                                Spacer()
-                                Text(group.detail)
-                                    .wiltedFont(.utility)
-                                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            }
+                            if let group = section.statusGroup {
                                 groupActions(group)
                             }
-                            VStack(alignment: .leading, spacing: 0) {
-                                ForEach(Array(episodes.enumerated()), id: \.element.id) { index, episode in
-                                    if index > 0 { Divider() }
-                                    let position = (model.menuWaitingEpisodes.firstIndex(of: episode) ?? index) + 1
-                                    menuRow(episode, position: position, count: total)
-                                }
-                            }
-                            .wiltedCard(colorScheme)
                         }
-                        .accessibilityElement(children: .contain)
-                        .accessibilityIdentifier("wilted-menu-group-\(group.rawValue.lowercased())")
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(section.episodes.enumerated()), id: \.element.id) { index, episode in
+                                if index > 0 { Divider() }
+                                let position = (model.menuWaitingEpisodes.firstIndex(of: episode) ?? index) + 1
+                                menuRow(episode, position: position, count: total)
+                            }
+                        }
+                        .wiltedCard(colorScheme)
                     }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier(menuSectionIdentifier(section))
                 }
                 tailDropTarget
             }
         }
+    }
+
+    /// Status keeps its established automation identifiers; the two new
+    /// presentation modes use section identities that cannot collide with it.
+    private func menuSectionIdentifier(_ section: WiltedMacMenuSection) -> String {
+        if let group = section.statusGroup {
+            return "wilted-menu-group-\(group.rawValue.lowercased())"
+        }
+        return "wilted-menu-section-\(section.id)"
+    }
+
+    private func menuSectionCountIdentifier(_ section: WiltedMacMenuSection) -> String {
+        if let group = section.statusGroup {
+            return "wilted-menu-\(group.rawValue.lowercased())-count"
+        }
+        return "wilted-menu-section-\(section.id)-count"
     }
 
     /// The strip below the last row is a real destination: a drop here appends
@@ -1297,7 +1333,7 @@ private struct WiltedMacMenuView: View {
                     .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     .lineLimit(1)
-                Text("\(episode.feedTitle) · \(group.displayName)")
+                Text("\(episode.feedTitle) · \(episode.releasedAt.formatted(date: .abbreviated, time: .omitted)) · \(group.displayName)")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .lineLimit(1)

@@ -1217,13 +1217,64 @@ final class WiltedMacModelTests: XCTestCase {
         let first = WiltedMacModel(arguments: [], preferences: preferences)
         first.larderSort = .title
         first.menuSort = .title
+        first.menuGrouping = .date
         first.selectedNavigation = .feeds
 
         let second = WiltedMacModel(arguments: [], preferences: preferences)
         XCTAssertEqual(second.larderSort, .title)
         XCTAssertEqual(second.menuSort, .title)
+        XCTAssertEqual(second.menuGrouping, .date)
         XCTAssertEqual(second.selectedNavigation, .feeds,
                        "the selected destination must outlive the model that chose it")
+    }
+
+    func testMenuGroupingDefaultsToStatusAndBuildsFeedDateAndStatusSections() {
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func episode(
+            _ id: String,
+            feed: String,
+            daysAgo: Int,
+            download: WiltedMacEpisodeDownloadState,
+            preparation: WiltedMacEpisodePreparationState = .notPrepared
+        ) -> WiltedMacEpisode {
+            WiltedMacEpisode(
+                id: id, title: id, feedTitle: feed, summary: "", artworkURL: nil,
+                releasedAt: calendar.date(byAdding: .day, value: -daysAgo, to: now)!,
+                durationSeconds: 600, playbackSeconds: 0, downloadState: download,
+                preparationState: preparation
+            )
+        }
+        let ready = episode(
+            "group-ready", feed: "Daily Field", daysAgo: 0, download: .completed,
+            preparation: .prepared(summary: "Ready")
+        )
+        let downloaded = episode("group-downloaded", feed: "Quiet Season", daysAgo: 1, download: .completed)
+        let available = episode("group-available", feed: "Daily Field", daysAgo: 3, download: .notDownloaded)
+        for value in [ready, downloaded, available] {
+            model.installEpisodeForTesting(value)
+            model.keepEpisode(value)
+        }
+
+        XCTAssertEqual(model.menuGrouping, .status)
+        XCTAssertEqual(model.menuSections(calendar: calendar, now: now).map(\.title), [
+            "Ready", "Downloaded", "Not downloaded",
+        ])
+        XCTAssertTrue(model.menuSections(calendar: calendar, now: now).allSatisfy { $0.statusGroup != nil })
+
+        model.menuGrouping = .feed
+        let feedSections = model.menuSections(calendar: calendar, now: now)
+        XCTAssertEqual(feedSections.map(\.title), ["Daily Field", "Quiet Season"])
+        XCTAssertEqual(feedSections.flatMap(\.episodes).count, 3)
+        XCTAssertTrue(feedSections.allSatisfy { $0.statusGroup == nil })
+
+        model.menuGrouping = .date
+        let dateSections = model.menuSections(calendar: calendar, now: now)
+        XCTAssertEqual(dateSections.prefix(2).map(\.title), ["Today", "Yesterday"])
+        XCTAssertEqual(dateSections.flatMap(\.episodes).count, 3)
+        XCTAssertTrue(dateSections.allSatisfy { $0.statusGroup == nil })
     }
 
     func testMenuSortReordersOnlyUpcomingEpisodesAndKeepsCurrentInPlace() {

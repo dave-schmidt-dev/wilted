@@ -120,6 +120,24 @@ enum WiltedMacMenuSort: String, CaseIterable, Identifiable, Sendable {
     var displayName: String { self == .custom ? "Custom order" : rawValue }
 }
 
+/// How the Larder draws section boundaries. Grouping is presentation only;
+/// the durable queue and its independent sort remain the listening order.
+enum WiltedMacMenuGrouping: String, CaseIterable, Identifiable, Sendable {
+    case feed = "Feed"
+    case date = "Date"
+    case status = "Status"
+
+    var id: Self { self }
+}
+
+struct WiltedMacMenuSection: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let detail: String?
+    let statusGroup: WiltedMacMenuGroup?
+    let episodes: [WiltedMacEpisode]
+}
+
 /// A known-duration total for one queue or status group. Unknown durations
 /// stay visible in the count rather than being silently treated as zero.
 struct WiltedMacQueueAudioSummary: Equatable, Sendable {
@@ -1229,8 +1247,14 @@ final class WiltedMacModel {
             applyMenuSortIfNeeded()
         }
     }
+    /// Section presentation is independent from the queue's selected sort.
+    /// Status preserves the Larder's established default for existing users.
+    var menuGrouping: WiltedMacMenuGrouping = .status {
+        didSet { preferences.set(menuGrouping.rawValue, forKey: Self.menuGroupingPreferenceKey) }
+    }
     static let larderSortPreferenceKey = "wilted.queue.larder.sort"
     static let menuSortPreferenceKey = "wilted.queue.menu.sort"
+    static let menuGroupingPreferenceKey = "wilted.queue.menu.grouping"
     /// The highest preparation request sequence issued so far. Persisted on
     /// every issue as a fallback (see `preparationRequestSequencePreferenceKey`
     /// below), but reseeded from the ticket table's own high-water mark at
@@ -1622,6 +1646,10 @@ final class WiltedMacModel {
         if let stored = self.preferences.string(forKey: Self.menuSortPreferenceKey),
            let sort = WiltedMacMenuSort(rawValue: stored) {
             menuSort = sort
+        }
+        if let stored = self.preferences.string(forKey: Self.menuGroupingPreferenceKey),
+           let grouping = WiltedMacMenuGrouping(rawValue: stored) {
+            menuGrouping = grouping
         }
         preparationRequestSequence = self.preferences.integer(
             forKey: Self.preparationRequestSequencePreferenceKey
@@ -4139,6 +4167,63 @@ final class WiltedMacModel {
         return menuSearchResults.filter { Self.menuGroup(for: $0) == menuFilter }
     }
 
+    /// Sections for the selected presentation. Feed and Date collect rows by
+    /// their source and release day; Status retains the existing lifecycle
+    /// groups and is the only mode that owns group actions.
+    func menuSections(
+        calendar: Calendar = .autoupdatingCurrent,
+        now: Date = Date()
+    ) -> [WiltedMacMenuSection] {
+        switch menuGrouping {
+        case .feed:
+            var feeds: [String] = []
+            var episodesByFeed: [String: [WiltedMacEpisode]] = [:]
+            for episode in menuFilteredEpisodes {
+                if episodesByFeed[episode.feedTitle] == nil { feeds.append(episode.feedTitle) }
+                episodesByFeed[episode.feedTitle, default: []].append(episode)
+            }
+            return feeds.map { feed in
+                WiltedMacMenuSection(
+                    id: "feed-\(feed)", title: feed, detail: nil,
+                    statusGroup: nil, episodes: episodesByFeed[feed] ?? []
+                )
+            }
+        case .status:
+            let groups = menuFilter.map { [$0] } ?? WiltedMacMenuGroup.allCases
+            return groups.compactMap { group in
+                let episodes = menuEpisodes(in: group)
+                guard !episodes.isEmpty else { return nil }
+                return WiltedMacMenuSection(
+                    id: "status-\(group.rawValue)", title: group.displayName,
+                    detail: group.detail, statusGroup: group, episodes: episodes
+                )
+            }
+        case .date:
+            var dates: [Date] = []
+            var episodesByDate: [Date: [WiltedMacEpisode]] = [:]
+            for episode in menuFilteredEpisodes {
+                let date = calendar.startOfDay(for: episode.releasedAt)
+                if episodesByDate[date] == nil { dates.append(date) }
+                episodesByDate[date, default: []].append(episode)
+            }
+            return dates.map { date in
+                let title: String
+                if calendar.isDate(date, inSameDayAs: now) {
+                    title = "Today"
+                } else if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+                          calendar.isDate(date, inSameDayAs: yesterday) {
+                    title = "Yesterday"
+                } else {
+                    title = date.formatted(date: .abbreviated, time: .omitted)
+                }
+                return WiltedMacMenuSection(
+                    id: "date-\(date.timeIntervalSinceReferenceDate)", title: title,
+                    detail: nil, statusGroup: nil, episodes: episodesByDate[date] ?? []
+                )
+            }
+        }
+    }
+
     // MARK: - Menu search
 
     /// The Menu's search text. Every change reschedules the transcript
@@ -4844,6 +4929,7 @@ final class WiltedMacModel {
                 await self.fixturePodcastInstallTask?.value
                 self.refreshPlaybackReadout()
                 try await playback.playPodcastQueueEpisodeNow(id)
+                self.menuSort = .custom
                 self.selectedArticleID = nil
                 self.currentPodcastEpisodeID = episode.id
                 self.isPodcastPlayback = true
