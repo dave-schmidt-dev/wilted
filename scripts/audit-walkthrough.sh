@@ -9,7 +9,11 @@ report="$1"
 [[ -f "$report" ]] || fail "missing report: $report"
 command -v file >/dev/null 2>&1 || fail 'missing required tool: file'
 html="$(<"$report")"
-need() { [[ "$html" == *"$1"* ]] || fail "missing token: $1"; }
+# Rendered-copy contracts must not be satisfied by a coincidental byte sequence
+# inside one of the multi-megabyte embedded PNG payloads. Image evidence is
+# validated separately below against the unmodified document.
+html_text="$(printf '%s' "$html" | perl -0777 -pe 's#(data:image/png;base64,)[^"[:space:]<]+#$1#g')"
+need() { [[ "$html_text" == *"$1"* ]] || fail "missing token: $1"; }
 
 say "audit.stage=structure path=$report"
 for token in '<html' 'data-candidate-commit=' 'data-gate-receipt=' 'data-capture-status=' \
@@ -19,6 +23,8 @@ for token in '<html' 'data-candidate-commit=' 'data-gate-receipt=' 'data-capture
   'download' 'recovery' 'Finder' 'system-owned' 'Accessibility tree' 'content viewport' \
   'id="onboarding"' 'id="roles"' 'id="limits"' 'onboarding' 'role' 'disabled' \
   'id="fig-menu-deferred-prepare-now"' 'Prepare now' 'wilted-menu-prepare-now-&lt;id&gt;' \
+  'Group by: Status' 'Feed and Date' 'Sort by: Custom order' '&lt;release date&gt;' \
+  'Play Now inserts the selected episode immediately before the current episode' \
   'XCUIElement.screenshot()' 'NSApp.mainWindow.contentView' 'systemAttachmentLifetime' \
   'Production CloudKit is not claimed' \
   'physical-device is not claimed' 'App Store Connect is not claimed' 'TestFlight is not claimed' \

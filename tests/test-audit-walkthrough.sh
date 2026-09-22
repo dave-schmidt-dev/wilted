@@ -10,7 +10,7 @@ set -Eeuo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 audit="$root/scripts/audit-walkthrough.sh"
-report="$root/docs/2026-09-19-mac-daily-driver-walkthrough.html"
+report="$root/docs/2026-09-22-mac-daily-driver-walkthrough.html"
 tmp="$(mktemp -d -t wilted-walkthrough-tests.XXXXXX)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -75,5 +75,8 @@ reject pending-with-image perl -0pi -e 's/data-capture-status="verified-content-
 reject release-claim perl -0pi -e 's/owner acceptance remains pending/owner acceptance approved/'
 reject missing-deferred-frame perl -0pi -e 's#<figure id="fig-menu-deferred-prepare-now">.*?</figure>##s'
 reject missing-deferred-control perl -0pi -e 's/wilted-menu-prepare-now-&lt;id&gt;/missing-prepare-now-control/g'
+reject missing-grouping-contract perl -0pi -e 's/Group by: Status/GROUPING_REMOVED/g'
+reject missing-release-date-contract perl -0pi -e 's/&lt;release date&gt;/RELEASE_DATE_REMOVED/g'
+reject missing-play-now-contract perl -0pi -e 's/Play Now inserts the selected episode immediately before the current episode/PLAY_NOW_REMOVED/g'
 
 printf '%s\n' "test.stage=complete cases=$cases" >&2

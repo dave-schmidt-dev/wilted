@@ -184,9 +184,11 @@ def build(captures, commit, date_iso, date_human, previous):
             "destination rather than in a separate rail, because Menu is the one destination that expands "
             "Transcript and Notes inline (5.4) instead of into the full-window overlay. Audio on Menu "
             "(<code>wilted-menu-audio-total</code>) and Waiting for you "
-            "(<code>wilted-menu-waiting-count</code>) sit beside the always-labelled "
-            "<strong>Sort: Custom order</strong> menu (<code>wilted-menu-sort</code>), which offers Custom "
-            "order, Newest, Oldest, Length, Show, and Title. Filter "
+            "(<code>wilted-menu-waiting-count</code>) sit beside the independent "
+            "<strong>Group by: Status</strong> menu (<code>wilted-menu-grouping</code>), which also offers "
+            "Feed and Date, and the always-labelled <strong>Sort by: Custom order</strong> menu "
+            "(<code>wilted-menu-sort</code>), which offers Custom order, Newest, Oldest, Length, Show, and "
+            "Title. Filter "
             "chips (<code>wilted-menu-filter-all</code> and one per "
             "<code>wilted-menu-filter-&lt;group&gt;</code>) jump to a group's rows, and Download all new "
             "(<code>wilted-menu-download-all</code>) and Prepare all downloaded "
@@ -216,7 +218,7 @@ def build(captures, commit, date_iso, date_human, previous):
             "<strong>5.3 Menu, a prepared episode.</strong> A successful terminal preparation journal matching "
             "the audio revision ready to play places the episode in the Ready group "
             "(<code>wilted-menu-group-ready</code>, <code>wilted-menu-row-&lt;id&gt;</code>), subtitled "
-            "&ldquo;&lt;show&gt; &middot; Ready&rdquo;. The row does not yet carry the completion summary "
+            "&ldquo;&lt;show&gt; &middot; &lt;release date&gt; &middot; Ready&rdquo;. The row does not yet carry the completion summary "
             "(&ldquo;5 ads removed (7:22) &middot; transcript synced&rdquo;) the retired Larder row used to: "
             "that text is read from <code>WiltedMacEpisodeLifecyclePresentation.primaryLabel</code>, which only "
             "the Feeds inbox row still consults, and carrying it onto the Menu row is its own re-queued item "
@@ -383,7 +385,7 @@ def build(captures, commit, date_iso, date_human, previous):
 <p class="eyebrow">Wilted &middot; Mac daily-driver walkthrough &middot; {date_human} &middot; candidate evidence</p>
 <h1>Mac daily-driver review.<br><em>Signed content-viewport evidence.</em></h1>
 <p>This report is a screen-by-screen review of the Wilted Mac app as built from the candidate commit below. Every image is an app-owned, window-scoped capture of the Wilted process itself, taken during a signed local XCUITest session. It is candidate evidence for owner review. It is not owner acceptance, not a release record, and not evidence of any production, device, or store state.</p>
-<p>It supersedes the {previous} report, which was captured against Larder and Prep as destinations. Task 0.1 retired both: the app now has three destinations &mdash; Feeds, Menu, Settings &mdash; with Larder's episode queue and Prep's preparation reporting folded into Menu. Every frame here was retaken against the current routes; none is carried over.</p>
+<p>It supersedes the {previous} report. The app still has three destinations &mdash; Larder, Feeds, Settings &mdash; and every frame here was retaken against the current routes; none is carried over.</p>
 <nav class="toc" aria-label="Contents"><a href="#current">Current state</a><a href="#method">Method</a><a href="#onboarding">Onboarding</a><a href="#feeds">Feeds</a><a href="#menu">Menu</a><a href="#playback">Playback</a><a href="#settings">Settings</a><a href="#recovery">Recovery</a><a href="#roles">Roles</a><a href="#system-boundaries">System boundaries</a><a href="#limits">Coverage limits</a><a href="#non-claims">Non-claims</a><a href="#owner-checklist">Owner checklist</a></nav>
 </header>
 
@@ -396,7 +398,7 @@ def build(captures, commit, date_iso, date_human, previous):
 <tr><td>Window geometry</td><td>{geometry_line}</td></tr>
 <tr><td>Reproducing this report</td><td><code>scripts/record-walkthrough-frames.sh</code> writes the frames and a geometry sidecar beside each one, by setting <code>WILTED_WALKTHROUGH_CAPTURE=1</code> inside the generated scheme's TestAction and running <code>-only-testing:WiltedMacUITests/WiltedMacWalkthroughCapture</code>; <code>scripts/build-mac-walkthrough.py</code> assembles this document from that directory</td></tr>
 </tbody></table>
-<div class="warning"><strong>What changed since the {previous} report.</strong> Larder and Prep no longer exist as destinations; the app now has three &mdash; Feeds, Menu, Settings. Feeds is a one-decision inbox (Keep or Skip) plus feed upkeep; Menu is where Larder's episode queue and Prep's preparation reporting landed together, and it is now the one destination that expands Transcript and Notes inline rather than into the full-window overlay every other destination uses. Skip (retirement) and Remove (dismissal) both now restore through the same &ldquo;Off the list&rdquo; control on Feeds, where a dismissed episode previously had no restore path at all. Every frame was retaken at this commit.</div>
+<div class="warning"><strong>What changed since the {previous} report.</strong> Larder now separates presentation from listening order: Group by offers Feed, Date, and Status, while Sort by retains Custom order, Newest, Oldest, Length, Show, and Title. Every episode row includes its release date. Play Now inserts the selected episode immediately before the current episode so the interrupted episode remains next. Every frame was retaken at this commit.</div>
 </section>
 
 <section id="method"><h2>2. Method and evidence labels</h2>
@@ -418,7 +420,7 @@ def build(captures, commit, date_iso, date_human, previous):
 </section>
 
 <section id="feeds"><h2>4. Feeds</h2>
-<p>Feeds answers one question, once, per new episode: keep it or skip it. Downloading, preparing, and playing all happen on the Menu, which is where Larder's episode queue landed once Larder was retired. Feed upkeep &mdash; subscribing, refreshing, hiding, unsubscribing &mdash; and the restorable list for anything taken off the Menu share the same destination, reached by <code>wilted-navigation-feeds</code> with detail pane <code>wilted-mac-feeds-detail</code>.</p>
+<p>Feeds answers one question, once, per new episode: keep it or skip it. Downloading, preparing, and playing all happen in the Menu. Feed upkeep &mdash; subscribing, refreshing, hiding, unsubscribing &mdash; and the restorable list for anything taken off the Menu share the same destination, reached by <code>wilted-navigation-feeds</code> with detail pane <code>wilted-mac-feeds-detail</code>.</p>
 {figures["feeds-inbox"]}
 {figures["feeds-add"]}
 {figures["feeds-off-the-list"]}
@@ -428,7 +430,7 @@ def build(captures, commit, date_iso, date_human, previous):
 </section>
 
 <section id="menu"><h2>5. Menu</h2>
-<p>Menu is the primary destination and the default route at launch, including a restore of a stored selection that names a retired destination: <code>WiltedMacNavigation.restored(from:)</code> resolves an unreadable, absent, or retired value to Menu, because it is now the one place episodes wait. The sidebar (<code>wilted-mac-sidebar</code>) holds the wordmark and the three surviving destinations &mdash; <code>wilted-navigation-feeds</code>, <code>wilted-navigation-menu</code>, <code>wilted-navigation-settings</code> &mdash; drawn with the broccoli, numbered-list, and gear symbols, pinned above the standing sidebar totals (<code>wilted-sidebar-ready-total</code>, <code>wilted-sidebar-downloaded-total</code>, <code>wilted-sidebar-menu-total</code>).</p>
+<p>Menu is the primary destination and the default route at launch. <code>WiltedMacNavigation.restored(from:)</code> resolves an unreadable, absent, or retired stored selection to Menu. The sidebar (<code>wilted-mac-sidebar</code>) holds the wordmark and the three destinations &mdash; <code>wilted-navigation-menu</code>, <code>wilted-navigation-feeds</code>, <code>wilted-navigation-settings</code> &mdash; pinned above the standing sidebar totals (<code>wilted-sidebar-ready-total</code>, <code>wilted-sidebar-downloaded-total</code>, <code>wilted-sidebar-menu-total</code>).</p>
 {figures["menu-idle"]}
 {figures["menu-add"]}
 {figures["menu-prepared"]}
@@ -490,6 +492,8 @@ def build(captures, commit, date_iso, date_human, previous):
 <li>Paste an article address into the Menu's Add article box and confirm it is saved as an article.</li>
 <li>Paste a podcast address into the same box, or into Feeds' Add feed box, and confirm it subscribes, and that the feed appears on Feeds.</li>
 <li>Keep an episode from the Feeds inbox and confirm it appears on the Menu; skip another and confirm it leaves the inbox for Off the list.</li>
+<li>In Larder, group the same queue by Feed, Date, and Status; confirm each row keeps its release date and that changing Sort by changes order independently.</li>
+<li>While a far-down episode is playing, choose Play Now on another episode and confirm the selected episode starts while the interrupted episode becomes next.</li>
 <li>Download an episode, prepare it, and confirm the prepared audio plays from the position you were at.</li>
 <li>Expand Transcript on a prepared episode and confirm the text follows the audio.</li>
 <li>On that same episode, confirm each removed advertisement is marked in the transcript where the audio jumps, and that the original times it names match what Prep reported before it was retired (Menu's row does not yet carry that summary; see 5.3).</li>
