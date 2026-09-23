@@ -7464,9 +7464,11 @@ final class WiltedMacModelTests: XCTestCase {
         let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
         for fragment in [
             "model.menuDownloadableEpisodes.count",
-            "model.menuDownloadableEpisodes.isEmpty",
+            "actionable: model.menuDownloadableEpisodes",
+            "inFlight: model.menuDownloadsInFlight",
             "model.menuPreparableEpisodes.count",
-            "model.menuPreparableEpisodes.isEmpty",
+            "actionable: model.menuPreparableEpisodes",
+            "inFlight: model.menuPreparationsInFlight",
         ] {
             XCTAssertTrue(view.contains(fragment), "\(fragment) must be the toolbar's source")
         }
@@ -7480,6 +7482,36 @@ final class WiltedMacModelTests: XCTestCase {
         let modelSource = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacModel.swift"))
         XCTAssertTrue(modelSource.contains("for episode in menuDownloadableEpisodes"))
         XCTAssertTrue(modelSource.contains("for episode in menuPreparableEpisodes"))
+    }
+
+    func testBulkActionsCountOnlyWorkThePressStartsAndReportWhatIsStillRunning() {
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        let notDownloaded = destinationEpisode("bulk-not-downloaded", download: .notDownloaded, preparation: .notPrepared)
+        let queued = destinationEpisode("bulk-queued", download: .queued, preparation: .notPrepared)
+        let downloading = destinationEpisode(
+            "bulk-downloading", download: .downloading(received: 10, expected: 100), preparation: .notPrepared
+        )
+        let failed = destinationEpisode("bulk-failed", download: .failed, preparation: .notPrepared)
+        let cancelled = destinationEpisode("bulk-cancelled", download: .cancelled, preparation: .notPrepared)
+        let notPrepared = destinationEpisode("bulk-not-prepared", download: .completed, preparation: .notPrepared)
+        let preparing = destinationEpisode("bulk-preparing", download: .completed, preparation: .preparing(stage: "Queued"))
+        let prepared = destinationEpisode("bulk-prepared", download: .completed, preparation: .prepared(summary: "Ready"))
+        for episode in [notDownloaded, queued, downloading, failed, cancelled, notPrepared, preparing, prepared] {
+            model.installEpisodeForTesting(episode)
+            model.keepEpisode(episode)
+        }
+
+        XCTAssertEqual(Set(model.menuDownloadableEpisodes.map(\.id)), Set([notDownloaded.id, failed.id, cancelled.id]))
+        XCTAssertEqual(Set(model.menuDownloadsInFlight.map(\.id)), Set([queued.id, downloading.id]))
+        XCTAssertEqual(Set(model.menuPreparableEpisodes.map(\.id)), Set([notPrepared.id]))
+        XCTAssertEqual(Set(model.menuPreparationsInFlight.map(\.id)), Set([preparing.id]))
+
+        XCTAssertTrue(WiltedMacEpisodeDownloadState.queued.isInFlight)
+        XCTAssertTrue(WiltedMacEpisodeDownloadState.downloading(received: 0, expected: nil).isInFlight)
+        XCTAssertFalse(WiltedMacEpisodeDownloadState.notDownloaded.isInFlight)
+        XCTAssertFalse(WiltedMacEpisodeDownloadState.completed.isInFlight)
+        XCTAssertFalse(WiltedMacEpisodeDownloadState.failed.isInFlight)
+        XCTAssertFalse(WiltedMacEpisodeDownloadState.cancelled.isInFlight)
     }
 
     /// Prepare all starts exactly the Downloaded group's eligible rows and
@@ -7500,6 +7532,11 @@ final class WiltedMacModelTests: XCTestCase {
         }
 
         model.prepareAllDownloadedMenuEpisodes()
+
+        XCTAssertEqual(
+            Set(model.menuPreparationsInFlight.map(\.id)), Set<String>([downloaded.id, preparing.id]),
+            "the pressed row joins the one already running"
+        )
 
         XCTAssertEqual(model.episodes.first { $0.id == downloaded.id }?.preparationState,
                        .preparing(stage: WiltedMacModel.preparingStage),
@@ -7524,6 +7561,7 @@ final class WiltedMacModelTests: XCTestCase {
         model.keepEpisode(deferred)
         model.admitAutomaticPreparation(for: deferred, at: try localDate(hour: 12))
         XCTAssertEqual(model.menuPreparableEpisodes.map(\.id), [deferred.id])
+        XCTAssertTrue(model.menuPreparationsInFlight.isEmpty, "a row waiting for off-peak is not running")
 
         model.prepareAllDownloadedMenuEpisodes()
 
@@ -7531,6 +7569,7 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertTrue(model.episodes.first(where: { $0.id == deferred.id })?.preparationState.isRunning == true)
         XCTAssertTrue(model.menuPreparableEpisodes.isEmpty,
                       "a genuinely running preparation must not be offered or started twice")
+        XCTAssertEqual(model.menuPreparationsInFlight.map(\.id), [deferred.id])
     }
 
     // MARK: Sidebar totals
@@ -7923,10 +7962,19 @@ final class WiltedMacModelTests: XCTestCase {
         let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
         XCTAssertTrue(view.contains("wilted-menu-search-suppresses-bulk"),
                       "the disabled control must say a search is active")
-        XCTAssertGreaterThanOrEqual(
-            view.components(separatedBy: "|| model.isSearchingMenu").count - 1, 5,
-            "every bulk action must be disabled by an active search"
-        )
+        // Every Download-all and Prepare-all control goes through `bulkAction`,
+        // and that one helper is what a search disables.
+        let helper = try XCTUnwrap(view.range(of: "private func bulkAction("))
+        let helperEnd = try XCTUnwrap(view.range(
+            of: "private func ", range: helper.upperBound..<view.endIndex
+        )?.lowerBound)
+        XCTAssertTrue(view[helper.lowerBound..<helperEnd].contains(".disabled(model.isSearchingMenu)"),
+                      "every bulk action must be disabled by an active search")
+        for title in ["Button(\"Download all", "Button(\"Prepare all"] {
+            XCTAssertFalse(view.contains(title), "\(title) must go through bulkAction")
+        }
+        XCTAssertTrue(view.contains("|| model.isSearchingMenu)"),
+                      "Play the first is a bulk action too")
         XCTAssertTrue(view.contains(".disabled(model.isSearchingMenu)"),
                       "the group clear is a bulk action too")
         XCTAssertTrue(view.contains(".searchable(text: $model.librarySearchQuery,"),

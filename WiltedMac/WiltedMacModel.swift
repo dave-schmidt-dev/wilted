@@ -570,6 +570,16 @@ enum WiltedMacEpisodeDownloadState: Equatable, Sendable {
     case completed
     case failed
     case cancelled
+
+    /// Whether the download has been admitted and has not yet settled.
+    var isInFlight: Bool {
+        switch self {
+        case .notDownloaded, .completed, .failed, .cancelled:
+            false
+        case .queued, .downloading:
+            true
+        }
+    }
 }
 
 /// What preparation has done to a downloaded episode, and what it is doing now.
@@ -4970,9 +4980,16 @@ final class WiltedMacModel {
     /// The exact set the Available bulk action acts on, so its button's count
     /// and the rows it changes are one answer. Never the search's subset: a
     /// group action covers the group, and the view disables it while a search
-    /// is active rather than silently acting on the rows that remain.
+    /// is active rather than silently acting on the rows that remain. Rows
+    /// already queued or downloading are excluded, so the count is work the
+    /// press will start.
     var menuDownloadableEpisodes: [WiltedMacEpisode] {
-        menuUnfilteredEpisodes(in: .available)
+        menuUnfilteredEpisodes(in: .available).filter { !$0.downloadState.isInFlight }
+    }
+
+    /// Available rows whose downloads have been admitted and are still running.
+    var menuDownloadsInFlight: [WiltedMacEpisode] {
+        menuUnfilteredEpisodes(in: .available).filter { $0.downloadState.isInFlight }
     }
 
     /// Downloaded rows the bulk override can start now. This includes ordinary
@@ -4981,6 +4998,15 @@ final class WiltedMacModel {
     var menuPreparableEpisodes: [WiltedMacEpisode] {
         menuUnfilteredEpisodes(in: .downloaded).filter {
             isDeferredForOffPeak($0.id) || Self.isEligibleForPreparation($0)
+        }
+    }
+
+    /// Downloaded rows genuinely preparing. A row waiting for the off-peak
+    /// window carries a queued `.preparing` stage but is not running, and
+    /// `menuPreparableEpisodes` already offers it, so it is excluded here.
+    var menuPreparationsInFlight: [WiltedMacEpisode] {
+        menuUnfilteredEpisodes(in: .downloaded).filter {
+            $0.preparationState.isRunning && !isDeferredForOffPeak($0.id)
         }
     }
 

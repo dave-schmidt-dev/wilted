@@ -992,7 +992,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(source.contains("wilted-mac-menu-detail"))
         XCTAssertTrue(source.contains(".draggable(episode.id)"))
         XCTAssertTrue(source.contains(".dropDestination(for: String.self)"))
-        XCTAssertTrue(source.contains("Button(\"Prepare all now (\\(model.menuPreparableEpisodes.count))\")"))
+        XCTAssertTrue(source.contains("Prepare all now (\\(model.menuPreparableEpisodes.count))"))
         XCTAssertTrue(source.contains("\"Needs preparation\""))
         XCTAssertTrue(source.contains("Label(\"Group by: \\(model.menuGrouping.rawValue)\""))
         XCTAssertTrue(source.contains("Label(\"Sort by: \\(model.menuSort.displayName)\""))
@@ -1016,11 +1016,44 @@ final class WiltedVisualSystemTests: XCTestCase {
         ))
         XCTAssertTrue(source.contains("model.menuEpisodes(in: .playable)"))
         XCTAssertTrue(source.contains("model.menuPreparableEpisodes"))
-        XCTAssertTrue(source.contains(".disabled(model.menuPreparableEpisodes.isEmpty || model.isSearchingMenu)"))
-        XCTAssertTrue(source.contains(".disabled(model.menuDownloadableEpisodes.isEmpty || model.isSearchingMenu)"))
+        XCTAssertTrue(source.contains(".disabled(model.isSearchingMenu)"))
         XCTAssertTrue(source.contains("model.prepareAllDownloadedMenuEpisodes()"))
         XCTAssertTrue(source.contains("wilted-menu-prepare-all"))
         XCTAssertFalse(source.contains("expansionButton(\"Up Next\""))
+    }
+
+    func testBulkActionsBecomeTheirProgressWhileRowsAreInFlight() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
+        let source = try String(contentsOf: root)
+        let start = try XCTUnwrap(source.range(of: "private func bulkAction("))
+        let end = try XCTUnwrap(source.range(
+            of: "private func ", range: start.upperBound..<source.endIndex
+        )?.lowerBound)
+        let bulkAction = source[start.lowerBound..<end]
+
+        XCTAssertTrue(bulkAction.contains("ProgressView()"))
+        XCTAssertTrue(bulkAction.contains("\"\\(identifier)-progress\""))
+        XCTAssertTrue(bulkAction.contains("inFlight.isEmpty"))
+        XCTAssertTrue(bulkAction.contains(".disabled(model.isSearchingMenu)"))
+        // Every call site pairs an in-flight set with the actionable set of the same kind,
+        // however many call sites there are.
+        let compact = source.filter { !$0.isWhitespace }
+        for (actionable, inFlight) in [
+            ("model.menuDownloadableEpisodes", "model.menuDownloadsInFlight"),
+            ("model.menuPreparableEpisodes", "model.menuPreparationsInFlight"),
+        ] {
+            let uses = compact.components(separatedBy: "inFlight:\(inFlight)").count - 1
+            let paired = compact.components(separatedBy: "actionable:\(actionable),inFlight:\(inFlight)").count - 1
+            XCTAssertGreaterThan(uses, 0, inFlight)
+            XCTAssertEqual(paired, uses, inFlight)
+        }
+        // The button is its own branch, not the else of the progress branch, so new
+        // arrivals can still be started while earlier rows run.
+        XCTAssertFalse(bulkAction.contains("} else if !actionable.isEmpty"))
+        XCTAssertTrue(source.contains("inFlightVerb: \"Downloading\""))
+        XCTAssertTrue(source.contains("inFlightVerb: \"Preparing\""))
+        XCTAssertFalse(source.contains("Button(\"Download all new ("))
     }
 
     /// Which cue carries a speaker name, and what its spoken label says, are

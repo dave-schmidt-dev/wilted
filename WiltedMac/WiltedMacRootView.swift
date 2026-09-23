@@ -1167,16 +1167,24 @@ private struct WiltedMacMenuView: View {
                     filterChip(group, label: group.displayName, count: model.menuEpisodes(in: group).count)
                 }
                 Spacer()
-                Button("Download all new (\(model.menuDownloadableEpisodes.count))") {
+                bulkAction(
+                    "Download all new (\(model.menuDownloadableEpisodes.count))",
+                    identifier: "wilted-menu-download-all",
+                    actionable: model.menuDownloadableEpisodes,
+                    inFlight: model.menuDownloadsInFlight,
+                    inFlightVerb: "Downloading"
+                ) {
                     model.downloadAllAvailableMenuEpisodes()
                 }
-                .disabled(model.menuDownloadableEpisodes.isEmpty || model.isSearchingMenu)
-                .accessibilityIdentifier("wilted-menu-download-all")
-                Button("Prepare all now (\(model.menuPreparableEpisodes.count))") {
+                bulkAction(
+                    "Prepare all now (\(model.menuPreparableEpisodes.count))",
+                    identifier: "wilted-menu-prepare-all",
+                    actionable: model.menuPreparableEpisodes,
+                    inFlight: model.menuPreparationsInFlight,
+                    inFlightVerb: "Preparing"
+                ) {
                     model.prepareAllDownloadedMenuEpisodes()
                 }
-                .disabled(model.menuPreparableEpisodes.isEmpty || model.isSearchingMenu)
-                .accessibilityIdentifier("wilted-menu-prepare-all")
             }
             // A bulk action that covered rows the reader cannot see would be
             // the same defect as Skip deleting media: the control says what it
@@ -1189,6 +1197,37 @@ private struct WiltedMacMenuView: View {
             }
         }
         .controlSize(.small)
+    }
+
+    // W-INV-001: a bulk press moves the rows it counted into the in-flight set, so the
+    // control shows progress until the last of them settles. While rows remain that
+    // nothing has started (new arrivals, failed downloads), the button stays beside the
+    // progress so they can still be started.
+    @ViewBuilder private func bulkAction(
+        _ title: String, identifier: String,
+        actionable: [WiltedMacEpisode], inFlight: [WiltedMacEpisode],
+        inFlightVerb: String, action: @escaping () -> Void
+    ) -> some View {
+        if !inFlight.isEmpty {
+            HStack(spacing: WiltedTheme.Spacing.xSmall) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("\(inFlightVerb) \(inFlight.count)…")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("\(identifier)-progress")
+        }
+        if !actionable.isEmpty {
+            Button(title, action: action)
+                .disabled(model.isSearchingMenu)
+                .accessibilityIdentifier(identifier)
+        } else if inFlight.isEmpty {
+            Button(title, action: action)
+                .disabled(true)
+                .accessibilityIdentifier(identifier)
+        }
     }
 
     private func filterChip(_ group: WiltedMacMenuGroup?, label: String, count: Int) -> some View {
@@ -1228,17 +1267,25 @@ private struct WiltedMacMenuView: View {
                       || model.isSearchingMenu)
             .accessibilityIdentifier("wilted-menu-play-first")
         case .downloaded:
-            Button("Prepare all now \(model.menuPreparableEpisodes.count)") {
+            bulkAction(
+                "Prepare all now \(model.menuPreparableEpisodes.count)",
+                identifier: "wilted-menu-group-prepare-all",
+                actionable: model.menuPreparableEpisodes,
+                inFlight: model.menuPreparationsInFlight,
+                inFlightVerb: "Preparing"
+            ) {
                 model.prepareAllDownloadedMenuEpisodes()
             }
-            .disabled(model.menuPreparableEpisodes.isEmpty || model.isSearchingMenu)
-            .accessibilityIdentifier("wilted-menu-group-prepare-all")
         case .available:
-            Button("Download all \(model.menuDownloadableEpisodes.count)") {
+            bulkAction(
+                "Download all \(model.menuDownloadableEpisodes.count)",
+                identifier: "wilted-menu-group-download-all",
+                actionable: model.menuDownloadableEpisodes,
+                inFlight: model.menuDownloadsInFlight,
+                inFlightVerb: "Downloading"
+            ) {
                 model.downloadAllAvailableMenuEpisodes()
             }
-            .disabled(model.menuDownloadableEpisodes.isEmpty || model.isSearchingMenu)
-            .accessibilityIdentifier("wilted-menu-group-download-all")
         }
         Button(model.menuGroupClearLabel(group)) {
             model.clearMenuGroup(group)
