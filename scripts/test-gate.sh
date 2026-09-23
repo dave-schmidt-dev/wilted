@@ -230,9 +230,16 @@ validate_pixel_snapshot_baselines() {
   grep -Fq 'testPodcastPlaybackStaysOutOfArticleSyncWhileArticleQueuesOneCheckpoint' \
     "$root/WiltedMacTests/WiltedVisualSystemTests.swift" ||
     fail 'Mac podcast/article sync-isolation model selector is missing'
-  grep -Fq 'testPodcastCompactPlayerPersistsAcrossDestinationsAndExposesCompleteControls' \
+  grep -Fq 'testPodcastPlaybackJourneyAcrossDestinations' \
     "$repo_root/WiltedMacUITests/WiltedMacSmokeUITests.swift" ||
     fail 'Mac persistent compact-player real-window selector is missing'
+  # The Mac UI suite seizes the owner's screen, so it is capped at five
+  # journeys (INVARIANTS.md W-INV-012). New coverage goes headless first; an
+  # assertion that truly needs a real window joins an existing journey.
+  mac_ui_journeys="$(grep -cE '^[[:space:]]*func[[:space:]]+test' \
+    "$repo_root/WiltedMacUITests/WiltedMacSmokeUITests.swift")"
+  (( mac_ui_journeys <= 5 )) ||
+    fail 'Mac UI suite exceeds its five-journey ceiling; add assertions to an existing journey or move them headless (INVARIANTS.md W-INV-012)'
 
   expected_count=162
   [[ "$(find "$snapshot_dir" -type f -name '*.png' | wc -l | tr -d ' ')" -eq "$expected_count" ]] ||
@@ -375,7 +382,7 @@ expected_test_count_floor() {
   fi
   case "$1" in
     macos-unit-tests) printf '30\n' ;;
-    macos-ui-tests) printf '17\n' ;;
+    macos-ui-tests) printf '5\n' ;;
     ios-pixel-snapshot-tests) printf '11\n' ;;
     *) printf '1\n' ;;
   esac
@@ -385,8 +392,8 @@ assert_mac_ui_selector_floor_contract() {
   local focused='WiltedMacUITests/WiltedMacSmokeUITests/testFocusedSelector'
   [[ "$(WILTED_MAC_UI_SELECTOR="$focused" expected_test_count_floor macos-ui-tests)" == "1" ]] ||
     fail 'validated focused Mac UI selector must require exactly one test'
-  [[ "$(unset WILTED_MAC_UI_SELECTOR; expected_test_count_floor macos-ui-tests)" == "17" ]] ||
-    fail 'default Mac UI suite must retain its seventeen-test floor'
+  [[ "$(unset WILTED_MAC_UI_SELECTOR; expected_test_count_floor macos-ui-tests)" == "5" ]] ||
+    fail 'default Mac UI suite must retain its five-journey floor'
   # A floor is a minimum, not a named set: an unrelated new test keeps the
   # suite above it while a named one quietly disappears. Tests whose absence
   # would not be caught by the count alone are asserted by identifier.
@@ -419,7 +426,7 @@ assert_result_bundle_tests() {
     elif [[ "$label" == "macos-unit-tests" ]]; then
       printf '%s\n' '{"totalTestCount":30}' >"$summary_file"
     elif [[ "$label" == "macos-ui-tests" ]]; then
-      printf '%s\n' '{"totalTestCount":17}' >"$summary_file"
+      printf '%s\n' '{"totalTestCount":5}' >"$summary_file"
     elif [[ "$label" == "ios-pixel-snapshot-tests" ]]; then
       printf '%s\n' '{"totalTestCount":11}' >"$summary_file"
     else
@@ -930,7 +937,7 @@ leg_ios_unit_tests() {
 
 # XCUITest cannot bring an application forward while the login session is
 # locked: every test in the leg fails its activation timeout instead, so a
-# locked Mac reads as sixteen broken journeys and costs a twenty-minute run to
+# locked Mac reads as five broken journeys and costs a twenty-minute run to
 # find out. Ask first. `caffeinate` in the Makefile keeps the display awake,
 # which is a different problem and does not unlock anything.
 screen_is_locked() {

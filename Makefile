@@ -30,7 +30,7 @@ native:
 # in every other run tells you when it is owed.
 # `caffeinate` because every test in the leg fails with "Failed to activate
 # application (current state: Running Background)" if the display sleeps
-# mid-run, which reads as sixteen broken journeys rather than one asleep Mac.
+# mid-run, which reads as five broken journeys rather than one asleep Mac.
 native-ui:
 	@WILTED_MAC_UI=1 caffeinate -disu bash scripts/test-gate.sh
 

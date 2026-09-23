@@ -997,9 +997,23 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(source.contains("model.menuEpisodes(in: .playable)"))
         XCTAssertTrue(source.contains("model.menuPreparableEpisodes"))
         XCTAssertTrue(source.contains(".disabled(model.menuPreparableEpisodes.isEmpty || model.isSearchingMenu)"))
+        XCTAssertTrue(source.contains(".disabled(model.menuDownloadableEpisodes.isEmpty || model.isSearchingMenu)"))
         XCTAssertTrue(source.contains("model.prepareAllDownloadedMenuEpisodes()"))
         XCTAssertTrue(source.contains("wilted-menu-prepare-all"))
         XCTAssertFalse(source.contains("expansionButton(\"Up Next\""))
+    }
+
+    /// Which cue carries a speaker name, and what its spoken label says, are
+    /// unit-tested in `WiltedMacModelTests`. This pins the wiring that puts
+    /// that label on each transcript row, which the Mac UI suite used to prove
+    /// by reading the live tree (W-INV-012 moved it here).
+    func testTranscriptRowsSpeakTheSpeakerExactlyWhereTheHeadingIsDrawn() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Shared/WiltedSurfaces.swift")
+        let source = try String(contentsOf: root, encoding: .utf8)
+        XCTAssertTrue(source.contains("let headings = speakerHeadingCueIDs"))
+        XCTAssertTrue(source.contains("case .cue(let cue): line(cue, showsSpeaker: headings.contains(cue.id))"))
+        XCTAssertTrue(source.contains(".accessibilityLabel(spokenLabel(cue, showsSpeaker: showsSpeaker))"))
     }
 
     func testAutomationSettingsPresentationFollowsThePipelineAndOnlyShowsLiveControls() throws {

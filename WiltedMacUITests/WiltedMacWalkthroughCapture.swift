@@ -198,7 +198,7 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         // an id to that queue. `installPodcastFixture` never seeds
         // `podcastQueueIDs`, so the row has to be kept before it exists on
         // the Menu at all -- confirmed against
-        // `WiltedMacSmokeUITests.testPodcastCompactPlayerPersistsAcrossDestinationsAndExposesCompleteControls`,
+        // `WiltedMacSmokeUITests.testPodcastPlaybackJourneyAcrossDestinations`,
         // which drives this same launch/keep sequence.
         element(prepared, "wilted-navigation-feeds").click()
         XCTAssertTrue(element(prepared, "wilted-mac-feeds-detail").waitForExistence(timeout: 15))
@@ -390,7 +390,7 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         element(failure, "wilted-navigation-menu").click()
         XCTAssertTrue(element(failure, "wilted-mac-menu-detail").waitForExistence(timeout: 10))
 
-        // `testUnpreparedEpisodeHasNoListeningActionAndTheMenuOwnsItsStep`
+        // `testEpisodeDecisionJourneyFromFeedsToLarder`
         // proves `wilted-menu-download-` exists after Keep under this same
         // fixture, so a miss here is a real regression, not a timing
         // question -- hardened to match the other scenarios rather than

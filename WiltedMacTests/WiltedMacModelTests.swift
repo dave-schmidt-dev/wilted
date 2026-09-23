@@ -8437,6 +8437,32 @@ final class WiltedMacModelTests: XCTestCase {
                   + "queued=\(queuedCount) preparationRuns=\(polledRuns) journalRows=\(200 * 4)")
         }
     }
+
+    /// Replaces the UI test testMenuBulkActionsAreDisabledWithHonestEmptyState.
+    func testAReadyLibraryWithNothingKeptOffersNoBulkLarderWork() throws {
+        let directory = temporaryDirectory("ready-no-bulk-work")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: directory,
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        XCTAssertTrue(model.menuDownloadableEpisodes.isEmpty)
+        XCTAssertTrue(model.menuPreparableEpisodes.isEmpty)
+    }
+
+    /// Replaces the playback half of testSidebarListsDestinationsOnlyAndNotTheArticleList.
+    func testAnArticleStillBeingReadCannotOpenThePlayer() throws {
+        let directory = temporaryDirectory("preparing-no-player")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-preparing"],
+            stateDirectoryOverride: directory,
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        XCTAssertFalse(model.articles.isEmpty)
+        XCTAssertFalse(model.articles.contains { $0.isReady })
+    }
 }
 
 /// Seeds one downloaded, prepared episode -- unplayed and not queued -- so a
