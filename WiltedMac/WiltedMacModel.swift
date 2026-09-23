@@ -3019,6 +3019,7 @@ final class WiltedMacModel {
     /// is not silent: it lands here at `.warning`, retrievable with
     /// `log show --predicate 'subsystem == "com.zerodelta.wilted.mac"'`.
     private static let workTicketLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "WorkTicket")
+    private static let playbackLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "Playback")
 
     /// Records one state transition for a work ticket, find-or-inserting it
     /// first if this is its first write.
@@ -3395,8 +3396,17 @@ final class WiltedMacModel {
     /// again is the worst possible answer to "I am done with this", so the
     /// episode just retired is skipped explicitly rather than assumed gone.
     private func advanceToNextMenuEpisode() {
-        guard isPodcastPlayback,
-              let next = nextMenuEpisodeToPlay() else { return }
+        guard isPodcastPlayback else {
+            Self.playbackLog.notice("advanceToNextMenuEpisode: not podcast playback")
+            return
+        }
+        guard let next = nextMenuEpisodeToPlay() else {
+            Self.playbackLog.notice("advanceToNextMenuEpisode: no next episode")
+            return
+        }
+        Self.playbackLog.notice(
+            "advanceToNextMenuEpisode: nextEpisode=\(next.id, privacy: .public)"
+        )
         playEpisode(next)
     }
 
@@ -4958,14 +4968,24 @@ final class WiltedMacModel {
             guard let self else { return }
             do {
                 await self.fixturePodcastInstallTask?.value
-                self.refreshPlaybackReadout()
+                Self.playbackLog.notice(
+                    "playEpisode started: episode=\(episode.id, privacy: .public)"
+                )
+                // The outgoing episode is still current here; the forced
+                // publish below is the one that names the new episode.
+                self.refreshPlaybackReadout(shouldPublishNowPlaying: false)
                 try await playback.playPodcastQueueEpisodeNow(id)
+                Self.playbackLog.notice(
+                    "playEpisode returned: episode=\(episode.id, privacy: .public) isPlaying=\(playback.liveIsPlaying, privacy: .public) time=\(playback.livePositionSeconds, privacy: .public) rate=\(playback.playbackRate, privacy: .public)"
+                )
                 self.menuSort = .custom
                 self.selectedArticleID = nil
                 self.currentPodcastEpisodeID = episode.id
                 self.isPodcastPlayback = true
                 self.isNowPlaying = true
                 self.currentTranscript = .unavailable
+                self.refreshPlaybackReadout(shouldPublishNowPlaying: false)
+                self.publishNowPlaying(force: true)
                 await self.refreshPodcastQueueState()
                 await self.loadEpisodeTranscript(itemID: id)
                 self.refreshPlaybackReadout()
@@ -4980,6 +5000,9 @@ final class WiltedMacModel {
                     self.episodes[index].isReadyMediaAvailable = false
                 }
                 self.playbackError = "This episode's saved audio is unavailable."
+                Self.playbackLog.error(
+                    "playEpisode failed: episode=\(episode.id, privacy: .public) error=\(String(describing: error), privacy: .public)"
+                )
                 self.playbackOperationStatus = nil
             }
         }
@@ -5221,8 +5244,10 @@ final class WiltedMacModel {
     /// `PlaybackController` advances its own position, but nothing observed it
     /// while audio ran, so the producer's readout would freeze at the loaded
     /// value. The player view drives this on a one-second cadence, matching
-    /// the listener's `refreshNowPlayingReadout`.
-    func refreshPlaybackReadout() {
+    /// the listener's `refreshNowPlayingReadout`. A caller that is about to
+    /// force its own publish passes `shouldPublishNowPlaying: false`, so the
+    /// widget is not handed an intermediate state first.
+    func refreshPlaybackReadout(shouldPublishNowPlaying: Bool = true) {
 #if canImport(WiltedProducer)
         guard let playback else { return }
         playbackDurationSeconds = playback.durationSeconds
@@ -5237,7 +5262,7 @@ final class WiltedMacModel {
         updateCurrentLibraryPlaybackProjection()
         // The one funnel every transport and the player's timer already goes
         // through, so the system readout cannot drift from the on-screen one.
-        publishNowPlaying()
+        if shouldPublishNowPlaying { publishNowPlaying() }
         rescheduleSeamMarker()
     }
 
@@ -5580,6 +5605,9 @@ final class WiltedMacModel {
         Task { [weak self] in
             guard let self else { return }
             do {
+                Self.playbackLog.notice(
+                    "markCurrentPlaybackCompleted: episode=\(self.currentPodcastEpisodeID ?? "none", privacy: .public)"
+                )
                 // Idempotent by halves: a record that already says completed is
                 // not rewritten, but the retirement it never got runs anyway.
                 // Pressing this on an episode marked finished elsewhere -- an
