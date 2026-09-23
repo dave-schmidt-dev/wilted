@@ -287,6 +287,9 @@ POSTROLL_RECOVERY_MAX_SECONDS = 300.0
 POSTROLL_RECOVERY_MAX_SEGMENTS = 96
 POSTROLL_ALREADY_CLAIMED_SECONDS = 1.0
 POSTROLL_RECOVERY_MINIMUM_SECONDS = 10.0
+# Speech-to-text splits at a pause this long, so a cue that starts after one
+# cannot also hold the sign-off's last words.
+POSTROLL_CLEAN_BREAK_SECONDS = 2.0
 # How much of the silence before a produced spot the cut may claim. The seam
 # between the sign-off and the spot is the spot's own leader, and leaving it
 # behind leaves the advertisement in: TechCrunch's is 6.3 seconds, The Daily's
@@ -398,13 +401,17 @@ envelope, but that is evidence to review, not permission to cut. Return the supp
 that are definitely one non-empty contiguous spoken commercial read. The answer must include the
 observed commercial evidence. Return only strict JSON with no prose: {"ad_ids":[ID,...]}."""
 COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT = """\
-Review this bounded podcast envelope independently. Judge only the IDs named as proposed commercial
-IDs. Return any of those proposed IDs containing programme, editorial discussion, an interview, or a
-mixed programme/commercial passage; never return a context-only ID in programme_ids. Also say whether
-programme exists in the supplied context before and after the proposal. A conversational host-read
-that promotes a product, service, offer, or destination is advertising, not programme, even when the
-same host reads it without a music break. A transcript boundary is not itself programme. Return only
-strict JSON with no prose: {"programme_ids":[ID,...],"programme_before":true,"programme_after":true}."""
+Review this bounded podcast envelope independently. Classify each ID listed under "IDs to classify",
+reading the rest as context. "commercial": the whole passage is advertising -- a sponsor message, a
+produced spot, a promotion for a different show, or a host-read promoting a product, service, offer,
+or destination, with its call to action. "programme": the passage is this show's own content -- its
+reporting, discussion, interviews, narration, a teaser for what comes after the break, credits, or a
+request to support or subscribe to this show. "mixed": the passage holds both. Return only strict
+JSON with no prose."""
+# Label only nearby flanks so the preservation response does not truncate.
+COMMERCIAL_PRESERVATION_FLANK_IDS = 2
+# A pod can begin at the proposal, so look past commercial flanks for programme.
+COMMERCIAL_PRESERVATION_FLANK_STEPS = 3
 # How often the sponsor's own name has to come back before recurrence counts
 # as advertising copy rather than a subject someone happens to be discussing.
 EXPLICIT_SPONSOR_NAME_MAX_WORDS = 4
@@ -2700,6 +2707,77 @@ def _commercial_recovery_context(
     return candidate_ids, context_ids, rendered
 
 
+def _commercial_preservation_review(backend, rendered, context_ids, proposed_ids) -> None:
+    """Require programme context around a proposed commercial cut."""
+    proposed_ids = tuple(proposed_ids)
+    labelled_ids = tuple(
+        segment_id for segment_id in context_ids
+        if proposed_ids[0] - COMMERCIAL_PRESERVATION_FLANK_IDS
+        <= segment_id
+        <= proposed_ids[-1] + COMMERCIAL_PRESERVATION_FLANK_IDS
+    )
+
+    def label(ids):
+        preservation, _ = backend.generate(
+            COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT,
+            f"IDs to classify: {', '.join(map(str, ids))}\n{rendered}",
+            response_format=_commercial_preservation_response_format(ids),
+        )
+        return _commercial_preservation_labels(preservation, ids)
+
+    labels = label(labelled_ids)
+    programme_ids = tuple(
+        segment_id for segment_id in proposed_ids
+        if labels[str(segment_id)] in {"programme", "mixed"}
+    )
+    if programme_ids:
+        raise ValueError(
+            "programme preservation intersects the proposed cut at IDs "
+            + ", ".join(map(str, programme_ids))
+        )
+
+    first, last = proposed_ids[0], proposed_ids[-1]
+    confirmed = {
+        "left": any(
+            segment_id < first and labels[str(segment_id)] in {"programme", "mixed"}
+            for segment_id in labelled_ids
+        ),
+        "right": any(
+            segment_id > last and labels[str(segment_id)] in {"programme", "mixed"}
+            for segment_id in labelled_ids
+        ),
+    }
+    side_ids = {
+        "left": tuple(segment_id for segment_id in labelled_ids if segment_id < first),
+        "right": tuple(segment_id for segment_id in labelled_ids if segment_id > last),
+    }
+    for side in ("left", "right"):
+        for _ in range(COMMERCIAL_PRESERVATION_FLANK_STEPS):
+            if confirmed[side] or not side_ids[side]:
+                break
+            outermost_index = context_ids.index(
+                min(side_ids[side]) if side == "left" else max(side_ids[side])
+            )
+            if side == "left":
+                next_ids = context_ids[
+                    max(0, outermost_index - COMMERCIAL_PRESERVATION_FLANK_IDS):outermost_index
+                ]
+            else:
+                next_ids = context_ids[
+                    outermost_index + 1:outermost_index + 1 + COMMERCIAL_PRESERVATION_FLANK_IDS
+                ]
+            if not next_ids:
+                break
+            follow_up_labels = label(next_ids)
+            confirmed[side] = any(
+                follow_up_labels[str(segment_id)] in {"programme", "mixed"}
+                for segment_id in next_ids
+            )
+            side_ids[side] = tuple(next_ids)
+    if not confirmed["left"] or not confirmed["right"]:
+        raise ValueError("programme preservation was not confirmed on both sides")
+
+
 def _commercial_envelope_preserved(
     ads_module, backend, segments, total_seconds, candidate_ids, *, nominate
 ):
@@ -2727,38 +2805,7 @@ def _commercial_envelope_preserved(
             _candidate, context_ids, rendered = _commercial_recovery_context(
                 ads_module, segments, proposed_ids[0], proposed_ids[-1], total_seconds
             )
-        preservation, _ = backend.generate(
-            COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT,
-            f"Proposed commercial IDs: {', '.join(map(str, proposed_ids))}\n{rendered}",
-            response_format=_commercial_preservation_response_format(proposed_ids),
-        )
-        parsed_preservation = json.loads(preservation)
-        if (
-            not isinstance(parsed_preservation, dict)
-            or set(parsed_preservation) != {
-                "programme_ids", "programme_before", "programme_after"
-            }
-            or type(parsed_preservation["programme_before"]) is not bool
-            or type(parsed_preservation["programme_after"]) is not bool
-        ):
-            raise ValueError("programme preservation response has an invalid shape")
-        programme_ids = _parse_experimental_ids(
-            json.dumps({"programme_ids": parsed_preservation["programme_ids"]}),
-            "programme_ids",
-            proposed_ids,
-            nonempty=False,
-        )
-        intersections = sorted(set(programme_ids) & set(proposed_ids))
-        if intersections:
-            raise ValueError(
-                "programme preservation intersects the proposed cut at IDs "
-                + ", ".join(map(str, intersections))
-            )
-        first, last = proposed_ids[0], proposed_ids[-1]
-        left_confirmed = parsed_preservation["programme_before"]
-        right_confirmed = parsed_preservation["programme_after"]
-        if not left_confirmed or not right_confirmed:
-            raise ValueError("programme preservation was not confirmed on both sides")
+        _commercial_preservation_review(backend, rendered, context_ids, proposed_ids)
         return proposed_ids
     except Exception as error:  # noqa: BLE001 - incomplete commercial review preserves source audio
         progress(
@@ -3459,9 +3506,23 @@ def recover_transcript_end_postroll(ads_module, backend, segments, detections, t
         )
         return detections
 
-    boundary_carries_program = advertising_start_id < window_ids[-1] and _tail_carries_program(
-        ads_module, backend, segments, advertising_start_id
+    gap = (
+        float(segments[advertising_start_id].start_s)
+        - float(segments[advertising_start_id - 1].end_s)
+        if advertising_start_id > 0 else 0.0
     )
+    boundary_carries_program = False
+    if gap >= POSTROLL_CLEAN_BREAK_SECONDS:
+        progress(
+            "ads.detect.boundary.clean",
+            f"segment {advertising_start_id} starts {gap:.2f}s "
+            "after the segment before it, "
+            "so it cannot share the sign-off's last words",
+        )
+    elif advertising_start_id < window_ids[-1]:
+        boundary_carries_program = _tail_carries_program(
+            ads_module, backend, segments, advertising_start_id
+        )
     if boundary_carries_program:
         # The sign-off and the spot's first words share a segment, so the cut
         # starts after it. One step only, for the same reason as the opening.
@@ -3929,10 +3990,6 @@ EXPERIMENTAL_NOMINATION_PROMPT = """\
 Review the bounded podcast context. Return only the supplied global IDs that are definitely spoken
 advertising and form one contiguous candidate. Context on both sides is programme, not permission to
 extend a cut. Return only strict JSON with no prose: {"ad_ids":[ID,...]}."""
-EXPERIMENTAL_PRESERVATION_PROMPT = """\
-Review the same bounded podcast context independently. Return every supplied global ID containing
-programme, including any segment mixing programme with advertising. Return only strict JSON with no
-prose: {"programme_ids":[ID,...]}."""
 
 
 def _experimental_id_response_format(field: str, permitted_ids: tuple[int, ...]) -> dict:
@@ -3947,24 +4004,51 @@ def _experimental_id_response_format(field: str, permitted_ids: tuple[int, ...])
     }
 
 
-def _commercial_preservation_response_format(proposed_ids: tuple[int, ...]) -> dict:
-    """Constrain preservation to the proposal plus explicit side confirmations."""
+def _commercial_preservation_response_format(labelled_ids: tuple[int, ...]) -> dict:
+    """Constrain preservation to one label for every nearby passage."""
     return {
         "type": "json_object",
         "schema": {
             "type": "object",
             "properties": {
-                "programme_ids": {
-                    "type": "array",
-                    "items": {"type": "integer", "enum": list(proposed_ids)},
+                "labels": {
+                    "type": "object",
+                    "properties": {
+                        str(segment_id): {
+                            "type": "string",
+                            "enum": ["commercial", "programme", "mixed"],
+                        }
+                        for segment_id in labelled_ids
+                    },
+                    "required": [str(segment_id) for segment_id in labelled_ids],
+                    "additionalProperties": False,
                 },
-                "programme_before": {"type": "boolean"},
-                "programme_after": {"type": "boolean"},
             },
-            "required": ["programme_ids", "programme_before", "programme_after"],
+            "required": ["labels"],
             "additionalProperties": False,
         },
     }
+
+
+def _commercial_preservation_labels(
+    response: str, labelled_ids: tuple[int, ...]
+) -> dict[str, str]:
+    """Return complete per-ID labels or reject an incomplete preservation review."""
+    parsed = json.loads(response)
+    expected_keys = {str(segment_id) for segment_id in labelled_ids}
+    if (
+        not isinstance(parsed, dict)
+        or set(parsed) != {"labels"}
+        or not isinstance(parsed["labels"], dict)
+        or set(parsed["labels"]) != expected_keys
+        or any(
+            not isinstance(label, str)
+            or label not in {"commercial", "programme", "mixed"}
+            for label in parsed["labels"].values()
+        )
+    ):
+        raise ValueError("programme preservation response has an invalid shape")
+    return parsed["labels"]
 
 
 def _parse_experimental_ids(response: str, field: str, permitted_ids: tuple[int, ...], *, nonempty: bool) -> tuple[int, ...]:
@@ -4061,20 +4145,7 @@ def _experimental_speculative_cuts(
             ad_ids = _parse_experimental_ids(nomination, "ad_ids", candidate_ids, nonempty=True)
             if ad_ids != candidate_ids:
                 raise ValueError("nomination did not confirm the complete candidate")
-            preservation, _ = budget.generate(
-                EXPERIMENTAL_PRESERVATION_PROMPT,
-                rendered,
-                response_format=_experimental_id_response_format("programme_ids", context_ids),
-            )
-            programme_ids = _parse_experimental_ids(
-                preservation, "programme_ids", context_ids, nonempty=True
-            )
-            if set(programme_ids) & set(ad_ids):
-                raise ValueError("programme-preservation response overlaps the proposed cut")
-            if not any(segment_id < first for segment_id in programme_ids) or not any(
-                segment_id > last for segment_id in programme_ids
-            ):
-                raise ValueError("programme preservation was not confirmed on both sides")
+            _commercial_preservation_review(budget, rendered, context_ids, ad_ids)
         except Exception as error:  # noqa: BLE001 - experimental work cannot weaken a safe result
             audit.incomplete_error = f"experimental adaptation incomplete: {type(error).__name__}: {error}"
             audit.speculative_cuts = ()

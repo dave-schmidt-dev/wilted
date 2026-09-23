@@ -283,10 +283,14 @@ class FakeLLM:
     tail_carries_program: bool | None = None
     commercial_ad_ids: list[int] | None = None
     commercial_programme_ids: list[int] | None = None
+    commercial_preservation_answer: str | None = None
+    commercial_preservation_answers: list[str] = field(default_factory=list)
     # The closing review asks the same confirmation twice when the first answer
     # moves the boundary, so the double has to be able to answer it differently.
     program_id_answers: list = field(default_factory=list)
     requests: list = field(default_factory=list)
+    request_contents: list = field(default_factory=list)
+    request_prompts: list = field(default_factory=list)
 
     def load(self):
         if self.fail_load is not None:
@@ -295,6 +299,8 @@ class FakeLLM:
 
     def generate(self, system_prompt, user_content, *, response_format=None):
         self.requests.append(response_format)
+        self.request_contents.append(user_content)
+        self.request_prompts.append(system_prompt)
         if not self.loaded:
             raise RuntimeError("Model not loaded. Call load() first.")
         if self.fail_generate is not None:
@@ -320,28 +326,48 @@ class FakeLLM:
         field_name = (response_format or {}).get("field")
         schema = (response_format or {}).get("schema", {})
         properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
-        for commercial_field, configured in (
-            ("ad_ids", self.commercial_ad_ids),
-            ("programme_ids", self.commercial_programme_ids),
-        ):
+        labels_schema = properties.get("labels")
+        if isinstance(labels_schema, dict) and isinstance(labels_schema.get("properties"), dict):
+            labelled_ids = [int(segment_id) for segment_id in labels_schema["properties"]]
+            if self.commercial_preservation_answers:
+                return self.commercial_preservation_answers.pop(0), 1
+            if self.commercial_preservation_answer is not None:
+                preservation_requests = sum(
+                    content.startswith("IDs to classify:") for content in self.request_contents
+                )
+                # A follow-up asks about IDs the canned answer never named:
+                # keep its labels and call the rest commercial.
+                if preservation_requests > 1:
+                    try:
+                        supplied = json.loads(self.commercial_preservation_answer)["labels"]
+                    except (json.JSONDecodeError, KeyError, TypeError):
+                        supplied = None
+                    if isinstance(supplied, dict) and all(
+                        label in {"commercial", "programme", "mixed"}
+                        for label in supplied.values()
+                    ):
+                        return json.dumps({"labels": {
+                            str(segment_id): supplied.get(str(segment_id), "commercial")
+                            for segment_id in labelled_ids
+                        }}), 1
+                return self.commercial_preservation_answer, 1
+            programme = self.commercial_programme_ids
+            proposed_ids = set(self.commercial_ad_ids or labelled_ids[1:-1])
+            labels = {
+                str(segment_id): (
+                    "programme"
+                    if (
+                        segment_id in programme
+                        if programme is not None else segment_id not in proposed_ids
+                    )
+                    else "commercial"
+                )
+                for segment_id in labelled_ids
+            }
+            return json.dumps({"labels": labels}), 1
+        for commercial_field, configured in (("ad_ids", self.commercial_ad_ids),):
             if commercial_field not in properties:
                 continue
-            permitted = properties[commercial_field]["items"]["enum"]
-            if commercial_field == "programme_ids":
-                proposed = user_content.partition("Proposed commercial IDs: ")[2].partition("\n")[0]
-                proposed_ids = [int(value.strip()) for value in proposed.split(",") if value.strip()]
-                programme = list(configured) if configured is not None else []
-                return json.dumps({
-                    commercial_field: [segment_id for segment_id in programme if segment_id in proposed_ids],
-                    "programme_before": (
-                        any(segment_id < proposed_ids[0] for segment_id in programme)
-                        if configured is not None else True
-                    ),
-                    "programme_after": (
-                        any(segment_id > proposed_ids[-1] for segment_id in programme)
-                        if configured is not None else True
-                    ),
-                }), 1
             if configured is not None:
                 return json.dumps({commercial_field: configured}), 1
             # Ordinary legacy tests do not exercise the new recovery.  When a
@@ -1533,6 +1559,29 @@ class AdDetectionTests(unittest.TestCase):
         # stays paid advertising.
         self.assertEqual(recovered[0].kinds, ("credits",))
         self.assertIn("after program ID 19", details["ads.detect.postroll"])
+
+    def test_a_clean_postroll_break_skips_the_tail_probe(self):
+        segments = [
+            FakeSegment(0.0, 500.0, "invented programme discussion"),
+            FakeSegment(500.0, 537.68, "invented programme sign-off"),
+            FakeSegment(543.24, 580.0, "invented promotion for another show"),
+            FakeSegment(580.0, 600.0, "invented promotion details"),
+        ]
+        llm = FakeLLM(
+            postroll_advertising_start_id=2,
+            tail_carries_program=True,
+            preroll_program_id=-1,
+        )
+        recovered, details = self.postroll(llm, total=600.0, segments=segments)
+        self.assertEqual(
+            [(ad.start_s, ad.end_s) for ad in recovered], [(537.68, 600.0)]
+        )
+        self.assertNotIn(wp.BOUNDARY_SEGMENT_TAIL_PROMPT, llm.request_prompts)
+        self.assertEqual(
+            details["ads.detect.boundary.clean"],
+            "segment 2 starts 5.56s after the segment before it, "
+            "so it cannot share the sign-off's last words",
+        )
 
     def test_the_cut_claims_the_spots_own_leader(self):
         # The silence between the sign-off and the spot is the spot's leader,
@@ -3014,6 +3063,27 @@ class CommercialEvidenceRecoveryTests(unittest.TestCase):
             analysis = wp.analyze_ad_detections(ads, llm, segments, 500.0)
         return analysis, llm
 
+    def preserve(self, llm, segments, candidate_ids):
+        ads = install_fake_ads(llm)
+        llm.load()
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            preserved = wp._commercial_envelope_preserved(
+                ads, llm, segments, 500.0, candidate_ids, nominate=False
+            )
+        details = {
+            json.loads(line)["stage"]: json.loads(line)["detail"]
+            for line in stream.getvalue().splitlines()
+        }
+        return preserved, details
+
+    @staticmethod
+    def preservation_labels(segments, **overrides):
+        labels = {str(index): "programme" for index in range(1, 7)}
+        labels.update({"3": "commercial", "4": "commercial"})
+        labels.update(overrides)
+        return json.dumps({"labels": labels})
+
     def test_adjacent_cta_and_destination_recover_an_unanchored_read(self):
         segments = [
             FakeSegment(0.0, 10.0, "the programme discusses its topic"),
@@ -3121,6 +3191,153 @@ class CommercialEvidenceRecoveryTests(unittest.TestCase):
         seeds = wp.commercial_evidence_seed_ids(segments, [])
         self.assertLessEqual(len(seeds), wp.COMMERCIAL_RECOVERY_MAX_CANDIDATES)
         self.assertTrue(all(right[-1] < left[0] for left, right in zip(seeds, seeds[1:])))
+
+    def test_programme_flanks_and_a_commercial_proposal_are_cut(self):
+        segments = [
+            FakeSegment(index * 10.0, index * 10.0 + 10.0, f"invented passage {index}")
+            for index in range(9)
+        ]
+        llm = FakeLLM(commercial_ad_ids=[3, 4], commercial_programme_ids=[1, 2, 5, 6])
+        preserved, _details = self.preserve(llm, segments, (3, 4))
+        self.assertEqual(preserved, (3, 4))
+
+    def test_a_mixed_proposed_passage_is_declined(self):
+        segments = [
+            FakeSegment(index * 10.0, index * 10.0 + 10.0, f"invented passage {index}")
+            for index in range(9)
+        ]
+        llm = FakeLLM(
+            commercial_preservation_answer=self.preservation_labels(
+                segments, **{"3": "mixed"}
+            )
+        )
+        preserved, details = self.preserve(llm, segments, (3, 4))
+        self.assertIsNone(preserved)
+        self.assertIn(
+            "intersects the proposed cut at IDs 3", details["ads.detect.recovery.skipped"]
+        )
+
+    def test_commercial_labels_on_one_flank_do_not_confirm_the_proposal(self):
+        segments = [
+            FakeSegment(index * 10.0, index * 10.0 + 10.0, f"invented passage {index}")
+            for index in range(9)
+        ]
+        llm = FakeLLM(
+            commercial_preservation_answer=self.preservation_labels(
+                segments, **{"1": "commercial", "2": "commercial"}
+            )
+        )
+        preserved, details = self.preserve(llm, segments, (3, 4))
+        self.assertIsNone(preserved)
+        self.assertIn(
+            "not confirmed on both sides", details["ads.detect.recovery.skipped"]
+        )
+
+    def test_malformed_preservation_labels_decline_without_cutting(self):
+        segments = [
+            FakeSegment(index * 10.0, index * 10.0 + 10.0, f"invented passage {index}")
+            for index in range(9)
+        ]
+        labels = json.loads(self.preservation_labels(segments))["labels"]
+        malformed = []
+        missing = dict(labels)
+        missing.pop("1")
+        malformed.append(json.dumps({"labels": missing}))
+        extra = dict(labels)
+        extra["9"] = "programme"
+        malformed.append(json.dumps({"labels": extra}))
+        invalid = dict(labels)
+        invalid["3"] = "advertisement"
+        malformed.append(json.dumps({"labels": invalid}))
+        for response in malformed:
+            with self.subTest(response=response):
+                preserved, details = self.preserve(
+                    FakeLLM(commercial_preservation_answer=response), segments, (3, 4)
+                )
+                self.assertIsNone(preserved)
+                self.assertIn("invalid shape", details["ads.detect.recovery.skipped"])
+
+    def test_preservation_request_labels_only_the_proposal_and_nearby_flanks(self):
+        segments = [
+            FakeSegment(index * 10.0, index * 10.0 + 10.0, f"invented passage {index}")
+            for index in range(9)
+        ]
+        llm = FakeLLM(commercial_ad_ids=[3, 4], commercial_programme_ids=[1, 2, 5, 6])
+        preserved, _details = self.preserve(llm, segments, (3, 4))
+        self.assertEqual(preserved, (3, 4))
+        request = next(
+            content for content in llm.request_contents if content.startswith("IDs to classify:")
+        )
+        self.assertEqual(
+            request.partition("\n")[0], "IDs to classify: 1, 2, 3, 4, 5, 6"
+        )
+
+    def test_commercial_right_flank_walks_past_a_pod(self):
+        segments = [
+            FakeSegment(index * 10.0, index * 10.0 + 10.0, f"invented passage {index}")
+            for index in range(12)
+        ]
+        llm = FakeLLM(commercial_ad_ids=[3, 4], commercial_programme_ids=[1, 2, 7, 8])
+        preserved, _details = self.preserve(llm, segments, (3, 4))
+        requests = [content for content in llm.request_contents if content.startswith("IDs to classify:")]
+        self.assertEqual(preserved, (3, 4))
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[1].partition("\n")[0], "IDs to classify: 7, 8")
+
+    def test_commercial_left_flank_walks_past_a_pod(self):
+        segments = [
+            FakeSegment(index * 10.0, index * 10.0 + 10.0, f"invented passage {index}")
+            for index in range(12)
+        ]
+        llm = FakeLLM(commercial_ad_ids=[7, 8], commercial_programme_ids=[3, 4, 9, 10])
+        preserved, _details = self.preserve(llm, segments, (7, 8))
+        requests = [content for content in llm.request_contents if content.startswith("IDs to classify:")]
+        self.assertEqual(preserved, (7, 8))
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[1].partition("\n")[0], "IDs to classify: 3, 4")
+
+    def test_commercial_flank_walk_stops_after_its_step_bound(self):
+        segments = [
+            FakeSegment(index * 10.0, index * 10.0 + 10.0, f"invented passage {index}")
+            for index in range(16)
+        ]
+        llm = FakeLLM(commercial_ad_ids=[3, 4], commercial_programme_ids=[1, 2, 13])
+        preserved, details = self.preserve(llm, segments, (3, 4))
+        requests = [content for content in llm.request_contents if content.startswith("IDs to classify:")]
+        self.assertIsNone(preserved)
+        self.assertIn("not confirmed on both sides", details["ads.detect.recovery.skipped"])
+        self.assertEqual(len(requests), 1 + wp.COMMERCIAL_PRESERVATION_FLANK_STEPS)
+        # Each step labels the next IDs out, never the same flank again.
+        self.assertEqual(requests[-1].partition("\n")[0], "IDs to classify: 11, 12")
+
+    def test_commercial_flank_walk_stops_at_the_context_end(self):
+        segments = [
+            FakeSegment(index * 10.0, index * 10.0 + 10.0, f"invented passage {index}")
+            for index in range(9)
+        ]
+        llm = FakeLLM(commercial_ad_ids=[3, 4], commercial_programme_ids=[1, 2])
+        preserved, details = self.preserve(llm, segments, (3, 4))
+        requests = [content for content in llm.request_contents if content.startswith("IDs to classify:")]
+        self.assertIsNone(preserved)
+        self.assertIn("not confirmed on both sides", details["ads.detect.recovery.skipped"])
+        for request in requests:
+            ids = request.partition("\n")[0].partition(": ")[2].split(", ")
+            self.assertTrue(all(0 <= int(segment_id) < len(segments) for segment_id in ids))
+
+    def test_malformed_commercial_flank_follow_up_declines_without_cutting(self):
+        segments = [
+            FakeSegment(index * 10.0, index * 10.0 + 10.0, f"invented passage {index}")
+            for index in range(12)
+        ]
+        llm = FakeLLM(
+            commercial_preservation_answers=[
+                self.preservation_labels(segments, **{"5": "commercial", "6": "commercial"}),
+                '{"labels":{}}',
+            ]
+        )
+        preserved, details = self.preserve(llm, segments, (3, 4))
+        self.assertIsNone(preserved)
+        self.assertIn("invalid shape", details["ads.detect.recovery.skipped"])
 
 
 class AdjacentAdPodContinuationTests(unittest.TestCase):
@@ -5268,7 +5485,8 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
 
         experimental, experimental_backend = self.analysis(
             detector,
-            ['{"ads":[[1,"sponsor_read"]]}', '{"ad_ids":[1]}', '{"programme_ids":[0,2]}'],
+            ['{"ads":[[1,"sponsor_read"]]}', '{"ad_ids":[1]}',
+             '{"labels":{"0":"programme","1":"commercial","2":"programme"}}'],
             experimental_candidates=[candidate],
             experimental_max_additional_model_calls=2,
         )
