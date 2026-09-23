@@ -179,18 +179,54 @@ final class WiltedVisualSystemTests: XCTestCase {
         // derived from the model's single group accessor.
         XCTAssertTrue(row.contains("WiltedMacModel.menuGroup(for: episode)"))
         XCTAssertTrue(row.contains("episode.releasedAt.formatted(date: .numeric, time: .omitted)"))
+        XCTAssertTrue(row.contains("showsGroupName"))
+        XCTAssertTrue(source.contains("showsGroupName: section.statusGroup == nil"))
         XCTAssertTrue(row.contains("· \\(group.displayName)"))
         XCTAssertTrue(row.contains("wilted-menu-progress-\\(episode.id)"))
         XCTAssertTrue(row.contains("wilted-menu-row-\\(episode.id)"))
 
         XCTAssertTrue(control.contains("case .failed, .cancelled:"))
-        XCTAssertEqual(control.components(separatedBy: "Button(\"Retry\")").count - 1, 2)
+        XCTAssertEqual(control.components(separatedBy: "Label(\"Retry\", systemImage: \"arrow.clockwise\")").count - 1, 2)
         XCTAssertTrue(control.contains("wilted-menu-stop-\\(episode.id)"))
         XCTAssertTrue(control.contains("wilted-menu-retry-\\(episode.id)"))
         XCTAssertTrue(control.contains("wilted-menu-prepare-\\(episode.id)"))
         XCTAssertFalse(control.contains("Text(\"Download failed\")"))
         XCTAssertFalse(control.contains("Text(\"Download cancelled\")"))
         XCTAssertFalse(control.contains("accessibilityLabel(\"Available offline\")"))
+    }
+
+    func testLarderRowsUseIconsForShortWordsAndStateOnce() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
+        let source = try String(contentsOf: root)
+        let start = try XCTUnwrap(source.range(of: "private func menuRow")?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "private var addArticleButton", range: start..<source.endIndex)?.lowerBound)
+        let larderRows = source[start..<end]
+
+        for symbol in [
+            "speaker.wave.2.fill", "speaker.fill", "circle.lefthalf.filled", "checkmark.circle.fill",
+            "play.fill", "forward.end.fill", "checkmark", "minus.circle", "stop.fill",
+            "arrow.clockwise", "xmark.circle", "arrow.down.circle",
+        ] {
+            XCTAssertTrue(larderRows.contains("\"\(symbol)\""), "missing \(symbol)")
+        }
+        XCTAssertTrue(larderRows.contains(".labelStyle(.iconOnly)"))
+        for retiredTextControl in [
+            "Text(\"Play now\")", "Button(\"Play now\")", "Button(\"Remove\")", "Button(\"Download\")",
+            "Text(\"In Progress\")", "Text(\"Played\")",
+        ] {
+            XCTAssertFalse(larderRows.contains(retiredTextControl), "retired text control: \(retiredTextControl)")
+        }
+        XCTAssertTrue(larderRows.contains("model.currentPodcastEpisodeID != episode.id"))
+
+        // Each icon-only control carries its own tooltip: the `.help` has to
+        // come before the next control starts, not anywhere later in the row.
+        let iconOnlyControls = larderRows.components(separatedBy: ".labelStyle(.iconOnly)").dropFirst()
+        for control in iconOnlyControls {
+            let ownModifiers = control.components(separatedBy: "Button").first ?? ""
+            XCTAssertTrue(ownModifiers.contains(".help("), "icon-only control without its tooltip: \(ownModifiers.prefix(120))")
+        }
+        XCTAssertFalse(larderRows.contains("retirementLabel == \"Completed\""))
     }
 
     @MainActor

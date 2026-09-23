@@ -1347,7 +1347,12 @@ private struct WiltedMacMenuView: View {
                             ForEach(Array(section.episodes.enumerated()), id: \.element.id) { index, episode in
                                 if index > 0 { Divider() }
                                 let position = (model.menuWaitingEpisodes.firstIndex(of: episode) ?? index) + 1
-                                menuRow(episode, position: position, count: total)
+                                menuRow(
+                                    episode,
+                                    position: position,
+                                    count: total,
+                                    showsGroupName: section.statusGroup == nil
+                                )
                             }
                         }
                         .wiltedCard(colorScheme)
@@ -1438,8 +1443,14 @@ private struct WiltedMacMenuView: View {
         .accessibilityIdentifier("wilted-menu-articles")
     }
 
-    private func menuRow(_ episode: WiltedMacEpisode, position: Int, count: Int) -> some View {
+    private func menuRow(
+        _ episode: WiltedMacEpisode,
+        position: Int,
+        count: Int,
+        showsGroupName: Bool
+    ) -> some View {
         let group = WiltedMacModel.menuGroup(for: episode)
+        let subtitle = "\(episode.feedTitle) · \(episode.releasedAt.formatted(date: .numeric, time: .omitted))"
         return VStack(spacing: 0) {
             Rectangle()
                 .fill(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
@@ -1457,7 +1468,7 @@ private struct WiltedMacMenuView: View {
                     .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     .lineLimit(1)
-                Text("\(episode.feedTitle) · \(episode.releasedAt.formatted(date: .numeric, time: .omitted)) · \(group.displayName)")
+                Text(showsGroupName ? "\(subtitle) · \(group.displayName)" : subtitle)
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .lineLimit(1)
@@ -1499,13 +1510,24 @@ private struct WiltedMacMenuView: View {
             // episode on. An unstarted episode stays enabled on purpose:
             // pressing it explains that there was nothing to skip.
             let retirementLabel = model.menuRowRetirementLabel(episode)
-            if model.isEpisodeInProgress(episode) {
-                Text("In Progress")
-                    .wiltedFont(.utility)
+            // The label's own predicate picks the symbol, so rewording the
+            // label cannot swap the icon.
+            let finishesRecord = model.hasStartedEpisode(episode)
+            if model.isEpisodeInProgress(episode), model.currentPodcastEpisodeID != episode.id {
+                Image(systemName: "circle.lefthalf.filled")
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .help("In progress")
+                    .accessibilityLabel("In progress")
                     .accessibilityIdentifier("wilted-menu-in-progress-\(episode.id)")
             }
-            Button(retirementLabel) { model.skipEpisode(episode) }
+            Button { model.skipEpisode(episode) } label: {
+                Label(
+                    retirementLabel,
+                    systemImage: finishesRecord ? "checkmark" : "forward.end.fill"
+                )
+            }
+                .labelStyle(.iconOnly)
+                .help(finishesRecord ? "Mark completed" : "Skip")
                 .accessibilityLabel("\(retirementLabel) \(episode.title)")
                 .accessibilityIdentifier("wilted-menu-skip-\(episode.id)")
             // Remove and Skip/Completed are different acts. Remove takes the
@@ -1513,7 +1535,11 @@ private struct WiltedMacMenuView: View {
             // and the listening state exactly where they are, so the episode
             // returns to Feeds; Skip retires it. The two get separate slots
             // on purpose.
-            Button("Remove") { model.removeEpisodeFromUpNext(episode.id) }
+            Button { model.removeEpisodeFromUpNext(episode.id) } label: {
+                Label("Remove from Larder", systemImage: "minus.circle")
+            }
+                .labelStyle(.iconOnly)
+                .help("Remove from Larder")
                 .accessibilityLabel("Remove \(episode.title) from Larder")
                 .accessibilityIdentifier("wilted-menu-remove-\(episode.id)")
             }
@@ -1537,18 +1563,29 @@ private struct WiltedMacMenuView: View {
         switch group {
         case .playable:
             if model.currentPodcastEpisodeID == episode.id {
-                Text(model.isPlaying ? "Playing now" : "Now Playing")
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                Image(systemName: model.isPlaying ? "speaker.wave.2.fill" : "speaker.fill")
+                    .foregroundStyle(
+                        model.isPlaying
+                            ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme)
+                            : WiltedTheme.color(.secondaryText, scheme: colorScheme)
+                    )
+                    .help(model.isPlaying ? "Playing now" : "Paused")
+                    .accessibilityLabel(model.isPlaying ? "Playing now" : "Paused")
+                    .accessibilityIdentifier("wilted-menu-now-playing-\(episode.id)")
             } else if model.isEpisodeFinished(episode) {
                 // The one definition of finished, asked by the row: a finished
                 // episode is not waiting to be played again.
-                Text("Played")
-                    .wiltedFont(.utility)
+                Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .help("Played")
+                    .accessibilityLabel("Played")
                     .accessibilityIdentifier("wilted-menu-played-\(episode.id)")
             } else {
-                Button("Play now") { model.playEpisode(episode) }
+                Button { model.playEpisode(episode) } label: {
+                    Label("Play now", systemImage: "play.fill")
+                }
+                    .labelStyle(.iconOnly)
+                    .help("Play now")
                     .accessibilityLabel("Play \(episode.title) now")
                     .accessibilityIdentifier("wilted-menu-play-\(episode.id)")
             }
@@ -1571,12 +1608,20 @@ private struct WiltedMacMenuView: View {
                     Text("Preparing…")
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    Button("Stop") { model.cancelEpisodePreparation(episode) }
+                    Button { model.cancelEpisodePreparation(episode) } label: {
+                        Label("Stop", systemImage: "stop.fill")
+                    }
+                        .labelStyle(.iconOnly)
+                        .help("Stop")
                         .accessibilityLabel("Stop preparing \(episode.title)")
                         .accessibilityIdentifier("wilted-menu-stop-\(episode.id)")
                 }
             } else if case .failed = episode.preparationState {
-                Button("Retry") { model.prepareEpisode(episode) }
+                Button { model.prepareEpisode(episode) } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                }
+                    .labelStyle(.iconOnly)
+                    .help("Retry")
                     .accessibilityLabel("Retry preparing \(episode.title)")
                     .accessibilityIdentifier("wilted-menu-retry-\(episode.id)")
             } else {
@@ -1586,13 +1631,28 @@ private struct WiltedMacMenuView: View {
         case .available:
             switch episode.downloadState {
             case .queued, .downloading:
-                Button("Cancel") { model.cancelEpisodeDownload(episode) }
+                Button { model.cancelEpisodeDownload(episode) } label: {
+                    Label("Cancel download", systemImage: "xmark.circle")
+                }
+                    .labelStyle(.iconOnly)
+                    .help("Cancel download")
+                    .accessibilityLabel("Cancel download \(episode.title)")
                     .accessibilityIdentifier("wilted-menu-cancel-\(episode.id)")
             case .failed, .cancelled:
-                Button("Retry") { model.retryEpisodeDownload(episode) }
+                Button { model.retryEpisodeDownload(episode) } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                }
+                    .labelStyle(.iconOnly)
+                    .help("Retry")
+                    .accessibilityLabel("Retry \(episode.title)")
                     .accessibilityIdentifier("wilted-menu-retry-\(episode.id)")
             case .notDownloaded, .completed:
-                Button("Download") { model.downloadEpisode(episode) }
+                Button { model.downloadEpisode(episode) } label: {
+                    Label("Download", systemImage: "arrow.down.circle")
+                }
+                    .labelStyle(.iconOnly)
+                    .help("Download")
+                    .accessibilityLabel("Download \(episode.title)")
                     .accessibilityIdentifier("wilted-menu-download-\(episode.id)")
             }
         }
