@@ -1121,6 +1121,16 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertFalse(card.contains("UserDefaults"), "Settings must reuse the model's validated persistence")
     }
 
+    func testSettingsOffersTheRemovedAdChime() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
+        let source = try String(contentsOf: root)
+        let removeAds = try XCTUnwrap(source.range(of: "wilted-automation-remove-ads")?.lowerBound)
+        let marker = try XCTUnwrap(source.range(of: "wilted-automation-ad-marker")?.lowerBound)
+        XCTAssertTrue(source.contains("Toggle(\"Chime where an ad was removed\""))
+        XCTAssertLessThan(removeAds, marker)
+    }
+
     /// Removed rows carry enough presentation metadata to name the episode,
     /// its feed, and its retained Prep history without reconstructing a deleted
     /// episode record.

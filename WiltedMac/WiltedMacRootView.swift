@@ -2446,6 +2446,11 @@ private struct WiltedMacSettingsView: View {
                 .accessibilityIdentifier("wilted-automation-transcript-policy")
                 Toggle("Remove ads", isOn: removeAdsBinding)
                     .accessibilityIdentifier("wilted-automation-remove-ads")
+                Toggle("Chime where an ad was removed", isOn: Binding(
+                    get: { model.marksRemovedAds }, set: { model.marksRemovedAds = $0 }
+                ))
+                    .accessibilityIdentifier("wilted-automation-ad-marker")
+                    .help("Plays a short, quiet tone at each spot an advertisement was cut. Takes effect immediately; nothing is re-prepared.")
                 if model.automationSettings.transcriptPolicyBlocksAdRemoval {
                     Text(WiltedAutomationSettings.transcriptPolicyBlocksAdRemovalExplanation)
                         .wiltedFont(.utility)

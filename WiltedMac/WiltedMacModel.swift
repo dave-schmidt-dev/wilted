@@ -1265,6 +1265,7 @@ final class WiltedMacModel {
     static let larderSortPreferenceKey = "wilted.queue.larder.sort"
     static let menuSortPreferenceKey = "wilted.queue.menu.sort"
     static let menuGroupingPreferenceKey = "wilted.queue.menu.grouping"
+    static let marksRemovedAdsPreferenceKey = "wilted.playback.marksRemovedAds"
     /// The highest preparation request sequence issued so far. Persisted on
     /// every issue as a fallback (see `preparationRequestSequencePreferenceKey`
     /// below), but reseeded from the ticket table's own high-water mark at
@@ -1331,6 +1332,13 @@ final class WiltedMacModel {
     /// reconstructed, live in the store instead.
     static let lastAutomationRefreshPreferenceKey = "wilted.automation.lastRefreshSuccess"
     private let preferences: UserDefaults
+    /// Whether a quiet marker identifies each advertisement seam during playback.
+    var marksRemovedAds = true {
+        didSet {
+            preferences.set(marksRemovedAds, forKey: Self.marksRemovedAdsPreferenceKey)
+            rescheduleSeamMarker()
+        }
+    }
     /// Automation reads this one validated value, never individual preference keys.
     private(set) var automationSettings = WiltedAutomationSettings.defaults
     /// How much bigger than the system's own text the window draws itself.
@@ -1404,6 +1412,13 @@ final class WiltedMacModel {
     /// loads. Keyed rather than held as one current value so that changing
     /// episode cannot leave the previous episode's cuts on screen.
     private var removedSpansByEpisode: [String: [WiltedMacRemovedSpan]] = [:]
+    private var seamMarkerTask: Task<Void, Never>?
+    private var lastMarkedSeam: (episodeID: String, seconds: TimeInterval)?
+    /// The output is injectable for tests. A prior test-host gate played a
+    /// 220 Hz tone from the owner's speakers, so tests and fixtures stay silent.
+    var seamMarkerOutput: any WiltedMacSeamMarkerOutput
+    /// The target of the cancellable marker task, exposed for headless tests.
+    private(set) var pendingSeamMarkerForTesting: TimeInterval?
     private(set) var playbackRate: Double = WiltedMacModel.initialPlaybackRate
     private(set) var playbackVolume: Double = 1
     private(set) var playbackOperationStatus: String?
@@ -1611,6 +1626,9 @@ final class WiltedMacModel {
         fixtureEpisodeIsPrepared = arguments.contains("--wilted-ui-fixture-prepared")
         fixtureEpisodeHasLongTranscript = arguments.contains("--wilted-ui-fixture-long-transcript")
         fixtureEpisodeIsDeferred = arguments.contains("--wilted-ui-fixture-deferred")
+        seamMarkerOutput = (Self.hostsTests || usesFixtureMode)
+            ? WiltedMacSilentSeamMarkerOutput()
+            : WiltedMacAVSeamMarkerOutput()
 
         if usesFixtureMode {
             let configuredStore = try? LocalLibraryStore(url: self.libraryURL)
@@ -1667,6 +1685,7 @@ final class WiltedMacModel {
         if self.preferences.object(forKey: Self.playbackRatePreferenceKey) != nil {
             playbackRate = Self.clampPlaybackRate(self.preferences.double(forKey: Self.playbackRatePreferenceKey))
         }
+        marksRemovedAds = self.preferences.object(forKey: Self.marksRemovedAdsPreferenceKey) as? Bool ?? true
         // `installFixture` above seeds the deferral a fixture launch is meant
         // to show, and a fixture host has nothing stored under this key, so
         // reading the preference here would erase the seed before the first
@@ -3658,6 +3677,7 @@ final class WiltedMacModel {
     private func stopPlaybackForRemovedEpisode() async {
         try? await playback?.pause()
         stopPlaybackCheckpointTicker()
+        cancelSeamMarker()
         currentPodcastEpisodeID = nil
         isPodcastPlayback = false
         isNowPlaying = false
@@ -4773,6 +4793,7 @@ final class WiltedMacModel {
     private func beginArticlePlaybackTransition(_ article: WiltedMacArticle) {
         if isNowPlaying { refreshPlaybackReadout() }
         selectedArticleID = article.id
+        cancelSeamMarker()
         currentPodcastEpisodeID = nil
         isPodcastPlayback = false
         isNowPlaying = true
@@ -5153,6 +5174,7 @@ final class WiltedMacModel {
 #if canImport(WiltedProducer)
         playback?.defaultRate = Float(playbackRate)
         playback?.setRate(Float(playbackRate))
+        rescheduleSeamMarker()
         guard isPodcastPlayback, let store, let id = playback?.itemID else { return }
         let selectedRate = playbackRate
         playbackOperationStatus = "Saving playback speed…"
@@ -5162,6 +5184,8 @@ final class WiltedMacModel {
             ))
             self?.playbackOperationStatus = nil
         }
+#else
+        rescheduleSeamMarker()
 #endif
     }
 
@@ -5214,6 +5238,76 @@ final class WiltedMacModel {
         // The one funnel every transport and the player's timer already goes
         // through, so the system readout cannot drift from the on-screen one.
         publishNowPlaying()
+        rescheduleSeamMarker()
+    }
+
+    /// Replaces the one pending marker with one based on the engine's live state.
+    /// The wake-time check below makes a seek or pause harmless even between
+    /// the player view's one-second readouts.
+    func rescheduleSeamMarker() {
+        cancelSeamMarker()
+
+        guard isPodcastPlayback, let episode = currentEpisode else { return }
+#if canImport(WiltedProducer)
+        let position = playback?.livePositionSeconds ?? playbackPositionSeconds
+        let isPlaying = playback?.liveIsPlaying ?? self.isPlaying
+        let rate = Double(playback?.playbackRate ?? Float(playbackRate))
+#else
+        let position = playbackPositionSeconds
+        let isPlaying = self.isPlaying
+        let rate = playbackRate
+#endif
+        let effectiveLastMarked = WiltedMacSeamMarkerSchedule.effectiveLastMarked(
+            lastMarkedSeam, episodeID: episode.id, position: position
+        )
+        if effectiveLastMarked == nil {
+            lastMarkedSeam = nil
+        }
+        guard let marker = WiltedMacSeamMarkerSchedule.next(
+            seams: currentRemovedSpans.map(\.preparedSeconds),
+            position: position,
+            rate: rate,
+            isPlaying: isPlaying,
+            enabled: marksRemovedAds,
+            lastMarked: effectiveLastMarked
+        ) else { return }
+
+        pendingSeamMarkerForTesting = marker.seam
+        let episodeID = episode.id
+        seamMarkerTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(marker.delay))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self else { return }
+            guard self.currentPodcastEpisodeID == episodeID else {
+                self.rescheduleSeamMarker()
+                return
+            }
+#if canImport(WiltedProducer)
+            let livePosition = self.playback?.livePositionSeconds ?? self.playbackPositionSeconds
+            let liveIsPlaying = self.playback?.liveIsPlaying ?? self.isPlaying
+            let volume = self.playback?.backend.volume ?? Float(self.playbackVolume)
+#else
+            let livePosition = self.playbackPositionSeconds
+            let liveIsPlaying = self.isPlaying
+            let volume = Float(self.playbackVolume)
+#endif
+            if WiltedMacSeamMarkerSchedule.shouldFire(
+                seam: marker.seam, livePosition: livePosition, isPlaying: liveIsPlaying
+            ) {
+                self.lastMarkedSeam = (episodeID, marker.seam)
+                self.seamMarkerOutput.play(volume: volume)
+            }
+            self.rescheduleSeamMarker()
+        }
+    }
+
+    private func cancelSeamMarker() {
+        seamMarkerTask?.cancel()
+        seamMarkerTask = nil
+        pendingSeamMarkerForTesting = nil
     }
 
     /// Keeps the outgoing row current when playback moves to another item.
@@ -5285,6 +5379,7 @@ final class WiltedMacModel {
             // no longer be resolved. Leaving them would list cuts under
             // "Transcript unavailable" against audio nothing can vouch for.
             removedSpansByEpisode[itemID.rawValue] = []
+            rescheduleSeamMarker()
             return
         }
         await loadTranscript(itemID: itemID, revisionID: stored.revision.revisionID)
@@ -5303,9 +5398,11 @@ final class WiltedMacModel {
             for: itemID, revisionID: revisionID
         ) else {
             removedSpansByEpisode[itemID.rawValue] = []
+            rescheduleSeamMarker()
             return
         }
         removedSpansByEpisode[itemID.rawValue] = Self.removedSpans(in: timeline)
+        rescheduleSeamMarker()
     }
 
     /// The removed intervals placed on the prepared clock, in the order a
@@ -5620,6 +5717,7 @@ final class WiltedMacModel {
     func pauseForQuit() {
         stopAutomationTicker()
         stopTicketDrainTicker()
+        cancelSeamMarker()
 #if canImport(WiltedProducer)
         guard let playback else { return }
         playbackOperationTask = Task { [weak self] in
@@ -5648,6 +5746,18 @@ final class WiltedMacModel {
     func failNextAudioRouteRecoveryForTesting() {
 #if canImport(WiltedProducer)
         (playback?.backend as? WiltedFixturePlaybackBackend)?.failNextLoad = true
+#endif
+    }
+
+    /// Moves fixture or test playback to `seconds` and refreshes the readout, as a
+    /// transport seek does. Test seam only.
+    func seekPlaybackForTesting(to seconds: TimeInterval) async {
+#if canImport(WiltedProducer)
+        try? await playback?.seek(to: seconds)
+        if let playback {
+            isPlaying = playback.isPlaying
+        }
+        refreshPlaybackReadout()
 #endif
     }
 
@@ -5734,6 +5844,7 @@ final class WiltedMacModel {
     }
 
     func clearPlaybackStateForTesting() {
+        cancelSeamMarker()
         isNowPlaying = false
         isPlaying = false
         currentPodcastEpisodeID = nil
