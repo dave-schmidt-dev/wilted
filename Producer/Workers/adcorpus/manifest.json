@@ -371,6 +371,64 @@
       ],
       "transcriptEndSeconds": 1732.88,
       "audioDurationSeconds": 1733.041
+    },
+    {
+      "id": "techcrunch-alexa-postroll-left-its-opening",
+      "itemID": "item-89385a4aa9e0b94ab5985ac89b586661ec8abd88d38d33c542b9f96288859ab1",
+      "show": "TechCrunch Daily",
+      "sourceHash": "sha256:e63d2c0cd2a67a12776162ccd40d9012982551f537dd1c909d64f2f0000429b6",
+      "sttModel": "mlx-community/parakeet-tdt-1.1b",
+      "segmentCount": 33,
+      "intentionalCondition": "Two failures in one short episode, in opposite directions. The reported one is at the end: after the show's sign-off (cue 30) comes a produced promotion for another podcast (cues 31-32). The transcript-end postroll recovery nominated cue 31 as its start, then the boundary-tail review answered that programme was still running inside cue 31 (ads.detect.boundary.shortened), so the cut starts at cue 32 and the promotion's 20s self-introduction is delivered. A separate commercial-evidence nomination for the same region was declined before any model call because the candidate reaches the transcript's last segment and has no programme after it. The second failure is at the start: the sponsor block (cues 1-8) was cut through cue 15, because the oversized-span resize review declined to shorten it and a rescan reconfirmed the whole span, so three headline stories including the episode's title story were removed. The owner did not report that one; it is labelled here because it is the costlier of the two.",
+      "reportedBy": "David, 2026-09-23: heard an advertisement at 4:22 of the prepared episode in the Mac app. The run's terminal kept map places prepared 262s at original 551.04s (kept segment from output 6.72 maps from original 295.76), inside cue 31. Preparation run recorded in ZPREPARATIONRECORD for this itemID at 2026-09-19 15:46:18-15:46:38Z; journal events ads.detect.boundary.shortened#19, ads.detect.recovery.skipped#16, and span.resize.skipped at cue 10.",
+      "provenance": {
+        "labelledBy": "Labelled by reading the aligned transcript cue by cue on 2026-09-23, anchored by David's reported timestamp. David confirmed an advertisement at 4:22 only; he was not asked to listen to any boundary, and the over-cut at the start was found by reading, not reported.",
+        "labelledOn": "2026-09-23",
+        "inputIdentity": "Every timing is a cue boundary of the aligned-STT cache entry keyed by this case's sourceHash, produced by mlx-community/parakeet-tdt-1.1b over 33 cues. The entry had already been evicted from the live cache and survives in adcorpus-snapshot-2026-09-17.",
+        "labelSource": "Read from cue edges. Cue 0 (the show's spoken ident) is unlabelled. Cue 9 (167.64-187.8) is deliberately unlabelled: it opens on the last words of the sponsor read and then starts the title story, so a cut on a segment edge cannot be right on both sides of it, the same straddle the corpus's other TechCrunch case leaves unlabelled."
+      },
+      "expected": [
+        {
+          "start": 6.72,
+          "end": 167.64,
+          "label": "must-cut",
+          "why": "Cues 1-8, two sponsor reads back to back, each ending in a destination and, for the second, a promo code. Cut by the reported run, which carried the cut on through cue 15."
+        },
+        {
+          "start": 187.8,
+          "end": 295.76,
+          "label": "must-keep",
+          "why": "Cues 10-15, the rest of the title story and the next two headlines. All of it was removed by the reported run."
+        },
+        {
+          "start": 529.6,
+          "end": 537.68,
+          "label": "must-keep",
+          "why": "Cue 30, the show's sign-off. Kept by the reported run."
+        },
+        {
+          "start": 543.24,
+          "end": 574.52,
+          "label": "must-cut",
+          "why": "Cues 31-32, a produced promotion for another podcast, introduced by that show's host and ending in a pitch to listen there. The reported run removed only cue 32 onward; cue 31 (543.24-563.4) was delivered, and that is what David heard at 4:22."
+        }
+      ],
+      "recorded": [
+        {
+          "start": 6.72,
+          "end": 295.76,
+          "confidence": 0.9,
+          "label": "sponsor_read"
+        },
+        {
+          "start": 563.4,
+          "end": 575.086,
+          "confidence": 0.7667,
+          "label": "ad_break"
+        }
+      ],
+      "transcriptEndSeconds": 574.52,
+      "audioDurationSeconds": 575.086
     }
   ],
   "decisions": [

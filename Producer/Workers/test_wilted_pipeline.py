@@ -4760,26 +4760,32 @@ class AdCorpusManifestTests(unittest.TestCase):
                     for start, end in recorded
                 ):
                     reproduced.append((case["id"], *pod))
-        # Twelve labelled pods across five cases as of 2026-09-23. The count is a
+        # Fourteen labelled pods across six cases as of 2026-09-23. The count is a
         # tripwire for a case being added or relabelled without anyone rereading
         # this measurement. The Planet Money case added four pods; its recorded
         # run reproduced the three it cut and missed the mid-roll pod it left whole.
-        self.assertEqual(len(pods), 12)
+        # The TechCrunch Alexa case added two and reproduced neither: its opening
+        # cut ran on through three headlines and its closing cut started late.
+        self.assertEqual(len(pods), 14)
         self.assertEqual(
             [(round(start, 2), round(end, 2)) for _case_id, start, end in reproduced],
             [(2729.8, 2917.96), (5278.64, 5339.76),
              (0.0, 17.2), (262.08, 310.96), (1694.88, 1732.88)],
         )
 
-    def test_the_detector_reports_the_same_confidence_for_every_span_it_finds(self):
-        # Both recorded runs come back at 1.0 throughout, including the spans
-        # that were wrong in each direction, which is why nothing in the app
-        # can currently use confidence to decide anything.
-        confidences = {
-            entry["confidence"]
-            for case in self.manifest["cases"] for entry in case["recorded"]
-        }
-        self.assertEqual(confidences, {1.0})
+    def test_recorded_confidence_does_not_rank_a_wrong_cut_below_a_right_one(self):
+        # Reread 2026-09-23 when the TechCrunch Alexa case landed. Every run
+        # recorded before 2026-09-19 comes back at 1.0 throughout, including
+        # spans wrong in each direction. The one run recorded after the detector
+        # began grading confidence reports 0.9 for the span that removed 108s of
+        # programme and 0.7667 for the one that was right as far as it went, so
+        # nothing in the app can yet use confidence to decide anything.
+        graded = {}
+        for case in self.manifest["cases"]:
+            values = sorted({entry["confidence"] for entry in case["recorded"]} - {1.0})
+            if values:
+                graded[case["id"]] = values
+        self.assertEqual(graded, {"techcrunch-alexa-postroll-left-its-opening": [0.7667, 0.9]})
 
     def test_every_remaining_gap_names_the_input_that_would_close_it(self):
         # The inventory is only actionable if a reader knows what to go and
@@ -5596,9 +5602,11 @@ class CorpusBracketingMeasurementTests(unittest.TestCase):
         measured = self.corpus.bracketing_measurement(self.cases)
         # Reread 2026-09-23 when the Planet Money case landed: one more bracketed
         # pod, 4.7% of a mid-length episode, so a proportional bound now has a
-        # second show's pod to pass. Still no short episode with a bracketed pod.
-        self.assertEqual(measured["cases"], 5)
-        self.assertEqual(measured["labelled_pods"], 12)
+        # second show's pod to pass. Reread again the same day for the TechCrunch
+        # Alexa case: two more pods, neither bracketed. Still no short episode
+        # with a bracketed pod.
+        self.assertEqual(measured["cases"], 6)
+        self.assertEqual(measured["labelled_pods"], 14)
         self.assertEqual(measured["bracketed_pods"], 3)
         self.assertEqual(measured["cases_with_bracketed_pods"], 2)
         by_id = {row["id"]: row for row in measured["per_case"]}
@@ -5609,7 +5617,7 @@ class CorpusBracketingMeasurementTests(unittest.TestCase):
             "both bracketed pods are a few percent of a long episode",
         )
         techcrunch = by_id["techcrunch-preroll-swallowed-the-headline-lead-in"]
-        self.assertLess(techcrunch["audio_seconds"], 400.0, "the corpus's one short episode")
+        self.assertLess(techcrunch["audio_seconds"], 400.0, "the corpus's shortest episode")
         self.assertEqual(
             techcrunch["bracketed_pods"], 0,
             "the short episode's overcut is an opening pod; bracketing cannot delimit it",
@@ -5617,6 +5625,12 @@ class CorpusBracketingMeasurementTests(unittest.TestCase):
         planet_money = by_id["planet-money-palantir-midroll-pod-left-whole"]
         self.assertEqual(planet_money["bracketed_pods"], 1, "the mid-roll pod between host lines")
         self.assertTrue(all(0.0 < share < 0.05 for share in planet_money["bracketed_shares"]))
+        alexa = by_id["techcrunch-alexa-postroll-left-its-opening"]
+        self.assertLess(alexa["audio_seconds"], 600.0)
+        self.assertEqual(
+            (alexa["labelled_pods"], alexa["bracketed_pods"]), (2, 0),
+            "an opening pod and a closing one; neither has programme on both sides",
+        )
 
 
 class AdCorpusReplayWiringTests(unittest.TestCase):
