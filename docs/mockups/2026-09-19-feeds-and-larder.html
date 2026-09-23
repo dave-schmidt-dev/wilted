@@ -23,9 +23,9 @@
   const state = { page: 'feeds', refreshing: false, lastUpdated: null, offListOpen: false, groupBy:'status', sortBy:'custom',
     feeds: [{ id:'field-notes', title:'Field Notes: Autumn Walk', source:'Quiet Season · Undecided' }],
     larder: [
-      { id:'ready', title:'Morning Brief', source:'Daily Field', date:'Sep 22, 2026', dateGroup:'Today', group:'Ready' },
-      { id:'deferred', title:'Night Garden', source:'Quiet Season', date:'Sep 21, 2026', dateGroup:'Yesterday', group:'Needs preparation', deferred:true },
-      { id:'available', title:'City Trees', source:'Field Audio', date:'Sep 18, 2026', dateGroup:'Sep 18, 2026', group:'Not downloaded' }
+      { id:'ready', title:'Morning Brief', source:'Daily Field', date:'9/22/2026', dateGroup:'Today', group:'Ready' },
+      { id:'deferred', title:'Night Garden', source:'Quiet Season', date:'9/21/2026', dateGroup:'Yesterday', group:'Needs preparation', deferred:true },
+      { id:'available', title:'City Trees', source:'Field Audio', date:'9/18/2026', dateGroup:'Sep 18, 2026', group:'Not downloaded' }
     ], offList:[{ id:'previously-skipped', title:'Last Week’s Dispatch', source:'Quiet Season · Skipped' }] };
   const stamp = () => state.lastUpdated ? state.lastUpdated.toLocaleString() : 'Never';
   const esc = text => text.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));

@@ -1333,7 +1333,7 @@ private struct WiltedMacMenuView: View {
                     .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     .lineLimit(1)
-                Text("\(episode.feedTitle) · \(episode.releasedAt.formatted(date: .abbreviated, time: .omitted)) · \(group.displayName)")
+                Text("\(episode.feedTitle) · \(episode.releasedAt.formatted(date: .numeric, time: .omitted)) · \(group.displayName)")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .lineLimit(1)

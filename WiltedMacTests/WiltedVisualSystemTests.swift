@@ -178,7 +178,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         // One dedicated state line: the row names the step it is waiting for,
         // derived from the model's single group accessor.
         XCTAssertTrue(row.contains("WiltedMacModel.menuGroup(for: episode)"))
-        XCTAssertTrue(row.contains("episode.releasedAt.formatted(date: .abbreviated, time: .omitted)"))
+        XCTAssertTrue(row.contains("episode.releasedAt.formatted(date: .numeric, time: .omitted)"))
         XCTAssertTrue(row.contains("· \\(group.displayName)"))
         XCTAssertTrue(row.contains("wilted-menu-progress-\\(episode.id)"))
         XCTAssertTrue(row.contains("wilted-menu-row-\\(episode.id)"))
