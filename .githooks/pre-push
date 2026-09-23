@@ -2,4 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-exec make -C "$repo_root" validate
+printf '%s\n' 'native.receipt.pre-push stage=validate' >&2
+make -C "$repo_root" validate
+printf '%s\n' 'native.receipt.pre-push stage=surface-check' >&2
+exec python3 "$repo_root/scripts/native-ui-receipt.py" check

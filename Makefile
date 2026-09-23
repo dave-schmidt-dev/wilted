@@ -28,11 +28,13 @@ native:
 # focus for its entire run, so it is deliberately absent from `validate` and
 # `native`. Run this when you can give up the machine; the deferred-leg line
 # in every other run tells you when it is owed.
+# A clean, fully green run writes a commit-bound receipt for the pre-push hook.
+# The receipt runner checks cleanliness before entering the screen-seizing gate.
 # `caffeinate` because every test in the leg fails with "Failed to activate
 # application (current state: Running Background)" if the display sleeps
 # mid-run, which reads as every journey broken rather than one asleep Mac.
 native-ui:
-	@WILTED_MAC_UI=1 caffeinate -disu bash scripts/test-gate.sh
+	@WILTED_MAC_UI=1 caffeinate -disu python3 scripts/native-ui-receipt.py record
 
 # Regenerates the app icons from the shipping `WiltedMarkShape`, so the icon and
 # the in-app mark cannot drift. Rerun after any change to the brand geometry.

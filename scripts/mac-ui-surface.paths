@@ -1,0 +1,20 @@
+# Mac XCUITest journeys: fixture, navigation, presentation, and hit testing.
+WiltedMacUITests/
+# Headless Mac models and view contracts used by those journeys.
+WiltedMacTests/
+# The Mac application's screens, state, resources, and entitlements.
+WiltedMac/
+# Shared views and resources compiled into the Mac application.
+Shared/
+# Podcast storage, preparation, and playback loaded by Mac journeys.
+Producer/
+# Domain and sync packages linked into the Mac application.
+WiltedKit/
+# CloudKit package linked into Mac startup and sync journeys.
+CloudSync/
+# XcodeGen target sources, packages, signing, and test scheme.
+project.yml
+# Native test leg definitions and their test-count checks.
+scripts/test-gate.sh
+# Targets that select the headless and screen-seizing gates.
+Makefile

@@ -61,6 +61,8 @@ copy_checkout_files() {
   cp "$repo_root/.githooks/pre-commit" "$checkout/.githooks/pre-commit"
   cp "$repo_root/.githooks/pre-push" "$checkout/.githooks/pre-push"
   cp "$repo_root/scripts/install-git-hooks.sh" "$checkout/scripts/install-git-hooks.sh"
+  cp "$repo_root/scripts/native-ui-receipt.py" "$checkout/scripts/native-ui-receipt.py"
+  cp "$repo_root/scripts/mac-ui-surface.paths" "$checkout/scripts/mac-ui-surface.paths"
   chmod +x "$checkout/.githooks/pre-commit" "$checkout/.githooks/pre-push" \
     "$checkout/scripts/install-git-hooks.sh"
 }
