@@ -4760,13 +4760,15 @@ class AdCorpusManifestTests(unittest.TestCase):
                     for start, end in recorded
                 ):
                     reproduced.append((case["id"], *pod))
-        # Eight labelled pods across four cases as of 2026-09-17. The count is a
+        # Twelve labelled pods across five cases as of 2026-09-23. The count is a
         # tripwire for a case being added or relabelled without anyone rereading
-        # this measurement; the two reproduced pods below are the point of it.
-        self.assertEqual(len(pods), 8)
+        # this measurement. The Planet Money case added four pods; its recorded
+        # run reproduced the three it cut and missed the mid-roll pod it left whole.
+        self.assertEqual(len(pods), 12)
         self.assertEqual(
             [(round(start, 2), round(end, 2)) for _case_id, start, end in reproduced],
-            [(2729.8, 2917.96), (5278.64, 5339.76)],
+            [(2729.8, 2917.96), (5278.64, 5339.76),
+             (0.0, 17.2), (262.08, 310.96), (1694.88, 1732.88)],
         )
 
     def test_the_detector_reports_the_same_confidence_for_every_span_it_finds(self):
@@ -5592,10 +5594,13 @@ class CorpusBracketingMeasurementTests(unittest.TestCase):
 
     def test_the_corpus_holds_two_bracketed_pods_in_one_long_case(self):
         measured = self.corpus.bracketing_measurement(self.cases)
-        self.assertEqual(measured["cases"], 4)
-        self.assertEqual(measured["labelled_pods"], 8)
-        self.assertEqual(measured["bracketed_pods"], 2)
-        self.assertEqual(measured["cases_with_bracketed_pods"], 1)
+        # Reread 2026-09-23 when the Planet Money case landed: one more bracketed
+        # pod, 4.7% of a mid-length episode, so a proportional bound now has a
+        # second show's pod to pass. Still no short episode with a bracketed pod.
+        self.assertEqual(measured["cases"], 5)
+        self.assertEqual(measured["labelled_pods"], 12)
+        self.assertEqual(measured["bracketed_pods"], 3)
+        self.assertEqual(measured["cases_with_bracketed_pods"], 2)
         by_id = {row["id"]: row for row in measured["per_case"]}
         practical = by_id["practical-ai-two-host-reads-left-whole"]
         self.assertEqual(practical["bracketed_pods"], 2)
@@ -5609,6 +5614,9 @@ class CorpusBracketingMeasurementTests(unittest.TestCase):
             techcrunch["bracketed_pods"], 0,
             "the short episode's overcut is an opening pod; bracketing cannot delimit it",
         )
+        planet_money = by_id["planet-money-palantir-midroll-pod-left-whole"]
+        self.assertEqual(planet_money["bracketed_pods"], 1, "the mid-roll pod between host lines")
+        self.assertTrue(all(0.0 < share < 0.05 for share in planet_money["bracketed_shares"]))
 
 
 class AdCorpusReplayWiringTests(unittest.TestCase):

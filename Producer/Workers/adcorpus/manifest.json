@@ -295,6 +295,82 @@
         "unitTests": "StraddlingSpanTailTests in Producer/Workers/test_wilted_pipeline.py -- six cases covering the straddle, the advertising-throughout tail that must be left alone, the unanswerable probe that must change nothing, a span already refined off a cue edge, a span confined to one cue, and the probe budget. Mutation-checked: forcing the trim unconditionally fails three of them. The full worker suite is 377 tests green, up from 371; the one pre-existing test that changed is the superhuman-boundary call-sequence assertion, which now names the third model call this safeguard adds.",
         "twoPassRefusal": "Already satisfied before this change, and re-checked rather than assumed. A span neither review will vouch for does not fall through to a zero exit: analyze_ad_detections compares the anchors covered by the proposed spans against those covered by the surviving ones and raises WorkerError('ads-recovery-audit-failed') -- 'explicit sponsor anchors were dropped after review twice declined to vouch for the span covering them' -- at Producer/Workers/wilted_pipeline.py:4159, after emitting ads.detect.recovery.audit.failed. Covered by test_post_cut_audit_fails_if_a_proposed_explicit_anchor_is_dropped in Producer/Workers/test_wilted_pipeline.py, which asserts the code rather than only the raise."
       }
+    },
+    {
+      "id": "planet-money-palantir-midroll-pod-left-whole",
+      "itemID": "item-4699ceb0ed17ea6228de7500d27f0dc54ee49064f756010ab42999d804e76337",
+      "show": "Planet Money",
+      "sourceHash": "sha256:26fafac4b10f902c42564e8351685ddcc515ef404d7c3fbd7343f7905a148566",
+      "sttModel": "mlx-community/parakeet-tdt-1.1b",
+      "segmentCount": 155,
+      "intentionalCondition": "A produced mid-roll pod of three back-to-back sponsor messages (cues 95-100, 1113.92-1195.0s), each opened by the network's 'this message comes from' bumper and closed by a destination call to action, sits between the host's tease into the break (cue 94) and the resumed story (cue 101). Commercial evidence was found and nominated, but the nomination proposed only cues 95-97, and the programme-preservation review then returned all three proposed IDs as programme, so recover_commercial_evidence_reads dropped the candidate and the whole pod stayed in. The run still reported a clean cut of three other advertising blocks, because no audit covers a declined commercial-evidence nomination. The other three blocks (preroll, the earlier mid-roll pair, the postroll pair) were cut correctly.",
+      "reportedBy": "David, 2026-09-23: heard an advertisement at 17:42 of the prepared episode in the Mac app. The run's terminal kept map places prepared 1062s at original 1128.08s (kept segment 244.88-1628.80 maps from 310.96), inside the first of the three surviving spots. Preparation run recorded in ZPREPARATIONRECORD for this itemID at 2026-09-17 13:53:53-13:54:43Z; journal events ads.detect.commercial.nominated#14 and ads.detect.recovery.skipped#15 ('programme preservation intersects the proposed cut at IDs 95, 96, 97').",
+      "provenance": {
+        "labelledBy": "Labelled by reading the aligned transcript cue by cue on 2026-09-23, anchored by David's reported timestamp. David confirmed an advertisement at 17:42 only; he was not asked to listen to the boundaries.",
+        "labelledOn": "2026-09-23",
+        "inputIdentity": "Every timing is a cue boundary of the aligned-STT cache entry keyed by this case's sourceHash, produced by mlx-community/parakeet-tdt-1.1b over 155 cues. The entry had already been evicted from the live cache and survives in adcorpus-snapshot-2026-09-17.",
+        "labelSource": "Read from cue edges. Cues 148-149 (1641.8-1658.36), a pitch for the network's own paid membership, are deliberately left unlabelled: whether a network's own membership pitch is advertising has not been decided, so a replay scores it neither way."
+      },
+      "expected": [
+        {
+          "start": 0.0,
+          "end": 17.2,
+          "label": "must-cut",
+          "why": "Cue 0, the preroll sponsor message. Cut correctly by the reported run."
+        },
+        {
+          "start": 262.08,
+          "end": 310.96,
+          "label": "must-cut",
+          "why": "Cues 24-26, the first mid-roll pair of sponsor messages. Cut correctly by the reported run."
+        },
+        {
+          "start": 1088.96,
+          "end": 1105.36,
+          "label": "must-keep",
+          "why": "Cue 94, the host's tease of what comes after the break. Programme."
+        },
+        {
+          "start": 1113.92,
+          "end": 1195.0,
+          "label": "must-cut",
+          "why": "Cues 95-100, the failure: the network bumper announcing sponsor messages, then three produced spots (a financial-services firm, a professional network's small-business product, a marketing-automation platform), each ending in a destination call to action. None of it was cut."
+        },
+        {
+          "start": 1196.12,
+          "end": 1205.32,
+          "label": "must-keep",
+          "why": "Cue 101, the host resuming the story after the break. Programme."
+        },
+        {
+          "start": 1694.88,
+          "end": 1732.88,
+          "label": "must-cut",
+          "why": "Cues 153-154, the postroll pair of sponsor messages. Cut correctly by the reported run."
+        }
+      ],
+      "recorded": [
+        {
+          "start": 0.0,
+          "end": 17.2,
+          "confidence": 1.0,
+          "label": "ad_break"
+        },
+        {
+          "start": 262.08,
+          "end": 310.96,
+          "confidence": 1.0,
+          "label": "sponsor_read"
+        },
+        {
+          "start": 1694.88,
+          "end": 1732.88,
+          "confidence": 1.0,
+          "label": "sponsor_read"
+        }
+      ],
+      "transcriptEndSeconds": 1732.88,
+      "audioDurationSeconds": 1733.041
     }
   ],
   "decisions": [
