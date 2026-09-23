@@ -533,7 +533,7 @@ private struct WiltedMacFeedsView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(model.feedsEpisodes.enumerated()), id: \.element.id) { index, episode in
                         if index > 0 { Divider() }
-                        feedsEpisodeRow(episode)
+                        WiltedMacFeedsEpisodeRow(model: model, episode: episode)
                     }
                 }
                 .wiltedCard(colorScheme)
@@ -546,38 +546,6 @@ private struct WiltedMacFeedsView: View {
                 // enough; the identifier creates the container on its own.
             }
         }
-    }
-
-    /// One inbox row. The buttons are the enum, in declaration order, so the
-    /// row cannot grow a third action without changing the one list the tests
-    /// read.
-    private func feedsEpisodeRow(_ episode: WiltedMacEpisode) -> some View {
-        HStack(spacing: WiltedTheme.Spacing.medium) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(episode.title)
-                    .wiltedFont(.body)
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                    .lineLimit(1)
-                Text("\(episode.feedTitle) · \(episode.lifecyclePresentation.primaryLabel)")
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            ForEach(WiltedMacFeedsAction.allCases) { action in
-                Button(action.rawValue) {
-                    switch action {
-                    case .keep: model.keepEpisode(episode)
-                    case .skip: model.skipFeedEpisode(episode)
-                    }
-                }
-                .accessibilityLabel("\(action.rawValue) \(episode.title)")
-                .accessibilityIdentifier("wilted-feeds-\(action.rawValue.lowercased())-\(episode.id)")
-            }
-        }
-        .padding(.vertical, WiltedTheme.Spacing.small)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-feeds-row-\(episode.id)")
     }
 
     /// Subscribing behind a button, matching the Larder's Add article. The
@@ -780,6 +748,115 @@ private struct WiltedMacFeedsView: View {
         .accessibilityIdentifier("wilted-podcast-feed-row-\(subscription.id)")
     }
 
+}
+
+/// One inbox row. The buttons are the enum, in declaration order, so the row
+/// cannot grow a third action without changing the one list the tests read.
+/// Its title opens the episode's show notes, so the listener can decide based
+/// on what the episode is about.
+private struct WiltedMacFeedsEpisodeRow: View {
+    @Bindable var model: WiltedMacModel
+    let episode: WiltedMacEpisode
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var isShowingNotes = false
+    @State private var isHoveringTitle = false
+
+    var body: some View {
+        HStack(spacing: WiltedTheme.Spacing.medium) {
+            VStack(alignment: .leading, spacing: 2) {
+                Button {
+                    isShowingNotes = true
+                } label: {
+                    Text(episode.title)
+                        .wiltedFont(.body)
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                        .lineLimit(1)
+                        .underline(isHoveringTitle)
+                }
+                .buttonStyle(.plain)
+                .onHover { isHoveringTitle = $0 }
+                .help("Show notes for \(episode.title)")
+                .accessibilityLabel("Show notes for \(episode.title)")
+                .accessibilityIdentifier("wilted-feeds-show-notes-\(episode.id)")
+                .popover(isPresented: $isShowingNotes, arrowEdge: .bottom) {
+                    notesPopover
+                }
+                Text("\(episode.feedTitle) · \(episode.lifecyclePresentation.primaryLabel)")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            ForEach(WiltedMacFeedsAction.allCases) { action in
+                Button(action.rawValue) {
+                    decide(action)
+                }
+                .accessibilityLabel("\(action.rawValue) \(episode.title)")
+                .accessibilityIdentifier("wilted-feeds-\(action.rawValue.lowercased())-\(episode.id)")
+            }
+        }
+        .padding(.vertical, WiltedTheme.Spacing.small)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-feeds-row-\(episode.id)")
+    }
+
+    private var notesPopover: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+            Text(episode.title)
+                .wiltedFont(.title)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+            Text("\(episode.feedTitle) · \(episode.releasedAt.formatted(date: .numeric, time: .omitted))")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            Divider()
+            ScrollView {
+                if let notes = episode.notes, !notes.isEmpty {
+                    Text(WiltedShowNotes.linked(notes))
+                        .wiltedFont(.body)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("wilted-feeds-notes-text-\(episode.id)")
+                } else {
+                    Text("This episode's feed did not include show notes.")
+                        .wiltedFont(.body)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-feeds-notes-unavailable-\(episode.id)")
+                }
+            }
+            .frame(maxHeight: .infinity)
+            // The popover repeats the row's two answers from the same enum, so
+            // reading notes and deciding stays in one place. A popover, rather
+            // than inline disclosure, keeps long notes from reflowing the list
+            // and pushing the other rows' answers out of view.
+            HStack {
+                Spacer()
+                ForEach(WiltedMacFeedsAction.allCases) { action in
+                    Button(action.rawValue) {
+                        decide(action)
+                    }
+                    .accessibilityLabel("\(action.rawValue) \(episode.title)")
+                    .accessibilityIdentifier("wilted-feeds-decide-\(action.rawValue.lowercased())-\(episode.id)")
+                    // Return keeps from inside the popover.
+                    .keyboardShortcut(action == .keep ? .defaultAction : nil)
+                }
+            }
+        }
+        .padding(WiltedTheme.Spacing.large)
+        .frame(width: 420, height: 360)
+        .background(WiltedTheme.color(.card, scheme: colorScheme))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-feeds-notes-popover-\(episode.id)")
+    }
+
+    private func decide(_ action: WiltedMacFeedsAction) {
+        isShowingNotes = false
+        switch action {
+        case .keep: model.keepEpisode(episode)
+        case .skip: model.skipFeedEpisode(episode)
+        }
+    }
 }
 
 /// Keeps the transient podcast status row at a two-line minimum without

@@ -279,6 +279,26 @@ final class WiltedVisualSystemTests: XCTestCase {
     }
 
     @MainActor
+    func testTheFeedsFixtureEpisodesCarryTheNotesTheirTitleOpens() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
+            stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        for _ in 0..<100 {
+            if !model.feedsEpisodes.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertFalse(model.feedsEpisodes.isEmpty)
+        XCTAssertTrue(model.feedsEpisodes.allSatisfy { episode in
+            guard let notes = episode.notes else { return false }
+            return !notes.isEmpty
+        })
+    }
+
+    @MainActor
     func testReadyEpisodeOutsideQueueBecomesCoherentCurrentPlayback() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1014,6 +1034,25 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(source.contains("let headings = speakerHeadingCueIDs"))
         XCTAssertTrue(source.contains("case .cue(let cue): line(cue, showsSpeaker: headings.contains(cue.id))"))
         XCTAssertTrue(source.contains(".accessibilityLabel(spokenLabel(cue, showsSpeaker: showsSpeaker))"))
+    }
+
+    func testFeedsTitleOpensShowNotesWithTheSameTwoAnswers() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
+        let source = try String(contentsOf: root)
+        let start = try XCTUnwrap(source.range(of: "struct WiltedMacFeedsEpisodeRow")?.lowerBound)
+        // The struct ends at its own column-zero closing brace, so nothing
+        // declared after it can satisfy an assertion meant for the row.
+        let end = try XCTUnwrap(source.range(of: "\n}\n", range: start..<source.endIndex)?.upperBound)
+        let row = source[start..<end]
+
+        XCTAssertTrue(row.contains(".popover(isPresented: $isShowingNotes"))
+        XCTAssertTrue(row.contains("WiltedShowNotes.linked("))
+        XCTAssertTrue(row.contains("wilted-feeds-show-notes-\\(episode.id)"))
+        XCTAssertTrue(row.contains("This episode's feed did not include show notes."))
+        XCTAssertTrue(row.contains("wilted-feeds-decide-"))
+        XCTAssertEqual(row.components(separatedBy: "ForEach(WiltedMacFeedsAction.allCases)").count - 1, 2)
+        XCTAssertFalse(source.contains("private func feedsEpisodeRow"))
     }
 
     func testAutomationSettingsPresentationFollowsThePipelineAndOnlyShowsLiveControls() throws {

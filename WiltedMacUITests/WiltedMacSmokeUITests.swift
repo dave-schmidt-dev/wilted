@@ -193,6 +193,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
     /// Absorbs:
     /// - testMenuSearchFiltersAndTheFeedsRestorePath
     /// - testUnpreparedEpisodeHasNoListeningActionAndTheMenuOwnsItsStep
+    /// - the Feeds show-notes popover
     func testEpisodeDecisionJourneyFromFeedsToLarder() {
         let app = launch(arguments: [
             "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts",
@@ -207,6 +208,26 @@ final class WiltedMacSmokeUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-row-'")
         ).firstMatch
         XCTAssertTrue(feedRow.waitForExistence(timeout: 8))
+
+        // Show notes inform the Feeds decision without adding another journey.
+        let showNotes = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-show-notes-'")
+        ).firstMatch
+        XCTAssertTrue(showNotes.waitForExistence(timeout: 5))
+        showNotes.click()
+        let notes = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-notes-text-'")
+        ).firstMatch
+        XCTAssertTrue(notes.waitForExistence(timeout: 5), "the title opens the episode's show notes")
+        XCTAssertTrue(app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-decide-keep-'")
+        ).firstMatch.exists)
+        app.typeKey(.escape, modifierFlags: [])
+        let notesDismissed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: notes
+        )
+        XCTAssertEqual(XCTWaiter().wait(for: [notesDismissed], timeout: 5), .completed,
+                       "Escape closes the notes popover")
 
         // A skip leaves the list; Feeds owns the reversal.
         let skip = app.buttons.matching(
@@ -227,8 +248,10 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(feedRow.waitForExistence(timeout: 5), "Restore returns the row to Feeds")
 
         // Keep is the other half of the one decision Feeds owns.
+        // It is made from the notes popover; the row's Keep is driven by testPodcastPlaybackJourneyAcrossDestinations.
+        showNotes.click()
         let keep = app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-keep-'")
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-decide-keep-'")
         ).firstMatch
         XCTAssertTrue(keep.waitForExistence(timeout: 5))
         keep.click()
