@@ -62,8 +62,8 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
 
     // MARK: - Scenarios
 
-    /// Feeds: the one-decision inbox (Keep/Skip), the subscribe composer, the
-    /// restorable list, and per-feed upkeep.
+    /// Feeds: the one-decision inbox (Keep/Skip), show notes, the subscribe
+    /// composer, the restorable list, and per-feed upkeep.
     ///
     /// "Off the list" now lists both removal kinds Task 4.5 folded onto one
     /// `removalKind` column -- a Skip from this inbox (retirement) and a
@@ -94,6 +94,22 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         XCTAssertTrue(element(app, "wilted-podcast-feed-url").waitForExistence(timeout: 10))
         try write(popover: app.popovers.firstMatch, "4.2-feeds-add-feed", into: root)
         app.typeKey(.escape, modifierFlags: [])
+
+        // The title opens the full feed notes without leaving the inbox. Its
+        // popover carries the same decision controls, and Escape returns to
+        // the untouched row before this scenario demonstrates Skip.
+        let showNotes = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-show-notes-'")
+        ).firstMatch
+        XCTAssertTrue(showNotes.waitForExistence(timeout: 10))
+        showNotes.click()
+        let notesPopover = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-notes-popover-'")
+        ).firstMatch
+        XCTAssertTrue(notesPopover.waitForExistence(timeout: 10))
+        try write(popover: notesPopover, "4.6-feeds-show-notes", into: root)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(notesPopover.waitForNonExistence(timeout: 5))
 
         // Skip retires one inbox episode outright, which is the one
         // UI-reachable action that lands a row in Off the list.
@@ -360,6 +376,7 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         // describing it. A fixture launch has its own defaults domain, so
         // driving the picker here cannot reach the owner's own choice.
         element(app, "wilted-mac-settings").swipeUp()
+        XCTAssertTrue(element(app, "wilted-automation-ad-marker").waitForExistence(timeout: 10))
         let transcriptPolicy = element(app, "wilted-automation-transcript-policy")
         XCTAssertTrue(transcriptPolicy.waitForExistence(timeout: 10))
         transcriptPolicy.click()

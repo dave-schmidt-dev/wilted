@@ -123,6 +123,18 @@ def build(captures, commit, date_iso, date_human, previous):
             "without either. An inbox with nothing new reads &ldquo;Nothing new&rdquo; at "
             "<code>wilted-feeds-empty</code> instead of an empty list.",
             captures),
+        "feeds-show-notes": figure(
+            "fig-feeds-show-notes", "4.6-feeds-show-notes",
+            "The Feeds show-notes popover with the episode's notes and its Keep and Skip decisions",
+            "<strong>4.6 Feeds, show notes.</strong> Selecting an episode title at "
+            "<code>wilted-feeds-show-notes-&lt;id&gt;</code> opens this popover "
+            "(<code>wilted-feeds-notes-popover-&lt;id&gt;</code>) without leaving the inbox. It shows the "
+            "notes at <code>wilted-feeds-notes-text-&lt;id&gt;</code>, or "
+            "<code>wilted-feeds-notes-unavailable-&lt;id&gt;</code> when the feed supplied none, beside the "
+            "same Keep and Skip answers at <code>wilted-feeds-decide-keep-&lt;id&gt;</code> and "
+            "<code>wilted-feeds-decide-skip-&lt;id&gt;</code>. Return keeps the episode; Escape closes the "
+            "popover.",
+            captures),
         "feeds-add": figure(
             "fig-feeds-add", "4.2-feeds-add-feed",
             "The subscribe-composer popover with its feed address field and Subscribe button",
@@ -192,7 +204,12 @@ def build(captures, commit, date_iso, date_human, previous):
             "chips (<code>wilted-menu-filter-all</code> and one per "
             "<code>wilted-menu-filter-&lt;group&gt;</code>) jump to a group's rows, and Download all new "
             "(<code>wilted-menu-download-all</code>) and Prepare all downloaded "
-            "(<code>wilted-menu-prepare-all</code>) act across whichever rows are currently visible. The three "
+            "(<code>wilted-menu-prepare-all</code>) act across whichever rows are currently visible. While a "
+            "bulk run is active, each action shows a spinner with its count at "
+            "<code>wilted-menu-download-all-progress</code> (&ldquo;Downloading N&hellip;&rdquo;) or "
+            "<code>wilted-menu-prepare-all-progress</code> (&ldquo;Preparing N&hellip;&rdquo;); its button stays "
+            "beside the spinner while other rows remain startable. No frame captures this state because no "
+            "fixture holds a bulk run open. The three "
             "groups &mdash; Ready, Downloaded, Available &mdash; are the episode steps in order; each carries "
             "its own bulk action and clear (<code>wilted-menu-group-&lt;group&gt;</code>, "
             "<code>wilted-menu-clear-ready</code>, <code>wilted-menu-clear-downloaded</code>, "
@@ -217,20 +234,22 @@ def build(captures, commit, date_iso, date_human, previous):
             "The Menu's Ready group showing a prepared episode's row",
             "<strong>5.3 Menu, a prepared episode.</strong> A successful terminal preparation journal matching "
             "the audio revision ready to play places the episode in the Ready group "
-            "(<code>wilted-menu-group-ready</code>, <code>wilted-menu-row-&lt;id&gt;</code>), subtitled "
-            "&ldquo;&lt;show&gt; &middot; &lt;release date&gt; &middot; Ready&rdquo;. The row does not yet carry the completion summary "
-            "(&ldquo;5 ads removed (7:22) &middot; transcript synced&rdquo;) the retired Larder row used to: "
-            "that text is read from <code>WiltedMacEpisodeLifecyclePresentation.primaryLabel</code>, which only "
-            "the Feeds inbox row still consults, and carrying it onto the Menu row is its own re-queued item "
-            "rather than something this rewrite already did. A row in this state offers Play now "
-            "(<code>wilted-menu-play-&lt;id&gt;</code>) and, once finished, reads Played "
-            "(<code>wilted-menu-played-&lt;id&gt;</code>) in place of the button. Every row carries the retiring "
-            "control this walkthrough calls Skip (<code>wilted-menu-skip-&lt;id&gt;</code>, labelled from "
-            "whether the episode was ever started) beside Remove (<code>wilted-menu-remove-&lt;id&gt;</code>), "
-            "which only takes the episode off the Menu's queue and returns it to the Feeds inbox &mdash; it is "
-            "neither the retirement Skip performs nor the dismissal 4.3 describes. A running preparation shows "
-            "its progress at <code>wilted-menu-progress-&lt;id&gt;</code>, drawn in the Downloaded group so the "
-            "row does not change groups mid-run.",
+            "(<code>wilted-menu-group-ready</code>, <code>wilted-menu-row-&lt;id&gt;</code>). Under a Status "
+            "heading its subtitle is &ldquo;&lt;show&gt; &middot; &lt;release date&gt;&rdquo;; it appends "
+            "&ldquo;&middot; &lt;group&gt;&rdquo; only when grouped by Feed or Date, so status is stated once. "
+            "Play now (<code>wilted-menu-play-&lt;id&gt;</code>) is the <code>play.fill</code> icon and Played "
+            "(<code>wilted-menu-played-&lt;id&gt;</code>) is <code>checkmark.circle.fill</code>; each keeps its "
+            "word as its tooltip and accessibility label. The retiring control "
+            "(<code>wilted-menu-skip-&lt;id&gt;</code>) is <code>forward.end.fill</code> for Skip or "
+            "<code>checkmark</code> for Mark completed, again with that word as tooltip and accessibility label. "
+            "Remove (<code>wilted-menu-remove-&lt;id&gt;</code>) is <code>minus.circle</code> with the word kept "
+            "as its tooltip and accessibility label; it only takes the episode off the Menu's queue and returns "
+            "it to the Feeds inbox &mdash; it is neither the retirement Skip performs nor the dismissal 4.3 "
+            "describes. The current row instead shows <code>wilted-menu-now-playing-&lt;id&gt;</code>: "
+            "<code>speaker.wave.2.fill</code> while playing or <code>speaker.fill</code> while paused, with no "
+            "additional in-progress mark. A running preparation shows its progress at "
+            "<code>wilted-menu-progress-&lt;id&gt;</code>, drawn in the Downloaded group so the row does not "
+            "change groups mid-run.",
             captures),
         "menu-transcript-inline": figure(
             "fig-menu-transcript-inline", "5.4-menu-transcript-inline",
@@ -328,7 +347,9 @@ def build(captures, commit, date_iso, date_human, previous):
             "(<code>wilted-automation-download-policy</code>), immediate/manual/off-peak processing "
             "(<code>wilted-automation-processing-policy</code>), transcript preference "
             "(<code>wilted-automation-transcript-policy</code>), and ad removal "
-            "(<code>wilted-automation-remove-ads</code>); the off-peak window "
+            "(<code>wilted-automation-remove-ads</code>). Chime where an ad was removed "
+            "(<code>wilted-automation-ad-marker</code>) is on by default and takes effect without "
+            "re-preparation; the off-peak window "
             "(<code>wilted-automation-off-peak-start</code>, <code>wilted-automation-off-peak-end</code>) "
             "appears only for that processing choice. Sync (<code>wilted-sync-controls</code>) reads Disabled "
             "with the detail &ldquo;Sync is not configured.&rdquo; at <code>wilted-sync-detail</code>, producer "
@@ -354,11 +375,13 @@ def build(captures, commit, date_iso, date_human, previous):
             "A Menu row in the Available group reporting a failed download and offering retry",
             "<strong>8.1 Download failure and retry.</strong> The download-failure fixture drives a row in the "
             "Menu's Available group to fail its download at <code>wilted-menu-download-&lt;id&gt;</code>. The "
-            "row's next-step control becomes Retry at <code>wilted-menu-retry-&lt;id&gt;</code>, the same "
-            "control an interrupted or cancelled download shows; a download still in flight shows Cancel at "
-            "<code>wilted-menu-cancel-&lt;id&gt;</code> instead. Neither the row nor any other control is "
-            "disabled by the failure &mdash; the rest of the Menu keeps working while this one row waits to be "
-            "retried.",
+            "Download control is the <code>arrow.down.circle</code> icon, with Download kept as its tooltip "
+            "and accessibility label. The row's next-step control becomes the <code>arrow.clockwise</code> "
+            "Retry icon at <code>wilted-menu-retry-&lt;id&gt;</code>, the same control an interrupted or cancelled "
+            "download shows; a download still in flight shows the <code>xmark.circle</code> Cancel download "
+            "icon at <code>wilted-menu-cancel-&lt;id&gt;</code> instead. Each word remains its tooltip and "
+            "accessibility label. Neither the row nor any other control is disabled by the failure &mdash; the "
+            "rest of the Menu keeps working while this one row waits to be retried.",
             captures),
         "recovery-quarantine": figure(
             "fig-recovery-quarantine", "8.2-recovery-sync-quarantine",
@@ -394,11 +417,11 @@ def build(captures, commit, date_iso, date_human, previous):
 <table><thead><tr><th>Property</th><th>Observed value</th></tr></thead><tbody>
 <tr><td>Bundle identifier</td><td><code>com.zerodelta.wilted.mac</code></td></tr>
 <tr><td>Signature</td><td><code>CODE_SIGN_IDENTITY=Apple Development</code>, <code>DEVELOPMENT_TEAM=4CJ49V6QHW</code>; the gate verifies the runner with <code>codesign --verify --deep --strict</code> and refuses quarantine or FinderInfo metadata on either bundle</td></tr>
-<tr><td>Captured processes</td><td>Nine launches across five capture scenarios &mdash; Menu launches three times, Playback twice, and Recovery twice, once for the download failure and once for the quarantine notice. Each frame is scoped to its own launch's window, or, for the two popover frames, to the popover that launch opened.</td></tr>
+<tr><td>Captured processes</td><td>Nine launches across five capture scenarios &mdash; Menu launches three times, Playback twice, and Recovery twice, once for the download failure and once for the quarantine notice. Each frame is scoped to its own launch's window, or, for the three popover frames, to the popover that launch opened.</td></tr>
 <tr><td>Window geometry</td><td>{geometry_line}</td></tr>
 <tr><td>Reproducing this report</td><td><code>scripts/record-walkthrough-frames.sh</code> writes the frames and a geometry sidecar beside each one, by setting <code>WILTED_WALKTHROUGH_CAPTURE=1</code> inside the generated scheme's TestAction and running <code>-only-testing:WiltedMacUITests/WiltedMacWalkthroughCapture</code>; <code>scripts/build-mac-walkthrough.py</code> assembles this document from that directory</td></tr>
 </tbody></table>
-<div class="warning"><strong>What changed since the {previous} report.</strong> Larder now separates presentation from listening order: Group by offers Feed, Date, and Status, while Sort by retains Custom order, Newest, Oldest, Length, Show, and Title. Every episode row includes its release date. Play Now inserts the selected episode immediately before the current episode so the interrupted episode remains next. Every frame was retaken at this commit.</div>
+<div class="warning"><strong>What changed since the {previous} report.</strong> Larder now separates presentation from listening order: Group by offers Feed, Date, and Status, while Sort by retains Custom order, Newest, Oldest, Length, Show, and Title. Release dates are numeric, for example 9/22/2026 in US English. Feeds now opens show notes in a popover. Download all new and Prepare all now show bulk progress while rows run. Settings adds the Chime where an ad was removed setting. Larder rows state their status once and use icons with tooltips. Play Now inserts the selected episode immediately before the current episode so the interrupted episode remains next. Now Playing names the next episode as soon as Mark completed starts it. Every frame was retaken at this commit.</div>
 </section>
 
 <section id="method"><h2>2. Method and evidence labels</h2>
@@ -422,6 +445,7 @@ def build(captures, commit, date_iso, date_human, previous):
 <section id="feeds"><h2>4. Feeds</h2>
 <p>Feeds answers one question, once, per new episode: keep it or skip it. Downloading, preparing, and playing all happen in the Menu. Feed upkeep &mdash; subscribing, refreshing, hiding, unsubscribing &mdash; and the restorable list for anything taken off the Menu share the same destination, reached by <code>wilted-navigation-feeds</code> with detail pane <code>wilted-mac-feeds-detail</code>.</p>
 {figures["feeds-inbox"]}
+{figures["feeds-show-notes"]}
 {figures["feeds-add"]}
 {figures["feeds-off-the-list"]}
 {figures["feeds-management"]}
