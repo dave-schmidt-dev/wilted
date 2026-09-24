@@ -208,7 +208,7 @@ validate_pixel_snapshot_baselines() {
     wilted-player-next wilted-player-restart wilted-player-keyboard-transports \
     wilted-player-status wilted-player-transcript-expanded \
     wilted-mac-menu-detail wilted-menu-clear-ready wilted-menu-clear-downloaded \
-    wilted-menu-clear-available wilted-menu-skip- wilted-menu-remove- wilted-menu-row-; do
+    wilted-menu-clear-available wilted-menu-mark-completed- wilted-menu-remove- wilted-menu-row-; do
     grep -Fq "$identifier" \
       "$root/WiltedMac/WiltedMacRootView.swift" "$root/Shared/WiltedRootView.swift" ||
       fail "Mac compact player identifier is missing: $identifier"

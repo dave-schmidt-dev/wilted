@@ -281,9 +281,9 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertEqual(app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-play-'")
         ).count, 0, "an Available row cannot claim to be playable")
-        XCTAssertTrue(app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-skip-'")
-        ).firstMatch.exists)
+        XCTAssertEqual(app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-skip-' OR identifier BEGINSWITH 'wilted-menu-mark-completed-'")
+        ).count, 0, "an unstarted row has no skip or completion action")
         XCTAssertTrue(app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-remove-'")
         ).firstMatch.exists)

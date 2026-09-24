@@ -203,7 +203,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         let larderRows = source[start..<end]
 
         for symbol in [
-            "checkmark.circle.fill", "play.fill", "forward.end.fill", "checkmark", "minus.circle", "stop.fill",
+            "checkmark.circle.fill", "play.fill", "checkmark", "minus.circle", "stop.fill",
             "arrow.clockwise", "xmark.circle", "arrow.down.circle",
         ] {
             XCTAssertTrue(larderRows.contains("\"\(symbol)\""), "missing \(symbol)")
@@ -222,10 +222,21 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(larderRows.contains("Self.readyActionSlotWidth"))
         XCTAssertTrue(larderRows.contains("Self.trailingActionSlotsWidth"))
         XCTAssertTrue(larderRows.contains("HStack(spacing: 2)"))
+        XCTAssertTrue(larderRows.contains("model.hasStartedEpisode(episode) && !episode.isPlayed"))
+        XCTAssertTrue(larderRows.contains("Label(\"Mark completed\", systemImage: \"checkmark\")"))
+        XCTAssertTrue(larderRows.contains(".help(\"Mark completed\")"))
+        XCTAssertTrue(larderRows.contains(".accessibilityIdentifier(\"wilted-menu-mark-completed-\\(episode.id)\")"))
+        XCTAssertTrue(larderRows.contains(".accessibilityLabel(\"Mark \\(episode.title) completed\")"))
+        XCTAssertTrue(larderRows.contains("Color.clear\n                        .frame(width: 28, height: 28)"))
+        XCTAssertFalse(larderRows.contains("wilted-menu-skip-"))
+        XCTAssertFalse(larderRows.contains("forward.end.fill"))
+        XCTAssertTrue(source.contains("Button(\"Undo completion\")"))
+        XCTAssertTrue(source.contains("Undo completion of \\(skipped.title)"))
         XCTAssertFalse(larderRows.contains("model.currentPodcastEpisodeID"))
         let modelRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("WiltedMac/WiltedMacModel.swift")
         let modelSource = try String(contentsOf: modelRoot)
+        XCTAssertTrue(modelSource.contains("Undo completion restores it."))
         XCTAssertTrue(modelSource.contains("var larderPresentationEpisodes"))
         XCTAssertTrue(modelSource.contains("guard isPodcastPlayback, let currentPodcastEpisodeID"))
 

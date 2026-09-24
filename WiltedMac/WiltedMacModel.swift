@@ -2204,30 +2204,15 @@ final class WiltedMacModel {
         larderPresentationEpisodes.filter { $0.feedID == feedID }.count
     }
 
-    /// The one definition of "finished" every completion surface asks.
-    ///
-    /// Two surfaces used to answer this differently: the Larder's status filter
-    /// treated an episode as finished once playback reached 95% of its
-    /// duration, ignoring the durable listening record, while the episode row
-    /// said "Played" from that record alone. Both facts matter. A record whose
-    /// `isPlayed` is set wins outright -- an episode finished by hand never
-    /// reached the end, and one that stopped seconds short finished anyway --
-    /// and the 95% fallback covers rows that predate the listening record,
-    /// where position is the only evidence there is.
-    nonisolated static func isFinished(
-        position: TimeInterval, duration: TimeInterval?, isPlayed: Bool
-    ) -> Bool {
-        if isPlayed { return true }
-        guard let duration, duration > 0 else { return false }
-        return position >= duration * 0.95
-    }
+    /// The one definition of "Played" every completion surface asks. A live
+    /// playhead can nominate a manual-Next completion, but only the durable
+    /// listening record proves that the episode was completed.
+    nonisolated static func isFinished(isPlayed: Bool) -> Bool { isPlayed }
 
     /// The Menu row asks this before it offers Play: an episode already
     /// finished must not sit in Ready waiting to be played again.
     func isEpisodeFinished(_ episode: WiltedMacEpisode) -> Bool {
-        Self.isFinished(
-            position: episode.playbackSeconds, duration: episode.durationSeconds, isPlayed: episode.isPlayed
-        )
+        Self.isFinished(isPlayed: episode.isPlayed)
     }
 
     /// Whether a visible row has playback underway but is not finished. The
@@ -2239,7 +2224,7 @@ final class WiltedMacModel {
             ? playbackPositionSeconds
             : episode.playbackSeconds
         guard position > 0 else { return false }
-        return !Self.isFinished(position: position, duration: episode.durationSeconds, isPlayed: episode.isPlayed)
+        return !Self.isFinished(isPlayed: episode.isPlayed)
     }
 
     /// How far this episode's running preparation has got, when it has said.
@@ -3601,7 +3586,7 @@ final class WiltedMacModel {
 #endif
     }
 
-    /// Skips an episode the listener has started, deleting nothing.
+    /// Marks an episode the listener has started completed, deleting nothing.
     ///
     /// The row's Skip button used to call `removeEpisode`, which erased the
     /// episode's records and needed a network feed check to bring anything
@@ -3615,14 +3600,14 @@ final class WiltedMacModel {
     func skipEpisode(_ episode: WiltedMacEpisode) {
 #if canImport(WiltedProducer)
         guard hasStartedEpisode(episode) else {
-            podcastOperationMessage = "\(episode.title) was not started, so nothing was skipped."
+            podcastOperationMessage = "\(episode.title) was not started, so nothing was marked completed."
             return
         }
         withdrawPreparationRequest(for: episode.id)
         undoableRemoval = nil
         let wasPlaying = currentPodcastEpisodeID == episode.id
         undoableSkip = episode
-        podcastOperationMessage = "Skipped \(episode.title). Undo Skip restores it."
+        podcastOperationMessage = "Marked \(episode.title) completed. Undo completion restores it."
         Task { [weak self] in
             guard let self, let store = self.store, let id = try? ItemID(rawValue: episode.id) else { return }
             do {
@@ -3636,7 +3621,7 @@ final class WiltedMacModel {
                 ))
                 guard skipped else {
                     self.undoableSkip = nil
-                    self.podcastOperationMessage = "\(episode.title) could not be skipped."
+                    self.podcastOperationMessage = "\(episode.title) could not be marked completed."
                     return
                 }
                 if let playback = self.playback {
@@ -3647,13 +3632,13 @@ final class WiltedMacModel {
                 await self.reloadLibraryRows()
             } catch {
                 self.undoableSkip = nil
-                self.podcastOperationMessage = "\(episode.title) could not be skipped."
+                self.podcastOperationMessage = "\(episode.title) could not be marked completed."
             }
         }
 #endif
     }
 
-    /// Reverses `skipEpisode` from local state alone.
+    /// Reverses `skipEpisode`'s local completion from local state alone.
     ///
     /// The listening record is cleared and the episode plays again from the
     /// media already on disk; no feed is consulted, which is the acceptance
@@ -4557,10 +4542,23 @@ final class WiltedMacModel {
         return hiddenEpisodeIDs.contains(episode.id) || episode.retiredAt != nil
     }
 
-    var canSelectPreviousEpisode: Bool {
+    /// The previous queued episode before the current one that satisfies `canPlayEpisode`.
+    /// Walks backward through `podcastQueueIDs` and selects the nearest earlier episode
+    /// that can actually be played.
+    func previousEligiblePodcastQueueEpisode() -> WiltedMacEpisode? {
         guard isPodcastPlayback, let currentPodcastEpisodeID,
-              let index = podcastQueueIDs.firstIndex(of: currentPodcastEpisodeID) else { return false }
-        return index > podcastQueueIDs.startIndex
+              let index = podcastQueueIDs.firstIndex(of: currentPodcastEpisodeID),
+              index > podcastQueueIDs.startIndex else { return nil }
+        for id in podcastQueueIDs[..<index].reversed() {
+            guard let candidate = episodes.first(where: { $0.id == id }),
+                  canPlayEpisode(candidate) else { continue }
+            return candidate
+        }
+        return nil
+    }
+
+    var canSelectPreviousEpisode: Bool {
+        previousEligiblePodcastQueueEpisode() != nil
     }
 
     /// The next queued episode after the current one that satisfies `canPlayEpisode`.
@@ -5131,13 +5129,6 @@ final class WiltedMacModel {
     /// definition `skipEpisode` guards on and the row's label reads.
     func hasStartedEpisode(_ episode: WiltedMacEpisode) -> Bool {
         episode.isPlayed || episode.playbackSeconds > 0 || currentPodcastEpisodeID == episode.id
-    }
-
-    /// The Menu row's one retirement control label: "Completed" once the
-    /// episode was started, "Skip" when pressing it only passes the episode
-    /// on. Both press the reversible `skipEpisode`.
-    func menuRowRetirementLabel(_ episode: WiltedMacEpisode) -> String {
-        hasStartedEpisode(episode) ? "Completed" : "Skip"
     }
 
     /// The group action names the queue mutation, not the retirement detail.
@@ -7573,7 +7564,12 @@ final class WiltedMacModel {
 #if canImport(WiltedProducer)
         guard isPodcastPlayback else { return }
         guard let playback else {
-            if !previous, let next = nextEligiblePodcastQueueEpisode() {
+            if previous {
+                if let prev = previousEligiblePodcastQueueEpisode() {
+                    currentPodcastEpisodeID = prev.id
+                    refreshPlaybackReadout()
+                }
+            } else if let next = nextEligiblePodcastQueueEpisode() {
                 currentPodcastEpisodeID = next.id
                 refreshPlaybackReadout()
             }

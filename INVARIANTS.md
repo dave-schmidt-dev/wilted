@@ -93,7 +93,7 @@ rationale: Native Mac daily use is implemented and reaches Phase 3 Mac owner acc
 area: ["Shared/**", "WiltedMac/**", "WiltediOS/**"]
 gate_test: test-gate.sh
 threshold: 3
-rationale: Wilted preserves Zero Delta structure, status semantics, native typography, accessibility, and flat surfaces while limiting the lettuce motif to a restrained identity mark and accent. Navigation stays literal, color never carries state alone, and light/dark behavior is snapshot- and contrast-tested. Larder's Add article action remains accessible after its last article is removed and when a search has no article matches.
+rationale: Wilted preserves Zero Delta structure, status semantics, native typography, accessibility, and flat surfaces while limiting the lettuce motif to a restrained identity mark and accent. Navigation stays literal, color never carries state alone, and light/dark behavior is snapshot- and contrast-tested. Larder's Add article action remains accessible after its last article is removed and when a search has no article matches. Larder never repeats Feeds' Keep/Skip decision; its Played label requires a durable completion record, and its completion control appears only for a started, unfinished row.
 
 ### W-INV-011 — Episode state dimensions stay orthogonal and locally durable
 area: ["Producer/**"]

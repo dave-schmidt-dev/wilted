@@ -334,14 +334,32 @@ public final class PlaybackController {
         podcastStateHandler?(episodeID, nil)
     }
 
-    /// Selects the queue item before the current episode, if one exists.
+    /// Resolves the first eligible episode before `anchorID` (or current episode)
+    /// by walking backward through the queued episode IDs.
+    public func previousEligibleEpisodeID(before anchorID: ItemID? = nil) async throws -> ItemID? {
+        let state = try await store.podcastQueueState()
+        let activeID = anchorID ?? state.currentEpisodeID ?? itemID
+        let endIndex: Int
+        if let activeID, let idx = state.episodeIDs.firstIndex(of: activeID) {
+            endIndex = idx
+        } else if let currentIndex = state.currentIndex {
+            endIndex = currentIndex
+        } else {
+            return nil
+        }
+        guard endIndex > state.episodeIDs.startIndex else { return nil }
+        for candidate in state.episodeIDs[..<endIndex].reversed() {
+            if try await isEpisodeEligible(candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    /// Selects the first eligible queue item before the current episode, if one exists.
     @discardableResult
     public func selectPreviousPodcastQueueEpisode(autoplay: Bool = true) async throws -> Bool {
-        let state = try await store.podcastQueueState()
-        guard let currentIndex = state.currentIndex, currentIndex > state.episodeIDs.startIndex else {
-            return false
-        }
-        let previous = state.episodeIDs[state.episodeIDs.index(before: currentIndex)]
+        guard let previous = try await previousEligibleEpisodeID() else { return false }
         try await selectPodcastQueueEpisode(previous, autoplay: autoplay)
         return true
     }
@@ -396,7 +414,28 @@ public final class PlaybackController {
     @discardableResult
     public func selectNextPodcastQueueEpisode(autoplay: Bool = true) async throws -> Bool {
         guard let next = try await nextEligibleEpisodeID() else { return false }
-        try await selectPodcastQueueEpisode(next, autoplay: autoplay)
+        let state = try await store.podcastQueueState()
+
+        // Keep the outgoing checkpoint recoverable until the successor is
+        // actually open. In particular, a playhead parked at the final frame
+        // is still resumable when the successor cannot load; pressing Next is
+        // not evidence that the outgoing episode was completed.
+        if itemID == state.currentEpisodeID, currentRevision != nil {
+            try await checkpoint(markCompletedAtEnd: false)
+        }
+        let completion = manualNextCompletionCandidate(currentQueueItem: state.currentEpisodeID)
+
+        // Loading precedes both the durable queue move and the completion
+        // write. A missing or corrupt successor therefore leaves the current
+        // item, its queue identity, and its resumable checkpoint intact.
+        try await loadQueuedEpisode(next, playAfterLoad: autoplay)
+        try await store.addPodcastQueueEpisode(next)
+        try await store.setCurrentPodcastQueueEpisode(next)
+        if let completion {
+            try await persistManualNextCompletion(completion)
+            podcastCompletionHandler?(completion.itemID)
+        }
+        podcastStateHandler?(next, nil)
         return true
     }
 
@@ -507,7 +546,12 @@ public final class PlaybackController {
         try await checkpointCompletedRevision(accountPlaybackToEnd: false)
     }
 
-    public func checkpoint() async throws {
+    public func checkpoint() async throws { try await checkpoint(markCompletedAtEnd: true) }
+
+    /// Writes the current playhead without inferring a terminal record unless
+    /// the caller is handling an actual audio completion. Manual Next uses the
+    /// non-terminal form until its successor has loaded successfully.
+    private func checkpoint(markCompletedAtEnd: Bool) async throws {
         guard let revision = currentRevision, let itemID, let revisionID, let sessionID else {
             throw PlaybackControllerError.noLoadedRevision
         }
@@ -515,7 +559,8 @@ public final class PlaybackController {
         positionSeconds = recoverableFault == .playbackFailed(itemID)
             ? max(positionSeconds, livePosition) : livePosition
         isPlaying = backend.isPlaying
-        completed = positionSeconds >= durationSeconds && recoverableFault != .playbackFailed(itemID)
+        completed = markCompletedAtEnd && positionSeconds >= durationSeconds
+            && recoverableFault != .playbackFailed(itemID)
         sequence = max(1, sequence + 1)
         let state = try PlaybackState(
             itemID: itemID,
@@ -664,6 +709,49 @@ public final class PlaybackController {
         stageSpeedInterval(endingAt: accountingEnd)
         try await persistPendingSpeedIntervals(revisionID: revisionID)
         speedSavingsBaselineSeconds = durationSeconds
+    }
+
+    /// Immutable details of an outgoing podcast eligible for manual-Next
+    /// completion. The controller captures these before loading a successor,
+    /// because the successor replaces the mutable current-revision fields.
+    private struct ManualNextCompletion {
+        let itemID: ItemID
+        let revisionID: RevisionID
+        let sessionID: String
+        let sequence: Int64
+        let durationSeconds: TimeInterval
+        let intent: PlaybackIntent
+    }
+
+    /// A manual Next completes only a loaded current podcast whose *live*
+    /// playhead has reached the owner-selected 95% threshold. Saved row
+    /// position is intentionally not consulted here.
+    private func manualNextCompletionCandidate(currentQueueItem: ItemID?) -> ManualNextCompletion? {
+        guard loadedIsPodcastEpisode, currentRevision != nil,
+              let itemID, let revisionID, let sessionID,
+              itemID == currentQueueItem,
+              durationSeconds.isFinite, durationSeconds > 0,
+              livePositionSeconds >= durationSeconds * 0.95 else { return nil }
+        return ManualNextCompletion(
+            itemID: itemID, revisionID: revisionID, sessionID: sessionID,
+            sequence: sequence, durationSeconds: durationSeconds, intent: intent
+        )
+    }
+
+    /// Persists the terminal playback and listening records only after the
+    /// successor has loaded and become the queue's durable current item.
+    private func persistManualNextCompletion(_ completion: ManualNextCompletion) async throws {
+        let now = Timestamp(Date())
+        let playbackState = try PlaybackState(
+            itemID: completion.itemID, revisionID: completion.revisionID,
+            sessionID: completion.sessionID, sequence: max(1, completion.sequence + 1),
+            positionSeconds: completion.durationSeconds, durationSeconds: completion.durationSeconds,
+            completed: true, intent: completion.intent, deviceID: deviceID, updatedAt: now
+        )
+        try await store.save(playback: playbackState, listening: PodcastListeningState(
+            episodeID: completion.itemID, completedAt: now,
+            lastRevisionID: completion.revisionID, updatedAt: now
+        ))
     }
 
     @discardableResult

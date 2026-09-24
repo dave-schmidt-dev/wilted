@@ -6365,6 +6365,274 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertNotNil(model.playbackError)
     }
 
+    func testCanSelectPreviousEpisodeIsFalseWhenQueuedPredecessorsMediaIsMissing() {
+        let root = temporaryDirectory("can-select-previous-media-missing")
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let missingID = "item-" + String(repeating: "1", count: 64)
+        let currentID = "item-" + String(repeating: "2", count: 64)
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: root,
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        let missing = WiltedMacEpisode(
+            id: missingID, title: "Missing", feedTitle: "Fixtures", summary: "Fixture",
+            artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 100), durationSeconds: 600,
+            playbackSeconds: 0, downloadState: .completed,
+            preparationState: .prepared(summary: "Ready · transcript synced"),
+            isReadyMediaAvailable: false
+        )
+        let current = WiltedMacEpisode(
+            id: currentID, title: "Current", feedTitle: "Fixtures", summary: "Fixture",
+            artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 200), durationSeconds: 600,
+            playbackSeconds: 12, downloadState: .completed,
+            preparationState: .prepared(summary: "Ready · transcript synced")
+        )
+        model.installEpisodeForTesting(missing)
+        model.installPlaybackStateForTesting(
+            episode: current, isPlaying: true, position: 12, duration: 600,
+            queue: [missingID, currentID]
+        )
+
+        XCTAssertFalse(model.canSelectPreviousEpisode,
+                       "the queued predecessor's media is missing, so selecting it must be disallowed")
+    }
+
+    func testManualPreviousWithABCSkipsUnpreparedBAndAdvancesToA() async throws {
+        let directory = temporaryDirectory("manual-skip-abc-previous")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/manual-skip-abc-prev.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let firstEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/manual-skip-abc-prev-1.mp3"))
+        let secondEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/manual-skip-abc-prev-2.mp3"))
+        let thirdEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/manual-skip-abc-prev-3.mp3"))
+        let firstID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "manual-skip-abc-prev-1", enclosureURL: firstEnclosure
+        )
+        let secondID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "manual-skip-abc-prev-2", enclosureURL: secondEnclosure
+        )
+        let thirdID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "manual-skip-abc-prev-3", enclosureURL: thirdEnclosure
+        )
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Manual Skip ABC Prev", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    firstID, guid: "manual-skip-abc-prev-1", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: firstEnclosure, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                try await Self.addDownloadedUnpreparedEpisode(
+                    secondID, guid: "manual-skip-abc-prev-2", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: secondEnclosure, publishedAt: created.date.addingTimeInterval(60),
+                    directory: directory, store: store, created: created
+                )
+                try await Self.addReadyEpisode(
+                    thirdID, guid: "manual-skip-abc-prev-3", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: thirdEnclosure, publishedAt: created.date.addingTimeInterval(120),
+                    directory: directory, store: store, created: created
+                )
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.libraryOrder = .oldest
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let first = try XCTUnwrap(model.episodes.first { $0.id == firstID.rawValue })
+        model.playEpisode(first)
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+        XCTAssertEqual(model.currentEpisode?.id, firstID.rawValue)
+
+        let second = try XCTUnwrap(model.episodes.first { $0.id == secondID.rawValue })
+        let third = try XCTUnwrap(model.episodes.first { $0.id == thirdID.rawValue })
+        model.addEpisodeToUpNext(second)
+        model.addEpisodeToUpNext(third)
+        try await settle(model)
+
+        XCTAssertTrue(model.canSelectNextEpisode)
+        XCTAssertFalse(model.canSelectPreviousEpisode, "no predecessor before first episode")
+
+        model.nextPlayback()
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+
+        XCTAssertEqual(model.currentEpisode?.id, thirdID.rawValue,
+                       "Next must skip unprepared B and advance to C")
+        XCTAssertTrue(model.canSelectPreviousEpisode,
+                      "first is ready and queued before unprepared B, so Previous must be enabled")
+
+        model.previousPlayback()
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+
+        XCTAssertEqual(model.currentEpisode?.id, firstID.rawValue,
+                       "manual Previous must skip unprepared B and select A")
+        XCTAssertNil(model.playbackError)
+        XCTAssertFalse(model.canSelectPreviousEpisode, "back at first episode, Previous must be disabled")
+
+        model.previousPlayback()
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+        XCTAssertEqual(model.currentEpisode?.id, firstID.rawValue)
+        XCTAssertNil(model.playbackError)
+    }
+
+    func testManualAndRemotePreviousWithABCSkipsRetiredReadyBAndAdvancesToA() async throws {
+        let directory = temporaryDirectory("manual-skip-abc-retired-prev")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/manual-skip-abc-retired-prev.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let firstEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/manual-skip-abc-retired-prev-1.mp3"))
+        let secondEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/manual-skip-abc-retired-prev-2.mp3"))
+        let thirdEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/manual-skip-abc-retired-prev-3.mp3"))
+        let firstID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "manual-skip-abc-retired-prev-1", enclosureURL: firstEnclosure
+        )
+        let secondID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "manual-skip-abc-retired-prev-2", enclosureURL: secondEnclosure
+        )
+        let thirdID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "manual-skip-abc-retired-prev-3", enclosureURL: thirdEnclosure
+        )
+
+        let sink = ModelTestNowPlayingSink()
+        let commands = ModelTestRemoteCommandSource()
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Manual Skip ABC Retired Prev", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    firstID, guid: "manual-skip-abc-retired-prev-1", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: firstEnclosure, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                try await Self.addReadyEpisode(
+                    secondID, guid: "manual-skip-abc-retired-prev-2", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: secondEnclosure, publishedAt: created.date.addingTimeInterval(60),
+                    directory: directory, store: store, created: created
+                )
+                _ = try await store.retireEpisode(secondID)
+                try await Self.addReadyEpisode(
+                    thirdID, guid: "manual-skip-abc-retired-prev-3", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: thirdEnclosure, publishedAt: created.date.addingTimeInterval(120),
+                    directory: directory, store: store, created: created
+                )
+                return store
+            }, nowPlayingSink: sink, remoteCommandSource: commands,
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.libraryOrder = .oldest
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let first = try XCTUnwrap(model.episodes.first { $0.id == firstID.rawValue })
+        let second = try XCTUnwrap(model.episodes.first { $0.id == secondID.rawValue })
+        let third = try XCTUnwrap(model.episodes.first { $0.id == thirdID.rawValue })
+
+        XCTAssertTrue(model.canPlayEpisode(first))
+        XCTAssertFalse(model.canPlayEpisode(second), "retired ready B must not be playable")
+        XCTAssertTrue(model.canPlayEpisode(third))
+
+        model.playEpisode(first)
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+        XCTAssertEqual(model.currentEpisode?.id, firstID.rawValue)
+
+        model.addEpisodeToUpNext(second)
+        model.addEpisodeToUpNext(third)
+        try await settle(model)
+
+        // Advance to third
+        model.nextPlayback()
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+        XCTAssertEqual(model.currentEpisode?.id, thirdID.rawValue)
+
+        XCTAssertTrue(model.canSelectPreviousEpisode,
+                      "first is ready and queued before retired B, so Previous must be enabled")
+        model.publishNowPlaying(force: true)
+        XCTAssertEqual(commands.availability.last?.hasPrevious, true)
+
+        // Remote Previous command must skip retired ready B and select first
+        commands.send(.previousTrack)
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+
+        XCTAssertEqual(model.currentEpisode?.id, firstID.rawValue,
+                       "remote Previous must skip retired B and select first")
+        XCTAssertNil(model.playbackError)
+
+        // B must remain retired: Previous must not silently unretire it
+        let retiredSecond = try XCTUnwrap(model.episodes.first { $0.id == secondID.rawValue })
+        XCTAssertNotNil(retiredSecond.retiredAt, "Previous must not silently unretire B")
+
+        // When only retired B is queued before current, Previous must be disabled
+        model.nextPlayback()
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+        XCTAssertEqual(model.currentEpisode?.id, thirdID.rawValue)
+
+        model.removeEpisodeFromUpNext(first.id)
+        try await settle(model)
+        XCTAssertEqual(model.podcastQueueIDs, [second.id, third.id])
+        XCTAssertFalse(model.canSelectPreviousEpisode,
+                       "only retired B is before current, so Previous must be disabled")
+        model.publishNowPlaying(force: true)
+        XCTAssertEqual(commands.availability.last?.hasPrevious, false)
+
+        commands.send(.previousTrack)
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+        XCTAssertEqual(model.currentEpisode?.id, thirdID.rawValue)
+
+        model.previousPlayback()
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+        XCTAssertEqual(model.currentEpisode?.id, thirdID.rawValue)
+
+        // Restoring B must make it eligible again
+        model.restoreSkippedFeedEpisode(second)
+        for _ in 0..<50 {
+            if model.episodes.first(where: { $0.id == secondID.rawValue })?.retiredAt == nil {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try await settle(model)
+
+        let restoredSecond = try XCTUnwrap(model.episodes.first { $0.id == secondID.rawValue })
+        XCTAssertNil(restoredSecond.retiredAt)
+        XCTAssertNil(restoredSecond.removalKind)
+        XCTAssertTrue(model.canPlayEpisode(restoredSecond), "restored B must be playable again")
+        XCTAssertTrue(model.canSelectPreviousEpisode, "restoring B makes Previous enabled again")
+        model.publishNowPlaying(force: true)
+        XCTAssertEqual(commands.availability.last?.hasPrevious, true)
+
+        model.previousPlayback()
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+        XCTAssertEqual(model.currentEpisode?.id, secondID.rawValue, "manual Previous now selects restored B")
+    }
+
     /// In production, `PlaybackController`'s own `podcastCompletionHandler`
     /// retires the finished episode before `handlePodcastPlaybackFinished`
     /// ever runs its successor search -- the two fire from separate places in
@@ -6982,10 +7250,11 @@ final class WiltedMacModelTests: XCTestCase {
 
         let saved = episode("saved", position: 12)
         let fresh = episode("fresh", position: 0)
-        let finished = episode("finished", position: 99)
+        let nearFinished = episode("near-finished", position: 99)
         XCTAssertTrue(model.isEpisodeInProgress(saved))
         XCTAssertFalse(model.isEpisodeInProgress(fresh))
-        XCTAssertFalse(model.isEpisodeInProgress(finished))
+        XCTAssertTrue(model.isEpisodeInProgress(nearFinished),
+                      "a near-end position remains resumable until a durable completion exists")
 
         model.installPlaybackStateForTesting(
             episode: episode("live", position: 0), isPlaying: true, position: 0, duration: 100
@@ -7037,13 +7306,13 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(model.currentPlaybackShareText, "An episode — A show")
     }
 
-    /// The Menu row's Played state asks the model's one finished predicate,
-    /// including the boundary cases where surfaces used to disagree.
-    func testFinishedHasOneDefinitionForTheMenuRow() throws {
+    /// The Menu row says Played only when the durable listening record says
+    /// completed. Near-end progress is still a playable, explicit-completion row.
+    func testPlayedHasOneDurableDefinitionForTheMenuRow() throws {
         let cases: [(position: TimeInterval, duration: TimeInterval?, isPlayed: Bool, finished: Bool)] = [
             (0, 100, true, true),       // finished by hand, never reached the end
-            (96, 100, false, true),     // stopped seconds short of the end
-            (95, 100, false, true),     // the 95% boundary itself
+            (96, 100, false, false),    // no durable completion at 96%
+            (95, 100, false, false),    // no durable completion at the boundary
             (94.9, 100, false, false),
             (0, nil, false, false),
             (0, 0, false, false),
@@ -7051,7 +7320,7 @@ final class WiltedMacModelTests: XCTestCase {
         ]
         for (position, duration, isPlayed, expected) in cases {
             XCTAssertEqual(
-                WiltedMacModel.isFinished(position: position, duration: duration, isPlayed: isPlayed),
+                WiltedMacModel.isFinished(isPlayed: isPlayed),
                 expected,
                 "position \(position), duration \(String(describing: duration)), played \(isPlayed)"
             )
@@ -7067,7 +7336,7 @@ final class WiltedMacModelTests: XCTestCase {
             )
         }
         let handFinished = episode("finished-by-hand", position: 0, played: true)
-        let stoppedShort = episode("finished-short", position: 96, played: false)
+        let stoppedShort = episode("stopped-short", position: 96, played: false)
         let stillGoing = episode("still-going", position: 50, played: false)
         let notStarted = episode("not-started", position: 0, played: false)
         for value in [handFinished, stoppedShort, stillGoing, notStarted] {
@@ -7075,25 +7344,24 @@ final class WiltedMacModelTests: XCTestCase {
             model.keepEpisode(value)
         }
 
-        // The Menu row asks the model's one predicate before it offers Play:
-        // a finished episode says "Played" rather than waiting to be played
-        // again. The threshold itself may not be duplicated in the view.
+        // The Menu row asks the model's one predicate before it offers Play.
+        // A near-end row remains playable until the listening record exists.
         XCTAssertTrue(model.isEpisodeFinished(handFinished),
                       "finished by hand never reached the end")
-        XCTAssertTrue(model.isEpisodeFinished(stoppedShort))
+        XCTAssertFalse(model.isEpisodeFinished(stoppedShort))
         XCTAssertFalse(model.isEpisodeFinished(stillGoing))
         XCTAssertFalse(model.isEpisodeFinished(notStarted))
 
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let modelSource = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacModel.swift"))
-        XCTAssertTrue(modelSource.contains("Self.isFinished("),
+        XCTAssertTrue(modelSource.contains("Self.isFinished(isPlayed:"),
                       "the row's Played state reads the model's one definition")
         XCTAssertEqual(modelSource.components(separatedBy: "func isFinished").count - 1, 1,
                        "exactly one implementation of the finished predicate")
         let source = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
         XCTAssertTrue(source.contains("model.isEpisodeFinished(episode)"),
                       "the Menu row must read the model's one definition")
-        XCTAssertFalse(source.contains("0.95"), "the threshold must live in one place")
+        XCTAssertFalse(source.contains("0.95"), "the view must not infer Played from progress")
     }
 
     /// The retry message names the surface that holds the restore control:
@@ -7490,7 +7758,7 @@ final class WiltedMacModelTests: XCTestCase {
         model.skipEpisode(episode)
 
         XCTAssertNil(model.undoableSkip)
-        XCTAssertEqual(model.podcastOperationMessage, "Untouched was not started, so nothing was skipped.")
+        XCTAssertEqual(model.podcastOperationMessage, "Untouched was not started, so nothing was marked completed.")
         guard let stored = model.episodes.first(where: { $0.id == episode.id }) else {
             return XCTFail("the skipped row must stay exactly where it was")
         }
@@ -8221,29 +8489,30 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertTrue(view.contains("case .failed = episode.preparationState"))
     }
 
-    // MARK: Menu row retirement (Task 0.5)
+    // MARK: Menu row completion
 
-    /// The row's one retirement control reads the model's label: "Completed"
-    /// once an episode was started, "Skip" when pressing it can only pass the
-    /// episode on. Both labels press the reversible `skipEpisode`.
-    func testMenuRowRetirementLabelIsCompletedOnlyOnceStarted() {
+    /// A Larder row exposes explicit completion only after it has started and
+    /// before the durable listening record exists.
+    func testMenuRowCompletionEligibilityUsesStartedAndDurablePlayedState() {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let started = retirementEpisode("retire-started", position: 12)
         let unstarted = retirementEpisode("retire-unstarted", position: 0)
+        var played = retirementEpisode("retire-played", position: 99)
+        played.isPlayed = true
         model.installEpisodeForTesting(started)
         model.installEpisodeForTesting(unstarted)
+        model.installEpisodeForTesting(played)
 
-        XCTAssertEqual(model.menuRowRetirementLabel(started), "Completed",
-                       "a saved position means the press finishes a record")
-        XCTAssertEqual(model.menuRowRetirementLabel(unstarted), "Skip")
         XCTAssertTrue(model.hasStartedEpisode(started))
         XCTAssertFalse(model.hasStartedEpisode(unstarted))
+        XCTAssertTrue(model.hasStartedEpisode(played))
+        XCTAssertTrue(played.isPlayed, "a durable record suppresses duplicate completion iconography")
 
         let playing = retirementEpisode("retire-playing", position: 0)
         model.installEpisodeForTesting(playing)
         model.installPlaybackStateForTesting(episode: playing, isPlaying: true, position: 0, duration: 600)
-        XCTAssertEqual(model.menuRowRetirementLabel(playing), "Completed",
-                       "the episode playing right now counts as started")
+        XCTAssertTrue(model.hasStartedEpisode(playing),
+                      "the episode playing right now counts as started")
     }
 
     private func retirementEpisode(_ id: String, position: TimeInterval) -> WiltedMacEpisode {
@@ -8255,9 +8524,9 @@ final class WiltedMacModelTests: XCTestCase {
         )
     }
 
-    /// The started predicate is declared once, in the model, and the view
-    /// reads the model's label rather than restating the comparison.
-    func testTheStartedPredicateLivesOnceInTheModelAndTheViewReadsIt() throws {
+    /// The started predicate is declared once in the model, while the view
+    /// uses the durable Played flag to avoid a duplicate completion control.
+    func testTheCompletionControlUsesModelStartedAndPlayedState() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let modelSource = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacModel.swift"))
         XCTAssertEqual(modelSource.components(separatedBy: "playbackSeconds > 0").count - 1, 1,
@@ -8265,9 +8534,16 @@ final class WiltedMacModelTests: XCTestCase {
         let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
         XCTAssertEqual(view.components(separatedBy: "playbackSeconds > 0").count - 1, 0,
                        "the view must not restate the predicate")
-        XCTAssertTrue(view.contains("model.menuRowRetirementLabel(episode)"))
+        XCTAssertTrue(view.contains("model.hasStartedEpisode(episode) && !episode.isPlayed"))
         XCTAssertTrue(view.contains("model.skipEpisode(episode)"))
-        XCTAssertTrue(view.contains("wilted-menu-skip-\\(episode.id)"))
+        XCTAssertTrue(view.contains("wilted-menu-mark-completed-\\(episode.id)"))
+        XCTAssertTrue(view.contains("Remove from Larder"),
+                      "an anomalous played row still has an explicit retirement path")
+        XCTAssertFalse(modelSource.contains("menuRowRetirementLabel"))
+        XCTAssertFalse(view.contains("replacingOccurrences(of: \"could not be skipped\""),
+                       "the view must present the model's completion message verbatim")
+        XCTAssertTrue(modelSource.contains("Marked \\(episode.title) completed. Undo completion restores it."))
+        XCTAssertTrue(modelSource.contains("could not be marked completed."))
         XCTAssertEqual(view.components(separatedBy: "model.removeEpisode(").count - 1, 0,
                        "the destructive path gets no row surface")
     }

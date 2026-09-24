@@ -904,13 +904,13 @@ private struct WiltedMacPodcastOperationMessage: View {
                     .accessibilityLabel("Undo removing \(undoable.title)")
                 }
                 if let skipped = model.undoableSkip {
-                    // The reversible Skip: nothing was deleted, so this is a
-                    // local restore that works with no network.
-                    Button("Undo Skip") {
+                    // Completion can be reversed locally without consulting
+                    // the feed or deleting the episode's media.
+                    Button("Undo completion") {
                         model.undoSkipEpisode(skipped)
                     }
                     .accessibilityIdentifier("wilted-podcast-undo-skip")
-                    .accessibilityLabel("Undo skipping \(skipped.title)")
+                    .accessibilityLabel("Undo completion of \(skipped.title)")
                 }
             }
         }
@@ -1511,32 +1511,26 @@ private struct WiltedMacMenuView: View {
             } else {
                 nextStepControl(episode, group: group)
             }
-            // One retirement control per row. Skip is the reversible one and
-            // keeps the media; the destructive path gets no row surface. The
-            // label reports the model's one started predicate, so the reader
-            // is told whether this finishes a record or just passes the
-            // episode on. An unstarted episode stays enabled on purpose:
-            // pressing it explains that there was nothing to skip.
-            let retirementLabel = model.menuRowRetirementLabel(episode)
-            // The label's own predicate picks the symbol, so rewording the
-            // label cannot swap the icon.
-            let finishesRecord = model.hasStartedEpisode(episode)
+            // Completion is available only after listening has started and
+            // before its durable completion record exists. Unstarted and
+            // already completed rows keep this slot empty.
+            let canMarkCompleted = model.hasStartedEpisode(episode) && !episode.isPlayed
             HStack(spacing: 2) {
-                Button { model.skipEpisode(episode) } label: {
-                    Label(
-                        retirementLabel,
-                        systemImage: finishesRecord ? "checkmark" : "forward.end.fill"
-                    )
+                if canMarkCompleted {
+                    Button { model.skipEpisode(episode) } label: {
+                        Label("Mark completed", systemImage: "checkmark")
+                    }
+                        .labelStyle(.iconOnly)
+                        .help("Mark completed")
+                        .accessibilityLabel("Mark \(episode.title) completed")
+                        .accessibilityIdentifier("wilted-menu-mark-completed-\(episode.id)")
+                } else {
+                    Color.clear
+                        .frame(width: 28, height: 28)
+                        .accessibilityHidden(true)
                 }
-                    .labelStyle(.iconOnly)
-                    .help(finishesRecord ? "Mark completed" : "Skip")
-                    .accessibilityLabel("\(retirementLabel) \(episode.title)")
-                    .accessibilityIdentifier("wilted-menu-skip-\(episode.id)")
-                // Remove and Skip/Completed are different acts. Remove takes the
-                // entry off the durable queue and leaves every record, the media
-                // and the listening state exactly where they are, so the episode
-                // returns to Feeds; Skip retires it. The two get separate slots
-                // on purpose.
+                // Keep Remove in its existing trailing slot when the completion
+                // control is hidden.
                 Button { model.removeEpisodeFromUpNext(episode.id) } label: {
                     Label("Remove from Larder", systemImage: "minus.circle")
                 }
