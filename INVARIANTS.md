@@ -69,13 +69,13 @@ rationale: SwiftUI presentation and interaction invoke domain operations; produc
 area: ["WiltedKit/**", "WiltediOS/**", "WiltedMac/**"]
 gate_test: test-gate.sh
 threshold: 3
-rationale: Playback state carries revision ID, position, completion, session epoch, explicit restart/rewind intent, and update time. Merge rules preserve intentional rewinds/restarts and reject incompatible revisions.
+rationale: Playback state carries revision ID, position, completion, session epoch, explicit restart/rewind intent, and update time. Merge rules preserve intentional rewinds/restarts and reject incompatible revisions. After an explicit rewind or restart, later Mac and iPhone checkpoints retain that intent for the session; compatible pending listener playback rebases against fetched server state before retry.
 
 ### W-INV-007 — CloudKit transfer with local cache
 area: ["WiltedKit/**", "WiltedMac/**", "WiltediOS/**", "CloudSync/**", "Listener/**"]
 gate_test: test-gate.sh
 threshold: 3
-rationale: CloudKit is a transfer service, not the source of truth or a real-time channel. Both apps retain local state; completed Mac revisions automatically publish metadata plus deterministic bounded byte chunks, catalog fetches never stage audio, and iOS explicitly fetches, validates, and atomically reconstructs a selected revision before caching it for offline playback. Persisted zone changes/deletions survive relaunch, every typed account change quarantines local work until explicit review resumes the current engine, and an operation generation prevents pre-quarantine fetch/send completions from committing afterward.
+rationale: CloudKit is a transfer service, not the source of truth or a real-time channel. Both apps retain local state; completed Mac revisions automatically publish metadata plus deterministic bounded byte chunks, catalog fetches never stage audio, and iOS explicitly fetches, validates, and atomically reconstructs a selected revision before caching it for offline playback. Persisted zone changes/deletions survive relaunch, but engine tokens advance only after corresponding local data or send acknowledgements commit; pending chunks gate publication only for their own revision. Every typed account change quarantines local work until explicit review resumes the current engine, and an operation generation prevents pre-quarantine fetch/send completions from committing afterward.
 
 ### W-INV-008 — Cross-target fixtures are authoritative
 area: ["WiltedKit/**", "WiltedMacTests/**", "WiltediOSTests/**", "CloudSync/**", "Listener/**"]
@@ -93,7 +93,7 @@ rationale: Native Mac daily use is implemented and reaches Phase 3 Mac owner acc
 area: ["Shared/**", "WiltedMac/**", "WiltediOS/**"]
 gate_test: test-gate.sh
 threshold: 3
-rationale: Wilted preserves Zero Delta structure, status semantics, native typography, accessibility, and flat surfaces while limiting the lettuce motif to a restrained identity mark and accent. Navigation stays literal, color never carries state alone, and light/dark behavior is snapshot- and contrast-tested.
+rationale: Wilted preserves Zero Delta structure, status semantics, native typography, accessibility, and flat surfaces while limiting the lettuce motif to a restrained identity mark and accent. Navigation stays literal, color never carries state alone, and light/dark behavior is snapshot- and contrast-tested. Larder's Add article action remains accessible after its last article is removed and when a search has no article matches.
 
 ### W-INV-011 — Episode state dimensions stay orthogonal and locally durable
 area: ["Producer/**"]

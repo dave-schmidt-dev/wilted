@@ -104,6 +104,8 @@ public actor ListenerRepository: SyncRepository {
         var tombstones = current.tombstones
         var pending = current.pendingChanges
         var conflicts = current.conflictedRecordIDs
+        var protected = current.protectedRecordIDs
+        var conflictRecords = current.conflictServerRecords
         var quarantinedIDs: Set<WiltedRecordID> = []
         for id in deleted {
             records.removeValue(forKey: id)
@@ -144,10 +146,28 @@ public actor ListenerRepository: SyncRepository {
                     || current.protectedRecordIDs.contains(incoming.id)
                 if !preservesLocalCatalogRecord { records[incoming.id] = incoming }
             case .playbackState:
-                // An unsent local playback write owns this record until the existing
-                // send/acknowledgement or conflict path resolves it. Comparing the
-                // pending write to a fetched tag would manufacture a false conflict.
-                guard !pendingIDs.contains(incoming.id) else { continue }
+                if let pendingIndex = pending.firstIndex(where: { $0.recordID == incoming.id }),
+                   let local = pending[pendingIndex].record {
+                    switch try rebasePlayback(local: pending[pendingIndex], against: incoming) {
+                    case let .local(rebased):
+                        pending[pendingIndex] = rebased
+                        records[incoming.id] = rebased.record
+                        conflicts.remove(incoming.id)
+                        conflictRecords.removeValue(forKey: incoming.id)
+                    case .remote:
+                        pending.remove(at: pendingIndex)
+                        records[incoming.id] = incoming
+                        protected.remove(incoming.id)
+                        conflicts.remove(incoming.id)
+                        conflictRecords.removeValue(forKey: incoming.id)
+                    case .unresolved:
+                        records[incoming.id] = local
+                        protected.insert(incoming.id)
+                        conflicts.insert(incoming.id)
+                        conflictRecords[incoming.id] = incoming
+                    }
+                    continue
+                }
                 if let stored = records[incoming.id] {
                     records[incoming.id] = try mergedPlaybackEnvelope(
                         current: stored,
@@ -163,8 +183,8 @@ public actor ListenerRepository: SyncRepository {
         let next = SyncRepositoryState(records: Array(records.values).sorted { $0.id.description < $1.id.description },
                                        engineState: effectiveEngineState, pendingChanges: pending,
                                        tombstones: tombstones, remoteAcknowledgedRecordIDs: current.remoteAcknowledgedRecordIDs.union(acknowledgedDeletes).union(fetchedIDs),
-                                       protectedRecordIDs: current.protectedRecordIDs.subtracting(acknowledgedDeletes), conflictedRecordIDs: conflicts.subtracting(acknowledgedDeletes.subtracting(quarantinedIDs)),
-                                       conflictServerRecords: current.conflictServerRecords,
+                                       protectedRecordIDs: protected.subtracting(acknowledgedDeletes), conflictedRecordIDs: conflicts.subtracting(acknowledgedDeletes.subtracting(quarantinedIDs)),
+                                       conflictServerRecords: conflictRecords,
                                        accountOwnerToken: current.accountOwnerToken)
         try persist(next)
         current = next
@@ -246,7 +266,10 @@ public actor ListenerRepository: SyncRepository {
         let currentByID = Dictionary(current.pendingChanges.map { ($0.recordID, $0) }, uniquingKeysWith: { first, _ in first })
         let applicableIDs = Set(sentByID.compactMap { id, change in currentByID[id] == change ? id : nil })
         let acknowledged = Set(result.acknowledgedRecordIDs).intersection(applicableIDs)
-        let failures = result.failures.filter { applicableIDs.contains($0.recordID) }
+        let failures = result.failures.filter { failure in
+            applicableIDs.contains(failure.recordID)
+                || (failure.disposition == .conflict && currentByID[failure.recordID] != nil)
+        }
         let terminalFailures = Set(failures.filter { $0.disposition == .terminal }.map(\.recordID))
         let effectiveEngineState = result.engineState ?? current.engineState
         guard acknowledged.isEmpty && failures.isEmpty || effectiveEngineState != nil else {
@@ -262,7 +285,7 @@ public actor ListenerRepository: SyncRepository {
                 }
             }
         }
-        let pending = current.pendingChanges.filter { !acknowledged.contains($0.recordID) && !terminalFailures.contains($0.recordID) }
+        var pending = current.pendingChanges.filter { !acknowledged.contains($0.recordID) && !terminalFailures.contains($0.recordID) }
         var records = Dictionary(uniqueKeysWithValues: current.records.map { ($0.id, $0) })
         for envelope in result.serverEnvelopes where acknowledged.contains(envelope.id) {
             if envelope.id.recordType == .playbackState, let stored = records[envelope.id] {
@@ -273,11 +296,36 @@ public actor ListenerRepository: SyncRepository {
         }
         var conflicts = current.conflictedRecordIDs
         var conflictRecords = current.conflictServerRecords
+        var protected = current.protectedRecordIDs
         conflicts.formUnion(terminalFailures)
         for failure in failures {
             if failure.disposition == .conflict {
-                conflicts.insert(failure.recordID)
-                if let server = failure.serverRecord { conflictRecords[failure.recordID] = server }
+                guard failure.recordID.recordType == .playbackState,
+                      let server = failure.serverRecord,
+                      let pendingIndex = pending.firstIndex(where: { $0.recordID == failure.recordID }) else {
+                    conflicts.insert(failure.recordID)
+                    if let server = failure.serverRecord { conflictRecords[failure.recordID] = server }
+                    continue
+                }
+                // A subsequent enqueue can replace the sent write before this
+                // acknowledgement arrives. Rebase that current causal state instead
+                // of parking it as a conflict for an obsolete sent payload.
+                switch try rebasePlayback(local: pending[pendingIndex], against: server) {
+                case let .local(rebased):
+                    pending[pendingIndex] = rebased
+                    records[failure.recordID] = rebased.record
+                    conflicts.remove(failure.recordID)
+                    conflictRecords.removeValue(forKey: failure.recordID)
+                case .remote:
+                    pending.remove(at: pendingIndex)
+                    records[failure.recordID] = server
+                    protected.remove(failure.recordID)
+                    conflicts.remove(failure.recordID)
+                    conflictRecords.removeValue(forKey: failure.recordID)
+                case .unresolved:
+                    conflicts.insert(failure.recordID)
+                    conflictRecords[failure.recordID] = server
+                }
             }
         }
         var retainedConflictRecords = conflictRecords
@@ -285,7 +333,7 @@ public actor ListenerRepository: SyncRepository {
         let next = SyncRepositoryState(records: Array(records.values).sorted { $0.id.description < $1.id.description }, engineState: effectiveEngineState,
                                        pendingChanges: pending, tombstones: current.tombstones,
                                        remoteAcknowledgedRecordIDs: current.remoteAcknowledgedRecordIDs.union(acknowledged),
-                                       protectedRecordIDs: current.protectedRecordIDs.subtracting(acknowledged), conflictedRecordIDs: conflicts.subtracting(acknowledged),
+                                       protectedRecordIDs: protected.subtracting(acknowledged), conflictedRecordIDs: conflicts.subtracting(acknowledged),
                                        conflictServerRecords: retainedConflictRecords,
                                        accountOwnerToken: current.accountOwnerToken)
         try persist(next)
@@ -366,6 +414,43 @@ public actor ListenerRepository: SyncRepository {
             fields: winner.fields,
             sidecar: incomingEnvelope.sidecar
         )
+    }
+
+    private enum PlaybackRebase {
+        case local(SyncPendingChange)
+        case remote
+        case unresolved
+    }
+
+    /// Rebuilds a pending playback write against the server version that supplied the
+    /// current CloudKit system fields. Causal ordering chooses the payload; the server
+    /// always supplies the sidecar used by the next save attempt.
+    private func rebasePlayback(
+        local change: SyncPendingChange,
+        against server: WiltedRecordEnvelope
+    ) throws -> PlaybackRebase {
+        guard let local = change.record else { return .unresolved }
+        let codec = WiltedRecordCodec()
+        let localState = try codec.decodePlaybackRecord(local).value
+        let serverState = try codec.decodePlaybackRecord(server).value
+        let merge = mergePlayback(current: serverState, incoming: localState, changeTagMatches: true)
+        if merge.acceptedStateIsIncoming {
+            let rebased = try WiltedRecordEnvelope(
+                id: local.id,
+                schemaVersion: local.schemaVersion,
+                fields: local.fields,
+                sidecar: server.sidecar
+            )
+            return .local(try SyncPendingChange(operation: change.operation, recordID: change.recordID, record: rebased))
+        }
+        switch merge.reason {
+        case .incompatibleItem, .incompatibleRevision:
+            return .unresolved
+        case .forwardProgress, .explicitIntentNewSession, .staleOrdinaryProgressAcrossSessions,
+             .staleSequence, .explicitIntentRequiresNewSession,
+             .staleChangeTag, .backwardProgress, .completionCannotBeReversed:
+            return .remote
+        }
     }
 
     private func persist(_ state: SyncRepositoryState) throws { try atomicWrite(JSONEncoder().encode(state), to: stateURL) }

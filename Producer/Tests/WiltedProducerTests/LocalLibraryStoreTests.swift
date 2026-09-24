@@ -1902,6 +1902,52 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertEqual(readUpdatedListening, updatedListening, "an existing listening row updates in place rather than duplicating")
     }
 
+    /// A started Larder row is both a finished-listening fact and a retirement.
+    /// The paired transitions must never leave Feeds an active completed row,
+    /// and a stale Undo Skip must not undo a later dismissal.
+    func testCompletedLarderEpisodeRetiresAndUndoRestoresOnlyThatRetirement() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let (feed, episode) = try podcastValues()
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(episode: episode)
+        let completedAt = Timestamp(Date(timeIntervalSince1970: 1_700_003_000))
+        let listening = PodcastListeningState(
+            episodeID: episode.itemID, completedAt: completedAt,
+            lastRevisionID: nil, updatedAt: completedAt
+        )
+
+        let didCompleteAndRetire = try await store.completeAndRetireEpisode(listening: listening, at: completedAt)
+        let completedListening = try await store.listeningState(for: episode.itemID)
+        let completedRemovalKind = try await store.removalKind(for: episode.itemID)
+        let completedRetiredAt = try await store.retiredAt(for: episode.itemID)
+        XCTAssertTrue(didCompleteAndRetire)
+        XCTAssertEqual(completedListening, listening)
+        XCTAssertEqual(completedRemovalKind, .retired)
+        XCTAssertEqual(completedRetiredAt, completedAt)
+
+        let restoredAt = Timestamp(Date(timeIntervalSince1970: 1_700_003_100))
+        let didUndo = try await store.undoCompletedAndRetiredEpisode(episode.itemID, updatedAt: restoredAt)
+        let restoredRemovalKind = try await store.removalKind(for: episode.itemID)
+        let restoredListening = try await store.listeningState(for: episode.itemID)
+        XCTAssertTrue(didUndo)
+        XCTAssertNil(restoredRemovalKind)
+        XCTAssertNil(restoredListening?.completedAt)
+        XCTAssertNil(restoredListening?.lastRevisionID)
+        XCTAssertEqual(restoredListening?.updatedAt, restoredAt)
+
+        let didRetireAgain = try await store.completeAndRetireEpisode(listening: listening, at: completedAt)
+        let didDismiss = try await store.dismissPodcastEpisode(episode.itemID)
+        let didUndoDismissal = try await store.undoCompletedAndRetiredEpisode(episode.itemID)
+        let dismissedRemovalKind = try await store.removalKind(for: episode.itemID)
+        let dismissedListening = try await store.listeningState(for: episode.itemID)
+        XCTAssertTrue(didRetireAgain)
+        XCTAssertTrue(didDismiss)
+        XCTAssertFalse(didUndoDismissal)
+        XCTAssertEqual(dismissedRemovalKind, .dismissed)
+        XCTAssertNotNil(dismissedListening?.completedAt)
+    }
+
     /// `retireCompletedEpisodesMissingRetirement()` is the bootstrap sweep that
     /// heals pre-Phase-5 data: a finished episode with no `retiredAt` gets one,
     /// but only when its listening fact matches the *current* ready revision --
@@ -1990,6 +2036,81 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertNil(retiredAtBAfterSecondSweep)
     }
 
+    /// Legacy listening rows can lack `lastRevisionID`. They retire only when
+    /// the current ready revision predates completion, retaining the prepared
+    /// media and leaving a later re-download active.
+    func testRetireCompletedEpisodesMissingRetirementHandlesNilRevisionIDOnlyWhenReadyRevisionPredatesCompletion() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+
+        func makeEpisode(_ guid: String) throws -> (PodcastFeed, PodcastEpisode) {
+            let feedURL = URL(string: "https://podcasts.example.test/retire-nil-revision/\(guid)/feed.xml")!
+            let enclosureURL = URL(string: "https://podcasts.example.test/retire-nil-revision/\(guid).mp3")!
+            let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+            let feed = try PodcastFeed(itemID: feedID, canonicalURL: feedURL, title: guid, createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000)))
+            let episode = try PodcastEpisode(
+                itemID: try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: guid, enclosureURL: enclosureURL),
+                feedID: feedID, feedURL: feedURL, rssGUID: guid, title: guid,
+                enclosureURL: enclosureURL, enclosureMediaType: "audio/mpeg",
+                createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+            )
+            return (feed, episode)
+        }
+
+        let completedAt = Timestamp(Date(timeIntervalSince1970: 1_700_001_000))
+
+        let (priorFeed, priorEpisode) = try makeEpisode("ready-before-completion")
+        let priorRevision = try AudioRevision(
+            itemID: priorEpisode.itemID, revisionID: RevisionID(rawValue: "rev-nil-before"), durationSeconds: 90,
+            byteCount: 4_096, contentHash: "sha256:" + String(repeating: "e", count: 64), mediaType: "audio/mp4",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_500)), schemaVersion: 3
+        )
+        let priorMediaURL = URL(fileURLWithPath: "/tmp/retire-nil-before.m4a")
+        try await store.save(feed: priorFeed)
+        try await store.save(episode: priorEpisode)
+        try await store.finalizePodcastDownload(
+            revision: priorRevision, mediaURL: priorMediaURL,
+            download: try completedPodcastDownload(episodeID: priorEpisode.itemID, revision: priorRevision, mediaURL: priorMediaURL)
+        )
+        try await store.saveListening(PodcastListeningState(
+            episodeID: priorEpisode.itemID, completedAt: completedAt, lastRevisionID: nil, updatedAt: completedAt
+        ))
+
+        let (laterFeed, laterEpisode) = try makeEpisode("ready-after-completion")
+        let laterRevision = try AudioRevision(
+            itemID: laterEpisode.itemID, revisionID: RevisionID(rawValue: "rev-nil-after"), durationSeconds: 90,
+            byteCount: 4_096, contentHash: "sha256:" + String(repeating: "f", count: 64), mediaType: "audio/mp4",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_001_001)), schemaVersion: 3
+        )
+        let laterMediaURL = URL(fileURLWithPath: "/tmp/retire-nil-after.m4a")
+        try await store.save(feed: laterFeed)
+        try await store.save(episode: laterEpisode)
+        try await store.finalizePodcastDownload(
+            revision: laterRevision, mediaURL: laterMediaURL,
+            download: try completedPodcastDownload(episodeID: laterEpisode.itemID, revision: laterRevision, mediaURL: laterMediaURL)
+        )
+        try await store.saveListening(PodcastListeningState(
+            episodeID: laterEpisode.itemID, completedAt: completedAt, lastRevisionID: nil, updatedAt: completedAt
+        ))
+
+        try await store.retireCompletedEpisodesMissingRetirement()
+
+        let priorRemovalKind = try await store.removalKind(for: priorEpisode.itemID)
+        let priorRetiredAt = try await store.retiredAt(for: priorEpisode.itemID)
+        let priorReadyRevision = try await store.readyRevision(for: priorEpisode.itemID)
+        let laterRemovalKind = try await store.removalKind(for: laterEpisode.itemID)
+        let laterRetiredAt = try await store.retiredAt(for: laterEpisode.itemID)
+        let laterReadyRevision = try await store.readyRevision(for: laterEpisode.itemID)
+        XCTAssertEqual(priorRemovalKind, .retired)
+        XCTAssertNotNil(priorRetiredAt)
+        XCTAssertEqual(priorReadyRevision?.mediaURL, priorMediaURL,
+                       "retirement keeps the prepared file available")
+        XCTAssertNil(laterRemovalKind,
+                     "a ready revision created after a legacy completion stays active")
+        XCTAssertNil(laterRetiredAt)
+        XCTAssertEqual(laterReadyRevision?.mediaURL, laterMediaURL)
+    }
+
     /// Dismiss deletes the episode row but, since Phase 5, not the listening
     /// row -- so a restore re-inserts a fresh row with `retiredAt == nil`
     /// while the listening fact's `lastRevisionID` still points at the
@@ -2040,6 +2161,8 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertEqual(listeningAfterRestore?.completedAt, completedAt, "restore keeps the listening history intact")
         XCTAssertNil(listeningAfterRestore?.lastRevisionID,
                       "clearing this defeats the sweep's exact-match guard until a fresh completion re-sets it")
+        XCTAssertGreaterThan(try XCTUnwrap(listeningAfterRestore?.updatedAt), completedAt,
+                             "restore refreshes the listening mutation timestamp")
         let retiredAtAfterRestore = try await store.retiredAt(for: episode.itemID)
         XCTAssertNil(retiredAtAfterRestore, "the re-inserted row starts active again")
 
@@ -3654,6 +3777,64 @@ final class LocalLibraryStoreTests: XCTestCase {
         XCTAssertTrue(WorkTicketState.cancelled.isTerminal)
         XCTAssertFalse(WorkTicketState.pending.isTerminal)
         XCTAssertFalse(WorkTicketState.deferred.isTerminal)
+    }
+
+    /// A retry is a new request, but not a second durable row. Its newer
+    /// sequence atomically replaces the old terminal attempt, so an old
+    /// completion that lands late cannot reopen or overwrite the retry.
+    func testReadmittingATerminalTicketReplacesPolicyAndRejectsLateOlderWrites() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let firstAt = Timestamp(Date(timeIntervalSince1970: 1_700_005_000))
+        let retryAt = Timestamp(Date(timeIntervalSince1970: 1_700_005_100))
+        let oldSnapshot = Data("removeAds=false".utf8)
+        let newSnapshot = Data("removeAds=true".utf8)
+        let oldProcessing = Data("offPeak".utf8)
+        let newProcessing = Data("immediate".utf8)
+
+        _ = try await store.readmitWorkTicket(
+            kind: .podcastPreparation, subjectID: "episode-retry", requestSequence: 10,
+            policySnapshot: oldSnapshot, processingPolicy: oldProcessing, to: .running, at: firstAt
+        )
+        _ = try await store.applyWorkTicketTransition(
+            kind: .podcastPreparation, subjectID: "episode-retry", requestSequence: 10,
+            to: .failed, failureKind: "retryable", lastFailureMessage: "old failure", at: firstAt
+        )
+        let failedTicket = try await store.workTicket(kind: .podcastPreparation, subjectID: "episode-retry")
+        var failed = try XCTUnwrap(failedTicket)
+        failed.runID = "old-run"
+        failed.nextEligibleAt = Timestamp(firstAt.date.addingTimeInterval(60))
+        failed.resolvedItemID = "old-resolution"
+        try await store.upsertWorkTicket(failed)
+
+        let retried = try await store.readmitWorkTicket(
+            kind: .podcastPreparation, subjectID: "episode-retry", requestSequence: 11,
+            policySnapshot: newSnapshot, processingPolicy: newProcessing, to: .running, at: retryAt
+        )
+        XCTAssertEqual(retried.requestSequence, 11)
+        XCTAssertEqual(retried.state, .running)
+        XCTAssertEqual(retried.attemptCount, 2, "the retry entered running once")
+        XCTAssertEqual(retried.policySnapshot, newSnapshot)
+        XCTAssertEqual(retried.processingPolicy, newProcessing)
+        XCTAssertNil(retried.failureKind)
+        XCTAssertNil(retried.lastFailureMessage)
+        XCTAssertNil(retried.nextEligibleAt)
+        XCTAssertNil(retried.runID)
+        XCTAssertNil(retried.resolvedItemID)
+
+        let duplicateRunning = try await store.applyWorkTicketTransition(
+            kind: .podcastPreparation, subjectID: "episode-retry", requestSequence: 11,
+            to: .running, at: retryAt
+        )
+        XCTAssertEqual(duplicateRunning.attemptCount, 2, "a duplicate running write is not another attempt")
+
+        let lateOlderFailure = try await store.applyWorkTicketTransition(
+            kind: .podcastPreparation, subjectID: "episode-retry", requestSequence: 10,
+            to: .failed, failureKind: "terminal", lastFailureMessage: "late old failure", at: retryAt
+        )
+        XCTAssertEqual(lateOlderFailure, duplicateRunning, "a late older attempt is a no-op")
+        let tickets = try await store.workTickets().filter { $0.id == retried.id }
+        XCTAssertEqual(tickets, [duplicateRunning], "re-admission retains exactly one row per ticket key")
     }
 
     /// REQUIRED EMPIRICAL CHECK: establishes what this repo's SwiftData

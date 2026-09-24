@@ -56,11 +56,17 @@ final class WiltedMacPlaybackHandoffTests: XCTestCase {
 
     func testMarkingCompleteAdvancesTheWidgetToTheNextEpisode() async throws {
         let (model, sink, directory) = makeModel()
-        let first = try XCTUnwrap(model.episodes.first)
+        let fixture = try XCTUnwrap(model.episodes.first)
+        // The seeded fixture has a placeholder media file. Use a playable
+        // episode so completion exercises the controller's real handoff.
+        let first = try await addReadyEpisode(
+            after: fixture, to: model, in: directory,
+            suffix: "first", durationSeconds: 10
+        )
+        let second = try await addReadyEpisode(after: first, to: model, in: directory)
         model.playEpisode(first)
         await model.waitForPlaybackOperationForTesting()
-
-        let second = try await addReadyEpisode(after: first, to: model, in: directory)
+        XCTAssertEqual(model.currentPodcastEpisodeID, first.id)
         model.addEpisodeToUpNext(second)
         try await waitUntil { model.podcastQueueIDs.contains(second.id) }
         XCTAssertTrue(
@@ -94,21 +100,28 @@ final class WiltedMacPlaybackHandoffTests: XCTestCase {
 
     /// Adds a second ready episode through the same store the fixture model reads.
     private func addReadyEpisode(
-        after first: WiltedMacEpisode, to model: WiltedMacModel, in directory: URL
+        after first: WiltedMacEpisode, to model: WiltedMacModel, in directory: URL,
+        suffix: String = "second", durationSeconds: Int = 1
     ) async throws -> WiltedMacEpisode {
         let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
-        let storedEpisodes = try await store.podcastEpisodes()
-        let storedFirst = try XCTUnwrap(storedEpisodes.first { $0.itemID.rawValue == first.id })
-        let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/playback-handoff-second.mp3"))
+        let deadline = ContinuousClock.now + .seconds(10)
+        var maybeStoredFirst: PodcastEpisode?
+        while maybeStoredFirst == nil && ContinuousClock.now < deadline {
+            let persisted = try await store.podcastEpisodes()
+            maybeStoredFirst = persisted.first { $0.itemID.rawValue == first.id }
+            if maybeStoredFirst == nil { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        let storedFirst = try XCTUnwrap(maybeStoredFirst)
+        let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/playback-handoff-\(suffix).mp3"))
         let itemID = try ItemID.derivePodcastEpisode(
-            feedURL: storedFirst.feedURL, rssGUID: "playback-handoff-second", enclosureURL: enclosureURL
+            feedURL: storedFirst.feedURL, rssGUID: "playback-handoff-\(suffix)", enclosureURL: enclosureURL
         )
         try await store.save(episode: PodcastEpisode(
             itemID: itemID,
             feedID: storedFirst.feedID,
             feedURL: storedFirst.feedURL,
-            rssGUID: "playback-handoff-second",
-            title: "Second handoff episode",
+            rssGUID: "playback-handoff-\(suffix)",
+            title: "\(suffix.capitalized) handoff episode",
             publishedTime: storedFirst.publishedTime,
             enclosureURL: enclosureURL,
             enclosureMediaType: "audio/mpeg",
@@ -116,9 +129,11 @@ final class WiltedMacPlaybackHandoffTests: XCTestCase {
         ))
         // Real audio: the controller has to load and start this episode, and
         // a placeholder file fails that load and never reaches the widget.
-        let mediaURL = directory.appendingPathComponent("playback-handoff-second.m4a")
+        let mediaURL = directory.appendingPathComponent("playback-handoff-\(suffix).m4a")
         let assembled = try AudioAssembler().assemble(
-            pcm: (0..<44_100).map { Float(0.2 * sin(2 * Double.pi * 220 * Double($0) / 44_100)) },
+            pcm: (0..<(44_100 * durationSeconds)).map {
+                Float(0.2 * sin(2 * Double.pi * 220 * Double($0) / 44_100))
+            },
             itemID: itemID, destinationURL: mediaURL
         )
         // Downloaded and prepared in the store, not just on the model: marking
@@ -141,12 +156,12 @@ final class WiltedMacPlaybackHandoffTests: XCTestCase {
         ))
         let episode = WiltedMacEpisode(
             id: itemID.rawValue,
-            title: "Second handoff episode",
+            title: "\(suffix.capitalized) handoff episode",
             feedTitle: first.feedTitle,
             summary: "Playback handoff fixture.",
             artworkURL: nil,
             releasedAt: first.releasedAt,
-            durationSeconds: 1,
+            durationSeconds: TimeInterval(durationSeconds),
             playbackSeconds: 0,
             downloadState: .completed,
             preparationState: .prepared(summary: "Ready")

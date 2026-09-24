@@ -70,12 +70,11 @@ struct ApplePodcastsImportTests {
         #expect(bare.byteCount == nil)
     }
 
-    /// Episode identity includes the canonical feed URL, and a feed that
-    /// redirects resolves to a different one than Apple stored. Rebuilding
-    /// against the loaded feed is what keeps a rebuilt episode addressable by
-    /// the same identity a later refresh will derive.
-    @Test func rebuildsAgainstTheLoadedFeedIdentity() throws {
-        let canonical = URL(string: "https://cdn.example.test/redirected/feed.xml")!
+    /// Episode identity includes the subscribed feed URL, even if a fetch
+    /// reaches a redirected host. Rebuilding against that stable identity
+    /// keeps Apple imports addressable by later refreshes.
+    @Test func rebuildsAgainstTheSubscribedFeedIdentity() throws {
+        let canonical = URL(string: "https://podcasts.example.test/subscribed/feed.xml")!
         let feed = try PodcastFeed(
             itemID: ItemID.derivePodcastFeed(from: canonical), canonicalURL: canonical,
             title: "Show", artworkURL: URL(string: "https://cdn.example.test/art.jpg"),

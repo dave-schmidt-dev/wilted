@@ -270,7 +270,7 @@ public actor ListenerPlaybackController {
             positionSeconds: boundedPosition,
             durationSeconds: state.durationSeconds,
             completed: false,
-            intent: intent,
+            intent: newSession ? intent : state.intent,
             deviceID: state.deviceID,
             encodedCloudKitRecordSystemFields: state.encodedCloudKitRecordSystemFields,
             updatedAt: Timestamp(Date())
@@ -416,7 +416,8 @@ public actor ListenerPlaybackController {
         let sessionID = newSession ? "remote-\(state.sequence + 1)" : state.sessionID
         let updated = try PlaybackState(itemID: state.itemID, revisionID: state.revisionID, sessionID: sessionID,
                                         sequence: state.sequence + 1, positionSeconds: max(0, position),
-                                        durationSeconds: state.durationSeconds, completed: false, intent: intent,
+                                        durationSeconds: state.durationSeconds, completed: false,
+                                        intent: newSession ? intent : state.intent,
                                         deviceID: state.deviceID, encodedCloudKitRecordSystemFields: state.encodedCloudKitRecordSystemFields,
                                         updatedAt: Timestamp(Date()))
         currentState = updated
@@ -428,7 +429,7 @@ public actor ListenerPlaybackController {
     private func nextState(from state: PlaybackState, position: Double, intent: PlaybackIntent, completed: Bool) throws -> PlaybackState {
         try PlaybackState(itemID: state.itemID, revisionID: state.revisionID, sessionID: state.sessionID,
                           sequence: state.sequence + 1, positionSeconds: max(0, position), durationSeconds: state.durationSeconds,
-                          completed: completed, intent: intent, deviceID: state.deviceID,
+                          completed: completed, intent: state.intent == .progress ? intent : state.intent, deviceID: state.deviceID,
                           encodedCloudKitRecordSystemFields: state.encodedCloudKitRecordSystemFields, updatedAt: Timestamp(Date()))
     }
 

@@ -263,6 +263,12 @@ public protocol SyncTransport: SyncStatusReporting {
     func fetchChanges() async throws -> SyncFetchBatch
     func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult
 
+    /// Marks a fetched engine state durable after its batch commits to the repository.
+    func commitFetchedState(_ engineState: Data?) async throws
+
+    /// Marks a sent engine state durable after its acknowledgement commits locally.
+    func commitSentState(_ engineState: Data?) async throws
+
     /// Returns the account-operation generation captured by in-flight work.
     /// Adapters increment it when account ownership changes so stale results
     /// cannot be committed after quarantine.
@@ -271,6 +277,8 @@ public protocol SyncTransport: SyncStatusReporting {
 
 public extension SyncTransport {
     func operationGeneration() async -> UInt64 { 0 }
+    func commitFetchedState(_ engineState: Data?) async throws {}
+    func commitSentState(_ engineState: Data?) async throws {}
 }
 
 /// CloudKit-neutral local repository contract.

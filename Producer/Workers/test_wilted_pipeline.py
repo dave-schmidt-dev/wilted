@@ -1215,7 +1215,7 @@ class AdDetectionTests(unittest.TestCase):
         # to leave alone: a short news-alert episode that really is mostly
         # advertising.
         segments = [FakeSegment(index * 20.0, index * 20.0 + 20.0, f"segment {index}") for index in range(28)]
-        llm = FakeLLM(preroll_program_start_id=0)
+        llm = FakeLLM(preroll_program_start_id=-1)
         install_fake_ads(llm, detections=[FakeAd(6.72, 250.0, label="sponsor_read")])
         stream = io.StringIO()
         with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=459.0):
@@ -1229,17 +1229,34 @@ class AdDetectionTests(unittest.TestCase):
         self.assertNotIn("ads.detect.refused", stages)
         self.assertIn("ads.cut.refused", stages)
 
+    def test_an_all_programme_oversized_span_is_not_confirmed_or_cut(self):
+        # The first supplied ID means the program starts immediately. It must
+        # not confirm an oversized detection or let it bypass the size ceiling.
+        segments = [FakeSegment(index * 20.0, index * 20.0 + 20.0, f"segment {index}") for index in range(28)]
+        llm = FakeLLM(preroll_program_start_id=0, rescan_evidence_id=-1)
+        install_fake_ads(llm, detections=[FakeAd(6.72, 250.0, label="sponsor_read")])
+        stream = io.StringIO()
+        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=459.0):
+            path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
+        self.assertEqual((path, spans, keeps), (self.audio, [], []))
+        stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
+        self.assertIn("ads.detect.span.resize.skipped", stages)
+        self.assertIn("ads.detect.span.rejected", stages)
+        self.assertNotIn("ads.detect.span.confirmed", stages)
+
     # A short episode's whole programme, bracketed as one advertisement. The
     # advertising is genuinely at the front; everything from segment 9 on is
     # the news, and the detector's absolute pod bounds swallowed all of it.
     OVERSIZED = [FakeSegment(index * 20.0, index * 20.0 + 20.0, f"segment {index}") for index in range(28)]
 
-    def resize(self, llm, ad, total=563.17):
+    def resize(self, llm, ad, total=563.17, segments=None):
         ads = install_fake_ads(llm)
         llm.load()  # `detect_and_cut` does this; a direct call has to say so.
         stream = io.StringIO()
         with redirect_stderr(stream):
-            resized, self.confirmed = wp.resize_oversized_ad_spans(ads, llm, self.OVERSIZED, [ad], total)
+            resized, self.confirmed = wp.resize_oversized_ad_spans(
+                ads, llm, self.OVERSIZED if segments is None else segments, [ad], total
+            )
         details = {
             json.loads(line)["stage"]: json.loads(line)["detail"]
             for line in stream.getvalue().splitlines()
@@ -1257,23 +1274,37 @@ class AdDetectionTests(unittest.TestCase):
         self.assertIn("before program ID 9", details["ads.detect.span.resized"])
 
     def test_a_shortened_span_holding_program_content_is_left_alone(self):
-        # The second question is not the first asked again: it is handed only
-        # the shortened span, so a boundary in the wrong place is caught by
-        # finding the programme still inside it.
-        llm = FakeLLM(preroll_program_start_id=9, preroll_program_id=3, boundary_starts_program=False)
+        # A retry that cannot produce a valid answer may not vouch for the
+        # original span or guess its safe prefix.
+        llm = FakeLLM(
+            preroll_program_start_id=9,
+            program_id_answers=[3],
+            boundary_starts_program=False,
+        )
         resized, details = self.resize(llm, FakeAd(6.72, 456.88))
         self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 456.88)])
-        self.assertIn("holds program content at 3", details["ads.detect.span.resize.skipped"])
+        self.assertIn("safe-prefix confirmation failed", details["ads.detect.span.resize.skipped"])
+        self.assertNotIn(wp.OVERSIZED_SPAN_RESCAN_PROMPT, llm.request_prompts)
+        self.assertEqual(self.confirmed, frozenset())
 
     def test_a_span_the_review_calls_advertising_throughout_is_confirmed(self):
         # Reading the whole span and finding no programme in it is an answer,
         # not a failure to answer. A short news alert can legitimately be
         # mostly advertising, so the verdict stands and the span is vouched for.
-        llm = FakeLLM(preroll_program_start_id=0)
+        llm = FakeLLM(preroll_program_start_id=-1)
         resized, details = self.resize(llm, FakeAd(6.72, 456.88))
         self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 456.88)])
         self.assertIn("advertising throughout", details["ads.detect.span.confirmed"])
         self.assertEqual(self.confirmed, frozenset({(6.72, 456.88)}))
+
+    def test_a_span_where_program_starts_at_first_segment_is_not_confirmed(self):
+        llm = FakeLLM(preroll_program_start_id=0, rescan_evidence_id=-1)
+        resized, details = self.resize(llm, FakeAd(6.72, 456.88))
+        self.assertIn("the program starts at the first segment", details["ads.detect.span.resize.skipped"])
+        self.assertNotIn(wp.OVERSIZED_SPAN_RESCAN_PROMPT, llm.request_prompts)
+        self.assertEqual(self.confirmed, frozenset())
+        kept = wp.reject_implausible_ad_spans(resized, 563.17, self.confirmed)
+        self.assertEqual(kept, [])
 
     def test_a_located_boundary_is_honoured_however_large_the_advertisement(self):
         # The review found where the programme resumes, which is the question
@@ -1423,21 +1454,60 @@ class AdDetectionTests(unittest.TestCase):
         self.assertIn("without review", details["ads.detect.refused"])
         self.assertIn("keeping the episode whole", details["ads.detect.refused"])
 
-    def test_an_unplaceable_span_is_rescanned_for_evidence_it_was_ever_an_ad(self):
-        # The first review found programme content inside the span, so it could
-        # not place a boundary. Asking that same question again would return the
-        # same nothing; the rescan asks what evidence says this was advertising.
-        llm = FakeLLM(preroll_program_start_id=20, preroll_program_id=3, rescan_evidence_id=2)
+    def test_sponsor_prefix_before_a_mixed_programme_cue_is_confirmed_once(self):
+        # TechCrunch's cue 9 starts at 167.64 seconds. It ends a Plaud sponsor
+        # read and starts the episode title and first headline, so the first
+        # confirmation rightly finds programme there. Re-confirming only cues
+        # before 9 may preserve the sponsor prefix, but must not rescan the
+        # original oversized span.
+        segments = [
+            FakeSegment(
+                167.64 if index == 9 else index * 20.0,
+                187.64 if index == 9 else (167.64 if index == 8 else index * 20.0 + 20.0),
+                "Visit Acme.example for the sponsor offer."
+                if index == 4 else
+                "Plaud sponsor tail, then the programme begins with the daily report."
+                if index == 9 else
+                f"opening cue {index}",
+            )
+            for index in range(28)
+        ]
+        llm = FakeLLM(
+            preroll_program_start_id=20,
+            program_id_answers=[9, -1],
+            rescan_evidence_id=4,
+        )
+        resized, details = self.resize(llm, FakeAd(6.72, 456.88), segments=segments)
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 167.64)])
+        self.assertIn("before program ID 9", details["ads.detect.span.resized"])
+        self.assertNotIn("ads.detect.span.rescan.confirmed", details)
+        self.assertNotIn(wp.OVERSIZED_SPAN_RESCAN_PROMPT, llm.request_prompts)
+        self.assertEqual(self.confirmed, frozenset({(6.72, 167.64)}))
+
+    def test_a_safe_prefix_retry_that_finds_programme_preserves_the_full_span(self):
+        # The retry is the only extra question permitted after positive
+        # programme evidence. Another programme answer leaves the detector's
+        # original span unvouched for and cannot fall through to a whole-span
+        # rescan, even when that rescan would find sponsor evidence.
+        llm = FakeLLM(
+            preroll_program_start_id=20,
+            program_id_answers=[9, 3],
+            rescan_evidence_id=4,
+        )
         resized, details = self.resize(llm, FakeAd(6.72, 456.88))
         self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 456.88)])
-        self.assertIn("evidence at ID 2", details["ads.detect.span.rescan.confirmed"])
-        self.assertEqual(self.confirmed, frozenset({(6.72, 456.88)}))
+        self.assertIn("safe prefix still holds program content at 3",
+                      details["ads.detect.span.resize.skipped"])
+        self.assertNotIn(wp.OVERSIZED_SPAN_RESCAN_PROMPT, llm.request_prompts)
+        self.assertEqual(self.confirmed, frozenset())
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(wp.reject_implausible_ad_spans(resized, 563.17, self.confirmed), [])
 
     def test_a_span_that_fails_the_rescan_too_is_left_unvouched_for(self):
-        # Reviewed twice, in two different ways, and neither could call it an
-        # advertisement. That is the case where there really is a problem, and
-        # the size ceiling downstream is what catches it.
-        llm = FakeLLM(preroll_program_start_id=20, preroll_program_id=3, rescan_evidence_id=-1)
+        # An unreadable first review has no programme finding to preserve, so
+        # it may still take the second, advertising-evidence route. Neither
+        # review can vouch for this span, and the size ceiling catches it.
+        llm = FakeLLM(answer="not json", rescan_evidence_id=-1)
         resized, details = self.resize(llm, FakeAd(6.72, 456.88))
         self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 456.88)])
         self.assertIn("no advertising evidence on a second read",

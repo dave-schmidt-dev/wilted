@@ -444,6 +444,99 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
         }
     }
 
+    func testStartupReconciliationRepairsSupersededReadyItemPointerWithoutRequeueingChunks() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wilted-mac-startup-item-pointer-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let libraryURL = root.appendingPathComponent("library.sqlite")
+        let mediaURL = root.appendingPathComponent("media.m4a")
+        let item = try article("startup-item-pointer")
+        let bytes = Data("startup-item-pointer-media".utf8)
+        let chunked = try AudioChunking.chunk(bytes, chunkSize: 3)
+        let hash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let revisionA = try AudioRevision(
+            itemID: item.itemID, revisionID: try RevisionID(rawValue: "revision-startup-item-pointer-a"),
+            durationSeconds: 4, byteCount: Int64(bytes.count), contentHash: hash,
+            mediaType: "audio/mp4", createdAt: Timestamp(Date()), schemaVersion: 1
+        )
+        let revisionB = try AudioRevision(
+            itemID: item.itemID, revisionID: try RevisionID(rawValue: "revision-startup-item-pointer-b"),
+            durationSeconds: 4, byteCount: Int64(bytes.count), contentHash: hash,
+            mediaType: "audio/mp4", createdAt: Timestamp(Date()), schemaVersion: 1
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try bytes.write(to: mediaURL)
+        let transport = LifecycleFakeTransport(batch: try SyncFetchBatch(
+            generationID: "empty", records: [], engineState: Data([1])
+        ))
+
+        do {
+            let store = try LocalLibraryStore(url: libraryURL)
+            try await store.save(article: item)
+            try await store.saveReadyRevision(revisionB, mediaURL: mediaURL)
+            let queueLifecycle = lifecycle(store, transport: transport)
+            let queuedAItem = await queueLifecycle.queueItem(item, currentRevisionID: revisionA.revisionID)
+            let queuedARevision = await queueLifecycle.queueRevision(revisionA, chunkedFile: chunked)
+            XCTAssertTrue(isSuccess(queuedAItem))
+            XCTAssertTrue(isSuccess(queuedARevision))
+            // The first B chunk atomically retires A's complete pending family, including
+            // the shared item record. Simulate termination before the later item→B call.
+            let queuedBRevision = await queueLifecycle.queueRevision(revisionB, chunkedFile: chunked)
+            XCTAssertTrue(isSuccess(queuedBRevision))
+
+            let stateSnapshot = try await store.syncRepositoryState()
+            let state = try XCTUnwrap(stateSnapshot)
+            let itemRecordID = try WiltedRecordID.item(item.itemID)
+            XCTAssertFalse(state.pendingChanges.contains { $0.recordID == itemRecordID })
+            XCTAssertEqual(state.pendingChanges.filter { $0.recordID.recordType == .revisionChunk }.count, chunked.chunks.count)
+            XCTAssertEqual(state.pendingChanges.filter { $0.recordID.recordType == .revision }.count, 1)
+
+            // This shared ID acknowledges the old item→A payload. Reconciliation must
+            // inspect the persisted pointer rather than treating membership as item→B.
+            let acknowledgedA = SyncRepositoryState(
+                records: state.records, engineState: state.engineState, pendingChanges: state.pendingChanges,
+                tombstones: state.tombstones, remoteAcknowledgedRecordIDs: state.remoteAcknowledgedRecordIDs.union([itemRecordID]),
+                protectedRecordIDs: state.protectedRecordIDs, conflictedRecordIDs: state.conflictedRecordIDs,
+                conflictServerRecords: state.conflictServerRecords, accountOwnerToken: state.accountOwnerToken
+            )
+            try await store.applySyncCommit(LocalLibrarySyncCommit(state: acknowledgedA))
+            let acknowledgedState = try await store.syncRepositoryState()
+            XCTAssertTrue(acknowledgedState?.remoteAcknowledgedRecordIDs.contains(itemRecordID) == true)
+        }
+
+        do {
+            let model = WiltedMacModel(
+                arguments: [],
+                syncTransportFactory: {
+                    WiltedMacSyncTransportHandle(transport: transport, cancel: { await transport.cancel() })
+                },
+                stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
+            )
+
+            model.reconcileSyncOnLaunchOrForeground()
+            for _ in 0..<300 {
+                if await transport.saveCallCount() == 2, model.syncStatus.phase == .completed { break }
+                try await Task.sleep(nanoseconds: 1_000_000)
+            }
+
+            let saveCallCount = await transport.saveCallCount()
+            XCTAssertEqual(saveCallCount, 2)
+            let sentTypes = await transport.sentRecordTypes()
+            XCTAssertEqual(sentTypes.filter { $0 == .revisionChunk }.count, chunked.chunks.count)
+            XCTAssertEqual(sentTypes.filter { $0 == .revision }.count, 1)
+            XCTAssertEqual(sentTypes.filter { $0 == .item }.count, 1)
+            let finalStore = try LocalLibraryStore(url: libraryURL)
+            let finalSnapshot = try await finalStore.syncRepositoryState()
+            let finalState = try XCTUnwrap(finalSnapshot)
+            let itemRecordID = try WiltedRecordID.item(item.itemID)
+            let currentItem = try XCTUnwrap(finalState.records.first { $0.id == itemRecordID })
+            guard case let .string(revisionID)? = currentItem.fields["currentRevisionID"] else {
+                return XCTFail("reconciliation must persist item→B")
+            }
+            XCTAssertEqual(revisionID, revisionB.revisionID.rawValue)
+        }
+    }
+
     func testEmptyPersistedEngineStateReadsAsAbsentRatherThanCorrupt() {
         // LocalLibraryStore mirrors the engine bytes into a non-optional column and writes
         // zero bytes for "no state yet", so a fresh install reads back empty non-nil Data.

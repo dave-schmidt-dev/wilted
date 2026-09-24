@@ -170,7 +170,9 @@ public final class WiltedListenerAppModel: ObservableObject {
     private var audioChunkLoader: ListenerAudioChunkLoader?
     private let sessionFactory: ListenerSyncSessionFactory?
     private var session: (any ListenerSyncSession)?
-    private var rebuildSessionBeforeNextRefresh = false
+    /// A transport that observed state which did not commit locally cannot be
+    /// reused: CKSyncEngine serialization is process-local until promoted.
+    private var rebuildSessionBeforeNextTransportOperation = false
     /// Published so the listener can offer account review the way the producer
     /// does. While this was private the quarantined status was non-retryable
     /// and no control was drawn, which left the shipping listener with no way
@@ -386,44 +388,23 @@ public final class WiltedListenerAppModel: ObservableObject {
             return
         }
 
-        if rebuildSessionBeforeNextRefresh {
-            await session?.cancel()
+        do {
+            guard try await prepareTransport(repository: repository, operation: operation) else { return }
+        } catch {
             guard isCurrent(operation) else { return }
-            session = nil
-            transport = nil
-            assetLoader = nil
-            audioChunkLoader = nil
-            sessionStatusTask?.cancel()
-            sessionStatusTask = nil
-            rebuildSessionBeforeNextRefresh = false
-        }
-
-        if transport == nil, let sessionFactory {
-            do {
-                let state = await repository.state()
-                let createdSession = try await sessionFactory(state.engineState)
-                guard isCurrent(operation) else { return }
-                session = createdSession
-                transport = createdSession.transport
-                assetLoader = createdSession.assetLoader
-                audioChunkLoader = createdSession.audioChunkLoader
-                observeSession(createdSession.accountChanges)
-            } catch {
-                guard isCurrent(operation) else { return }
-                rebuildSessionBeforeNextRefresh = true
-                if let listenerRepository = repository as? ListenerRepository {
-                    try? await listenerRepository.recordFetchFailure(error.localizedDescription)
-                }
-                await refreshSyncObservability()
-                guard isCurrent(operation) else { return }
-                await loadLocal(repository: repository, fallback: error.localizedDescription, operation: operation)
-                guard isCurrent(operation) else { return }
-                if case .offline = syncPhase {
-                    syncRetryOperation = .refresh
-                    syncPhase = .failed("Sync unavailable: \(error.localizedDescription)", retryable: true)
-                }
-                return
+            rebuildSessionBeforeNextTransportOperation = true
+            if let listenerRepository = repository as? ListenerRepository {
+                try? await listenerRepository.recordFetchFailure(error.localizedDescription)
             }
+            await refreshSyncObservability()
+            guard isCurrent(operation) else { return }
+            await loadLocal(repository: repository, fallback: error.localizedDescription, operation: operation)
+            guard isCurrent(operation) else { return }
+            if case .offline = syncPhase {
+                syncRetryOperation = .refresh
+                syncPhase = .failed("Sync unavailable: \(error.localizedDescription)", retryable: true)
+            }
+            return
         }
 
         guard !accountQuarantined else {
@@ -436,6 +417,9 @@ public final class WiltedListenerAppModel: ObservableObject {
                 let batch = try await transport.fetchChanges()
                 guard isCurrent(operation) else { return }
                 guard try await stageAndCommit(batch, repository: repository, operation: operation) else { return }
+                guard isCurrent(operation) else { return }
+                try await transport.commitFetchedState(batch.engineState)
+                guard isCurrent(operation) else { return }
                 if let listenerRepository = repository as? ListenerRepository {
                     try? await listenerRepository.recordSuccessfulFetch()
                 }
@@ -461,7 +445,7 @@ public final class WiltedListenerAppModel: ObservableObject {
             } catch {
                 guard isCurrent(operation) else { return }
                 if sessionFactory != nil {
-                    rebuildSessionBeforeNextRefresh = true
+                    rebuildSessionBeforeNextTransportOperation = true
                 }
                 if let listenerRepository = repository as? ListenerRepository {
                     try? await listenerRepository.recordFetchFailure(error.localizedDescription)
@@ -480,6 +464,38 @@ public final class WiltedListenerAppModel: ObservableObject {
 
         guard isCurrent(operation) else { return }
         await loadLocal(repository: repository, fallback: "Offline mode", operation: operation)
+    }
+
+    /// Reconstructs a session only from repository-persisted engine state.
+    /// A failed fetch or local commit may leave the prior transport carrying
+    /// provisional CKSyncEngine state, so it must not perform a later send.
+    private func prepareTransport(
+        repository: any SyncRepository,
+        operation: UInt64
+    ) async throws -> Bool {
+        if rebuildSessionBeforeNextTransportOperation {
+            await session?.cancel()
+            guard isCurrent(operation) else { return false }
+            session = nil
+            transport = nil
+            assetLoader = nil
+            audioChunkLoader = nil
+            sessionStatusTask?.cancel()
+            sessionStatusTask = nil
+            rebuildSessionBeforeNextTransportOperation = false
+        }
+
+        guard transport == nil, let sessionFactory else { return true }
+        let state = await repository.state()
+        guard isCurrent(operation) else { return false }
+        let createdSession = try await sessionFactory(state.engineState)
+        guard isCurrent(operation) else { return false }
+        session = createdSession
+        transport = createdSession.transport
+        assetLoader = createdSession.assetLoader
+        audioChunkLoader = createdSession.audioChunkLoader
+        observeSession(createdSession.accountChanges)
+        return true
     }
 
     /// Re-stages one fetched batch when a concurrent local enqueue invalidates its snapshot.
@@ -505,7 +521,11 @@ public final class WiltedListenerAppModel: ObservableObject {
         syncRetryOperation = nil
         let operation = await beginQueuedOperation()
         defer { finishOperation(operation) }
-        guard let repository, let transport else {
+        guard let repository else {
+            syncPhase = .offline("Offline: changes will send when connected")
+            return
+        }
+        guard transport != nil || sessionFactory != nil else {
             syncPhase = .offline("Offline: changes will send when connected")
             return
         }
@@ -540,22 +560,55 @@ public final class WiltedListenerAppModel: ObservableObject {
                 }
                 return
             }
-            let result = try await transport.save(changes: sendableChanges, role: .iphone)
-            guard isCurrent(operation) else { return }
-            try await repository.acknowledge(result, sent: sendableChanges)
-            guard isCurrent(operation) else { return }
-            rebuild(from: await repository.state())
-            guard isCurrent(operation) else { return }
-            await updateDownloadedStates()
-            guard isCurrent(operation) else { return }
-            if result.failures.isEmpty {
-                syncPhase = .ready
-            } else {
-                syncRetryOperation = .send
-                syncPhase = .failed("Some playback changes need retry", retryable: true)
+            guard try await prepareTransport(repository: repository, operation: operation) else { return }
+            guard let transport else {
+                syncPhase = .offline("Offline: changes will send when connected")
+                return
+            }
+            var changes = sendableChanges
+            var rebaseSendsRemaining = 1
+            while true {
+                let result = try await transport.save(changes: changes, role: .iphone)
+                guard isCurrent(operation) else { return }
+                try await repository.acknowledge(result, sent: changes)
+                guard isCurrent(operation) else { return }
+                try await transport.commitSentState(result.engineState)
+                guard isCurrent(operation) else { return }
+                let acknowledgedState = await repository.state()
+                rebuild(from: acknowledgedState)
+                guard isCurrent(operation) else { return }
+                await updateDownloadedStates()
+                guard isCurrent(operation) else { return }
+                if result.failures.isEmpty {
+                    syncPhase = .ready
+                    return
+                }
+
+                let rebasedChanges = acknowledgedState.pendingChanges.filter { change in
+                    guard change.recordID.recordType == .playbackState,
+                          let record = change.record,
+                          case let .string(rawItemID) = record.fields["itemID"],
+                          let itemID = try? ItemID(rawValue: rawItemID) else { return false }
+                    return liveItemIDs.contains(itemID)
+                        && !acknowledgedState.conflictedRecordIDs.contains(change.recordID)
+                }
+                let receivedPlaybackConflict = result.failures.contains {
+                    $0.disposition == .conflict && $0.recordID.recordType == .playbackState
+                }
+                guard receivedPlaybackConflict, rebaseSendsRemaining > 0, !rebasedChanges.isEmpty else {
+                    syncRetryOperation = .send
+                    syncPhase = .failed("Some playback changes need retry", retryable: true)
+                    return
+                }
+                rebaseSendsRemaining -= 1
+                changes = rebasedChanges
+                syncPhase = .sending("Sending rebased playback progress…")
             }
         } catch {
             guard isCurrent(operation) else { return }
+            if sessionFactory != nil {
+                rebuildSessionBeforeNextTransportOperation = true
+            }
             syncRetryOperation = .send
             syncPhase = .failed("Send failed: \(error.localizedDescription)", retryable: true)
         }
@@ -787,6 +840,13 @@ public final class WiltedListenerAppModel: ObservableObject {
     private func invalidateCurrentOperation() {
         cancellationRequested = true
         operationGeneration &+= 1
+        // A session-factory transport may have advanced its in-memory engine state
+        // after returning a fetch batch but before that batch was promoted. Do not
+        // let a later send serialize that provisional state. Directly injected
+        // transports intentionally remain reusable after cancellation in tests.
+        if sessionFactory != nil, session != nil {
+            rebuildSessionBeforeNextTransportOperation = true
+        }
         guard operationInFlight else { return }
         releaseOperationSlot()
     }
@@ -1194,13 +1254,14 @@ public final class WiltedListenerAppModel: ObservableObject {
     }
 
     private func nextPlayback(_ current: PlaybackState, position: Double, intent: PlaybackIntent, newSession: Bool) throws -> PlaybackState {
-        try PlaybackState(itemID: current.itemID, revisionID: current.revisionID,
-                          sessionID: newSession ? UUID().uuidString : current.sessionID,
-                          sequence: newSession ? 1 : current.sequence + 1,
-                          positionSeconds: max(0, position), durationSeconds: current.durationSeconds,
-                          completed: false, intent: intent, deviceID: current.deviceID,
-                          encodedCloudKitRecordSystemFields: current.encodedCloudKitRecordSystemFields,
-                          updatedAt: Timestamp(Date()))
+        let resolvedIntent = newSession ? intent : (current.intent != .progress ? current.intent : intent)
+        return try PlaybackState(itemID: current.itemID, revisionID: current.revisionID,
+                                 sessionID: newSession ? UUID().uuidString : current.sessionID,
+                                 sequence: newSession ? 1 : current.sequence + 1,
+                                 positionSeconds: max(0, position), durationSeconds: current.durationSeconds,
+                                 completed: false, intent: resolvedIntent, deviceID: current.deviceID,
+                                 encodedCloudKitRecordSystemFields: current.encodedCloudKitRecordSystemFields,
+                                 updatedAt: Timestamp(Date()))
     }
 
     private func recordPlayback(_ state: PlaybackState) async throws {

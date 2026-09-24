@@ -4,6 +4,21 @@ import WiltedDomain
 import WiltedSync
 @testable import WiltedProducer
 
+private actor RecordingSyncTransport: SyncTransport {
+    nonisolated let statuses = AsyncStream<SyncStatus> { _ in }
+    private(set) var savedBatches: [[WiltedRecordID]] = []
+
+    func fetchChanges() async throws -> SyncFetchBatch {
+        try SyncFetchBatch(generationID: "recording", records: [])
+    }
+
+    func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {
+        savedBatches.append(changes.map(\.recordID))
+        return try SyncSendResult(engineState: Data([1]), acknowledgedRecordIDs: changes.map(\.recordID),
+                                  serverEnvelopes: changes.compactMap(\.record))
+    }
+}
+
 final class LocalLibrarySyncRepositoryTests: XCTestCase {
     private func storeURL(_ name: String = #function) -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("wilted-sync-\(name)-\(UUID().uuidString)").appendingPathComponent("library.sqlite")
@@ -234,6 +249,94 @@ final class LocalLibrarySyncRepositoryTests: XCTestCase {
         let inspection = try await store.inspect()
         XCTAssertEqual(inspection.articleCount, 0)
         XCTAssertEqual(inspection.revisionCount, 0)
+    }
+
+    func testNewRevisionDropsOnlySupersededPendingChunksAndTheirConflictBookkeeping() async throws {
+        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let item = try article("superseded-chunks")
+        let codec = WiltedRecordCodec()
+        let oldRevisionID = try RevisionID(rawValue: "rev-superseded-old")
+        let newRevisionID = try RevisionID(rawValue: "rev-superseded-new")
+        let oldChunked = try AudioChunking.chunk(Data("old revision bytes".utf8), chunkSize: 4)
+        let oldRevision = try AudioRevision(
+            itemID: item.itemID, revisionID: oldRevisionID, durationSeconds: 4,
+            byteCount: Int64(oldChunked.manifest.totalByteCount),
+            contentHash: "sha256:\(oldChunked.manifest.contentSHA256)", mediaType: "audio/mp4",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000)), schemaVersion: 1)
+        let oldItemRecord = try codec.encode(article: item, currentRevisionID: oldRevisionID)
+        let oldManifestRecord = try codec.encode(revision: oldRevision, manifest: oldChunked.manifest)
+        let oldRecords = try oldChunked.manifest.chunks.map { descriptor in
+            try codec.encode(
+                revisionChunk: item.itemID, revisionID: oldRevisionID, descriptor: descriptor,
+                chunkAsset: try WiltedAsset(assetID: descriptor.identity, contentHash: "sha256:\(descriptor.sha256)")
+            )
+        }
+        let newChunked = try AudioChunking.chunk(Data("new revision bytes".utf8), chunkSize: 4)
+        let newRevision = try AudioRevision(
+            itemID: item.itemID, revisionID: newRevisionID, durationSeconds: 4,
+            byteCount: Int64(newChunked.manifest.totalByteCount),
+            contentHash: "sha256:\(newChunked.manifest.contentSHA256)", mediaType: "audio/mp4",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_001)), schemaVersion: 1)
+        let newItemRecord = try codec.encode(article: item, currentRevisionID: newRevisionID)
+        let newManifestRecord = try codec.encode(revision: newRevision, manifest: newChunked.manifest)
+        let newRecord = try codec.encode(
+            revisionChunk: item.itemID, revisionID: newRevisionID, descriptor: newChunked.manifest.chunks[0],
+            chunkAsset: try WiltedAsset(assetID: newChunked.manifest.chunks[0].identity,
+                                        contentHash: "sha256:\(newChunked.manifest.chunks[0].sha256)")
+        )
+        let store = try LocalLibraryStore(url: url)
+        let repository = try await LocalLibrarySyncRepository(store: store)
+        let oldItemChange = try SyncPendingChange(operation: .create, recordID: oldItemRecord.id, record: oldItemRecord)
+        let oldManifestChange = try SyncPendingChange(operation: .create, recordID: oldManifestRecord.id, record: oldManifestRecord)
+        let oldChanges = try oldRecords.map { try SyncPendingChange(operation: .create, recordID: $0.id, record: $0) }
+        for change in [oldItemChange, oldManifestChange] + oldChanges { try await repository.enqueue(change) }
+        guard let conflicted = oldChanges.first, let acknowledged = oldChanges.dropFirst().first else {
+            XCTFail("expected multiple chunks for supersession coverage")
+            return
+        }
+        try await repository.acknowledge(
+            try SyncSendResult(engineState: Data([1]), failures: [
+                SyncSendFailure(recordID: conflicted.recordID, disposition: .conflict, serverRecord: conflicted.record!)
+            ]),
+            sent: [conflicted]
+        )
+        try await repository.acknowledge(
+            try SyncSendResult(engineState: Data([2]), acknowledgedRecordIDs: [acknowledged.recordID],
+                               serverEnvelopes: [acknowledged.record!]),
+            sent: [acknowledged]
+        )
+
+        let newChange = try SyncPendingChange(operation: .create, recordID: newRecord.id, record: newRecord)
+        try await repository.enqueue(newChange)
+
+        let state = await repository.state()
+        XCTAssertEqual(state.pendingChanges, [newChange])
+        XCTAssertFalse(state.pendingChanges.contains(where: { $0.recordID == oldManifestRecord.id || $0.recordID == oldItemRecord.id }))
+        XCTAssertFalse(state.protectedRecordIDs.contains(conflicted.recordID))
+        XCTAssertFalse(state.conflictedRecordIDs.contains(conflicted.recordID))
+        XCTAssertNil(state.conflictServerRecords[conflicted.recordID])
+        XCTAssertTrue(state.remoteAcknowledgedRecordIDs.contains(acknowledged.recordID))
+
+        let transport = RecordingSyncTransport()
+        if case let .failure(error) = await SyncCoordinator(transport: transport, repository: repository).sendPending(role: .mac) {
+            XCTFail("expected B chunk to publish: \(error)")
+        }
+        let firstBatches = await transport.savedBatches
+        XCTAssertEqual(firstBatches, [[newChange.recordID]])
+        XCTAssertFalse(firstBatches.flatMap { $0 }.contains(oldManifestRecord.id))
+        XCTAssertFalse(firstBatches.flatMap { $0 }.contains(oldItemRecord.id))
+
+        let newManifestChange = try SyncPendingChange(operation: .create, recordID: newManifestRecord.id, record: newManifestRecord)
+        let newItemChange = try SyncPendingChange(operation: .create, recordID: newItemRecord.id, record: newItemRecord)
+        try await repository.enqueue(newManifestChange)
+        try await repository.enqueue(newItemChange)
+        if case let .failure(error) = await SyncCoordinator(transport: transport, repository: repository).sendPending(role: .mac) {
+            XCTFail("expected B ready records to publish: \(error)")
+        }
+        let batches = await transport.savedBatches
+        XCTAssertEqual(Set(batches[1]), Set([newManifestChange.recordID, newItemChange.recordID]))
+        let finalState = await repository.state()
+        XCTAssertTrue(finalState.pendingChanges.isEmpty)
     }
 
     func testRevisionEnqueueStillFailsWhenNoLocalMediaBacksIt() async throws {

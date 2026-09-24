@@ -55,9 +55,14 @@ private func fixtureArticle() throws -> (Article, RevisionID, WiltedAsset) {
     return (article, revisionID, try WiltedAsset(assetID: "asset-alpha", contentHash: hash))
 }
 
-private func chunkPublicationChanges() throws -> [SyncPendingChange] {
-    let (article, revisionID, _) = try fixtureArticle()
-    let bytes = Data("two-phase-audio".utf8)
+private func chunkPublicationChanges(
+    revisionID requestedRevisionID: RevisionID? = nil,
+    bytes: Data = Data("two-phase-audio".utf8),
+    includeItem: Bool = true,
+    includePlayback: Bool = false
+) throws -> [SyncPendingChange] {
+    let (article, defaultRevisionID, _) = try fixtureArticle()
+    let revisionID = requestedRevisionID ?? defaultRevisionID
     let chunked = try AudioChunking.chunk(bytes, chunkSize: 4)
     let hash = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
     let revision = try AudioRevision(itemID: article.itemID, revisionID: revisionID,
@@ -74,9 +79,17 @@ private func chunkPublicationChanges() throws -> [SyncPendingChange] {
                          chunkAsset: WiltedAsset(assetID: descriptor.identity,
                                                  contentHash: "sha256:\(descriptor.sha256)"))
     }
+    var records = (includeItem ? [item] : []) + [manifest] + chunks
+    if includePlayback {
+        records.append(try codec.encode(playback: PlaybackState(
+            itemID: article.itemID, revisionID: revisionID, sessionID: "session-\(revisionID.rawValue)",
+            sequence: 1, positionSeconds: 1, durationSeconds: 4, completed: false,
+            intent: .progress, deviceID: "device-mac", updatedAt: article.createdAt
+        )))
+    }
     // Deliberately put visibility records first. The coordinator must not rely on
     // caller ordering to keep a partial upload undiscoverable.
-    return try ([item, manifest] + chunks).map {
+    return try records.map {
         try SyncPendingChange(operation: .create, recordID: $0.id, record: $0)
     }
 }
@@ -222,6 +235,98 @@ private actor CountingBatchTransport: SyncTransport {
 
     func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {
         try SyncSendResult(engineState: Data([6]))
+    }
+}
+
+private actor StateProbeTransport: SyncTransport {
+    nonisolated let statuses = AsyncStream<SyncStatus> { _ in }
+    private let batch: SyncFetchBatch
+    private let emptySendResult: SyncSendResult
+    private(set) var fetchCalls = 0
+    private(set) var saveCalls = 0
+    private(set) var committedSentStates: [Data?] = []
+
+    init(batch: SyncFetchBatch, emptySendResult: SyncSendResult = try! SyncSendResult()) {
+        self.batch = batch
+        self.emptySendResult = emptySendResult
+    }
+
+    func fetchChanges() async throws -> SyncFetchBatch {
+        fetchCalls += 1
+        return batch
+    }
+
+    func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {
+        saveCalls += 1
+        return emptySendResult
+    }
+
+    func commitSentState(_ engineState: Data?) async throws {
+        committedSentStates.append(engineState)
+    }
+}
+
+private actor FailOnceAcknowledgeRepository: SyncRepository {
+    nonisolated let statuses = AsyncStream<SyncStatus> { _ in }
+    private var storedState: SyncRepositoryState
+    private var shouldFail = true
+
+    init(state: SyncRepositoryState) { storedState = state }
+
+    func state() async -> SyncRepositoryState { storedState }
+    func stage(_ batch: SyncFetchBatch) async throws -> StagedSyncBatch {
+        StagedSyncBatch(batch: batch, priorState: storedState)
+    }
+    func commit(_ staged: StagedSyncBatch) async throws {}
+    func enqueue(_ change: SyncPendingChange) async throws {}
+    func acknowledge(_ result: SyncSendResult, sent: [SyncPendingChange]) async throws {
+        if shouldFail {
+            shouldFail = false
+            throw WiltedSyncError.injectedFailure("acknowledge")
+        }
+        storedState = SyncRepositoryState(engineState: result.engineState)
+    }
+}
+
+private actor FailOnceCommitRepository: SyncRepository {
+    nonisolated let statuses = AsyncStream<SyncStatus> { _ in }
+    private var storedState: SyncRepositoryState
+    private var shouldFailCommit = true
+
+    init(state: SyncRepositoryState) { storedState = state }
+
+    func state() async -> SyncRepositoryState { storedState }
+
+    func stage(_ batch: SyncFetchBatch) async throws -> StagedSyncBatch {
+        StagedSyncBatch(batch: batch, priorState: storedState)
+    }
+
+    func commit(_ staged: StagedSyncBatch) async throws {
+        guard !shouldFailCommit else {
+            shouldFailCommit = false
+            throw WiltedSyncError.injectedFailure("commit")
+        }
+        storedState = SyncRepositoryState(
+            records: staged.batch.records,
+            engineState: staged.batch.engineState ?? storedState.engineState,
+            pendingChanges: storedState.pendingChanges
+        )
+    }
+
+    func enqueue(_ change: SyncPendingChange) async throws {
+        storedState = SyncRepositoryState(
+            records: storedState.records,
+            engineState: storedState.engineState,
+            pendingChanges: storedState.pendingChanges + [change]
+        )
+    }
+
+    func acknowledge(_ result: SyncSendResult, sent: [SyncPendingChange]) async throws {
+        storedState = SyncRepositoryState(
+            records: storedState.records,
+            engineState: result.engineState ?? storedState.engineState,
+            pendingChanges: storedState.pendingChanges
+        )
     }
 }
 
@@ -424,6 +529,91 @@ func failedFetchPreservesState() async throws {
     let result = await SyncCoordinator(transport: transport, repository: repository).synchronize()
     guard case .failure = result else { Issue.record("expected failed fetch"); return }
     #expect(await repository.state() == initial)
+}
+
+@Test("send after a failed commit rebuilds before it can acknowledge a fetched token")
+func sendAfterFailedCommitRebuildsBeforeAcknowledgement() async throws {
+    let (article, revisionID, _) = try fixtureArticle()
+    let record = try WiltedRecordCodec().encode(article: article, currentRevisionID: revisionID)
+    let committedState = Data([1])
+    let fetchedState = Data([9])
+    let initialState = SyncRepositoryState(engineState: committedState)
+    let batch = try SyncFetchBatch(
+        generationID: "redeliver-after-failed-commit",
+        records: [record],
+        engineState: fetchedState
+    )
+    // This transport models the pre-fix leak: an empty save would return the
+    // fetched state unless the coordinator replaces it first.
+    let failedTransport = StateProbeTransport(
+        batch: batch,
+        emptySendResult: try SyncSendResult(engineState: fetchedState)
+    )
+    let replacement = StateProbeTransport(batch: batch)
+    let probe = TransportRebuildProbe(replacement: replacement)
+    let repository = FailOnceCommitRepository(state: initialState)
+    let coordinator = SyncCoordinator(
+        transport: failedTransport,
+        repository: repository,
+        transportFactory: { stateData in await probe.makeTransport(stateData: stateData) }
+    )
+
+    guard case .failure = await coordinator.synchronize() else {
+        Issue.record("expected local commit failure")
+        return
+    }
+    guard case .success = await coordinator.sendPending(role: .mac) else {
+        Issue.record("expected empty send through rebuilt transport")
+        return
+    }
+
+    #expect(await probe.stateInputs == [committedState])
+    #expect(await failedTransport.saveCalls == 0)
+    #expect(await replacement.saveCalls == 1)
+    #expect((await repository.state()).engineState == committedState)
+
+    guard case .success = await coordinator.synchronize() else {
+        Issue.record("expected redelivery after failed commit")
+        return
+    }
+    let recovered = await repository.state()
+    #expect(await replacement.fetchCalls == 1)
+    #expect(recovered.records == [record])
+    #expect(recovered.engineState == fetchedState)
+}
+
+@Test("failed send acknowledgement cannot promote an engine token")
+func failedSendAcknowledgementRebuildsCommittedState() async throws {
+    let committed = Data([1])
+    let sent = Data([9])
+    let batch = try SyncFetchBatch(generationID: "unused-send-probe", records: [])
+    let sendResult = try SyncSendResult(engineState: sent)
+    let first = StateProbeTransport(batch: batch, emptySendResult: sendResult)
+    let replacement = StateProbeTransport(batch: batch, emptySendResult: sendResult)
+    let probe = TransportRebuildProbe(replacement: replacement)
+    let repository = FailOnceAcknowledgeRepository(state: SyncRepositoryState(engineState: committed))
+    let coordinator = SyncCoordinator(
+        transport: first,
+        repository: repository,
+        transportFactory: { stateData in await probe.makeTransport(stateData: stateData) }
+    )
+
+    guard case .failure = await coordinator.sendPending(role: .mac) else {
+        Issue.record("expected local acknowledgement failure")
+        return
+    }
+    #expect(await first.committedSentStates.isEmpty)
+    #expect((await repository.state()).engineState == committed)
+
+    guard case .success = await coordinator.sendPending(role: .mac) else {
+        Issue.record("expected send through a rebuilt transport")
+        return
+    }
+    #expect(await probe.stateInputs == [committed])
+    #expect(await first.saveCalls == 1)
+    #expect(await replacement.saveCalls == 1)
+    #expect(await replacement.committedSentStates == [sent])
+    #expect((await repository.state()).engineState == sent)
 }
 
 @Test("account change between fetch return and commit invalidates the staged generation")
@@ -687,7 +877,7 @@ func coordinatorWithholdsReadyPointersAfterChunkFailure() async throws {
     #expect(pending.contains { $0.recordID.recordType == .item })
 }
 
-@Test("a conflicted chunk withholds ready records even when sibling chunks upload")
+@Test("a conflicted chunk withholds only its own ready records when sibling chunks upload")
 func coordinatorWithholdsReadyPointersForMixedChunkConflict() async throws {
     let changes = try chunkPublicationChanges()
     let blockedChunk = try #require(changes.first { $0.recordID.recordType == .revisionChunk })
@@ -698,24 +888,22 @@ func coordinatorWithholdsReadyPointersForMixedChunkConflict() async throws {
     let transport = FakeSyncTransport(batch: try SyncFetchBatch(generationID: "no-op", records: []))
 
     let result = await SyncCoordinator(transport: transport, repository: repository).sendPending(role: .mac)
-    guard case let .failure(error) = result else {
-        Issue.record("a blocked chunk must prevent ready publication")
+    guard case let .success(outcome) = result else {
+        Issue.record("sibling chunks should still upload")
         return
     }
 
-    #expect(error as? WiltedSyncError == .transport(
-        "chunk publication incomplete; ready records were withheld"
-    ))
     let batches = await transport.savedBatches
     #expect(batches.count == 1)
     #expect(batches[0].allSatisfy { $0.recordType == .revisionChunk })
+    #expect(!outcome.acknowledgedRecordIDs.isEmpty)
     let pending = await repository.state().pendingChanges
     #expect(pending.contains { $0.recordID.recordType == .revision })
     #expect(pending.contains { $0.recordID.recordType == .item })
     #expect(pending.contains { $0.recordID == blockedChunk.recordID })
 }
 
-@Test("an unreported chunk outcome withholds ready records")
+@Test("an unreported chunk outcome withholds only its ready records")
 func coordinatorWithholdsReadyPointersForOmittedChunkOutcome() async throws {
     let changes = try chunkPublicationChanges()
     let firstChunk = try #require(changes.first { $0.recordID.recordType == .revisionChunk })
@@ -726,21 +914,128 @@ func coordinatorWithholdsReadyPointersForOmittedChunkOutcome() async throws {
                                       sendResult: omitted)
 
     let result = await SyncCoordinator(transport: transport, repository: repository).sendPending(role: .mac)
-    guard case let .failure(error) = result else {
-        Issue.record("an omitted chunk outcome must prevent ready publication")
+    guard case let .success(outcome) = result else {
+        Issue.record("an omitted chunk outcome should leave its ready records pending")
         return
     }
 
-    #expect(error as? WiltedSyncError == .transport(
-        "chunk publication incomplete; ready records were withheld"
-    ))
     let batches = await transport.savedBatches
     #expect(batches.count == 1)
     #expect(batches[0].allSatisfy { $0.recordType == .revisionChunk })
+    #expect(outcome.acknowledgedRecordIDs == [firstChunk.recordID])
     let pending = await repository.state().pendingChanges
     #expect(pending.contains { $0.recordID.recordType == .revision })
     #expect(pending.contains { $0.recordID.recordType == .item })
     #expect(pending.contains { $0.recordID.recordType == .revisionChunk })
+}
+
+@Test("chunk gating uses envelope identities that contain colons")
+func coordinatorWithholdsColonIdentifiedReadyRecordsAfterChunkFailure() async throws {
+    let changes = try chunkPublicationChanges()
+    let itemID = try ItemID(rawValue: "item:with:colon")
+    let revisionID = try RevisionID(rawValue: "revision:with:colon")
+    let recordItemID = try ItemID(rawValue: "record-item")
+    let recordRevisionID = try RevisionID(rawValue: "record-revision")
+    let failedChunk = try #require(changes.first { $0.recordID.recordType == .revisionChunk })
+    let rewritten = try changes.map { change -> SyncPendingChange in
+        guard let record = change.record else { return change }
+        var fields = record.fields
+        fields["itemID"] = .string(itemID.rawValue)
+        switch record.id.recordType {
+        case .revisionChunk:
+            fields["revisionID"] = .string(revisionID.rawValue)
+            guard case let .int64(index)? = fields["index"] else { throw WiltedSyncError.invalidRecordIdentity }
+            let id = try WiltedRecordID.revisionChunk(recordItemID, recordRevisionID, index: Int(index))
+            let envelope = try WiltedRecordEnvelope(id: id, schemaVersion: record.schemaVersion, fields: fields, sidecar: record.sidecar)
+            return try SyncPendingChange(operation: change.operation, recordID: id, record: envelope)
+        case .revision:
+            fields["revisionID"] = .string(revisionID.rawValue)
+            let id = try WiltedRecordID.revision(recordItemID, recordRevisionID)
+            let envelope = try WiltedRecordEnvelope(id: id, schemaVersion: record.schemaVersion, fields: fields, sidecar: record.sidecar)
+            return try SyncPendingChange(operation: change.operation, recordID: id, record: envelope)
+        case .item:
+            fields["currentRevisionID"] = .string(revisionID.rawValue)
+            let id = try WiltedRecordID.item(recordItemID)
+            let envelope = try WiltedRecordEnvelope(id: id, schemaVersion: record.schemaVersion, fields: fields, sidecar: record.sidecar)
+            return try SyncPendingChange(operation: change.operation, recordID: id, record: envelope)
+        default:
+            return change
+        }
+    }
+    let rewrittenFailedChunk = try #require(rewritten.first { $0.recordID.recordType == .revisionChunk && $0.record?.fields["index"] == failedChunk.record?.fields["index"] })
+    let partial = try SyncSendResult(engineState: Data([9]), failures: [
+        SyncSendFailure(recordID: rewrittenFailedChunk.recordID, disposition: .retryable)
+    ])
+    let repository = FakeSyncRepository(state: SyncRepositoryState(pendingChanges: rewritten))
+    let transport = FakeSyncTransport(batch: try SyncFetchBatch(generationID: "no-op", records: []), sendResult: partial)
+
+    _ = await SyncCoordinator(transport: transport, repository: repository).sendPending(role: .mac)
+
+    let batches = await transport.savedBatches
+    #expect(batches.count == 1)
+    #expect(batches[0].allSatisfy { $0.recordType == .revisionChunk })
+}
+
+@Test("an unidentifiable pending chunk fails closed for every ready record")
+func coordinatorWithholdsReadyRecordsForUnidentifiableChunk() async throws {
+    let changes = try chunkPublicationChanges()
+    let recordItemID = try ItemID(rawValue: "unidentified-record-item")
+    let recordRevisionID = try RevisionID(rawValue: "unidentified-record-revision")
+    let malformed = try #require(changes.first { $0.recordID.recordType == .revisionChunk })
+    let rewritten = try changes.map { change -> SyncPendingChange in
+        guard change.recordID == malformed.recordID, let record = change.record else { return change }
+        var fields = record.fields
+        fields.removeValue(forKey: "itemID")
+        guard case let .int64(index)? = fields["index"] else { throw WiltedSyncError.invalidRecordIdentity }
+        let id = try WiltedRecordID.revisionChunk(recordItemID, recordRevisionID, index: Int(index))
+        let envelope = try WiltedRecordEnvelope(id: id, schemaVersion: record.schemaVersion, fields: fields, sidecar: record.sidecar)
+        return try SyncPendingChange(operation: change.operation, recordID: id, record: envelope)
+    }
+    let rewrittenMalformed = try #require(rewritten.first {
+        $0.recordID.recordType == .revisionChunk && $0.record?.fields["itemID"] == nil
+    })
+    let partial = try SyncSendResult(engineState: Data([9]), failures: [
+        SyncSendFailure(recordID: rewrittenMalformed.recordID, disposition: .retryable)
+    ])
+    let repository = FakeSyncRepository(state: SyncRepositoryState(pendingChanges: rewritten))
+    let transport = FakeSyncTransport(batch: try SyncFetchBatch(generationID: "no-op", records: []), sendResult: partial)
+
+    _ = await SyncCoordinator(transport: transport, repository: repository).sendPending(role: .mac)
+
+    let batches = await transport.savedBatches
+    #expect(batches.count == 1)
+    #expect(batches[0].allSatisfy { $0.recordType == .revisionChunk })
+}
+
+@Test("a conflicted revision chunk does not stall another revision, item pointer, or playback")
+func coordinatorPublishesUnrelatedRevisionWhileAnotherRevisionIsConflicted() async throws {
+    let oldRevision = try chunkPublicationChanges(includeItem: false)
+    let newRevisionID = try RevisionID(rawValue: "rev-alpha-v2")
+    let newRevision = try chunkPublicationChanges(
+        revisionID: newRevisionID,
+        bytes: Data("two-phase-audio-v2".utf8),
+        includePlayback: true
+    )
+    let oldChunks = oldRevision.filter { $0.recordID.recordType == .revisionChunk }
+    let repository = FakeSyncRepository(state: SyncRepositoryState(
+        pendingChanges: oldRevision + newRevision,
+        conflictedRecordIDs: Set(oldChunks.map(\.recordID))
+    ))
+    let transport = FakeSyncTransport(batch: try SyncFetchBatch(generationID: "no-op", records: []))
+
+    let result = await SyncCoordinator(transport: transport, repository: repository).sendPending(role: .mac)
+    guard case let .success(outcome) = result else {
+        Issue.record("the unrelated revision should publish")
+        return
+    }
+
+    let batches = await transport.savedBatches
+    #expect(batches.count == 2)
+    #expect(Set(batches[0]) == Set(newRevision.filter { $0.recordID.recordType == .revisionChunk }.map(\.recordID)))
+    #expect(Set(batches[1]) == Set(newRevision.filter { $0.recordID.recordType != .revisionChunk }.map(\.recordID)))
+    #expect(outcome.failures.isEmpty)
+    let pending = await repository.state().pendingChanges
+    #expect(Set(pending.map(\.recordID)) == Set(oldRevision.map(\.recordID)))
 }
 
 @Test("a fully conflicted queue reports a blocked send instead of a clean upload")

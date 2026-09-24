@@ -234,8 +234,8 @@ The excerpt is a passage from a podcast episode that a detector classified entir
 and it is too long for that to be true. Find the first ID at which the program itself resumes. The
 program's own reporting, discussion, interviews, host introductions, and unstructured banter all
 count as program; read advertisements, sponsor messages, promotional spots for other shows, and
-their calls to action do not. Return the first supplied ID when the passage is advertising
-throughout. Use only a supplied ID.
+their calls to action do not. Return the first supplied ID when the program starts immediately.
+Return -1 when the passage is advertising throughout. Use only a supplied ID or -1.
 Return only the strict JSON object {"program_start_id": ID}, with no prose or Markdown."""
 
 OVERSIZED_SPAN_CONFIRM_PROMPT = """\
@@ -3653,33 +3653,39 @@ def _resize_one_oversized_span(ads_module, backend, segments, ad, total_seconds)
     never happens.
 
     `outcome` is `"confirmed"` when the review positively established what the
-    span is -- advertising throughout, or advertising up to a located boundary
-    -- and `"unconfirmed"` when it could not answer. The distinction is the
-    whole point: size alone never decides, so a span the review vouched for is
-    not later thrown away for being large.
+    span is -- advertising throughout, advertising up to a located boundary,
+    or one re-confirmed prefix before programme found in a mixed candidate --
+    `"program_found"` when programme evidence leaves no such safe prefix, and
+    `"unanswered"` when it could not answer. Programme evidence is not an
+    unanswered review: it must not let a later rescan vouch for the original
+    oversized span. Size alone never decides, so a span the review vouched for
+    is not later thrown away for being large.
     """
     span_ids = [
         segment_id for segment_id, segment in enumerate(segments)
         if float(segment.start_s) < float(ad.end_s) and float(segment.end_s) > float(ad.start_s)
     ]
     if len(span_ids) < 2:
-        return ("unconfirmed", None)
+        return ("unanswered", None)
     window_ids = span_ids[:OVERSIZED_SPAN_RESIZE_MAX_SEGMENTS]
 
     try:
         program_start_id = _constrained_id(
             ads_module, backend, OVERSIZED_SPAN_PROGRAM_START_PROMPT, "program_start_id",
-            window_ids, window_ids, segments,
+            window_ids, [-1, *window_ids], segments,
         )
     except Exception as error:  # noqa: BLE001 - an unanswered question never cuts audio
         progress("ads.detect.span.resize.skipped", f"resize review failed: {type(error).__name__}: {error}")
-        return ("unconfirmed", None)
-    if program_start_id == window_ids[0]:
+        return ("unanswered", None)
+    if program_start_id == -1:
         # An affirmative verdict, not a decline: the review read the whole span
         # and found no programme in it. A short news alert really can be mostly
         # advertising, so this is the answer, not a failure to answer.
         progress("ads.detect.span.confirmed", "the span is advertising throughout")
         return ("confirmed", ad)
+    if program_start_id == window_ids[0]:
+        progress("ads.detect.span.resize.skipped", "the program starts at the first segment")
+        return ("program_found", None)
 
     if program_start_id - 1 > window_ids[0] and _program_starts_inside(
         ads_module, backend, segments, program_start_id - 1
@@ -3695,7 +3701,7 @@ def _resize_one_oversized_span(ads_module, backend, segments, ad, total_seconds)
     end_s = float(segments[program_start_id].start_s)
     if end_s <= float(ad.start_s):
         progress("ads.detect.span.resize.skipped", "the program resumes before the span begins")
-        return ("unconfirmed", None)
+        return ("program_found", None)
     opening_ids = [segment_id for segment_id in window_ids if segment_id < program_start_id]
     try:
         program_id = _constrained_id(
@@ -3704,10 +3710,52 @@ def _resize_one_oversized_span(ads_module, backend, segments, ad, total_seconds)
         )
     except Exception as error:  # noqa: BLE001 - an unanswered question never cuts audio
         progress("ads.detect.span.resize.skipped", f"resize confirmation failed: {type(error).__name__}: {error}")
-        return ("unconfirmed", None)
+        # The boundary review already found programme after this prefix. An
+        # unreadable confirmation cannot turn that positive evidence into
+        # permission to re-vouch for the original, oversized detection.
+        return ("program_found", None)
     if program_id != -1:
-        progress("ads.detect.span.resize.skipped", f"the shortened span holds program content at {program_id}")
-        return ("unconfirmed", None)
+        # A positive answer means this proposed prefix was too wide, not that
+        # its whole original span may be re-vouched for. The one bounded retry
+        # considers only the earlier IDs. It can therefore establish precisely
+        # the sponsor prefix before a mixed cue, but cannot guess at any later
+        # boundary or reopen the whole-span rescan route.
+        prefix_ids = [segment_id for segment_id in opening_ids if segment_id < program_id]
+        if not prefix_ids:
+            progress(
+                "ads.detect.span.resize.skipped",
+                f"the shortened span holds program content at {program_id}; no earlier prefix remains",
+            )
+            return ("program_found", None)
+        try:
+            prefix_program_id = _constrained_id(
+                ads_module, backend, OVERSIZED_SPAN_CONFIRM_PROMPT, "program_id",
+                prefix_ids, [-1, *prefix_ids], segments,
+            )
+        except Exception as error:  # noqa: BLE001 - an unanswered question never cuts audio
+            progress(
+                "ads.detect.span.resize.skipped",
+                f"safe-prefix confirmation failed: {type(error).__name__}: {error}",
+            )
+            return ("program_found", None)
+        if prefix_program_id != -1:
+            progress(
+                "ads.detect.span.resize.skipped",
+                f"the safe prefix still holds program content at {prefix_program_id}",
+            )
+            return ("program_found", None)
+        end_s = float(segments[program_id].start_s)
+        if end_s <= float(ad.start_s):
+            progress("ads.detect.span.resize.skipped", "the safe prefix cuts no positive duration")
+            return ("program_found", None)
+        progress(
+            "ads.detect.span.resized",
+            f"{float(ad.start_s):.3f}-{float(ad.end_s):.3f} safely shortened to "
+            f"{float(ad.start_s):.3f}-{end_s:.3f} before program ID {program_id}",
+        )
+        return ("confirmed", ads_module.AdSegment(
+            float(ad.start_s), end_s, float(ad.confidence), ad.label
+        ))
 
     progress(
         "ads.detect.span.resized",
@@ -3780,6 +3828,9 @@ def resize_oversized_ad_spans(ads_module, backend, segments, detections, total_s
     gets a second, differently-worded read; only a span that survives neither is
     handed to `reject_implausible_ad_spans`, which remains the net.
 
+    Only an `"unanswered"` first review gets the rescan: a review that found
+    programme in either candidate must leave the original span unvouched for.
+
     `total_seconds` is the probed audio duration, the same denominator the
     rejection below uses, so the two bounds cannot disagree about how large a
     span is.
@@ -3796,7 +3847,7 @@ def resize_oversized_ad_spans(ads_module, backend, segments, detections, total_s
         outcome, reviewed = _resize_one_oversized_span(
             ads_module, backend, segments, ad, total_seconds
         )
-        if outcome == "unconfirmed" and _rescan_unconfirmed_oversized_span(
+        if outcome == "unanswered" and _rescan_unconfirmed_oversized_span(
             ads_module, backend, segments, ad
         ):
             outcome, reviewed = "confirmed", ad

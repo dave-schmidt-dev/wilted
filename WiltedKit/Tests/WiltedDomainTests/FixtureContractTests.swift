@@ -11,7 +11,7 @@ final class FixtureContractTests: XCTestCase {
         XCTAssertEqual(manifest["manifestVersion"] as? Int, 1)
         XCTAssertEqual(manifest["hashAlgorithm"] as? String, "sha256")
         let expected = try XCTUnwrap(manifest["fixtures"] as? [String: String])
-        XCTAssertEqual(expected.count, 17)
+        XCTAssertEqual(expected.count, 19)
         let actualNames = try FileManager.default.contentsOfDirectory(atPath: directory.path)
             .filter { $0 != "FixtureManifest.json" && $0.hasSuffix(".json") }
         XCTAssertEqual(Set(actualNames), Set(expected.keys))
@@ -39,6 +39,8 @@ final class FixtureContractTests: XCTestCase {
     func testPreparationFailureFixture() throws { try evaluate("15-partial-preparation-failure") }
     func testTimeoutFixture() throws { try evaluate("16-timeout-terminal-error") }
     func testStaleChangeTagFixture() throws { try evaluate("17-stale-change-tag") }
+    func testIPhoneRewindContinuedOnMacFixture() throws { try evaluate("18-rewind-continued-iphone") }
+    func testMacRewindContinuedOnIPhoneFixture() throws { try evaluate("19-rewind-continued-mac") }
 
     private func evaluate(_ name: String) throws {
         let directory = try fixtureDirectory()

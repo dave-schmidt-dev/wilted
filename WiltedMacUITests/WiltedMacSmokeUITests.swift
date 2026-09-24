@@ -101,6 +101,10 @@ final class WiltedMacSmokeUITests: XCTestCase {
             app.descendants(matching: .any)["wilted-menu-empty"].waitForExistence(timeout: 10),
             "Removing the only article must fall back to the Menu's empty state."
         )
+        XCTAssertTrue(
+            addArticle.waitForExistence(timeout: 5),
+            "Removing the only article must leave the Add article entry point reachable."
+        )
 
         navFeeds.click()
         XCTAssertTrue(
@@ -188,6 +192,13 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(compact.exists)
         XCTAssertFalse(syncControls.exists)
         XCTAssertFalse(app.descendants(matching: .any)["wilted-podcast-feeds"].exists)
+
+        addArticle.click()
+        XCTAssertTrue(
+            add.waitForExistence(timeout: 8),
+            "Opening the Add article button after the roundtrip must expose the add-link control."
+        )
+        app.typeKey(.escape, modifierFlags: [])
     }
 
     /// Absorbs:

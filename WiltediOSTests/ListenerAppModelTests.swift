@@ -92,11 +92,11 @@ final class ListenerAppModelTests: XCTestCase {
         changes = await waitForEnqueuedChanges(harness.repository, count: 3)
         XCTAssertEqual(pauseHandled, .success)
         XCTAssertEqual(changes.count, 3)
-        let pauseEnvelope = try XCTUnwrap(changes.last?.record)
-        let pause = try WiltedRecordCodec().decodePlaybackRecord(pauseEnvelope).value
-        XCTAssertEqual(pause.intent, .progress)
-        XCTAssertEqual(pause.positionSeconds, 9)
-        XCTAssertEqual(harness.model.selectedPlayback, pause)
+        let rewoundPauseEnvelope = try XCTUnwrap(changes.last?.record)
+        let rewoundPause = try WiltedRecordCodec().decodePlaybackRecord(rewoundPauseEnvelope).value
+        XCTAssertEqual(rewoundPause.intent, .rewind)
+        XCTAssertEqual(rewoundPause.positionSeconds, 9)
+        XCTAssertEqual(harness.model.selectedPlayback, rewoundPause)
         XCTAssertEqual(harness.model.playbackPhase, .paused)
     }
 
@@ -502,6 +502,149 @@ final class ListenerAppModelTests: XCTestCase {
         XCTAssertEqual(recoveredState.pendingChanges, pendingChanges)
     }
 
+    func testFailedFetchCommitRebuildsFromCommittedStateBeforeNonEmptySend() async throws {
+        let fixture = try listenerCommitHandshakeFixture()
+        let committedState = Data([1])
+        let provisionalFetchState = Data([2])
+        let repository = CommitHandshakeRepository(
+            state: SyncRepositoryState(records: fixture.records, engineState: committedState,
+                                       pendingChanges: [fixture.pendingChange]),
+            commitFailuresRemaining: 1
+        )
+        let failedTransport = SerializedStateTransport(
+            initialState: committedState,
+            fetchStates: [provisionalFetchState],
+            persistenceCheck: { state in (await repository.state()).engineState == state }
+        )
+        let recoveredTransport = SerializedStateTransport(
+            initialState: committedState,
+            persistenceCheck: { state in (await repository.state()).engineState == state }
+        )
+        let cancellation = SessionCancelProbe()
+        let factory = SessionSequenceProbe(
+            transports: [failedTransport, recoveredTransport],
+            firstCancelProbe: cancellation
+        )
+        let model = WiltedListenerAppModel(
+            repository: repository,
+            sessionFactory: { stateData in
+                try await factory.makeSession(stateData: stateData)
+            }
+        )
+
+        await model.refresh()
+        guard case .failed(_, retryable: true) = model.syncPhase else {
+            return XCTFail("Expected the fetch whose local commit failed to be retryable")
+        }
+
+        await model.sendPending()
+
+        let stateInputs = await factory.stateInputs()
+        let wasCancelled = await cancellation.wasCalled
+        let failedSaveCount = await failedTransport.saveCount()
+        let recoveredSentCommits = await recoveredTransport.sentCommitStates()
+        let persistedState = await repository.state()
+        XCTAssertEqual(stateInputs, [committedState, committedState])
+        XCTAssertTrue(wasCancelled)
+        XCTAssertEqual(failedSaveCount, 0,
+                       "the transport carrying provisional fetch state must not send")
+        XCTAssertEqual(recoveredSentCommits, [committedState])
+        XCTAssertEqual(persistedState.engineState, committedState)
+    }
+
+    func testCancelledFetchBeforeLocalCommitRebuildsFromPersistedStateBeforeNonEmptySend() async throws {
+        let fixture = try listenerCommitHandshakeFixture()
+        let committedState = Data([1])
+        let provisionalFetchState = Data([2])
+        let stageGate = AsyncEnqueueGate()
+        let repository = CommitHandshakeRepository(
+            state: SyncRepositoryState(records: fixture.records, engineState: committedState,
+                                       pendingChanges: [fixture.pendingChange])
+        )
+        let provisionalTransport = SerializedStateTransport(
+            initialState: committedState,
+            fetchStates: [committedState, provisionalFetchState],
+            persistenceCheck: { state in (await repository.state()).engineState == state }
+        )
+        let recoveredTransport = SerializedStateTransport(
+            initialState: committedState,
+            persistenceCheck: { state in (await repository.state()).engineState == state }
+        )
+        let cancellation = SessionCancelProbe()
+        let factory = SessionSequenceProbe(
+            transports: [provisionalTransport, recoveredTransport],
+            firstCancelProbe: cancellation
+        )
+        let model = WiltedListenerAppModel(
+            repository: repository,
+            sessionFactory: { stateData in
+                try await factory.makeSession(stateData: stateData)
+            }
+        )
+
+        // Load the locally known item first. Sending playback is intentionally
+        // limited to items the listener has displayed, so a cancelled first
+        // launch fetch would have no sendable changes to exercise this path.
+        await model.refresh()
+        XCTAssertEqual(model.items.count, 1)
+        await repository.setStageGate(stageGate)
+        let refresh = Task { await model.refresh() }
+        let stageStarted = await stageGate.waitUntilStarted()
+        XCTAssertTrue(stageStarted)
+        model.cancel()
+        await stageGate.release()
+        await refresh.value
+
+        await model.sendPending()
+
+        let stateInputs = await factory.stateInputs()
+        let wasCancelled = await cancellation.wasCalled
+        let provisionalSaveCount = await provisionalTransport.saveCount()
+        let recoveredSentCommits = await recoveredTransport.sentCommitStates()
+        let persistedState = await repository.state()
+        XCTAssertEqual(stateInputs, [committedState, committedState])
+        XCTAssertTrue(wasCancelled)
+        XCTAssertEqual(provisionalSaveCount, 0,
+                       "the cancelled session carrying provisional fetch state must not send")
+        XCTAssertEqual(recoveredSentCommits, [committedState])
+        XCTAssertEqual(persistedState.engineState, committedState)
+    }
+
+    func testCommittedFetchAndSendStateSurviveLaterEmptyFetchAndSend() async throws {
+        let fixture = try listenerCommitHandshakeFixture()
+        let initialState = Data([1])
+        let fetchedState = Data([2])
+        let sentState = Data([3])
+        let repository = CommitHandshakeRepository(
+            state: SyncRepositoryState(records: fixture.records, engineState: initialState,
+                                       pendingChanges: [fixture.pendingChange])
+        )
+        let transport = SerializedStateTransport(
+            initialState: initialState,
+            fetchStates: [fetchedState, sentState],
+            sendStates: [sentState],
+            persistenceCheck: { state in (await repository.state()).engineState == state }
+        )
+        let model = WiltedListenerAppModel(repository: repository, transport: transport)
+
+        await model.refresh()
+        await model.sendPending()
+        await model.refresh()
+        await model.sendPending()
+
+        let fetchedCommits = await transport.fetchedCommitStates()
+        let sentCommits = await transport.sentCommitStates()
+        let committedState = await transport.committedState()
+        let persistedState = await repository.state()
+        let saveCount = await transport.saveCount()
+        XCTAssertEqual(fetchedCommits, [fetchedState, sentState])
+        XCTAssertEqual(sentCommits, [sentState])
+        XCTAssertEqual(committedState, sentState)
+        XCTAssertEqual(persistedState.engineState, sentState)
+        XCTAssertEqual(saveCount, 1,
+                       "the empty send must retain, rather than replace, the latest committed state")
+    }
+
     func testPixelFixturesAreAccountFreeAndExposeTheirIntendedTerminalStates() {
         let library = WiltedListenerAppModel.makePixelFixture()
         XCTAssertEqual(library.syncPhase, .ready)
@@ -790,6 +933,55 @@ final class ListenerAppModelTests: XCTestCase {
         let acknowledged = await repository.acknowledgedBatches()
         XCTAssertEqual(saved, [[change]])
         XCTAssertEqual(acknowledged, [[change]])
+    }
+
+    func testPlaybackConflictRebaseIsSentWithoutLeavingTheUIStuck() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let repository = try ListenerRepository(directoryURL: root)
+        let url = URL(string: "https://example.test/rebased-playback")!
+        let itemID = try ItemID.derive(from: url)
+        let revisionID = try RevisionID(rawValue: "revision-rebased-playback")
+        let asset = try WiltedAsset(assetID: "audio-rebased-playback",
+                                    contentHash: "sha256:" + String(repeating: "a", count: 64))
+        let codec = WiltedRecordCodec()
+        let article = try Article(itemID: itemID, canonicalURL: url, title: "Rebased playback",
+                                  source: "Test", createdAt: Timestamp(Date()))
+        let revision = try AudioRevision(itemID: itemID, revisionID: revisionID, durationSeconds: 30,
+                                         byteCount: 1, contentHash: asset.contentHash,
+                                         mediaType: "audio/mpeg", createdAt: Timestamp(Date()), schemaVersion: 1)
+        let local = try PlaybackState(itemID: itemID, revisionID: revisionID, sessionID: "session",
+                                      sequence: 3, positionSeconds: 15, durationSeconds: 30,
+                                      completed: false, intent: .progress, deviceID: "iphone",
+                                      updatedAt: Timestamp(Date()))
+        let localRecord = try codec.encode(
+            playback: local,
+            sidecar: WiltedOpaqueSidecar(changeTag: "local-tag", encodedSystemFields: Data([1]))
+        )
+        let remote = try codec.encode(
+            playback: try PlaybackState(itemID: itemID, revisionID: revisionID, sessionID: "session",
+                                         sequence: 2, positionSeconds: 10, durationSeconds: 30,
+                                         completed: false, intent: .progress, deviceID: "mac",
+                                         updatedAt: Timestamp(Date())),
+            sidecar: WiltedOpaqueSidecar(changeTag: "server-tag", encodedSystemFields: Data([2]))
+        )
+        try await repository.commit(try await repository.stage(try SyncFetchBatch(
+            generationID: "catalog", records: [try codec.encode(article: article, currentRevisionID: revisionID),
+                                                    try codec.encode(revision: revision, audioAsset: asset)],
+            engineState: Data([1])
+        )))
+        try await repository.enqueue(try SyncPendingChange(operation: .update, recordID: localRecord.id, record: localRecord))
+        let transport = RebasedPlaybackTransport(serverRecord: remote)
+        let model = WiltedListenerAppModel(repository: repository, transport: transport)
+
+        await model.refresh()
+        await model.sendPending()
+
+        let batches = await transport.savedBatches()
+        XCTAssertEqual(batches.count, 2)
+        XCTAssertEqual(batches[1].first?.record?.sidecar?.changeTag, "server-tag")
+        let finalState = await repository.state()
+        XCTAssertEqual(finalState.pendingChanges, [])
+        XCTAssertEqual(model.syncPhase, .ready)
     }
 
     func testPlaybackSendAcknowledgementReconcilesAnAlreadyCachedItemAsDownloaded() async throws {
@@ -1236,21 +1428,85 @@ final class ListenerAppModelTests: XCTestCase {
 
         await harness.model.seekForward()
 
-        let progress = try XCTUnwrap(harness.model.selectedPlayback)
+        let continuedRewind = try XCTUnwrap(harness.model.selectedPlayback)
         XCTAssertEqual(harness.model.playbackPhase, .paused)
-        XCTAssertEqual(progress.intent, .progress)
-        XCTAssertEqual(progress.positionSeconds, 30)
-        XCTAssertEqual(progress.sessionID, rewind.sessionID)
-        XCTAssertEqual(progress.sequence, rewind.sequence + 1)
+        XCTAssertEqual(continuedRewind.intent, .rewind)
+        XCTAssertEqual(continuedRewind.positionSeconds, 30)
+        XCTAssertEqual(continuedRewind.sessionID, rewind.sessionID)
+        XCTAssertEqual(continuedRewind.sequence, rewind.sequence + 1)
         XCTAssertFalse(harness.engine.isPlaying)
         XCTAssertEqual(harness.engine.playCallCount, playCallsBeforeSeek)
         XCTAssertEqual(harness.engine.loadCallCount, loadCallsBeforeSeek)
         let changes = await harness.repository.enqueuedChanges()
         XCTAssertEqual(changes.count, 4)
         let rewindEnvelope = try XCTUnwrap(changes[2].record)
-        let progressEnvelope = try XCTUnwrap(changes[3].record)
+        let continuedRewindEnvelope = try XCTUnwrap(changes[3].record)
         XCTAssertEqual(try WiltedRecordCodec().decodePlaybackRecord(rewindEnvelope).value, rewind)
-        XCTAssertEqual(try WiltedRecordCodec().decodePlaybackRecord(progressEnvelope).value, progress)
+        XCTAssertEqual(try WiltedRecordCodec().decodePlaybackRecord(continuedRewindEnvelope).value, continuedRewind)
+    }
+
+    func testPlayingRewindThenForwardSeekPreservesExplicitIntent() async throws {
+        let harness = try await PlaybackHarness.make()
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        harness.engine.currentTime = 20
+        await harness.model.refreshNowPlayingReadout()
+        let initialPlayback = try XCTUnwrap(harness.model.selectedPlayback)
+
+        await harness.model.rewind()
+
+        let rewind = try XCTUnwrap(harness.model.selectedPlayback)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
+        XCTAssertEqual(rewind.intent, .rewind)
+        XCTAssertEqual(rewind.positionSeconds, 5)
+        XCTAssertNotEqual(rewind.sessionID, initialPlayback.sessionID)
+        XCTAssertGreaterThanOrEqual(rewind.sequence, 1)
+
+        await harness.model.seekForward()
+
+        let continuedRewind = try XCTUnwrap(harness.model.selectedPlayback)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
+        XCTAssertEqual(continuedRewind.sessionID, rewind.sessionID)
+        XCTAssertGreaterThan(continuedRewind.sequence, rewind.sequence)
+        XCTAssertEqual(continuedRewind.intent, .rewind)
+        let changes = await harness.repository.enqueuedChanges()
+        XCTAssertEqual(changes.count, 3)
+        let rewindEnvelope = try XCTUnwrap(changes[1].record)
+        let continuedRewindEnvelope = try XCTUnwrap(changes[2].record)
+        XCTAssertEqual(try WiltedRecordCodec().decodePlaybackRecord(rewindEnvelope).value, rewind)
+        XCTAssertEqual(try WiltedRecordCodec().decodePlaybackRecord(continuedRewindEnvelope).value, continuedRewind)
+    }
+
+    func testPlayingRestartThenForwardSeekPreservesExplicitIntent() async throws {
+        let harness = try await PlaybackHarness.make()
+        await harness.model.refresh()
+        await harness.model.play(itemID: harness.itemID)
+        harness.engine.currentTime = 20
+        await harness.model.refreshNowPlayingReadout()
+        let initialPlayback = try XCTUnwrap(harness.model.selectedPlayback)
+
+        await harness.model.restart()
+
+        let restart = try XCTUnwrap(harness.model.selectedPlayback)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
+        XCTAssertEqual(restart.intent, .restart)
+        XCTAssertEqual(restart.positionSeconds, 0)
+        XCTAssertNotEqual(restart.sessionID, initialPlayback.sessionID)
+        XCTAssertGreaterThanOrEqual(restart.sequence, 1)
+
+        await harness.model.seekForward()
+
+        let continuedRestart = try XCTUnwrap(harness.model.selectedPlayback)
+        XCTAssertEqual(harness.model.playbackPhase, .playing)
+        XCTAssertEqual(continuedRestart.sessionID, restart.sessionID)
+        XCTAssertGreaterThan(continuedRestart.sequence, restart.sequence)
+        XCTAssertEqual(continuedRestart.intent, .restart)
+        let changes = await harness.repository.enqueuedChanges()
+        XCTAssertEqual(changes.count, 3)
+        let restartEnvelope = try XCTUnwrap(changes[1].record)
+        let continuedRestartEnvelope = try XCTUnwrap(changes[2].record)
+        XCTAssertEqual(try WiltedRecordCodec().decodePlaybackRecord(restartEnvelope).value, restart)
+        XCTAssertEqual(try WiltedRecordCodec().decodePlaybackRecord(continuedRestartEnvelope).value, continuedRestart)
     }
 
     func testRestartOpensANewSessionInsteadOfFailingTheSequenceFloor() async throws {
@@ -2014,6 +2270,169 @@ private actor SessionSequenceProbe {
     func stateInputs() -> [Data?] { inputs }
 }
 
+/// Models the commit handshake that keeps CloudKit engine serialization local
+/// until the repository has persisted the matching fetch or send result.
+private actor SerializedStateTransport: SyncTransport {
+    nonisolated let statuses = AsyncStream<SyncStatus> { _ in }
+    private var currentState: Data?
+    private var fetchedState: Data?
+    private var sentState: Data?
+    private var fetchStates: [Data?]
+    private var sendStates: [Data?]
+    private var committedFetchStates: [Data?] = []
+    private var committedSendStates: [Data?] = []
+    private var saves = 0
+    private let persistenceCheck: (@Sendable (Data?) async -> Bool)?
+
+    init(
+        initialState: Data?,
+        fetchStates: [Data?] = [],
+        sendStates: [Data?] = [],
+        persistenceCheck: (@Sendable (Data?) async -> Bool)? = nil
+    ) {
+        self.currentState = initialState
+        self.fetchStates = fetchStates
+        self.sendStates = sendStates
+        self.persistenceCheck = persistenceCheck
+    }
+
+    func fetchChanges() async throws -> SyncFetchBatch {
+        let state = fetchStates.isEmpty ? currentState : fetchStates.removeFirst()
+        currentState = state
+        fetchedState = state
+        return try SyncFetchBatch(generationID: "serialized-state-fetch-\(committedFetchStates.count)",
+                                  records: [], engineState: state)
+    }
+
+    func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {
+        saves += 1
+        let state = sendStates.isEmpty ? currentState : sendStates.removeFirst()
+        currentState = state
+        sentState = state
+        return try SyncSendResult(engineState: state, acknowledgedRecordIDs: changes.map(\.recordID),
+                                  serverEnvelopes: changes.compactMap(\.record))
+    }
+
+    func commitFetchedState(_ engineState: Data?) async throws {
+        guard engineState == fetchedState else { throw TestSyncError.network }
+        if let persistenceCheck { guard await persistenceCheck(engineState) else { throw TestSyncError.network } }
+        currentState = engineState
+        committedFetchStates.append(engineState)
+        fetchedState = nil
+    }
+
+    func commitSentState(_ engineState: Data?) async throws {
+        guard engineState == (sentState ?? currentState) else { throw TestSyncError.network }
+        if let persistenceCheck { guard await persistenceCheck(engineState) else { throw TestSyncError.network } }
+        currentState = engineState
+        committedSendStates.append(engineState)
+        sentState = nil
+    }
+
+    func committedState() -> Data? { currentState }
+    func fetchedCommitStates() -> [Data?] { committedFetchStates }
+    func sentCommitStates() -> [Data?] { committedSendStates }
+    func saveCount() -> Int { saves }
+}
+
+private actor CommitHandshakeRepository: SyncRepository {
+    nonisolated let statuses = AsyncStream<SyncStatus> { _ in }
+    private var snapshot: SyncRepositoryState
+    private var commitFailuresRemaining: Int
+    private var stageGate: AsyncEnqueueGate?
+
+    init(
+        state: SyncRepositoryState,
+        commitFailuresRemaining: Int = 0,
+        stageGate: AsyncEnqueueGate? = nil
+    ) {
+        self.snapshot = state
+        self.commitFailuresRemaining = commitFailuresRemaining
+        self.stageGate = stageGate
+    }
+
+    func state() async -> SyncRepositoryState { snapshot }
+
+    func setStageGate(_ gate: AsyncEnqueueGate?) { stageGate = gate }
+
+    func stage(_ batch: SyncFetchBatch) async throws -> StagedSyncBatch {
+        if let stageGate { await stageGate.suspend() }
+        return StagedSyncBatch(batch: batch, priorState: snapshot)
+    }
+
+    func commit(_ staged: StagedSyncBatch) async throws {
+        guard commitFailuresRemaining == 0 else {
+            commitFailuresRemaining -= 1
+            throw TestSyncError.network
+        }
+        snapshot = SyncRepositoryState(
+            records: staged.batch.records.isEmpty ? snapshot.records : staged.batch.records,
+            engineState: staged.batch.engineState ?? snapshot.engineState,
+            pendingChanges: snapshot.pendingChanges,
+            tombstones: snapshot.tombstones,
+            remoteAcknowledgedRecordIDs: snapshot.remoteAcknowledgedRecordIDs,
+            protectedRecordIDs: snapshot.protectedRecordIDs,
+            conflictedRecordIDs: snapshot.conflictedRecordIDs,
+            conflictServerRecords: snapshot.conflictServerRecords,
+            accountOwnerToken: snapshot.accountOwnerToken
+        )
+    }
+
+    func enqueue(_ change: SyncPendingChange) async throws {
+        snapshot = SyncRepositoryState(
+            records: snapshot.records,
+            engineState: snapshot.engineState,
+            pendingChanges: snapshot.pendingChanges.filter { $0.recordID != change.recordID } + [change],
+            tombstones: snapshot.tombstones,
+            remoteAcknowledgedRecordIDs: snapshot.remoteAcknowledgedRecordIDs,
+            protectedRecordIDs: snapshot.protectedRecordIDs,
+            conflictedRecordIDs: snapshot.conflictedRecordIDs,
+            conflictServerRecords: snapshot.conflictServerRecords,
+            accountOwnerToken: snapshot.accountOwnerToken
+        )
+    }
+
+    func acknowledge(_ result: SyncSendResult, sent _: [SyncPendingChange]) async throws {
+        let acknowledged = Set(result.acknowledgedRecordIDs)
+        snapshot = SyncRepositoryState(
+            records: snapshot.records,
+            engineState: result.engineState ?? snapshot.engineState,
+            pendingChanges: snapshot.pendingChanges.filter { !acknowledged.contains($0.recordID) },
+            tombstones: snapshot.tombstones,
+            remoteAcknowledgedRecordIDs: snapshot.remoteAcknowledgedRecordIDs.union(acknowledged),
+            protectedRecordIDs: snapshot.protectedRecordIDs.subtracting(acknowledged),
+            conflictedRecordIDs: snapshot.conflictedRecordIDs.subtracting(acknowledged),
+            conflictServerRecords: snapshot.conflictServerRecords.filter { !acknowledged.contains($0.key) },
+            accountOwnerToken: snapshot.accountOwnerToken
+        )
+    }
+}
+
+private func listenerCommitHandshakeFixture() throws -> (records: [WiltedRecordEnvelope], pendingChange: SyncPendingChange) {
+    let url = URL(string: "https://example.test/listener-commit-handshake")!
+    let itemID = try ItemID.derive(from: url)
+    let revisionID = try RevisionID(rawValue: "listener-commit-handshake")
+    let hash = "sha256:" + String(repeating: "c", count: 64)
+    let asset = try WiltedAsset(assetID: "listener-commit-handshake", contentHash: hash)
+    let article = try Article(itemID: itemID, canonicalURL: url, title: "Commit handshake",
+                              source: "Test", createdAt: Timestamp(Date()))
+    let revision = try AudioRevision(itemID: itemID, revisionID: revisionID,
+                                     durationSeconds: 30, byteCount: 1, contentHash: hash,
+                                     mediaType: "audio/m4a", createdAt: Timestamp(Date()), schemaVersion: 1)
+    let playback = try PlaybackState(itemID: itemID, revisionID: revisionID, sessionID: "handshake",
+                                     sequence: 1, positionSeconds: 5, durationSeconds: 30,
+                                     completed: false, intent: .progress, deviceID: "iphone",
+                                     updatedAt: Timestamp(Date()))
+    let codec = WiltedRecordCodec()
+    let playbackRecord = try codec.encode(playback: playback)
+    let pendingChange = try SyncPendingChange(operation: .update, recordID: playbackRecord.id, record: playbackRecord)
+    return ([
+        try codec.encode(article: article, currentRevisionID: revisionID),
+        try codec.encode(revision: revision, audioAsset: asset),
+        playbackRecord,
+    ], pendingChange)
+}
+
 private func listenerStaleStageFixture(changeCount: Int) throws -> ([WiltedRecordEnvelope], [SyncPendingChange]) {
     let url = URL(string: "https://example.test/listener-stale-stage")!
     let itemID = try ItemID.derive(from: url)
@@ -2209,6 +2628,32 @@ private actor RecordingSyncTransport: SyncTransport {
     func savedChanges() -> [[SyncPendingChange]] { sent }
     func fetchCountValue() -> Int { fetchCount }
     func saveCountValue() -> Int { saveCount }
+}
+
+private actor RebasedPlaybackTransport: SyncTransport {
+    nonisolated let statuses = AsyncStream<SyncStatus> { _ in }
+    private let serverRecord: WiltedRecordEnvelope
+    private var batches: [[SyncPendingChange]] = []
+
+    init(serverRecord: WiltedRecordEnvelope) { self.serverRecord = serverRecord }
+
+    func fetchChanges() async throws -> SyncFetchBatch {
+        try SyncFetchBatch(generationID: "empty", records: [], engineState: Data([1]))
+    }
+
+    func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {
+        batches.append(changes)
+        if batches.count == 1 {
+            return try SyncSendResult(engineState: Data([2]), failures: [
+                SyncSendFailure(recordID: serverRecord.id, disposition: .conflict, serverRecord: serverRecord)
+            ])
+        }
+        return try SyncSendResult(engineState: Data([3]), acknowledgedRecordIDs: changes.map(\.recordID),
+                                  serverEnvelopes: changes.compactMap(\.record))
+    }
+
+    func savedBatches() -> [[SyncPendingChange]] { batches }
+    func operationGeneration() async -> UInt64 { 0 }
 }
 
 private actor LegacyAssetEngineDriver: CloudKitEngineDriver {

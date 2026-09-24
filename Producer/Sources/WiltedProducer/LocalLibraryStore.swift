@@ -375,8 +375,9 @@ public enum WorkTicketKind: String, Codable, Equatable, Sendable, CaseIterable {
 }
 
 /// A ticket's lifecycle. `isTerminal` covers the three states a ticket
-/// cannot leave once reached -- a fresh issue or retry always starts a new
-/// ticket rather than reopening one of these.
+/// cannot leave once reached. A subsequent request re-admits the same durable
+/// row with a newer request sequence; it does not transition this attempt
+/// backward.
 public enum WorkTicketState: String, Codable, Equatable, Sendable {
     case pending
     case deferred
@@ -422,12 +423,13 @@ public enum WorkTicketState: String, Codable, Equatable, Sendable {
 /// preparation, or article preparation -- keyed by kind and subject so a
 /// retry or relaunch finds the existing ticket instead of issuing a
 /// duplicate. `requestSequence` orders tickets across kinds by intake order
-/// and is allocated by the store, never by the caller.
+/// and identifies the current attempt in the one durable row for this kind
+/// and subject.
 public struct WorkTicket: Codable, Equatable, Sendable {
     public let kind: WorkTicketKind
     public let subjectID: String
     public var resolvedItemID: String?
-    public let requestSequence: Int
+    public var requestSequence: Int
     public var state: WorkTicketState
     public var attemptCount: Int
     public var failureKind: String?
@@ -436,7 +438,7 @@ public struct WorkTicket: Codable, Equatable, Sendable {
     public var policySnapshot: Data?
     public var processingPolicy: Data?
     public var runID: String?
-    public let requestedAt: Timestamp
+    public var requestedAt: Timestamp
     public var updatedAt: Timestamp
 
     /// `"<kind>|<subjectID>"`, matching the persisted record's unique key.
@@ -1663,8 +1665,9 @@ private enum LocalLibrarySchemaV12Models {
             updatedAt = value.updatedAt.date
         }
 
-        /// Overwrites every field but `id`/`kind`/`subjectID`/`requestedAt` --
-        /// the identity and intake time of a ticket never change underneath it.
+        /// Overwrites every field but `id`/`kind`/`subjectID`. A re-admission
+        /// keeps that durable key but replaces its attempt identity and intake
+        /// time with the newer request.
         func apply(_ value: WorkTicket) {
             resolvedItemID = value.resolvedItemID
             requestSequence = value.requestSequence
@@ -1676,6 +1679,7 @@ private enum LocalLibrarySchemaV12Models {
             policySnapshot = value.policySnapshot
             processingPolicy = value.processingPolicy
             runID = value.runID
+            requestedAt = value.requestedAt.date
             updatedAt = value.updatedAt.date
         }
     }
@@ -2128,14 +2132,11 @@ public actor LocalLibraryStore {
     /// ordering guarantee between detached `Task`s.
     ///
     /// Immutable-at-admission fields (`policySnapshot`, `processingPolicy`,
-    /// `resolvedItemID`) are only ever set when currently nil, matching
-    /// `issueWorkTicket`'s and the caller's existing immutability contract.
-    /// `attemptCount` increments only when the transition's destination is
-    /// `.running`, once per call -- a duplicate `.running` write (two retries
-    /// racing to report the same attempt) still only counts once, because the
-    /// second call sees `state == .running` already and `canTransition`
-    /// allows the no-op but the caller is expected not to call it twice for
-    /// one attempt.
+    /// `resolvedItemID`) are only ever set when currently nil. The sole
+    /// exception is `readmitWorkTicket`, which atomically replaces them for a
+    /// genuinely newer request after an earlier attempt has settled.
+    /// `attemptCount` increments only on entry into `.running`, never for a
+    /// duplicate `.running` write for the same request sequence.
     ///
     /// Throws `.invalidWorkTicketTransition` rather than silently applying or
     /// silently doing nothing when the requested transition is illegal per
@@ -2155,6 +2156,55 @@ public actor LocalLibraryStore {
         failureKind: String? = nil,
         lastFailureMessage: String? = nil,
         at now: Timestamp
+    ) throws -> WorkTicket {
+        try transitionWorkTicket(
+            kind: kind, subjectID: subjectID, requestSequence: requestSequence,
+            resolvedItemID: resolvedItemID, policySnapshot: policySnapshot,
+            processingPolicy: processingPolicy, to: state, failureKind: failureKind,
+            lastFailureMessage: lastFailureMessage, at: now, reAdmitting: false
+        )
+    }
+
+    /// Atomically admits a newer request into the durable row for this
+    /// `(kind, subjectID)`. A newer sequence supersedes the prior attempt in
+    /// place: it replaces both policy values, clears terminal/run metadata,
+    /// and then applies `state`. A late write carrying an older sequence is a
+    /// no-op, so an earlier attempt cannot overwrite this admission.
+    ///
+    /// Within one request sequence, ordinary forward-only transition rules
+    /// still apply and policy remains immutable. Callers must use this only
+    /// when they have accepted a genuinely new request.
+    @discardableResult
+    public func readmitWorkTicket(
+        kind: WorkTicketKind,
+        subjectID: String,
+        requestSequence: Int,
+        resolvedItemID: String? = nil,
+        policySnapshot: Data? = nil,
+        processingPolicy: Data? = nil,
+        to state: WorkTicketState,
+        at now: Timestamp
+    ) throws -> WorkTicket {
+        try transitionWorkTicket(
+            kind: kind, subjectID: subjectID, requestSequence: requestSequence,
+            resolvedItemID: resolvedItemID, policySnapshot: policySnapshot,
+            processingPolicy: processingPolicy, to: state, failureKind: nil,
+            lastFailureMessage: nil, at: now, reAdmitting: true
+        )
+    }
+
+    private func transitionWorkTicket(
+        kind: WorkTicketKind,
+        subjectID: String,
+        requestSequence: Int? = nil,
+        resolvedItemID: String? = nil,
+        policySnapshot: Data? = nil,
+        processingPolicy: Data? = nil,
+        to state: WorkTicketState,
+        failureKind: String? = nil,
+        lastFailureMessage: String? = nil,
+        at now: Timestamp,
+        reAdmitting: Bool
     ) throws -> WorkTicket {
         let context = ModelContext(container)
         let id = "\(kind.rawValue)|\(subjectID)"
@@ -2176,6 +2226,31 @@ public actor LocalLibraryStore {
             )
         }
 
+        if let requestSequence, requestSequence < ticket.requestSequence {
+            // This is a late write from an earlier attempt. It must leave the
+            // newer row completely untouched, including its timestamp.
+            return ticket
+        }
+        if let requestSequence, requestSequence > ticket.requestSequence {
+            guard reAdmitting else {
+                throw LocalLibraryStoreError.invalidWorkTicketTransition(
+                    from: ticket.state.rawValue, to: state.rawValue
+                )
+            }
+            // One row remains per key, but every value tied to the old run is
+            // discarded before the new admission supplies its policy.
+            ticket.requestSequence = requestSequence
+            ticket.requestedAt = now
+            ticket.state = .pending
+            ticket.resolvedItemID = resolvedItemID
+            ticket.failureKind = nil
+            ticket.lastFailureMessage = nil
+            ticket.nextEligibleAt = nil
+            ticket.policySnapshot = policySnapshot
+            ticket.processingPolicy = processingPolicy
+            ticket.runID = nil
+        }
+
         guard ticket.state.canTransition(to: state) else {
             throw LocalLibraryStoreError.invalidWorkTicketTransition(from: ticket.state.rawValue, to: state.rawValue)
         }
@@ -2183,7 +2258,7 @@ public actor LocalLibraryStore {
         if ticket.policySnapshot == nil, let policySnapshot { ticket.policySnapshot = policySnapshot }
         if ticket.processingPolicy == nil, let processingPolicy { ticket.processingPolicy = processingPolicy }
         if ticket.resolvedItemID == nil, let resolvedItemID { ticket.resolvedItemID = resolvedItemID }
-        if state == .running { ticket.attemptCount += 1 }
+        if state == .running, ticket.state != .running { ticket.attemptCount += 1 }
         ticket.state = state
         if let failureKind { ticket.failureKind = failureKind }
         if let lastFailureMessage { ticket.lastFailureMessage = lastFailureMessage }
@@ -4836,6 +4911,65 @@ public actor LocalLibraryStore {
         )
     }
 
+    /// Records a manual completion and retires the same active episode in one
+    /// save. A started Larder row uses this rather than separately writing a
+    /// listening fact and a retirement, so Feeds cannot observe a completed
+    /// episode as active after an interrupted write.
+    ///
+    /// Existing prepared media, transcripts, and revisions are deliberately
+    /// untouched. A dismissal is stronger than retirement and is never
+    /// replaced by this operation.
+    @discardableResult
+    public func completeAndRetireEpisode(
+        listening: PodcastListeningState,
+        at retiredAt: Timestamp = Timestamp(Date())
+    ) throws -> Bool {
+        let context = ModelContext(container)
+        let identifier = listening.episodeID.rawValue
+        guard let episode = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+            .first(where: { $0.id == identifier }), episode.removalKind == nil else { return false }
+
+        let listeningRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>())
+        if let existing = listeningRecords.first(where: { $0.id == identifier }) {
+            existing.completedAt = listening.completedAt?.date
+            existing.lastRevisionID = listening.lastRevisionID?.rawValue
+            existing.updatedAt = listening.updatedAt.date
+        } else {
+            context.insert(LocalLibrarySchemaV10Models.PodcastListeningRecord(listening))
+        }
+        episode.retiredAt = retiredAt.date
+        episode.removalKind = PodcastEpisodeRemovalKind.retired.rawValue
+        try context.save()
+        return true
+    }
+
+    /// Reverses a completion written by `completeAndRetireEpisode` in one
+    /// save. It intentionally accepts only a retirement with the manual
+    /// completion shape (`lastRevisionID == nil`), so stale Undo Skip cannot
+    /// restore or alter a separately dismissed episode.
+    @discardableResult
+    public func undoCompletedAndRetiredEpisode(
+        _ episodeID: ItemID,
+        updatedAt: Timestamp = Timestamp(Date())
+    ) throws -> Bool {
+        let context = ModelContext(container)
+        let identifier = episodeID.rawValue
+        guard let episode = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+            .first(where: { $0.id == identifier }),
+            episode.removalKind == PodcastEpisodeRemovalKind.retired.rawValue,
+            let listening = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>())
+            .first(where: { $0.id == identifier }),
+            listening.completedAt != nil,
+            listening.lastRevisionID == nil else { return false }
+
+        listening.completedAt = nil
+        listening.updatedAt = updatedAt.date
+        episode.removalKind = nil
+        episode.retiredAt = nil
+        try context.save()
+        return true
+    }
+
     /// Idempotent: retiring an episode already retired or dismissed is a
     /// no-op returning `false`. Retiring cannot override a dismissal --
     /// dismissal is the stronger of the two removals; see `dismissPodcastEpisode`.
@@ -4878,6 +5012,7 @@ public actor LocalLibraryStore {
             .first(where: { $0.id == identifier }), record.removalKind != nil else { return false }
         record.removalKind = nil
         record.retiredAt = nil
+        let restoredAt = Date()
         // Clearing `lastRevisionID` (not `completedAt`) keeps "I listened to
         // this" intact while defeating the bootstrap sweep's exact-revision
         // match: a re-download that lands on the same content-addressed
@@ -4887,6 +5022,7 @@ public actor LocalLibraryStore {
             FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>()
         ).first(where: { $0.id == identifier }) {
             listening.lastRevisionID = nil
+            listening.updatedAt = restoredAt
         }
         try context.save()
         return true
@@ -4938,7 +5074,10 @@ public actor LocalLibraryStore {
     /// Scoped to the *current* ready revision (not just any completed
     /// listening fact) so a dismissed-then-restored episode, whose ready
     /// revision was deleted and has not been re-downloaded, is left alone
-    /// rather than retired sight unseen. Separate from
+    /// rather than retired sight unseen. A legacy completion without a
+    /// revision ID may retire only when that ready revision was created no
+    /// later than the completion and the listening row was not refreshed after
+    /// completion; a later download or restore remains active. Separate from
     /// `reconcilePodcastStateV10` because, unlike every step there, this is
     /// not a no-op on repeat first launches: it is the completion flow's own
     /// retirement, run once for every episode that finished before this
@@ -4956,7 +5095,12 @@ public actor LocalLibraryStore {
             guard let episode = episodes.first(where: { $0.id == listening.id }), episode.removalKind == nil,
                   let episodeID = try? ItemID(rawValue: listening.id),
                   let ready = readyRevisions[episodeID.rawValue],
-                  listening.lastRevisionID == ready.revision.revisionID.rawValue else { continue }
+                  let completedAt = listening.completedAt else { continue }
+            let matchesCompletedRevision = listening.lastRevisionID == ready.revision.revisionID.rawValue
+            let legacyCompletionHasPriorReadyRevision = listening.lastRevisionID == nil
+                && listening.updatedAt <= completedAt
+                && ready.revision.createdAt.date <= completedAt
+            guard matchesCompletedRevision || legacyCompletionHasPriorReadyRevision else { continue }
             episode.retiredAt = Date()
             episode.removalKind = PodcastEpisodeRemovalKind.retired.rawValue
             changed = true

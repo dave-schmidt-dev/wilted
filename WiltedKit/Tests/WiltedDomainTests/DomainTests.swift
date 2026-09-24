@@ -342,13 +342,21 @@ final class DomainTests: XCTestCase {
         XCTAssertEqual(mergePlayback(current: current, incoming: undo, changeTagMatches: true).reason, .completionCannotBeReversed)
     }
 
-    func testExplicitIntentRequiresNewSessionAndCurrentTag() throws {
+    func testExplicitIntentIsScopedToItsSessionAndRequiresACurrentTag() throws {
         let current = try makePlayback(sequence: 2, position: 100)
         let sameSession = try makePlayback(sequence: 3, position: 10, intent: .rewind)
         XCTAssertEqual(mergePlayback(current: current, incoming: sameSession, changeTagMatches: true).reason, .explicitIntentRequiresNewSession)
         let newSession = try makePlayback(session: "session-new", sequence: 1, position: 10, intent: .rewind)
         XCTAssertEqual(mergePlayback(current: current, incoming: newSession, changeTagMatches: false).reason, .staleChangeTag)
         XCTAssertEqual(mergePlayback(current: current, incoming: newSession, changeTagMatches: true).decision, .accept)
+
+        let rewindSession = try makePlayback(session: "session-new", sequence: 1, position: 10, intent: .rewind)
+        let retainedRewind = try makePlayback(session: "session-new", sequence: 2, position: 15, intent: .rewind)
+        XCTAssertEqual(mergePlayback(current: rewindSession, incoming: retainedRewind, changeTagMatches: true).decision, .accept)
+        let legacyProgress = try makePlayback(session: "session-new", sequence: 3, position: 20)
+        XCTAssertEqual(mergePlayback(current: retainedRewind, incoming: legacyProgress, changeTagMatches: true).decision, .accept)
+        let conflictingRestart = try makePlayback(session: "session-new", sequence: 3, position: 20, intent: .restart)
+        XCTAssertEqual(mergePlayback(current: retainedRewind, incoming: conflictingRestart, changeTagMatches: true).reason, .explicitIntentRequiresNewSession)
     }
 
     func testPreparationStatusRequiresConsistentTerminalPayload() throws {

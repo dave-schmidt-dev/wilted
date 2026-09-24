@@ -1,4 +1,5 @@
 import Foundation
+import WiltedDomain
 
 /// Coordinates fetch, staging, and atomic commit without inspecting opaque engine bytes.
 public actor SyncCoordinator {
@@ -29,11 +30,7 @@ public actor SyncCoordinator {
     public func synchronize() async -> Result<SyncFetchBatch, Error> {
         emit(.init(phase: .fetching, message: "Fetching changes"))
         do {
-            if rebuildTransportBeforeNextSynchronization, let transportFactory {
-                let state = await repository.state()
-                transport = try await transportFactory(state.engineState)
-                rebuildTransportBeforeNextSynchronization = false
-            }
+            try await rebuildTransportIfNeeded()
             let operationGeneration = await transport.operationGeneration()
             let batch = try await transport.fetchChanges()
             for attempt in 1...Self.maximumStaleStageAttempts {
@@ -43,6 +40,7 @@ public actor SyncCoordinator {
                 emit(.init(phase: .committing, message: "Committing fetched changes", generationID: batch.generationID))
                 do {
                     try await repository.commit(staged)
+                    try await transport.commitFetchedState(batch.engineState)
                     emit(.init(phase: .completed, message: "Sync completed", generationID: batch.generationID))
                     return .success(batch)
                 } catch let error as WiltedSyncError where error == .staleStagedBatch {
@@ -62,63 +60,35 @@ public actor SyncCoordinator {
     /// Sends queued mutations and atomically applies the transport acknowledgement.
     public func sendPending(role: SyncDeviceRole) async -> Result<SyncSendResult, Error> {
         do {
+            try await rebuildTransportIfNeeded()
             var state = await repository.state()
-            let blocked = state.conflictBlockedChanges
-            // A queue that is entirely conflicted sends an empty batch and returns a
-            // clean result, so without this the surface reports a completed upload
-            // while every queued change is still sitting on the device (W-INV-001).
-            if state.sendableChanges.isEmpty, !blocked.isEmpty {
-                let reviewRequired = !state.accountQuarantinedRecordIDs.isEmpty
-                emit(.init(phase: .failed, message: Self.blockedMessage(count: blocked.count, accountReviewRequired: reviewRequired)))
-                return .failure(WiltedSyncError.sendBlockedByConflicts(count: blocked.count, accountReviewRequired: reviewRequired))
-            }
-
             var results: [SyncSendResult] = []
-            let pendingChunks = state.pendingChanges.filter { $0.recordID.recordType == .revisionChunk }
-            if !pendingChunks.isEmpty {
-                // A ready revision manifest and its item pointer make the revision
-                // discoverable. Never add either to CKSyncEngine until every chunk has
-                // been acknowledged in a prior send. This remains fail-closed when a
-                // chunk is retryable or conflicted.
-                let chunks = state.sendableChanges.filter { $0.recordID.recordType == .revisionChunk }
-                guard !chunks.isEmpty else {
-                    let blockedChunks = state.conflictBlockedChanges.filter {
-                        $0.recordID.recordType == .revisionChunk
-                    }
-                    let reviewRequired = !state.accountQuarantinedRecordIDs.intersection(
-                        Set(blockedChunks.map(\.recordID))
-                    ).isEmpty
-                    emit(.init(phase: .failed, message: Self.blockedMessage(
-                        count: blockedChunks.count,
-                        accountReviewRequired: reviewRequired
-                    )))
-                    return .failure(WiltedSyncError.sendBlockedByConflicts(
-                        count: blockedChunks.count,
-                        accountReviewRequired: reviewRequired
-                    ))
-                }
+
+            // Chunks must precede only the manifest and item pointer for their own
+            // revision. A stalled revision must not turn the durable queue into a
+            // global barrier for another revision, item, or playback update.
+            let chunks = state.sendableChanges.filter(isRevisionChunk)
+            if !chunks.isEmpty {
                 let chunkResult = try await sendAndAcknowledge(chunks, role: role)
                 results.append(chunkResult)
-                guard chunkResult.failures.isEmpty else {
-                    let result = try combine(results)
-                    emit(.init(phase: .failed, message: Self.retryMessage(count: result.failures.count)))
-                    return .success(result)
-                }
                 state = await repository.state()
-                guard !state.pendingChanges.contains(where: {
-                    $0.recordID.recordType == .revisionChunk
-                }) else {
-                    let error = WiltedSyncError.transport(
-                        "chunk publication incomplete; ready records were withheld"
-                    )
-                    emit(.init(phase: .failed, message: String(describing: error)))
-                    return .failure(error)
-                }
             }
 
-            let remaining = state.sendableChanges
-            if !remaining.isEmpty || results.isEmpty {
+            let withheld = readyRecordsWithheldByPendingChunks(in: state)
+            let remaining = state.sendableChanges.filter {
+                !isRevisionChunk($0) && !withheld.contains($0.recordID)
+            }
+            if !remaining.isEmpty {
                 results.append(try await sendAndAcknowledge(remaining, role: role))
+            }
+            if results.isEmpty {
+                let blocked = state.conflictBlockedChanges
+                if !blocked.isEmpty {
+                    let reviewRequired = !state.accountQuarantinedRecordIDs.isEmpty
+                    emit(.init(phase: .failed, message: Self.blockedMessage(count: blocked.count, accountReviewRequired: reviewRequired)))
+                    return .failure(WiltedSyncError.sendBlockedByConflicts(count: blocked.count, accountReviewRequired: reviewRequired))
+                }
+                results.append(try await sendAndAcknowledge([], role: role))
             }
             let result = try combine(results)
             // Read after acknowledgement: this send can conflict records of its own, so
@@ -131,6 +101,7 @@ public actor SyncCoordinator {
             }
             return .success(result)
         } catch {
+            rebuildTransportBeforeNextSynchronization = true
             emit(.init(phase: .failed, message: String(describing: error)))
             return .failure(error)
         }
@@ -167,6 +138,15 @@ public actor SyncCoordinator {
 
     private func emit(_ status: SyncStatus) { continuation?.yield(status) }
 
+    /// A failed fetch/stage/commit can leave an adapter holding provisional
+    /// engine state. Rebuild it from the repository before any later operation.
+    private func rebuildTransportIfNeeded() async throws {
+        guard rebuildTransportBeforeNextSynchronization, let transportFactory else { return }
+        let state = await repository.state()
+        transport = try await transportFactory(state.engineState)
+        rebuildTransportBeforeNextSynchronization = false
+    }
+
     private func ensureCurrent(_ expected: UInt64) async throws {
         guard await transport.operationGeneration() == expected else {
             throw WiltedSyncError.transport("sync operation superseded by an account change")
@@ -178,6 +158,7 @@ public actor SyncCoordinator {
         let result = try await transport.save(changes: changes, role: role)
         try await ensureCurrent(operationGeneration)
         try await repository.acknowledge(result, sent: changes)
+        try await transport.commitSentState(result.engineState)
         return result
     }
 
@@ -188,5 +169,76 @@ public actor SyncCoordinator {
             serverEnvelopes: results.flatMap(\.serverEnvelopes),
             failures: results.flatMap(\.failures)
         )
+    }
+
+    private struct RevisionKey: Hashable {
+        let itemID: ItemID
+        let revisionID: RevisionID
+    }
+
+    private func isRevisionChunk(_ change: SyncPendingChange) -> Bool {
+        change.recordID.recordType == .revisionChunk
+    }
+
+    /// Returns the ready records that would expose an incomplete revision. The
+    /// revision manifest is addressed by its identity, while an item record is
+    /// addressed by its current-revision pointer.
+    private func readyRecordsWithheldByPendingChunks(in state: SyncRepositoryState) -> Set<WiltedRecordID> {
+        let pendingChunks = state.pendingChanges.filter(isRevisionChunk)
+        guard !pendingChunks.isEmpty else { return [] }
+        let pendingChunkKeys = pendingChunks.map(revisionKeyForChunk)
+        let pendingRevisions = Set(pendingChunkKeys.compactMap { $0 })
+        // An unidentified chunk could belong to any ready revision. Do not let an
+        // ambiguous identity turn the per-revision barrier into a fail-open path.
+        let hasUnidentifiedChunk = pendingChunkKeys.contains(nil)
+        return Set(state.sendableChanges.compactMap { change in
+            guard isReadyRecord(change) else { return nil }
+            guard !hasUnidentifiedChunk,
+                  let key = readyRevisionKey(for: change),
+                  !pendingRevisions.contains(key) else { return change.recordID }
+            return nil
+        })
+    }
+
+    private func revisionKeyForChunk(_ change: SyncPendingChange) -> RevisionKey? {
+        guard change.recordID.recordType == .revisionChunk else { return nil }
+        return revisionKey(from: change.record)
+    }
+
+    private func readyRevisionKey(for change: SyncPendingChange) -> RevisionKey? {
+        switch change.recordID.recordType {
+        case .revision:
+            guard change.record?.fields["audioManifest"] != nil else { return nil }
+            return revisionKey(from: change.record)
+        case .item:
+            guard let envelope = change.record,
+                  case let .string(itemValue)? = envelope.fields["itemID"],
+                  case let .string(revisionValue)? = envelope.fields["currentRevisionID"],
+                  let itemID = try? ItemID(rawValue: itemValue),
+                  let revisionID = try? RevisionID(rawValue: revisionValue) else { return nil }
+            return RevisionKey(itemID: itemID, revisionID: revisionID)
+        default:
+            return nil
+        }
+    }
+
+    private func isReadyRecord(_ change: SyncPendingChange) -> Bool {
+        switch change.recordID.recordType {
+        case .revision:
+            return change.record?.fields["audioManifest"] != nil
+        case .item:
+            return change.record?.fields["currentRevisionID"] != nil
+        default:
+            return false
+        }
+    }
+
+    private func revisionKey(from record: WiltedRecordEnvelope?) -> RevisionKey? {
+        guard let record,
+              case let .string(itemValue)? = record.fields["itemID"],
+              case let .string(revisionValue)? = record.fields["revisionID"],
+              let itemID = try? ItemID(rawValue: itemValue),
+              let revisionID = try? RevisionID(rawValue: revisionValue) else { return nil }
+        return RevisionKey(itemID: itemID, revisionID: revisionID)
     }
 }

@@ -18,7 +18,12 @@ public actor CloudKitSyncTransport: SyncTransport {
     private let accumulator: CloudKitChangeAccumulator
     private let statusContinuation: AsyncStream<SyncStatus>.Continuation
     private let accountContinuation: AsyncStream<CloudKitAccountChangeSignal>.Continuation
-    private var stateData: Data?
+    /// State that has committed to the repository and may safely be returned by a send.
+    private var committedStateData: Data?
+    /// State seen during a fetch, held until its fetched batch commits locally.
+    private var fetchedStateData: Data?
+    /// State seen during a send, held until its acknowledgement commits locally.
+    private var sentStateData: Data?
     private var operationGenerationValue: UInt64 = 0
     private var generation = 0
     private var pendingChanges: [SyncPendingChange] = []
@@ -50,9 +55,9 @@ public actor CloudKitSyncTransport: SyncTransport {
                 knownOwnerToken: String? = nil) throws {
         if let stateData {
             guard !stateData.isEmpty, driver.isValidStateData(stateData) else { throw CloudKitSyncError.stateCorrupt }
-            self.stateData = stateData
+            self.committedStateData = stateData
         } else {
-            self.stateData = nil
+            self.committedStateData = nil
         }
         self.driver = driver
         self.role = role
@@ -96,10 +101,10 @@ public actor CloudKitSyncTransport: SyncTransport {
         guard !quarantined else { throw CloudKitSyncError.quarantined }
         guard !sendInFlight, !fetchInFlight else { throw CloudKitSyncError.operationInProgress }
         guard role == self.role else { throw CloudKitSyncError.invalidRecordIdentity }
-        if let stateData, !driver.isValidStateData(stateData) { throw CloudKitSyncError.stateCorrupt }
+        if let committedStateData, !driver.isValidStateData(committedStateData) { throw CloudKitSyncError.stateCorrupt }
         if changes.isEmpty {
             emit(.init(phase: .completed, message: "No CloudKit changes to send"))
-            return try SyncSendResult(engineState: stateData)
+            return try SyncSendResult(engineState: committedStateData)
         }
         for change in changes {
             if let record = change.record { try validateOutgoing(record) }
@@ -118,6 +123,7 @@ public actor CloudKitSyncTransport: SyncTransport {
         pendingChanges = changes
         sentRecords = []; failedRecords = []; deletedRecordIDs = []; failedDeleteErrors = [:]; sentEventReceived = false
         sendAcknowledgementSequence = 0; sendStateSequence = 0
+        sentStateData = nil
         sendZoneRecoveryAttempted = false; sendRecoveryInFlight = false; sendRecoveryCompletionPending = false; sendRetryDispatched = false
         pendingZoneSaveIDs = []; pendingZoneDeleteIDs = []
         await driver.addPendingRecordZoneChanges(operations)
@@ -146,7 +152,7 @@ public actor CloudKitSyncTransport: SyncTransport {
     public func fetchChanges() async throws -> SyncFetchBatch {
         guard !quarantined else { throw CloudKitSyncError.quarantined }
         guard !fetchInFlight, !sendInFlight else { throw CloudKitSyncError.operationInProgress }
-        if let stateData, !driver.isValidStateData(stateData) { throw CloudKitSyncError.stateCorrupt }
+        if let committedStateData, !driver.isValidStateData(committedStateData) { throw CloudKitSyncError.stateCorrupt }
         fetchInFlight = true
         emit(.init(phase: .staging, message: "Ensuring CloudKit custom zone exists"))
         do { try await driver.ensureZone() }
@@ -159,8 +165,9 @@ public actor CloudKitSyncTransport: SyncTransport {
         guard !quarantined else { throw CloudKitSyncError.accountChanged }
         guard fetchInFlight else { throw CloudKitSyncError.cancelled }
         generation += 1
+        fetchedStateData = nil
         await accumulator.begin()
-        await accumulator.seedState(stateData)
+        await accumulator.seedState(committedStateData)
         emit(.init(phase: .fetching, message: "Fetching CloudKit changes"))
         return try await withCheckedThrowingContinuation { continuation in
             fetchWaiters.append(continuation)
@@ -291,7 +298,9 @@ public actor CloudKitSyncTransport: SyncTransport {
     public func resetAfterAccountChange() async {
         await driver.resetZoneBootstrap()
         quarantined = false
-        stateData = nil
+        committedStateData = nil
+        fetchedStateData = nil
+        sentStateData = nil
         pendingChanges = []
         // The review confirmed whichever account is signed in now, so the recorded owner
         // is dropped and the next sign-in adopts it. Keeping the old token would quarantine
@@ -303,6 +312,34 @@ public actor CloudKitSyncTransport: SyncTransport {
 
     public func operationGeneration() async -> UInt64 { operationGenerationValue }
 
+    /// Promotes only the state returned by the current completed fetch after its
+    /// matching repository batch has committed.
+    public func commitFetchedState(_ engineState: Data?) async throws {
+        guard !quarantined else { throw CloudKitSyncError.quarantined }
+        guard !fetchInFlight, engineState == fetchedStateData else {
+            throw CloudKitSyncError.stateCorrupt
+        }
+        if let engineState, !engineState.isEmpty, !driver.isValidStateData(engineState) {
+            throw CloudKitSyncError.stateCorrupt
+        }
+        committedStateData = engineState
+        fetchedStateData = nil
+    }
+
+    /// Promotes only the state returned by a completed send after its local
+    /// acknowledgement has committed.
+    public func commitSentState(_ engineState: Data?) async throws {
+        guard !quarantined, !sendInFlight,
+              engineState == (sentStateData ?? committedStateData) else {
+            throw CloudKitSyncError.stateCorrupt
+        }
+        if let engineState, !engineState.isEmpty, !driver.isValidStateData(engineState) {
+            throw CloudKitSyncError.stateCorrupt
+        }
+        committedStateData = engineState
+        sentStateData = nil
+    }
+
     /// Returns staged asset locations owned by the most recently completed fetch.
     public func assetHandoff() async -> [WiltedRecordID: [String: URL]] {
         await accumulator.assetHandoff()
@@ -312,9 +349,13 @@ public actor CloudKitSyncTransport: SyncTransport {
         switch event {
         case let .stateUpdated(data):
             guard !data.isEmpty, driver.isValidStateData(data) else { await failFetch(CloudKitSyncError.stateCorrupt); failSend(CloudKitSyncError.stateCorrupt); return }
-            stateData = data
-            await accumulator.updateState(data)
-            if sendInFlight { sendStateSequence = sendAcknowledgementSequence }
+            if fetchInFlight {
+                fetchedStateData = data
+                await accumulator.updateState(data)
+            } else if sendInFlight {
+                sentStateData = data
+                sendStateSequence = sendAcknowledgementSequence
+            }
         case .willFetch:
             emit(.init(phase: .fetching, message: "CloudKit fetch started"))
         case let .fetched(modifications, deletions):
@@ -337,6 +378,7 @@ public actor CloudKitSyncTransport: SyncTransport {
             do {
                 let hasChanges = await accumulator.hasRemoteChanges()
                 let batch = try await accumulator.finish(requireFreshState: hasChanges)
+                fetchedStateData = batch.engineState
                 finishFetch(with: .success(batch))
             } catch { await failFetch(error) }
         case .willSend:
@@ -387,7 +429,7 @@ public actor CloudKitSyncTransport: SyncTransport {
                 failSend(CloudKitSyncError.stateCorrupt)
                 return
             }
-            guard let result = try? CloudKitSendMapper(mapper: mapper).result(engineState: stateData, pendingChanges: pendingChanges,
+            guard let result = try? CloudKitSendMapper(mapper: mapper).result(engineState: sentStateData ?? committedStateData, pendingChanges: pendingChanges,
                 saved: sentRecords, failed: failedRecords.map { ($0.record, $0.error) }, deleted: deletedRecordIDs, failedDeletes: failedDeleteErrors) else {
                 failSend(CloudKitSyncError.stateCorrupt)
                 return
@@ -417,7 +459,9 @@ public actor CloudKitSyncTransport: SyncTransport {
             quarantined = true
             await driver.resetZoneBootstrap()
             pendingChanges = []
-            stateData = nil
+            committedStateData = nil
+            fetchedStateData = nil
+            sentStateData = nil
             await accumulator.cleanupStagedAssets()
             finishFetch(with: .failure(CloudKitSyncError.accountChanged))
             finishSend(with: .failure(CloudKitSyncError.accountChanged))
@@ -495,19 +539,22 @@ public actor CloudKitSyncTransport: SyncTransport {
         await driver.resetZoneBootstrap()
         try await driver.ensureZone()
         guard !quarantined, fetchInFlight else { throw quarantined ? CloudKitSyncError.accountChanged : CloudKitSyncError.cancelled }
+        fetchedStateData = nil
         await accumulator.begin()
-        await accumulator.seedState(stateData)
+        await accumulator.seedState(committedStateData)
         emit(.init(phase: .fetching, message: "Retrying CloudKit record-zone fetch"))
         try await driver.fetchChanges()
     }
 
     private func failFetch(_ error: Error) async {
+        fetchedStateData = nil
         await accumulator.cleanupStagedAssets()
         finishFetch(with: .failure(quarantined ? .accountChanged : CloudKitSyncError.map(error)))
         emit(.init(phase: .failed, message: String(describing: error)))
     }
 
     private func failSend(_ error: Error) {
+        sentStateData = nil
         sendRecoveryInFlight = false
         sendRecoveryCompletionPending = false
         finishSend(with: .failure(quarantined ? .accountChanged : CloudKitSyncError.map(error)))
@@ -516,12 +563,14 @@ public actor CloudKitSyncTransport: SyncTransport {
 
     private func finishFetch(with result: Result<SyncFetchBatch, Error>) {
         fetchInFlight = false
+        if case .failure = result { fetchedStateData = nil }
         let waiters = fetchWaiters; fetchWaiters.removeAll()
         for waiter in waiters { waiter.resume(with: result) }
     }
 
     private func finishSend(with result: Result<SyncSendResult, Error>) {
         sendInFlight = false
+        if case .failure = result { sentStateData = nil }
         sendRecoveryInFlight = false
         sendRecoveryCompletionPending = false
         sendRetryDispatched = false

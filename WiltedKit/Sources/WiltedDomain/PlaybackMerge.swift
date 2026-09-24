@@ -47,7 +47,13 @@ public func mergePlayback(
         return accept(.explicitIntentNewSession)
     }
 
-    guard incoming.intent == .progress else { return reject(.explicitIntentRequiresNewSession) }
+    // An explicit rewind or restart names the whole causal session, rather than
+    // only the transition that created it. Older peers can still send ordinary
+    // progress for that session, but a different explicit intent must establish
+    // its own session.
+    let incomingContinuesSession = incoming.intent == .progress
+        || (current.intent != .progress && incoming.intent == current.intent)
+    guard incomingContinuesSession else { return reject(.explicitIntentRequiresNewSession) }
     guard changeTagMatches else { return reject(.staleChangeTag) }
     guard incoming.sequence > current.sequence else { return reject(.staleSequence) }
     guard incoming.positionSeconds >= current.positionSeconds else { return reject(.backwardProgress) }

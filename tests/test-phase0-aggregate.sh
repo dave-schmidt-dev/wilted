@@ -25,6 +25,7 @@ expected_legs=(
   "test-temp-sweep"
   "test-git-hooks"
   "test-native-ui-receipt"
+  "test-release-wrappers"
 )
 if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
   expected_legs+=("test-audio-contract-ios-build")

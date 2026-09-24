@@ -500,15 +500,15 @@ public actor PodcastPreparationPipeline {
     /// Manually bumped when the semantic preparation behavior changes. This is
     /// deliberately independent of the app or UI build number so a launch can
     /// identify old preparation results without invalidating unrelated work.
-    public static let semanticVersion = "podcast-preparation-v2"
+    public static let semanticVersion = "podcast-preparation-v3"
     /// The worker is part of the semantic pipeline even though it lives in a
     /// separate Python source tree. Update this alongside the fingerprint when
     /// that worker changes.
-    public static let workerSourceHash = "sha256:c88fdb8281ba01e22b5c2bf8add88daec6635f7d1dba04f4d7e6893b5396d1bd"
+    public static let workerSourceHash = "sha256:898ce56911314d5111373b13e965d433da789379aed5723d777a5ffc68294751"
     /// This file's own source hash is computed with this value normalized out;
     /// it makes a semantic edit fail the coverage test until this fingerprint
     /// block is deliberately updated.
-    public static let pipelineSourceHash = "sha256:bd7edc76ba0032aae41bf474ee4c77ba17f4e684c140f571c3733b82739c1d18"
+    public static let pipelineSourceHash = "sha256:4c43687047d88e83c337abf2f8dc84d9df4a20f402597ace87d7a85d8414d5a0"
 
     /// Includes the external Python packages imported by the worker. The
     /// runtime itself now lives in this repository under `Producer/Runtime`,

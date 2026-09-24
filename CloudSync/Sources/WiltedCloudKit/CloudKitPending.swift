@@ -74,6 +74,14 @@ public struct CloudKitSendMapper: Sendable {
         for id in deleted { acknowledged.append(try neutralID(id, nil)) }
         for (record, error) in failed {
             let id = try neutralID(record.recordID, record.recordType)
+            if let pending = pendingByID[id], let serverRecord = immutableChunkAcknowledgement(
+                pending: pending,
+                error: error
+            ) {
+                acknowledged.append(id)
+                serverEnvelopes.append(serverRecord)
+                continue
+            }
             let mapped = CloudKitSyncError.map(error)
             let serverEnvelope = conflictEnvelope(error: error)
             failures.append(SyncSendFailure(recordID: id, disposition: disposition(for: error, mapped: mapped), serverRecord: serverEnvelope))
@@ -83,6 +91,26 @@ public struct CloudKitSendMapper: Sendable {
             failures.append(SyncSendFailure(recordID: neutral, disposition: disposition(for: error, mapped: CloudKitSyncError.map(error))))
         }
         return try SyncSendResult(engineState: engineState, acknowledgedRecordIDs: acknowledged, serverEnvelopes: serverEnvelopes, failures: failures)
+    }
+
+    /// CloudKit may report a create of an immutable chunk as a conflict after an
+    /// earlier attempt reached the server. It is an acknowledgement only when the
+    /// returned row proves it contains the same descriptor and validated bytes.
+    private func immutableChunkAcknowledgement(
+        pending: WiltedRecordEnvelope,
+        error: Error
+    ) -> WiltedRecordEnvelope? {
+        guard pending.id.recordType == .revisionChunk,
+              let cloudKitError = error as? CKError,
+              cloudKitError.code == .serverRecordChanged,
+              let serverRecord = cloudKitError.serverRecord,
+              let localDescriptor = try? WiltedRecordCodec().decodeRevisionChunkRecord(pending).value,
+              let decodedServerChunk = try? mapper.decodeChunk(serverRecord),
+              decodedServerChunk.id == pending.id,
+              decodedServerChunk.descriptor == localDescriptor else {
+            return nil
+        }
+        return try? mapper.envelope(pending, updatedFrom: serverRecord)
     }
 
     private func conflictEnvelope(error: Error) -> WiltedRecordEnvelope? {

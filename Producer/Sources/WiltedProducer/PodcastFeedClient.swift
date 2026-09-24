@@ -47,6 +47,23 @@ public struct PodcastFeedHTTPResponse: Sendable {
 /// The transport boundary used by `PodcastFeedClient`.
 public protocol PodcastFeedLoading: Sendable {
     func load(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse
+    /// Loads at most the requested prefix of a successful response.
+    ///
+    /// This is intentionally different from `load`: callers that only need
+    /// the opening bytes may accept a resource whose complete body is larger
+    /// than `maximumBytes`.
+    func loadPrefix(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse
+}
+
+public extension PodcastFeedLoading {
+    func loadPrefix(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
+        let response = try await load(url, maximumBytes: maximumBytes)
+        return PodcastFeedHTTPResponse(
+            url: response.url,
+            statusCode: response.statusCode,
+            data: Data(response.data.prefix(maximumBytes))
+        )
+    }
 }
 
 public struct URLSessionPodcastFeedLoader: PodcastFeedLoading, Sendable {
@@ -67,8 +84,23 @@ public struct URLSessionPodcastFeedLoader: PodcastFeedLoading, Sendable {
     }
 
     public func load(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
+        try await load(url, maximumBytes: maximumBytes, acceptsOversizedResponsePrefix: false)
+    }
+
+    public func loadPrefix(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
+        try await load(url, maximumBytes: maximumBytes, acceptsOversizedResponsePrefix: true)
+    }
+
+    private func load(
+        _ url: URL,
+        maximumBytes: Int,
+        acceptsOversizedResponsePrefix: Bool
+    ) async throws -> PodcastFeedHTTPResponse {
         try Task.checkCancellation()
-        let operation = PodcastFeedRequestOperation(maximumBytes: maximumBytes)
+        let operation = PodcastFeedRequestOperation(
+            maximumBytes: maximumBytes,
+            acceptsOversizedResponsePrefix: acceptsOversizedResponsePrefix
+        )
         let configuration = configuration.copy() as! URLSessionConfiguration
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         let session = URLSession(configuration: configuration, delegate: operation, delegateQueue: nil)
@@ -129,7 +161,10 @@ public struct PodcastFeedClient: Sendable {
                 throw PodcastFeedClientError.invalidResponse(response.statusCode)
             }
             guard Self.isHTTPS(response.url) else { throw PodcastFeedClientError.invalidURL }
-            return try PodcastRSSParser(feedURL: response.url, createdAt: now()).parse(response.data)
+            // The requested address is the durable subscription identity. A
+            // host migration may change the final fetch URL without creating a
+            // different podcast in the listener's library.
+            return try PodcastRSSParser(feedURL: url, createdAt: now()).parse(response.data)
         } catch is CancellationError {
             throw PodcastFeedClientError.cancelled
         } catch let error as PodcastFeedClientError {
@@ -152,6 +187,7 @@ public struct PodcastFeedClient: Sendable {
 private final class PodcastFeedRequestOperation: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private let maximumBytes: Int
+    private let acceptsOversizedResponsePrefix: Bool
     private var continuation: CheckedContinuation<PodcastFeedHTTPResponse, Error>?
     private var task: URLSessionDataTask?
     private var response: HTTPURLResponse?
@@ -159,7 +195,10 @@ private final class PodcastFeedRequestOperation: NSObject, URLSessionDataDelegat
     private var terminalError: PodcastFeedClientError?
     private var completed = false
 
-    init(maximumBytes: Int) { self.maximumBytes = maximumBytes }
+    init(maximumBytes: Int, acceptsOversizedResponsePrefix: Bool = false) {
+        self.maximumBytes = maximumBytes
+        self.acceptsOversizedResponsePrefix = acceptsOversizedResponsePrefix
+    }
 
     func start(session: URLSession, requestURL: URL) async throws -> PodcastFeedHTTPResponse {
         try await withCheckedThrowingContinuation { continuation in
@@ -215,10 +254,15 @@ private final class PodcastFeedRequestOperation: NSObject, URLSessionDataDelegat
             guard PodcastFeedClient.isHTTPS(http.url ?? dataTask.currentRequest?.url ?? dataTask.originalRequest?.url ?? URL(fileURLWithPath: "/")) else {
                 terminalError = .invalidURL; dataTask.cancel(); completionHandler(.cancel); return
             }
-            guard response.expectedContentLength <= Int64(maximumBytes) || response.expectedContentLength == NSURLSessionTransferSizeUnknown else {
+            guard acceptsOversizedResponsePrefix || response.expectedContentLength <= Int64(maximumBytes) || response.expectedContentLength == NSURLSessionTransferSizeUnknown else {
                 terminalError = .responseTooLarge; dataTask.cancel(); completionHandler(.cancel); return
             }
             self.response = http
+            if acceptsOversizedResponsePrefix, maximumBytes == 0 {
+                completePrefixLocked(dataTask)
+                completionHandler(.cancel)
+                return
+            }
             completionHandler(.allow)
         }
     }
@@ -226,6 +270,13 @@ private final class PodcastFeedRequestOperation: NSObject, URLSessionDataDelegat
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         lock.withLock {
             guard !completed, terminalError == nil else { return }
+            if acceptsOversizedResponsePrefix {
+                let remaining = maximumBytes - self.data.count
+                guard remaining > 0 else { return }
+                self.data.append(data.prefix(remaining))
+                if self.data.count == maximumBytes { completePrefixLocked(dataTask) }
+                return
+            }
             guard self.data.count <= maximumBytes - data.count else {
                 terminalError = .responseTooLarge
                 dataTask.cancel()
@@ -258,6 +309,19 @@ private final class PodcastFeedRequestOperation: NSObject, URLSessionDataDelegat
         completed = true
         self.continuation = nil
         continuation.resume(with: result)
+    }
+
+    private func completePrefixLocked(_ dataTask: URLSessionDataTask) {
+        guard let response,
+              let finalURL = response.url ?? dataTask.currentRequest?.url ?? dataTask.originalRequest?.url,
+              PodcastFeedClient.isHTTPS(finalURL)
+        else {
+            terminalError = .invalidURL
+            dataTask.cancel()
+            return
+        }
+        dataTask.cancel()
+        finishLocked(.success(PodcastFeedHTTPResponse(url: finalURL, statusCode: response.statusCode, data: data)))
     }
 }
 

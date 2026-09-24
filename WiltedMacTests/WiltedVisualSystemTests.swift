@@ -131,14 +131,13 @@ final class WiltedVisualSystemTests: XCTestCase {
                     updatedAt: Timestamp(Date(timeIntervalSince1970: 400))
                 ))
                 if index == 2 {
-                    // `lastRevisionID` stays nil so the bootstrap's retirement
-                    // sweep (which only retires an exact ready-revision match)
-                    // leaves this episode alone -- this test is about the
-                    // "finished" filter showing a completed episode, not about
-                    // retirement taking it off the shelf.
+                    // A later restoration clears the completed revision and
+                    // refreshes the listening timestamp. The retirement sweep
+                    // must leave this completed episode visible in Feeds; this
+                    // test exercises that library projection.
                     try await store.saveListening(PodcastListeningState(
                         episodeID: episodeID, completedAt: Timestamp(Date(timeIntervalSince1970: 400)),
-                        lastRevisionID: nil, updatedAt: Timestamp(Date(timeIntervalSince1970: 400))
+                        lastRevisionID: nil, updatedAt: Timestamp(Date(timeIntervalSince1970: 500))
                     ))
                 }
             }
@@ -204,11 +203,14 @@ final class WiltedVisualSystemTests: XCTestCase {
         let larderRows = source[start..<end]
 
         for symbol in [
-            "speaker.wave.2.fill", "speaker.fill", "circle.lefthalf.filled", "checkmark.circle.fill",
-            "play.fill", "forward.end.fill", "checkmark", "minus.circle", "stop.fill",
+            "checkmark.circle.fill", "play.fill", "forward.end.fill", "checkmark", "minus.circle", "stop.fill",
             "arrow.clockwise", "xmark.circle", "arrow.down.circle",
         ] {
             XCTAssertTrue(larderRows.contains("\"\(symbol)\""), "missing \(symbol)")
+        }
+        for retiredRowStateSymbol in ["speaker.wave.2.fill", "speaker.fill", "circle.lefthalf.filled"] {
+            XCTAssertFalse(larderRows.contains("\"\(retiredRowStateSymbol)\""),
+                           "Now Playing owns \(retiredRowStateSymbol)")
         }
         XCTAssertTrue(larderRows.contains(".labelStyle(.iconOnly)"))
         for retiredTextControl in [
@@ -217,7 +219,15 @@ final class WiltedVisualSystemTests: XCTestCase {
         ] {
             XCTAssertFalse(larderRows.contains(retiredTextControl), "retired text control: \(retiredTextControl)")
         }
-        XCTAssertTrue(larderRows.contains("model.currentPodcastEpisodeID != episode.id"))
+        XCTAssertTrue(larderRows.contains("Self.readyActionSlotWidth"))
+        XCTAssertTrue(larderRows.contains("Self.trailingActionSlotsWidth"))
+        XCTAssertTrue(larderRows.contains("HStack(spacing: 2)"))
+        XCTAssertFalse(larderRows.contains("model.currentPodcastEpisodeID"))
+        let modelRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("WiltedMac/WiltedMacModel.swift")
+        let modelSource = try String(contentsOf: modelRoot)
+        XCTAssertTrue(modelSource.contains("var larderPresentationEpisodes"))
+        XCTAssertTrue(modelSource.contains("guard isPodcastPlayback, let currentPodcastEpisodeID"))
 
         // Each icon-only control carries its own tooltip: the `.help` has to
         // come before the next control starts, not anywhere later in the row.
@@ -234,7 +244,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         let podcastRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: podcastRoot) }
         let podcastModel = WiltedMacModel(
-            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"],
             stateDirectoryOverride: podcastRoot, preferences: WiltedMacTestPreferences.ephemeral()
         )
         let podcast = try XCTUnwrap(podcastModel.episodes.first)
@@ -281,7 +291,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let model = WiltedMacModel(
-            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"],
             stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
         )
         let episode = try XCTUnwrap(model.episodes.first)
@@ -339,7 +349,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let model = WiltedMacModel(
-            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"],
             stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
         )
         let episode = try XCTUnwrap(model.episodes.first)
@@ -365,7 +375,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let model = WiltedMacModel(
-            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"],
             stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
         )
         let first = try XCTUnwrap(model.episodes.first)
@@ -373,6 +383,20 @@ final class WiltedVisualSystemTests: XCTestCase {
         await model.waitForPlaybackOperationForTesting()
 
         let store = try LocalLibraryStore(url: root.appendingPathComponent("library.sqlite"))
+        // The fixture supplies a ready revision and an in-memory completed
+        // download state. Record the durable download too, since queue
+        // navigation reloads episodes from the store.
+        let firstID = try ItemID(rawValue: first.id)
+        let firstReadyValue = try await store.readyRevision(for: firstID)
+        let firstReady = try XCTUnwrap(firstReadyValue)
+        try await store.save(download: try PodcastDownload(
+            episodeID: firstID, status: .completed,
+            bytesReceived: firstReady.revision.byteCount,
+            expectedByteCount: firstReady.revision.byteCount,
+            localURL: firstReady.mediaURL,
+            contentHash: firstReady.revision.contentHash,
+            updatedAt: Timestamp(Date())
+        ))
         // The second episode is a row in the store as well as in the model. An
         // episode finishing reloads the library rows so the one just left
         // behind shows its Played badge, and a row that exists only in memory
@@ -409,6 +433,11 @@ final class WiltedVisualSystemTests: XCTestCase {
             schemaVersion: 1
         )
         try await store.saveReadyRevision(revision, mediaURL: mediaURL)
+        try await store.savePreparationOutcome(PodcastPreparationOutcome(
+            episodeID: secondID, revisionID: revision.revisionID,
+            policyDigest: "fixture-policy", pipelineFingerprint: "fixture-fingerprint",
+            semanticVersion: "fixture-semantic-version", producedAt: Timestamp(Date())
+        ))
         let second = WiltedMacEpisode(
             id: secondID.rawValue,
             title: "Second queued episode",
@@ -418,7 +447,8 @@ final class WiltedVisualSystemTests: XCTestCase {
             releasedAt: first.releasedAt,
             durationSeconds: 90,
             playbackSeconds: 0,
-            downloadState: .completed
+            downloadState: .completed,
+            preparationState: .prepared(summary: "Ready")
         )
         model.installEpisodeForTesting(second)
         model.playEpisode(second)
@@ -438,6 +468,13 @@ final class WiltedVisualSystemTests: XCTestCase {
         queue = try await store.podcastQueueState()
         XCTAssertEqual(queue.currentEpisodeID?.rawValue, second.id)
 
+        XCTAssertEqual(queue.episodeIDs.map(\.rawValue), [second.id, first.id])
+        let reloadedFirst = try XCTUnwrap(model.episodes.first(where: { $0.id == first.id }))
+        XCTAssertTrue(model.canPlayEpisode(reloadedFirst),
+                      "first queued episode must retain downloaded, prepared, ready media: "
+                          + "download=\(reloadedFirst.downloadState) prep=\(reloadedFirst.preparationState) "
+                          + "ready=\(reloadedFirst.isReadyMediaAvailable)")
+        XCTAssertEqual(model.nextEligiblePodcastQueueEpisode()?.id, first.id)
         model.nextPlayback()
         await model.waitForPlaybackOperationForTesting()
         XCTAssertEqual(model.currentEpisode?.id, first.id)
@@ -456,7 +493,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let model = WiltedMacModel(
-            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"],
             stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
         )
         let playingEpisode = try XCTUnwrap(model.episodes.first)
@@ -502,7 +539,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let model = WiltedMacModel(
-            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"],
             stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
         )
         let episode = try XCTUnwrap(model.episodes.first)
@@ -526,7 +563,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let model = WiltedMacModel(
-            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"],
             stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
         )
         let episode = try XCTUnwrap(model.episodes.first)
@@ -559,7 +596,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let model = WiltedMacModel(
-            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"],
             stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
         )
         let episode = try XCTUnwrap(model.episodes.first)
@@ -1038,7 +1075,6 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(source.contains("model.menuSort = option"),
                       "each sort order must be a directly clickable menu action")
         XCTAssertTrue(source.contains("Button {\n                            model.menuSort = option"))
-        XCTAssertTrue(source.contains("wilted-menu-in-progress-\\(episode.id)"))
         XCTAssertTrue(source.contains("wilted-player-share"))
         XCTAssertTrue(source.contains("if let shareURL = model.currentPlaybackShareURL"))
         XCTAssertTrue(source.contains("else if let shareText = model.currentPlaybackShareText"))

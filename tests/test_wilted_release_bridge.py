@@ -44,7 +44,7 @@ class IdentityAllocationTests(unittest.TestCase):
         self.assertEqual(proof["groupIdentifierHash"], hashlib.sha256(b"group-1").hexdigest())
 
     def test_project_configuration_prepares_the_next_patch_successor(self) -> None:
-        self.assertEqual(BRIDGE.marketing_version(), "0.2.3")
+        self.assertEqual(BRIDGE.marketing_version(), "0.2.6")
 
     def test_assignment_reconciliation_is_read_only_and_binds_the_exact_group_and_build(self) -> None:
         for index, (group_builds, expected) in enumerate((([], "absent"), ([{"type": "builds", "id": "build-1"}], "found")), start=1):

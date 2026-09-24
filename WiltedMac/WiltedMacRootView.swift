@@ -1062,6 +1062,9 @@ private struct WiltedMacArticleRow: View {
 /// same group accessor the rows do, so no count can label a list it does not
 /// match.
 private struct WiltedMacMenuView: View {
+    private static let readyActionSlotWidth: CGFloat = 28
+    private static let trailingActionSlotsWidth: CGFloat = 58
+
     @Bindable var model: WiltedMacModel
     @Binding var presentation: WiltedMacPlayerSection?
     let focusRequest: WiltedMacPlayerSection?
@@ -1147,10 +1150,7 @@ private struct WiltedMacMenuView: View {
 
             filterBar
             groupList
-
-            if !model.menuSearchArticleResults.isEmpty {
-                articlesSection
-            }
+            articlesSection
         }
         .searchable(text: $model.librarySearchQuery,
                     prompt: "Search titles, shows, notes, and transcripts")
@@ -1425,13 +1425,15 @@ private struct WiltedMacMenuView: View {
                 Spacer()
                 addArticleButton
             }
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(model.menuSearchArticleResults.enumerated()), id: \.element.id) { index, article in
-                    if index > 0 { Divider() }
-                    WiltedMacArticleRow(model: model, article: article)
+            if !model.menuSearchArticleResults.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(model.menuSearchArticleResults.enumerated()), id: \.element.id) { index, article in
+                        if index > 0 { Divider() }
+                        WiltedMacArticleRow(model: model, article: article)
+                    }
                 }
+                .wiltedCard(colorScheme)
             }
-            .wiltedCard(colorScheme)
         }
         // The container goes on the section, not on the VStack that holds the
         // rows. A `.contain` element directly around rows that are themselves
@@ -1457,7 +1459,7 @@ private struct WiltedMacMenuView: View {
                 .frame(height: 2)
                 .opacity(dropTargetID == episode.id ? 1 : 0)
                 .accessibilityHidden(true)
-            HStack(spacing: WiltedTheme.Spacing.medium) {
+            HStack(spacing: WiltedTheme.Spacing.small) {
             Text(String(format: "%02d", position))
                 .wiltedFont(.utility)
                 .monospacedDigit()
@@ -1502,7 +1504,13 @@ private struct WiltedMacMenuView: View {
                 .accessibilityAction(named: Text("Move later")) {
                     model.moveMenuEpisode(episode.id, by: 1)
                 }
-            nextStepControl(episode, group: group)
+            if group == .playable {
+                nextStepControl(episode, group: group)
+                    .controlSize(.small)
+                    .frame(width: Self.readyActionSlotWidth, height: 28)
+            } else {
+                nextStepControl(episode, group: group)
+            }
             // One retirement control per row. Skip is the reversible one and
             // keeps the media; the destructive path gets no row surface. The
             // label reports the model's one started predicate, so the reader
@@ -1513,35 +1521,32 @@ private struct WiltedMacMenuView: View {
             // The label's own predicate picks the symbol, so rewording the
             // label cannot swap the icon.
             let finishesRecord = model.hasStartedEpisode(episode)
-            if model.isEpisodeInProgress(episode), model.currentPodcastEpisodeID != episode.id {
-                Image(systemName: "circle.lefthalf.filled")
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .help("In progress")
-                    .accessibilityLabel("In progress")
-                    .accessibilityIdentifier("wilted-menu-in-progress-\(episode.id)")
+            HStack(spacing: 2) {
+                Button { model.skipEpisode(episode) } label: {
+                    Label(
+                        retirementLabel,
+                        systemImage: finishesRecord ? "checkmark" : "forward.end.fill"
+                    )
+                }
+                    .labelStyle(.iconOnly)
+                    .help(finishesRecord ? "Mark completed" : "Skip")
+                    .accessibilityLabel("\(retirementLabel) \(episode.title)")
+                    .accessibilityIdentifier("wilted-menu-skip-\(episode.id)")
+                // Remove and Skip/Completed are different acts. Remove takes the
+                // entry off the durable queue and leaves every record, the media
+                // and the listening state exactly where they are, so the episode
+                // returns to Feeds; Skip retires it. The two get separate slots
+                // on purpose.
+                Button { model.removeEpisodeFromUpNext(episode.id) } label: {
+                    Label("Remove from Larder", systemImage: "minus.circle")
+                }
+                    .labelStyle(.iconOnly)
+                    .help("Remove from Larder")
+                    .accessibilityLabel("Remove \(episode.title) from Larder")
+                    .accessibilityIdentifier("wilted-menu-remove-\(episode.id)")
             }
-            Button { model.skipEpisode(episode) } label: {
-                Label(
-                    retirementLabel,
-                    systemImage: finishesRecord ? "checkmark" : "forward.end.fill"
-                )
-            }
-                .labelStyle(.iconOnly)
-                .help(finishesRecord ? "Mark completed" : "Skip")
-                .accessibilityLabel("\(retirementLabel) \(episode.title)")
-                .accessibilityIdentifier("wilted-menu-skip-\(episode.id)")
-            // Remove and Skip/Completed are different acts. Remove takes the
-            // entry off the durable queue and leaves every record, the media
-            // and the listening state exactly where they are, so the episode
-            // returns to Feeds; Skip retires it. The two get separate slots
-            // on purpose.
-            Button { model.removeEpisodeFromUpNext(episode.id) } label: {
-                Label("Remove from Larder", systemImage: "minus.circle")
-            }
-                .labelStyle(.iconOnly)
-                .help("Remove from Larder")
-                .accessibilityLabel("Remove \(episode.title) from Larder")
-                .accessibilityIdentifier("wilted-menu-remove-\(episode.id)")
+            .controlSize(.small)
+            .frame(width: Self.trailingActionSlotsWidth, alignment: .trailing)
             }
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
@@ -1562,17 +1567,7 @@ private struct WiltedMacMenuView: View {
     @ViewBuilder private func nextStepControl(_ episode: WiltedMacEpisode, group: WiltedMacMenuGroup) -> some View {
         switch group {
         case .playable:
-            if model.currentPodcastEpisodeID == episode.id {
-                Image(systemName: model.isPlaying ? "speaker.wave.2.fill" : "speaker.fill")
-                    .foregroundStyle(
-                        model.isPlaying
-                            ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme)
-                            : WiltedTheme.color(.secondaryText, scheme: colorScheme)
-                    )
-                    .help(model.isPlaying ? "Playing now" : "Paused")
-                    .accessibilityLabel(model.isPlaying ? "Playing now" : "Paused")
-                    .accessibilityIdentifier("wilted-menu-now-playing-\(episode.id)")
-            } else if model.isEpisodeFinished(episode) {
+            if model.isEpisodeFinished(episode) {
                 // The one definition of finished, asked by the row: a finished
                 // episode is not waiting to be played again.
                 Image(systemName: "checkmark.circle.fill")

@@ -141,26 +141,31 @@ func executePlaybackMerge(input: JSONObject, expected: JSONObject) throws {
     let currentSession = try string(current, "sessionID", "input.current")
     let incomingSession = try string(incoming, "sessionID", "input.incoming")
     let intent = try string(incoming, "intent", "input.incoming")
+    let currentIntent = try string(current, "intent", "input.current")
 
     let result: (decision: String, winner: String, reason: String)
     if currentItem != incomingItem {
         result = ("reject", "current", "incompatibleItem")
     } else if currentRevision != incomingRevision {
         result = ("reject", "current", "incompatibleRevision")
-    } else if intent == "rewind" || intent == "restart" {
-        guard incomingSession != currentSession else { try fail("explicit \(intent) must create a new session ID") }
-        guard changeTagMatches else { try fail("explicit \(intent) fixture must represent retry against the current change tag") }
-        result = ("accept", "incoming", "explicitIntentNewSession")
     } else if incomingSession != currentSession {
-        result = ("reject", "current", "staleOrdinaryProgressAcrossSessions")
-    } else if try integer(incoming, "sequence", "input.incoming") <= integer(current, "sequence", "input.current") {
-        result = ("reject", "current", "staleSequence")
-    } else if try bool(current, "completed", "input.current") && !bool(incoming, "completed", "input.incoming") {
-        result = ("reject", "current", "completionRequiresExplicitRestart")
-    } else if try number(incoming, "positionSeconds", "input.incoming") < number(current, "positionSeconds", "input.current") {
-        result = ("reject", "current", "ordinaryProgressMovedBackward")
+        if intent != "rewind" && intent != "restart" {
+            result = ("reject", "current", "staleOrdinaryProgressAcrossSessions")
+        } else if !changeTagMatches {
+            result = ("reject", "current", "staleChangeTag")
+        } else {
+            result = ("accept", "incoming", "explicitIntentNewSession")
+        }
+    } else if intent != "progress" && intent != currentIntent {
+        result = ("reject", "current", "explicitIntentRequiresNewSession")
     } else if !changeTagMatches {
         result = ("reject", "current", "staleChangeTag")
+    } else if try integer(incoming, "sequence", "input.incoming") <= integer(current, "sequence", "input.current") {
+        result = ("reject", "current", "staleSequence")
+    } else if try number(incoming, "positionSeconds", "input.incoming") < number(current, "positionSeconds", "input.current") {
+        result = ("reject", "current", "backwardProgress")
+    } else if try bool(current, "completed", "input.current") && !bool(incoming, "completed", "input.incoming") {
+        result = ("reject", "current", "completionCannotBeReversed")
     } else {
         result = ("accept", "incoming", "forwardProgress")
     }

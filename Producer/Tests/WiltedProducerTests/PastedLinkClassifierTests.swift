@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Testing
 @testable import WiltedProducer
 
@@ -103,8 +106,26 @@ struct PastedLinkClassifierTests {
         #expect(try await classifier(body: "plain text, no markup").classify(pageURL) == .article)
     }
 
+    @Test func classifiesADeclaredOversizedFeedFromItsPrefix() async throws {
+        let classifier = networkClassifier()
+        let kind = try await classifier.classify(URL(string: "https://sniff.example.test/item?case=declared")!)
+        #expect(kind == .podcastFeed)
+    }
+
+    @Test func classifiesAStreamedOversizedPageFromItsPrefix() async throws {
+        let classifier = networkClassifier()
+        let kind = try await classifier.classify(URL(string: "https://sniff.example.test/item?case=streamed")!)
+        #expect(kind == .articleAdvertisingFeed(URL(string: "https://sniff.example.test/feed.xml")!))
+    }
+
     private func classifier(body: String) -> PastedLinkClassifier {
         PastedLinkClassifier(loader: BodyLoader(body: Data(body.utf8), url: pageURL))
+    }
+
+    private func networkClassifier() -> PastedLinkClassifier {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [OversizedSniffURLProtocol.self]
+        return PastedLinkClassifier(loader: URLSessionPodcastFeedLoader(configuration: configuration))
     }
 
     private func expectInvalidURL(_ classifier: PastedLinkClassifier, _ url: URL) async {
@@ -140,4 +161,31 @@ private struct RefusingLoader: PodcastFeedLoading {
         Issue.record("The classifier fetched \(url) when it should not have")
         throw PastedLinkClassifierError.unreachable("unexpected fetch")
     }
+}
+
+/// A local transport fake whose declared and streamed payloads both exceed the
+/// classifier's cap. The identifying markup is deliberately at the front.
+private final class OversizedSniffURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "sniff.example.test" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let isDeclared = request.url?.query == "case=declared"
+        let prefix = isDeclared
+            ? "<?xml version=\"1.0\"?><rss><channel><title>Show</title></channel></rss>"
+            : "<!doctype html><html><head><link rel=\"alternate\" type=\"application/rss+xml\" href=\"/feed.xml\"></head><body>"
+        let body = Data((prefix + String(repeating: "x", count: PastedLinkClassifier.maximumSniffBytes + 1) + "</body></html>").utf8)
+        let headers = isDeclared ? ["Content-Length": String(body.count)] : [:]
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if isDeclared {
+            client?.urlProtocol(self, didLoad: body)
+        } else {
+            client?.urlProtocol(self, didLoad: Data(body.prefix(64)))
+            client?.urlProtocol(self, didLoad: Data(body.dropFirst(64)))
+        }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

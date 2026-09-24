@@ -2176,20 +2176,32 @@ final class WiltedMacModel {
         return defaults
     }
 
-    /// The episode rows the shelf draws at all. Hidden and retired records are
-    /// not on the shelf, so nothing may count them as "in Larder"; every
-    /// surface that needs the shelf's episode set starts from here.
+    /// The durable episode records the shelf retains. Hidden and retired
+    /// records are not on the shelf; presentation applies its active-podcast
+    /// exclusion separately so queue and playback code retain this full set.
     var larderVisibleEpisodes: [WiltedMacEpisode] {
         episodes.filter { !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil }
     }
 
+    /// The Larder is a waiting list; its active podcast is represented by Now
+    /// Playing instead. This projection deliberately leaves the durable queue
+    /// and `currentPodcastEpisodeID` alone, so playback succession retains its
+    /// identity and order. A remembered podcast marker during article playback
+    /// is not active podcast playback and therefore stays visible.
+    var larderPresentationEpisodes: [WiltedMacEpisode] {
+        guard isPodcastPlayback, let currentPodcastEpisodeID else {
+            return larderVisibleEpisodes
+        }
+        return larderVisibleEpisodes.filter { $0.id != currentPodcastEpisodeID }
+    }
+
     /// How many rows one feed contributes to the Larder, counted against the
-    /// same set the shelf itself draws. `WiltedMacSubscription.episodeCount`
+    /// same set the Larder itself presents. `WiltedMacSubscription.episodeCount`
     /// is the raw snapshot count -- every record the feed holds, retired and
     /// hidden ones included -- so the Feeds card used to claim episodes the
     /// Larder did not show.
     func larderEpisodeCount(forFeedID feedID: String) -> Int {
-        larderVisibleEpisodes.filter { $0.feedID == feedID }.count
+        larderPresentationEpisodes.filter { $0.feedID == feedID }.count
     }
 
     /// The one definition of "finished" every completion surface asks.
@@ -2944,7 +2956,7 @@ final class WiltedMacModel {
         Task { [weak self] in
             await self?.recordWorkTicketTransition(
                 kind: .podcastPreparation, subjectID: episodeID,
-                requestSequence: sequence, state: .pending
+                requestSequence: sequence, state: .pending, admitting: true
             )
         }
         return sequence
@@ -2981,7 +2993,7 @@ final class WiltedMacModel {
         Task { [weak self] in
             await self?.recordWorkTicketTransition(
                 kind: kind, subjectID: episodeID, requestSequence: sequence, state: .running,
-                policySnapshot: policySnapshot, processingPolicy: processingPolicy
+                policySnapshot: policySnapshot, processingPolicy: processingPolicy, admitting: true
             )
         }
         return sequence
@@ -3009,12 +3021,11 @@ final class WiltedMacModel {
     /// store-less request from being lost outright rather than merely
     /// delayed.
     ///
-    /// `issueWorkTicket` is a find-or-insert: calling this for a ticket that
-    /// already exists never resets its `requestSequence` or overwrites a
-    /// `policySnapshot`/`processingPolicy` already captured. That is what
-    /// makes the immutable-policy-at-admission guarantee hold even though
-    /// this same helper is called more than once across one request's
-    /// lifetime (pending, then running, then a terminal state).
+    /// An admission is the one exception to normal forward-only transitions:
+    /// a newer request sequence atomically replaces a terminal attempt's
+    /// policy and stale failure/run metadata in the same durable row. Within
+    /// that new sequence, subsequent transitions remain forward-only and its
+    /// policy stays immutable.
     /// The work-ticket durability log. A rejected or failed transition write
     /// is not silent: it lands here at `.warning`, retrievable with
     /// `log show --predicate 'subsystem == "com.zerodelta.wilted.mac"'`.
@@ -3053,17 +3064,26 @@ final class WiltedMacModel {
         policySnapshot: Data? = nil,
         processingPolicy: Data? = nil,
         failureKind: String? = nil,
-        lastFailureMessage: String? = nil
+        lastFailureMessage: String? = nil,
+        admitting: Bool = false
     ) async {
         guard let store else { return }
         let now = Timestamp(Date())
         do {
-            _ = try await store.applyWorkTicketTransition(
-                kind: kind, subjectID: subjectID, requestSequence: requestSequence,
-                resolvedItemID: resolvedItemID, policySnapshot: policySnapshot,
-                processingPolicy: processingPolicy, to: state,
-                failureKind: failureKind, lastFailureMessage: lastFailureMessage, at: now
-            )
+            if admitting, let requestSequence {
+                _ = try await store.readmitWorkTicket(
+                    kind: kind, subjectID: subjectID, requestSequence: requestSequence,
+                    resolvedItemID: resolvedItemID, policySnapshot: policySnapshot,
+                    processingPolicy: processingPolicy, to: state, at: now
+                )
+            } else {
+                _ = try await store.applyWorkTicketTransition(
+                    kind: kind, subjectID: subjectID, requestSequence: requestSequence,
+                    resolvedItemID: resolvedItemID, policySnapshot: policySnapshot,
+                    processingPolicy: processingPolicy, to: state,
+                    failureKind: failureKind, lastFailureMessage: lastFailureMessage, at: now
+                )
+            }
         } catch {
             Self.workTicketLog.warning(
                 "work ticket transition failed: kind=\(kind.rawValue, privacy: .public) subject=\(subjectID, privacy: .public) attemptedState=\(state.rawValue, privacy: .public) error=\(String(describing: error), privacy: .public)"
@@ -3171,7 +3191,8 @@ final class WiltedMacModel {
                 self?.updateEpisode(episode.id) { $0.preparationState = .notPrepared }
                 self?.podcastOperationMessage = "Preparation cancelled."
                 await self?.recordWorkTicketTransition(
-                    kind: .podcastPreparation, subjectID: episode.id, state: .cancelled
+                    kind: .podcastPreparation, subjectID: episode.id,
+                    requestSequence: requestSequence, state: .cancelled
                 )
                 return
             }
@@ -3182,6 +3203,14 @@ final class WiltedMacModel {
                 self?.updateEpisode(episode.id) { $0.preparationState = .preparing(stage: Self.preparingStage) }
                 self?.podcastOperationMessage = "Preparing \(episode.title)…"
             }
+            // Admission is also dispatched when the request is consumed, but
+            // that task can race this run after an immediately available gate.
+            // Await the same idempotent write before reading its policy.
+            await self?.recordWorkTicketTransition(
+                kind: .podcastPreparation, subjectID: episode.id,
+                requestSequence: requestSequence, state: .running,
+                policySnapshot: admittedPolicyData, admitting: true
+            )
             // Decoded verbatim from the ticket written at admission, never
             // re-derived from live settings at run start. Falls back to the
             // locally-captured snapshot only when there is no store (fixture
@@ -3199,7 +3228,8 @@ final class WiltedMacModel {
                 let summary = result.summary
                 self.podcastOperationMessage = "\(episode.title): \(summary)"
                 await self.recordWorkTicketTransition(
-                    kind: .podcastPreparation, subjectID: episode.id, state: .succeeded
+                    kind: .podcastPreparation, subjectID: episode.id,
+                    requestSequence: requestSequence, state: .succeeded
                 )
                 if let store = self.store {
                     let values = try await self.loadLibrary(from: store)
@@ -3226,7 +3256,8 @@ final class WiltedMacModel {
                 self?.updateEpisode(episode.id) { $0.preparationState = .notPrepared }
                 self?.podcastOperationMessage = "Preparation cancelled."
                 await self?.recordWorkTicketTransition(
-                    kind: .podcastPreparation, subjectID: episode.id, state: .cancelled
+                    kind: .podcastPreparation, subjectID: episode.id,
+                    requestSequence: requestSequence, state: .cancelled
                 )
             } catch {
                 // The reason is on Prep, with the log that led to it.
@@ -3240,7 +3271,8 @@ final class WiltedMacModel {
                 let failureKind: PodcastDownloadFailureKind =
                     (error as? ProducerError)?.retryable == true ? .retryable : .terminal
                 await self?.recordWorkTicketTransition(
-                    kind: .podcastPreparation, subjectID: episode.id, state: .failed,
+                    kind: .podcastPreparation, subjectID: episode.id,
+                    requestSequence: requestSequence, state: .failed,
                     failureKind: failureKind.rawValue, lastFailureMessage: String(describing: error)
                 )
             }
@@ -3595,13 +3627,18 @@ final class WiltedMacModel {
             guard let self, let store = self.store, let id = try? ItemID(rawValue: episode.id) else { return }
             do {
                 // `lastRevisionID` stays nil on purpose: a skip is not
-                // evidence about the revision's audio, and leaving the record
-                // unmatched keeps the launch-time retirement pass from
-                // sweeping the row off the shelf before the undo is used.
-                try await store.saveListening(PodcastListeningState(
+                // evidence about the revision's audio. The store persists this
+                // listening shape and the retirement together, so Feeds never
+                // sees the completed row as active between two saves.
+                let skipped = try await store.completeAndRetireEpisode(listening: PodcastListeningState(
                     episodeID: id, completedAt: Timestamp(Date()),
                     lastRevisionID: nil, updatedAt: Timestamp(Date())
                 ))
+                guard skipped else {
+                    self.undoableSkip = nil
+                    self.podcastOperationMessage = "\(episode.title) could not be skipped."
+                    return
+                }
                 if let playback = self.playback {
                     try? await playback.removePodcastQueueEpisode(id)
                     await self.refreshPodcastQueueState()
@@ -3628,12 +3665,10 @@ final class WiltedMacModel {
         Task { [weak self] in
             guard let self, let store = self.store, let id = try? ItemID(rawValue: episode.id) else { return }
             do {
-                let existing = try await store.listeningState(for: id)
-                if existing?.completedAt != nil {
-                    try await store.saveListening(PodcastListeningState(
-                        episodeID: id, completedAt: nil,
-                        lastRevisionID: existing?.lastRevisionID, updatedAt: Timestamp(Date())
-                    ))
+                let restored = try await store.undoCompletedAndRetiredEpisode(id)
+                guard restored else {
+                    self.podcastOperationMessage = "\(episode.title) could not be restored."
+                    return
                 }
                 await self.reloadLibraryRows()
                 self.podcastOperationMessage = "Restored \(episode.title)."
@@ -4128,9 +4163,9 @@ final class WiltedMacModel {
     }
 
     /// The Menu entries the badge and its label count: the same visible rows
-    /// the Menu renders, in Menu order, current episode included. Slicing at
-    /// the current index used to hide every earlier entry from the count and
-    /// from the reader; a durable entry stays on the Menu at any index.
+    /// the Menu renders, in Menu order. The current podcast stays durable in
+    /// the queue but is represented by Now Playing, while entries on either
+    /// side remain waiting rows.
     var menuUpcomingEpisodeIDs: [String] {
         menuWaitingEpisodes.map(\.id)
     }
@@ -4163,7 +4198,7 @@ final class WiltedMacModel {
     /// id the library no longer carries -- a played-and-retired episode, say
     /// -- simply has no row.
     var menuWaitingEpisodes: [WiltedMacEpisode] {
-        let visible = Dictionary(uniqueKeysWithValues: larderVisibleEpisodes.map { ($0.id, $0) })
+        let visible = Dictionary(uniqueKeysWithValues: larderPresentationEpisodes.map { ($0.id, $0) })
         return menuDisplayEpisodeIDs.compactMap { visible[$0] }
     }
 
@@ -4463,7 +4498,12 @@ final class WiltedMacModel {
     }
 
     func canPlayEpisode(_ episode: WiltedMacEpisode) -> Bool {
-        episode.downloadState == .completed && episode.preparationState.isPrepared && episode.isReadyMediaAvailable
+        !hiddenEpisodeIDs.contains(episode.id) &&
+            episode.retiredAt == nil &&
+            episode.removalKind == nil &&
+            episode.downloadState == .completed &&
+            episode.preparationState.isPrepared &&
+            episode.isReadyMediaAvailable
     }
 
     func canAddEpisodeToMenu(_ episode: WiltedMacEpisode) -> Bool {
@@ -4523,16 +4563,24 @@ final class WiltedMacModel {
         return index > podcastQueueIDs.startIndex
     }
 
-    var canSelectNextEpisode: Bool {
+    /// The next queued episode after the current one that satisfies `canPlayEpisode`.
+    /// Walks forward through `podcastQueueIDs` and selects the first later episode
+    /// that can actually be played.
+    func nextEligiblePodcastQueueEpisode() -> WiltedMacEpisode? {
         guard isPodcastPlayback, let currentPodcastEpisodeID,
-              let index = podcastQueueIDs.firstIndex(of: currentPodcastEpisodeID) else { return false }
+              let index = podcastQueueIDs.firstIndex(of: currentPodcastEpisodeID) else { return nil }
         let nextIndex = podcastQueueIDs.index(after: index)
-        guard nextIndex < podcastQueueIDs.endIndex else { return false }
-        // An ID absent from the snapshot is unknown, not unavailable: preserve
-        // today's bounds-only answer rather than treating "not found" as "not
-        // playable."
-        guard let nextEpisode = episodes.first(where: { $0.id == podcastQueueIDs[nextIndex] }) else { return true }
-        return nextEpisode.isReadyMediaAvailable
+        guard nextIndex < podcastQueueIDs.endIndex else { return nil }
+        for id in podcastQueueIDs[nextIndex...] {
+            guard let candidate = episodes.first(where: { $0.id == id }),
+                  canPlayEpisode(candidate) else { continue }
+            return candidate
+        }
+        return nil
+    }
+
+    var canSelectNextEpisode: Bool {
+        nextEligiblePodcastQueueEpisode() != nil
     }
 
     var canCancelPreparation: Bool { preparation?.cancellable == true }
@@ -4676,7 +4724,8 @@ final class WiltedMacModel {
                     phase: .cancelled, detail: "Preparation cancelled.", fraction: nil, cancellable: false
                 )
                 await self?.recordWorkTicketTransition(
-                    kind: .articlePreparation, subjectID: preparedItemID.rawValue, state: .cancelled
+                    kind: .articlePreparation, subjectID: preparedItemID.rawValue,
+                    requestSequence: requestSequence, state: .cancelled
                 )
                 return
             }
@@ -4707,12 +4756,14 @@ final class WiltedMacModel {
                     self.syncLifecycle?.startAutomaticUpload()
                 }
                 await self.recordWorkTicketTransition(
-                    kind: .articlePreparation, subjectID: preparedItemID.rawValue, state: .succeeded,
+                    kind: .articlePreparation, subjectID: preparedItemID.rawValue,
+                    requestSequence: requestSequence, state: .succeeded,
                     resolvedItemID: resolvedItemID
                 )
             case .cancelled:
                 await self.recordWorkTicketTransition(
-                    kind: .articlePreparation, subjectID: preparedItemID.rawValue, state: .cancelled,
+                    kind: .articlePreparation, subjectID: preparedItemID.rawValue,
+                    requestSequence: requestSequence, state: .cancelled,
                     resolvedItemID: resolvedItemID
                 )
             default:
@@ -4724,7 +4775,8 @@ final class WiltedMacModel {
                 // marking it terminal would only ever hide a retry option
                 // the reader could otherwise take from Prep.
                 await self.recordWorkTicketTransition(
-                    kind: .articlePreparation, subjectID: preparedItemID.rawValue, state: .failed,
+                    kind: .articlePreparation, subjectID: preparedItemID.rawValue,
+                    requestSequence: requestSequence, state: .failed,
                     resolvedItemID: resolvedItemID,
                     failureKind: PodcastDownloadFailureKind.retryable.rawValue,
                     lastFailureMessage: self.preparation?.detail
@@ -5999,9 +6051,10 @@ final class WiltedMacModel {
     ///
     /// Membership is checked rather than sync status so a partially queued item repairs
     /// itself, and a revision whose media file is gone is skipped instead of failing the
-    /// whole upload.
+    /// whole upload. The item record has one stable identity across revisions, so an
+    /// acknowledgement counts only when its persisted pointer names the ready revision.
     private func queueUnpublishedReadyRevisions() async -> Bool {
-        guard let store, syncLifecycle != nil else { return false }
+        guard let store, let syncLifecycle else { return false }
         guard let articles = try? await store.articles() else { return false }
         let state = try? await store.syncRepositoryState()
         let queued = Set((state?.pendingChanges.map(\.recordID) ?? []) + Array(state?.remoteAcknowledgedRecordIDs ?? []))
@@ -6015,9 +6068,31 @@ final class WiltedMacModel {
             let chunkRecordIDs = chunkedFile.manifest.chunks.compactMap {
                 try? WiltedRecordID.revisionChunk(article.itemID, stored.revision.revisionID, index: $0.index)
             }
-            let expected = Set([revisionRecordID] + chunkRecordIDs)
-            guard !expected.isSubset(of: queued) else { continue }
-            didQueue = await queuePreparedPublication(itemID: article.itemID, chunkedFile: chunkedFile) || didQueue
+            guard let itemRecordID = try? WiltedRecordID.item(article.itemID) else { continue }
+            let revisionExpected = Set([revisionRecordID] + chunkRecordIDs)
+            let hasCurrentItemPointer = state.map { state in
+                let pointsToReadyRevision: (WiltedRecordEnvelope?) -> Bool = { record in
+                    guard case let .string(revisionID)? = record?.fields["currentRevisionID"] else { return false }
+                    return revisionID == stored.revision.revisionID.rawValue
+                }
+                if state.pendingChanges.contains(where: {
+                    $0.recordID == itemRecordID && pointsToReadyRevision($0.record)
+                }) {
+                    return true
+                }
+                return state.remoteAcknowledgedRecordIDs.contains(itemRecordID) &&
+                    state.records.contains(where: {
+                        $0.id == itemRecordID && pointsToReadyRevision($0)
+                    })
+            } ?? false
+            guard !revisionExpected.isSubset(of: queued) || !hasCurrentItemPointer else { continue }
+            if revisionExpected.isSubset(of: queued) {
+                if case .success = await syncLifecycle.queueItem(article, currentRevisionID: stored.revision.revisionID) {
+                    didQueue = true
+                }
+            } else {
+                didQueue = await queuePreparedPublication(itemID: article.itemID, chunkedFile: chunkedFile) || didQueue
+            }
         }
         let hasSendablePending = (try? await store.syncRepositoryState())?.sendableChanges.isEmpty == false
         return didQueue || hasSendablePending
@@ -6646,6 +6721,11 @@ final class WiltedMacModel {
             )
         }
         playback?.defaultRate = Float(playbackRate)
+        playback?.episodeEligibilityPredicate = { [weak self] itemID in
+            guard let self else { return false }
+            guard let episode = self.episodes.first(where: { $0.id == itemID.rawValue }) else { return false }
+            return self.canPlayEpisode(episode)
+        }
         playback?.podcastStateHandler = { [weak self] itemID, fault in
             self?.applyPodcastPlaybackObservation(itemID: itemID, fault: fault)
         }
@@ -6905,9 +6985,8 @@ final class WiltedMacModel {
         guard let index = ordered.firstIndex(where: { $0.id == finishedID }) else { return nil }
         return ordered[ordered.index(after: index)...]
             .first {
-                !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil
-                    && $0.downloadState == .completed && $0.preparationState.isPrepared && !$0.isPlayed
-                    && $0.isReadyMediaAvailable
+                !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil && !$0.isPlayed
+                    && canPlayEpisode($0)
             }
     }
 
@@ -7492,7 +7571,14 @@ final class WiltedMacModel {
 
     private func navigatePodcastQueue(previous: Bool) {
 #if canImport(WiltedProducer)
-        guard let playback, isPodcastPlayback else { return }
+        guard isPodcastPlayback else { return }
+        guard let playback else {
+            if !previous, let next = nextEligiblePodcastQueueEpisode() {
+                currentPodcastEpisodeID = next.id
+                refreshPlaybackReadout()
+            }
+            return
+        }
         playbackOperationStatus = previous ? "Opening previous episode…" : "Opening next episode…"
         playbackOperationTask = Task { [weak self] in
             guard let self else { return }

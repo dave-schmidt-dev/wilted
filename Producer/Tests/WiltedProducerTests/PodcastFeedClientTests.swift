@@ -185,6 +185,21 @@ struct PodcastFeedClientTests {
         await expect(.redirectDowngrade) { try await PodcastFeedClient(loader: RedirectDowngradeLoader()).load(self.sourceURL) }
     }
 
+    @Test func redirectsKeepTheSubscribedFeedAndEpisodeIDs() async throws {
+        let redirectedURL = URL(string: "https://cdn.example.test/moved/feed.xml")!
+        let result = try await client(
+            xml: feed(item: "<guid>stable</guid><enclosure url=\"https://cdn.example.test/one.mp3\" type=\"audio/mpeg\" />"),
+            finalURL: redirectedURL
+        ).load(sourceURL)
+        let expectedFeedID = try ItemID.derivePodcastFeed(from: sourceURL)
+        #expect(result.feed.itemID == expectedFeedID)
+        #expect(result.feed.canonicalURL == sourceURL)
+        #expect(result.episodes[0].feedID == expectedFeedID)
+        #expect(result.episodes[0].itemID == (try ItemID.derivePodcastEpisode(
+            feedURL: sourceURL, rssGUID: "stable", enclosureURL: URL(string: "https://cdn.example.test/one.mp3")!
+        )))
+    }
+
     @Test func rejectsBadStatusAndOversizedResponses() async {
         await expect(.invalidResponse(503)) { try await client(status: 503).load(self.sourceURL) }
         await expect(.responseTooLarge) {

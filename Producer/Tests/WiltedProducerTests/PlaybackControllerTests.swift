@@ -143,7 +143,7 @@ final class PlaybackControllerTests: XCTestCase {
     func testPauseThenNewControllerResumesMatchingRevision() async throws {
         let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
         let store = try LocalLibraryStore(url: path)
-        let (article, revision) = try fixture()
+        let (_, revision) = try fixture()
         let backend = FakeBackend()
         let controller = PlaybackController(store: store, backend: backend, deviceID: "test-device")
         try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
@@ -558,6 +558,11 @@ final class PlaybackControllerTests: XCTestCase {
         try controller.play()
         XCTAssertEqual(backend.loadCount, 2, "rewind already restored a valid backend generation")
         XCTAssertEqual(backend.currentTime, 15)
+        backend.currentTime = 18
+        try await controller.checkpoint()
+        let rewoundState = try await store.playbackState(for: revision.itemID, revisionID: revision.revisionID)
+        let rewoundCheckpoint = try XCTUnwrap(rewoundState)
+        XCTAssertEqual(rewoundCheckpoint.intent, .rewind, "durable checkpoints retain the explicit session intent")
 
         backend.finish(successfully: false)
         await waitUntil { finishCount == 2 }
@@ -567,6 +572,11 @@ final class PlaybackControllerTests: XCTestCase {
         try controller.play()
         XCTAssertEqual(backend.loadCount, 3, "restart already restored a valid backend generation")
         XCTAssertEqual(backend.currentTime, 0)
+        backend.currentTime = 3
+        try await controller.checkpoint()
+        let restartedState = try await store.playbackState(for: revision.itemID, revisionID: revision.revisionID)
+        let restartedCheckpoint = try XCTUnwrap(restartedState)
+        XCTAssertEqual(restartedCheckpoint.intent, .restart, "durable checkpoints retain the explicit session intent")
     }
 
     /// Progress is written from where the audio is, so an episode the listener
@@ -1179,6 +1189,260 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(controller.itemID, second.revision.itemID)
     }
 
+    func testManualNextWithABCSkipsUnpreparedBAndAdvancesToC() async throws {
+        let path = storeURL(); let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let first = try await queueRevision(index: 1, root: root, store: store, prepared: true)
+        let second = try await queueRevision(index: 2, root: root, store: store, prepared: false)
+        let third = try await queueRevision(index: 3, root: root, store: store, prepared: true)
+        try await store.replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: [first.revision.itemID, second.revision.itemID, third.revision.itemID],
+            currentEpisodeID: first.revision.itemID
+        ))
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        await controller.restorePodcastQueue()
+        XCTAssertEqual(controller.itemID, first.revision.itemID)
+        XCTAssertEqual(backend.loadCount, 1)
+
+        let selected = try await controller.selectNextPodcastQueueEpisode()
+        XCTAssertTrue(selected)
+        XCTAssertEqual(controller.itemID, third.revision.itemID, "manual Next must skip unprepared B and select C")
+        XCTAssertEqual(backend.loadCount, 2, "unprepared B must never be loaded into the backend")
+        let queueState = try await store.podcastQueueState()
+        XCTAssertEqual(queueState.currentEpisodeID, third.revision.itemID)
+    }
+
+    func testCompletionWithABCSkipsUnpreparedBAndAdvancesToC() async throws {
+        let path = storeURL(); let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let first = try await queueRevision(index: 1, root: root, store: store, prepared: true)
+        let second = try await queueRevision(index: 2, root: root, store: store, prepared: false)
+        let third = try await queueRevision(index: 3, root: root, store: store, prepared: true)
+        try await store.replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: [first.revision.itemID, second.revision.itemID, third.revision.itemID],
+            currentEpisodeID: first.revision.itemID
+        ))
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        var observations: [ItemID?] = []
+        controller.podcastStateHandler = { itemID, _ in observations.append(itemID) }
+        await controller.restorePodcastQueue()
+        XCTAssertEqual(controller.itemID, first.revision.itemID)
+        XCTAssertEqual(backend.loadCount, 1)
+
+        backend.finish(successfully: true)
+        await waitUntil { controller.itemID == third.revision.itemID }
+
+        XCTAssertEqual(controller.itemID, third.revision.itemID, "completion must skip unprepared B and advance to C")
+        XCTAssertEqual(backend.loadCount, 2, "unprepared B must never be loaded into the backend")
+        XCTAssertEqual(observations.last, third.revision.itemID)
+        let queueState = try await store.podcastQueueState()
+        XCTAssertEqual(queueState.currentEpisodeID, third.revision.itemID)
+    }
+
+    func testCompletionWithABCSkipsRetiredReadyBAndAdvancesToC() async throws {
+        let path = storeURL(); let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let feedURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/feed.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let feed = try PodcastFeed(
+            itemID: feedID, canonicalURL: feedURL, title: "The Wilted Show",
+            author: "Wilted", artworkURL: nil, createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_100))
+        )
+        try await store.save(feed: feed)
+
+        let secondEnclosure = try XCTUnwrap(URL(string: "https://podcasts.example.test/audio/episode-2.mp3"))
+        let secondID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "episode-2", enclosureURL: secondEnclosure)
+        let secondEpisode = try PodcastEpisode(
+            itemID: secondID, feedID: feedID, feedURL: feedURL, rssGUID: "episode-2",
+            title: "Episode 2", enclosureURL: secondEnclosure, enclosureMediaType: "audio/mpeg",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_200))
+        )
+        try await store.save(episode: secondEpisode)
+
+        let first = try await queueRevision(index: 1, root: root, store: store, prepared: true)
+        let second = try await queueRevision(index: 2, root: root, store: store, prepared: true, itemID: secondID)
+        let third = try await queueRevision(index: 3, root: root, store: store, prepared: true)
+
+        let retired = try await store.retireEpisode(secondID)
+        XCTAssertTrue(retired)
+        let retiredAtBefore = try await store.retiredAt(for: secondID)
+        XCTAssertNotNil(retiredAtBefore)
+
+        let now = Timestamp(Date())
+        let playback = try PlaybackState(
+            itemID: secondID,
+            revisionID: second.revision.revisionID,
+            sessionID: "session-2",
+            sequence: 1,
+            positionSeconds: 42,
+            durationSeconds: 42,
+            completed: true,
+            intent: .progress,
+            deviceID: "device-1",
+            updatedAt: now
+        )
+        try await store.save(playback: playback, listening: PodcastListeningState(
+            episodeID: secondID,
+            completedAt: now,
+            lastRevisionID: second.revision.revisionID,
+            updatedAt: now
+        ))
+
+        try await store.replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: [first.revision.itemID, secondID, third.revision.itemID],
+            currentEpisodeID: first.revision.itemID
+        ))
+
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        controller.episodeEligibilityPredicate = { _ in true }
+
+        var observations: [ItemID?] = []
+        controller.podcastStateHandler = { itemID, _ in observations.append(itemID) }
+        await controller.restorePodcastQueue()
+        XCTAssertEqual(controller.itemID, first.revision.itemID)
+        XCTAssertEqual(backend.loadCount, 1)
+
+        backend.finish(successfully: true)
+        await waitUntil { controller.itemID == third.revision.itemID }
+
+        XCTAssertEqual(controller.itemID, third.revision.itemID, "completion must skip retired ready B and advance to C")
+        XCTAssertEqual(backend.loadCount, 2, "retired ready B must never be loaded into the backend")
+        XCTAssertEqual(observations.last, third.revision.itemID)
+        let queueState = try await store.podcastQueueState()
+        XCTAssertEqual(queueState.currentEpisodeID, third.revision.itemID)
+
+        do {
+            try await controller.playPodcastQueueEpisodeNow(secondID)
+            XCTFail("playPodcastQueueEpisodeNow must reject retired B")
+        } catch {
+            // Expected
+        }
+        do {
+            try await controller.selectPodcastQueueEpisode(secondID)
+            XCTFail("selectPodcastQueueEpisode must reject retired B")
+        } catch {
+            // Expected
+        }
+
+        try await store.replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: [secondID, third.revision.itemID],
+            currentEpisodeID: secondID
+        ))
+        let controller2 = PlaybackController(store: store, backend: FakeBackend())
+        controller2.episodeEligibilityPredicate = { _ in true }
+        await controller2.restorePodcastQueue()
+        XCTAssertNil(controller2.itemID, "queue restore must not load retired B")
+
+        let restored = try await store.restoreEpisode(secondID)
+        XCTAssertTrue(restored)
+        let retiredAtAfter = try await store.retiredAt(for: secondID)
+        XCTAssertNil(retiredAtAfter)
+        let removalKindAfter = try await store.removalKind(for: secondID)
+        XCTAssertNil(removalKindAfter)
+        let eligibleAfterRestore = try await controller2.isEpisodeEligible(secondID)
+        XCTAssertTrue(eligibleAfterRestore, "restored B must be eligible even if completedAt is set in listening history")
+
+        try await controller2.selectPodcastQueueEpisode(secondID)
+        XCTAssertEqual(controller2.itemID, secondID, "restored B must now load into controller")
+    }
+
+    func testManualNextWithABCSkipsRetiredReadyBAndAdvancesToC() async throws {
+        let path = storeURL(); let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let feedURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/feed.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let feed = try PodcastFeed(
+            itemID: feedID, canonicalURL: feedURL, title: "The Wilted Show",
+            author: "Wilted", artworkURL: nil, createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_100))
+        )
+        try await store.save(feed: feed)
+
+        let secondEnclosure = try XCTUnwrap(URL(string: "https://podcasts.example.test/audio/episode-2.mp3"))
+        let secondID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "episode-2", enclosureURL: secondEnclosure)
+        let secondEpisode = try PodcastEpisode(
+            itemID: secondID, feedID: feedID, feedURL: feedURL, rssGUID: "episode-2",
+            title: "Episode 2", enclosureURL: secondEnclosure, enclosureMediaType: "audio/mpeg",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_200))
+        )
+        try await store.save(episode: secondEpisode)
+
+        let first = try await queueRevision(index: 1, root: root, store: store, prepared: true)
+        _ = try await queueRevision(index: 2, root: root, store: store, prepared: true, itemID: secondID)
+        let third = try await queueRevision(index: 3, root: root, store: store, prepared: true)
+
+        try await store.retireEpisode(secondID)
+        try await store.replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: [first.revision.itemID, secondID, third.revision.itemID],
+            currentEpisodeID: first.revision.itemID
+        ))
+
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        controller.episodeEligibilityPredicate = { _ in true }
+        await controller.restorePodcastQueue()
+        XCTAssertEqual(controller.itemID, first.revision.itemID)
+        XCTAssertEqual(backend.loadCount, 1)
+
+        let selected = try await controller.selectNextPodcastQueueEpisode()
+        XCTAssertTrue(selected)
+        XCTAssertEqual(controller.itemID, third.revision.itemID, "manual Next must skip retired B and select C")
+        XCTAssertEqual(backend.loadCount, 2, "retired B must never be loaded into the backend")
+        let queueState = try await store.podcastQueueState()
+        XCTAssertEqual(queueState.currentEpisodeID, third.revision.itemID)
+    }
+
+    func testCompletionWithABCSkipsUnpreparedBAndFailsDeterministicallyWhenCMediaMissing() async throws {
+        let path = storeURL(); let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let first = try await queueRevision(index: 1, root: root, store: store, prepared: true)
+        let second = try await queueRevision(index: 2, root: root, store: store, prepared: false)
+        let third = try await queueRevision(index: 3, root: root, store: store, prepared: true)
+        try FileManager.default.removeItem(at: third.mediaURL)
+        let initialQueue = try PodcastQueueState(
+            episodeIDs: [first.revision.itemID, second.revision.itemID, third.revision.itemID],
+            currentEpisodeID: first.revision.itemID
+        )
+        try await store.replacePodcastQueue(initialQueue)
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        var finishCount = 0
+        var observedItem: ItemID?
+        var observedFault: PlaybackControllerError?
+        controller.playbackDidFinishHandler = { finishCount += 1 }
+        controller.podcastStateHandler = { item, fault in
+            observedItem = item
+            observedFault = fault
+        }
+        await controller.restorePodcastQueue()
+        XCTAssertEqual(controller.itemID, first.revision.itemID)
+        XCTAssertEqual(backend.loadCount, 1)
+
+        backend.finish(successfully: true)
+        await waitUntil { finishCount == 1 }
+
+        XCTAssertEqual(finishCount, 1)
+        XCTAssertFalse(controller.isPlaying)
+        XCTAssertEqual(backend.loadCount, 1, "neither B nor C was loaded into the backend")
+        XCTAssertEqual(controller.recoverableFault, .podcastMediaUnavailable(third.revision.itemID))
+        XCTAssertEqual(observedFault, .podcastMediaUnavailable(third.revision.itemID))
+        XCTAssertEqual(observedItem, first.revision.itemID, "completed item identity retained on fault")
+        let retainedQueue = try await store.podcastQueueState()
+        XCTAssertEqual(retainedQueue, initialQueue)
+    }
+
     func testQueueRelaunchRestoresCurrentIdentityWithoutDuplicateSession() async throws {
         let path = storeURL(); let root = path.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1203,20 +1467,28 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(backend.loadCount, 1)
     }
 
-    private func queueRevision(index: Int, root: URL, store: LocalLibraryStore) async throws -> StoredAudioRevision {
+    private func queueRevision(
+        index: Int, root: URL, store: LocalLibraryStore, prepared: Bool = true, itemID: ItemID? = nil
+    ) async throws -> StoredAudioRevision {
         // Truncated, because the digits of a two-digit index repeated 64 times
         // is a 128-character identifier the store rejects. Single-digit indexes
         // are unchanged by the truncation.
         let seed = String(String(repeating: String(index), count: 64).prefix(64))
-        let itemID = try ItemID(rawValue: "item-" + seed)
+        let effectiveItemID = try itemID ?? ItemID(rawValue: "item-" + seed)
         let revision = try AudioRevision(
-            itemID: itemID, revisionID: RevisionID(rawValue: "podcast-\(index)"), durationSeconds: 42,
+            itemID: effectiveItemID, revisionID: RevisionID(rawValue: "podcast-\(index)"), durationSeconds: 42,
             byteCount: 1, contentHash: "sha256:" + seed,
             mediaType: "audio/mpeg", createdAt: Timestamp(Date()), schemaVersion: 1
         )
         let url = root.appendingPathComponent("podcast-\(index).mp3")
         _ = FileManager.default.createFile(atPath: url.path, contents: Data([UInt8(index % 256)]))
         try await store.saveReadyRevision(revision, mediaURL: url)
+        if prepared {
+            try await store.savePreparationOutcome(PodcastPreparationOutcome(
+                episodeID: effectiveItemID, revisionID: revision.revisionID, policyDigest: "d",
+                pipelineFingerprint: "f", semanticVersion: "v", producedAt: Timestamp(Date())
+            ))
+        }
         return StoredAudioRevision(revision: revision, mediaURL: url)
     }
 

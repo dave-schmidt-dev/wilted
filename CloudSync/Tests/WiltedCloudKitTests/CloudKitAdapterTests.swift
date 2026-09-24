@@ -457,6 +457,36 @@ func initialEmptySendWithoutStateUpdate() async throws {
     #expect(await driver.sendCalls == 0)
 }
 
+@Test("failed fetch keeps the last committed state for an empty send")
+func failedFetchDoesNotExposeProvisionalState() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver()
+    let committedState = Data("{}".utf8)
+    let provisionalState = Data("{\"state\":1}".utf8)
+    let transport = try CloudKitSyncTransport(
+        driver: driver,
+        role: .mac,
+        mapper: mapper,
+        stateData: committedState
+    )
+    let fetch = Task { try await transport.fetchChanges() }
+    guard await driver.waitForFetchCall() else {
+        await transport.cancel()
+        Issue.record("fake driver did not receive fetchChanges")
+        return
+    }
+
+    await driver.emit(.stateUpdated(provisionalState))
+    for _ in 0..<100 { await Task.yield() }
+    await transport.cancel()
+    do { _ = try await fetch.value; Issue.record("expected cancelled fetch") }
+    catch let error as CloudKitSyncError { #expect(error == .cancelled) }
+
+    let send = try await transport.sendChanges(changes: [], role: .mac)
+    #expect(send.engineState == committedState)
+    #expect(await driver.sendCalls == 0)
+}
+
 private final class TestStager: CloudKitAssetStaging {
     let root: URL
     private(set) var stageCalls = 0
@@ -973,6 +1003,34 @@ func transportSkipsUnknownCatalogFamilies() async throws {
         "Skipped CloudKit record with unsupported reference family: future-family:mixed-reference",
         "Skipped unsupported CloudKit record type deletion: FutureCatalogFamily",
     ])
+}
+
+@Test("send engine state remains provisional until local acknowledgement commits")
+func transportSendStateNeedsCommit() async throws {
+    let mapper = try mapper()
+    let driver = FakeEngineDriver()
+    let committed = Data("{}".utf8)
+    let updated = Data("{\"state\":1}".utf8)
+    let transport = try CloudKitSyncTransport(driver: driver, role: .mac, mapper: mapper, stateData: committed)
+    let envelope = try validEnvelope("send-state-commit")
+    let change = try SyncPendingChange(operation: .update, recordID: envelope.id, record: envelope)
+    let record = try mapper.encode(envelope)
+    let send = Task { try await transport.save(changes: [change], role: .mac) }
+    guard await driver.waitForSendCall() else {
+        await transport.cancel()
+        Issue.record("fake driver did not receive sendChanges")
+        return
+    }
+    await driver.emit(.sent(saved: [record], failed: [], deleted: [], failedDeletes: [:]))
+    await driver.emit(.stateUpdated(updated))
+    await driver.emit(.sendCompleted)
+    let result = try await send.value
+    #expect(result.engineState == updated)
+    let beforeCommit = try await transport.sendChanges(changes: [], role: .mac)
+    #expect(beforeCommit.engineState == committed)
+    try await transport.commitSentState(result.engineState)
+    let afterCommit = try await transport.sendChanges(changes: [], role: .mac)
+    #expect(afterCommit.engineState == updated)
 }
 
 @Test("transport send returns partial acknowledgement and server conflict envelope")
@@ -1577,6 +1635,49 @@ func savedAcknowledgementCarriesEnvelope() throws {
     #expect(result.acknowledgedRecordIDs == [envelope.id])
     #expect(result.serverEnvelopes.first?.fields["custom"] == .string("kept"))
     #expect(result.serverEnvelopes.first?.sidecar?.encodedSystemFields != nil)
+}
+
+@Test("identical immutable chunk conflicts acknowledge only after byte validation")
+func immutableChunkConflictAcknowledgementRequiresValidatedBytes() throws {
+    let stager = try TestStager()
+    let mapper = try mapper(stager: stager)
+    let item = try article("immutable-chunk-conflict").0.itemID
+    let revisionID = try RevisionID(rawValue: "rev-immutable-chunk-conflict")
+    let bytes = Data("immutable chunk bytes".utf8)
+    let chunked = try AudioChunking.chunk(bytes, chunkSize: Int64(bytes.count))
+    let descriptor = try #require(chunked.manifest.chunks.first)
+    let source = stager.root.appendingPathComponent("immutable-chunk")
+    try bytes.write(to: source)
+    let asset = try WiltedAsset(assetID: "immutable-chunk", contentHash: "sha256:\(descriptor.sha256)")
+    let envelope = try WiltedRecordCodec().encode(
+        revisionChunk: item, revisionID: revisionID, descriptor: descriptor, chunkAsset: asset
+    )
+    let change = try SyncPendingChange(operation: .create, recordID: envelope.id, record: envelope)
+    let localRecord = try mapper.encodeChunk(envelope, assetURL: source)
+    let identicalServerRecord = try mapper.encodeChunk(envelope, assetURL: source)
+    let identicalError = CKError(.serverRecordChanged, userInfo: [
+        CKRecordChangedErrorServerRecordKey: identicalServerRecord
+    ])
+
+    let acknowledged = try CloudKitSendMapper(mapper: mapper).result(
+        engineState: Data([1]), pendingChanges: [change], saved: [],
+        failed: [(localRecord, identicalError)], deleted: [], failedDeletes: [:]
+    )
+    #expect(acknowledged.acknowledgedRecordIDs == [envelope.id])
+    #expect(acknowledged.failures.isEmpty)
+
+    let invalidBytes = stager.root.appendingPathComponent("immutable-chunk-invalid")
+    try Data("not the declared bytes".utf8).write(to: invalidBytes)
+    let descriptorOnlyServerRecord = try mapper.encodeChunk(envelope, assetURL: invalidBytes)
+    let descriptorOnlyError = CKError(.serverRecordChanged, userInfo: [
+        CKRecordChangedErrorServerRecordKey: descriptorOnlyServerRecord
+    ])
+    let conflict = try CloudKitSendMapper(mapper: mapper).result(
+        engineState: Data([2]), pendingChanges: [change], saved: [],
+        failed: [(localRecord, descriptorOnlyError)], deleted: [], failedDeletes: [:]
+    )
+    #expect(conflict.acknowledgedRecordIDs.isEmpty)
+    #expect(conflict.failures.first?.disposition == .conflict)
 }
 
 @Test("unavailable conflict assets do not fail the entire conflict result")

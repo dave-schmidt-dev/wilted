@@ -164,6 +164,9 @@ public final class PlaybackController {
     /// before that function re-reads queue state, and a queue mutation here
     /// would race that read.
     @ObservationIgnored public var podcastCompletionHandler: (@MainActor @Sendable (ItemID) -> Void)?
+    /// Predicate used to determine whether a queued podcast episode is eligible
+    /// for playback (e.g. downloaded, prepared, and ready media available).
+    @ObservationIgnored public var episodeEligibilityPredicate: (@MainActor @Sendable (ItemID) async -> Bool)?
 
     private var currentRevision: AudioRevision?
     private var checkpointTask: Task<Void, Never>?
@@ -289,6 +292,10 @@ public final class PlaybackController {
     /// ordinary Previous/Next selection intentionally keeps its existing
     /// current-marker-only semantics.
     public func playPodcastQueueEpisodeNow(_ episodeID: ItemID) async throws {
+        guard try await isEpisodeEligible(episodeID) else {
+            recoverableFault = .podcastMediaUnavailable(episodeID)
+            throw PlaybackControllerError.podcastMediaUnavailable(episodeID)
+        }
         let state = try await store.podcastQueueState()
         if state.currentEpisodeID == episodeID {
             if itemID == episodeID, loadedIsPodcastEpisode {
@@ -339,11 +346,56 @@ public final class PlaybackController {
         return true
     }
 
-    /// Selects the queue item after the current episode, if one exists.
+    /// Whether an episode satisfies playback eligibility. If the store records
+    /// a durable removal (retirement or dismissal), the episode is ineligible
+    /// until restored. Otherwise, an external predicate is consulted if
+    /// provided, or the store is checked for a ready revision and valid
+    /// preparation outcome.
+    public func isEpisodeEligible(_ episodeID: ItemID) async throws -> Bool {
+        if try await store.retiredAt(for: episodeID) != nil {
+            return false
+        }
+        if try await store.removalKind(for: episodeID) != nil {
+            return false
+        }
+        if let episodeEligibilityPredicate {
+            return await episodeEligibilityPredicate(episodeID)
+        }
+        guard let stored = try await store.readyRevision(for: episodeID) else {
+            return false
+        }
+        if let outcome = try await store.preparationOutcome(for: episodeID, revisionID: stored.revision.revisionID) {
+            return outcome.eligibility != .invalid
+        }
+        return false
+    }
+
+    /// Resolves the first eligible episode after `anchorID` (or current episode)
+    /// by walking forward through the queued episode IDs.
+    public func nextEligibleEpisodeID(after anchorID: ItemID? = nil) async throws -> ItemID? {
+        let state = try await store.podcastQueueState()
+        let activeID = anchorID ?? state.currentEpisodeID ?? itemID
+        let startIndex: Int
+        if let activeID, let idx = state.episodeIDs.firstIndex(of: activeID) {
+            startIndex = state.episodeIDs.index(after: idx)
+        } else if let currentIndex = state.currentIndex {
+            startIndex = state.episodeIDs.index(after: currentIndex)
+        } else {
+            startIndex = state.episodeIDs.startIndex
+        }
+        guard startIndex < state.episodeIDs.endIndex else { return nil }
+        for candidate in state.episodeIDs[startIndex...] {
+            if try await isEpisodeEligible(candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    /// Selects the first eligible queue item after the current episode, if one exists.
     @discardableResult
     public func selectNextPodcastQueueEpisode(autoplay: Bool = true) async throws -> Bool {
-        let state = try await store.podcastQueueState()
-        guard let next = state.nextEpisodeID else { return false }
+        guard let next = try await nextEligibleEpisodeID() else { return false }
         try await selectPodcastQueueEpisode(next, autoplay: autoplay)
         return true
     }
@@ -529,7 +581,8 @@ public final class PlaybackController {
                 playbackDidFinishHandler?()
                 return
             }
-            guard let next = state.nextEpisodeID else {
+            let nextEligible = try? await nextEligibleEpisodeID(after: completedItemID)
+            guard let next = nextEligible else {
                 podcastStateHandler?(itemID, nil)
                 playbackDidFinishHandler?()
                 return
@@ -617,6 +670,13 @@ public final class PlaybackController {
     private func loadQueuedEpisode(
         _ episodeID: ItemID, playAfterLoad: Bool, expectedGeneration: UInt64? = nil
     ) async throws -> UInt64 {
+        if let expectedGeneration, loadedBackendGeneration != expectedGeneration {
+            throw CancellationError()
+        }
+        guard try await isEpisodeEligible(episodeID) else {
+            recoverableFault = .podcastMediaUnavailable(episodeID)
+            throw PlaybackControllerError.podcastMediaUnavailable(episodeID)
+        }
         let ready = try await store.readyRevision(for: episodeID)
         if let expectedGeneration, loadedBackendGeneration != expectedGeneration {
             throw CancellationError()

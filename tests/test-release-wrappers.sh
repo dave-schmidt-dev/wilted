@@ -7,6 +7,8 @@ bridge="$root/app/wilted_app_store_connect_bridge.py"
 [[ -x "$root/app/release-status" ]] || { echo 'release wrapper missing: release-status' >&2; exit 1; }
 [[ -x "$root/app/release-testflight" ]] || { echo 'release wrapper missing: release-testflight' >&2; exit 1; }
 [[ -f "$bridge" ]] || { echo 'release bridge missing' >&2; exit 1; }
+cd "$root"
+python3 -m unittest tests.test_release_archive_ios
 python3 "$root/tests/test_wilted_release_bridge.py"
 
 for wrapper in "$root/app/release-status" "$root/app/release-testflight"; do

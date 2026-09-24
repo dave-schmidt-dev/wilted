@@ -207,6 +207,26 @@ public actor LocalLibrarySyncRepository: SyncRepository {
                 records.append(record)
             }
             var pending = storedState.pendingChanges
+            let retiredPendingRecordIDs: Set<WiltedRecordID>
+            if let incomingRevision = revisionKey(forChunk: change) {
+                let supersededRevisions: Set<RevisionKey> = Set(pending.compactMap { pendingChange in
+                    guard let pendingRevision = revisionKey(forChunk: pendingChange),
+                          pendingRevision.itemID == incomingRevision.itemID,
+                          pendingRevision.revisionID != incomingRevision.revisionID else { return nil }
+                    return pendingRevision
+                })
+                // A later chunk makes an earlier revision unpublished work. Retire the
+                // complete pending revision family atomically, not merely its chunks:
+                // otherwise a ready manifest or item pointer can expose partial media.
+                retiredPendingRecordIDs = Set(pending.compactMap { pendingChange in
+                    guard let pendingRevision = revisionKey(forPendingRecord: pendingChange),
+                          supersededRevisions.contains(pendingRevision) else { return nil }
+                    return pendingChange.recordID
+                })
+                pending.removeAll { retiredPendingRecordIDs.contains($0.recordID) }
+            } else {
+                retiredPendingRecordIDs = []
+            }
             pending.removeAll { $0.recordID == change.recordID && $0.operation == change.operation }
             pending.append(change)
             var tombstones = storedState.tombstones
@@ -221,9 +241,9 @@ public actor LocalLibrarySyncRepository: SyncRepository {
             let candidate = SyncRepositoryState(records: records, engineState: storedState.engineState,
                                                 pendingChanges: pending, tombstones: tombstones,
                                                 remoteAcknowledgedRecordIDs: storedState.remoteAcknowledgedRecordIDs,
-                                                protectedRecordIDs: storedState.protectedRecordIDs.union([change.recordID]),
-                                                conflictedRecordIDs: storedState.conflictedRecordIDs,
-                                                conflictServerRecords: storedState.conflictServerRecords,
+                                                protectedRecordIDs: storedState.protectedRecordIDs.subtracting(retiredPendingRecordIDs).union([change.recordID]),
+                                                conflictedRecordIDs: storedState.conflictedRecordIDs.subtracting(retiredPendingRecordIDs),
+                                                conflictServerRecords: storedState.conflictServerRecords.filter { !retiredPendingRecordIDs.contains($0.key) },
                                                 accountOwnerToken: storedState.accountOwnerToken)
             try beforeCommit?()
             let status: LocalLibrarySyncStatus = .pendingUpload
@@ -536,6 +556,42 @@ public actor LocalLibrarySyncRepository: SyncRepository {
         let parts = recordID.recordName.split(separator: ":")
         guard parts.count >= 2 else { return nil }
         return try? ItemID(rawValue: String(parts[1]))
+    }
+
+    private struct RevisionKey: Hashable {
+        let itemID: ItemID
+        let revisionID: RevisionID
+    }
+
+    private func revisionKey(forChunk change: SyncPendingChange) -> RevisionKey? {
+        guard change.recordID.recordType == .revisionChunk else { return nil }
+        return revisionKey(from: change.record)
+    }
+
+    /// Returns a pending record's revision identity from its validated envelope,
+    /// never from a colon-delimited record name. Item identifiers and revision
+    /// identifiers both permit colons.
+    private func revisionKey(forPendingRecord change: SyncPendingChange) -> RevisionKey? {
+        guard let record = change.record else { return nil }
+        switch record.id.recordType {
+        case .item:
+            guard case let .string(itemValue)? = record.fields["itemID"],
+                  case let .string(revisionValue)? = record.fields["currentRevisionID"],
+                  let itemID = try? ItemID(rawValue: itemValue),
+                  let revisionID = try? RevisionID(rawValue: revisionValue) else { return nil }
+            return RevisionKey(itemID: itemID, revisionID: revisionID)
+        case .revision, .revisionChunk, .transcript, .playbackState:
+            return revisionKey(from: record)
+        }
+    }
+
+    private func revisionKey(from record: WiltedRecordEnvelope?) -> RevisionKey? {
+        guard let record,
+              case let .string(itemValue)? = record.fields["itemID"],
+              case let .string(revisionValue)? = record.fields["revisionID"],
+              let itemID = try? ItemID(rawValue: itemValue),
+              let revisionID = try? RevisionID(rawValue: revisionValue) else { return nil }
+        return RevisionKey(itemID: itemID, revisionID: revisionID)
     }
 
     private func acknowledgedTombstone(_ tombstone: SyncTombstone, in tombstones: [SyncTombstone]) -> [SyncTombstone] {

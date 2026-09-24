@@ -329,8 +329,8 @@ func fetchedNewerPlaybackWinsWithoutPendingWrite() async throws {
     #expect(stored.sidecar?.changeTag == "different-tag")
 }
 
-@Test("fetched playback defers while the same record has a pending local write")
-func fetchedPlaybackDefersToPendingWrite() async throws {
+@Test("fetched playback rebases a causally newer pending write onto the server sidecar")
+func fetchedPlaybackRebasesNewerPendingWrite() async throws {
     let repository = try ListenerRepository(
         directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     )
@@ -342,7 +342,7 @@ func fetchedPlaybackDefersToPendingWrite() async throws {
         try SyncFetchBatch(generationID: "playback-baseline", records: [baseline], engineState: Data([1]))
     ))
     let pendingEnvelope = try playbackEnvelope(
-        playbackState(sequence: 2, position: 10),
+        playbackState(sequence: 3, position: 15),
         sidecar: baseline.sidecar,
         marker: "pending"
     )
@@ -353,7 +353,7 @@ func fetchedPlaybackDefersToPendingWrite() async throws {
     )
     try await repository.enqueue(pending)
     let incoming = try playbackEnvelope(
-        playbackState(sequence: 3, position: 15),
+        playbackState(sequence: 2, position: 10),
         sidecar: WiltedOpaqueSidecar(changeTag: "fetched-tag", encodedSystemFields: Data([3])),
         marker: "incoming"
     )
@@ -365,10 +365,194 @@ func fetchedPlaybackDefersToPendingWrite() async throws {
     let state = await repository.state()
     let stored = try #require(state.records.first(where: { $0.id == pendingEnvelope.id }))
     let decoded = try WiltedRecordCodec().decodePlayback(stored)
-    #expect(decoded.sequence == 2)
+    #expect(decoded.sequence == 3)
     #expect(stored.fields["mergeMarker"] == .string("pending"))
-    #expect(stored.sidecar?.changeTag == "baseline-tag")
-    #expect(state.pendingChanges == [pending])
+    #expect(stored.sidecar?.changeTag == "fetched-tag")
+    #expect(stored.sidecar?.encodedSystemFields == Data([3]))
+    let rebased = try #require(state.pendingChanges.first)
+    #expect(rebased.record == stored)
+    let acknowledged = try SyncSendResult(
+        engineState: Data([3]),
+        acknowledgedRecordIDs: [rebased.recordID],
+        serverEnvelopes: [stored]
+    )
+    try await repository.acknowledge(acknowledged, sent: [rebased])
+    #expect((await repository.state()).pendingChanges.isEmpty)
+}
+
+@Test("fetched playback adopts a causal remote winner and clears obsolete pending work")
+func fetchedPlaybackAdoptsRemoteWinner() async throws {
+    let repository = try ListenerRepository(
+        directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    let local = try playbackEnvelope(
+        playbackState(sequence: 2, position: 10),
+        sidecar: WiltedOpaqueSidecar(changeTag: "local-tag", encodedSystemFields: Data([1])),
+        marker: "local"
+    )
+    let change = try SyncPendingChange(operation: .update, recordID: local.id, record: local)
+    try await repository.enqueue(change)
+    let remote = try playbackEnvelope(
+        playbackState(sequence: 3, position: 15),
+        sidecar: WiltedOpaqueSidecar(changeTag: "remote-tag", encodedSystemFields: Data([2])),
+        marker: "remote"
+    )
+
+    try await repository.commit(try await repository.stage(
+        try SyncFetchBatch(generationID: "remote-wins", records: [remote], engineState: Data([2]))
+    ))
+
+    let state = await repository.state()
+    #expect(state.records.first(where: { $0.id == remote.id }) == remote)
+    #expect(state.pendingChanges.isEmpty)
+    #expect(!state.protectedRecordIDs.contains(remote.id))
+    #expect(!state.conflictedRecordIDs.contains(remote.id))
+}
+
+@Test("fetched explicit rewind in a new session supersedes stale pending progress")
+func fetchedRewindInNewSessionClearsStalePendingProgress() async throws {
+    let repository = try ListenerRepository(
+        directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    let local = try playbackEnvelope(
+        playbackState(sequence: 4, position: 20, sessionID: "iphone-session-1"),
+        sidecar: WiltedOpaqueSidecar(changeTag: "iphone-tag", encodedSystemFields: Data([1])),
+        marker: "iphone-progress"
+    )
+    let change = try SyncPendingChange(operation: .update, recordID: local.id, record: local)
+    try await repository.enqueue(change)
+    let server = try playbackEnvelope(
+        playbackState(sequence: 1, intent: .rewind, position: 5, sessionID: "mac-session-2"),
+        sidecar: WiltedOpaqueSidecar(changeTag: "mac-rewind-tag", encodedSystemFields: Data([2])),
+        marker: "mac-rewind"
+    )
+
+    try await repository.commit(try await repository.stage(
+        try SyncFetchBatch(generationID: "new-session-rewind", records: [server], engineState: Data([2]))
+    ))
+
+    let state = await repository.state()
+    #expect(state.records.first(where: { $0.id == server.id }) == server)
+    #expect(state.pendingChanges.isEmpty)
+    #expect(!state.protectedRecordIDs.contains(server.id))
+    #expect(!state.conflictedRecordIDs.contains(server.id))
+    #expect(state.conflictServerRecords[server.id] == nil)
+}
+
+@Test("conflict acknowledgement adopts a new-session rewind over stale pending progress")
+func conflictAcknowledgementAdoptsNewSessionRewindOverStalePendingProgress() async throws {
+    let repository = try ListenerRepository(
+        directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    let local = try playbackEnvelope(
+        playbackState(sequence: 4, position: 20, sessionID: "iphone-session-1"),
+        sidecar: WiltedOpaqueSidecar(changeTag: "iphone-tag", encodedSystemFields: Data([1])),
+        marker: "iphone-progress"
+    )
+    let change = try SyncPendingChange(operation: .update, recordID: local.id, record: local)
+    try await repository.enqueue(change)
+    let server = try playbackEnvelope(
+        playbackState(sequence: 1, intent: .rewind, position: 5, sessionID: "mac-session-2"),
+        sidecar: WiltedOpaqueSidecar(changeTag: "mac-rewind-tag", encodedSystemFields: Data([2])),
+        marker: "mac-rewind"
+    )
+
+    try await repository.acknowledge(try SyncSendResult(
+        engineState: Data([2]),
+        failures: [SyncSendFailure(recordID: local.id, disposition: .conflict, serverRecord: server)]
+    ), sent: [change])
+
+    let state = await repository.state()
+    #expect(state.records.first(where: { $0.id == server.id }) == server)
+    #expect(state.pendingChanges.isEmpty)
+    #expect(!state.protectedRecordIDs.contains(server.id))
+    #expect(!state.conflictedRecordIDs.contains(server.id))
+    #expect(state.conflictServerRecords[server.id] == nil)
+}
+
+@Test("stale playback acknowledgement cannot erase a newly queued write")
+func stalePlaybackAcknowledgementKeepsNewerPendingWrite() async throws {
+    let repository = try ListenerRepository(
+        directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    let first = try playbackEnvelope(
+        playbackState(sequence: 1, position: 5),
+        sidecar: WiltedOpaqueSidecar(changeTag: "first-tag", encodedSystemFields: Data([1]))
+    )
+    let firstChange = try SyncPendingChange(operation: .update, recordID: first.id, record: first)
+    try await repository.enqueue(firstChange)
+    let newer = try playbackEnvelope(
+        playbackState(sequence: 2, position: 10),
+        sidecar: WiltedOpaqueSidecar(changeTag: "first-tag", encodedSystemFields: Data([1]))
+    )
+    let newerChange = try SyncPendingChange(operation: .update, recordID: newer.id, record: newer)
+    try await repository.enqueue(newerChange)
+    let server = try playbackEnvelope(
+        playbackState(sequence: 1, position: 5),
+        sidecar: WiltedOpaqueSidecar(changeTag: "server-tag", encodedSystemFields: Data([2]))
+    )
+
+    try await repository.acknowledge(try SyncSendResult(
+        engineState: Data([2]), acknowledgedRecordIDs: [first.id], serverEnvelopes: [server]
+    ), sent: [firstChange])
+
+    let state = await repository.state()
+    #expect(state.pendingChanges == [newerChange])
+    #expect(state.records.first(where: { $0.id == newer.id }) == newer)
+    #expect(state.protectedRecordIDs.contains(newer.id))
+}
+
+@Test("stale playback conflict acknowledgement rebases a newer pending write")
+func stalePlaybackConflictAcknowledgementRebasesNewerPendingWrite() async throws {
+    let repository = try ListenerRepository(
+        directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    let first = try playbackEnvelope(
+        playbackState(sequence: 1, position: 5),
+        sidecar: WiltedOpaqueSidecar(changeTag: "first-tag", encodedSystemFields: Data([1]))
+    )
+    let firstChange = try SyncPendingChange(operation: .update, recordID: first.id, record: first)
+    try await repository.enqueue(firstChange)
+    let newer = try playbackEnvelope(
+        playbackState(sequence: 2, position: 10),
+        sidecar: first.sidecar
+    )
+    try await repository.enqueue(try SyncPendingChange(operation: .update, recordID: newer.id, record: newer))
+    let server = try playbackEnvelope(
+        playbackState(sequence: 1, position: 5),
+        sidecar: WiltedOpaqueSidecar(changeTag: "server-tag", encodedSystemFields: Data([2]))
+    )
+
+    try await repository.acknowledge(try SyncSendResult(
+        engineState: Data([2]),
+        failures: [SyncSendFailure(recordID: first.id, disposition: .conflict, serverRecord: server)]
+    ), sent: [firstChange])
+
+    let rebasedState = await repository.state()
+    let rebased = try #require(rebasedState.pendingChanges.first)
+    let rebasedRecord = try #require(rebased.record)
+    let rebasedPlayback = try WiltedRecordCodec().decodePlayback(rebasedRecord)
+    #expect(rebasedPlayback.sequence == 2)
+    #expect(rebasedRecord.sidecar == server.sidecar)
+    #expect(rebasedState.records.first(where: { $0.id == newer.id }) == rebasedRecord)
+    #expect(rebasedState.protectedRecordIDs.contains(newer.id))
+    #expect(!rebasedState.conflictedRecordIDs.contains(newer.id))
+
+    let retriedServer = try playbackEnvelope(
+        playbackState(sequence: 2, position: 10),
+        sidecar: WiltedOpaqueSidecar(changeTag: "retry-tag", encodedSystemFields: Data([3]))
+    )
+    try await repository.acknowledge(try SyncSendResult(
+        engineState: Data([3]), acknowledgedRecordIDs: [rebased.recordID], serverEnvelopes: [retriedServer]
+    ), sent: [rebased])
+
+    let converged = await repository.state()
+    #expect(converged.pendingChanges.isEmpty)
+    #expect(!converged.protectedRecordIDs.contains(newer.id))
+    #expect(!converged.conflictedRecordIDs.contains(newer.id))
+    let stored = try #require(converged.records.first(where: { $0.id == newer.id }))
+    #expect(try WiltedRecordCodec().decodePlayback(stored).sequence == 2)
+    #expect(stored.sidecar == retriedServer.sidecar)
 }
 
 @Test("acknowledged playback uses causal merge and refreshes server sidecar")
@@ -664,6 +848,63 @@ func naturalCompletionEmitsDurableCheckpoint() async throws {
     #expect((await controller.current()) == checkpoint)
 }
 
+@Test("durable listener checkpoints retain an explicit session intent")
+func durableCheckpointsRetainExplicitSessionIntent() async throws {
+    let bytes = Data("session-intent-audio".utf8)
+    let cache = try ListenerAudioCache(
+        rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    let audio = try asset(bytes)
+    _ = try await cache.store(data: bytes, asset: audio)
+    let engine = MemoryEngine()
+    let remote = TestRemoteCommands()
+    let controller = ListenerPlaybackController(cache: cache, engine: engine)
+    await controller.install(remoteCommands: remote)
+    _ = try await controller.play(asset: audio, title: "Session", state: try playbackState(position: 20))
+
+    let rewind = try #require(try await controller.seek(position: 5, intent: .rewind, newSession: true))
+    engine.currentTime = 7
+    let paused = try #require(try await controller.pause())
+    _ = engine.play()
+    engine.currentTime = 9
+    let backgrounded = try #require(try await controller.enterBackground())
+    engine.currentTime = 11
+    let checkpoint = try #require(try await controller.liveCheckpoint())
+    #expect([rewind, paused, backgrounded, checkpoint].allSatisfy { $0.intent == .rewind })
+
+    var remoteResults = controller.remoteCommandResults.makeAsyncIterator()
+    await remote.send(.pause)
+    let remotePause = await remoteResults.next()
+    #expect(remotePause?.state.intent == .rewind)
+    await remote.send(.play)
+    let remotePlay = await remoteResults.next()
+    #expect(remotePlay?.state.intent == .rewind)
+
+    await remote.send(.restart)
+    let restart = try #require(await remoteResults.next())
+    #expect(restart.state.intent == .restart)
+    engine.currentTime = 2
+    let restartedPause = try #require(try await controller.pause())
+    _ = engine.play()
+    engine.currentTime = 4
+    let restartedBackground = try #require(try await controller.enterBackground())
+    engine.currentTime = 6
+    let restartedCheckpoint = try #require(try await controller.liveCheckpoint())
+    #expect([restart.state, restartedPause, restartedBackground, restartedCheckpoint].allSatisfy { $0.intent == .restart })
+    await remote.send(.pause)
+    let restartedRemotePause = await remoteResults.next()
+    #expect(restartedRemotePause?.state.intent == .restart)
+    await remote.send(.play)
+    let restartedRemotePlay = await remoteResults.next()
+    #expect(restartedRemotePlay?.state.intent == .restart)
+
+    engine.finishNaturally()
+    for _ in 0..<100 { await Task.yield() }
+    let completed = try #require(await controller.current())
+    #expect(completed.completed == true)
+    #expect(completed.intent == .restart)
+}
+
 @Test("delayed completion from a superseded playback generation is ignored")
 func supersededCompletionGenerationIsIgnored() async throws {
     let bytes = Data("generation-audio".utf8)
@@ -743,11 +984,19 @@ func backgroundAndRemoteCommands() async throws {
     #expect(rewound?.intent == .rewind)
     #expect(rewound?.sequence == 6)
     #expect(rewound?.sessionID == "remote-6")
+    await installedRemote.object?.send(.pause)
+    let pausedRewind = await controller.current()
+    #expect(pausedRewind?.intent == .rewind)
+    #expect(pausedRewind?.sequence == 7)
+    await installedRemote.object?.send(.play)
+    let resumedRewind = await controller.current()
+    #expect(resumedRewind?.intent == .rewind)
+    #expect(resumedRewind?.sequence == 8)
     await installedRemote.object?.send(.restart)
     let restarted = await controller.current()
     #expect(restarted?.intent == .restart)
-    #expect(restarted?.sequence == 7)
-    #expect(restarted?.sessionID == "remote-7")
+    #expect(restarted?.sequence == 9)
+    #expect(restarted?.sessionID == "remote-9")
     #expect(engine.playing == true)
     #expect(nowPlaying.updates >= 6)
     await controller.cancel()
@@ -827,7 +1076,7 @@ func pausedSeekDoesNotRestartAudio() async throws {
 
     let progressState = try await controller.seek(position: 20, intent: .progress, newSession: false)
     let progress = try #require(progressState)
-    #expect(progress.intent == .progress)
+    #expect(progress.intent == .rewind)
     #expect(progress.sessionID == rewind.sessionID)
     #expect(progress.sequence == rewind.sequence + 1)
     #expect(progress.positionSeconds == 20)

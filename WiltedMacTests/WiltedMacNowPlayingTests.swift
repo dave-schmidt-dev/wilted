@@ -179,18 +179,44 @@ final class WiltedMacNowPlayingTests: XCTestCase {
     /// button that does nothing.
     func testQueuePositionDecidesWhichSkipControlsTheWidgetDraws() {
         let (model, _, commands) = makeModel()
+        let ep1 = episode(id: "episode-1")
+        let ep2 = episode(id: "episode-2")
+        let ep3 = episode(id: "episode-3")
+        model.installEpisodeForTesting(ep1)
+        model.installEpisodeForTesting(ep2)
+        model.installEpisodeForTesting(ep3)
         let queue = ["episode-1", "episode-2", "episode-3"]
-        model.installPlaybackStateForTesting(episode: episode(id: "episode-2"), isPlaying: true,
+        model.installPlaybackStateForTesting(episode: ep2, isPlaying: true,
                                              position: 0, duration: 1_800, queue: queue)
         model.publishNowPlaying()
         XCTAssertEqual(commands.availability.last?.hasNext, true)
         XCTAssertEqual(commands.availability.last?.hasPrevious, true)
 
-        model.installPlaybackStateForTesting(episode: episode(id: "episode-3"), isPlaying: true,
+        model.installPlaybackStateForTesting(episode: ep3, isPlaying: true,
                                              position: 0, duration: 1_800, queue: queue)
         model.publishNowPlaying(force: true)
         XCTAssertEqual(commands.availability.last?.hasNext, false, "the last episode has nothing after it")
         XCTAssertEqual(commands.availability.last?.hasPrevious, true)
+    }
+
+    func testRemoteCommandNextTrackWithABCSkipsUnpreparedBAndSelectsC() {
+        let (model, _, commands) = makeModel()
+        let epA = episode(id: "episode-A", prepared: true)
+        let epB = episode(id: "episode-B", prepared: false)
+        let epC = episode(id: "episode-C", prepared: true)
+        model.installEpisodeForTesting(epA)
+        model.installEpisodeForTesting(epB)
+        model.installEpisodeForTesting(epC)
+        let queue = ["episode-A", "episode-B", "episode-C"]
+        model.installPlaybackStateForTesting(episode: epA, isPlaying: true,
+                                             position: 0, duration: 1_800, queue: queue)
+        model.publishNowPlaying()
+        XCTAssertEqual(commands.availability.last?.hasNext, true)
+
+        commands.send(.nextTrack)
+
+        XCTAssertEqual(model.currentPodcastEpisodeID, "episode-C",
+                       "remote next-track must skip unprepared B and advance directly to C")
     }
 
     // MARK: - What comes back
@@ -270,12 +296,14 @@ final class WiltedMacNowPlayingTests: XCTestCase {
         return (model, sink, commands)
     }
 
-    private func episode(id: String = "episode-1") -> WiltedMacEpisode {
+    private func episode(id: String = "episode-1", prepared: Bool = true) -> WiltedMacEpisode {
         WiltedMacEpisode(
             id: id, title: "The Cost of Everything", feedTitle: "Quarterly",
             summary: "One line.", artworkURL: URL(string: "https://example.com/art.png"),
             releasedAt: Date(timeIntervalSince1970: 1_700_000_000), durationSeconds: 1_800,
-            playbackSeconds: 0, downloadState: .completed
+            playbackSeconds: 0, downloadState: .completed,
+            preparationState: prepared ? .prepared(summary: "Clean") : .notPrepared,
+            isReadyMediaAvailable: true
         )
     }
 

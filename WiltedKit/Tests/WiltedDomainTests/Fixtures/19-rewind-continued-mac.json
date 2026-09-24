@@ -1,0 +1,38 @@
+{
+  "fixtureVersion": 1,
+  "caseID": "playback-mac-rewind-continued-on-iphone",
+  "operation": "playbackMerge",
+  "description": "A Mac rewind and later Mac checkpoint converge when the iPhone applies the second record.",
+  "input": {
+    "changeTagMatches": true,
+    "current": {
+      "itemID": "item-alpha",
+      "revisionID": "rev-alpha-v1",
+      "sessionID": "session-mac-rewind-2",
+      "durationSeconds": 420,
+      "completed": false,
+      "intent": "rewind",
+      "deviceID": "device-mac",
+      "sequence": 1,
+      "positionSeconds": 120,
+      "updatedAt": "2026-08-17T15:10:00Z"
+    },
+    "incoming": {
+      "itemID": "item-alpha",
+      "revisionID": "rev-alpha-v1",
+      "sessionID": "session-mac-rewind-2",
+      "durationSeconds": 420,
+      "completed": false,
+      "intent": "rewind",
+      "deviceID": "device-mac",
+      "sequence": 2,
+      "positionSeconds": 155,
+      "updatedAt": "2026-08-17T15:11:00Z"
+    }
+  },
+  "expected": {
+    "decision": "accept",
+    "winningState": "incoming",
+    "reason": "forwardProgress"
+  }
+}

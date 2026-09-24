@@ -60,7 +60,7 @@ public struct PastedLinkClassifier: Sendable {
 
         let response: PodcastFeedHTTPResponse
         do {
-            response = try await loader.load(url, maximumBytes: Self.maximumSniffBytes)
+            response = try await loader.loadPrefix(url, maximumBytes: Self.maximumSniffBytes)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
