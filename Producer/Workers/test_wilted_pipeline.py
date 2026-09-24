@@ -285,6 +285,12 @@ class FakeLLM:
     commercial_programme_ids: list[int] | None = None
     commercial_preservation_answer: str | None = None
     commercial_preservation_answers: list[str] = field(default_factory=list)
+    commercial_conflict_answer: str | None = None
+    commercial_conflict_answers: list[str] = field(default_factory=list)
+    commercial_prefix_role_answer: str | None = None
+    commercial_prefix_cue_answer: str | None = None
+    preroll_continuation_id: int | None = None
+    preroll_continuation_answer: str | None = None
     # The closing review asks the same confirmation twice when the first answer
     # moves the boundary, so the double has to be able to answer it differently.
     program_id_answers: list = field(default_factory=list)
@@ -307,7 +313,26 @@ class FakeLLM:
             raise self.fail_generate
         if system_prompt in {"archive ad classifier", "archive ad classifier correction"}:
             return self.classifier_answer, 1
+        if system_prompt == wp.COMMERCIAL_PREFIX_ROLE_PROMPT:
+            return self.commercial_prefix_role_answer or self.answer, 1
+        if system_prompt == wp.COMMERCIAL_PREFIX_CUE_PROMPT:
+            return self.commercial_prefix_cue_answer or self.answer, 1
+        if system_prompt == wp.COMMERCIAL_CONFLICTING_EVIDENCE_PROMPT:
+            if self.commercial_conflict_answers:
+                return self.commercial_conflict_answers.pop(0), 1
+            if self.commercial_conflict_answer is not None:
+                return self.commercial_conflict_answer, 1
+            if self.commercial_programme_ids is not None:
+                candidate_id = int(user_content.partition("Candidate ID to resolve: ")[2].split()[0])
+                if candidate_id in self.commercial_programme_ids:
+                    return json.dumps({"classification": "programme"}), 1
+                return json.dumps({"classification": "commercial"}), 1
+            return json.dumps({"classification": "commercial"}), 1
         if system_prompt == wp.AD_POD_CONTINUATION_PROMPT:
+            if self.preroll_continuation_answer is not None:
+                return self.preroll_continuation_answer, 1
+            if self.preroll_continuation_id is not None:
+                return json.dumps({"program_start_id": self.preroll_continuation_id}), 1
             if self.adjacent_program_start_answer is not None:
                 return self.adjacent_program_start_answer, 1
             if self.adjacent_program_start_id is not None:
@@ -3409,6 +3434,421 @@ class CommercialEvidenceRecoveryTests(unittest.TestCase):
         self.assertIsNone(preserved)
         self.assertIn("invalid shape", details["ads.detect.recovery.skipped"])
 
+    def test_conflicting_evidence_cta_destination_cue_recovers_ground_news_like_midroll(self):
+        # Synthetic Ground News-like host midroll:
+        # Cue 0: programme context before
+        # Cues 1-2: sponsor read narrative/body
+        # Cue 3: CTA and destination initially mislabelled as programme
+        # Cue 4: programme context resumes
+        segments = [
+            FakeSegment(0.0, 20.0, "the hosts discuss the news and interview the panel"),
+            FakeSegment(20.0, 40.0, "our sponsor helps you see every side of every story"),
+            FakeSegment(40.0, 60.0, "compare coverage and see bias charts for yourself"),
+            FakeSegment(60.0, 80.0, "go check them out at example dot com slash news and get started today"),
+            FakeSegment(80.0, 100.0, "welcome back to our ongoing reporting and analysis"),
+        ]
+        # Initially preservation labels cue 3 as programme
+        preservation = json.dumps({"labels": {
+            "0": "programme", "1": "commercial", "2": "commercial", "3": "programme", "4": "programme"
+        }})
+        llm = FakeLLM(
+            commercial_ad_ids=[1, 2, 3],
+            commercial_preservation_answer=preservation,
+            commercial_conflict_answer=json.dumps({"classification": "commercial"}),
+        )
+        preserved, details = self.preserve(llm, segments, (1, 2, 3))
+        self.assertEqual(preserved, (1, 2, 3))
+        self.assertEqual(
+            details["ads.detect.commercial.conflict.resolved"],
+            "candidate ID 3 resolved to commercial",
+        )
+
+    def test_conflicting_evidence_review_preserves_actual_programme_and_mixed_cues(self):
+        segments = [
+            FakeSegment(0.0, 20.0, "programme before"),
+            FakeSegment(20.0, 40.0, "sponsor read message body"),
+            FakeSegment(40.0, 60.0, "go check them out at example dot com slash show and get started today"),
+            FakeSegment(60.0, 80.0, "programme after"),
+        ]
+        preservation = json.dumps({"labels": {
+            "0": "programme", "1": "commercial", "2": "programme", "3": "programme"
+        }})
+        # When conflict review confirms actual programme, audio is preserved
+        llm_prog = FakeLLM(
+            commercial_ad_ids=[1, 2],
+            commercial_preservation_answer=preservation,
+            commercial_conflict_answer=json.dumps({"classification": "programme"}),
+        )
+        preserved_prog, details_prog = self.preserve(llm_prog, segments, (1, 2))
+        self.assertIsNone(preserved_prog)
+        self.assertEqual(
+            details_prog["ads.detect.commercial.conflict.preserved"],
+            "candidate ID 2 confirmed as programme",
+        )
+
+        # When conflict review classifies as mixed, audio is preserved
+        llm_mixed = FakeLLM(
+            commercial_ad_ids=[1, 2],
+            commercial_preservation_answer=preservation,
+            commercial_conflict_answer=json.dumps({"classification": "mixed"}),
+        )
+        preserved_mixed, details_mixed = self.preserve(llm_mixed, segments, (1, 2))
+        self.assertIsNone(preserved_mixed)
+        self.assertEqual(
+            details_mixed["ads.detect.commercial.conflict.preserved"],
+            "candidate ID 2 confirmed as mixed",
+        )
+
+    def test_conflicting_evidence_review_fails_closed_on_malformed_response(self):
+        segments = [
+            FakeSegment(0.0, 20.0, "programme before"),
+            FakeSegment(20.0, 40.0, "sponsor read message body"),
+            FakeSegment(40.0, 60.0, "go check them out at example dot com and get started today"),
+            FakeSegment(60.0, 80.0, "programme after"),
+        ]
+        preservation = json.dumps({"labels": {
+            "0": "programme", "1": "commercial", "2": "programme", "3": "programme"
+        }})
+        llm = FakeLLM(
+            commercial_ad_ids=[1, 2],
+            commercial_preservation_answer=preservation,
+            commercial_conflict_answer="not json",
+        )
+        preserved, details = self.preserve(llm, segments, (1, 2))
+        self.assertIsNone(preserved)
+        self.assertIn("conflict review failed", details["ads.detect.commercial.conflict.skipped"])
+
+    def test_mixed_preservation_label_is_never_overridden_by_conflict_review(self):
+        segments = [
+            FakeSegment(0.0, 20.0, "programme before"),
+            FakeSegment(20.0, 40.0, "sponsor read message body"),
+            FakeSegment(40.0, 60.0, "go check them out at example dot com and get started today"),
+            FakeSegment(60.0, 80.0, "programme after"),
+        ]
+        preservation = json.dumps({"labels": {
+            "0": "programme", "1": "commercial", "2": "mixed", "3": "programme"
+        }})
+        llm = FakeLLM(
+            commercial_ad_ids=[1, 2],
+            commercial_preservation_answer=preservation,
+            commercial_conflict_answer=json.dumps({"classification": "commercial"}),
+        )
+        preserved, details = self.preserve(llm, segments, (1, 2))
+        self.assertIsNone(preserved)
+        self.assertIn("intersects the proposed cut at IDs 2", details["ads.detect.recovery.skipped"])
+        self.assertFalse(any(wp.COMMERCIAL_CONFLICTING_EVIDENCE_PROMPT == p for p in llm.request_prompts))
+
+
+class SparseCommercialRecoveryTests(unittest.TestCase):
+    """A sparse positive can nominate a read, never authorize one by itself."""
+
+    @staticmethod
+    def segments(texts, gaps_after=()):
+        segments = []
+        cursor = 0.0
+        for index, text in enumerate(texts):
+            segments.append(FakeSegment(cursor, cursor + 10.0, text))
+            cursor += 10.0 + (6.0 if index in gaps_after else 0.0)
+        return segments
+
+    def recover(self, segments, ad_ids, programme_ids, seed_id, *, existing=(), llm=None):
+        llm = llm or FakeLLM(commercial_ad_ids=ad_ids,
+                            commercial_programme_ids=programme_ids)
+        llm.load()
+        ads = install_fake_ads(llm)
+        candidates = () if existing else (
+            wp.AuditCandidate("positive-missing-final-span", (seed_id,), "sparse positive"),
+        )
+        audit = wp.AdAnalysisAudit(candidates=candidates)
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            result = wp.recover_sparse_commercial_reads(
+                ads, llm, segments, list(existing), 6000.0, audit
+            )
+        events = [json.loads(line) for line in stream.getvalue().splitlines()]
+        return result, llm, events
+
+    @staticmethod
+    def prefix_review_llm(segments, prefix_ids, programme_ids, *, role="commercial", cue_role="commercial"):
+        labels = {
+            str(index): "programme" if index in prefix_ids or index in programme_ids else "commercial"
+            for index in range(len(segments))
+        }
+        return FakeLLM(
+            commercial_preservation_answer=json.dumps({"labels": labels}),
+            commercial_prefix_role_answer=json.dumps({"classification": role}),
+            commercial_prefix_cue_answer=json.dumps({"labels": {
+                str(index): cue_role for index in prefix_ids
+            }}),
+        )
+
+    def test_short_cta_cut_expands_to_whole_news_service_read(self):
+        segments = self.segments([
+            "the panel discusses the day's reporting",
+            "the host follows up with an editorial question",
+            "a comparison service can show different views of the same story",
+            "the service displays each outlet's coverage",
+            "its comparison tools help readers inspect bias",
+            "the host explains how the paid service works",
+            "an example of the service's comparison display",
+            "more details about the paid plan",
+            "the offer is available to listeners",
+            "visit example dot com and get started with the offer",
+            "the host returns to the panel's reporting",
+        ], gaps_after=(1, 9))
+        existing = (FakeAd(segments[9].start_s, segments[9].end_s, label="sponsor_read"),)
+        self.assertEqual(wp.sparse_pause_envelope(segments, 9), tuple(range(2, 10)))
+        llm = self.prefix_review_llm(segments, tuple(range(2, 9)), (0, 1, 10))
+        result, llm, _events = self.recover(
+            segments, list(range(2, 10)), [0, 1, 10], 9, existing=existing, llm=llm
+        )
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in result],
+                         [(segments[2].start_s, segments[9].end_s)])
+        self.assertEqual(result[0].label, "sponsor_read")
+        self.assertIn(wp.COMMERCIAL_PREFIX_ROLE_PROMPT, llm.request_prompts)
+        self.assertIn(wp.COMMERCIAL_PREFIX_CUE_PROMPT, llm.request_prompts)
+
+    def test_dropped_product_cue_recovers_apparel_read_without_cta_or_domain(self):
+        segments = self.segments([
+            "the guest finishes an editorial answer",
+            "the host introduces the next discussion topic",
+            "the host describes a company's socks and material",
+            "the apparel maker has a comfort guarantee",
+            "more product sizing and fabric details",
+            "the host describes trying the socks at home",
+            "the paid brand sells different styles",
+            "the host continues the apparel offer",
+            "the product message wraps up",
+            "the hosts return to their interview",
+        ], gaps_after=(1, 8))
+        self.assertEqual(wp.sparse_pause_envelope(segments, 6), tuple(range(2, 9)))
+        llm = self.prefix_review_llm(segments, (2, 3, 4), (0, 1, 9))
+        result, _llm, _events = self.recover(
+            segments, list(range(2, 9)), [0, 1, 9], 6, llm=llm
+        )
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in result],
+                         [(segments[2].start_s, segments[8].end_s)])
+
+    def test_dropped_product_cue_recovers_pet_food_read_through_offer_tail(self):
+        segments = self.segments([
+            "the discussion reaches an editorial conclusion",
+            "the hosts preview their next interview",
+            "the host describes a delivered pet food product",
+            "the subscription is tailored to each animal",
+            "details of the recipe and shipping",
+            "the host describes why the brand makes it",
+            "the product message continues",
+            "the classifier observed this product cue",
+            "the host explains the plan options",
+            "the host explains the first box",
+            "the brand offers a listener discount",
+            "more details about the pet food offer",
+            "the offer has a destination at example dot com",
+            "the commercial signs off",
+            "the programme returns to the interview",
+        ], gaps_after=(1, 13))
+        self.assertEqual(wp.sparse_pause_envelope(segments, 7), tuple(range(2, 14)))
+        llm = self.prefix_review_llm(segments, tuple(range(2, 7)), (0, 1, 14))
+        result, _llm, _events = self.recover(
+            segments, list(range(2, 14)), [0, 1, 14], 7, llm=llm
+        )
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in result],
+                         [(segments[2].start_s, segments[13].end_s)])
+
+    def test_mixed_interior_cue_preserves_the_existing_short_cut(self):
+        segments = self.segments([
+            "programme before",
+            "commercial opening",
+            "commercial then the programme returns in this same cue",
+            "visit example dot com and get started",
+            "programme after",
+        ], gaps_after=(0, 3))
+        labels = json.dumps({"labels": {
+            "0": "programme", "1": "commercial", "2": "mixed",
+            "3": "commercial", "4": "programme",
+        }})
+        llm = FakeLLM(commercial_ad_ids=[1, 2, 3],
+                      commercial_preservation_answer=labels)
+        original = FakeAd(segments[3].start_s, segments[3].end_s, label="sponsor_read")
+        result, _llm, events = self.recover(
+            segments, [1, 2, 3], [0, 4], 3, existing=(original,), llm=llm
+        )
+        self.assertEqual(result, [original])
+        self.assertTrue(any(event["stage"] == "ads.detect.sparse.prefix.preserved"
+                            for event in events))
+
+    def test_editorial_or_invalid_review_preserves_audio(self):
+        segments = self.segments([
+            "programme before", "product opening", "editorial discussion",
+            "product detail", "programme after",
+        ], gaps_after=(0, 3))
+        for llm in (
+            FakeLLM(commercial_ad_ids=[1, 2, 3],
+                    commercial_programme_ids=[0, 2, 4]),
+            FakeLLM(commercial_ad_ids=[1, 2, 3],
+                    commercial_preservation_answer="invalid json"),
+            FakeLLM(commercial_ad_ids=[1, 2, 3],
+                    commercial_programme_ids=[]),
+        ):
+            with self.subTest(llm=llm):
+                result, _llm, _events = self.recover(
+                    segments, [1, 2, 3], [0, 4], 2, llm=llm
+                )
+                self.assertEqual(result, [])
+
+    def test_prefix_review_preserves_audio_on_programme_mixed_or_invalid_responses(self):
+        segments = self.segments([
+            "editorial discussion", "visit example dot com to hear the product anecdote",
+            "product details", "visit example dot com and get started",
+            "editorial resumes",
+        ], gaps_after=(0, 3))
+        for role, cue_role in (("programme", "commercial"), ("mixed", "commercial"),
+                               ("commercial", "programme"), ("commercial", "mixed"),
+                               ("invalid", "commercial")):
+            with self.subTest(role=role, cue_role=cue_role):
+                llm = self.prefix_review_llm(segments, (1,), (0, 4),
+                                             role=role, cue_role=cue_role)
+                original = FakeAd(segments[3].start_s, segments[3].end_s,
+                                  label="sponsor_read")
+                result, llm, _events = self.recover(
+                    segments, [1, 2, 3], [0, 4], 3, existing=(original,), llm=llm
+                )
+                if role == "invalid":
+                    self.assertEqual(result, [original])
+                else:
+                    self.assertEqual([(ad.start_s, ad.end_s) for ad in result],
+                                     [(segments[2].start_s, segments[3].end_s)])
+                    self.assertGreater(result[0].start_s, segments[1].start_s)
+                self.assertNotIn(wp.COMMERCIAL_CONFLICTING_EVIDENCE_PROMPT,
+                                 llm.request_prompts)
+
+    def test_editorial_inside_the_proposal_is_never_relabelled_as_a_prefix(self):
+        segments = self.segments([
+            "programme before", "product story", "editorial interview",
+            "product offer", "programme after",
+        ], gaps_after=(0, 3))
+        llm = self.prefix_review_llm(segments, (2,), (0, 4))
+        result, llm, _events = self.recover(
+            segments, [1, 2, 3], [0, 4], 3, llm=llm
+        )
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in result],
+                         [(segments[3].start_s, segments[3].end_s)])
+        self.assertNotIn(wp.COMMERCIAL_PREFIX_ROLE_PROMPT, llm.request_prompts)
+
+    def test_one_disputed_lead_in_cue_is_kept_before_verified_commercial_suffix(self):
+        segments = self.segments([
+            "programme before", "the problem is introduced",
+            "the service solves that problem", "the service features are explained",
+            "the offer details continue", "visit example dot com and get started",
+            "programme after",
+        ], gaps_after=(0, 5))
+        llm = self.prefix_review_llm(segments, (1, 2, 3, 4), (0, 6))
+        llm.commercial_prefix_cue_answer = json.dumps({"labels": {
+            "1": "programme", "2": "commercial", "3": "commercial", "4": "commercial",
+        }})
+        original = FakeAd(segments[5].start_s, segments[5].end_s,
+                          label="sponsor_read")
+        result, _llm, _events = self.recover(
+            segments, [1, 2, 3, 4, 5], [0, 6], 5, existing=(original,), llm=llm
+        )
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in result],
+                         [(segments[2].start_s, segments[5].end_s)])
+
+    def test_mixed_opening_is_kept_before_verified_product_pitch_suffix(self):
+        segments = self.segments([
+            "programme before", "host hands off to the break",
+            "the brand begins its offer", "more sponsor details",
+            "observed product cue", "the commercial signs off", "programme after",
+        ], gaps_after=(0, 5))
+        llm = self.prefix_review_llm(segments, (1, 2, 3), (0, 6), role="mixed")
+        llm.commercial_prefix_cue_answer = json.dumps({"labels": {
+            "1": "mixed", "2": "commercial", "3": "commercial",
+        }})
+        result, _llm, _events = self.recover(
+            segments, [1, 2, 3, 4, 5], [0, 6], 4, llm=llm
+        )
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in result],
+                         [(segments[2].start_s, segments[5].end_s)])
+
+    def test_keyword_in_editorial_pause_passage_cannot_trigger_single_cue_override(self):
+        segments = self.segments([
+            "programme before", "hosts discuss visiting example dot com",
+            "the interview talks about products", "programme after",
+        ], gaps_after=(0, 2))
+        llm = FakeLLM(
+            commercial_preservation_answer=json.dumps({"labels": {
+                "0": "programme", "1": "programme", "2": "programme", "3": "programme",
+            }}),
+            commercial_conflict_answer=json.dumps({"classification": "commercial"}),
+        )
+        result, llm, _events = self.recover(
+            segments, [1, 2], [0, 1, 2, 3], 1, llm=llm
+        )
+        self.assertEqual(result, [])
+        self.assertNotIn(wp.COMMERCIAL_CONFLICTING_EVIDENCE_PROMPT,
+                         llm.request_prompts)
+
+    def test_a_short_cut_requires_whole_cue_evidence_before_expansion(self):
+        segments = self.segments([
+            "programme before", "visit example dot com and get started",
+            "programme after",
+        ])
+        partial = FakeAd(11.0, 20.0, label="sponsor_read")
+        result, llm, _events = self.recover(
+            segments, [1], [0, 2], 1, existing=(partial,)
+        )
+        self.assertEqual(result, [partial])
+        self.assertEqual(llm.request_prompts, [])
+
+    def test_exhausted_sparse_review_budget_preserves_the_original_short_cut(self):
+        segments = self.segments([
+            "programme before", "visit example dot com and get started",
+            "programme after",
+        ], gaps_after=(0, 1))
+        original = FakeAd(segments[1].start_s, segments[1].end_s,
+                          label="sponsor_read")
+        llm = FakeLLM()
+        llm.load()
+        ads = install_fake_ads(llm)
+        exhausted = wp._CallBudgetBackend(llm, 0)
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            result = wp.recover_sparse_commercial_reads(
+                ads, exhausted, segments, [original], 6000.0,
+                wp.AdAnalysisAudit(),
+            )
+        events = [json.loads(line) for line in stream.getvalue().splitlines()]
+        self.assertEqual(result, [original])
+        self.assertEqual(exhausted.calls, 0)
+        self.assertEqual(llm.requests, [])
+        self.assertTrue(any(
+            event["stage"] == "ads.detect.recovery.skipped"
+            and "budget exhausted" in event["detail"]
+            for event in events
+        ))
+
+    def test_pause_without_classifier_or_cut_evidence_never_nominates(self):
+        segments = self.segments([
+            "the interview pauses", "an editorial story continues",
+            "the host asks another question",
+        ], gaps_after=(0, 1))
+        audit = wp.AdAnalysisAudit()
+        self.assertEqual(wp.sparse_commercial_seeds(segments, [], audit), ())
+
+    def test_consecutive_tiny_transition_cues_are_preserved_after_product_signoff(self):
+        segments = [
+            FakeSegment(0.0, 10.0, "programme"),
+            FakeSegment(16.0, 25.0, "a product pitch begins"),
+            FakeSegment(25.5, 35.0, "the offer signs off"),
+            FakeSegment(35.5, 35.8, "mm"),
+            FakeSegment(36.0, 36.3, "yeah"),
+            FakeSegment(42.0, 52.0, "programme resumes"),
+        ]
+        self.assertEqual(wp.sparse_pause_envelope(segments, 1), (1, 2))
+        self.assertIsNone(wp.sparse_pause_envelope(self.segments([
+            "programme", "positive cue", "programme"
+        ]), 1))
+
 
 class AdjacentAdPodContinuationTests(unittest.TestCase):
     SEGMENTS = [
@@ -5292,6 +5732,98 @@ class TranscriptStartPrerollRecoveryTests(unittest.TestCase):
         _result, details = self.preroll(llm, self.segments(), self.existing())
         self.assertEqual(details["ads.detect.preroll.nominated"], "program ID 5 at 100.000s")
 
+    def test_consecutive_preroll_extends_to_first_verified_programme_return(self):
+        # Synthetic consecutive preroll:
+        # Cues 0-1: sponsor 1 (Shopify-like e-commerce platform ad)
+        # Cues 2-3: sponsor 2 (ChatGPT-like AI tool ad)
+        # Cues 4-5: programme begins (editorial topic discussion)
+        segments = [
+            FakeSegment(0.0, 20.0, "grow your business with an online store"),
+            FakeSegment(20.0, 40.0, "sign up for a one dollar per month trial at acme dot com"),
+            FakeSegment(40.0, 60.0, "introducing an assistant that can write code and summarize documents"),
+            FakeSegment(60.0, 80.0, "try it today and get started"),
+            FakeSegment(80.0, 100.0, "welcome back to the programme and our discussion today"),
+            FakeSegment(100.0, 120.0, "our panel reports on the latest industry developments"),
+        ]
+        # Q1 identifies programme start at cue 4 (80.0s).
+        # Q2 mistakenly identifies cue 2 (40.0s) as the start of the program because sponsor 2 began.
+        # Preroll continuation review queries from cue 2 and identifies cue 4 (80.0s).
+        llm = FakeLLM(
+            preroll_program_start_id=4,
+            preroll_program_id=2,
+            preroll_continuation_id=4,
+        )
+        result, details = self.preroll(llm, segments, self.existing())
+        self.assertEqual(
+            [(ad.start_s, ad.end_s, ad.label) for ad in result],
+            [(0.0, 80.0, "ad_break"), (150.0, 180.0, "sponsor_read")],
+        )
+        self.assertEqual(
+            details["ads.detect.preroll.shortened"],
+            "program moved to ID 2 at 40.000s",
+        )
+        self.assertEqual(
+            details["ads.detect.preroll.extended"],
+            "opening extended to ID 4 at 80.000s",
+        )
+
+    def test_preroll_continuation_preserves_editorial_opening_when_programme_is_confirmed(self):
+        # When Q2 shortened to an editorial cue (e.g. cue 2) and continuation finds
+        # no further ad pod continuation (-1), shortened boundary is preserved.
+        segments = [FakeSegment(i * 20.0, i * 20.0 + 20.0, f"segment {i}") for i in range(6)]
+        llm = FakeLLM(
+            preroll_program_start_id=5,
+            preroll_program_id=2,
+            preroll_continuation_id=-1,
+        )
+        result, details = self.preroll(llm, segments, self.existing())
+        self.assertEqual(
+            [(ad.start_s, ad.end_s, ad.label) for ad in result],
+            [(0.0, 40.0, "ad_break"), (150.0, 180.0, "sponsor_read")],
+        )
+        self.assertIn(
+            "continuation found no subsequent programme return",
+            details["ads.detect.preroll.continuation.skipped"],
+        )
+
+    def test_preroll_continuation_fails_closed_on_invalid_response(self):
+        segments = [FakeSegment(i * 20.0, i * 20.0 + 20.0, f"segment {i}") for i in range(6)]
+        llm = FakeLLM(
+            preroll_program_start_id=5,
+            preroll_program_id=2,
+            preroll_continuation_answer="invalid json",
+        )
+        result, details = self.preroll(llm, segments, self.existing())
+        self.assertEqual(
+            [(ad.start_s, ad.end_s, ad.label) for ad in result],
+            [(0.0, 40.0, "ad_break"), (150.0, 180.0, "sponsor_read")],
+        )
+        self.assertIn(
+            "opening continuation review failed",
+            details["ads.detect.preroll.continuation.skipped"],
+        )
+
+    def test_preroll_continuation_is_strictly_capped_at_first_verified_programme_return(self):
+        # Q1 verified programme return at cue 4 (80.0s).
+        # Continuation tries to return cue 5 (100.0s).
+        # The extension MUST be capped at cue 4, never overcutting verified programme.
+        segments = [FakeSegment(i * 20.0, i * 20.0 + 20.0, f"segment {i}") for i in range(6)]
+        llm = FakeLLM(
+            preroll_program_start_id=4,
+            preroll_program_id=2,
+            preroll_continuation_id=5,
+        )
+        result, details = self.preroll(llm, segments, self.existing())
+        self.assertEqual(
+            [(ad.start_s, ad.end_s, ad.label) for ad in result],
+            [(0.0, 80.0, "ad_break"), (150.0, 180.0, "sponsor_read")],
+        )
+        self.assertEqual(
+            details["ads.detect.preroll.extended"],
+            "opening extended to ID 4 at 80.000s",
+        )
+
+
 class AuditedDetectorAdapterTests(unittest.TestCase):
     """Exercise retry coverage without loading the archived model or detector."""
 
@@ -5305,6 +5837,7 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
             mock.patch.object(wp, name, passthrough)
             for name, passthrough in (
                 ("recover_unclaimed_explicit_sponsor_reads", _passthrough_detections),
+                ("recover_sparse_commercial_reads", _passthrough_detections),
                 ("recover_commercial_evidence_reads", _passthrough_detections),
                 ("recover_transcript_start_preroll", _passthrough_detections),
                 ("recover_transcript_end_postroll", _passthrough_detections),
@@ -5482,6 +6015,7 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
         # there being one entry.
         order = []
         for name in ("recover_unclaimed_explicit_sponsor_reads", "recover_commercial_evidence_reads",
+                     "recover_sparse_commercial_reads",
                      "recover_transcript_start_preroll",
                      "recover_transcript_end_postroll", "resize_oversized_ad_spans"):
             def record(*args, _name=name, **_kwargs):
@@ -5502,6 +6036,7 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
             "detect_ads",
             "recover_unclaimed_explicit_sponsor_reads",
             "recover_commercial_evidence_reads",
+            "recover_sparse_commercial_reads",
             "recover_transcript_start_preroll",
             "recover_transcript_end_postroll",
             "resize_oversized_ad_spans",

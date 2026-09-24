@@ -274,9 +274,9 @@ AD_POD_CONTINUATION_MAX_SEGMENTS = 12
 AD_POD_CONTINUATION_MAX_SECONDS = 90.0
 AD_POD_CONTINUATION_PROMPT = """\
 The excerpt begins immediately after a verified commercial in a podcast. It may begin with a
-second produced advertisement or a promotion for another podcast. Find the first supplied ID at
+second produced advertisement, a second sponsor message, or a promotion for another podcast. Find the first supplied ID at
 which this podcast's programme resumes. Its title, host introduction, reporting, discussion, or
-interview count as programme. A promotion for another podcast is not programme. Return -1 when no
+interview count as programme. A second produced advertisement, a second sponsor message, or a promotion for another podcast is not programme. Return -1 when no
 programme resumption is visible in the supplied excerpt. Use only a supplied ID or -1.
 Return only the strict JSON object {"program_start_id": ID}, with no prose or Markdown."""
 
@@ -341,7 +341,15 @@ COMMERCIAL_RECOVERY_MAX_CANDIDATE_SHARE = 0.15
 COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_IDS = 3
 COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_SECONDS = 90.0
 COMMERCIAL_RECOVERY_MAX_CANDIDATES = 4
-COMMERCIAL_RECOVERY_MAX_ADDITIONAL_CALLS = 12
+COMMERCIAL_RECOVERY_MAX_ADDITIONAL_CALLS = 16
+COMMERCIAL_SPARSE_MAX_SECONDS = 30.0
+COMMERCIAL_SPARSE_GAP_MIN_SECONDS = 4.0
+COMMERCIAL_SPARSE_MAX_ENVELOPE_SECONDS = 180.0
+COMMERCIAL_SPARSE_CONTEXT_FLANK_IDS = 6
+COMMERCIAL_SPARSE_TRANSITION_MAX_SECONDS = 0.5
+COMMERCIAL_SPARSE_TRANSITION_MAX_CHARS = 6
+COMMERCIAL_SPARSE_PREFIX_MAX_IDS = 12
+COMMERCIAL_SPARSE_PREFIX_MAX_SECONDS = 90.0
 # One straddle probe per span tail, capped so a transcript of many short spans
 # cannot turn the safeguard into an unbounded second pass over the episode.
 STRADDLING_TAIL_MAX_PROBES = 8
@@ -404,10 +412,39 @@ COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT = """\
 Review this bounded podcast envelope independently. Classify each ID listed under "IDs to classify",
 reading the rest as context. "commercial": the whole passage is advertising -- a sponsor message, a
 produced spot, a promotion for a different show, or a host-read promoting a product, service, offer,
-or destination, with its call to action. "programme": the passage is this show's own content -- its
+or destination, with its call to action. A host's anecdote, question, or scene-setting that leads
+directly into the product pitch is part of the commercial when the whole cue serves that pitch.
+"programme": the passage is this show's own content -- its
 reporting, discussion, interviews, narration, a teaser for what comes after the break, credits, or a
 request to support or subscribe to this show. "mixed": the passage holds both. Return only strict
 JSON with no prose."""
+COMMERCIAL_CONFLICTING_EVIDENCE_PROMPT = """\
+Review this bounded podcast envelope to resolve conflicting promotional evidence for the specified
+candidate ID. The candidate ID contains a promotional call to action or sponsor destination URL/code,
+but was initially classified as programme. Read the whole context to decide its true role.
+"commercial": the candidate cue is wholly part of a commercial advertisement or sponsor message,
+including its call to action, website address, promo code, or offer details.
+"programme": the candidate cue belongs to the podcast's own editorial content (reporting, discussion,
+interview, narration, host intro, show credits, cold open, or self-promotion for this show itself).
+"mixed": the candidate cue contains both commercial advertisement and show programme content.
+Return only strict JSON with no prose: {"classification": "commercial" | "programme" | "mixed"}."""
+COMMERCIAL_PREFIX_ROLE_PROMPT = """\
+Review this complete pause-bracketed podcast passage. A later ID inside the passage carries observed
+commercial evidence, but several earlier IDs were called programme in a broad cue-by-cue review.
+Judge the specified earlier prefix as one continuous passage. Is its entire role a host-read
+commercial setup that leads directly into the later product, service, or offer? A personal anecdote,
+problem statement, rhetorical question, or scene-setting can be a commercial setup when it is
+clearly part of that pitch. An actual show discussion, report, interview, host introduction, teaser,
+credit, or self-promotion is programme. Any passage containing both is mixed. Treat the programme
+before and after the bracket as boundaries, not part of the prefix. Return only strict JSON with
+no prose: {"classification": "commercial" | "programme" | "mixed"}."""
+COMMERCIAL_PREFIX_CUE_PROMPT = """\
+Review each specified ID in this pause-bracketed podcast passage separately. The earlier passage
+may be a commercial setup leading into later observed commercial evidence, but a whole-passage
+judgment does not authorize cutting a mixed or editorial cue. Label an ID commercial only if its entire
+speech is part of that sponsor setup or pitch, including a connected anecdote or problem statement.
+Label the show's own discussion, report, interview, introduction, teaser, or credits programme.
+If an ID contains both commercial and programme, label it mixed. Return only strict JSON with no prose."""
 # Label only nearby flanks so the preservation response does not truncate.
 COMMERCIAL_PRESERVATION_FLANK_IDS = 2
 # A pod can begin at the proposal, so look past commercial flanks for programme.
@@ -2663,7 +2700,8 @@ host introduction, or discussion does not. Return only strict JSON {{"include": 
 
 
 def _commercial_recovery_context(
-    ads_module, segments, first: int, last: int, total_seconds: float
+    ads_module, segments, first: int, last: int, total_seconds: float,
+    *, flank_limit: int | None = None,
 ):
     """Return a bounded whole-envelope context, or raise before model work.
 
@@ -2686,9 +2724,11 @@ def _commercial_recovery_context(
     remaining = COMMERCIAL_RECOVERY_CONTEXT_IDS - len(candidate_ids)
     if remaining < 2:
         raise ValueError("commercial envelope exceeds the bounded context ID budget")
-    left_extra = min(first, remaining // 2)
+    left_extra = min(first, remaining // 2, flank_limit if flank_limit is not None else remaining)
     right_extra = min(len(segments) - last - 1, remaining - left_extra)
-    left_extra = min(first, remaining - right_extra)
+    if flank_limit is not None:
+        right_extra = min(right_extra, flank_limit)
+    left_extra = min(first, remaining - right_extra, flank_limit if flank_limit is not None else remaining)
     context_ids = tuple(range(first - left_extra, last + right_extra + 1))
     if (len(context_ids) > COMMERCIAL_RECOVERY_CONTEXT_IDS
             or (first > 0 and context_ids[0] >= first) or context_ids[-1] <= last):
@@ -2707,7 +2747,10 @@ def _commercial_recovery_context(
     return candidate_ids, context_ids, rendered
 
 
-def _commercial_preservation_review(backend, rendered, context_ids, proposed_ids) -> None:
+def _commercial_preservation_review(
+    backend, rendered, context_ids, proposed_ids, segments=None,
+    prefix_evidence_id=None,
+) -> None:
     """Require programme context around a proposed commercial cut."""
     proposed_ids = tuple(proposed_ids)
     labelled_ids = tuple(
@@ -2726,15 +2769,133 @@ def _commercial_preservation_review(backend, rendered, context_ids, proposed_ids
         return _commercial_preservation_labels(preservation, ids)
 
     labels = label(labelled_ids)
-    programme_ids = tuple(
+    programme_ids = [
         segment_id for segment_id in proposed_ids
         if labels[str(segment_id)] in {"programme", "mixed"}
-    )
-    if programme_ids:
-        raise ValueError(
-            "programme preservation intersects the proposed cut at IDs "
-            + ", ".join(map(str, programme_ids))
+    ]
+    if prefix_evidence_id is not None and programme_ids:
+        first_commercial = next(
+            (segment_id for segment_id in proposed_ids
+             if labels[str(segment_id)] == "commercial"), None
         )
+        prefix_ids = tuple(range(proposed_ids[0], first_commercial)) if first_commercial is not None else ()
+        if (prefix_ids
+                and programme_ids == list(prefix_ids)
+                and prefix_evidence_id in proposed_ids
+                and labels[str(prefix_evidence_id)] == "commercial"
+                and segments is not None
+                and len(prefix_ids) <= COMMERCIAL_SPARSE_PREFIX_MAX_IDS
+                and float(segments[prefix_ids[-1]].end_s) - float(segments[prefix_ids[0]].start_s)
+                <= COMMERCIAL_SPARSE_PREFIX_MAX_SECONDS
+                and any(segment_id < proposed_ids[0]
+                        and labels[str(segment_id)] in {"programme", "mixed"}
+                        for segment_id in labelled_ids)):
+            progress(
+                "ads.detect.sparse.prefix.reviewing",
+                f"checking commercial setup IDs {prefix_ids[0]}-{prefix_ids[-1]} before evidence ID {prefix_evidence_id}",
+            )
+            try:
+                role_response, _ = backend.generate(
+                    COMMERCIAL_PREFIX_ROLE_PROMPT,
+                    f"Prefix IDs: {', '.join(map(str, prefix_ids))}; observed evidence ID: {prefix_evidence_id}\n{rendered}",
+                    response_format=_commercial_conflict_response_format(),
+                )
+                prefix_role = _parse_commercial_conflict_response(role_response)
+                progress("ads.detect.sparse.prefix.role", f"whole-prefix role={prefix_role}")
+                if prefix_role in {"commercial", "mixed"}:
+                    cue_response, _ = backend.generate(
+                        COMMERCIAL_PREFIX_CUE_PROMPT,
+                        f"IDs to classify: {', '.join(map(str, prefix_ids))}; observed evidence ID: {prefix_evidence_id}\n{rendered}",
+                        response_format=_commercial_preservation_response_format(prefix_ids),
+                    )
+                    cue_labels = _commercial_preservation_labels(cue_response, prefix_ids)
+                    rejected_ids = [
+                        f"{segment_id}:{cue_labels[str(segment_id)]}"
+                        for segment_id in prefix_ids
+                        if cue_labels[str(segment_id)] != "commercial"
+                    ]
+                    progress(
+                        "ads.detect.sparse.prefix.cues",
+                        "all commercial" if not rejected_ids else "veto=" + ",".join(rejected_ids),
+                    )
+                    if (prefix_role == "commercial"
+                            and all(cue_labels[str(segment_id)] == "commercial" for segment_id in prefix_ids)):
+                        for segment_id in prefix_ids:
+                            labels[str(segment_id)] = "commercial"
+                        programme_ids = []
+                        progress(
+                            "ads.detect.sparse.prefix.resolved",
+                            f"entire commercial setup IDs {prefix_ids[0]}-{prefix_ids[-1]} verified",
+                        )
+                    elif rejected_ids:
+                        # A mixed/uncertain opening stays in the output. A
+                        # later all-commercial suffix may still be removable.
+                        for segment_id in prefix_ids:
+                            labels[str(segment_id)] = cue_labels[str(segment_id)]
+                        programme_ids = [
+                            segment_id for segment_id in proposed_ids
+                            if labels[str(segment_id)] in {"programme", "mixed"}
+                        ]
+            except Exception as error:  # noqa: BLE001 - unresolved prefix preserves audio
+                progress(
+                    "ads.detect.sparse.prefix.skipped",
+                    f"commercial setup review failed: {type(error).__name__}: {error}",
+                )
+                raise ValueError("commercial setup review was invalid") from error
+    if programme_ids and segments is not None and prefix_evidence_id is None:
+        for segment_id in tuple(programme_ids):
+            if labels[str(segment_id)] != "programme":
+                continue
+            text = segments[segment_id].text or ""
+            if not (
+                EXPLICIT_SPONSOR_CTA_RE.search(text) is not None
+                or explicit_sponsor_destination_seen(text)
+            ):
+                continue
+            progress(
+                "ads.detect.commercial.conflict.reviewing",
+                f"checking conflicting evidence on candidate ID {segment_id}",
+            )
+            try:
+                response, _tokens = backend.generate(
+                    COMMERCIAL_CONFLICTING_EVIDENCE_PROMPT,
+                    f"Candidate ID to resolve: {segment_id}\n{rendered}",
+                    response_format=_commercial_conflict_response_format(),
+                )
+                classification = _parse_commercial_conflict_response(response)
+                if classification == "commercial":
+                    labels[str(segment_id)] = "commercial"
+                    programme_ids.remove(segment_id)
+                    progress(
+                        "ads.detect.commercial.conflict.resolved",
+                        f"candidate ID {segment_id} resolved to commercial",
+                    )
+                else:
+                    progress(
+                        "ads.detect.commercial.conflict.preserved",
+                        f"candidate ID {segment_id} confirmed as {classification}",
+                    )
+            except Exception as error:  # noqa: BLE001 - uncertain conflict resolution preserves source audio
+                progress(
+                    "ads.detect.commercial.conflict.skipped",
+                    f"candidate ID {segment_id} conflict review failed: {type(error).__name__}: {error}",
+                )
+
+    if programme_ids:
+        safe_first = max(programme_ids) + 1
+        if (prefix_evidence_id is None
+                or safe_first > prefix_evidence_id
+                or any(labels[str(segment_id)] != "commercial"
+                       for segment_id in range(safe_first, proposed_ids[-1] + 1))):
+            raise ValueError(
+                "programme preservation intersects the proposed cut at IDs "
+                + ", ".join(map(str, programme_ids))
+            )
+        progress(
+            "ads.detect.sparse.prefix.preserved",
+            f"keeping disputed IDs through {safe_first - 1}; reviewing commercial suffix {safe_first}-{proposed_ids[-1]}",
+        )
+        proposed_ids = tuple(range(safe_first, proposed_ids[-1] + 1))
 
     first, last = proposed_ids[0], proposed_ids[-1]
     confirmed = {
@@ -2776,10 +2937,14 @@ def _commercial_preservation_review(backend, rendered, context_ids, proposed_ids
             side_ids[side] = tuple(next_ids)
     if not confirmed["left"] or not confirmed["right"]:
         raise ValueError("programme preservation was not confirmed on both sides")
+    return proposed_ids
 
 
 def _commercial_envelope_preserved(
-    ads_module, backend, segments, total_seconds, candidate_ids, *, nominate
+    ads_module, backend, segments, total_seconds, candidate_ids, *, nominate,
+    nomination_prompt=COMMERCIAL_EVIDENCE_NOMINATION_PROMPT,
+    context_flank_ids=None,
+    prefix_evidence_id=None,
 ):
     """Return a verified commercial subset or ``None`` without weakening audio safety."""
     try:
@@ -2787,12 +2952,13 @@ def _commercial_envelope_preserved(
         if candidate_ids != tuple(range(candidate_ids[0], candidate_ids[-1] + 1)):
             raise ValueError("commercial candidate is not contiguous")
         _candidate, context_ids, rendered = _commercial_recovery_context(
-            ads_module, segments, candidate_ids[0], candidate_ids[-1], total_seconds
+            ads_module, segments, candidate_ids[0], candidate_ids[-1], total_seconds,
+            flank_limit=context_flank_ids,
         )
         proposed_ids = candidate_ids
         if nominate:
             nomination, _ = backend.generate(
-                COMMERCIAL_EVIDENCE_NOMINATION_PROMPT,
+                nomination_prompt,
                 f"Observed commercial evidence IDs: {', '.join(map(str, candidate_ids))}\n{rendered}",
                 response_format=_experimental_id_response_format("ad_ids", context_ids),
             )
@@ -2803,9 +2969,13 @@ def _commercial_envelope_preserved(
                 raise ValueError("commercial nomination omitted observed evidence")
             # Rebuild around the nominated whole candidate before preservation.
             _candidate, context_ids, rendered = _commercial_recovery_context(
-                ads_module, segments, proposed_ids[0], proposed_ids[-1], total_seconds
+                ads_module, segments, proposed_ids[0], proposed_ids[-1], total_seconds,
+                flank_limit=context_flank_ids,
             )
-        _commercial_preservation_review(backend, rendered, context_ids, proposed_ids)
+        proposed_ids = _commercial_preservation_review(
+            backend, rendered, context_ids, proposed_ids, segments=segments,
+            prefix_evidence_id=prefix_evidence_id,
+        )
         return proposed_ids
     except Exception as error:  # noqa: BLE001 - incomplete commercial review preserves source audio
         progress(
@@ -3180,6 +3350,144 @@ def recover_commercial_evidence_reads(ads_module, backend, segments, detections,
     return merged
 
 
+def sparse_commercial_seeds(segments, detections, audit):
+    """Nominate dropped classifier positives and whole short commercial cues.
+
+    A short surviving cut is reviewed only when its one fully covered cue also
+    carries both a call to action and a destination. That is a bounded reason
+    to look for an earlier host read, never a reason to extend the cut itself.
+    """
+    seeds = []
+    for candidate in audit.candidates:
+        if candidate.kind != "positive-missing-final-span" or len(candidate.ids) != 1:
+            continue
+        segment_id = candidate.ids[0]
+        if 0 <= segment_id < len(segments) and not any(
+            float(ad.start_s) < float(segments[segment_id].end_s)
+            and float(ad.end_s) > float(segments[segment_id].start_s)
+            for ad in detections
+        ):
+            seeds.append((segment_id, None))
+    for ad in detections:
+        start_s, end_s = float(ad.start_s), float(ad.end_s)
+        if not 0 < end_s - start_s <= COMMERCIAL_SPARSE_MAX_SECONDS:
+            continue
+        covered = [
+            segment_id for segment_id, segment in enumerate(segments)
+            if abs(float(segment.start_s) - start_s) <= 0.01
+            and abs(float(segment.end_s) - end_s) <= 0.01
+        ]
+        if len(covered) != 1:
+            continue
+        segment_id = covered[0]
+        text = segments[segment_id].text or ""
+        if (EXPLICIT_SPONSOR_CTA_RE.search(text) is not None
+                and explicit_sponsor_destination_seen(text)):
+            seeds.append((segment_id, ad))
+    # The already verified short cut is the strongest observation; review it
+    # before spending calls on classifier positives that produced no cut.
+    seeds.sort(key=lambda seed: (seed[1] is None, seed[0]))
+    return tuple(seeds)
+
+
+def sparse_pause_envelope(segments, seed_id):
+    """Return the local pause-bracketed passage around one observed ad cue.
+
+    A pause is only a proposed boundary. The model must still classify every
+    included cue and find programme on both sides before any audio is removed.
+    Reject a passage with no nearby pauses instead of guessing its extent.
+    """
+    seed_start = float(segments[seed_id].start_s)
+    first = None
+    for left in range(seed_id - 1, -1, -1):
+        if seed_start - float(segments[left].start_s) > COMMERCIAL_SPARSE_MAX_ENVELOPE_SECONDS:
+            break
+        gap = float(segments[left + 1].start_s) - float(segments[left].end_s)
+        if gap >= COMMERCIAL_SPARSE_GAP_MIN_SECONDS:
+            first = left + 1
+            break
+    if first is None:
+        return None
+    last = None
+    for right in range(seed_id, len(segments) - 1):
+        if float(segments[right].end_s) - seed_start > COMMERCIAL_SPARSE_MAX_ENVELOPE_SECONDS:
+            break
+        gap = float(segments[right + 1].start_s) - float(segments[right].end_s)
+        if gap >= COMMERCIAL_SPARSE_GAP_MIN_SECONDS:
+            last = right
+            break
+    if last is None or first == 0 or last >= len(segments) - 1:
+        return None
+    # Several tiny backchannels can sit between a read's meaningful sign-off
+    # and the actual silence. Keep those in the programme side of the review;
+    # removing less audio is the safe choice when their role is unclear.
+    while last > seed_id and (
+        float(segments[last].end_s) - float(segments[last].start_s)
+        <= COMMERCIAL_SPARSE_TRANSITION_MAX_SECONDS
+        and len((segments[last].text or "").strip()) <= COMMERCIAL_SPARSE_TRANSITION_MAX_CHARS
+    ):
+        last -= 1
+    if float(segments[last].end_s) - float(segments[first].start_s) > COMMERCIAL_SPARSE_MAX_ENVELOPE_SECONDS:
+        return None
+    return tuple(range(first, last + 1))
+
+
+def recover_sparse_commercial_reads(
+    ads_module, backend, segments, detections, total_seconds, audit
+):
+    """Recover a complete read around sparse classifier evidence, or keep audio."""
+    recovered = list(detections)
+    reviewed_envelopes = set()
+    for segment_id, original in sparse_commercial_seeds(segments, detections, audit):
+        candidate_ids = sparse_pause_envelope(segments, segment_id)
+        if candidate_ids is None or candidate_ids in reviewed_envelopes:
+            continue
+        reviewed_envelopes.add(candidate_ids)
+        if len(reviewed_envelopes) > COMMERCIAL_RECOVERY_MAX_CANDIDATES:
+            break
+        progress(
+            "ads.detect.sparse.nominated",
+            f"reviewing pause-bracketed IDs {candidate_ids[0]}-{candidate_ids[-1]} around evidence ID {segment_id}",
+        )
+        proposed_ids = _commercial_envelope_preserved(
+            ads_module, backend, segments, total_seconds, candidate_ids,
+            nominate=False, context_flank_ids=COMMERCIAL_SPARSE_CONTEXT_FLANK_IDS,
+            prefix_evidence_id=segment_id,
+        )
+        if proposed_ids is None:
+            continue
+        start_s = float(segments[proposed_ids[0]].start_s)
+        end_s = float(segments[proposed_ids[-1]].end_s)
+        if original is not None and not (
+            start_s <= float(original.start_s) and end_s >= float(original.end_s)
+        ):
+            progress("ads.detect.sparse.skipped", f"proposal did not contain existing cut at ID {segment_id}")
+            continue
+        if original is not None and (
+            abs(start_s - float(original.start_s)) <= 0.01
+            and abs(end_s - float(original.end_s)) <= 0.01
+        ):
+            continue
+        if any(
+            ad is not original and float(ad.start_s) < end_s and float(ad.end_s) > start_s
+            for ad in recovered
+        ):
+            progress("ads.detect.sparse.skipped", f"proposal overlaps another cut at ID {segment_id}")
+            continue
+        confidence = recovered_confidence(2, 3)
+        label = "sponsor_read"
+        if original is not None:
+            confidence = min(confidence, float(original.confidence))
+            label = original.label
+            recovered.remove(original)
+        recovered.append(ads_module.AdSegment(start_s, end_s, confidence, label))
+        progress(
+            "ads.detect.sparse.recovered",
+            f"ID {segment_id} verified as complete commercial {start_s:.3f}-{end_s:.3f}",
+        )
+    return sorted(recovered, key=lambda ad: float(ad.start_s))
+
+
 def _constrained_id(ads_module, backend, prompt, field, window_ids, permitted, segments):
     """Ask one bounded ID question and return a validated supplied ID."""
     response, _tokens = ads_module._generate_constrained_response(  # noqa: SLF001
@@ -3237,6 +3545,7 @@ def recover_transcript_start_preroll(ads_module, backend, segments, detections):
         progress("ads.detect.preroll.skipped", "the program starts at the first segment")
         return detections
 
+    q1_program_start_id = program_start_id
     nominated_end_s = float(segments[program_start_id].start_s)
     progress("ads.detect.preroll.nominated", f"program ID {program_start_id} at {nominated_end_s:.3f}s")
     if nominated_end_s < PREROLL_RECOVERY_MINIMUM_SECONDS:
@@ -3271,6 +3580,58 @@ def recover_transcript_start_preroll(ads_module, backend, segments, detections):
             progress("ads.detect.preroll.skipped",
                      f"the shortened opening is only {nominated_end_s:.1f}s long")
             return detections
+        if program_start_id < q1_program_start_id:
+            continuation_ids = [program_start_id]
+            window_limit = min(
+                len(segments),
+                max(q1_program_start_id + 4, program_start_id + AD_POD_CONTINUATION_MAX_SEGMENTS),
+            )
+            for segment_id in range(program_start_id + 1, window_limit):
+                if (
+                    float(segments[segment_id].start_s) - float(segments[program_start_id].start_s)
+                    > AD_POD_CONTINUATION_MAX_SECONDS
+                ):
+                    break
+                continuation_ids.append(segment_id)
+            if len(continuation_ids) >= 2:
+                progress(
+                    "ads.detect.preroll.continuation.reviewing",
+                    f"checking continuation from ID {program_start_id} up to Q1 ID {q1_program_start_id}",
+                )
+                try:
+                    continued_id = _constrained_id(
+                        ads_module,
+                        backend,
+                        AD_POD_CONTINUATION_PROMPT,
+                        "program_start_id",
+                        continuation_ids,
+                        [-1, *continuation_ids],
+                        segments,
+                    )
+                    if continued_id > program_start_id:
+                        extended_start_id = min(continued_id, q1_program_start_id)
+                        if extended_start_id > program_start_id:
+                            program_start_id = extended_start_id
+                            confirmation_agreed = (extended_start_id == q1_program_start_id)
+                            progress(
+                                "ads.detect.preroll.extended",
+                                f"opening extended to ID {program_start_id} at {float(segments[program_start_id].start_s):.3f}s",
+                            )
+                        else:
+                            progress(
+                                "ads.detect.preroll.continuation.skipped",
+                                f"continuation ID {continued_id} did not advance past ID {program_start_id}",
+                            )
+                    else:
+                        progress(
+                            "ads.detect.preroll.continuation.skipped",
+                            f"continuation found no subsequent programme return (got {continued_id})",
+                        )
+                except Exception as error:  # noqa: BLE001 - uncertain continuation preserves shortened boundary
+                    progress(
+                        "ads.detect.preroll.continuation.skipped",
+                        f"opening continuation review failed: {type(error).__name__}: {error}",
+                    )
 
     # The cut runs to where the program begins rather than to the last
     # advertising cue, because the insertion gap between them is the spot's
@@ -4102,6 +4463,37 @@ def _commercial_preservation_labels(
     return parsed["labels"]
 
 
+def _commercial_conflict_response_format() -> dict:
+    """Constrain conflicting evidence resolution to one verified classification."""
+    return {
+        "type": "json_object",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "classification": {
+                    "type": "string",
+                    "enum": ["commercial", "programme", "mixed"],
+                },
+            },
+            "required": ["classification"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def _parse_commercial_conflict_response(response: str) -> str:
+    """Return the resolved classification or reject an invalid model response."""
+    parsed = json.loads(response)
+    if (
+        not isinstance(parsed, dict)
+        or set(parsed) != {"classification"}
+        or not isinstance(parsed["classification"], str)
+        or parsed["classification"] not in {"commercial", "programme", "mixed"}
+    ):
+        raise ValueError("commercial conflict resolution response has an invalid shape")
+    return parsed["classification"]
+
+
 def _parse_experimental_ids(response: str, field: str, permitted_ids: tuple[int, ...], *, nonempty: bool) -> tuple[int, ...]:
     parsed = json.loads(response)
     if not isinstance(parsed, dict) or set(parsed) != {field} or not isinstance(parsed[field], list):
@@ -4196,7 +4588,7 @@ def _experimental_speculative_cuts(
             ad_ids = _parse_experimental_ids(nomination, "ad_ids", candidate_ids, nonempty=True)
             if ad_ids != candidate_ids:
                 raise ValueError("nomination did not confirm the complete candidate")
-            _commercial_preservation_review(budget, rendered, context_ids, ad_ids)
+            _commercial_preservation_review(budget, rendered, context_ids, ad_ids, segments=segments)
         except Exception as error:  # noqa: BLE001 - experimental work cannot weaken a safe result
             audit.incomplete_error = f"experimental adaptation incomplete: {type(error).__name__}: {error}"
             audit.speculative_cuts = ()
@@ -4332,6 +4724,10 @@ def analyze_ad_detections(
     )
     detections = recover_commercial_evidence_reads(
         ads_module, commercial_recovery_backend, segments, detections, total_seconds
+    )
+    detections = recover_sparse_commercial_reads(
+        ads_module, commercial_recovery_backend, segments, detections,
+        total_seconds, preliminary_audit,
     )
     detections = recover_transcript_start_preroll(
         ads_module, auditing_backend, segments, detections
