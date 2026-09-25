@@ -16,6 +16,8 @@ CloudSync/
 project.yml
 # Native test leg definitions and their test-count checks.
 scripts/test-gate.sh
+# Shared UI lane locking and simulator lifecycle helpers.
+scripts/lib/simctl_gate_lib.sh
 # Native UI snapshot and result-bundle validation sourced by the native gate.
 scripts/lib/native-gate-validation.sh
 # Targets that select the headless and screen-seizing gates.

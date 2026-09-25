@@ -18,10 +18,13 @@ set -Eeuo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-record-ios-snapshots.XXXXXX")"
 trap 'rm -rf "$tmp_root"' EXIT
+# shellcheck source=lib/simctl_gate_lib.sh
+source "$repo_root/scripts/lib/simctl_gate_lib.sh"
 
 status() { printf '%s\n' "$*" >&2; }
 
-device_name='iPhone 17 Pro'
+stale_simulators_swept="$(gate_sweep wilted)"
+status "record.simulator.sweep wilted_deleted=${stale_simulators_swept:-0}"
 
 root="$tmp_root/record-root"
 mkdir -p "$root/WiltedKit" "$root/Producer" "$root/CloudSync" "$root/Listener"
@@ -36,18 +39,11 @@ done
 
 xcodegen generate --spec "$root/project.yml" --project "$root" --project-root "$root" >/dev/null
 
-read -r udid state <<<"$(xcrun simctl list devices available | awk -F '[()]' -v device_name="$device_name" '
-  {
-    name=$1; state=$4
-    gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
-    gsub(/^[[:space:]]+|[[:space:]]+$/, "", state)
-    if (name == device_name) { print $2, state; exit }
-  }')"
-[[ -n "${udid:-}" ]] || { status "no available $device_name simulator"; exit 1; }
-if [[ "$state" != Booted ]]; then
-  status "simulator.boot udid=$udid"
-  xcrun simctl boot "$udid" >&2
-fi
+read -r runtime device_type <<<"$(xcrun simctl list devices available -j | python3 "$repo_root/scripts/select-ios-simulator.py")"
+[[ -n "${runtime:-}" && -n "${device_type:-}" ]] || { status 'iOS 26.x simulator selector returned no device'; exit 1; }
+udid="$(gate_sim_create wilted snapshots "$device_type" "$runtime")"
+status "simulator.create name=wilted-gate-snapshots runtime=$runtime device_type=$device_type udid=$udid"
+xcrun simctl boot "$udid" >&2
 xcrun simctl bootstatus "$udid" -b >&2
 
 declare -a only=()
@@ -61,8 +57,9 @@ fi
 
 snapshots="WiltediOSUITests/__Snapshots__/WiltediOSPixelSnapshotTests"
 
-status "record.start device=$device_name methods=${*:-all}"
-TEST_RUNNER_WILTED_RECORD_SNAPSHOTS=1 xcodebuild test \
+status "record.start device=iPhone 17 Pro runtime=$runtime methods=${*:-all}"
+gate_ui_test_lock --label 'Wilted iOS snapshot recording' --simulator-udid "$udid" \
+  env TEST_RUNNER_WILTED_RECORD_SNAPSHOTS=1 xcodebuild test \
   -project "$root/Wilted.xcodeproj" \
   -scheme WiltediOS \
   -destination "platform=iOS Simulator,id=$udid" \

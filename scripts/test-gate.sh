@@ -77,6 +77,8 @@ cleanup() {
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
+# shellcheck source=lib/simctl_gate_lib.sh
+source "$repo_root/scripts/lib/simctl_gate_lib.sh"
 
 leg_names=(
   xcodegen-reproducible
@@ -105,6 +107,13 @@ fail() {
   printf 'native.error %s\n' "$1" >&2
   exit 1
 }
+
+if [[ "$native_self_test" != "1" ]]; then
+  if ! stale_simulators_swept="$(gate_sweep wilted)"; then
+    fail 'could not complete Wilted simulator ownership sweep'
+  fi
+  status "native.simulator.sweep complete wilted_deleted=${stale_simulators_swept:-0}"
+fi
 
 # Xcode 27's SwiftPM writes test bundles to `<scratch>/out/Products/Debug` and
 # emits one per test target rather than a single `<Package>PackageTests.xctest`,
@@ -380,72 +389,34 @@ find_project() {
   printf '%s\n' "$native_project"
 }
 
-find_simulator_udid() {
+select_ios_simulator_spec() {
   require_tool xcrun
+  require_tool python3
+  xcrun simctl list devices available -j | python3 "$repo_root/scripts/select-ios-simulator.py"
+}
+
+create_gate_simulator() {
+  local purpose="$1" runtime device_type
+  read -r runtime device_type <<<"$(select_ios_simulator_spec)"
+  [[ -n "$runtime" && -n "$device_type" ]] || fail 'iOS 26.x simulator selector returned an empty runtime or device type'
   local udid
-  local state
-
-  # Reuse a booted device first to avoid racing CoreSimulatorService or
-  # disturbing a simulator the owner is already using.
-  udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ && /Booted/ { print $2; exit }')"
-  [[ -n "$udid" ]] || udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPad/ && /Booted/ { print $2; exit }')"
-  state=Booted
-  if [[ -z "$udid" ]]; then
-    udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ && /Shutdown/ { print $2; exit }')"
-    [[ -n "$udid" ]] || udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPad/ && /Shutdown/ { print $2; exit }')"
-    state=Shutdown
-  fi
-  [[ -n "$udid" ]] || fail 'no available iOS simulator device'
-
-  if [[ "$state" == Booted ]]; then
-    printf 'native.simulator.reuse udid=%s state=Booted\n' "$udid" >&2
-  else
-    printf 'native.simulator.boot udid=%s\n' "$udid" >&2
-    xcrun simctl boot "$udid" >&2
-  fi
-  printf 'native.simulator.bootstatus.start udid=%s\n' "$udid" >&2
+  udid="$(gate_sim_create wilted "$purpose" "$device_type" "$runtime")" ||
+    fail "failed to create Wilted simulator for $purpose"
+  printf 'native.simulator.create purpose=%s runtime=%s device_type=%s udid=%s\n' \
+    "$purpose" "$runtime" "$device_type" "$udid" >&2
+  xcrun simctl boot "$udid" >&2
   xcrun simctl bootstatus "$udid" -b >&2
-  printf 'native.simulator.ready udid=%s\n' "$udid" >&2
+  printf 'native.simulator.ready purpose=%s udid=%s\n' "$purpose" "$udid" >&2
   printf '%s\n' "$udid"
 }
 
-find_shutdown_iphone_udid() {
-  require_tool xcrun
-  local udid state device_list
-  device_list="$(xcrun simctl list devices available)"
-  read -r udid state <<<"$(printf '%s\n' "$device_list" | awk -F '[()]' -v device_name="$ios_ui_device_name" '
-    {
-      name=$1
-      state=$4
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", state)
-      if (name == device_name) { print $2, state; exit }
-    }')"
-  [[ -n "$udid" ]] || fail "no available $ios_ui_device_name simulator for $ios_ui_baseline_geometry geometry"
-  if [[ "$state" == "Booted" ]]; then
-    local busy_pids busy_list
-    # Match a CLIENT driving the device, not the device itself. Every booted
-    # simulator runs a launchd_sim whose command line carries its own UDID, so
-    # a bare `pgrep -f "$udid"` matches unconditionally here -- this branch only
-    # runs when the device is Booted -- and refuses every shutdown. An
-    # xcodebuild aimed at the device names it after `-destination`.
-    busy_pids="$(pgrep -f -- "-destination[^ ]*$udid|id=$udid" 2>/dev/null || true)"
-    busy_list="$(printf '%s' "$busy_pids" | tr '\n' ',')"
-    if [[ -n "$busy_list" ]]; then
-      printf 'native.simulator.clean-shutdown.busy name=%s udid=%s pids=%s\n' \
-        "$ios_ui_device_name" "$udid" "$busy_list" >&2
-      fail "$ios_ui_device_name simulator $udid is in use by pids $busy_list; refusing to shut it down"
-    fi
-    printf 'native.simulator.clean-shutdown name=%s udid=%s state=Booted\n' \
-      "$ios_ui_device_name" "$udid" >&2
-    xcrun simctl shutdown "$udid" >&2
-    state=Shutdown
+cleanup_leg_simulator() {
+  local udid="$1" original_status="$2" cleanup_status=0
+  gate_sim_cleanup "$udid" || cleanup_status=$?
+  if [[ "$original_status" -eq 0 && "$cleanup_status" -ne 0 ]]; then
+    return "$cleanup_status"
   fi
-  [[ "$state" == "Shutdown" ]] ||
-    fail "$ios_ui_device_name simulator is not available in a clean state: $state"
-  printf 'native.simulator.clean-selection name=%s geometry=%s udid=%s state=Shutdown\n' \
-    "$ios_ui_device_name" "$ios_ui_baseline_geometry" "$udid" >&2
-  printf '%s\n' "$udid"
+  return "$original_status"
 }
 
 xcode_test_leg() {
@@ -455,6 +426,7 @@ xcode_test_leg() {
   local destination="$4"
   local target="$5"
   local project
+  local lock_pid_file="$tmp_root/$label.ui-lock.pid"
   shift 5
   local only_testing_args=(-only-testing:"$target")
   for target in "$@"; do
@@ -470,7 +442,7 @@ xcode_test_leg() {
   [[ "$xcode_test_timeout_seconds" =~ ^[1-9][0-9]*$ ]] ||
     fail 'WILTED_XCODE_TEST_TIMEOUT_SECONDS must be a positive integer'
   cleanup_mac_test_hosts
-  xcodebuild test \
+  local -a test_command=(xcodebuild test \
     -project "$project" \
     -scheme "$scheme" \
     "${only_testing_args[@]}" \
@@ -478,13 +450,30 @@ xcode_test_leg() {
     -derivedDataPath "$derived_data/$label" \
     -resultBundlePath "$tmp_root/$label.xcresult" \
     -parallel-testing-enabled NO \
-    -quiet &
+    -quiet)
+  if [[ -n "${WILTED_UI_TEST_SIMULATOR_UDID:-}" ]]; then
+    GATE_UI_TEST_LOCK_PID_FILE="$lock_pid_file" gate_ui_test_lock \
+      --label "$label" --simulator-udid "$WILTED_UI_TEST_SIMULATOR_UDID" \
+      "${test_command[@]}" &
+  else
+    "${test_command[@]}" &
+  fi
   local xcode_pid=$!
   local elapsed_seconds=0
   local xcode_status
   while kill -0 "$xcode_pid" 2>/dev/null; do
     if (( elapsed_seconds >= xcode_test_timeout_seconds )); then
-      kill -TERM "$xcode_pid" 2>/dev/null || true
+      local lock_wrapper_pid=""
+      if [[ -n "${WILTED_UI_TEST_SIMULATOR_UDID:-}" && -s "$lock_pid_file" ]]; then
+        lock_wrapper_pid="$(cat "$lock_pid_file")"
+      fi
+      if [[ "$lock_wrapper_pid" =~ ^[1-9][0-9]*$ ]]; then
+        # Signal apple-ui-test-lock directly; it forwards TERM to xcodebuild's
+        # process group before returning and releasing the simulator lane.
+        kill -TERM "$lock_wrapper_pid" 2>/dev/null || true
+      else
+        kill -TERM "$xcode_pid" 2>/dev/null || true
+      fi
       cleanup_mac_test_hosts
       set +e
       wait "$xcode_pid"
@@ -506,6 +495,7 @@ xcode_test_leg() {
   wait "$xcode_pid"
   xcode_status=$?
   set -e
+  rm -f "$lock_pid_file"
   return "$xcode_status"
 }
 
@@ -514,9 +504,11 @@ leg_macos_unit_tests() {
 }
 
 leg_ios_unit_tests() {
-  local udid
-  udid="$(find_simulator_udid)" || return 1
-  xcode_test_leg ios-unit-tests "$integration_root/WiltediOSTests" WiltediOS "platform=iOS Simulator,id=$udid" WiltediOSTests
+  local udid result=0
+  udid="$(create_gate_simulator ios-units)" || return 1
+  xcode_test_leg ios-unit-tests "$integration_root/WiltediOSTests" WiltediOS \
+    "platform=iOS Simulator,id=$udid" WiltediOSTests || result=$?
+  cleanup_leg_simulator "$udid" "$result"
 }
 
 # XCUITest cannot bring an application forward while the login session is
@@ -634,7 +626,7 @@ leg_macos_ui_tests() {
   printf '%s\n' "$runner_signature_info"
   printf '%s\n' "$host_signature_info"
 
-  xcodebuild test-without-building \
+  gate_ui_test_lock --label "$label" xcodebuild test-without-building \
     -project "$project" \
     -scheme WiltedMac \
     "$only_testing_arg" \
@@ -645,41 +637,16 @@ leg_macos_ui_tests() {
     -quiet
 }
 
-leg_ios_ui_tests() (
-  local udid=""
-  local simulator_started=0
-
-  cleanup_ios_ui_simulator() {
-    local test_status=$?
-    local cleanup_status=0
-    if [[ "$simulator_started" -eq 1 ]]; then
-      printf 'native.simulator.shutdown.start udid=%s\n' "$udid" >&2
-      xcrun simctl shutdown "$udid" >&2 || cleanup_status=$?
-      if [[ "$cleanup_status" -eq 0 ]]; then
-        printf 'native.simulator.shutdown.complete udid=%s\n' "$udid" >&2
-      else
-        printf 'native.simulator.shutdown.failed udid=%s status=%s\n' "$udid" "$cleanup_status" >&2
-      fi
-    fi
-    if [[ "$test_status" -eq 0 && "$cleanup_status" -ne 0 ]]; then
-      exit "$cleanup_status"
-    fi
-    exit "$test_status"
-  }
-  trap cleanup_ios_ui_simulator EXIT
-
-  udid="$(find_shutdown_iphone_udid)" || return 1
-  printf 'native.simulator.boot udid=%s purpose=ios-ui-tests\n' "$udid" >&2
-  xcrun simctl boot "$udid" >&2
-  simulator_started=1
-  printf 'native.simulator.bootstatus.start udid=%s purpose=ios-ui-tests\n' "$udid" >&2
-  xcrun simctl bootstatus "$udid" -b >&2
-  printf 'native.simulator.ready udid=%s purpose=ios-ui-tests\n' "$udid" >&2
-  xcode_test_leg ios-pixel-snapshot-tests "$integration_root/WiltediOSUITests" WiltediOS \
+leg_ios_ui_tests() {
+  local udid result=0
+  udid="$(create_gate_simulator ios-pixel-ui)" || return 1
+  WILTED_UI_TEST_SIMULATOR_UDID="$udid" xcode_test_leg \
+    ios-pixel-snapshot-tests "$integration_root/WiltediOSUITests" WiltediOS \
     "platform=iOS Simulator,id=$udid" \
     WiltediOSUITests/WiltediOSPixelSnapshotTests \
-    WiltediOSUITests/WiltediOSMVPFlowUITests
-)
+    WiltediOSUITests/WiltediOSMVPFlowUITests || result=$?
+  cleanup_leg_simulator "$udid" "$result"
+}
 
 prepare_integration_root() {
   integration_root="$tmp_root/integration-root"

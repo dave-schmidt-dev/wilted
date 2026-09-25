@@ -397,83 +397,24 @@ assert_snapshot_contract() {
 
 assert_snapshot_contract
 
-assert_simulator_readiness_contract() {
-  local simulator_block
-  local first_booted_line
-  local first_shutdown_line
-
-  assert_contains 'native.simulator.reuse' "$gate"
-  assert_contains 'native.simulator.boot' "$gate"
-  assert_contains 'xcrun simctl boot "$udid"' "$gate"
-  assert_contains 'xcrun simctl bootstatus "$udid" -b' "$gate"
-  assert_contains 'native.simulator.ready' "$gate"
-
-  simulator_block="$(sed -n '/^find_simulator_udid()/,/^}/p' "$gate")"
-  first_booted_line="$(printf '%s\n' "$simulator_block" | rg -n 'Booted' | head -1 | cut -d: -f1)"
-  first_shutdown_line="$(printf '%s\n' "$simulator_block" | rg -n 'Shutdown' | head -1 | cut -d: -f1)"
-  [[ -n "$first_booted_line" && -n "$first_shutdown_line" && "$first_booted_line" -lt "$first_shutdown_line" ]] || {
-    printf '%s\n' 'assertion failed: booted simulator preference must precede shutdown fallback' >&2
-    exit 1
-  }
-}
-
-assert_simulator_readiness_contract
-
-assert_ios_ui_clean_simulator_contract() {
-  local ios_ui_block
-  local selection_line
-  local boot_line
-  local bootstatus_line
-  local test_line
-  local shutdown_line
-  local trap_line
-
+assert_private_simulator_contract() {
+  assert_contains 'scripts/select-ios-simulator.py' "$gate"
+  assert_contains 'gate_sim_create wilted "$purpose" "$device_type" "$runtime"' "$gate"
+  assert_contains 'gate_sweep wilted' "$gate"
+  assert_contains 'GATE_UI_TEST_LOCK_PID_FILE="$lock_pid_file" gate_ui_test_lock' "$gate"
+  assert_contains '--simulator-udid "$WILTED_UI_TEST_SIMULATOR_UDID"' "$gate"
+  assert_contains 'gate_ui_test_lock --label "$label" xcodebuild test-without-building' "$gate"
   assert_contains 'run_leg "${leg_names[8]}" "${leg_reports[8]}" leg_ios_ui_tests' "$gate"
-  assert_contains 'find_shutdown_iphone_udid' "$gate"
-  assert_contains "ios_ui_device_name='iPhone 17 Pro'" "$gate"
-  assert_contains 'ios_ui_baseline_geometry' "$gate"
-  assert_contains 'name == device_name' "$gate"
-  assert_contains 'native.simulator.clean-shutdown' "$gate"
-  assert_contains 'native.simulator.clean-shutdown.busy' "$gate"
-  assert_contains 'pgrep -f "$udid"' "$gate"
-  assert_contains 'geometry=%s' "$gate"
-  assert_contains 'xcrun simctl shutdown "$udid"' "$gate"
-  assert_contains 'trap cleanup_ios_ui_simulator EXIT' "$gate"
-
-  ios_ui_block="$(sed -n '/^leg_ios_ui_tests()/,/^)$/p' "$gate")"
-  if printf '%s\n' "$ios_ui_block" | rg -q 'find_simulator_udid|iPad|Booted'; then
-    printf '%s\n' 'assertion failed: iOS UI leg may not reuse booted or iPad simulators' >&2
-    exit 1
-  fi
-  selection_line="$(printf '%s\n' "$ios_ui_block" | rg -n 'find_shutdown_iphone_udid' | head -1 | cut -d: -f1)"
-  boot_line="$(printf '%s\n' "$ios_ui_block" | rg -n 'simctl boot ' | head -1 | cut -d: -f1)"
-  bootstatus_line="$(printf '%s\n' "$ios_ui_block" | rg -n 'simctl bootstatus ' | head -1 | cut -d: -f1)"
-  test_line="$(printf '%s\n' "$ios_ui_block" | rg -n 'xcode_test_leg ' | head -1 | cut -d: -f1)"
-  shutdown_line="$(printf '%s\n' "$ios_ui_block" | rg -n 'simctl shutdown ' | head -1 | cut -d: -f1)"
-  trap_line="$(printf '%s\n' "$ios_ui_block" | rg -n 'trap cleanup_ios_ui_simulator EXIT' | head -1 | cut -d: -f1)"
-  [[ -n "$selection_line" && -n "$boot_line" && -n "$bootstatus_line" && -n "$test_line" && -n "$shutdown_line" && -n "$trap_line" ]] || {
-    printf '%s\n' 'assertion failed: iOS UI clean simulator lifecycle is incomplete' >&2
-    exit 1
-  }
-  [[ "$selection_line" -lt "$boot_line" && "$boot_line" -lt "$bootstatus_line" && "$bootstatus_line" -lt "$test_line" ]] || {
-    printf '%s\n' 'assertion failed: iOS UI simulator must boot and become ready before tests' >&2
-    exit 1
-  }
-  # Cleanup is registered before the simulator is booted, so it runs for both
-  # successful and failed xcodebuild invocations.
-  [[ "$trap_line" -lt "$boot_line" ]] || {
-    printf '%s\n' 'assertion failed: iOS UI simulator shutdown cleanup is misplaced' >&2
-    exit 1
-  }
-  assert_block_contains 'WiltediOSUITests/WiltediOSPixelSnapshotTests' "$ios_ui_block"
-  assert_block_contains 'WiltediOSUITests/WiltediOSMVPFlowUITests' "$ios_ui_block"
-  if printf '%s\n' "$ios_ui_block" | rg -q 'WiltediOSSmokeUITests|WiltediOSAttendedCloudKitUITests|[[:space:]]WiltediOSUITests$'; then
-    printf '%s\n' 'assertion failed: iOS pixel leg must exclude smoke and attended UI tests' >&2
+  assert_contains 'create_gate_simulator ios-units' "$gate"
+  assert_contains 'create_gate_simulator ios-pixel-ui' "$gate"
+  assert_contains 'cleanup_leg_simulator "$udid" "$result"' "$gate"
+  if rg -q 'find_simulator_udid|find_shutdown_iphone_udid|native.simulator.reuse|simctl list devices available \|' "$gate"; then
+    printf '%s\n' 'assertion failed: gate still selects or reuses simulators by list order' >&2
     exit 1
   fi
 }
 
-assert_ios_ui_clean_simulator_contract
+assert_private_simulator_contract
 
 assert_fail_stops_its_leg_contract() {
   local fail_block
@@ -482,8 +423,7 @@ assert_fail_stops_its_leg_contract() {
   # run_leg runs each leg as one pipeline element, so an exit inside the leg
   # ends that leg while PIPESTATUS still carries its status back to run_leg.
   assert_contains 'command_status="${PIPESTATUS[0]}"' "$gate"
-  assert_contains 'udid="$(find_simulator_udid)" || return 1' "$gate"
-  assert_contains 'udid="$(find_shutdown_iphone_udid)" || return 1' "$gate"
+  assert_contains 'udid="$(create_gate_simulator ios-units)" || return 1' "$gate"
   assert_contains 'project="$(find_project)" || return 1' "$gate"
 }
 
