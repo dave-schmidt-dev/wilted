@@ -23,6 +23,7 @@ expected_legs=(
   "test-preparation-runtime"
   "test-install-mac-app"
   "test-temp-sweep"
+  "test-storage-retention"
   "test-git-hooks"
   "test-simulator-cleanup"
   "test-native-ui-receipt"
@@ -93,6 +94,7 @@ assert_contains() {
 }
 
 assert_contains 'run_leg_async "assert-mac-first-docs" "$repo_root/scripts/assert-mac-first-docs.sh"' "$phase0_script"
+assert_contains 'run_leg_async "test-storage-retention" "$repo_root/tests/test-storage-retention.sh"' "$phase0_script"
 assert_contains 'run_leg_async "test-simulator-cleanup" "$repo_root/tests/test-simulator-cleanup.sh"' "$phase0_script"
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/wilted-phase0-agg.XXXXXX")"

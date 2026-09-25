@@ -49,6 +49,9 @@ wilted_sweep_stale_temp_dirs() {
         # list: this loop is the thing that actually deletes, and it must
         # refuse on its own even if a future edit changes how entries reach it.
         [[ "$(basename -- "$entry")" == wilted-* ]] || continue
+        # Spec workspaces can hold review evidence and have no recorded owner;
+        # leave historical ones for the explicit dry-run backlog collector.
+        [[ "$(basename -- "$entry")" == wilted-spec* ]] && continue
         # Never follow a symlink out of the temp root.
         [[ -L "$entry" ]] && { rm -f "$entry" 2>/dev/null && removed=$((removed + 1)); continue; }
         if rm -rf "$entry" 2>/dev/null; then

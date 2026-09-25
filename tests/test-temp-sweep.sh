@@ -43,13 +43,15 @@ mkdir -p "$sweep_root"
 stale_dir="$sweep_root/wilted-old-fixture.abc123"
 fresh_dir="$sweep_root/wilted-new-fixture.def456"
 untouched_dir="$sweep_root/not-wilted-anything"
+spec_dir="$sweep_root/wilted-spec.owner-review"
 # `chflags uchg` makes rm -rf fail on this one even though it is stale: the
 # only way to exercise the removed-count-double-counted-as-kept regression is
 # a stale entry the sweep actually tries and fails to remove, not merely one
 # it never targets.
 undeletable_dir="$sweep_root/wilted-undeletable.ghi789"
-mkdir -p "$stale_dir" "$fresh_dir" "$untouched_dir" "$undeletable_dir"
+mkdir -p "$stale_dir" "$fresh_dir" "$untouched_dir" "$undeletable_dir" "$spec_dir"
 backdate "$stale_dir" 48
+backdate "$spec_dir" 48
 backdate "$untouched_dir" 48
 backdate "$undeletable_dir" 48
 chflags uchg "$undeletable_dir"
@@ -73,6 +75,11 @@ if [[ ! -d "$untouched_dir" ]]; then
 else
     pass 'non-wilted directory is left alone regardless of age'
 fi
+if [[ ! -d "$spec_dir" ]]; then
+    fail 'sweep removed a historical spec workspace'
+else
+    pass 'historical spec workspace is left for the dry-run collector'
+fi
 if [[ ! -d "$undeletable_dir" ]]; then
     fail 'the immutable stale directory should have survived (rm -rf cannot remove it)'
 else
@@ -84,11 +91,11 @@ else
     pass 'sweep reports one removal'
 fi
 # Regression guard for the kept-count double-count: the survivors are
-# fresh_dir and undeletable_dir (two wilted-* entries still on disk
+# fresh_dir, spec_dir, and undeletable_dir (three wilted-* entries still on disk
 # afterward). The old code additionally re-added undeletable_dir a second
 # time because it also incremented `kept` inline when its rm -rf failed.
-if [[ "$sweep_output" != *'kept=2'* ]]; then
-    fail "sweep did not report kept=2 (double-count regression?): $sweep_output"
+if [[ "$sweep_output" != *'kept=3'* ]]; then
+    fail "sweep did not report kept=3 (double-count regression?): $sweep_output"
 else
     pass 'sweep reports the correct kept count'
 fi
@@ -106,7 +113,7 @@ backdate "$killed_prior_run" 48
 # another gate invocation that started seconds ago and is still working.
 
 gate_log="$hermetic_root/gate.log"
-if ! env NATIVE_SELF_TEST=1 WILTED_MAC_UI=1 TMPDIR="$gate_tmpdir" \
+if ! env NATIVE_SELF_TEST=1 WILTED_MAC_UI=1 WILTED_TEMP_SWEEP_MAX_AGE_HOURS=24 TMPDIR="$gate_tmpdir" \
     WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR="$hermetic_root/diagnostics" \
     bash "$gate" >"$gate_log" 2>&1; then
     fail 'self-test gate run did not exit 0'
