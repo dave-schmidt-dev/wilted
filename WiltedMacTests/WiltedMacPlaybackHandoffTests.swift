@@ -42,9 +42,8 @@ final class WiltedMacPlaybackHandoffTests: XCTestCase {
         // The fixture's transcript load finishes before anything could observe the
         // gap, so the ordering itself is pinned: the forced publish for the new
         // episode comes before the first await that can take real time.
-        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("WiltedMac/WiltedMacModel.swift"))
+        let source = try WiltedMacSource.model(root: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent())
         let body = try XCTUnwrap(source.range(of: "func playEpisode(_ episode: WiltedMacEpisode)"))
         let rest = source[body.upperBound...]
         let publish = try XCTUnwrap(rest.range(of: "self.publishNowPlaying(force: true)"))

@@ -18,8 +18,8 @@ final class WiltedVisualSystemTests: XCTestCase {
         let sources = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("WiltedMac")
-        let files = try FileManager.default
-            .contentsOfDirectory(at: sources, includingPropertiesForKeys: nil)
+        let files = try XCTUnwrap(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
+            .compactMap { $0 as? URL }
             .filter { $0.pathExtension == "swift" }
         XCTAssertFalse(files.isEmpty, "the Mac sources must be readable from the test bundle")
 
@@ -60,10 +60,7 @@ final class WiltedVisualSystemTests: XCTestCase {
 
     func testMacSettingsExposeThisMacLifetimeStatisticsWithStableIdentifiers() throws {
         let sourceRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(
-            contentsOf: sourceRoot.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"),
-            encoding: .utf8
-        )
+        let source = try WiltedMacSource.views(root: sourceRoot)
         XCTAssertTrue(source.contains("WiltedScreenCopy.lifetimeStatisticsScope"))
         for identifierName in [
             "WiltedScreenCopy.audioProcessedIdentifier",
@@ -166,11 +163,10 @@ final class WiltedVisualSystemTests: XCTestCase {
 
     func testEpisodeRowsOwnOneDedicatedLifecycleLineAndKeepControlsActionOnly() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
-        let source = try String(contentsOf: root)
-        let rowStart = try XCTUnwrap(source.range(of: "private func menuRow")?.lowerBound)
+        let source = try WiltedMacSource.views(root: root)
+        let rowStart = try XCTUnwrap(source.range(of: "func menuRow")?.lowerBound)
         let start = try XCTUnwrap(source.range(of: "@ViewBuilder private func nextStepControl")?.lowerBound)
-        let end = try XCTUnwrap(source.range(of: "private var addArticleButton", range: start..<source.endIndex)?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "var addArticleButton", range: start..<source.endIndex)?.lowerBound)
         let row = source[rowStart..<start]
         let control = source[start..<end]
 
@@ -196,10 +192,9 @@ final class WiltedVisualSystemTests: XCTestCase {
 
     func testLarderRowsUseIconsForShortWordsAndStateOnce() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
-        let source = try String(contentsOf: root)
-        let start = try XCTUnwrap(source.range(of: "private func menuRow")?.lowerBound)
-        let end = try XCTUnwrap(source.range(of: "private var addArticleButton", range: start..<source.endIndex)?.lowerBound)
+        let source = try WiltedMacSource.views(root: root)
+        let start = try XCTUnwrap(source.range(of: "func menuRow")?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "var addArticleButton", range: start..<source.endIndex)?.lowerBound)
         let larderRows = source[start..<end]
 
         for symbol in [
@@ -234,8 +229,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(source.contains("Undo completion of \\(skipped.title)"))
         XCTAssertFalse(larderRows.contains("model.currentPodcastEpisodeID"))
         let modelRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("WiltedMac/WiltedMacModel.swift")
-        let modelSource = try String(contentsOf: modelRoot)
+        let modelSource = try WiltedMacSource.model(root: modelRoot)
         XCTAssertTrue(modelSource.contains("Undo completion restores it."))
         XCTAssertTrue(modelSource.contains("var larderPresentationEpisodes"))
         XCTAssertTrue(modelSource.contains("guard isPodcastPlayback, let currentPodcastEpisodeID"))
@@ -983,8 +977,7 @@ final class WiltedVisualSystemTests: XCTestCase {
     /// visual regression without changing snapshots.
     func testPrepRunAndCompactPlayerPresentationContracts() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
-        let source = try String(contentsOf: root)
+        let source = try WiltedMacSource.views(root: root)
 
         func section(_ start: String, before end: String) throws -> Substring {
             let startIndex = try XCTUnwrap(source.range(of: start)?.lowerBound)
@@ -992,11 +985,11 @@ final class WiltedVisualSystemTests: XCTestCase {
             return source[startIndex..<endIndex]
         }
 
-        let row = try section("private func menuRow", before: "@ViewBuilder private func nextStepControl")
+        let row = try section("func menuRow", before: "@ViewBuilder private func nextStepControl")
         XCTAssertTrue(row.contains("nextStepControl(episode, group: group)"))
         XCTAssertTrue(row.contains("wilted-menu-progress-\\(episode.id)"))
 
-        let control = try section("@ViewBuilder private func nextStepControl", before: "private var addArticleButton")
+        let control = try section("@ViewBuilder private func nextStepControl", before: "var addArticleButton")
         XCTAssertTrue(control.contains("wilted-menu-stop-\\(episode.id)"))
         XCTAssertTrue(control.contains("wilted-menu-retry-\\(episode.id)"))
         XCTAssertTrue(control.contains("wilted-menu-prepare-\\(episode.id)"))
@@ -1021,8 +1014,7 @@ final class WiltedVisualSystemTests: XCTestCase {
             ".disabled(!model.hasCurrentPlayback || model.playbackCompletionIsSettled)"))
         XCTAssertFalse(source.contains(".disabled(!model.hasCurrentPlayback || model.playbackCompleted)"))
 
-        let modelRoot = root.deletingLastPathComponent().appendingPathComponent("WiltedMacModel.swift")
-        let modelSource = try String(contentsOf: modelRoot)
+        let modelSource = try WiltedMacSource.model(root: root)
         XCTAssertTrue(modelSource.contains("guard !audioRouteRecoveryAttempted else { return }"))
         XCTAssertTrue(modelSource.contains("audioRouteRecoveryAttempted = true"))
         XCTAssertTrue(modelSource.contains("self.audioRouteFault = true"))
@@ -1041,9 +1033,8 @@ final class WiltedVisualSystemTests: XCTestCase {
         )
 
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
-        let source = try String(contentsOf: root)
-        let player = try XCTUnwrap(source.range(of: "private struct WiltedMacPlayerContent")?.lowerBound)
+        let source = try WiltedMacSource.views(root: root)
+        let player = try XCTUnwrap(source.range(of: "struct WiltedMacPlayerContent")?.lowerBound)
         let playerSource = source[player...]
 
         XCTAssertTrue(source.contains("WiltedMacFullWindowPlayer("))
@@ -1090,7 +1081,7 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertTrue(source.contains("if let shareURL = model.currentPlaybackShareURL"))
         XCTAssertTrue(source.contains("else if let shareText = model.currentPlaybackShareText"))
         XCTAssertTrue(source.contains(".opacity(dropTargetID == episode.id ? 1 : 0)"))
-        let menuRowStart = try XCTUnwrap(source.range(of: "private func menuRow")?.lowerBound)
+        let menuRowStart = try XCTUnwrap(source.range(of: "func menuRow")?.lowerBound)
         let menuRowEnd = try XCTUnwrap(source.range(
             of: "@ViewBuilder private func nextStepControl", range: menuRowStart..<source.endIndex
         )?.lowerBound)
@@ -1107,8 +1098,7 @@ final class WiltedVisualSystemTests: XCTestCase {
 
     func testBulkActionsBecomeTheirProgressWhileRowsAreInFlight() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
-        let source = try String(contentsOf: root)
+        let source = try WiltedMacSource.views(root: root)
         let start = try XCTUnwrap(source.range(of: "private func bulkAction("))
         let end = try XCTUnwrap(source.range(
             of: "private func ", range: start.upperBound..<source.endIndex
@@ -1154,8 +1144,7 @@ final class WiltedVisualSystemTests: XCTestCase {
 
     func testFeedsTitleOpensShowNotesWithTheSameTwoAnswers() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
-        let source = try String(contentsOf: root)
+        let source = try WiltedMacSource.views(root: root)
         let start = try XCTUnwrap(source.range(of: "struct WiltedMacFeedsEpisodeRow")?.lowerBound)
         // The struct ends at its own column-zero closing brace, so nothing
         // declared after it can satisfy an assertion meant for the row.
@@ -1173,8 +1162,7 @@ final class WiltedVisualSystemTests: XCTestCase {
 
     func testAutomationSettingsPresentationFollowsThePipelineAndOnlyShowsLiveControls() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
-        let source = try String(contentsOf: root)
+        let source = try WiltedMacSource.views(root: root)
         let start = try XCTUnwrap(source.range(of: "private var automationCard")?.lowerBound)
         let end = try XCTUnwrap(source.range(of: "private var syncCard", range: start..<source.endIndex)?.lowerBound)
         let card = source[start..<end]
@@ -1206,8 +1194,7 @@ final class WiltedVisualSystemTests: XCTestCase {
 
     func testSettingsOffersTheRemovedAdChime() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("WiltedMac/WiltedMacRootView.swift")
-        let source = try String(contentsOf: root)
+        let source = try WiltedMacSource.views(root: root)
         let removeAds = try XCTUnwrap(source.range(of: "wilted-automation-remove-ads")?.lowerBound)
         let marker = try XCTUnwrap(source.range(of: "wilted-automation-ad-marker")?.lowerBound)
         XCTAssertTrue(source.contains("Toggle(\"Chime where an ad was removed\""))

@@ -6,8 +6,8 @@ automation is scheduled, how it claims work so nothing transfers twice, what hap
 it fails, and what it does not yet do.
 
 The relevant source is `WiltedMac/WiltedAutomationCoordinator.swift` (scheduling, claims,
-retry, status), the `WiltedAutomationSettings` family near the top of
-`WiltedMac/WiltedMacModel.swift` (the persisted policy), and the admission/claim methods in
+retry, status), the `WiltedAutomationSettings` family in
+`WiltedMac/Models/WiltedAutomationSettings.swift` (the persisted policy), and the admission/claim methods in
 `Producer/Sources/WiltedProducer/LocalLibraryStore.swift`.
 
 ## Why automation only runs while the app is open

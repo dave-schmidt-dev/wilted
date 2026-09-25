@@ -1282,12 +1282,8 @@ final class WiltedMacModelTests: XCTestCase {
         // Commit 4f83343's kind grouping was withdrawn with the Larder. The
         // Menu has one grouping axis -- readiness -- and a second orthogonal
         // grouping by kind must not return beside it.
-        let source = try? String(
-            contentsOf: URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent().deletingLastPathComponent()
-                .appendingPathComponent("WiltedMac/WiltedMacModel.swift"),
-            encoding: .utf8
-        )
+        let source = try? WiltedMacSource.model(root: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent())
         XCTAssertFalse(source?.contains("WiltedMacLibraryKind") == true,
                        "the kind renderer must be deleted, not moved")
         XCTAssertFalse(source?.contains("WiltedMacQueueGrouping") == true,
@@ -7232,7 +7228,7 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(model.larderEpisodeCount(forFeedID: "feed-missing"), 0)
 
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
+        let view = try WiltedMacSource.views(root: root)
         XCTAssertTrue(view.contains("model.larderEpisodeCount(forFeedID: subscription.id)"),
                       "the Feeds row must render that count, not the raw snapshot one")
     }
@@ -7353,12 +7349,12 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertFalse(model.isEpisodeFinished(notStarted))
 
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let modelSource = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacModel.swift"))
+        let modelSource = try WiltedMacSource.model(root: root)
         XCTAssertTrue(modelSource.contains("Self.isFinished(isPlayed:"),
                       "the row's Played state reads the model's one definition")
         XCTAssertEqual(modelSource.components(separatedBy: "func isFinished").count - 1, 1,
                        "exactly one implementation of the finished predicate")
-        let source = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
+        let source = try WiltedMacSource.views(root: root)
         XCTAssertTrue(source.contains("model.isEpisodeFinished(episode)"),
                       "the Menu row must read the model's one definition")
         XCTAssertFalse(source.contains("0.95"), "the view must not infer Played from progress")
@@ -7499,7 +7495,7 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertNil(WiltedMacStartupState.ready.loadingStep)
 
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
+        let source = try WiltedMacSource.views(root: root)
         XCTAssertTrue(source.contains("model.startupStepLabel"),
                       "the loading surface must render the step the model is on")
         XCTAssertFalse(source.contains("Opening and updating your larder"),
@@ -7535,7 +7531,7 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertTrue(app.contains("pipelineFingerprintResolutionForLaunch"),
                       "the app must hand the model a resolver, not a resolved value")
 
-        let model = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacModel.swift"))
+        let model = try WiltedMacSource.model(root: root)
         XCTAssertTrue(model.contains("await pipelineFingerprintResolution()"),
                       "the model must await resolution rather than read a stored value")
     }
@@ -7636,7 +7632,7 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertFalse(pipeline.contains("\"pipelineFingerprint\": Self.semanticFingerprint"),
                        "the worker request still carries the sentinel")
 
-        let model = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacModel.swift"))
+        let model = try WiltedMacSource.model(root: root)
         XCTAssertFalse(model.contains("?? PodcastPreparationPipeline.semanticFingerprint\n"),
                        "the recovery checkpoint still falls back to the sentinel")
         XCTAssertTrue(model.contains("WiltedMacUnresolvedFingerprint"),
@@ -7796,7 +7792,7 @@ final class WiltedMacModelTests: XCTestCase {
 
     func testTheSkipButtonCallsTheReversibleExclusionNotRemoval() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
+        let source = try WiltedMacSource.views(root: root)
         XCTAssertTrue(source.contains("model.skipFeedEpisode("),
                       "Feeds' Skip must call the non-destructive exclusion, not removal")
         XCTAssertFalse(source.contains("model.removeEpisode("),
@@ -7833,7 +7829,7 @@ final class WiltedMacModelTests: XCTestCase {
     /// stable identifiers.
     func testFeedsRendersRestoreControlsForSkippedAndRemovedEpisodes() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
+        let view = try WiltedMacSource.views(root: root)
         XCTAssertTrue(view.contains("wilted-feeds-restore-skipped-\\(episode.id)"))
         XCTAssertTrue(view.contains("wilted-feeds-restore-removed-\\(dismissal.id)"))
         XCTAssertTrue(view.contains("model.restoreSkippedFeedEpisode(episode)"))
@@ -7968,13 +7964,13 @@ final class WiltedMacModelTests: XCTestCase {
 
     func testTheRetiredSurfacesRetainNoRenderer() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
+        let view = try WiltedMacSource.views(root: root)
         for retired in ["WiltedMacLibraryView", "WiltedMacProcessorView", "WiltedMacEpisodeRow",
                         "WiltedMacPreparationView", "WiltedMacQueueControls", "WiltedMacQueueSection",
                         "WiltedMacQueueGrouping", "WiltedMacLibraryKind"] {
             XCTAssertFalse(view.contains(retired), "\(retired) is a retired renderer and must be deleted")
         }
-        let model = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacModel.swift"))
+        let model = try WiltedMacSource.model(root: root)
         for retired in ["preparationQueueSections", "makeQueueSections", "WiltedMacQueueSection",
                         "WiltedMacLibraryKind", "WiltedMacQueueGrouping", "WiltedMacQueueStatus",
                         "WiltedMacPreparationSort"] {
@@ -8034,7 +8030,7 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(WiltedMacFeedsAction.allCases.map(\.rawValue), ["Keep", "Skip"],
                        "Feeds asks one question; every other step belongs on the Menu")
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
+        let view = try WiltedMacSource.views(root: root)
         XCTAssertTrue(view.contains("ForEach(WiltedMacFeedsAction.allCases)"),
                       "the inbox row's buttons are that list, not a hand-kept set")
     }
@@ -8127,7 +8123,7 @@ final class WiltedMacModelTests: XCTestCase {
 
         // The row renders the one progress accessor, keyed by the episode id.
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
+        let view = try WiltedMacSource.views(root: root)
         XCTAssertTrue(view.contains("model.preparationFraction(forEpisode: episode.id)"))
         XCTAssertTrue(view.contains("wilted-menu-progress-"))
     }
@@ -8181,7 +8177,7 @@ final class WiltedMacModelTests: XCTestCase {
 
         // And the view draws every heading and chip from that accessor.
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
+        let view = try WiltedMacSource.views(root: root)
         XCTAssertTrue(view.contains("model.menuEpisodes(in: group).count"),
                       "a heading or chip count must come from the group accessor")
         XCTAssertFalse(view.contains("menuQueueSections"),
@@ -8194,10 +8190,10 @@ final class WiltedMacModelTests: XCTestCase {
     /// whose identifier names the group it acts on.
     func testTheRetiredUpcomingClearIsGoneAndEveryGroupClearsItsOwnRows() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let modelSource = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacModel.swift"))
+        let modelSource = try WiltedMacSource.model(root: root)
         XCTAssertFalse(modelSource.contains("clearUpcomingMenu"),
                        "the upcoming-scoped clear is retired")
-        let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
+        let view = try WiltedMacSource.views(root: root)
         XCTAssertFalse(view.contains("wilted-menu-clear-upcoming"),
                        "the retired identifier must not survive in the view")
         for identifier in [
@@ -8302,7 +8298,7 @@ final class WiltedMacModelTests: XCTestCase {
         // The label's count and the press's set are one accessor, so they
         // cannot promise different work.
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
+        let view = try WiltedMacSource.views(root: root)
         for fragment in [
             "model.menuDownloadableEpisodes.count",
             "actionable: model.menuDownloadableEpisodes",
@@ -8320,7 +8316,7 @@ final class WiltedMacModelTests: XCTestCase {
         ] {
             XCTAssertTrue(view.contains(identifier), "\(identifier) must sit on its group's heading")
         }
-        let modelSource = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacModel.swift"))
+        let modelSource = try WiltedMacSource.model(root: root)
         XCTAssertTrue(modelSource.contains("for episode in menuDownloadableEpisodes"))
         XCTAssertTrue(modelSource.contains("for episode in menuPreparableEpisodes"))
     }
@@ -8451,7 +8447,7 @@ final class WiltedMacModelTests: XCTestCase {
                        "the whole-Menu figure sums the waiting set the Menu counts")
 
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
+        let view = try WiltedMacSource.views(root: root)
         for fragment in [
             "wilted-sidebar-ready-total",
             "wilted-sidebar-downloaded-total",
@@ -8478,7 +8474,7 @@ final class WiltedMacModelTests: XCTestCase {
     /// on the row that is in the state.
     func testAPreparingRowOffersStopAndAFailedOneOffersRetry() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
+        let view = try WiltedMacSource.views(root: root)
         XCTAssertTrue(view.contains("wilted-menu-stop-"),
                       "a preparing row must offer a way to stop the run")
         XCTAssertTrue(view.contains("model.cancelEpisodePreparation(episode)"))
@@ -8528,10 +8524,10 @@ final class WiltedMacModelTests: XCTestCase {
     /// uses the durable Played flag to avoid a duplicate completion control.
     func testTheCompletionControlUsesModelStartedAndPlayedState() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let modelSource = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacModel.swift"))
+        let modelSource = try WiltedMacSource.model(root: root)
         XCTAssertEqual(modelSource.components(separatedBy: "playbackSeconds > 0").count - 1, 1,
                        "the started predicate must have one home")
-        let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
+        let view = try WiltedMacSource.views(root: root)
         XCTAssertEqual(view.components(separatedBy: "playbackSeconds > 0").count - 1, 0,
                        "the view must not restate the predicate")
         XCTAssertTrue(view.contains("model.hasStartedEpisode(episode) && !episode.isPlayed"))
@@ -8582,7 +8578,7 @@ final class WiltedMacModelTests: XCTestCase {
     /// group action takes; the override is not a second enqueue path.
     func testMenuOverridesReuseTheMenuBulkAdmissionFunctions() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacModel.swift"))
+        let source = try WiltedMacSource.model(root: root)
         let start = try XCTUnwrap(source.range(of: "func setAutomationSettings"))
         let end = try XCTUnwrap(source.range(of: "func updateAutomationSettings",
                                              range: start.upperBound..<source.endIndex))
@@ -8808,7 +8804,7 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertTrue(model.isSearchingMenu)
 
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
+        let view = try WiltedMacSource.views(root: root)
         XCTAssertTrue(view.contains("wilted-menu-search-suppresses-bulk"),
                       "the disabled control must say a search is active")
         // Every Download-all and Prepare-all control goes through `bulkAction`,
@@ -8941,7 +8937,7 @@ final class WiltedMacModelTests: XCTestCase {
                        WiltedMacQueueAudioSummary(episodes: model.menuWaitingEpisodes))
 
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let view = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"))
+        let view = try WiltedMacSource.views(root: root)
         XCTAssertTrue(view.contains("model.menuUpcomingEpisodeIDs.count"))
         XCTAssertTrue(view.contains("Open Larder with \\(model.menuUpcomingEpisodeIDs.count) episodes"))
         XCTAssertTrue(view.contains("model.menuAudioSummary"))

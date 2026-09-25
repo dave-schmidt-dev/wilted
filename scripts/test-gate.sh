@@ -210,22 +210,22 @@ validate_pixel_snapshot_baselines() {
     wilted-mac-menu-detail wilted-menu-clear-ready wilted-menu-clear-downloaded \
     wilted-menu-clear-available wilted-menu-mark-completed- wilted-menu-remove- wilted-menu-row-; do
     grep -Fq "$identifier" \
-      "$root/WiltedMac/WiltedMacRootView.swift" "$root/Shared/WiltedRootView.swift" ||
+      "$root"/WiltedMac/Views/*.swift "$root/Shared/WiltedRootView.swift" ||
       fail "Mac compact player identifier is missing: $identifier"
   done
-  grep -Fq '@FocusState private var keyboardFocus' "$root/WiltedMac/WiltedMacRootView.swift" ||
+  grep -Fq '@FocusState private var keyboardFocus' "$root"/WiltedMac/Views/*.swift ||
     fail 'Mac compact player does not own keyboard focus restoration'
-  grep -Fq '@AccessibilityFocusState private var accessibilityFocus' "$root/WiltedMac/WiltedMacRootView.swift" ||
+  grep -Fq '@AccessibilityFocusState private var accessibilityFocus' "$root"/WiltedMac/Views/*.swift ||
     fail 'Mac compact player does not own accessibility focus restoration'
   # The sidebar draws its own selected row. A List that also tracks selection
   # stacks AppKit's blue capsule under the leaf-tinted background, and no pixel
   # baseline can catch it: the offscreen renderer does not draw List selection,
   # which is why re-recording every baseline after the fix changed nothing.
-  if grep -Eq 'List\(selection:' "$root/WiltedMac/WiltedMacRootView.swift"; then
+  if grep -Eq 'List\(selection:' "$root"/WiltedMac/Views/*.swift; then
     fail 'Mac sidebar List tracks selection, which double-draws the selected row'
   fi
   grep -Fq '.accessibilityAddTraits(isSelected ? [.isSelected] : [])' \
-    "$root/WiltedMac/WiltedMacRootView.swift" ||
+    "$root"/WiltedMac/Views/*.swift ||
     fail 'Mac sidebar does not announce its selected destination to accessibility'
   grep -Fq 'testPodcastPlaybackStaysOutOfArticleSyncWhileArticleQueuesOneCheckpoint' \
     "$root/WiltedMacTests/WiltedVisualSystemTests.swift" ||

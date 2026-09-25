@@ -129,10 +129,7 @@ final class WiltedTextScaleTests: XCTestCase {
     /// `wiltedFont` reads the default and the setting does nothing.
     func testTheMacRootHandsTheChosenScaleToItsSurfaces() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(
-            contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacRootView.swift"),
-            encoding: .utf8
-        )
+        let source = try WiltedMacSource.views(root: root)
         XCTAssertTrue(source.contains(".environment(\\.wiltedTextScale, model.textScale)"),
                       "the Mac root must publish the chosen scale")
     }
