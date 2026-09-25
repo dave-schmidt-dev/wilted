@@ -85,5 +85,197 @@ assert totals["wilted_spec_count"] == 1 and totals["wilted_spec_allocated_bytes"
 assert totals["all_allocated_bytes"] == totals["retained_allocated_bytes"] + totals["repo_build_allocated_bytes"] + totals["wilted_spec_allocated_bytes"]
 PY
 [[ -f "$repo/.logs/delivery/storage-retained-old/archive.log" && -f "$repo/.build/Products/build.log" && -f "$tmp_root/wilted-spec-old/output" ]] && pass 'collector did not alter backlog' || fail 'collector altered backlog'
+
+# Apply-mode deletion is exercised only in isolated fixture roots with fake
+# lsof/pgrep commands. The live TMPDIR is never passed to this test.
+probe_bin="$test_root/probe-bin"
+mkdir -p "$probe_bin"
+cat >"$probe_bin/lsof" <<'SH'
+#!/bin/sh
+case "${FAKE_LSOF_MODE:-none}" in
+    none) exit 1 ;;
+    open) printf '4242\n'; exit 0 ;;
+    error) exit 2 ;;
+    warning) printf 'lsof warning\n' >&2; exit 1 ;;
+    timeout) exec /bin/sleep 3 ;;
+    *) exit 2 ;;
+esac
+SH
+cat >"$probe_bin/pgrep" <<'SH'
+#!/bin/sh
+case "${FAKE_PGREP_MODE:-none}" in
+    none) exit 1 ;;
+    used) printf '5252\n'; exit 0 ;;
+    error) exit 2 ;;
+    mutate)
+        count=0
+        [ -f "$FAKE_PGREP_COUNT" ] && count="$(cat "$FAKE_PGREP_COUNT")"
+        count=$((count + 1))
+        printf '%s\n' "$count" >"$FAKE_PGREP_COUNT"
+        if [ "$count" -eq 2 ]; then
+            mv "$FAKE_MUTATE_PATH" "$FAKE_MUTATE_PATH.moved"
+            mkdir "$FAKE_MUTATE_PATH"
+            printf 'replacement\n' >"$FAKE_MUTATE_PATH/replacement"
+        fi
+        exit 1
+        ;;
+    *) exit 2 ;;
+esac
+SH
+chmod +x "$probe_bin/lsof" "$probe_bin/pgrep"
+case_root=""
+case_repo=""
+case_tmp=""
+candidate=""
+new_case() {
+    case_root="$test_root/apply-$1"
+    case_repo="$case_root/repo"
+    case_tmp="$case_root/tmp"
+    mkdir -p "$case_repo" "$case_tmp"
+}
+make_old_candidate() {
+    candidate="$case_tmp/wilted-spec.$1"
+    mkdir -p "$candidate"
+    printf 'diagnostic log\n' >"$candidate/run.log"
+    printf '{"result":"ok"}\n' >"$candidate/gate-result.json"
+    mkdir -p "$candidate/Run.xcresult/Data"
+    printf 'xcresult evidence\n' >"$candidate/Run.xcresult/Data/summary.log"
+    python3 - "$candidate" <<'PY'
+import os, pathlib, sys, time
+root = pathlib.Path(sys.argv[1])
+old = time.time() - 48 * 60 * 60
+for path in [root, *root.rglob("*")]:
+    os.utime(path, (old, old), follow_symlinks=False)
+PY
+}
+run_apply() {
+    local lsof_mode="$1" pgrep_mode="$2" timeout="${3:-1}"
+    env PATH="$probe_bin:$PATH" FAKE_LSOF_MODE="$lsof_mode" FAKE_PGREP_MODE="$pgrep_mode" \
+        python3 "$collector" --repo "$case_repo" --tmp-root "$case_tmp" --apply \
+        --probe-timeout-seconds "$timeout" --json >"$test_root/apply.json" 2>"$test_root/apply.err"
+}
+expect_apply() {
+    local expected_status="$1" expected_reason="$2"
+    python3 - "$test_root/apply.json" "$expected_status" "$expected_reason" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["mode"] == "apply", data
+assert len(data["cleanup"]) == 1, data["cleanup"]
+row = data["cleanup"][0]
+assert row["status"] == sys.argv[2], row
+assert row["reason"] == sys.argv[3], row
+assert row["allocated_bytes"] >= 0, row
+summary = data["cleanup_summary"]
+assert summary["removed_count"] == int(sys.argv[2] == "removed"), summary
+assert summary["skipped_count"] == int(sys.argv[2] == "skipped"), summary
+PY
+}
+
+new_case recent
+make_old_candidate fdgyGX
+printf 'new activity\n' >"$candidate/nested-recent"
+touch "$candidate/nested-recent"
+if run_apply none none; then
+    expect_apply skipped newest-entry-younger-than-cutoff && [[ -d "$candidate" ]] && pass 'newest recursive mtime protects recent activity' || fail 'recent activity was not protected'
+else fail 'recent-age apply invocation failed'; fi
+
+new_case lsof-open
+make_old_candidate ABCD0002
+if run_apply open none; then
+    expect_apply skipped open-files && [[ -d "$candidate" ]] && pass 'lsof open-file result prevents deletion' || fail 'lsof open-file safeguard failed'
+else fail 'lsof-open apply invocation failed'; fi
+
+new_case lsof-error
+make_old_candidate ABCD0003
+if run_apply error none; then
+    expect_apply skipped lsof-probe-error-exit-2 && [[ -d "$candidate" ]] && pass 'lsof error fails closed' || fail 'lsof error safeguard failed'
+else fail 'lsof-error apply invocation failed'; fi
+
+new_case lsof-warning
+make_old_candidate ABCD0010
+if run_apply warning none; then
+    expect_apply skipped lsof-probe-error-exit-1 && [[ -d "$candidate" ]] && pass 'lsof warning fails closed' || fail 'lsof warning safeguard failed'
+else fail 'lsof-warning apply invocation failed'; fi
+
+new_case lsof-timeout
+make_old_candidate ABCD0004
+if run_apply timeout none 0.1; then
+    expect_apply skipped lsof-probe-timeout && [[ -d "$candidate" ]] && pass 'lsof timeout fails closed' || fail 'lsof timeout safeguard failed'
+else fail 'lsof-timeout apply invocation failed'; fi
+
+new_case pgrep-used
+make_old_candidate ABCD0005
+if run_apply none used; then
+    expect_apply skipped process-reference && [[ -d "$candidate" ]] && pass 'pgrep process reference prevents deletion' || fail 'pgrep in-use safeguard failed'
+else fail 'pgrep-used apply invocation failed'; fi
+
+new_case pgrep-error
+make_old_candidate ABCD0006
+if run_apply none error; then
+    expect_apply skipped pgrep-probe-error-exit-2 && [[ -d "$candidate" ]] && pass 'pgrep error fails closed' || fail 'pgrep error safeguard failed'
+else fail 'pgrep-error apply invocation failed'; fi
+
+new_case unsafe-names
+candidate="$case_tmp/wilted-spec.ABCD0007"
+mkdir -p "$test_root/outside-target"
+printf 'do not follow\n' >"$test_root/outside-target/sentinel"
+ln -s "$test_root/outside-target" "$candidate"
+mkdir -p "$case_tmp/wilted-spec-not-random"
+if run_apply none none; then
+    python3 - "$test_root/apply.json" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+rows = {row["path"]: row for row in data["cleanup"]}
+assert rows[next(path for path in rows if path.endswith("ABCD0007"))]["reason"] == "symlink", rows
+assert rows[next(path for path in rows if path.endswith("wilted-spec-not-random"))]["reason"] == "noncanonical-name-or-path", rows
+PY
+    [[ -L "$case_tmp/wilted-spec.ABCD0007" && -d "$case_tmp/wilted-spec-not-random" && -f "$test_root/outside-target/sentinel" ]] && pass 'symlink roots and noncanonical dirs are preserved' || fail 'unsafe-name fixture changed'
+else fail 'unsafe-name apply invocation failed'; fi
+
+new_case revalidate
+make_old_candidate ABCD0008
+pgrep_count="$case_root/pgrep-count"
+if env PATH="$probe_bin:$PATH" FAKE_LSOF_MODE=none FAKE_PGREP_MODE=mutate \
+    FAKE_PGREP_COUNT="$pgrep_count" FAKE_MUTATE_PATH="$candidate" \
+    python3 "$collector" --repo "$case_repo" --tmp-root "$case_tmp" --apply --json >"$test_root/apply.json" 2>"$test_root/apply.err"; then
+    expect_apply skipped delete-error-directory-changed-before-delete \
+        && [[ -f "$candidate/replacement" && -f "$candidate.moved/run.log" ]] \
+        && pass 'directory identity is revalidated before deletion' || fail 'directory identity revalidation failed'
+else fail 'revalidation apply invocation failed'; fi
+
+new_case successful-removal
+make_old_candidate ABCD0009
+printf 'external data\n' >"$test_root/external-data"
+ln -s "$test_root/external-data" "$candidate/external-link"
+python3 - "$candidate" <<'PY'
+import os, pathlib, sys, time
+root = pathlib.Path(sys.argv[1])
+old = time.time() - 48 * 60 * 60
+os.utime(root / "external-link", (old, old), follow_symlinks=False)
+os.utime(root, (old, old))
+PY
+if run_apply none none; then
+    if expect_apply removed stale-and-unused && [[ ! -e "$candidate" && -f "$test_root/external-data" ]]; then
+        if python3 - "$test_root/apply.json" "$case_repo" <<'PY'
+import json, pathlib, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+row = data["cleanup"][0]
+archive = pathlib.Path(row["evidence_archive"])
+assert archive.is_dir(), archive
+assert (archive / "run.log").is_file()
+assert (archive / "gate-result.json").is_file()
+assert (archive / "Run.xcresult/Data/summary.log").is_file()
+manifest = json.loads((archive / "retained-evidence-manifest.json").read_text())
+assert manifest["retained_file_count"] >= 3, manifest
+assert data["cleanup_summary"]["freed_bytes"] == row["allocated_bytes"], data["cleanup_summary"]
+PY
+        then pass 'stale scratch removed after evidence was retained'
+        else fail 'evidence retention validation failed'; fi
+    else fail 'stale scratch was not removed'; fi
+else fail 'successful-removal apply invocation failed'; fi
+
+if python3 "$collector" --repo "$repo" --tmp-root "$tmp_root" --apply --min-age-hours 0 >/dev/null 2>&1; then
+    fail 'apply accepted an age cutoff below 24 hours'
+else pass 'apply enforces the 24-hour minimum age'; fi
 if (( failures )); then printf 'storage-retention.failed count=%s\n' "$failures" >&2; exit 1; fi
 printf 'storage-retention.passed\n' >&2
