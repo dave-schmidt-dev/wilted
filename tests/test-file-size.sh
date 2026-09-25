@@ -34,6 +34,15 @@ check() {
   set -e
 }
 
+check_with_index() {
+  local checkout="$1" index_path="$2"
+  shift 2
+  set +e
+  checker_output="$(cd "$checkout" && GIT_INDEX_FILE="$index_path" python3 scripts/check_file_size.py "$@" 2>&1)"
+  checker_status=$?
+  set -e
+}
+
 assert_status() {
   local expected="$1" label="$2"
   if [[ "$checker_status" -ne "$expected" ]]; then
@@ -51,157 +60,133 @@ assert_contains() {
   fi
 }
 
+assert_empty() {
+  local label="$1"
+  if [[ -n "$checker_output" ]]; then
+    printf 'assertion failed: %s unexpectedly output:\n%s\n' "$label" "$checker_output" >&2
+    exit 1
+  fi
+}
+
 commit_fixture() {
   local checkout="$1"
   git -C "$checkout" add .
   git -C "$checkout" commit --no-verify -q -m fixture
 }
 
-setup_grandfathered_repo() {
-  local checkout
-  checkout="$(init_repo)"
-  make_lines 600 "$checkout/large.py"
-  printf '%s\n' 'large.py 600 grandfathered fixture; may shrink, not grow' >"$checkout/.file-size-exceptions"
-  commit_fixture "$checkout"
-  printf '%s\n' "$checkout"
-}
-
 file_repo="$(init_repo)"
 make_lines 500 "$file_repo/Boundary.swift"
 check "$file_repo" Boundary.swift
-assert_status 0 '500-line Swift file'
-make_lines 501 "$file_repo/TooBig.swift"
+assert_status 0 '500-line file'
+assert_empty '500-line file'
+make_lines 501 "$file_repo/Warning.swift"
+check "$file_repo" Warning.swift
+assert_status 0 '501-line file'
+assert_contains 'file-size: Warning.swift has 501 lines (target 500)' '501-line warning'
+make_lines 800 "$file_repo/Ceiling.swift"
+check "$file_repo" Ceiling.swift
+assert_status 0 '800-line file'
+assert_contains 'file-size: Ceiling.swift has 800 lines (target 500)' '800-line warning'
+make_lines 801 "$file_repo/TooBig.swift"
 check "$file_repo" TooBig.swift
-assert_status 1 '501-line Swift file'
-assert_contains TooBig.swift '501-line Swift file'
-make_lines 600 "$file_repo/large.json"
-make_lines 600 "$file_repo/App.xcodeproj/x.swift"
-check "$file_repo" large.json App.xcodeproj/x.swift missing.swift
+assert_status 1 '801-line file'
+assert_contains 'TooBig.swift has 801 lines' '801-line error'
+printf '%s\n' 'TooBig.swift required single-file fixture' >"$file_repo/.file-size-exceptions"
+check "$file_repo" TooBig.swift
+assert_status 0 'listed 801-line file'
+make_lines 10 "$file_repo/Small.swift"
+printf '%s\n' 'Small.swift required single-file fixture' >"$file_repo/.file-size-exceptions"
+check "$file_repo" Small.swift
+assert_status 0 'listed 10-line file'
+assert_contains 'remove its exception' 'listed 10-line removal note'
+make_lines 900 "$file_repo/ignored.json"
+make_lines 900 "$file_repo/App.xcodeproj/ignored.swift"
+check "$file_repo" ignored.json App.xcodeproj/ignored.swift missing.swift
 assert_status 0 'ignored and missing FILE arguments'
 
-caps_repo="$(init_repo)"
-make_lines 600 "$caps_repo/large.py"
-printf '%s\n' 'large.py 600 justified fixture' >"$caps_repo/.file-size-exceptions"
-check "$caps_repo" large.py
-assert_status 0 'matching exception cap'
-printf '%s\n' 'large.py 599 justified fixture' >"$caps_repo/.file-size-exceptions"
-check "$caps_repo" large.py
-assert_status 1 'lower exception cap'
-assert_contains large.py 'lower exception cap'
-make_lines 10 "$caps_repo/small.py"
-printf '%s\n' 'small.py 600 justified fixture' >"$caps_repo/.file-size-exceptions"
-check "$caps_repo" small.py
-assert_status 0 'removable exception'
-assert_contains 'remove its exception' 'removable exception'
-
-for invalid_entry in 'broken.py 600' 'broken.py 0 reason' 'broken.py abc reason'; do
-  format_repo="$(init_repo)"
-  printf '%s\n' "$invalid_entry" >"$format_repo/.file-size-exceptions"
-  check "$format_repo" --all
-  assert_status 1 "invalid exception: $invalid_entry"
-done
+format_repo="$(init_repo)"
+printf '%s\n' 'reasonless.py' >"$format_repo/.file-size-exceptions"
+check "$format_repo" --all
+assert_status 1 'reason-less exception'
+assert_contains 'needs a reason' 'reason-less exception'
+format_repo="$(init_repo)"
+printf '%s\n' 'legacy.py 801 old cap format' >"$format_repo/.file-size-exceptions"
+check "$format_repo" --all
+assert_status 1 'cap-format exception'
+assert_contains 'line caps are no longer supported; remove the cap' 'cap-format exception'
+format_repo="$(init_repo)"
+printf '%s\n' 'duplicate.py first reason' 'duplicate.py second reason' >"$format_repo/.file-size-exceptions"
+check "$format_repo" --all
+assert_status 1 'duplicate exception'
+assert_contains 'duplicate exception path duplicate.py' 'duplicate exception'
 
 staged_repo="$(init_repo)"
 commit_fixture "$staged_repo"
-make_lines 501 "$staged_repo/staged.sh"
+make_lines 801 "$staged_repo/staged.sh"
 git -C "$staged_repo" add staged.sh
 check "$staged_repo" --staged
-assert_status 1 'staged oversized shell file'
-assert_contains staged.sh 'staged oversized shell file'
+assert_status 1 'staged 801-line file'
+assert_contains 'staged.sh has 801 lines' 'staged 801-line error'
 
 staged_repo="$(init_repo)"
 commit_fixture "$staged_repo"
-make_lines 500 "$staged_repo/staged.sh"
+make_lines 800 "$staged_repo/staged.sh"
 git -C "$staged_repo" add staged.sh
-make_lines 501 "$staged_repo/staged.sh"
+make_lines 801 "$staged_repo/staged.sh"
 check "$staged_repo" --staged
 assert_status 0 'working-tree-only growth'
+assert_contains 'staged.sh has 800 lines (target 500)' 'staged 800-line warning'
 
 staged_repo="$(init_repo)"
 commit_fixture "$staged_repo"
-make_lines 501 "$staged_repo/untracked.sh"
+make_lines 801 "$staged_repo/untracked.sh"
 check "$staged_repo" --staged
-assert_status 0 'untracked oversized shell file'
+assert_status 0 'untracked 801-line file'
 
-staged_repo="$(init_repo)"
-commit_fixture "$staged_repo"
-printf '%s\n' 'broken.py 600' >"$staged_repo/.file-size-exceptions"
-git -C "$staged_repo" add .file-size-exceptions
-check "$staged_repo" --staged
-assert_status 1 'staged malformed exceptions'
+index_repo="$(init_repo)"
+commit_fixture "$index_repo"
+make_lines 801 "$index_repo/alternate.py"
+alternate_index="$tmp_dir/alternate.index"
+cp "$index_repo/.git/index" "$alternate_index"
+GIT_INDEX_FILE="$alternate_index" git -C "$index_repo" add alternate.py
+check_with_index "$index_repo" "$alternate_index" --staged
+assert_status 1 'alternate index staged 801-line file'
+assert_contains 'alternate.py has 801 lines' 'alternate index error'
 
-staged_repo="$(init_repo)"
-make_lines 501 "$staged_repo/deleted.sh"
-commit_fixture "$staged_repo"
-git -C "$staged_repo" rm -q deleted.sh
-check "$staged_repo" --staged
-assert_status 0 'staged oversized deletion'
+exceptions_repo="$(init_repo)"
+make_lines 801 "$exceptions_repo/committed.py"
+printf '%s\n' 'committed.py required legacy fixture' >"$exceptions_repo/.file-size-exceptions"
+commit_fixture "$exceptions_repo"
+printf '%s\n' '# entry intentionally removed' >"$exceptions_repo/.file-size-exceptions"
+git -C "$exceptions_repo" add .file-size-exceptions
+check "$exceptions_repo" --staged
+assert_status 1 'staged exceptions removal'
+assert_contains 'committed.py has 801 lines' 'staged exceptions removal error'
 
-monotonic_repo="$(setup_grandfathered_repo)"
-printf '%s\n' 'large.py 601 grandfathered fixture; may shrink, not grow' >"$monotonic_repo/.file-size-exceptions"
-git -C "$monotonic_repo" add .file-size-exceptions
-check "$monotonic_repo" --staged
-assert_status 1 'raised grandfathered cap'
-assert_contains large.py 'raised grandfathered cap'
-
-monotonic_repo="$(setup_grandfathered_repo)"
-make_lines 590 "$monotonic_repo/large.py"
-printf '%s\n' 'large.py 590 grandfathered fixture; may shrink, not grow' >"$monotonic_repo/.file-size-exceptions"
-git -C "$monotonic_repo" add large.py .file-size-exceptions
-check "$monotonic_repo" --staged
-assert_status 0 'shrunk grandfathered cap'
-
-monotonic_repo="$(setup_grandfathered_repo)"
-make_lines 600 "$monotonic_repo/other.py"
-printf '%s\n' \
-  'large.py 600 grandfathered fixture; may shrink, not grow' \
-  'other.py 600 grandfathered fixture; may shrink, not grow' >"$monotonic_repo/.file-size-exceptions"
-git -C "$monotonic_repo" add other.py .file-size-exceptions
-check "$monotonic_repo" --staged
-assert_status 1 'new grandfathered cap'
-assert_contains other.py 'new grandfathered cap'
-
-monotonic_repo="$(setup_grandfathered_repo)"
-make_lines 600 "$monotonic_repo/other.py"
-printf '%s\n' \
-  'large.py 600 grandfathered fixture; may shrink, not grow' \
-  'other.py 600 independently justified fixture' >"$monotonic_repo/.file-size-exceptions"
-git -C "$monotonic_repo" add other.py .file-size-exceptions
-check "$monotonic_repo" --staged
-assert_status 0 'new non-grandfathered cap'
-
-for exception_change in removed lowered deleted; do
-  changed_repo="$(setup_grandfathered_repo)"
-  case "$exception_change" in
-    removed)
-      printf '%s\n' '# no exceptions remain' >"$changed_repo/.file-size-exceptions"
-      git -C "$changed_repo" add .file-size-exceptions
-      ;;
-    lowered)
-      printf '%s\n' 'large.py 550 grandfathered fixture; may shrink, not grow' >"$changed_repo/.file-size-exceptions"
-      git -C "$changed_repo" add .file-size-exceptions
-      ;;
-    deleted)
-      git -C "$changed_repo" rm -q .file-size-exceptions
-      ;;
-  esac
-  check "$changed_repo" --staged
-  assert_status 1 "changed exceptions: $exception_change"
-  assert_contains large.py "changed exceptions: $exception_change"
-done
+exceptions_repo="$(init_repo)"
+make_lines 801 "$exceptions_repo/committed.py"
+printf '%s\n' 'committed.py required legacy fixture' >"$exceptions_repo/.file-size-exceptions"
+commit_fixture "$exceptions_repo"
+git -C "$exceptions_repo" rm -q .file-size-exceptions
+check "$exceptions_repo" --staged
+assert_status 1 'staged exceptions deletion'
+assert_contains 'committed.py has 801 lines' 'staged exceptions deletion error'
 
 all_repo="$(init_repo)"
-make_lines 501 "$all_repo/untracked.swift"
+make_lines 801 "$all_repo/untracked.swift"
 check "$all_repo" --all
-assert_status 1 'untracked oversized all-mode file'
+assert_status 1 'untracked 801-line all-mode file'
 all_repo="$(init_repo)"
 printf '%s\n' 'ignored.swift' >"$all_repo/.gitignore"
-make_lines 501 "$all_repo/ignored.swift"
+make_lines 801 "$all_repo/ignored.swift"
 check "$all_repo" --all
-assert_status 0 'ignored all-mode file'
+assert_status 0 'ignored 801-line all-mode file'
 
 usage_repo="$(init_repo)"
 check "$usage_repo"
 assert_status 2 'missing checker mode'
+
+check "$repo_root" --all
+assert_status 0 'repository audit'
 
 printf '%s\n' 'file-size checker test passed'

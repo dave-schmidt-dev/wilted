@@ -1,4 +1,4 @@
-"""Enforce source and test file line limits with documented exceptions."""
+"""Warn about large source files and enforce the repository line ceiling."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ import subprocess
 import sys
 
 
-DEFAULT_MAX_LINES = 500
+DEFAULT_TARGET = 500
+DEFAULT_MAX_LINES = 800
 DEFAULT_EXCEPTIONS_PATH = ".file-size-exceptions"
 CHECKED_SUFFIXES = (".swift", ".py", ".sh")
 
@@ -22,44 +23,40 @@ def count_lines(contents: bytes) -> int:
 
 
 def applies_to(path: str) -> bool:
-    """Return whether *path* is a source or test path covered by this rule."""
+    """Return whether *path* is covered by this repository's file-size rule."""
     return ".xcodeproj/" not in path and path.endswith(CHECKED_SUFFIXES)
 
 
-def parse_exceptions(contents: bytes, source: str, strict: bool) -> tuple[dict[str, tuple[int, str]], list[str]]:
-    """Parse exception *contents* and return entries and format errors.
-
-    When *strict* is false, malformed entries are ignored for comparison with
-    a prior committed exceptions file.
-    """
+def parse_exceptions(contents: bytes, source: str) -> tuple[dict[str, str], list[str]]:
+    """Parse exception *contents* and return entries with format errors."""
     try:
         text = contents.decode()
     except UnicodeDecodeError:
-        return {}, [f"{source}: exceptions file must be UTF-8"] if strict else []
+        return {}, [f"{source}: exceptions file must be UTF-8"]
 
-    entries: dict[str, tuple[int, str]] = {}
+    entries: dict[str, str] = {}
+    seen_paths: set[str] = set()
     errors: list[str] = []
     for line_number, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        fields = line.split(maxsplit=2)
-        if len(fields) < 3 or not fields[2].strip():
-            if strict:
-                errors.append(f"{source}:{line_number}: exception entry needs a positive cap and reason")
+        fields = line.split(maxsplit=1)
+        path = fields[0]
+        if path in seen_paths:
+            errors.append(f"{source}:{line_number}: duplicate exception path {path}")
             continue
-        path, cap_text, reason = fields
-        try:
-            cap = int(cap_text)
-        except ValueError:
-            if strict:
-                errors.append(f"{source}:{line_number}: cap must be a positive integer")
+        seen_paths.add(path)
+        if len(fields) == 1 or not fields[1].strip():
+            errors.append(f"{source}:{line_number}: exception entry needs a reason")
             continue
-        if cap <= 0:
-            if strict:
-                errors.append(f"{source}:{line_number}: cap must be a positive integer")
+        second_token = fields[1].split(maxsplit=1)[0]
+        if second_token.isdigit():
+            errors.append(
+                f"{source}:{line_number}: line caps are no longer supported; remove the cap"
+            )
             continue
-        entries[path] = (cap, reason)
+        entries[path] = fields[1].strip()
     return entries, errors
 
 
@@ -78,11 +75,13 @@ def index_blob(path: str) -> tuple[bytes | None, str | None]:
 
 
 def indexed_paths() -> tuple[list[str], list[str]]:
-    """Return paths to check in staged mode and Git invocation errors."""
+    """Return staged paths, or all indexed paths when exceptions changed."""
     changed, error = run_git(["diff", "--cached", "--name-only", "--", DEFAULT_EXCEPTIONS_PATH])
     if error:
         return [], [error]
-    arguments = ["ls-files", "-z"] if changed else ["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"]
+    arguments = ["ls-files", "-z"] if changed else [
+        "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"
+    ]
     output, error = run_git(arguments)
     if error:
         return [], [error]
@@ -90,53 +89,41 @@ def indexed_paths() -> tuple[list[str], list[str]]:
 
 
 def all_paths() -> tuple[list[str], list[str]]:
-    """Return all working-tree paths selected by Git and invocation errors."""
+    """Return all tracked and non-ignored working-tree paths."""
     output, error = run_git(["ls-files", "-z", "-co", "--exclude-standard"])
     if error:
         return [], [error]
     return [os.fsdecode(path) for path in output.split(b"\0") if path], []
 
 
-def working_exceptions(path: str) -> tuple[dict[str, tuple[int, str]], list[str]]:
-    """Load and validate exceptions from working-tree *path*."""
+def working_exceptions(path: str) -> tuple[dict[str, str], list[str]]:
+    """Load exceptions from the working tree, if present."""
     exception_path = Path(path)
     if not exception_path.exists():
         return {}, []
     try:
-        return parse_exceptions(exception_path.read_bytes(), path, True)
+        return parse_exceptions(exception_path.read_bytes(), path)
     except OSError as error:
         return {}, [f"{path}: {error}"]
 
 
-def staged_exceptions() -> tuple[dict[str, tuple[int, str]], list[str]]:
-    """Load and validate exceptions from the index, if it contains the file."""
+def staged_exceptions() -> tuple[dict[str, str], list[str]]:
+    """Load exceptions from the index, treating an absent blob as no entries."""
     contents, error = index_blob(DEFAULT_EXCEPTIONS_PATH)
     if error:
         return {}, []
-    return parse_exceptions(contents, DEFAULT_EXCEPTIONS_PATH, True)
-
-
-def grandfathered_errors(entries: dict[str, tuple[int, str]]) -> list[str]:
-    """Return errors for new or raised staged grandfathered exception caps."""
-    contents, error = run_git(["cat-file", "blob", f"HEAD:{DEFAULT_EXCEPTIONS_PATH}"])
-    if error:
-        return []
-    previous, _ = parse_exceptions(contents, f"HEAD:{DEFAULT_EXCEPTIONS_PATH}", False)
-    errors: list[str] = []
-    for path, (cap, reason) in entries.items():
-        if reason.startswith("grandfathered") and (path not in previous or cap > previous[path][0]):
-            errors.append(f"{path}: grandfathered exception cap may not be added or raised")
-    return errors
+    return parse_exceptions(contents, DEFAULT_EXCEPTIONS_PATH)
 
 
 def check_files(
     paths: list[str],
-    exceptions: dict[str, tuple[int, str]],
+    exceptions: dict[str, str],
+    target: int,
     max_lines: int,
     exceptions_path: str,
     staged: bool,
 ) -> list[str]:
-    """Check *paths* and return every line-limit violation found."""
+    """Check *paths* and return every ceiling violation."""
     errors: list[str] = []
     for path in paths:
         if not applies_to(path):
@@ -155,18 +142,23 @@ def check_files(
             except OSError as error:
                 errors.append(f"{path}: {error}")
                 continue
+
         line_count = count_lines(contents)
         exception = exceptions.get(path)
-        if line_count <= max_lines:
-            if exception is not None:
-                print(
-                    f"{path}: {line_count} lines is at or under {max_lines}; "
-                    f"remove its exception from {exceptions_path}"
-                )
-        elif exception is None or line_count > exception[0]:
+        if target < line_count <= max_lines:
+            print(
+                f"file-size: {path} has {line_count} lines (target {target}); "
+                "split it when a clean seam exists"
+            )
+        if line_count > max_lines and exception is None:
             errors.append(
-                f"{path}: {line_count} lines exceeds {max_lines}; split it or "
-                f"add a justified entry to {exceptions_path}"
+                f"file-size: {path} has {line_count} lines (maximum {max_lines}); "
+                f"add a reasoned entry to {exceptions_path}"
+            )
+        elif exception is not None and line_count <= max_lines:
+            print(
+                f"file-size: {path} has {line_count} lines (at or under {max_lines}); "
+                f"remove its exception from {exceptions_path}"
             )
     return errors
 
@@ -174,6 +166,7 @@ def check_files(
 def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     """Parse command-line *arguments* for the file-size checker."""
     parser = argparse.ArgumentParser()
+    parser.add_argument("--target", type=int, default=DEFAULT_TARGET)
     parser.add_argument("--max-lines", type=int, default=DEFAULT_MAX_LINES)
     parser.add_argument("--exceptions", default=DEFAULT_EXCEPTIONS_PATH)
     modes = parser.add_mutually_exclusive_group()
@@ -190,6 +183,8 @@ def main(arguments: list[str] | None = None) -> int:
     """Check the selected files from *arguments* and return an exit status."""
     options = parse_arguments(sys.argv[1:] if arguments is None else arguments)
     errors: list[str] = []
+    if options.target <= 0:
+        errors.append("--target must be a positive integer")
     if options.max_lines <= 0:
         errors.append("--max-lines must be a positive integer")
 
@@ -198,14 +193,19 @@ def main(arguments: list[str] | None = None) -> int:
         exceptions, exception_errors = staged_exceptions()
         errors.extend(path_errors)
         errors.extend(exception_errors)
-        errors.extend(grandfathered_errors(exceptions))
-        errors.extend(check_files(paths, exceptions, options.max_lines, DEFAULT_EXCEPTIONS_PATH, True))
+        errors.extend(
+            check_files(
+                paths, exceptions, options.target, options.max_lines, DEFAULT_EXCEPTIONS_PATH, True
+            )
+        )
     else:
         paths, path_errors = all_paths() if options.all else (options.files, [])
         exceptions, exception_errors = working_exceptions(options.exceptions)
         errors.extend(path_errors)
         errors.extend(exception_errors)
-        errors.extend(check_files(paths, exceptions, options.max_lines, options.exceptions, False))
+        errors.extend(
+            check_files(paths, exceptions, options.target, options.max_lines, options.exceptions, False)
+        )
 
     for error in errors:
         print(error, file=sys.stderr)
