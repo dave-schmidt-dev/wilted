@@ -38,4 +38,3 @@ WiltedMacTests/WiltedVisualSystemTests.swift legacy 2026-09-25: over 800 lines w
 WiltediOS/ListenerAppModel.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 WiltediOSTests/ListenerAppModelTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 app/wilted_app_store_connect_bridge.py legacy 2026-09-25: over 800 lines when the rule was adopted
-scripts/test-gate.sh legacy 2026-09-25: over 800 lines when the rule was adopted

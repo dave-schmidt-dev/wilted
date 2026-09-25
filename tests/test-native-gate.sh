@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 gate="$repo_root/scripts/test-gate.sh"
+native_gate_validation="$repo_root/scripts/lib/native-gate-validation.sh"
 # shellcheck source=../scripts/lib/temp-sweep.sh
 source "$repo_root/scripts/lib/temp-sweep.sh"
 # This meta-test mints its own wilted-native-gate-meta.XXXXXX root on every
@@ -42,6 +43,10 @@ assert_contains() {
     cat "$file" >&2
     exit 1
   }
+}
+
+assert_validation_contains() {
+  assert_contains "$1" "$native_gate_validation"
 }
 
 assert_block_contains() {
@@ -110,17 +115,16 @@ assert_wiltedkit_sync_contract() {
   assert_contains 'fake delay emits visible status before completion' "$gate"
   assert_contains 'remote deletions apply incrementally, cascade items, and preserve protected work' "$gate"
   assert_contains 'leg_cloudsync_tests' "$gate"
-  assert_contains 'local scratch_path="$tmp_root/swiftpm/cloudsync-tests"' "$gate"
-  assert_contains 'swift test --package-path "$package" --scratch-path "$scratch_path"' "$gate"
-  assert_contains 'CloudSync named adapter case was not observed' "$gate"
-  assert_contains 'CloudSync named send case was not observed' "$gate"
+  assert_validation_contains 'local scratch_path="$tmp_root/swiftpm/cloudsync-tests"'
+  assert_validation_contains 'swift test --package-path "$package" --scratch-path "$scratch_path"'
+  assert_validation_contains 'CloudSync named adapter case was not observed'
+  assert_validation_contains 'CloudSync named send case was not observed'
   assert_contains 'cp "$repo_root/CloudSync/Package.swift" "$integration_root/CloudSync/Package.swift"' "$gate"
   assert_contains 'cp -R "$repo_root/CloudSync/Sources" "$repo_root/CloudSync/Tests" "$integration_root/CloudSync/"' "$gate"
   assert_contains 'leg_listener_tests' "$gate"
-  assert_contains 'local scratch_path="$tmp_root/swiftpm/listener-tests"' "$gate"
-  assert_contains 'swift test --package-path "$package" --scratch-path "$scratch_path"' "$gate"
-  assert_contains 'Listener repository case was not observed' "$gate"
-  assert_contains 'Listener playback case was not observed' "$gate"
+  assert_validation_contains 'local scratch_path="$tmp_root/swiftpm/listener-tests"'
+  assert_validation_contains 'Listener repository case was not observed'
+  assert_validation_contains 'Listener playback case was not observed'
   assert_contains 'cp "$repo_root/Listener/Package.swift" "$integration_root/Listener/Package.swift"' "$gate"
   assert_contains 'cp -R "$repo_root/Listener/Sources" "$repo_root/Listener/Tests" "$integration_root/Listener/"' "$gate"
 }
@@ -135,15 +139,15 @@ assert_swiftpm_scratch_contract() {
   listener_scratch='local scratch_path="$tmp_root/swiftpm/listener-tests"'
   producer_scratch='local scratch_path="$tmp_root/swiftpm/wiltedproducer-tests"'
   assert_contains "$wiltedkit_scratch" "$gate"
-  assert_contains "$cloudsync_scratch" "$gate"
-  assert_contains "$listener_scratch" "$gate"
+  assert_validation_contains "$cloudsync_scratch"
+  assert_validation_contains "$listener_scratch"
   assert_contains "$producer_scratch" "$gate"
-  unique_count="$(rg -o 'local scratch_path="\$tmp_root/swiftpm/[^"]+"' "$gate" | sort -u | wc -l | tr -d ' ')"
+  unique_count="$(rg -o 'local scratch_path="\$tmp_root/swiftpm/[^"]+"' "$gate" "$native_gate_validation" | sort -u | wc -l | tr -d ' ')"
   [[ "$unique_count" -eq 4 ]] || {
     printf '%s\n' 'assertion failed: SwiftPM package legs share a scratch path' >&2
     exit 1
   }
-  if rg -q 'find "\$package/\.build".*PackageTests\.xctest' "$gate"; then
+  if rg -q 'find "\$package/\.build".*PackageTests\.xctest' "$gate" "$native_gate_validation"; then
     printf '%s\n' 'assertion failed: XCTest discovery still reads checkout-local .build' >&2
     exit 1
   fi
@@ -308,10 +312,10 @@ assert_macos_ui_leg_is_executed() {
   assert_contains 'leg_macos_ui_tests()' "$gate"
   assert_contains 'run_leg "${leg_names[7]}" "${leg_reports[7]}" leg_macos_ui_tests' "$gate"
   assert_contains '  macos-ui-tests' "$gate"
-  assert_contains 'macos-ui-tests) mac_ui_declared_test_count ;;' "$gate"
+  assert_validation_contains 'macos-ui-tests) mac_ui_declared_test_count ;;'
   # A floor is a minimum, so a named journey can vanish while an unrelated new
   # test holds the count up. The gate asserts this one by identifier too.
-  assert_contains 'testMenuOverridesAnOffPeakDeferralWithPrepareNow' "$gate"
+  assert_validation_contains 'testMenuOverridesAnOffPeakDeferralWithPrepareNow'
   assert_contains '-only-testing:WiltedMacUITests' "$gate"
   for method in \
     testIntakeJourneyAcrossLarderFeedsAndSettings \
@@ -325,14 +329,15 @@ assert_macos_ui_leg_is_executed() {
 assert_macos_ui_leg_is_executed
 
 assert_snapshot_contract() {
+  assert_contains 'source "$repo_root/scripts/lib/native-gate-validation.sh"' "$gate"
   assert_contains 'validate_pixel_snapshot_baselines' "$gate"
   assert_contains 'validate_ios_pixel_snapshot_baselines' "$gate"
-  assert_contains 'expected_count=162' "$gate"
-  assert_contains 'expected_state_ids=' "$gate"
-  assert_contains 'expected_variants=' "$gate"
-  assert_contains 'expected_selectors' "$gate"
-  assert_contains 'duplicate_selectors' "$gate"
-  assert_contains 'empty_pngs' "$gate"
+  assert_validation_contains 'expected_count=162'
+  assert_validation_contains 'expected_state_ids='
+  assert_validation_contains 'expected_variants='
+  assert_validation_contains 'expected_selectors'
+  assert_validation_contains 'duplicate_selectors'
+  assert_validation_contains 'empty_pngs'
   assert_contains 'cp -R "$repo_root/Shared" "$repo_root/WiltedMac" "$repo_root/WiltedMacTests"' "$gate"
   assert_contains 'cp "$repo_root/Producer/Package.swift" "$integration_root/Producer/Package.swift"' "$gate"
   assert_contains 'cp -R "$repo_root/Producer/Sources" "$repo_root/Producer/Tests" "$integration_root/Producer/"' "$gate"
@@ -360,10 +365,10 @@ assert_snapshot_contract() {
 
   # The Mac result-bundle floor proves the four snapshot methods are included
   # in the executed target count, rather than merely present in source.
-  assert_contains 'expected_test_count_floor' "$gate"
-  assert_contains 'macos-unit-tests) printf' "$gate"
-  assert_contains 'ios-pixel-snapshot-tests) printf' "$gate"
-  assert_contains "printf '{\"totalTestCount\":%s}\\n' \"\$(mac_ui_declared_test_count)\"" "$gate"
+  assert_validation_contains 'expected_test_count_floor'
+  assert_validation_contains 'macos-unit-tests) printf'
+  assert_validation_contains 'ios-pixel-snapshot-tests) printf'
+  assert_validation_contains "printf '{\"totalTestCount\":%s}\\n' \"\$(mac_ui_declared_test_count)\""
   for method in \
     testEveryPreviewStateHasLightAndDarkPixelBaselines \
     testPixelSnapshotSelectorsAreUniqueAndComplete \
@@ -373,7 +378,7 @@ assert_snapshot_contract() {
     testMacNavigationSelectionPixelBaselines \
     testShippingMacProducerPixelBaselines \
     testShippingMacURLFocusPixelBaselines; do
-    assert_contains "$method" "$gate"
+    assert_validation_contains "$method"
   done
   for method in \
     testListenerLibraryDarkPixelBaseline \
@@ -386,7 +391,7 @@ assert_snapshot_contract() {
     testListenerEmptyNowPlayingLightPixelBaseline \
     testListenerTerminalFailureDarkPixelBaseline \
     testListenerTerminalFailureLightPixelBaseline; do
-    assert_contains "$method" "$gate"
+    assert_validation_contains "$method"
   done
 }
 
@@ -534,24 +539,24 @@ assert_result_bundle_contract() {
     printf '%s\n' 'assertion failed: native gate still infers counts from xcodebuild stdout' >&2
     exit 1
   fi
-  assert_contains 'xcrun xcresulttool get test-results summary' "$gate"
-  assert_contains 'totalTestCount' "$gate"
-  assert_contains 'parse_result_bundle_test_count' "$gate"
+  assert_validation_contains 'xcrun xcresulttool get test-results summary'
+  assert_validation_contains 'totalTestCount'
+  assert_validation_contains 'parse_result_bundle_test_count'
   assert_contains '-resultBundlePath' "$gate"
-  assert_contains 'native.result-bundle-missing' "$gate"
-  if rg -q -- '--xunit-output|assert_xunit_tests|count\(//testcase\)' "$gate"; then
+  assert_validation_contains 'native.result-bundle-missing'
+  if rg -q -- '--xunit-output|assert_xunit_tests|count\(//testcase\)' "$gate" "$native_gate_validation"; then
     printf '%s\n' 'assertion failed: native gate still relies on SwiftPM xUnit output' >&2
     exit 1
   fi
   assert_contains '--build-tests' "$gate"
   assert_contains 'xcrun xctest' "$gate"
-  assert_contains 'assert_xctest_output' "$gate"
-  assert_contains 'native.xctest-missing' "$gate"
-  assert_contains 'parse_xctest_output_count' "$gate"
+  assert_validation_contains 'assert_xctest_output'
+  assert_validation_contains 'native.xctest-missing'
+  assert_validation_contains 'parse_xctest_output_count'
   assert_contains 'local scratch_path="$tmp_root/swiftpm/wiltedproducer-tests"' "$gate"
   assert_contains 'swift build --package-path "$package" --scratch-path "$scratch_path" --build-tests' "$gate"
   assert_contains 'find "$scratch_path" -type d -name' "$gate"
-  if rg -q 'find "\$package/\.build".*WiltedProducerPackageTests\.xctest' "$gate"; then
+  if rg -q 'find "\$package/\.build".*WiltedProducerPackageTests\.xctest' "$gate" "$native_gate_validation"; then
     printf '%s\n' 'assertion failed: Producer XCTest discovery still reads checkout-local .build' >&2
     exit 1
   fi
@@ -660,8 +665,9 @@ assert_deferred_mac_ui_contract() {
   assert_contains 'deferred_leg_names' "$gate"
   assert_contains 'WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR' "$gate"
   assert_contains '$repo_root/.logs/native-gate-diagnostics' "$gate"
-  assert_contains 'retain_ui_failure_bundle' "$gate"
-  assert_contains 'clear_ui_failure_bundle' "$gate"
+  assert_contains 'source "$repo_root/scripts/lib/native-gate-validation.sh"' "$gate"
+  assert_validation_contains 'retain_ui_failure_bundle'
+  assert_validation_contains 'clear_ui_failure_bundle'
   # The Makefile must keep an opt-in route, or the leg becomes unreachable
   # rather than deferred.
   assert_contains 'WILTED_MAC_UI=1 caffeinate -disu python3 scripts/native-ui-receipt.py record' "$repo_root/Makefile"

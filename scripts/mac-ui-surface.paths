@@ -16,5 +16,7 @@ CloudSync/
 project.yml
 # Native test leg definitions and their test-count checks.
 scripts/test-gate.sh
+# Native UI snapshot and result-bundle validation sourced by the native gate.
+scripts/lib/native-gate-validation.sh
 # Targets that select the headless and screen-seizing gates.
 Makefile
