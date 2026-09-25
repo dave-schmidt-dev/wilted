@@ -67,6 +67,9 @@ def _pinned_playback_speed(monkeypatch):
     default keeps the capture a property of the code alone.
     """
     monkeypatch.setattr("wilted.get_default_speed", lambda: 1.0)
+    # NO_COLOR is inherited from some agent terminals and overrides the
+    # app's fixed salad theme during headless SVG capture.
+    monkeypatch.delenv("NO_COLOR", raising=False)
 
 
 # Wide/tall enough that the title/kind/playback-bar/interrupt-banner/
