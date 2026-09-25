@@ -1,4 +1,4 @@
-.PHONY: validate native-meta native native-ui lint deadcode check-fast install-hooks install app-icon ad-corpus ad-corpus-replay ad-corpus-adopt
+.PHONY: validate native-meta native native-ui lint deadcode file-size check-fast install-hooks install app-icon ad-corpus ad-corpus-replay ad-corpus-adopt
 
 lint:
 	@$(MAKE) -C Producer/Runtime lint
@@ -6,12 +6,16 @@ lint:
 deadcode:
 	@$(MAKE) -C Producer/Runtime deadcode
 
-check-fast: lint deadcode
+file-size:
+	@python3 scripts/check_file_size.py --staged
+
+check-fast: file-size lint deadcode
 
 install-hooks:
 	@$(MAKE) -C Producer/Runtime install-hooks
 
 validate:
+	@python3 scripts/check_file_size.py --all
 	@bash tests/test-phase0-aggregate.sh
 	@bash scripts/test-phase0.sh
 	@bash tests/test-native-gate.sh

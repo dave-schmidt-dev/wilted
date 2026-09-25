@@ -31,8 +31,10 @@ Install the repository-owned hooks once per clone:
 make install-hooks
 ```
 
-The `pre-commit` hook runs `make check-fast` (runtime lint and dead-code
-checks). The `pre-push` hook runs `make validate`, then compares each pushed
+The `pre-commit` hook runs `make check-fast`, which enforces the 500-line limit
+on staged `.swift`, `.py`, and `.sh` files through `scripts/check_file_size.py`;
+justified exceptions live in `.file-size-exceptions`, and `make validate` audits
+the whole tree. The `pre-push` hook runs `make validate`, then compares each pushed
 ref with the last green Mac UI receipt in `.logs/native-ui-receipt.json` for
 the paths in `scripts/mac-ui-surface.paths`. A Mac UI surface change requires
 `make native-ui` on a clean commit; non-surface pushes remain headless. The
