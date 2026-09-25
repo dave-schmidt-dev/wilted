@@ -6,6 +6,8 @@ tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/wilted-file-size.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 checker_output=""
+checker_stdout=""
+checker_stderr=""
 checker_status=0
 
 init_repo() {
@@ -29,18 +31,22 @@ check() {
   local checkout="$1"
   shift
   set +e
-  checker_output="$(cd "$checkout" && python3 scripts/check_file_size.py "$@" 2>&1)"
+  checker_stdout="$(cd "$checkout" && python3 scripts/check_file_size.py "$@" 2>"$tmp_dir/checker.stderr")"
   checker_status=$?
   set -e
+  checker_stderr="$(<"$tmp_dir/checker.stderr")"
+  checker_output="${checker_stdout}${checker_stderr:+$'\n'}${checker_stderr}"
 }
 
 check_with_index() {
   local checkout="$1" index_path="$2"
   shift 2
   set +e
-  checker_output="$(cd "$checkout" && GIT_INDEX_FILE="$index_path" python3 scripts/check_file_size.py "$@" 2>&1)"
+  checker_stdout="$(cd "$checkout" && GIT_INDEX_FILE="$index_path" python3 scripts/check_file_size.py "$@" 2>"$tmp_dir/checker.stderr")"
   checker_status=$?
   set -e
+  checker_stderr="$(<"$tmp_dir/checker.stderr")"
+  checker_output="${checker_stdout}${checker_stderr:+$'\n'}${checker_stderr}"
 }
 
 assert_status() {
@@ -64,6 +70,22 @@ assert_empty() {
   local label="$1"
   if [[ -n "$checker_output" ]]; then
     printf 'assertion failed: %s unexpectedly output:\n%s\n' "$label" "$checker_output" >&2
+    exit 1
+  fi
+}
+
+assert_stdout_contains() {
+  local needle="$1" label="$2"
+  if [[ "$checker_stdout" != *"$needle"* ]]; then
+    printf 'assertion failed: %s missing stdout %s\n%s\n' "$label" "$needle" "$checker_stdout" >&2
+    exit 1
+  fi
+}
+
+assert_stdout_not_contains() {
+  local needle="$1" label="$2"
+  if [[ "$checker_stdout" == *"$needle"* ]]; then
+    printf 'assertion failed: %s unexpectedly found stdout %s\n%s\n' "$label" "$needle" "$checker_stdout" >&2
     exit 1
   fi
 }
@@ -94,6 +116,12 @@ assert_contains 'TooBig.swift has 801 lines' '801-line error'
 printf '%s\n' 'TooBig.swift required single-file fixture' >"$file_repo/.file-size-exceptions"
 check "$file_repo" TooBig.swift
 assert_status 0 'listed 801-line file'
+printf '%s\n' 'TooBig.swift legacy oversized fixture' >"$file_repo/.file-size-exceptions"
+check "$file_repo" TooBig.swift
+assert_status 0 'legacy FILE-mode file'
+assert_stdout_contains \
+  'file-size: TooBig.swift is a legacy exception (801 lines); extract a clean seam from it in this piece of work' \
+  'legacy FILE-mode notice'
 make_lines 10 "$file_repo/Small.swift"
 printf '%s\n' 'Small.swift required single-file fixture' >"$file_repo/.file-size-exceptions"
 check "$file_repo" Small.swift
@@ -130,6 +158,24 @@ assert_contains 'staged.sh has 801 lines' 'staged 801-line error'
 
 staged_repo="$(init_repo)"
 commit_fixture "$staged_repo"
+make_lines 801 "$staged_repo/legacy.sh"
+printf '%s\n' 'legacy.sh legacy oversized fixture' >"$staged_repo/.file-size-exceptions"
+git -C "$staged_repo" add legacy.sh .file-size-exceptions
+check "$staged_repo" --staged
+assert_status 0 'staged legacy file'
+assert_stdout_contains \
+  'file-size: legacy.sh is a legacy exception (801 lines); extract a clean seam from it in this piece of work' \
+  'staged legacy notice'
+
+file_repo="$(init_repo)"
+make_lines 801 "$file_repo/nonlegacy.py"
+printf '%s\n' 'nonlegacy.py required oversized fixture' >"$file_repo/.file-size-exceptions"
+check "$file_repo" nonlegacy.py
+assert_status 0 'non-legacy file'
+assert_stdout_not_contains 'is a legacy exception' 'non-legacy reason'
+
+staged_repo="$(init_repo)"
+commit_fixture "$staged_repo"
 make_lines 800 "$staged_repo/staged.sh"
 git -C "$staged_repo" add staged.sh
 make_lines 801 "$staged_repo/staged.sh"
@@ -155,6 +201,17 @@ assert_contains 'alternate.py has 801 lines' 'alternate index error'
 
 exceptions_repo="$(init_repo)"
 make_lines 801 "$exceptions_repo/committed.py"
+printf '%s\n' 'committed.py legacy oversized fixture' >"$exceptions_repo/.file-size-exceptions"
+commit_fixture "$exceptions_repo"
+printf '%s\n' '# staged exceptions-only change' >>"$exceptions_repo/.file-size-exceptions"
+git -C "$exceptions_repo" add .file-size-exceptions
+make_lines 802 "$exceptions_repo/committed.py"
+check "$exceptions_repo" --staged
+assert_status 0 'exceptions-only staged legacy file'
+assert_stdout_not_contains 'is a legacy exception' 'exceptions-only staged legacy notice'
+
+exceptions_repo="$(init_repo)"
+make_lines 801 "$exceptions_repo/committed.py"
 printf '%s\n' 'committed.py required legacy fixture' >"$exceptions_repo/.file-size-exceptions"
 commit_fixture "$exceptions_repo"
 printf '%s\n' '# entry intentionally removed' >"$exceptions_repo/.file-size-exceptions"
@@ -176,6 +233,12 @@ all_repo="$(init_repo)"
 make_lines 801 "$all_repo/untracked.swift"
 check "$all_repo" --all
 assert_status 1 'untracked 801-line all-mode file'
+all_repo="$(init_repo)"
+make_lines 801 "$all_repo/legacy.swift"
+printf '%s\n' 'legacy.swift legacy oversized fixture' >"$all_repo/.file-size-exceptions"
+check "$all_repo" --all
+assert_status 0 'legacy all-mode file'
+assert_stdout_not_contains 'is a legacy exception' 'legacy all-mode notice'
 all_repo="$(init_repo)"
 printf '%s\n' 'ignored.swift' >"$all_repo/.gitignore"
 make_lines 801 "$all_repo/ignored.swift"

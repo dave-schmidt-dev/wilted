@@ -74,18 +74,21 @@ def index_blob(path: str) -> tuple[bytes | None, str | None]:
     return run_git(["cat-file", "blob", f":{path}"])
 
 
-def indexed_paths() -> tuple[list[str], list[str]]:
-    """Return staged paths, or all indexed paths when exceptions changed."""
+def indexed_paths() -> tuple[list[str], set[str], list[str]]:
+    """Return checked paths and the changed paths eligible for legacy notices."""
+    changed_paths, error = run_git(["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"])
+    if error:
+        return [], set(), [error]
+    staged_paths = {os.fsdecode(path) for path in changed_paths.split(b"\0") if path}
     changed, error = run_git(["diff", "--cached", "--name-only", "--", DEFAULT_EXCEPTIONS_PATH])
     if error:
-        return [], [error]
-    arguments = ["ls-files", "-z"] if changed else [
-        "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"
-    ]
-    output, error = run_git(arguments)
+        return [], set(), [error]
+    if not changed:
+        return sorted(staged_paths), staged_paths, []
+    output, error = run_git(["ls-files", "-z"])
     if error:
-        return [], [error]
-    return [os.fsdecode(path) for path in output.split(b"\0") if path], []
+        return [], set(), [error]
+    return [os.fsdecode(path) for path in output.split(b"\0") if path], staged_paths, []
 
 
 def all_paths() -> tuple[list[str], list[str]]:
@@ -122,6 +125,7 @@ def check_files(
     max_lines: int,
     exceptions_path: str,
     staged: bool,
+    legacy_notice_paths: set[str],
 ) -> list[str]:
     """Check *paths* and return every ceiling violation."""
     errors: list[str] = []
@@ -154,6 +158,16 @@ def check_files(
             errors.append(
                 f"file-size: {path} has {line_count} lines (maximum {max_lines}); "
                 f"add a reasoned entry to {exceptions_path}"
+            )
+        elif (
+            path in legacy_notice_paths
+            and line_count > max_lines
+            and exception is not None
+            and exception.startswith("legacy ")
+        ):
+            print(
+                f"file-size: {path} is a legacy exception ({line_count} lines); "
+                "extract a clean seam from it in this piece of work"
             )
         elif exception is not None and line_count <= max_lines:
             print(
@@ -189,13 +203,19 @@ def main(arguments: list[str] | None = None) -> int:
         errors.append("--max-lines must be a positive integer")
 
     if options.staged:
-        paths, path_errors = indexed_paths()
+        paths, legacy_notice_paths, path_errors = indexed_paths()
         exceptions, exception_errors = staged_exceptions()
         errors.extend(path_errors)
         errors.extend(exception_errors)
         errors.extend(
             check_files(
-                paths, exceptions, options.target, options.max_lines, DEFAULT_EXCEPTIONS_PATH, True
+                paths,
+                exceptions,
+                options.target,
+                options.max_lines,
+                DEFAULT_EXCEPTIONS_PATH,
+                True,
+                legacy_notice_paths,
             )
         )
     else:
@@ -204,7 +224,15 @@ def main(arguments: list[str] | None = None) -> int:
         errors.extend(path_errors)
         errors.extend(exception_errors)
         errors.extend(
-            check_files(paths, exceptions, options.target, options.max_lines, options.exceptions, False)
+            check_files(
+                paths,
+                exceptions,
+                options.target,
+                options.max_lines,
+                options.exceptions,
+                False,
+                set(paths) if not options.all else set(),
+            )
         )
 
     for error in errors:
