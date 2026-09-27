@@ -30,7 +30,6 @@ Producer/Tests/WiltedProducerTests/PodcastPreparationPipelineTests.swift legacy 
 Producer/Workers/test_wilted_pipeline.py legacy 2026-09-25: over 800 lines when the rule was adopted
 Producer/Workers/wilted_pipeline.py legacy 2026-09-25: over 800 lines when the rule was adopted
 WiltedKit/Tests/WiltedSyncTests/SyncSmokeTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
-WiltedMacTests/WiltedMacModelTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 WiltedMacTests/WiltedMacSyncLifecycleTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 WiltedMacTests/WiltedVisualSystemTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 WiltediOS/ListenerAppModel.swift legacy 2026-09-25: over 800 lines when the rule was adopted
