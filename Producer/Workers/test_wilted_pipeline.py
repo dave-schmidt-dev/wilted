@@ -3,8 +3,8 @@
 
 Deliberately dependency-free: every import the worker makes from the previous
 project is lazy and inside a function, so the tests stub those modules and run
-under the system interpreter. That keeps this leg in the ordinary gate instead
-of behind a virtualenv and a four-gigabyte model.
+without a model. That keeps this leg in the ordinary gate instead of loading a
+four-gigabyte model.
 """
 
 from __future__ import annotations
@@ -32,6 +32,8 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKER_PATH = REPO_ROOT / "Producer" / "Workers" / "wilted_pipeline.py"
 RUNTIME_ADS_PATH = REPO_ROOT / "Producer" / "Runtime" / "src" / "wilted" / "ads.py"
+WORKER_PACKAGE_PATH = WORKER_PATH.with_name("wilted_worker")
+WORKER_SOURCES = (WORKER_PATH, *sorted(WORKER_PACKAGE_PATH.rglob("*.py"))) if WORKER_PACKAGE_PATH.is_dir() else (WORKER_PATH,)
 
 
 def load_ad_corpus():
@@ -107,6 +109,23 @@ def load_runtime_ads():
 
 
 wp = load_worker()
+
+
+def worker_namespaces():
+    """Return the entry namespace plus every loaded split-worker namespace."""
+    namespaces = dict(vars(wp))
+    for name, module in sys.modules.items():
+        if name.startswith("wilted_worker.") and isinstance(module, types.ModuleType):
+            namespaces.update(vars(module))
+    return namespaces
+
+
+def _worker_owned_prompts():
+    return {
+        value
+        for name, value in worker_namespaces().items()
+        if name.endswith("_PROMPT") and isinstance(value, str) and value
+    }
 
 
 def _passthrough_detections(_ads, _backend, _segments, detections, *_args):
@@ -6329,7 +6348,7 @@ class NominatedPodBoundTests(unittest.TestCase):
         analysis_parameters = inspect.signature(wp.analyze_ad_detections).parameters
         self.assertIn("pod_share_bound", analysis_parameters)
         self.assertIsNone(analysis_parameters["pod_share_bound"].default)
-        for name in vars(wp):
+        for name in worker_namespaces():
             self.assertNotIn(
                 "POD_SHARE", name.upper(),
                 f"a pod bound constant landed: {name}; the bound must stay a parameter",
@@ -7279,18 +7298,18 @@ class ProducedSpanConfidenceTests(unittest.TestCase):
         return spans
 
     def test_no_worker_site_passes_a_literal_confidence_for_a_produced_span(self):
-        tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
         literals = []
-        for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "AdSegment"):
-                continue
-            third = (
-                node.args[2] if len(node.args) >= 3
-                else next((kw.value for kw in node.keywords if kw.arg == "confidence"), None)
-            )
-            if isinstance(third, ast.Constant) and third.value == 1.0:
-                literals.append(node.lineno)
+        for path in WORKER_SOURCES:
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "AdSegment"):
+                    continue
+                third = (
+                    node.args[2] if len(node.args) >= 3
+                    else next((kw.value for kw in node.keywords if kw.arg == "confidence"), None)
+                )
+                if isinstance(third, ast.Constant) and third.value == 1.0:
+                    literals.append((path.name, node.lineno))
         self.assertEqual(literals, [], "produced spans must carry measured confidence, not 1.0")
 
     def test_the_recovered_confidence_band_is_bounded_and_monotonic(self):
@@ -7386,7 +7405,7 @@ class RuntimeRecoveryConfidenceTests(unittest.TestCase):
             return sites
 
         self.assertEqual(
-            literal_sites(WORKER_PATH), [],
+            [site for path in WORKER_SOURCES for site in literal_sites(path)], [],
             "worker produced spans must carry measured confidence, not 1.0",
         )
         self.assertEqual(
@@ -7505,6 +7524,100 @@ class RuntimeRecoveryConfidenceTests(unittest.TestCase):
         self.assertTrue(all(0.0 < value < 1.0 for value in confidences))
 
 
+class WorkerSplitRailTests(unittest.TestCase):
+    @staticmethod
+    def _dotted_name(node):
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            parent = WorkerSplitRailTests._dotted_name(node.value)
+            return f"{parent}.{node.attr}" if parent else None
+        return None
+
+    @staticmethod
+    def _top_level_definitions(path):
+        definitions = set()
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                definitions.add(node.name)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+                definitions.update(
+                    target.id for target in targets if isinstance(target, ast.Name)
+                )
+        return definitions
+
+    @staticmethod
+    def _module_level_prompt_values():
+        prompts = set()
+        for path in WORKER_SOURCES:
+            for node in ast.parse(path.read_text(encoding="utf-8")).body:
+                if not isinstance(node, (ast.Assign, ast.AnnAssign)) or not isinstance(node.value, ast.Constant):
+                    continue
+                targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+                if isinstance(node.value.value, str) and any(
+                    isinstance(target, ast.Name) and target.id.endswith("_PROMPT") for target in targets
+                ):
+                    prompts.add(node.value.value)
+        return prompts
+
+    @staticmethod
+    def _ad_corpus_worker_names():
+        tree = ast.parse((WORKER_PATH.with_name("ad_corpus.py")).read_text(encoding="utf-8"))
+        return {
+            node.attr for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "wp"
+        }
+
+    def test_worker_owned_prompts_cover_every_prompt_constant(self):
+        self.assertEqual(_worker_owned_prompts(), self._module_level_prompt_values())
+
+    def test_patch_targets_are_defined_where_patched(self):
+        definitions = {path: self._top_level_definitions(path) for path in WORKER_SOURCES}
+        allowed = self._ad_corpus_worker_names()
+        module_paths = {"wilted_pipeline": WORKER_PATH}
+        for path in WORKER_SOURCES[1:]:
+            relative = path.relative_to(WORKER_PACKAGE_PATH).with_suffix("")
+            parts = relative.parts[:-1] if relative.name == "__init__" else relative.parts
+            module_paths["wilted_worker" + ("." + ".".join(parts) if parts else "")] = path
+
+        failures = []
+        for test_path in sorted((REPO_ROOT / "Producer" / "Workers").glob("test_*.py")):
+            tree = ast.parse(test_path.read_text(encoding="utf-8"))
+            bindings = {"wp": WORKER_PATH}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name in module_paths:
+                            bindings[alias.asname or alias.name.split(".")[0]] = module_paths[alias.name]
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    for alias in node.names:
+                        module_name = f"{node.module}.{alias.name}"
+                        if module_name in module_paths:
+                            bindings[alias.asname or alias.name] = module_paths[module_name]
+
+            for node in ast.walk(tree):
+                target_path = None
+                name = None
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "object" and isinstance(node.func.value, ast.Attribute)
+                        and node.func.value.attr == "patch" and len(node.args) >= 2
+                        and isinstance(node.args[1], ast.Constant)
+                        and isinstance(node.args[1].value, str)):
+                    target_name = self._dotted_name(node.args[0])
+                    target_path = bindings.get(target_name) or module_paths.get(target_name)
+                    name = node.args[1].value
+                elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "patch" and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id == "self" and node.args
+                        and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)):
+                    target_path = WORKER_PATH
+                    name = node.args[0].value
+                if target_path and name not in definitions[target_path] and name not in allowed:
+                    failures.append(f"{test_path.name}:{node.lineno} patches undefined {name}")
+        self.assertEqual(failures, [])
+
+
 class WorkerPromptContractTests(unittest.TestCase):
     """Every prompt this worker sends must survive its own audit backend.
 
@@ -7535,7 +7648,7 @@ class WorkerPromptContractTests(unittest.TestCase):
 
     def worker_prompts(self):
         return sorted(
-            (name, value) for name, value in vars(wp).items()
+            (name, value) for name, value in worker_namespaces().items()
             if name.endswith("_PROMPT") and isinstance(value, str) and value
         )
 
