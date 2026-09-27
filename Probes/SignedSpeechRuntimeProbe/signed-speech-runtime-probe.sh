@@ -132,14 +132,13 @@ app_executable="$app_path/Contents/MacOS/SpeechIPCProbe"
 
 if [[ -z "$probe_path" ]]; then
     command -v swift >/dev/null 2>&1 || fail "required tool unavailable: swift"
-    build_path="$temp_dir/swift-build"
     printf '%s\n' 'stage=build-speech-probe' >&2
-    if ! swift build --package-path "$repo_root/Probes/SpeechIPCProbe" \
-        --configuration release --product speech-ipc-probe --scratch-path "$build_path" >&2; then
+    if ! python3 "$repo_root/scripts/build-with-cache.py" run swiftpm speech-ipc-probe -- swift build --package-path "$repo_root/Probes/SpeechIPCProbe" \
+        --configuration release --product speech-ipc-probe >&2; then
         fail "speech probe build failed"
     fi
-    if ! probe_bin_dir="$(swift build --package-path "$repo_root/Probes/SpeechIPCProbe" \
-        --configuration release --show-bin-path --scratch-path "$build_path")"; then
+    if ! probe_bin_dir="$(python3 "$repo_root/scripts/build-with-cache.py" run swiftpm speech-ipc-probe -- swift build --package-path "$repo_root/Probes/SpeechIPCProbe" \
+        --configuration release --show-bin-path)"; then
         fail "speech probe binary path lookup failed"
     fi
     probe_path="$probe_bin_dir/speech-ipc-probe"

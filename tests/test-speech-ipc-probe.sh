@@ -6,7 +6,7 @@ output_file="$(mktemp -t speech-ipc-probe-tests.XXXXXX)"
 trap 'rm -f "$output_file"' EXIT
 
 printf '%s\n' 'stage=speech-ipc-probe-tests.start' >&2
-swift test --package-path "$repo_root/Probes/SpeechIPCProbe" 2>&1 | tee "$output_file"
+python3 "$repo_root/scripts/build-with-cache.py" run swiftpm speech-ipc-probe -- swift test --package-path "$repo_root/Probes/SpeechIPCProbe" 2>&1 | tee "$output_file"
 
 test_count="$(sed -nE 's/.*Executed ([0-9]+) tests?.*/\1/p' "$output_file" | tail -1)"
 if [[ -z "$test_count" || "$test_count" -eq 0 ]]; then

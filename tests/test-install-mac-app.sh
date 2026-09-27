@@ -26,7 +26,7 @@ pass() { printf 'install-identity.ok %s\n' "$*" >&2; }
 # shellcheck source=../scripts/lib/app-identity.sh
 source "$library"
 
-tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-install-identity.XXXXXX")"
+tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-install-identity.XXXXXX")"
 owner_pid=''
 cleanup() {
     if [[ -n "$owner_pid" ]]; then
@@ -58,6 +58,15 @@ printf '%s\n' '#!/usr/bin/env bash' \
     'exit 0' \
     >"$guard_bin/xcodebuild"
 printf '%s\n' '#!/usr/bin/env bash' \
+    'helper="$1"' \
+    'shift' \
+    'case "$1" in' \
+    '  path) [[ "$2" == xcode && "$3" == mac-install ]] || exit 64; printf "%s\\n" "$WILTED_TEST_DERIVED" ;;' \
+    '  run) [[ "$2" == xcode && "$3" == mac-install && "$4" == --clean-app-product && "$5" == -- ]] || exit 64; shift 5; exec "$@" ;;' \
+    '  *) exit 64 ;;' \
+    'esac' \
+    >"$guard_bin/python3"
+printf '%s\n' '#!/usr/bin/env bash' \
     '[[ "${WILTED_TEST_PIPELINE_RUNNING:-0}" == 1 || -e "$WILTED_TEST_ACTIVE_MARKER" ]]' \
     >"$guard_bin/pgrep"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$guard_bin/codesign"
@@ -66,7 +75,7 @@ printf '%s\n' '#!/usr/bin/env bash' ': >"$WILTED_TEST_QUIT_MARKER"' 'exit 0' >"$
 printf '%s\n' '#!/usr/bin/env bash' \
     '[[ "${WILTED_TEST_APP_RUNNING:-0}" == 1 ]] && printf "%s %s\\n" "$WILTED_TEST_OWNER_PID" "$WILTED_TEST_OWNER_EXECUTABLE"' \
     >"$guard_bin/ps"
-chmod +x "$guard_bin/xcodegen" "$guard_bin/xcodebuild" "$guard_bin/pgrep" \
+chmod +x "$guard_bin/xcodegen" "$guard_bin/xcodebuild" "$guard_bin/python3" "$guard_bin/pgrep" \
     "$guard_bin/codesign" "$guard_bin/ditto" "$guard_bin/osascript" "$guard_bin/ps"
 
 owner_app="$tmp_root/Owner.app"
@@ -82,7 +91,6 @@ run_guard() {
     local complete_build="${4:-0}" activate_during_build="${5:-0}"
     PATH="$guard_bin:/usr/bin:/bin:/usr/sbin:/sbin" \
         WILTED_INSTALL_LIBRARY_URL="$journal" \
-        WILTED_INSTALL_DERIVED_DATA_PATH="$tmp_root/derived" \
         WILTED_TEST_PIPELINE_RUNNING="$pipeline_running" \
         WILTED_TEST_APP_RUNNING="$app_running" \
         WILTED_TEST_OWNER_PID="$owner_pid" \
@@ -377,17 +385,12 @@ assert_installer_contains 'wilted_running_bundle_pids "$bundle_id"' \
     'quits every running copy by identifier'
 assert_installer_contains 'wilted_wait_for_bundle_exit "$bundle_id"' \
     'waits for running copies to exit before replacing the bundle'
-assert_installer_contains 'previous_app="$derived/Build/Products/Debug/WiltedMac.app"' \
-    'targets only the installer-owned Debug app product for pre-build cleanup'
-assert_installer_contains 'rm -rf -- "$previous_app"' \
-    'removes the stale app product while preserving intermediate build data'
-cleanup_line="$(awk '/rm -rf -- \"\$previous_app\"/ { print NR; exit }' "$installer")"
-xcodebuild_line="$(awk '/^[[:space:]]*xcodebuild build/ { print NR; exit }' "$installer")"
-if [[ -z "$cleanup_line" || -z "$xcodebuild_line" || "$cleanup_line" -ge "$xcodebuild_line" ]]; then
-    fail 'stale app cleanup is not ordered before xcodebuild'
-else
-    pass 'stale app cleanup is ordered before xcodebuild'
-fi
+assert_installer_contains 'path xcode mac-install' \
+    'looks up the installer cache path through the build-cache helper'
+assert_installer_contains 'run xcode mac-install --clean-app-product -- xcodebuild build' \
+    'routes the installer build through the build-cache helper'
+assert_installer_contains 'run xcode mac-install --clean-app-product -- xcodebuild build' \
+    'cleans the prior app product under the shared cache lock'
 if grep -Fq 'pgrep -f "$target/Contents/MacOS/"' "$installer"; then
     fail 'installer still looks for a running copy at the install path only'
 else
@@ -395,6 +398,12 @@ else
 fi
 assert_installer_contains 'describe --always --dirty' \
     'stamps a revision that admits a dirty tree'
+
+if grep -Fq -- '-derivedDataPath' "$installer"; then
+    fail 'installer still supplies a per-run DerivedData path outside the build-cache helper'
+else
+    pass 'installer delegates DerivedData selection to the build-cache helper'
+fi
 
 if grep -Fq 'rev-parse --short HEAD' "$installer"; then
     fail 'installer still stamps rev-parse --short HEAD, which names a commit a dirty build is not from'

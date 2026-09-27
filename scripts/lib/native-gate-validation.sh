@@ -324,7 +324,7 @@ parse_xctest_output_count() {
 
 leg_cloudsync_tests() {
   local package="$repo_root/CloudSync"
-  local scratch_path="$tmp_root/swiftpm/cloudsync-tests"
+  local cache_key='native-cloudsync-tests'
   [[ -d "$package" ]] || fail "missing CloudSync package: $package"
   assert_test_sources cloudsync-tests "$package/Tests"
   require_tool swift
@@ -333,7 +333,7 @@ leg_cloudsync_tests() {
   # named-case checks below prevent a package that merely builds or reports an
   # empty test plan from satisfying this leg.
   set +e
-  swift test --package-path "$package" --scratch-path "$scratch_path" 2>&1 | tee "$tmp_root/cloudsync-tests.xctest.log" >&2
+  run_with_build_cache swiftpm "$cache_key" swift test --package-path "$package" 2>&1 | tee "$tmp_root/cloudsync-tests.xctest.log" >&2
   local test_status="${PIPESTATUS[0]}"
   set -e
   if [[ "$test_status" -eq 0 ]]; then
@@ -351,7 +351,7 @@ leg_cloudsync_tests() {
 
 leg_listener_tests() {
   local package="$repo_root/Listener"
-  local scratch_path="$tmp_root/swiftpm/listener-tests"
+  local cache_key='native-listener-tests'
   [[ -d "$package" ]] || fail "missing Listener package: $package"
   assert_test_sources listener-tests "$package/Tests"
   require_tool swift
@@ -360,7 +360,7 @@ leg_listener_tests() {
   # keep their names in the runner evidence so an empty or unrelated suite
   # cannot satisfy the leg.
   set +e
-  swift test --package-path "$package" --scratch-path "$scratch_path" 2>&1 | tee "$tmp_root/listener-tests.xctest.log" >&2
+  run_with_build_cache swiftpm "$cache_key" swift test --package-path "$package" 2>&1 | tee "$tmp_root/listener-tests.xctest.log" >&2
   local test_status="${PIPESTATUS[0]}"
   set -e
   if [[ "$test_status" -eq 0 ]]; then

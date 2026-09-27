@@ -9,7 +9,7 @@
 #
 # On 2026-09-01 that lottery cost a morning: `/Applications/Wilted.app`, a
 # hand-copied build from a scratch tree, and dozens of gate and capture builds
-# under /private/tmp and DerivedData all claimed com.zerodelta.wilted.mac.
+# under temporary build roots and DerivedData all claimed com.zerodelta.wilted.mac.
 # LaunchServices held 435 registrations for it and 56 of those bundles were
 # still launchable. Their migration plans stopped at schema V6, the library had
 # moved to V7, and the app the owner clicked failed to open the larder while

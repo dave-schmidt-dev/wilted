@@ -17,6 +17,7 @@ from wilted.background_work.contracts import (
 from wilted.background_work.idempotency import IdempotencyKey, build_idempotency_key, logical_identity_for_kind
 from wilted.content_state import items_for_prepare, items_pending_classification, read_content_state
 from wilted.db import Item, ProcessingJob, ensure_db
+from wilted.log import LOG_PATH
 from wilted.pipeline_runner import PipelineRunner, RunStats
 from wilted.processing_jobs import SubmitResult, get_job_by_key, submit_job
 from wilted.speech_ready import require_speech_ready, runnable_cohort_requires_speech
@@ -34,7 +35,7 @@ def _emit(on_status: Callable[[str], None] | None, msg: str) -> None:
     pipeline emits status strings; the entry point owns the sink. The interactive
     CLI forwards a stderr printer so a multi-second discover/classify/prepare drain
     never reads as a hang; the nightly daemon passes ``None`` (the sink degrades to
-    the file log at ``/tmp/wilted.log``), leaving that path byte-for-byte unchanged.
+    the file log at ``LOG_PATH``), leaving that path byte-for-byte unchanged.
     """
     if on_status is not None:
         on_status(msg)
@@ -375,7 +376,7 @@ def run_classify_via_runner(
         logger.info("No fetched items to classify")
         return {"classified": 0, "errors": 0, "total": 0}
 
-    _emit(on_status, f"Classifying {len(items)} item(s) with the local LLM... (live log: /tmp/wilted.log)")
+    _emit(on_status, f"Classifying {len(items)} item(s) with the local LLM... (live log: {LOG_PATH})")
     submission_errors = 0
     for item in items:
         try:
@@ -442,7 +443,7 @@ def run_prepare_via_runner(
         logger.info("No selected items to prepare")
         return {"prepared": 0, "errors": 0, "skipped": 0}
 
-    _emit(on_status, f"Preparing {len(items)} item(s) (ad/promo detection + audio)... (live log: /tmp/wilted.log)")
+    _emit(on_status, f"Preparing {len(items)} item(s) (ad/promo detection + audio)... (live log: {LOG_PATH})")
     submission_errors = 0
     for item in items:
         try:
@@ -735,7 +736,7 @@ def run_discover_via_runner(
         logger.info("No enabled feeds to poll")
         return {"discovered": 0, "feeds_polled": 0, "errors": 0, "unknown": 0}
 
-    _emit(on_status, f"Polling {len(feeds)} feed(s) and fetching new articles... (live log: /tmp/wilted.log)")
+    _emit(on_status, f"Polling {len(feeds)} feed(s) and fetching new articles... (live log: {LOG_PATH})")
     submitted_keys: dict[int, str] = {}
     unknown = 0
     for feed in feeds:
@@ -797,7 +798,7 @@ def run_report_via_runner(
     from wilted.report import _local_date_str, assemble_report
 
     resolved_date = report_date or _local_date_str()
-    _emit(on_status, "Assembling the morning report... (live log: /tmp/wilted.log)")
+    _emit(on_status, f"Assembling the morning report... (live log: {LOG_PATH})")
     # Single-submit call, not a per-item loop (INV-6) — trivially isolated already;
     # no B2 try/except backport needed.
     submit_report(report_date=resolved_date, sync_run=False)

@@ -208,14 +208,13 @@ def materialize_source(destination: Path, frozen: Candidate, adapter) -> None:
 
 
 def build_archive(staged: Path, workspace: Path, frozen: Candidate) -> Path:
-    """Generate outside source and archive with fresh derived data."""
+    """Generate outside source and archive with the shared worktree build cache."""
 
     project_dir = workspace / "project"
     project_dir.mkdir(mode=0o700)
-    derived = workspace / "DerivedData"
     archive = workspace / "artifacts/WiltediOS.xcarchive"
     archive.parent.mkdir(mode=0o700)
-    if derived.exists() or archive.exists():
+    if archive.exists():
         raise ValueError("build-output-not-fresh")
     status("project-generation-started")
     run_visible(
@@ -240,12 +239,13 @@ def build_archive(staged: Path, workspace: Path, frozen: Candidate) -> Path:
         shutil.copyfile(source, target)
     status("archive-build-started")
     run_visible(
-        ["xcodebuild", "archive", "-project", str(generated), "-scheme", "WiltediOS",
+        [sys.executable, str(ROOT / "scripts/build-with-cache.py"), "run", "xcode",
+         "release-archive", "--", "xcodebuild", "archive", "-project", str(generated), "-scheme", "WiltediOS",
          "-configuration", "Release", "-destination", "generic/platform=iOS",
-         "-derivedDataPath", str(derived), "-archivePath", str(archive),
+         "-archivePath", str(archive),
          f"CURRENT_PROJECT_VERSION={frozen.build_number}"], cwd=workspace,
     )
-    if not derived.is_dir() or not archive.is_dir():
+    if not archive.is_dir():
         raise ValueError("archive-build-output-missing")
     return archive
 

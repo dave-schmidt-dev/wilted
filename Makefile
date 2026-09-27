@@ -10,11 +10,13 @@ file-size:
 	@python3 scripts/check_file_size.py --staged
 
 check-fast: file-size lint deadcode
+	@python3 scripts/check-no-global-tmp.py
 
 install-hooks:
 	@$(MAKE) -C Producer/Runtime install-hooks
 
 validate:
+	@python3 scripts/check-no-global-tmp.py
 	@python3 scripts/check_file_size.py --all
 	@bash tests/test-phase0-aggregate.sh
 	@bash scripts/test-phase0.sh

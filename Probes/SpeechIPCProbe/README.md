@@ -5,10 +5,10 @@ Disposable, dependency-free Swift proof of the `speech-stack` protocol-version 2
 The probe requires an explicit socket path. Progress stages go to stderr; one final machine-readable JSON object goes to stdout.
 
 ```sh
-swift run --package-path Probes/SpeechIPCProbe speech-ipc-probe selftest --socket "$HOME/Documents/Projects/speech-stack/.state/speechd.sock"
-swift run --package-path Probes/SpeechIPCProbe speech-ipc-probe status --socket "$HOME/Documents/Projects/speech-stack/.state/speechd.sock"
-swift run --package-path Probes/SpeechIPCProbe speech-ipc-probe protocol-mismatch --socket "$HOME/Documents/Projects/speech-stack/.state/speechd.sock"
-swift run --package-path Probes/SpeechIPCProbe speech-ipc-probe tts-cancel --socket "$HOME/Documents/Projects/speech-stack/.state/speechd.sock" --text "This is a short cancellation probe."
+python3 scripts/build-with-cache.py run swiftpm speech-ipc-probe -- swift run --package-path Probes/SpeechIPCProbe speech-ipc-probe selftest --socket "$HOME/Documents/Projects/speech-stack/.state/speechd.sock"
+python3 scripts/build-with-cache.py run swiftpm speech-ipc-probe -- swift run --package-path Probes/SpeechIPCProbe speech-ipc-probe status --socket "$HOME/Documents/Projects/speech-stack/.state/speechd.sock"
+python3 scripts/build-with-cache.py run swiftpm speech-ipc-probe -- swift run --package-path Probes/SpeechIPCProbe speech-ipc-probe protocol-mismatch --socket "$HOME/Documents/Projects/speech-stack/.state/speechd.sock"
+python3 scripts/build-with-cache.py run swiftpm speech-ipc-probe -- swift run --package-path Probes/SpeechIPCProbe speech-ipc-probe tts-cancel --socket "$HOME/Documents/Projects/speech-stack/.state/speechd.sock" --text "This is a short cancellation probe."
 ```
 
 `tts-cancel` validates the first nonempty AUDIO frame as explicitly decoded little-endian Float32: its byte count must be divisible by four and every sample must be finite. It closes the socket and reports only byte count, sample count, and peak absolute amplitude; it never outputs audio content. Socket close is the cancellation signal; the output intentionally does not claim daemon acknowledgement because no acknowledgement is returned on that connection.
@@ -16,7 +16,7 @@ swift run --package-path Probes/SpeechIPCProbe speech-ipc-probe tts-cancel --soc
 Run deterministic fake-socket tests without the live daemon:
 
 ```sh
-swift test --package-path Probes/SpeechIPCProbe
+python3 scripts/build-with-cache.py run swiftpm speech-ipc-probe -- swift test --package-path Probes/SpeechIPCProbe
 bash tests/test-speech-ipc-probe.sh
 ```
 

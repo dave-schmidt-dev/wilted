@@ -12,14 +12,14 @@ sizing_status_file="$(mktemp -t audio-contract-sizing-status.XXXXXX)"
 trap 'rm -f "$output_file" "$status_file" "$artifact_seed" "$artifact" "$sizing_status_file"; rm -rf "$sizing_dir"' EXIT
 
 printf '%s\n' 'stage=audio-contract-probe-tests.start' >&2
-swift test --package-path "$package" 2>&1 | tee "$output_file"
+python3 "$repo_root/scripts/build-with-cache.py" run swiftpm audio-contract-probe -- swift test --package-path "$package" 2>&1 | tee "$output_file"
 test_count="$(sed -nE 's/.*Executed ([0-9]+) tests?.*/\1/p' "$output_file" | tail -1)"
 if [[ -z "$test_count" || "$test_count" -eq 0 ]]; then
     printf '%s\n' 'audio contract probe runner found zero XCTest cases' >&2
     exit 1
 fi
 
-report="$(swift run --package-path "$package" audio-contract-probe --output "$artifact" 2> >(tee "$status_file" >&2))"
+report="$(python3 "$repo_root/scripts/build-with-cache.py" run swiftpm audio-contract-probe -- swift run --package-path "$package" audio-contract-probe --output "$artifact" 2> >(tee "$status_file" >&2))"
 printf '%s\n' "$report"
 
 if [[ "$(printf '%s\n' "$report" | wc -l | tr -d ' ')" -ne 1 ]]; then
@@ -43,7 +43,7 @@ for stage in generate-synthetic-pcm encode-m4a-aac flush-close-temp validate-avf
     fi
 done
 
-sizing_report="$(swift run --package-path "$package" audio-contract-probe --sizing --output-dir "$sizing_dir" 2> >(tee "$sizing_status_file" >&2))"
+sizing_report="$(python3 "$repo_root/scripts/build-with-cache.py" run swiftpm audio-contract-probe -- swift run --package-path "$package" audio-contract-probe --sizing --output-dir "$sizing_dir" 2> >(tee "$sizing_status_file" >&2))"
 printf '%s\n' "$sizing_report"
 if [[ "$(printf '%s\n' "$sizing_report" | wc -l | tr -d ' ')" -ne 1 ]]; then
     printf '%s\n' 'audio sizing probe must emit exactly one JSON stdout line' >&2

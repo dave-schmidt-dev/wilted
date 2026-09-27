@@ -1,7 +1,8 @@
 """Logging configuration for wilted.
 
-Sets up a RotatingFileHandler at /tmp/wilted.log (1 MB max, 2 backups).
-WARNING+ is always active; DEBUG requires --debug flag or WILTED_DEBUG=1.
+Sets up a RotatingFileHandler at .logs/wilted.log under the repository root
+(1 MB max, 2 backups). WARNING+ is always active; DEBUG requires --debug flag
+or WILTED_DEBUG=1.
 
 Usage in any module:
     import logging
@@ -11,7 +12,9 @@ Usage in any module:
 import logging
 from logging.handlers import RotatingFileHandler
 
-LOG_PATH = "/tmp/wilted.log"
+from wilted import PROJECT_ROOT
+
+LOG_PATH = PROJECT_ROOT.parent.parent / ".logs" / "wilted.log"
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -28,6 +31,10 @@ def setup_logging(debug: bool = False) -> None:
     root.setLevel(level)
 
     formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+
+    # The .logs/ directory is gitignored; create it on demand so the handler
+    # can open the file on a fresh checkout.
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     # File handler — WARNING+ always, or DEBUG when debug=True.
     file_handler = RotatingFileHandler(

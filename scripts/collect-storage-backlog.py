@@ -263,7 +263,7 @@ def apply_candidate(path: Path, tmp_root: Path, repo: Path, retainer: Path, cuto
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parent.parent)
-    parser.add_argument("--tmp-root", type=Path, default=Path(os.environ.get("TMPDIR") or "/tmp"))
+    parser.add_argument("--tmp-root", type=Path, default=Path(os.environ["TMPDIR"]))
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     parser.add_argument("--apply", action="store_true", help="remove stale, unused canonical wilted-spec scratch dirs")
     parser.add_argument("--min-age-hours", type=float, default=DEFAULT_MIN_AGE_HOURS)

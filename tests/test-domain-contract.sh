@@ -10,7 +10,7 @@ bash "$root_dir/tests/test-contract-fixtures.sh"
 swift "$root_dir/scripts/validate-domain-contract.swift" "$schema" "$fixtures"
 
 # Unknown operations are contractual errors and must fail closed.
-tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/wilted-domain-contract.XXXXXX")"
+tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-domain-contract.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
 cp -R "$fixtures" "$tmp_dir/fixtures"
 mutated="$tmp_dir/fixtures/01-publish-decode.json"

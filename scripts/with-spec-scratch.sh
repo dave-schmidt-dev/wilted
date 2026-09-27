@@ -5,7 +5,7 @@ if (( $# == 0 )); then
     printf 'usage: %s command [args...]\n' "${0##*/}" >&2
     exit 2
 fi
-scratch_parent="${TMPDIR:-/tmp}"
+scratch_parent="${TMPDIR:?TMPDIR must be set}"
 [[ -d "$scratch_parent" ]] || { printf 'spec-scratch.error temp root is missing\n' >&2; exit 2; }
 scratch_parent="$(cd -P "$scratch_parent" && pwd)" || exit 2
 scratch="$(mktemp -d "$scratch_parent/wilted-spec.XXXXXXXX")" || exit 2

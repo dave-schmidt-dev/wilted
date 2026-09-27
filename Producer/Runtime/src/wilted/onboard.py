@@ -11,6 +11,8 @@ import sys
 import time
 from collections.abc import Callable  # noqa: TC003
 
+from wilted.log import LOG_PATH
+
 logger = logging.getLogger(__name__)
 
 
@@ -298,7 +300,7 @@ def run_ingest(
             results["discover"] = stats
             print(f"  Found {stats['discovered']} new items from {stats['feeds_polled']} feeds")
             if stats["errors"]:
-                print(f"  {stats['errors']} feed(s) had errors (see /tmp/wilted.log)")
+                print(f"  {stats['errors']} feed(s) had errors (see {LOG_PATH})")
         except Exception as e:
             results["discover"] = {"error": str(e)}
             print(f"  Discovery failed: {e}", file=sys.stderr)
@@ -319,9 +321,9 @@ def run_ingest(
                 print(f"  {stats['errors']} item(s) had errors")
             # Truthful accounting (INV-6): an isolated submit failure is counted
             # separately (total == classified + errors + submission_errors) and
-            # must be named on the surface, not just in /tmp/wilted.log.
+            # must be named on the surface, not just in the file log at LOG_PATH.
             if stats.get("submission_errors"):
-                print(f"  {stats['submission_errors']} item(s) failed to submit (see /tmp/wilted.log)")
+                print(f"  {stats['submission_errors']} item(s) failed to submit (see {LOG_PATH})")
         except Exception as e:
             results["classify"] = {"error": str(e)}
             print(f"  Classification failed: {e}", file=sys.stderr)

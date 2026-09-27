@@ -19,7 +19,8 @@ set -Eeuo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out_dir="${1:-$repo_root/.logs/walkthrough-captures}"
 development_team="${WILTED_DEVELOPMENT_TEAM:-4CJ49V6QHW}"
-tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-walkthrough.XXXXXX")"
+build_cache="$repo_root/scripts/build-with-cache.py"
+tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-walkthrough.XXXXXX")"
 # A failed capture is diagnosed from the runner log, and the tail this script
 # prints is not enough -- the interesting part is which sections wrote frames
 # before the failure, which is thousands of lines earlier. Keeping the tree is
@@ -94,11 +95,10 @@ start_marker="$tmp_root/start"
 : >"$start_marker"
 
 status 'capture.start suite=WiltedMacUITests/WiltedMacWalkthroughCapture'
-caffeinate -disu xcodebuild test \
+caffeinate -disu python3 "$build_cache" run xcode walkthrough-frame-recording -- xcodebuild test \
   -project "$root/Wilted.xcodeproj" \
   -scheme WiltedMac \
   -destination 'platform=macOS' \
-  -derivedDataPath "$tmp_root/DerivedData" \
   -parallel-testing-enabled NO \
   -only-testing:WiltedMacUITests/WiltedMacWalkthroughCapture \
   CODE_SIGN_STYLE=Manual \

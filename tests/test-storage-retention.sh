@@ -4,13 +4,13 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 collector="$root/scripts/collect-storage-backlog.py"
 retainer="$root/scripts/retain-delivery-evidence.py"
 wrapper="$root/scripts/with-spec-scratch.sh"
-test_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-storage-test.XXXXXXXX")"
+test_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-storage-test.XXXXXXXX")"
 trap '[[ -d "$test_root" ]] && rm -rf "$test_root"' EXIT
 failures=0
 fail() { printf 'storage-retention.fail %s\n' "$*" >&2; failures=$((failures + 1)); }
 pass() { printf 'storage-retention.ok %s\n' "$*" >&2; }
 repo="$test_root/repo"
-tmp_root="$test_root/tmp"
+tmp_root="$test_root/scratch"
 mkdir -p "$repo/.logs/delivery" "$repo/.build/Products" "$repo/Logs/Test/Run.xcresult/Data" "$tmp_root"
 printf 'log\n' >"$repo/.logs/delivery/gate.log"
 printf '{"status":"ok"}\n' >"$repo/.logs/delivery/gate-result.json"
@@ -130,7 +130,7 @@ candidate=""
 new_case() {
     case_root="$test_root/apply-$1"
     case_repo="$case_root/repo"
-    case_tmp="$case_root/tmp"
+    case_tmp="$case_root/scratch"
     mkdir -p "$case_repo" "$case_tmp"
 }
 make_old_candidate() {

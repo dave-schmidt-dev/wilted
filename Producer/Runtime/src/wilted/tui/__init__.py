@@ -1484,7 +1484,7 @@ class WiltedApp(App):
             result = self._controller.submit_and_wait(StartPlayback(entry=entry), timeout=5.0)
         except Exception as e:
             # Log as well as show: a UI status disappears after a few seconds
-            # and never reaches /tmp/wilted.log, leaving a failed start (e.g. the
+            # and never reaches .logs/wilted.log, leaving a failed start (e.g. the
             # controller wedged) undiagnosable after the fact.
             logger.warning("StartPlayback failed for entry %s: %s", entry.entry_id, e, exc_info=True)
             self._set_status(f"Station error: {e}", _STATUS_HIGH)

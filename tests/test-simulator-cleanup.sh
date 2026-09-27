@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/wilted-sim-test.XXXXXX")"
+tmp="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-sim-test.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 bin="$tmp/bin"
 mkdir -p "$bin"

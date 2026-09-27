@@ -8,15 +8,15 @@ status_file="$(mktemp -t wilted-persistence-probe-status.XXXXXX)"
 trap 'rm -f "$output_file" "$status_file"' EXIT
 
 printf '%s\n' 'stage=persistence-probe-tests.start' >&2
-swift test --package-path "$package" 2>&1 | tee "$output_file"
+python3 "$repo_root/scripts/build-with-cache.py" run swiftpm persistence-probe -- swift test --package-path "$package" 2>&1 | tee "$output_file"
 test_count="$(sed -nE 's/.*Executed ([0-9]+) tests?.*/\1/p' "$output_file" | tail -1)"
 if [[ -z "$test_count" || "$test_count" -eq 0 ]]; then
   printf '%s\n' 'persistence probe runner found zero XCTest cases' >&2
   exit 1
 fi
 
-swift build --package-path "$package" >/dev/null
-probe_bin="$(swift build --package-path "$package" --show-bin-path)/persistence-probe"
+python3 "$repo_root/scripts/build-with-cache.py" run swiftpm persistence-probe -- swift build --package-path "$package" >/dev/null
+probe_bin="$(python3 "$repo_root/scripts/build-with-cache.py" run swiftpm persistence-probe -- swift build --package-path "$package" --show-bin-path)/persistence-probe"
 [[ -x "$probe_bin" ]] || { printf '%s\n' 'persistence probe executable was not built' >&2; exit 1; }
 
 result="$("$probe_bin" 2> >(tee "$status_file" >&2))"
@@ -29,7 +29,8 @@ for stage in store.open.ready concurrent-callbacks.complete probe.complete; do
   grep -q "stage=$stage" "$status_file" || { printf 'missing status: %s\n' "$stage" >&2; exit 1; }
 done
 
-crash_dir="$(mktemp -d)"
+crash_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-persistence-crash.XXXXXX")"
+trap 'rm -f "$output_file" "$status_file"; rm -rf "$crash_dir"' EXIT
 crash_store="$crash_dir/store.sqlite"
 set +e
 "$probe_bin" --durable-child "$crash_store" >"$output_file" 2>"$status_file"

@@ -16,7 +16,8 @@ set -Eeuo pipefail
 #        (default: every method in WiltediOSPixelSnapshotTests)
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-record-ios-snapshots.XXXXXX")"
+build_cache="$repo_root/scripts/build-with-cache.py"
+tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-record-ios-snapshots.XXXXXX")"
 trap 'rm -rf "$tmp_root"' EXIT
 # shellcheck source=lib/simctl_gate_lib.sh
 source "$repo_root/scripts/lib/simctl_gate_lib.sh"
@@ -59,11 +60,10 @@ snapshots="WiltediOSUITests/__Snapshots__/WiltediOSPixelSnapshotTests"
 
 status "record.start device=iPhone 17 Pro runtime=$runtime methods=${*:-all}"
 gate_ui_test_lock --label 'Wilted iOS snapshot recording' --simulator-udid "$udid" \
-  env TEST_RUNNER_WILTED_RECORD_SNAPSHOTS=1 xcodebuild test \
+  env TEST_RUNNER_WILTED_RECORD_SNAPSHOTS=1 python3 "$build_cache" run xcode ios-snapshot-recording -- xcodebuild test \
   -project "$root/Wilted.xcodeproj" \
   -scheme WiltediOS \
   -destination "platform=iOS Simulator,id=$udid" \
-  -derivedDataPath "$tmp_root/DerivedData" \
   -parallel-testing-enabled NO \
   "${only[@]}" >"$tmp_root/record.log" 2>&1 || {
     status 'record.failed; last 40 lines follow'

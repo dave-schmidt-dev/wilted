@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/wilted-file-size.XXXXXX")"
+tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-file-size.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 checker_output=""

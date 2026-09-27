@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-package="Probes/ArticleExtractionProbe"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+package="$repo_root/Probes/ArticleExtractionProbe"
 fixtures="$package/Fixtures"
 
 manifest_count="$(grep -c '"id":' "$fixtures/manifest.json")"
@@ -11,7 +12,7 @@ if [[ "$manifest_count" -ne 10 || "$html_count" -ne 10 ]]; then
   exit 1
 fi
 
-test_output="$(swift test --package-path "$package" 2>&1)"
+test_output="$(python3 "$repo_root/scripts/build-with-cache.py" run swiftpm article-extraction-probe -- swift test --package-path "$package" 2>&1)"
 printf '%s\n' "$test_output"
 test_count="$(printf '%s\n' "$test_output" | sed -nE 's/.*Executed ([0-9]+) tests?.*/\1/p' | tail -1)"
 if [[ -z "$test_count" || "$test_count" -eq 0 ]]; then
@@ -20,7 +21,7 @@ if [[ -z "$test_count" || "$test_count" -eq 0 ]]; then
 fi
 
 status_file="$(mktemp)"
-summary="$(swift run --package-path "$package" article-extraction-probe --fixtures "$fixtures" 2> >(tee "$status_file" >&2))"
+summary="$(python3 "$repo_root/scripts/build-with-cache.py" run swiftpm article-extraction-probe -- swift run --package-path "$package" article-extraction-probe --fixtures "$fixtures" 2> >(tee "$status_file" >&2))"
 trap 'rm -f "$status_file"' EXIT
 printf '%s\n' "$summary"
 

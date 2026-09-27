@@ -5,9 +5,9 @@ This dependency-free macOS 14+ Phase 0 probe tests one transfer-file candidate: 
 Run:
 
 ```sh
-swift test --package-path Probes/AudioContractProbe
-swift run --package-path Probes/AudioContractProbe audio-contract-probe --output /tmp/wilted-audio-candidate.m4a
-swift run --package-path Probes/AudioContractProbe audio-contract-probe --sizing --output-dir /tmp/wilted-audio-sizing
+python3 scripts/build-with-cache.py run swiftpm audio-contract-probe -- swift test --package-path Probes/AudioContractProbe
+python3 scripts/build-with-cache.py run swiftpm audio-contract-probe -- swift run --package-path Probes/AudioContractProbe audio-contract-probe --output .logs/wilted-audio-candidate.m4a
+python3 scripts/build-with-cache.py run swiftpm audio-contract-probe -- swift run --package-path Probes/AudioContractProbe audio-contract-probe --sizing --output-dir .logs/wilted-audio-sizing
 bash tests/test-audio-contract-ios-build.sh
 ```
 

@@ -3,18 +3,18 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 package="$repo_root/Probes/AudioContractProbe"
-build_path="$(mktemp -d -t audio-contract-ios-build.XXXXXX)"
+build_path="$(python3 "$repo_root/scripts/build-with-cache.py" path swiftpm audio-contract-ios-build)"
 core_output="$(mktemp -t audio-contract-ios-core-build.XXXXXX)"
 test_output="$(mktemp -t audio-contract-ios-test-build.XXXXXX)"
-trap 'rm -rf "$build_path"; rm -f "$core_output" "$test_output"' EXIT
+trap 'rm -f "$core_output" "$test_output"' EXIT
 
 # Xcode 27's SwiftPM drives Swift Build, which no longer prints the legacy
 # driver line "Compiling <Module> <File>.swift"; it prints "[n / m] <Target>"
 # progress instead. Verify compilation from build artifacts rather than log
 # text: every source file in the target must have produced its own object file
-# under the freshly minted build path, and that object must carry the iOS
-# simulator platform. $build_path is mktemp -d per run, so an artifact found
-# there cannot be a stale-cache read.
+# under the reused build cache, and that object must carry the iOS
+# simulator platform. The reused cache keeps compilation products across runs;
+# the target and platform checks guard against a wrong cached object.
 assert_compiled_sources() {
     local label="$1" sources_dir="$2"
     local sources=() expected=0 found=0 probe_object=""
@@ -69,20 +69,20 @@ simulator_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 simulator_triple="arm64-apple-ios17.0-simulator"
 printf 'stage=audio-contract-ios-build.sdk path=%s triple=%s\n' "$simulator_sdk" "$simulator_triple" >&2
 
-swift build \
+python3 "$repo_root/scripts/build-with-cache.py" run swiftpm audio-contract-ios-build -- swift build \
     --package-path "$package" \
     --target AudioContractProbeCore \
     --sdk "$simulator_sdk" \
     --triple "$simulator_triple" \
-    --build-path "$build_path" 2>&1 | tee "$core_output"
+    2>&1 | tee "$core_output"
 core_source_count="$(assert_compiled_sources core "$package/Sources/AudioContractProbeCore")"
 
-swift build \
+python3 "$repo_root/scripts/build-with-cache.py" run swiftpm audio-contract-ios-build -- swift build \
     --package-path "$package" \
     --target AudioContractProbeCoreTests \
     --sdk "$simulator_sdk" \
     --triple "$simulator_triple" \
-    --build-path "$build_path" 2>&1 | tee "$test_output"
+    2>&1 | tee "$test_output"
 test_source_count="$(assert_compiled_sources test-target "$package/Tests/AudioContractProbeCoreTests")"
 
 printf 'stage=audio-contract-ios-build.complete core_sources=%s test_sources=%s\n' "$core_source_count" "$test_source_count" >&2

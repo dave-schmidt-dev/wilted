@@ -24,7 +24,7 @@ pass() { printf 'temp-sweep.ok %s\n' "$*" >&2; }
 # shellcheck source=../scripts/lib/temp-sweep.sh
 source "$lib"
 
-hermetic_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-temp-sweep-test.XXXXXX")"
+hermetic_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-temp-sweep-test.XXXXXX")"
 # The undeletable-directory case below sets the macOS user-immutable flag to
 # force a real removal failure; strip it recursively before teardown or this
 # test's own cleanup would fail the same way it is testing for.

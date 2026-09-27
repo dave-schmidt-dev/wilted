@@ -21,8 +21,9 @@ cd "$repo_root" || exit 1
 wilted_development_team="${WILTED_DEVELOPMENT_TEAM:-4CJ49V6QHW}"
 allow_updates="${WILTED_ALLOW_PROVISIONING_UPDATES:-0}"
 project="$repo_root/Wilted.xcodeproj"
-derived="$repo_root/.attended-build"
-log_dir="$derived/logs"
+build_cache="$repo_root/scripts/build-with-cache.py"
+derived="$(python3 "$build_cache" path xcode attended-cloudkit)"
+log_dir="$repo_root/.logs/attended-cloudkit"
 container='iCloud.com.zerodelta.wilted'
 
 step() { printf '\n== %s\n' "$*"; }
@@ -113,12 +114,12 @@ cmd_mac() {
   require_tool xcodebuild; require_tool codesign
   step 'Building Mac producer (Development, live CloudKit)'
   local args=(); while IFS= read -r a; do args+=("$a"); done < <(signing_args)
-  run_build mac xcodebuild build \
+  run_build mac python3 "$build_cache" run xcode attended-cloudkit -- xcodebuild build \
     -project "$project" -scheme WiltedMac -configuration Development \
     -destination 'platform=macOS,arch=arm64' \
-    -derivedDataPath "$derived/mac" "${args[@]}"
+    "${args[@]}"
   local app
-  app="$(find "$derived/mac/Build/Products" -maxdepth 2 -type d -name 'WiltedMac.app' -print -quit)"
+  app="$(find "$derived/Build/Products" -maxdepth 2 -type d -name 'WiltedMac.app' -print -quit)"
   verify_artifact 'mac' "$app" 'Contents/embedded.provisionprofile'
   printf '\nMAC_APP=%s\n' "$app"
 }
@@ -127,12 +128,12 @@ cmd_ios() {
   require_tool xcodebuild; require_tool codesign
   step 'Building iOS listener (Development, live CloudKit, device slice)'
   local args=(); while IFS= read -r a; do args+=("$a"); done < <(signing_args)
-  run_build ios xcodebuild build \
+  run_build ios python3 "$build_cache" run xcode attended-cloudkit -- xcodebuild build \
     -project "$project" -scheme WiltediOS -configuration Development \
     -destination 'generic/platform=iOS' \
-    -derivedDataPath "$derived/ios" "${args[@]}"
+    "${args[@]}"
   local app
-  app="$(find "$derived/ios/Build/Products" -maxdepth 2 -type d -name 'WiltediOS.app' -print -quit)"
+  app="$(find "$derived/Build/Products" -maxdepth 2 -type d -name 'WiltediOS.app' -print -quit)"
   verify_artifact 'ios' "$app" 'embedded.mobileprovision'
   printf '\nIOS_APP=%s\n' "$app"
 }
@@ -142,7 +143,7 @@ cmd_install() {
   local device="${WILTED_DEVICE_ID:-}"
   [[ -n "$device" ]] || fail 'set WILTED_DEVICE_ID to the paired device identifier'
   local app
-  app="$(find "$derived/ios/Build/Products" -maxdepth 2 -type d -name 'WiltediOS.app' -print -quit)"
+  app="$(find "$derived/Build/Products" -maxdepth 2 -type d -name 'WiltediOS.app' -print -quit)"
   [[ -d "$app" ]] || fail 'no iOS product to install; run the ios step first'
   step "Installing listener on device $device"
   xcrun devicectl device install app --device "$device" "$app" || fail 'device install failed'

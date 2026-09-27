@@ -10,6 +10,8 @@ source "$repo_root/scripts/lib/temp-sweep.sh"
 wilted_sweep_stale_temp_dirs
 
 expected_legs=(
+  "test-build-with-cache"
+  "test-no-global-tmp"
   "assert-mac-first-docs"
   "test-contract-fixtures"
   "test-domain-contract"
@@ -97,7 +99,7 @@ assert_contains 'run_leg_async "assert-mac-first-docs" "$repo_root/scripts/asser
 assert_contains 'run_leg_async "test-storage-retention" "$repo_root/tests/test-storage-retention.sh"' "$phase0_script"
 assert_contains 'run_leg_async "test-simulator-cleanup" "$repo_root/tests/test-simulator-cleanup.sh"' "$phase0_script"
 
-tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/wilted-phase0-agg.XXXXXX")"
+tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-phase0-agg.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 base_output="$tmp_dir/selftest.log"

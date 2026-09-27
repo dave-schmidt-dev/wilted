@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/wilted-git-hooks.XXXXXX")"
+tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-git-hooks.XXXXXX")"
 tmp_dir="$(cd "$tmp_dir" && pwd -P)"
 trap 'rm -rf "$tmp_dir"' EXIT
 

@@ -59,7 +59,7 @@ run_clean_wilted() {
     exec /usr/bin/env -i \
         HOME="${HOME:-}" \
         PATH="$RUNTIME_PATH" \
-        TMPDIR="${TMPDIR:-/tmp}" \
+        TMPDIR="${TMPDIR:?TMPDIR must be set}" \
         UV_CACHE_DIR="${UV_CACHE_DIR:-${project_root}/.uv-cache}" \
         UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-${HOME:-}/.venvs/wilted}" \
         WILTED_PROJECT_ROOT="$project_root" \

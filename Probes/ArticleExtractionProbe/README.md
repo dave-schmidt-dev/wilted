@@ -9,9 +9,9 @@ Controlled outcomes use bounded static evidence rather than fixture-only oracle 
 Run:
 
 ```sh
-swift test --package-path Probes/ArticleExtractionProbe
+python3 scripts/build-with-cache.py run swiftpm article-extraction-probe -- swift test --package-path Probes/ArticleExtractionProbe
 bash tests/test-article-extraction-probe.sh
-swift run --package-path Probes/ArticleExtractionProbe article-extraction-probe --fixtures Probes/ArticleExtractionProbe/Fixtures
+python3 scripts/build-with-cache.py run swiftpm article-extraction-probe -- swift run --package-path Probes/ArticleExtractionProbe article-extraction-probe --fixtures Probes/ArticleExtractionProbe/Fixtures
 ```
 
 The CLI emits per-stage progress to stderr and one final JSON summary to stdout. The evidence is deterministic fixture coverage, hash/provenance integrity, expected outcome/content matching, URL fail-fast behavior, cancellation observability, and fail-closed manifest decoding.

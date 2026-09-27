@@ -9,7 +9,7 @@ source "$repo_root/scripts/lib/temp-sweep.sh"
 # This meta-test mints its own wilted-native-gate-meta.XXXXXX root on every
 # run; sweep abandoned ones from a killed prior run before adding another.
 wilted_sweep_stale_temp_dirs
-tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/wilted-native-gate-meta.XXXXXX")"
+tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-native-gate-meta.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 run_case() {
@@ -115,14 +115,14 @@ assert_wiltedkit_sync_contract() {
   assert_contains 'fake delay emits visible status before completion' "$gate"
   assert_contains 'remote deletions apply incrementally, cascade items, and preserve protected work' "$gate"
   assert_contains 'leg_cloudsync_tests' "$gate"
-  assert_validation_contains 'local scratch_path="$tmp_root/swiftpm/cloudsync-tests"'
-  assert_validation_contains 'swift test --package-path "$package" --scratch-path "$scratch_path"'
+  assert_validation_contains "local cache_key='native-cloudsync-tests'"
+  assert_validation_contains 'run_with_build_cache swiftpm "$cache_key" swift test --package-path "$package"'
   assert_validation_contains 'CloudSync named adapter case was not observed'
   assert_validation_contains 'CloudSync named send case was not observed'
   assert_contains 'cp "$repo_root/CloudSync/Package.swift" "$integration_root/CloudSync/Package.swift"' "$gate"
   assert_contains 'cp -R "$repo_root/CloudSync/Sources" "$repo_root/CloudSync/Tests" "$integration_root/CloudSync/"' "$gate"
   assert_contains 'leg_listener_tests' "$gate"
-  assert_validation_contains 'local scratch_path="$tmp_root/swiftpm/listener-tests"'
+  assert_validation_contains "local cache_key='native-listener-tests'"
   assert_validation_contains 'Listener repository case was not observed'
   assert_validation_contains 'Listener playback case was not observed'
   assert_contains 'cp "$repo_root/Listener/Package.swift" "$integration_root/Listener/Package.swift"' "$gate"
@@ -131,29 +131,54 @@ assert_wiltedkit_sync_contract() {
 
 assert_wiltedkit_sync_contract
 
-assert_swiftpm_scratch_contract() {
-  local wiltedkit_scratch cloudsync_scratch listener_scratch producer_scratch
-  local unique_count
-  wiltedkit_scratch='local scratch_path="$tmp_root/swiftpm/wiltedkit-tests"'
-  cloudsync_scratch='local scratch_path="$tmp_root/swiftpm/cloudsync-tests"'
-  listener_scratch='local scratch_path="$tmp_root/swiftpm/listener-tests"'
-  producer_scratch='local scratch_path="$tmp_root/swiftpm/wiltedproducer-tests"'
-  assert_contains "$wiltedkit_scratch" "$gate"
-  assert_validation_contains "$cloudsync_scratch"
-  assert_validation_contains "$listener_scratch"
-  assert_contains "$producer_scratch" "$gate"
-  unique_count="$(rg -o 'local scratch_path="\$tmp_root/swiftpm/[^"]+"' "$gate" "$native_gate_validation" | sort -u | wc -l | tr -d ' ')"
+assert_build_cache_routing_contract() {
+  local wiltedkit_cache cloudsync_cache listener_cache producer_cache
+  local unique_count wiltedkit_block producer_block xcode_test_block mac_ui_block
+  wiltedkit_cache="local cache_key='native-wiltedkit-tests'"
+  cloudsync_cache="local cache_key='native-cloudsync-tests'"
+  listener_cache="local cache_key='native-listener-tests'"
+  producer_cache="local cache_key='native-wiltedproducer-tests'"
+  assert_contains "$wiltedkit_cache" "$gate"
+  assert_validation_contains "$cloudsync_cache"
+  assert_validation_contains "$listener_cache"
+  assert_contains "$producer_cache" "$gate"
+  unique_count="$(rg -o "local cache_key='native-[^']+'" "$gate" "$native_gate_validation" | sort -u | wc -l | tr -d ' ')"
   [[ "$unique_count" -eq 4 ]] || {
-    printf '%s\n' 'assertion failed: SwiftPM package legs share a scratch path' >&2
+    printf '%s\n' 'assertion failed: SwiftPM package legs share a cache key' >&2
     exit 1
   }
+  assert_contains 'cache_path="$(build_cache_path swiftpm "$cache_key")"' "$gate"
+  assert_contains 'run_package_xctest_bundles WiltedKit "$cache_path"' "$gate"
+  assert_contains 'run_package_xctest_bundles WiltedProducer "$cache_path"' "$gate"
+  wiltedkit_block="$(sed -n '/^leg_wiltedkit_tests()/,/^}$/p' "$gate")"
+  producer_block="$(sed -n '/^leg_wiltedproducer_tests()/,/^}$/p' "$gate")"
+  assert_block_contains 'build_cache_path swiftpm "$cache_key"' "$wiltedkit_block"
+  assert_block_contains 'run_with_build_cache swiftpm "$cache_key" swift build' "$wiltedkit_block"
+  assert_block_contains 'build_cache_path swiftpm "$cache_key"' "$producer_block"
+  assert_block_contains 'run_with_build_cache swiftpm "$cache_key" swift build' "$producer_block"
+  xcode_test_block="$(sed -n '/^xcode_test_leg()/,/^}$/p' "$gate")"
+  assert_block_contains 'python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test' "$xcode_test_block"
+  mac_ui_block="$(sed -n '/^leg_macos_ui_tests()/,/^}$/p' "$gate")"
+  assert_block_contains 'build_cache_path xcode "$cache_key"' "$mac_ui_block"
+  assert_block_contains 'run_with_build_cache xcode "$cache_key" xcodebuild build-for-testing' "$mac_ui_block"
+  assert_block_contains 'run xcode "$cache_key" -- xcodebuild test-without-building' "$mac_ui_block"
+  if rg -q -- '--scratch-path|\$tmp_root/swiftpm|derived_data=|DerivedData' "$gate" "$native_gate_validation"; then
+    printf '%s\n' 'assertion failed: native gate retains a per-run build cache root' >&2
+    exit 1
+  fi
+  if rg -n '(^|[[:space:]])(swift (build|test)|xcodebuild (test|build-for-testing|test-without-building))' \
+      "$gate" "$native_gate_validation" | \
+      rg -qv 'run_with_build_cache|build_with_cache.*run xcode'; then
+    printf '%s\n' 'assertion failed: a native build bypasses the reusable build cache helper' >&2
+    exit 1
+  fi
   if rg -q 'find "\$package/\.build".*PackageTests\.xctest' "$gate" "$native_gate_validation"; then
     printf '%s\n' 'assertion failed: XCTest discovery still reads checkout-local .build' >&2
     exit 1
   fi
 }
 
-assert_swiftpm_scratch_contract
+assert_build_cache_routing_contract
 
 assert_capability_source_contract() {
   local project="$repo_root/project.yml"
@@ -352,7 +377,7 @@ assert_snapshot_contract() {
   assert_contains 'validate_ios_pixel_snapshot_baselines "$integration_root"' "$gate"
   assert_contains 'NATIVE_FORCE_SNAPSHOT_BASELINE' "$gate"
   assert_contains 'test_host_pattern' "$gate"
-  assert_contains "test_host_pattern='wilted-native-gate" "$gate"
+  assert_contains "test_host_pattern='\\.build/xcode/native-" "$gate"
   assert_contains 'native.cleanup mac-test-hosts-killed=' "$gate"
   assert_contains 'kill -KILL "$test_host_pid"' "$gate"
   assert_contains 'trap cleanup EXIT' "$gate"
@@ -403,7 +428,7 @@ assert_private_simulator_contract() {
   assert_contains 'gate_sweep wilted' "$gate"
   assert_contains 'GATE_UI_TEST_LOCK_PID_FILE="$lock_pid_file" gate_ui_test_lock' "$gate"
   assert_contains '--simulator-udid "$WILTED_UI_TEST_SIMULATOR_UDID"' "$gate"
-  assert_contains 'gate_ui_test_lock --label "$label" xcodebuild test-without-building' "$gate"
+  assert_contains 'gate_ui_test_lock --label "$label" python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test-without-building' "$gate"
   assert_contains 'run_leg "${leg_names[8]}" "${leg_reports[8]}" leg_ios_ui_tests' "$gate"
   assert_contains 'create_gate_simulator ios-units' "$gate"
   assert_contains 'create_gate_simulator ios-pixel-ui' "$gate"
@@ -433,14 +458,14 @@ assert_stray_host_cleanup_contract() {
   local xcode_leg_block mac_ui_block cleanup_line xcodebuild_line
   xcode_leg_block="$(sed -n '/^xcode_test_leg()/,/^}$/p' "$gate")"
   cleanup_line="$(printf '%s\n' "$xcode_leg_block" | rg -n 'cleanup_mac_test_hosts' | head -1 | cut -d: -f1)"
-  xcodebuild_line="$(printf '%s\n' "$xcode_leg_block" | rg -n 'xcodebuild test' | head -1 | cut -d: -f1)"
+  xcodebuild_line="$(printf '%s\n' "$xcode_leg_block" | rg -n 'run xcode.*xcodebuild test' | head -1 | cut -d: -f1)"
   [[ -n "$cleanup_line" && -n "$xcodebuild_line" && "$cleanup_line" -lt "$xcodebuild_line" ]] || {
     printf '%s\n' 'assertion failed: xcode test leg must sweep stray hosts before starting xcodebuild' >&2
     exit 1
   }
   mac_ui_block="$(sed -n '/^leg_macos_ui_tests()/,/^}$/p' "$gate")"
   cleanup_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'cleanup_mac_test_hosts' | head -1 | cut -d: -f1)"
-  xcodebuild_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'xcodebuild build-for-testing' | head -1 | cut -d: -f1)"
+  xcodebuild_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'run_with_build_cache xcode.*xcodebuild build-for-testing' | head -1 | cut -d: -f1)"
   [[ -n "$cleanup_line" && -n "$xcodebuild_line" && "$cleanup_line" -lt "$xcodebuild_line" ]] || {
     printf '%s\n' 'assertion failed: macOS UI leg must sweep stray hosts before starting xcodebuild' >&2
     exit 1
@@ -493,9 +518,18 @@ assert_result_bundle_contract() {
   assert_validation_contains 'assert_xctest_output'
   assert_validation_contains 'native.xctest-missing'
   assert_validation_contains 'parse_xctest_output_count'
-  assert_contains 'local scratch_path="$tmp_root/swiftpm/wiltedproducer-tests"' "$gate"
-  assert_contains 'swift build --package-path "$package" --scratch-path "$scratch_path" --build-tests' "$gate"
-  assert_contains 'find "$scratch_path" -type d -name' "$gate"
+  assert_contains 'build_with_cache="$repo_root/scripts/build-with-cache.py"' "$gate"
+  assert_contains 'python3 "$build_with_cache" path "$kind" "$key"' "$gate"
+  assert_contains 'python3 "$build_with_cache" run "$kind" "$key" -- "$@"' "$gate"
+  assert_contains 'cache_path="$(build_cache_path swiftpm "$cache_key")"' "$gate"
+  assert_contains 'run_with_build_cache swiftpm "$cache_key" swift build --package-path "$package" --build-tests' "$gate"
+  assert_contains 'run_with_build_cache swiftpm "$cache_key" swift test --package-path "$package"' "$native_gate_validation"
+  assert_contains 'local cache_key="native-$label"' "$gate"
+  assert_contains 'label_data="$(build_cache_path xcode "$cache_key")"' "$gate"
+  if rg -q -- '--scratch-path|derived_data=|DerivedData' "$gate" "$native_gate_validation"; then
+    printf '%s\n' 'assertion failed: native gate still creates per-run SwiftPM or DerivedData caches' >&2
+    exit 1
+  fi
   if rg -q 'find "\$package/\.build".*WiltedProducerPackageTests\.xctest' "$gate" "$native_gate_validation"; then
     printf '%s\n' 'assertion failed: Producer XCTest discovery still reads checkout-local .build' >&2
     exit 1

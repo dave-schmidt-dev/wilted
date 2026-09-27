@@ -47,13 +47,6 @@
 #       — that would put the registration inside a subshell too and silently
 #       disable cleanup.)
 #
-#   gate_derived_data
-#       Prints a fresh `mktemp -d` DerivedData directory for this run. Callers
-#       are responsible for passing it to `xcodebuild -derivedDataPath`; nothing
-#       here registers cleanup for it (unlike simulators, a per-run DerivedData
-#       directory does not leak host state that matters across runs, and
-#       callers that want it removed on exit can register their own trap).
-#
 #   gate_ui_test_lock [--label <label>] [--simulator-udid <UDID>] <cmd...>
 #       Runs <cmd...> through `~/.agent/bin/apple-ui-test-lock`, which
 #       keeps host UI and legacy calls globally exclusive. With an explicit
@@ -221,7 +214,7 @@ _gate_lib_cleanup_registered_sims() {
 # shell, not a subshell), so both this top-level registration and any later
 # gate_sim_create call — even from inside a command-substitution subshell —
 # agree on the same path.
-_GATE_LIB_SIM_REGISTRY="$(mktemp "${TMPDIR:-/tmp}/gate-sim-registry.XXXXXX" 2>/dev/null)" || {
+_GATE_LIB_SIM_REGISTRY="$(mktemp "${TMPDIR:?TMPDIR must be set}/gate-sim-registry.XXXXXX" 2>/dev/null)" || {
     echo "simctl_gate_lib.sh: failed to create simulator registry file" >&2
     # `return` covers the normal case (this file is sourced); `exit` is a
     # fallback for the unsupported case of running it directly, where
@@ -289,16 +282,12 @@ gate_sim_cleanup() {
         echo "gate_sim_cleanup: failed to delete $udid; EXIT cleanup will retry" >&2
         return 1
     fi
-    registry_tmp="$(mktemp "${TMPDIR:-/tmp}/gate-sim-registry-update.XXXXXX")" || return 1
+    registry_tmp="$(mktemp "${TMPDIR:?TMPDIR must be set}/gate-sim-registry-update.XXXXXX")" || return 1
     if [[ -f "$_GATE_LIB_SIM_REGISTRY" ]]; then
         grep -vxF -- "$udid" "$_GATE_LIB_SIM_REGISTRY" >"$registry_tmp" || true
         cat "$registry_tmp" >"$_GATE_LIB_SIM_REGISTRY"
     fi
     rm -f "$registry_tmp"
-}
-
-gate_derived_data() {
-    mktemp -d "${TMPDIR:-/tmp}/gate-derived-data.XXXXXX"
 }
 
 gate_ui_test_lock() {
@@ -341,7 +330,7 @@ gate_ui_test_lock() {
     # up a day later.
     local set_root before rc end_ts
     set_root="${GATE_XCTEST_DEVICE_SET:-$HOME/Library/Developer/XCTestDevices}"
-    before="$(mktemp "${TMPDIR:-/tmp}/gate-clone-snapshot.XXXXXX")"
+    before="$(mktemp "${TMPDIR:?TMPDIR must be set}/gate-clone-snapshot.XXXXXX")"
     _gate_lib_snapshot_clones "$set_root" >"$before" 2>/dev/null || true
     # `|| rc=$?` rather than a bare call followed by `rc=$?`: consumers source
     # this under `set -e`, which would abort the function on a failing leg

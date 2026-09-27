@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-temp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-native-ui-receipt.XXXXXX")"
+temp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-native-ui-receipt.XXXXXX")"
 trap 'rm -rf "$temp_root"' EXIT
 fixture="$temp_root/repo"
 mkdir -p "$fixture/.githooks" "$fixture/scripts" "$fixture/WiltedMac" "$fixture/docs" "$temp_root/bin"

@@ -19,7 +19,8 @@ set -Eeuo pipefail
 #        (default: every method in WiltedPixelSnapshotTests)
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-record-snapshots.XXXXXX")"
+build_cache="$repo_root/scripts/build-with-cache.py"
+tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-record-snapshots.XXXXXX")"
 trap 'rm -rf "$tmp_root"' EXIT
 
 status() { printf '%s\n' "$*" >&2; }
@@ -68,11 +69,10 @@ fi
 snapshots="WiltedMacTests/__Snapshots__/WiltedPixelSnapshotTests"
 
 status "record.start methods=${*:-all}"
-xcodebuild test \
+python3 "$build_cache" run xcode mac-snapshot-recording -- xcodebuild test \
   -project "$root/Wilted.xcodeproj" \
   -scheme WiltedMac \
   -destination 'platform=macOS' \
-  -derivedDataPath "$tmp_root/DerivedData" \
   -parallel-testing-enabled NO \
   "${only[@]}" >"$tmp_root/record.log" 2>&1 || {
     status 'record.failed; last 40 lines follow'

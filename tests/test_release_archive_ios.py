@@ -155,7 +155,6 @@ class FrozenSourceTests(unittest.TestCase):
             if args[0] == "xcodegen":
                 (workspace / "project/Wilted.xcodeproj").mkdir()
             else:
-                (workspace / "DerivedData").mkdir()
                 (workspace / "artifacts/WiltediOS.xcarchive").mkdir()
 
         with patch.object(archive, "run_visible", side_effect=fake_run):
@@ -164,7 +163,7 @@ class FrozenSourceTests(unittest.TestCase):
         self.assertEqual(calls[0][0][-2:], ["--project-root", str(stage)])
         self.assertEqual(calls[0][1], workspace)
         self.assertEqual((workspace / "project/WiltediOS/WiltediOSProduction.entitlements").read_bytes(), b"fixture")
-        self.assertEqual(calls[1][0][calls[1][0].index("-derivedDataPath") + 1], str(workspace / "DerivedData"))
+        self.assertEqual(calls[1][0][1:7], [str(archive.ROOT / "scripts/build-with-cache.py"), "run", "xcode", "release-archive", "--", "xcodebuild"])
         self.assertNotEqual(calls[1][1], self.root)
 
     def test_failed_build_preserves_existing_candidate_artifacts_and_evidence(self) -> None:

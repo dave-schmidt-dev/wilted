@@ -20,7 +20,7 @@ WILTED_TEMP_SWEEP_MAX_AGE_HOURS="${WILTED_TEMP_SWEEP_MAX_AGE_HOURS:-24}"
 
 # Removes abandoned wilted-* entries from a temp root.
 #
-#   $1  temp root to sweep       (default: ${TMPDIR:-/tmp})
+#   $1  temp root to sweep       (default: ${TMPDIR:?TMPDIR must be set})
 #   $2  age cutoff in hours      (default: WILTED_TEMP_SWEEP_MAX_AGE_HOURS)
 #
 # Prints one `temp.sweep` line to stderr and never fails the caller: this is
@@ -28,7 +28,7 @@ WILTED_TEMP_SWEEP_MAX_AGE_HOURS="${WILTED_TEMP_SWEEP_MAX_AGE_HOURS:-24}"
 # removed (another user's, or one being written right now) is not a reason to
 # refuse to run the gate.
 wilted_sweep_stale_temp_dirs() {
-    local root="${1:-${TMPDIR:-/tmp}}"
+    local root="${1:-${TMPDIR:?TMPDIR must be set}}"
     local max_age_hours="${2:-$WILTED_TEMP_SWEEP_MAX_AGE_HOURS}"
     local removed=0 kept=0 entry
 

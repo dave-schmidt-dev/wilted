@@ -12,7 +12,7 @@ from wilted import VOICES, WPM_ESTIMATE
 from wilted.fetch import get_text_from_clipboard, get_text_from_url
 from wilted.ingest import resolve_article
 from wilted.llm import DEFAULT_GGUF_MODEL
-from wilted.log import setup_logging
+from wilted.log import LOG_PATH, setup_logging
 from wilted.queue import (
     add_article,
     clear_queue,
@@ -870,11 +870,11 @@ def cmd_discover(argv: list[str]) -> None:
         stats = run_discover_via_runner(on_status=_print_status)
         print(f"Discovery complete: {stats['discovered']} new items from {stats['feeds_polled']} feeds")
         if stats["errors"]:
-            print(f"  {stats['errors']} feed(s) had errors (see /tmp/wilted.log)")
+            print(f"  {stats['errors']} feed(s) had errors (see {LOG_PATH})")
         if stats.get("unknown"):
             print(
                 f"  {stats['unknown']} feed(s) did not finish draining — outcome unknown, "
-                f"not counted (see /tmp/wilted.log)",
+                f"not counted (see {LOG_PATH})",
             )
     except Exception as e:
         print(f"Discovery failed: {e}", file=sys.stderr)
@@ -889,7 +889,7 @@ def cmd_classify(argv: list[str]) -> None:
         stats = run_classify_via_runner(on_status=_print_status)
         print(f"Classification complete: {stats['classified']} items classified")
         if stats["errors"]:
-            print(f"  {stats['errors']} item(s) had errors (see /tmp/wilted.log)")
+            print(f"  {stats['errors']} item(s) had errors (see {LOG_PATH})")
     except Exception as e:
         print(f"Classification failed: {e}", file=sys.stderr)
         sys.exit(1)
@@ -1283,7 +1283,7 @@ def run_cli(argv=None):
     util_group.add_argument("--clean", action="store_true", help="Output cleaned text only, no audio")
     util_group.add_argument("--list-voices", action="store_true", help="List available voices")
     util_group.add_argument("--version", action="store_true", help="Show version and exit")
-    util_group.add_argument("--debug", action="store_true", help="Enable DEBUG logging to /tmp/wilted.log")
+    util_group.add_argument("--debug", action="store_true", help=f"Enable DEBUG logging to {LOG_PATH}")
 
     args = parser.parse_args(argv)
 
@@ -1356,7 +1356,7 @@ def _weather_monitor_for_launch() -> "WeatherMonitor | None":
     else:
         logger.warning(
             "weather monitor in LIVE-NWS mode (WILTED_WEATHER_TEST_TRIGGER not set) — "
-            "touching /tmp/wilted-fire-bulletin does NOTHING in this mode; "
+            "touching the weather test trigger does NOTHING in this mode; "
             "use `make station-test` to arm the test trigger"
         )
     return monitor
@@ -1449,7 +1449,8 @@ def _launch_tui() -> None:
 
     try:
         # Append-mode, left open for the process lifetime (closed at exit).
-        fault_log = open("/tmp/wilted-faulthandler.log", "a")  # noqa: SIM115
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        fault_log = open(LOG_PATH.with_name("wilted-faulthandler.log"), "a")  # noqa: SIM115
         faulthandler.enable(file=fault_log)
     except Exception:
         pass

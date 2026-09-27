@@ -15,7 +15,6 @@
 
 set -euo pipefail
 
-LOCK_DIR="/tmp/wilted-nightly.lockdir"
 LOG_DIR="${HOME}/Library/Logs/homelab/wilted-nightly"
 AGG_LOG="${LOG_DIR}/wilted.log"
 RUN_LOG="${LOG_DIR}/wilted-$(date '+%Y%m%d-%H%M%S').log"
@@ -28,6 +27,8 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$REAL_SCRIPT")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export WILTED_PROJECT_ROOT="$PROJECT_ROOT"
+LOCK_DIR="${PROJECT_ROOT}/../../.logs/wilted-nightly.lockdir"
+mkdir -p "${PROJECT_ROOT}/../../.logs"
 
 # Keep the venv outside iCloud (~/Documents is iCloud-synced, which sets UF_HIDDEN on
 # .venv and breaks Python 3.13's .pth handling). See HISTORY.md.
@@ -63,7 +64,6 @@ cleanup() {
 # --- Locking ---
 # Use mkdir as a portable lock (macOS has no flock). The bounded scheduler
 # tick uses Python fcntl via processing_jobs.try_acquire_execution_lock.
-LOCK_DIR="/tmp/wilted-nightly.lockdir"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     log "SKIP: previous run still active"
     exit 0
@@ -82,7 +82,7 @@ run_ingest() {
     local ingest_status
 
     while true; do
-        if ! RUNTIME_STDERR="$(mktemp "${TMPDIR:-/tmp}/wilted-nightly-stderr.XXXXXX" 2>/dev/null)"; then
+        if ! RUNTIME_STDERR="$(mktemp "${TMPDIR:?TMPDIR must be set}/wilted-nightly-stderr.XXXXXX" 2>/dev/null)"; then
             return 126
         fi
         if ! chmod 600 "$RUNTIME_STDERR" 2>/dev/null; then

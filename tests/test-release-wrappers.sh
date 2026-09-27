@@ -12,14 +12,14 @@ python3 -m unittest tests.test_release_archive_ios
 python3 "$root/tests/test_wilted_release_bridge.py"
 
 for wrapper in "$root/app/release-status" "$root/app/release-testflight"; do
-  output="$("$wrapper" --adapter /tmp/unsafe 2>&1 || true)"
+  output="$("$wrapper" --adapter /private/var/unsafe 2>&1 || true)"
   grep -Fq 'caller-selected paths and credentials are not permitted' <<<"$output" || {
     echo "release wrapper accepted a caller-selected adapter: $wrapper" >&2
     exit 1
   }
 done
 
-temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-release-bridge.XXXXXX")"
+temporary_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-release-bridge.XXXXXX")"
 trap 'rm -rf "$temporary_root"' EXIT
 cp "$bridge" "$temporary_root/bridge.py"
 chmod 700 "$temporary_root/bridge.py"

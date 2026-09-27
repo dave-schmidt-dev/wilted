@@ -21,7 +21,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo_root/scripts/lib/app-identity.sh"
 destination_dir="${1:-/Applications}"
 bundle_id='com.zerodelta.wilted.mac'
-derived="${WILTED_INSTALL_DERIVED_DATA_PATH:-$repo_root/.build/mac-install}"
+build_cache="$repo_root/scripts/build-with-cache.py"
+derived=''
+build_log="$repo_root/.logs/install-mac-app.log"
 
 status() { printf '%s\n' "$*" >&2; }
 
@@ -64,31 +66,23 @@ wilted_refuse_active_preparation || exit 1
 
 command -v xcodegen >/dev/null 2>&1 || { status 'install.error missing xcodegen'; exit 1; }
 command -v xcodebuild >/dev/null 2>&1 || { status 'install.error missing xcodebuild'; exit 1; }
-
-mkdir -p "$derived"
+derived="$(python3 "$build_cache" path xcode mac-install)"
+mkdir -p "$repo_root/.logs"
 
 status 'install.generate project'
 xcodegen generate --spec "$repo_root/project.yml" --project "$repo_root" --project-root "$repo_root" >/dev/null
 
-# Xcode's code-signing pass rejects Finder metadata left on a prior product.
-# Remove only the installer-owned app product; the rest of DerivedData remains
-# available for incremental builds.
-previous_app="$derived/Build/Products/Debug/WiltedMac.app"
-if [[ -d "$previous_app" || -L "$previous_app" ]]; then
-  status "install.clean previous-product=$previous_app"
-  rm -rf -- "$previous_app"
-fi
-
+# Xcode's signing pass rejects Finder metadata on a prior app product.
+# The helper removes it under the same lock that serializes the build.
 status 'install.build configuration=Debug'
-xcodebuild build \
+python3 "$build_cache" run xcode mac-install --clean-app-product -- xcodebuild build \
   -project "$repo_root/Wilted.xcodeproj" \
   -scheme WiltedMac \
   -configuration Debug \
   -destination 'platform=macOS' \
-  -derivedDataPath "$derived" \
-  -quiet >"$derived.log" 2>&1 || {
+  -quiet >"$build_log" 2>&1 || {
     status 'install.build failed; last 40 lines follow'
-    tail -40 "$derived.log" >&2
+    tail -40 "$build_log" >&2
     exit 1
   }
 

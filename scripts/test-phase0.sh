@@ -9,7 +9,7 @@ source "$repo_root/scripts/lib/temp-sweep.sh"
 # Sweep before this run mints its own, same 24h cutoff so a genuinely
 # concurrent phase-0 run's directories (minutes old) are never touched.
 wilted_sweep_stale_temp_dirs
-tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-phase0.XXXXXX")"
+tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-phase0.XXXXXX")"
 phase0_self_test="${PHASE0_SELF_TEST:-0}"
 if [[ ! -d "$tmp_root" ]]; then
   printf '%s\n' 'error: unable to create validated phase-0 temp directory' >&2
@@ -192,6 +192,8 @@ run_leg_sync() {
   fi
 }
 
+run_leg_async "test-build-with-cache" "$repo_root/tests/test-build-with-cache.sh"
+run_leg_async "test-no-global-tmp" "$repo_root/tests/test-no-global-tmp.sh"
 run_leg_async "assert-mac-first-docs" "$repo_root/scripts/assert-mac-first-docs.sh"
 run_leg_async "test-contract-fixtures" "$repo_root/tests/test-contract-fixtures.sh"
 run_leg_async "test-domain-contract" "$repo_root/tests/test-domain-contract.sh"

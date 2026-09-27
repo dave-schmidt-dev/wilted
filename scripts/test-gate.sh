@@ -35,17 +35,16 @@ source "$repo_root/scripts/lib/temp-sweep.sh"
 # cutoff is what keeps this safe next to a gate that is genuinely still
 # running, whose directory is at most minutes old.
 wilted_sweep_stale_temp_dirs
-tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/wilted-native-gate.XXXXXX")"
-derived_data="$tmp_root/DerivedData"
+tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-native-gate.XXXXXX")"
+build_with_cache="$repo_root/scripts/build-with-cache.py"
 # A failed real Mac UI run is the one disposable artifact worth retaining for
 # diagnosis. The default lives under the repository's ignored .logs directory;
 # the override keeps the meta-test hermetic.
 macos_ui_failure_diagnostics_dir="${WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR:-$repo_root/.logs/native-gate-diagnostics}"
-mkdir -p "$derived_data"
 
 cleanup_mac_test_hosts() {
   local test_host_pattern test_host_pid test_host_pids alive_pids="" killed=0
-  test_host_pattern='wilted-native-gate\.[A-Za-z0-9]+/DerivedData/.*/WiltedMac\.app/Contents/MacOS/WiltedMac'
+  test_host_pattern='\.build/xcode/.*/WiltedMac\.app/Contents/MacOS/WiltedMac'
   test_host_pids="$(pgrep -f "$test_host_pattern" 2>/dev/null || true)"
   for test_host_pid in $test_host_pids; do
     if kill -0 "$test_host_pid" 2>/dev/null; then
@@ -284,6 +283,17 @@ require_tool() {
   command -v "$tool" >/dev/null 2>&1 || fail "missing required tool: $tool"
 }
 
+build_cache_path() {
+  local kind="$1" key="$2"
+  python3 "$build_with_cache" path "$kind" "$key"
+}
+
+run_with_build_cache() {
+  local kind="$1" key="$2"
+  shift 2
+  python3 "$build_with_cache" run "$kind" "$key" -- "$@"
+}
+
 generated_project_path() {
   find "$1" -maxdepth 1 -type d -name '*.xcodeproj' -print -quit
 }
@@ -323,7 +333,8 @@ leg_xcodegen_reproducible() {
 
 leg_wiltedkit_tests() {
   local package="$repo_root/WiltedKit"
-  local scratch_path="$tmp_root/swiftpm/wiltedkit-tests"
+  local cache_key='native-wiltedkit-tests'
+  local cache_path
   local authoritative="$repo_root/contracts/fixtures"
   local copied="$package/Tests/WiltedDomainTests/Fixtures"
   local sync_authoritative="$repo_root/contracts/cloudkit/fixtures/01-valid-publish-decode.json"
@@ -349,12 +360,13 @@ leg_wiltedkit_tests() {
   assert_test_sources wiltedsync-tests "$package/Tests/WiltedSyncTests"
   require_tool swift
   require_tool xcrun
-  swift build --package-path "$package" --scratch-path "$scratch_path" --build-tests
+  cache_path="$(build_cache_path swiftpm "$cache_key")"
+  run_with_build_cache swiftpm "$cache_key" swift build --package-path "$package" --build-tests
   # The installed Swift toolchain accepts the SwiftPM xUnit flag but does not
   # emit the requested file for this package. Invoke the built XCTest bundles
   # directly; their runner log is authoritative and remains visible while running.
   set +e
-  run_package_xctest_bundles WiltedKit "$scratch_path" "$tmp_root/wiltedkit-tests.xctest.log"
+  run_package_xctest_bundles WiltedKit "$cache_path" "$tmp_root/wiltedkit-tests.xctest.log"
   local xctest_status="$?"
   set -e
   if [[ "$xctest_status" -eq 0 ]]; then
@@ -371,14 +383,16 @@ leg_wiltedkit_tests() {
 
 leg_wiltedproducer_tests() {
   local package="$repo_root/Producer"
-  local scratch_path="$tmp_root/swiftpm/wiltedproducer-tests"
+  local cache_key='native-wiltedproducer-tests'
+  local cache_path
   [[ -d "$package" ]] || fail "missing WiltedProducer package: $package"
   assert_test_sources wiltedproducer-tests "$package/Tests"
   require_tool swift
   require_tool xcrun
-  swift build --package-path "$package" --scratch-path "$scratch_path" --build-tests
+  cache_path="$(build_cache_path swiftpm "$cache_key")"
+  run_with_build_cache swiftpm "$cache_key" swift build --package-path "$package" --build-tests
   set +e
-  run_package_xctest_bundles WiltedProducer "$scratch_path" "$tmp_root/wiltedproducer-tests.xctest.log"
+  run_package_xctest_bundles WiltedProducer "$cache_path" "$tmp_root/wiltedproducer-tests.xctest.log"
   local xctest_status="$?"
   set -e
   return "$xctest_status"
@@ -426,6 +440,7 @@ xcode_test_leg() {
   local destination="$4"
   local target="$5"
   local project
+  local cache_key="native-$label"
   local lock_pid_file="$tmp_root/$label.ui-lock.pid"
   shift 5
   local only_testing_args=(-only-testing:"$target")
@@ -442,12 +457,11 @@ xcode_test_leg() {
   [[ "$xcode_test_timeout_seconds" =~ ^[1-9][0-9]*$ ]] ||
     fail 'WILTED_XCODE_TEST_TIMEOUT_SECONDS must be a positive integer'
   cleanup_mac_test_hosts
-  local -a test_command=(xcodebuild test \
+  local -a test_command=(python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test \
     -project "$project" \
     -scheme "$scheme" \
     "${only_testing_args[@]}" \
     -destination "$destination" \
-    -derivedDataPath "$derived_data/$label" \
     -resultBundlePath "$tmp_root/$label.xcresult" \
     -parallel-testing-enabled NO \
     -quiet)
@@ -529,7 +543,8 @@ leg_macos_ui_tests() {
   local source_dir="$integration_root/WiltedMacUITests"
   local destination='platform=macOS'
   local project="$native_project"
-  local label_data="$derived_data/$label"
+  local cache_key="native-$label"
+  local label_data
   local runner host runner_metadata host_metadata metadata_info runner_signature_info host_signature_info
   local only_testing_arg='-only-testing:WiltedMacUITests'
   local requested_selector="${WILTED_MAC_UI_SELECTOR:-}"
@@ -556,12 +571,12 @@ leg_macos_ui_tests() {
   fi
 
   cleanup_mac_test_hosts
-  if ! xcodebuild build-for-testing \
+  label_data="$(build_cache_path xcode "$cache_key")"
+  if ! run_with_build_cache xcode "$cache_key" xcodebuild build-for-testing \
     -project "$project" \
     -scheme WiltedMac \
     "$only_testing_arg" \
     -destination "$destination" \
-    -derivedDataPath "$label_data" \
     -parallel-testing-enabled NO \
     -quiet \
     CODE_SIGN_STYLE=Manual \
@@ -626,12 +641,11 @@ leg_macos_ui_tests() {
   printf '%s\n' "$runner_signature_info"
   printf '%s\n' "$host_signature_info"
 
-  gate_ui_test_lock --label "$label" xcodebuild test-without-building \
+  gate_ui_test_lock --label "$label" python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test-without-building \
     -project "$project" \
     -scheme WiltedMac \
     "$only_testing_arg" \
     -destination "$destination" \
-    -derivedDataPath "$label_data" \
     -resultBundlePath "$tmp_root/$label.xcresult" \
     -parallel-testing-enabled NO \
     -quiet

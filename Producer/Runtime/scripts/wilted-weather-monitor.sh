@@ -30,7 +30,6 @@
 
 set -euo pipefail
 
-LOCK_FILE="/tmp/wilted-weather-monitor.lock"
 LOG_DIR="${HOME}/Library/Logs/wilted-weather-monitor"
 AGG_LOG="${LOG_DIR}/wilted-weather-monitor.log"
 RUN_LOG="${LOG_DIR}/wilted-weather-monitor-$(date '+%Y%m%d-%H%M%S').log"
@@ -43,6 +42,8 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$REAL_SCRIPT")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export WILTED_PROJECT_ROOT="$PROJECT_ROOT"
+LOCK_FILE="${PROJECT_ROOT}/../../.logs/wilted-weather-monitor.lock"
+mkdir -p "${PROJECT_ROOT}/../../.logs"
 
 # Keep the venv outside iCloud (~/Documents is iCloud-synced). See HISTORY.md.
 export UV_PROJECT_ENVIRONMENT="${HOME}/.venvs/wilted"
