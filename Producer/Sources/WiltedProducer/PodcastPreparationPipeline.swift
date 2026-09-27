@@ -508,7 +508,7 @@ public actor PodcastPreparationPipeline {
     /// This file's own source hash is computed with this value normalized out;
     /// it makes a semantic edit fail the coverage test until this fingerprint
     /// block is deliberately updated.
-    public static let pipelineSourceHash = "sha256:6e37ecb9cddd48d5bde7e36f17304e8ad618a712e8c244a38161736998971606"
+    public static let pipelineSourceHash = "sha256:4267abde1373154d96bc0faeb4d060bf67222cccb8a0f0cab6b752d7ec9dfae1"
 
     /// Includes the external Python packages imported by the worker. The
     /// runtime itself now lives in this repository under `Producer/Runtime`,
@@ -565,8 +565,44 @@ public actor PodcastPreparationPipeline {
         include("worker")
         hasher.update(data: workerData)
 
-        guard let sourceRoot = configuration.pythonPath else { return nil }
         let fileManager = FileManager.default
+        let workerPackage = configuration.workerURL.deletingLastPathComponent()
+            .appendingPathComponent("wilted_worker")
+        if fileManager.fileExists(atPath: workerPackage.path) {
+            var enumerationFailed = false
+            guard let enumerator = fileManager.enumerator(
+                at: workerPackage, includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsPackageDescendants],
+                errorHandler: { _, _ in
+                    enumerationFailed = true
+                    return false
+                }
+            ) else { return nil }
+            var packageFiles: [URL] = []
+            for case let url as URL in enumerator {
+                if url.lastPathComponent == "__pycache__" {
+                    enumerator.skipDescendants()
+                    continue
+                }
+                guard url.pathExtension == "py" else { continue }
+                do {
+                    if try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
+                        packageFiles.append(url)
+                    }
+                } catch {
+                    enumerationFailed = true
+                    break
+                }
+            }
+            guard !enumerationFailed else { return nil }
+            for url in packageFiles.sorted(by: { $0.path < $1.path }) {
+                include(String(url.path.dropFirst(workerPackage.path.count + 1)))
+                guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+                hasher.update(data: data)
+            }
+        }
+
+        guard let sourceRoot = configuration.pythonPath else { return nil }
         let speechSourceRoot = environment["WILTED_SPEECH_STACK_PYTHONPATH"]
             .map { URL(fileURLWithPath: $0) }
             ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Documents/Projects/speech-stack/src")

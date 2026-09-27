@@ -67,18 +67,10 @@ struct PodcastPreparationPipelineTests {
         let sourceRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-        let worker = try Data(contentsOf: sourceRoot.appendingPathComponent("Producer/Workers/wilted_pipeline.py"))
-        let workerHash = "sha256:" + SHA256.hash(data: worker).map { String(format: "%02x", $0) }.joined()
+        let workerHash = try ProducerSource.workerSourceHash(root: sourceRoot)
         #expect(workerHash == PodcastPreparationPipeline.workerSourceHash)
 
-        let pipelineURL = sourceRoot.appendingPathComponent("Producer/Sources/WiltedProducer/PodcastPreparationPipeline.swift")
-        var pipeline = try String(contentsOf: pipelineURL, encoding: .utf8)
-        let marker = "public static let pipelineSourceHash = \""
-        let markerRange = try #require(pipeline.range(of: marker))
-        let valueStart = markerRange.upperBound
-        let valueEnd = try #require(pipeline[valueStart...].firstIndex(of: "\""))
-        pipeline.replaceSubrange(valueStart..<valueEnd, with: "<normalized>")
-        let pipelineHash = "sha256:" + SHA256.hash(data: Data(pipeline.utf8)).map { String(format: "%02x", $0) }.joined()
+        let pipelineHash = try ProducerSource.pipelineSourceHash(root: sourceRoot)
         #expect(pipelineHash == PodcastPreparationPipeline.pipelineSourceHash)
     }
 
@@ -119,6 +111,42 @@ struct PodcastPreparationPipelineTests {
         try Data("PRIVATE = 1\n".utf8).write(to: unreadable)
         try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: unreadable.path)
         #expect(PodcastPreparationPipeline.resolvedSemanticFingerprint(environment: environment) == nil)
+    }
+
+    @Test func semanticFingerprintTracksWorkerPackageModules() throws {
+        let root = try Fixture.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = root.appendingPathComponent("worker.py")
+        let wilted = root.appendingPathComponent("wilted", isDirectory: true)
+        let speechStack = root.appendingPathComponent("speech_stack", isDirectory: true)
+        try FileManager.default.createDirectory(at: wilted, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: speechStack, withIntermediateDirectories: true)
+        try Data("WORKER = 1\n".utf8).write(to: worker)
+        try Data("DETECTOR = 1\n".utf8).write(to: wilted.appendingPathComponent("ads.py"))
+        try Data("CLIENT = 1\n".utf8).write(to: speechStack.appendingPathComponent("client.py"))
+        let environment = [
+            "WILTED_PIPELINE_PYTHONPATH": root.path,
+            "WILTED_SPEECH_STACK_PYTHONPATH": root.path,
+            "WILTED_PIPELINE_WORKER": worker.path
+        ]
+        let loneFileFingerprint = try #require(
+            PodcastPreparationPipeline.resolvedSemanticFingerprint(environment: environment)
+        )
+
+        let workerPackage = root.appendingPathComponent("wilted_worker", isDirectory: true)
+        try FileManager.default.createDirectory(at: workerPackage, withIntermediateDirectories: true)
+        let module = workerPackage.appendingPathComponent("a.py")
+        try Data("MODULE = 1\n".utf8).write(to: module)
+        let first = try #require(PodcastPreparationPipeline.resolvedSemanticFingerprint(environment: environment))
+        try Data("MODULE = 2\n".utf8).write(to: module)
+        let changed = try #require(PodcastPreparationPipeline.resolvedSemanticFingerprint(environment: environment))
+
+        #expect(first != changed)
+        try FileManager.default.removeItem(at: workerPackage)
+        let afterDeletingPackage = try #require(
+            PodcastPreparationPipeline.resolvedSemanticFingerprint(environment: environment)
+        )
+        #expect(afterDeletingPackage == loneFileFingerprint)
     }
 
     /// The transcript the feed publishes is preferred, arrives already timed,

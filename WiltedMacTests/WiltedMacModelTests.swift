@@ -7618,9 +7618,7 @@ final class WiltedMacModelTests: XCTestCase {
 
     func testNoDurableWriteCarriesTheUnresolvedSentinel() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let pipeline = try String(
-            contentsOf: root.appendingPathComponent("Producer/Sources/WiltedProducer/PodcastPreparationPipeline.swift")
-        )
+        let pipeline = try WiltedMacSource.pipeline(root: root)
         // `semanticFingerprint` is the sentinel-bearing value. Every stamping
         // site must take the optional resolution and omit the field instead:
         // a stored `-unresolved` becomes false provenance once a real

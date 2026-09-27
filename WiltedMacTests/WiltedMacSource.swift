@@ -56,6 +56,25 @@ enum WiltedMacSource {
         try joined(root: root, directories: ["Views"], ordered: viewFiles)
     }
 
+    /// The preparation pipeline, including files added by its future split.
+    static func pipeline(root: URL) throws -> String {
+        let producer = root.appendingPathComponent("Producer/Sources/WiltedProducer")
+        let pipeline = producer.appendingPathComponent("PodcastPreparationPipeline.swift")
+        let preparation = producer.appendingPathComponent("Preparation")
+        var sources = FileManager.default.fileExists(atPath: pipeline.path) ? [pipeline] : []
+        if FileManager.default.fileExists(atPath: preparation.path) {
+            let files = try FileManager.default.contentsOfDirectory(
+                at: preparation,
+                includingPropertiesForKeys: [.isRegularFileKey]
+            )
+            sources += try files
+                .filter { $0.pathExtension == "swift" }
+                .filter { try $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        }
+        return try sources.map { try String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
+    }
+
     private static func joined(root: URL, directories: [String], ordered: [String]) throws -> String {
         let app = root.appendingPathComponent("WiltedMac")
         var names = ordered
