@@ -32,6 +32,4 @@ Producer/Workers/wilted_pipeline.py legacy 2026-09-25: over 800 lines when the r
 WiltedKit/Tests/WiltedSyncTests/SyncSmokeTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 WiltedMacTests/WiltedMacSyncLifecycleTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 WiltedMacTests/WiltedVisualSystemTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
-WiltediOS/ListenerAppModel.swift legacy 2026-09-25: over 800 lines when the rule was adopted
-WiltediOSTests/ListenerAppModelTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 app/wilted_app_store_connect_bridge.py legacy 2026-09-25: over 800 lines when the rule was adopted
