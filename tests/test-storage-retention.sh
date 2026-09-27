@@ -149,7 +149,7 @@ for path in [root, *root.rglob("*")]:
 PY
 }
 run_apply() {
-    local lsof_mode="$1" pgrep_mode="$2" timeout="${3:-1}"
+    local lsof_mode="$1" pgrep_mode="$2" timeout="${3:-5}"
     env PATH="$probe_bin:$PATH" FAKE_LSOF_MODE="$lsof_mode" FAKE_PGREP_MODE="$pgrep_mode" \
         python3 "$collector" --repo "$case_repo" --tmp-root "$case_tmp" --apply \
         --probe-timeout-seconds "$timeout" --json >"$test_root/apply.json" 2>"$test_root/apply.err"

@@ -377,7 +377,7 @@ assert_snapshot_contract() {
   assert_contains 'validate_ios_pixel_snapshot_baselines "$integration_root"' "$gate"
   assert_contains 'NATIVE_FORCE_SNAPSHOT_BASELINE' "$gate"
   assert_contains 'test_host_pattern' "$gate"
-  assert_contains "test_host_pattern='\\.build/xcode/native-" "$gate"
+  assert_contains "test_host_pattern='\\.build/xcode/.*/WiltedMac\\.app/Contents/MacOS/WiltedMac'" "$gate"
   assert_contains 'native.cleanup mac-test-hosts-killed=' "$gate"
   assert_contains 'kill -KILL "$test_host_pid"' "$gate"
   assert_contains 'trap cleanup EXIT' "$gate"
