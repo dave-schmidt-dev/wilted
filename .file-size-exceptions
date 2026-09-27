@@ -22,10 +22,8 @@ Producer/Runtime/tests/test_station_contracts.py legacy 2026-09-25: over 800 lin
 Producer/Runtime/tests/test_transcribe.py legacy 2026-09-25: over 800 lines when the rule was adopted
 Producer/Runtime/tests/test_tui.py legacy 2026-09-25: over 800 lines when the rule was adopted
 Producer/Runtime/tests/test_weather_monitor.py legacy 2026-09-25: over 800 lines when the rule was adopted
-Producer/Sources/WiltedProducer/LocalLibraryStore.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 Producer/Sources/WiltedProducer/PlaybackController.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 Producer/Sources/WiltedProducer/PodcastPreparationPipeline.swift legacy 2026-09-25: over 800 lines when the rule was adopted
-Producer/Tests/WiltedProducerTests/LocalLibraryStoreTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 Producer/Tests/WiltedProducerTests/LocalLibrarySyncRepositoryTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 Producer/Tests/WiltedProducerTests/PlaybackControllerTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 Producer/Tests/WiltedProducerTests/PodcastPreparationPipelineTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
