@@ -8,7 +8,7 @@ it fails, and what it does not yet do.
 The relevant source is `WiltedMac/WiltedAutomationCoordinator.swift` (scheduling, claims,
 retry, status), the `WiltedAutomationSettings` family in
 `WiltedMac/Models/WiltedAutomationSettings.swift` (the persisted policy), and the admission/claim methods in
-`Producer/Sources/WiltedProducer/LocalLibraryStore.swift`.
+`Producer/Sources/WiltedProducer/LocalLibrary/`.
 
 ## Why automation only runs while the app is open
 
