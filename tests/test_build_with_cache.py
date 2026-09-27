@@ -72,13 +72,20 @@ class BuildWithCacheTests(unittest.TestCase):
     def test_path_reuses_the_same_cache(self) -> None:
         key = f"test-path-{os.getpid()}"
         first = self.run_helper("path", "swiftpm", key)
-        second = self.run_helper("path", "swiftpm", key + "-other-label")
+        second = self.run_helper("path", "swiftpm", key)
+        other = self.run_helper("path", "swiftpm", key + "-other-label")
 
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(first.stdout, second.stdout)
+        self.assertNotEqual(first.stdout, other.stdout)
         self.assertTrue(Path(first.stdout.strip()).is_dir())
-        self.assertEqual(Path(first.stdout.strip()), ROOT / ".build" / "swiftpm")
+        self.assertEqual(Path(first.stdout.strip()), ROOT / ".build" / "swiftpm" / key)
+        xcode_first = self.run_helper("path", "xcode", "mac-install")
+        xcode_other = self.run_helper("path", "xcode", "mac-ui-tests")
+        self.assertEqual(xcode_first.returncode, 0, xcode_first.stderr)
+        self.assertEqual(xcode_first.stdout, xcode_other.stdout)
+        self.assertEqual(Path(xcode_first.stdout.strip()), ROOT / ".build" / "xcode")
 
     def test_run_injects_swiftpm_and_xcode_cache_flags(self) -> None:
         swift_keys = [f"test-swift-{command}-{os.getpid()}" for command in ("build", "test", "run")]
@@ -97,7 +104,7 @@ class BuildWithCacheTests(unittest.TestCase):
         events = [event.split("\t") for event in self.read_events()]
         for command, key, args in zip(("build", "test", "run"), swift_keys, events[:3], strict=True):
             self.assertEqual(args[:3], ["swift", command, "--scratch-path"])
-            self.assertEqual(args[3], str(ROOT / ".build" / "swiftpm"))
+            self.assertEqual(args[3], str(ROOT / ".build" / "swiftpm" / key))
             self.assertEqual(args[4:], ["--verbose"])
         xcode_args = events[3]
         self.assertEqual(xcode_args[:2], ["xcodebuild", "-derivedDataPath"])
@@ -154,7 +161,31 @@ class BuildWithCacheTests(unittest.TestCase):
         self.assertEqual(exit_result.returncode, 23)
         self.assertEqual(signal_result.returncode, -signal.SIGTERM)
 
-    def test_same_cache_waits_across_labels_and_reports_contention(self) -> None:
+    def test_xcode_labels_share_a_lock(self) -> None:
+        first = subprocess.Popen(
+            [PYTHON, str(HELPER), "run", "xcode", "first", "--", "xcodebuild",
+             "--sleep-seconds", "1.3"],
+            cwd=ROOT, env=self.env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while not self.read_events() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(self.read_events(), "first fake Xcode build did not start")
+            second = self.run_helper(
+                "run", "xcode", "second", "--", "xcodebuild", timeout=8
+            )
+            _, first_stderr = first.communicate(timeout=5)
+            self.assertEqual(first.returncode, 0, first_stderr)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertIn("waiting kind=xcode", second.stderr)
+        finally:
+            if first.poll() is None:
+                first.terminate()
+                first.communicate(timeout=5)
+
+    def test_same_key_waits_and_reports_contention(self) -> None:
         key = f"test-lock-{os.getpid()}"
         first = subprocess.Popen(
             [PYTHON, str(HELPER), "run", "swiftpm", key, "--", "swift", "build",
@@ -172,7 +203,7 @@ class BuildWithCacheTests(unittest.TestCase):
             self.assertTrue(self.read_events(), "first fake build did not start")
 
             second = self.run_helper(
-                "run", "swiftpm", key + "-other-label", "--", "swift", "build", timeout=8
+                "run", "swiftpm", key, "--", "swift", "build", timeout=8
             )
             first_stdout, first_stderr = first.communicate(timeout=5)
             self.assertEqual(first.returncode, 0, first_stderr)

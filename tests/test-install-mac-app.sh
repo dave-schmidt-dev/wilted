@@ -294,11 +294,13 @@ fi
 #    This is the 2026-09-01 relaunch failure: an old build/quickcheck app
 #    outlived the registration sweep and won the next click.
 fake_repo="$tmp_root/repo"
-kept="$fake_repo/.build/mac-install/Build/Products/Debug/WiltedMac.app"
+kept="$fake_repo/.build/xcode/Build/Products/Debug/WiltedMac.app"
+other_cache="$fake_repo/.build/xcode/Build/Products/Development/WiltedMac.app"
 stale="$fake_repo/build/quickcheck/Build/Products/Debug/WiltedMac.app"
 runner="$fake_repo/build/quickcheck/Build/Products/Debug/WiltedMacUITests-Runner.app"
 outside="$tmp_root/elsewhere/WiltedMac.app"
 plant_bundle "$kept" "$bundle_id"
+plant_bundle "$other_cache" "$bundle_id"
 plant_bundle "$stale" "$bundle_id"
 plant_bundle "$runner" 'com.zerodelta.wilted.mac.uitests.xctrunner'
 plant_bundle "$outside" "$bundle_id"
@@ -307,10 +309,10 @@ if [[ "$pruned" != "$stale" ]]; then
     fail "prune reported the wrong set; got: ${pruned:-<none>}"
 elif [[ -d "$stale" ]]; then
     fail 'prune reported the stale product but left it in place'
-elif [[ ! -d "$kept" || ! -d "$runner" || ! -d "$outside" ]]; then
+elif [[ ! -d "$kept" || ! -d "$other_cache" || ! -d "$runner" || ! -d "$outside" ]]; then
     fail 'prune removed the kept product, another identifier, or a bundle outside the repo'
 else
-    pass 'stale build products are pruned; kept, foreign, and outside bundles survive'
+    pass 'stale build products are pruned; shared cache, foreign, and outside bundles survive'
 fi
 if ! wilted_prune_build_products "$tmp_root/absent" "$bundle_id" "$kept" >/dev/null; then
     fail 'pruning a repo without build roots returned non-zero'
@@ -387,6 +389,8 @@ assert_installer_contains 'wilted_wait_for_bundle_exit "$bundle_id"' \
     'waits for running copies to exit before replacing the bundle'
 assert_installer_contains 'path xcode mac-install' \
     'looks up the installer cache path through the build-cache helper'
+assert_installer_contains 'app="$derived/Build/Products/Debug/WiltedMac.app"' \
+    'installs the Debug Mac product even when the shared cache holds other configurations'
 assert_installer_contains 'run xcode mac-install --clean-app-product -- xcodebuild build' \
     'routes the installer build through the build-cache helper'
 assert_installer_contains 'run xcode mac-install --clean-app-product -- xcodebuild build' \

@@ -67,8 +67,10 @@ wilted_registered_bundle_paths() {
     return 0
 }
 
-# Deletes every *.app claiming <identifier> under the repo's own build roots
-# (<repo>/build and <repo>/.build), except <keep>, and prints each path removed.
+# Deletes stale *.app bundles claiming <identifier> under the repo's own
+# build roots, except <keep> and the reused .build/xcode cache, and prints
+# each path removed. The cache is shared by concurrent builds and must not be
+# pruned outside its helper lock.
 #
 # The registration sweep is not enough on its own. On 2026-09-01, an hour
 # after a clean install, the owner reopened the app and got an eleven-hour-old
@@ -87,7 +89,8 @@ wilted_prune_build_products() {
             [[ "$(wilted_bundle_identifier "$app")" == "$identifier" ]] || continue
             rm -rf "$app"
             printf '%s\n' "$app"
-        done < <(find "$root" -type d -name '*.app' -prune -print 2>/dev/null | sort)
+        done < <(find "$root" -path "$repo_root/.build/xcode" -prune -o \
+            -type d -name '*.app' -prune -print 2>/dev/null | sort)
     done
     return 0
 }

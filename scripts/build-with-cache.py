@@ -10,9 +10,10 @@ directory into the child build command -- `--scratch-path` directly after the
 `xcodebuild` -- then execs the child, so the child's exit status and signal
 death become the helper's own and stdout stays the child's.
 
-The cache lives at `.build/<kind>` under the checkout root resolved
-from this file's own location, which the repository `.gitignore` already
-covers. Builds of the same kind serialize on an advisory flock whose descriptor
+SwiftPM caches live at `.build/swiftpm/<key>` and Xcode DerivedData at
+`.build/xcode`, under the checkout root resolved from this file. The
+repository `.gitignore` covers the whole tree. SwiftPM builds sharing a stable
+package key serialize; all Xcode builds serialize on an advisory flock whose descriptor
 is inherited across the exec, so the lock is held for exactly the child's
 lifetime and is released by the child's exit; while another build holds the
 lock, a wait heartbeat is emitted at least every 15 seconds. The start line
@@ -67,8 +68,12 @@ def checkout_root(script_path: str | Path) -> Path:
 
 def cache_paths(root: Path, kind: str, key: str) -> tuple[Path, Path]:
     """Return the cache directory and the advisory-lock path for a key."""
-    cache = root / ".build" / kind
-    lock = root / ".build" / f"{kind}.lock"
+    if kind == "swiftpm":
+        cache = root / ".build" / "swiftpm" / key
+        lock = root / ".build" / "swiftpm" / ".locks" / f"{key}.lock"
+    else:
+        cache = root / ".build" / "xcode"
+        lock = root / ".build" / "xcode.lock"
     return cache, lock
 
 

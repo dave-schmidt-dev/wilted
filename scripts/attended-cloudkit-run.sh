@@ -119,7 +119,7 @@ cmd_mac() {
     -destination 'platform=macOS,arch=arm64' \
     "${args[@]}"
   local app
-  app="$(find "$derived/Build/Products" -maxdepth 2 -type d -name 'WiltedMac.app' -print -quit)"
+  app="$derived/Build/Products/Development/WiltedMac.app"
   verify_artifact 'mac' "$app" 'Contents/embedded.provisionprofile'
   printf '\nMAC_APP=%s\n' "$app"
 }
@@ -133,7 +133,7 @@ cmd_ios() {
     -destination 'generic/platform=iOS' \
     "${args[@]}"
   local app
-  app="$(find "$derived/Build/Products" -maxdepth 2 -type d -name 'WiltediOS.app' -print -quit)"
+  app="$derived/Build/Products/Development-iphoneos/WiltediOS.app"
   verify_artifact 'ios' "$app" 'embedded.mobileprovision'
   printf '\nIOS_APP=%s\n' "$app"
 }
@@ -143,7 +143,7 @@ cmd_install() {
   local device="${WILTED_DEVICE_ID:-}"
   [[ -n "$device" ]] || fail 'set WILTED_DEVICE_ID to the paired device identifier'
   local app
-  app="$(find "$derived/Build/Products" -maxdepth 2 -type d -name 'WiltediOS.app' -print -quit)"
+  app="$derived/Build/Products/Development-iphoneos/WiltediOS.app"
   [[ -d "$app" ]] || fail 'no iOS product to install; run the ios step first'
   step "Installing listener on device $device"
   xcrun devicectl device install app --device "$device" "$app" || fail 'device install failed'

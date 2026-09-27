@@ -86,7 +86,7 @@ python3 "$build_cache" run xcode mac-install --clean-app-product -- xcodebuild b
     exit 1
   }
 
-app="$(find "$derived/Build/Products" -maxdepth 2 -type d -name '*.app' -print -quit)"
+app="$derived/Build/Products/Debug/WiltedMac.app"
 [[ -n "$app" && -d "$app" ]] || { status 'install.error no app product was produced'; exit 1; }
 
 # Refuse to install something that is not this app, rather than overwriting
@@ -159,11 +159,11 @@ rm -rf "$target"
 ditto "$app" "$target"
 codesign --verify --strict "$target" || { status 'install.error installed app failed signature verification'; exit 1; }
 
-# Stale products under the repo's own build roots are deleted, not merely
-# unregistered: Spotlight indexes ~/Documents and the Dock remembers paths, so
+# Stale products under the repo's legacy build roots are deleted, not merely
+# unregistered; the shared .build/xcode cache is retained: Spotlight indexes ~/Documents and the Dock remembers paths, so
 # a bundle that still exists can be launched by path and re-register itself.
 # That is how an eleven-hour-old build/quickcheck app came back an hour after
-# a clean install. Bundles outside the repo are never deleted.
+# a clean install. Bundles outside the repo and in the shared cache are retained.
 while IFS= read -r pruned; do
   [[ -n "$pruned" ]] && status "install.prune removed=$pruned"
 done < <(wilted_prune_build_products "$repo_root" "$bundle_id" "$app")
