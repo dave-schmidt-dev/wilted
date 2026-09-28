@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  source "$repo_root/scripts/lib/test-runner.sh"
+  wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
+fi
+
 root_dir="$(cd "$(dirname "$0")/.." && pwd)"
 fixture_dir="$root_dir/contracts/cloudkit/fixtures"
 validator="$root_dir/scripts/validate-cloudkit-contract.swift"

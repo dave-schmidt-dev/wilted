@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  source "$repo_root/scripts/lib/test-runner.sh"
+  wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
+fi
+
 # Credential-free native gate for the generated Mac/iOS project.  The live
 # gate uses only local XcodeGen, SwiftPM, xcodebuild, and simctl capabilities.
 # NATIVE_SELF_TEST is intentionally hermetic and is used by the meta-test.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/test-runner.sh
+source "$repo_root/scripts/lib/test-runner.sh"
 project_yml="$repo_root/project.yml"
 native_self_test="${NATIVE_SELF_TEST:-0}"
+native_interrupt_test_command="${NATIVE_INTERRUPT_TEST_COMMAND:-}"
 forced_fail_leg="${NATIVE_FORCE_FAIL_LEG:-}"
 forced_zero_leg="${NATIVE_FORCE_ZERO_TEST_LEG:-}"
 forced_snapshot_baseline="${NATIVE_FORCE_SNAPSHOT_BASELINE:-}"
@@ -23,6 +32,7 @@ wilted_development_team="${WILTED_DEVELOPMENT_TEAM:-4CJ49V6QHW}"
 # WILTED_MAC_UI=1.
 wilted_mac_ui="${WILTED_MAC_UI:-0}"
 xcode_test_timeout_seconds="${WILTED_XCODE_TEST_TIMEOUT_SECONDS:-300}"
+native_leg_timeout_seconds="${WILTED_NATIVE_LEG_TIMEOUT_SECONDS:-1800}"
 # The iOS pixel baselines were recorded on iPhone 17 Pro. Selecting it by name
 # keeps the UI leg from silently using a different first-listed iPhone model.
 ios_ui_device_name='iPhone 17 Pro'
@@ -37,6 +47,7 @@ source "$repo_root/scripts/lib/temp-sweep.sh"
 wilted_sweep_stale_temp_dirs
 tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-native-gate.XXXXXX")"
 build_with_cache="$repo_root/scripts/build-with-cache.py"
+bounded_runner="$repo_root/scripts/run-bounded.py"
 # A failed real Mac UI run is the one disposable artifact worth retaining for
 # diagnosis. The default lives under the repository's ignored .logs directory;
 # the override keeps the meta-test hermetic.
@@ -69,6 +80,9 @@ cleanup_mac_test_hosts() {
 }
 
 cleanup() {
+  wilted_stop_active_ui_lock
+  wilted_stop_active_supervisor
+  wilted_finish_logger || true
   cleanup_mac_test_hosts
   rm -rf "$tmp_root"
 }
@@ -76,8 +90,18 @@ cleanup() {
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
+trap 'cleanup; exit 129' HUP
 # shellcheck source=lib/simctl_gate_lib.sh
 source "$repo_root/scripts/lib/simctl_gate_lib.sh"
+
+[[ -f "$bounded_runner" ]] || {
+  printf 'native.error bounded runner is missing: %s\n' "$bounded_runner" >&2
+  exit 127
+}
+[[ "$native_leg_timeout_seconds" =~ ^[1-9][0-9]*$ ]] || {
+  printf '%s\n' 'native.error WILTED_NATIVE_LEG_TIMEOUT_SECONDS must be a positive integer' >&2
+  exit 2
+}
 
 leg_names=(
   xcodegen-reproducible
@@ -134,8 +158,10 @@ run_package_xctest_bundles() {
   for bundle in "${bundles[@]}"; do
     printf 'native.xctest.start label=%s bundle=%s\n' "$label" "$(basename "$bundle")"
     set +e
-    xcrun xctest "$bundle" 2>&1 | tee -a "$log_path" >&2
-    bundle_status="${PIPESTATUS[0]}"
+    wilted_start_supervisor python3 "$bounded_runner" --timeout-seconds "$native_leg_timeout_seconds" -- \
+      xcrun xctest "$bundle" > >(tee -a "$log_path" >&2) 2>&1
+    wilted_wait_active_supervisor
+    bundle_status=$?
     set -e
     [[ "$bundle_status" -eq 0 ]] || status="$bundle_status"
   done
@@ -184,7 +210,7 @@ run_leg() {
   shift 2
   local output_file="$tmp_root/$name.log"
   local result_bundle="$tmp_root/$name.xcresult"
-  local command_status=0
+  local command_status=0 logger_status=0 stream_file="$tmp_root/$name.stream"
 
   if is_deferred_leg "$name"; then
     deferred_legs+=1
@@ -208,7 +234,7 @@ run_leg() {
       printf '%s\n' 'self_test_macos_ui_zero_test_evidence' >"$result_bundle/self-test-evidence"
     fi
     command_status=0
-  elif [[ "$native_self_test" == "1" ]]; then
+  elif [[ "$native_self_test" == "1" && "$name" != "interrupt-fixture" ]]; then
     if [[ "$report_mode" == "xctest" ]]; then
       # Distinct totals make the meta-test prove which capture is authoritative.
       # Reverting run_leg to the package leg's inner tee reports two, not three.
@@ -228,10 +254,16 @@ run_leg() {
     fi
     command_status=0
   else
+    wilted_start_logger "$output_file" "$stream_file"
     set +e
-    "$@" 2>&1 | tee "$output_file" >&2
-    command_status="${PIPESTATUS[0]}"
+    "$@" >&9 2>&1
+    command_status=$?
+    wilted_finish_logger
+    logger_status=$?
     set -e
+    if [[ "$command_status" -eq 0 && "$logger_status" -ne 0 ]]; then
+      command_status="$logger_status"
+    fi
   fi
 
   if [[ "$command_status" -eq 0 && "$report_mode" == "count" ]]; then
@@ -291,7 +323,18 @@ build_cache_path() {
 run_with_build_cache() {
   local kind="$1" key="$2"
   shift 2
-  python3 "$build_with_cache" run "$kind" "$key" -- "$@"
+  local timeout_seconds="$native_leg_timeout_seconds"
+  if [[ "$kind" == "xcode" ]]; then
+    timeout_seconds="$xcode_test_timeout_seconds"
+  fi
+  wilted_start_supervisor env WILTED_TEST_TIMEOUT_SECONDS="$timeout_seconds" \
+    python3 "$build_with_cache" run "$kind" "$key" -- "$@"
+  wilted_wait_active_supervisor
+}
+
+run_bounded_native_command() {
+  wilted_start_supervisor python3 "$bounded_runner" --timeout-seconds "$native_leg_timeout_seconds" -- "$@"
+  wilted_wait_active_supervisor
 }
 
 generated_project_path() {
@@ -305,8 +348,8 @@ leg_xcodegen_reproducible() {
   local first="$tmp_root/generated-first"
   local second="$tmp_root/generated-second"
   mkdir -p "$first" "$second"
-  xcodegen generate --spec "$integration_root/project.yml" --project "$first" --project-root "$integration_root"
-  xcodegen generate --spec "$integration_root/project.yml" --project "$second" --project-root "$integration_root"
+  run_bounded_native_command xcodegen generate --spec "$integration_root/project.yml" --project "$first" --project-root "$integration_root"
+  run_bounded_native_command xcodegen generate --spec "$integration_root/project.yml" --project "$second" --project-root "$integration_root"
 
   # XcodeGen resolves plist and entitlement paths relative to the generated
   # project, while the disposable project lives under tmp_root. Keep every
@@ -457,7 +500,8 @@ xcode_test_leg() {
   [[ "$xcode_test_timeout_seconds" =~ ^[1-9][0-9]*$ ]] ||
     fail 'WILTED_XCODE_TEST_TIMEOUT_SECONDS must be a positive integer'
   cleanup_mac_test_hosts
-  local -a test_command=(python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test \
+  local -a test_command=(env WILTED_TEST_TIMEOUT_SECONDS="$xcode_test_timeout_seconds" \
+    python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test \
     -project "$project" \
     -scheme "$scheme" \
     "${only_testing_args[@]}" \
@@ -466,13 +510,15 @@ xcode_test_leg() {
     -parallel-testing-enabled NO \
     -quiet)
   if [[ -n "${WILTED_UI_TEST_SIMULATOR_UDID:-}" ]]; then
+    WILTED_UI_LOCK_PID_FILE="$lock_pid_file"
     GATE_UI_TEST_LOCK_PID_FILE="$lock_pid_file" gate_ui_test_lock \
       --label "$label" --simulator-udid "$WILTED_UI_TEST_SIMULATOR_UDID" \
       "${test_command[@]}" &
+    WILTED_ACTIVE_SUPERVISOR_PID=$!
   else
-    "${test_command[@]}" &
+    wilted_start_supervisor "${test_command[@]}"
   fi
-  local xcode_pid=$!
+  local xcode_pid="$WILTED_ACTIVE_SUPERVISOR_PID"
   local elapsed_seconds=0
   local xcode_status
   while kill -0 "$xcode_pid" 2>/dev/null; do
@@ -484,14 +530,11 @@ xcode_test_leg() {
       if [[ "$lock_wrapper_pid" =~ ^[1-9][0-9]*$ ]]; then
         # Signal apple-ui-test-lock directly; it forwards TERM to xcodebuild's
         # process group before returning and releasing the simulator lane.
-        kill -TERM "$lock_wrapper_pid" 2>/dev/null || true
+        wilted_stop_active_ui_lock
       else
-        kill -TERM "$xcode_pid" 2>/dev/null || true
+        wilted_stop_active_supervisor
       fi
       cleanup_mac_test_hosts
-      set +e
-      wait "$xcode_pid"
-      set -e
       local timeout_phase=build
       if grep -q 'Testing started' "$tmp_root/$label.log" 2>/dev/null; then
         timeout_phase=test
@@ -506,8 +549,9 @@ xcode_test_leg() {
     ((elapsed_seconds += 1))
   done
   set +e
-  wait "$xcode_pid"
+  wilted_wait_active_supervisor
   xcode_status=$?
+  WILTED_UI_LOCK_PID_FILE=""
   set -e
   rm -f "$lock_pid_file"
   return "$xcode_status"
@@ -641,14 +685,21 @@ leg_macos_ui_tests() {
   printf '%s\n' "$runner_signature_info"
   printf '%s\n' "$host_signature_info"
 
-  gate_ui_test_lock --label "$label" python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test-without-building \
+  local lock_pid_file="$tmp_root/$label.ui-lock.pid"
+  WILTED_UI_LOCK_PID_FILE="$lock_pid_file"
+  GATE_UI_TEST_LOCK_PID_FILE="$lock_pid_file" gate_ui_test_lock --label "$label" \
+    env WILTED_TEST_TIMEOUT_SECONDS="$xcode_test_timeout_seconds" \
+    python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test-without-building \
     -project "$project" \
     -scheme WiltedMac \
     "$only_testing_arg" \
     -destination "$destination" \
     -resultBundlePath "$tmp_root/$label.xcresult" \
     -parallel-testing-enabled NO \
-    -quiet
+    -quiet &
+  WILTED_ACTIVE_SUPERVISOR_PID=$!
+  wilted_wait_active_supervisor
+  WILTED_UI_LOCK_PID_FILE=""
 }
 
 leg_ios_ui_tests() {
@@ -684,9 +735,7 @@ if [[ "$native_self_test" != "1" ]]; then
   require_tool xcodegen
   require_tool jq
   require_tool xmllint
-  # run_leg streams each function through tee, so state assigned inside the
-  # xcodegen function is not propagated from its pipeline subshell.  The
-  # deterministic first output path is known before that leg starts.
+  # The deterministic first output path is known before XcodeGen starts.
   prepare_integration_root
   native_project="$tmp_root/generated-first/Wilted.xcodeproj"
   validate_pixel_snapshot_baselines "$integration_root"
@@ -718,6 +767,12 @@ if ! is_deferred_leg macos-ui-tests && screen_is_locked; then
   status 'native.macos-ui.screen-locked remedy="unlock the Mac and rerun make native-ui"'
   fail 'the macOS UI leg cannot activate an application while the screen is locked'
   exit 1
+fi
+
+if [[ -n "$native_interrupt_test_command" ]]; then
+  if [[ "${NATIVE_INTERRUPT_UI_TEST:-0}" == "1" ]]; then WILTED_UI_LOCK_PID_FILE="${NATIVE_INTERRUPT_UI_LOCK_PID_FILE:-$tmp_root/interrupt.ui-lock.pid}"; run_leg "interrupt-fixture" "none" wilted_run_ui_lock_fixture "$native_interrupt_test_command"; else run_leg "interrupt-fixture" "none" run_with_build_cache swiftpm native-wiltedproducer-tests swift run "$native_interrupt_test_command"; fi
+  (( failed_legs == 0 )) || exit 1
+  exit 0
 fi
 
 run_leg "${leg_names[0]}" "${leg_reports[0]}" leg_xcodegen_reproducible

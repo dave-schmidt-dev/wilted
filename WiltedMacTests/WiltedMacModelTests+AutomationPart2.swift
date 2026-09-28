@@ -229,15 +229,87 @@ extension WiltedMacModelTests {
         XCTAssertFalse(model.ticketDrainTickerIsRunning, "actual termination is the one moment stopping it is right")
     }
 
+    func ticketDrainProgressWindow(
+        now: Date, calendar: Calendar
+    ) throws -> (window: WiltedAutomationOffPeakWindow, liveMinute: Int, ineligibleMinute: Int) {
+        let components = calendar.dateComponents([.hour, .minute], from: now)
+        let hour = try XCTUnwrap(components.hour)
+        let minute = try XCTUnwrap(components.minute)
+        let liveMinute = hour * 60 + minute
+        let ineligibleMinute = (liveMinute + 12 * 60) % (24 * 60)
+        let windowStart = (ineligibleMinute + 2) % (24 * 60)
+        let start = try XCTUnwrap(WiltedAutomationLocalTime(
+            hour: windowStart / 60, minute: windowStart % 60
+        ))
+        let end = try XCTUnwrap(WiltedAutomationLocalTime(
+            hour: ineligibleMinute / 60, minute: ineligibleMinute % 60
+        ))
+        return (try XCTUnwrap(WiltedAutomationOffPeakWindow(start: start, end: end)),
+                liveMinute, ineligibleMinute)
+    }
+
+    func testTicketDrainProgressWindowKeepsLiveTickerMinutesEligible() throws {
+        let calendar = Calendar.current
+        let simulatedMidnight = try localDate(hour: 0, minute: 0)
+        let oldWindow = try XCTUnwrap(WiltedAutomationOffPeakWindow(
+            start: try XCTUnwrap(WiltedAutomationLocalTime(hour: 0, minute: 1)),
+            end: try XCTUnwrap(WiltedAutomationLocalTime(hour: 23, minute: 59))
+        ))
+
+        XCTAssertEqual(
+            WiltedAutomationCoordinator.preparationPlan(
+                processingPolicy: .offPeak(oldWindow), at: simulatedMidnight, calendar: calendar
+            ),
+            .deferUntilOffPeak,
+            "the retired fixture rejects midnight"
+        )
+
+        for liveMinute in 0 ..< 24 * 60 {
+            let liveDate = try localDate(hour: liveMinute / 60, minute: liveMinute % 60)
+            let fixture = try ticketDrainProgressWindow(now: liveDate, calendar: calendar)
+            let policy = WiltedAutomationProcessingPolicy.offPeak(fixture.window)
+            XCTAssertEqual(fixture.liveMinute, liveMinute)
+            XCTAssertEqual(
+                WiltedAutomationCoordinator.preparationPlan(
+                    processingPolicy: policy, at: liveDate, calendar: calendar
+                ),
+                .prepareNow,
+                "live minute=\(liveMinute)"
+            )
+            let ineligibleDate = try localDate(
+                hour: fixture.ineligibleMinute / 60,
+                minute: fixture.ineligibleMinute % 60
+            )
+            XCTAssertEqual(
+                WiltedAutomationCoordinator.preparationPlan(
+                    processingPolicy: policy, at: ineligibleDate, calendar: calendar
+                ),
+                .deferUntilOffPeak,
+                "derived gap minute=\(fixture.ineligibleMinute)"
+            )
+            for drift in -5 ... 5 {
+                let driftedMinute = (liveMinute + drift + 24 * 60) % (24 * 60)
+                XCTAssertEqual(
+                    WiltedAutomationCoordinator.preparationPlan(
+                        processingPolicy: policy,
+                        at: try localDate(hour: driftedMinute / 60, minute: driftedMinute % 60),
+                        calendar: calendar
+                    ),
+                    .prepareNow,
+                    "a small ticker drift stays in the eligible half-day"
+                )
+            }
+        }
+    }
+
     /// Step 7's done-condition. `checkpointForBackground` used to leave an
     /// off-peak-deferred episode stuck: the only ticker that re-evaluated
     /// `deferredAutomaticPreparations` was the one it stops. The window here
-    /// is constructed to be eligible for all but two minutes out of the day
-    /// (00:00 and 23:59), so the deliberately-chosen admission date below
-    /// (fixed at 00:00) is reliably ineligible while the live ticker's own
-    /// real-clock check, moments later, is eligible with overwhelming
-    /// probability -- this is a real-clock ticker, so the assertion is
-    /// necessarily a poll rather than a single deterministic instant.
+    /// is constructed to be eligible for all but two minutes out of the day,
+    /// so the deliberately-chosen admission date below (inside a dynamic
+    /// two-minute gap opposite the live clock) is reliably
+    /// ineligible while the live ticker's own check is eligible. The assertion
+    /// remains a poll because the production ticker reads the real clock.
     func testAPendingTicketAdvancesWhileTheWindowIsNotFrontmost() async throws {
         let directory = temporaryDirectory("ticket-drain-background-progress")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -275,11 +347,13 @@ extension WiltedMacModelTests {
         await model.waitForStoreBootstrap()
         XCTAssertEqual(model.episodes.map(\.id), [episodeID])
 
-        let almostAllDay = try XCTUnwrap(WiltedAutomationOffPeakWindow(
-            start: try XCTUnwrap(WiltedAutomationLocalTime(hour: 0, minute: 1)),
-            end: try XCTUnwrap(WiltedAutomationLocalTime(hour: 23, minute: 59))
-        ))
-        let reliablyIneligibleNow = try localDate(hour: 0, minute: 0)
+        let calendar = Calendar.current
+        let progressWindow = try ticketDrainProgressWindow(now: Date(), calendar: calendar)
+        let almostAllDay = progressWindow.window
+        let reliablyIneligibleNow = try localDate(
+            hour: progressWindow.ineligibleMinute / 60,
+            minute: progressWindow.ineligibleMinute % 60
+        )
 
         // Mirrors `downloadEpisode`'s own sequence: the place in line is taken
         // before admission is decided, so there is already a durable, pending
@@ -314,6 +388,13 @@ extension WiltedMacModelTests {
             processingPolicy: .offPeak(almostAllDay),
             transcriptPolicy: .alwaysTranscribe, removeAds: false
         ))
+
+        XCTAssertEqual(
+            WiltedAutomationCoordinator.preparationPlan(
+                processingPolicy: .offPeak(almostAllDay), at: reliablyIneligibleNow, calendar: calendar
+            ),
+            .deferUntilOffPeak
+        )
 
         let episode = try XCTUnwrap(model.episodes.first(where: { $0.id == episodeID }))
         model.admitAutomaticPreparation(for: episode, at: reliablyIneligibleNow)

@@ -10,6 +10,10 @@ directory into the child build command -- `--scratch-path` directly after the
 `xcodebuild` -- then execs the child, so the child's exit status and signal
 death become the helper's own and stdout stays the child's.
 
+Every build command is supervised by ``run-bounded.py``.  Its default 300s
+deadline can be changed for a gate with ``WILTED_TEST_TIMEOUT_SECONDS``;
+``WILTED_BUILD_LOCK_TIMEOUT_SECONDS`` similarly bounds cache-lock waiting.
+
 SwiftPM caches live at `.build/swiftpm/<key>` and Xcode DerivedData at
 `.build/xcode`, under the checkout root resolved from this file. The
 repository `.gitignore` covers the whole tree. SwiftPM builds sharing a stable
@@ -30,6 +34,7 @@ malformed keys, commands that do not match the kind, and missing arguments.
 from __future__ import annotations
 
 import fcntl
+import math
 import os
 import re
 import shutil
@@ -52,6 +57,8 @@ KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 KEY_MAX_LENGTH = 128
 HEARTBEAT_SECONDS = 15.0
 LOCK_POLL_SECONDS = 0.2
+DEFAULT_TIMEOUT_SECONDS = 300.0
+DEFAULT_LOCK_TIMEOUT_SECONDS = 300.0
 EXIT_USAGE = 2
 EXIT_NOT_EXECUTABLE = 126
 EXIT_NOT_FOUND = 127
@@ -127,6 +134,7 @@ def acquire_lock(
     key: str,
     heartbeat_seconds: float = HEARTBEAT_SECONDS,
     poll_seconds: float = LOCK_POLL_SECONDS,
+    timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
     report: Callable[[str], None] = emit,
 ) -> int:
     """Hold the advisory lock for a key, heartbeating while it is contended.
@@ -147,6 +155,9 @@ def acquire_lock(
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             now = time.monotonic()
+            if now - started >= timeout_seconds:
+                os.close(descriptor)
+                raise ValueError(f"lock-timeout: kind={kind} key={key} waited={now - started:.0f}s")
             if last_heartbeat is None or now - last_heartbeat >= heartbeat_seconds:
                 report(
                     f"waiting kind={kind} key={key} lock={lock_path} "
@@ -156,6 +167,18 @@ def acquire_lock(
             time.sleep(poll_seconds)
         else:
             return descriptor
+
+
+def environment_timeout(name: str, default: float) -> float:
+    """Read one finite positive timeout from the environment."""
+    raw = os.environ.get(name, str(default))
+    try:
+        value = float(raw)
+    except ValueError as error:
+        raise ValueError(f"{name.lower()}-invalid") from error
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name.lower()}-invalid")
+    return value
 
 
 def parse_arguments(argv: list[str]) -> tuple[str, str, str, bool, list[str]]:
@@ -213,12 +236,23 @@ def main(argv: list[str]) -> int:
         plan = plan_child(kind, cache, child)
         ensure_cache(cache)
         emit(f"start kind={kind} key={key} cache={cache}")
-        acquire_lock(lock, kind, key)
+        lock_timeout = environment_timeout(
+            "WILTED_BUILD_LOCK_TIMEOUT_SECONDS", DEFAULT_LOCK_TIMEOUT_SECONDS
+        )
+        command_timeout = environment_timeout(
+            "WILTED_TEST_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS
+        )
+        acquire_lock(lock, kind, key, timeout_seconds=lock_timeout)
         if clean_product:
             clean_app_product(cache)
         sys.stderr.flush()
         try:
-            os.execvp(plan[0], plan)
+            runner = Path(__file__).with_name("run-bounded.py")
+            os.execvpe(
+                sys.executable,
+                [sys.executable, str(runner), "--timeout-seconds", str(command_timeout), "--", *plan],
+                os.environ,
+            )
         except FileNotFoundError:
             emit(f"command-not-found: {plan[0]}")
             return EXIT_NOT_FOUND

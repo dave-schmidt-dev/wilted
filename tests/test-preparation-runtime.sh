@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  source "$repo_root/scripts/lib/test-runner.sh"
+  wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
+fi
+
 # Gate leg for the vendored preparation runtime's Python suite.
 #
 # This is the suite that used to live in the separate wilted-old checkout. It

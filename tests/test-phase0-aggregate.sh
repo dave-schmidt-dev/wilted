@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  source "$repo_root/scripts/lib/test-runner.sh"
+  wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
+fi
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 phase0_script="$repo_root/scripts/test-phase0.sh"
 # shellcheck source=../scripts/lib/temp-sweep.sh
@@ -11,6 +17,7 @@ wilted_sweep_stale_temp_dirs
 
 expected_legs=(
   "test-build-with-cache"
+  "test-bounded-entry"
   "test-no-global-tmp"
   "assert-mac-first-docs"
   "test-contract-fixtures"
@@ -96,11 +103,119 @@ assert_contains() {
 }
 
 assert_contains 'run_leg_async "assert-mac-first-docs" "$repo_root/scripts/assert-mac-first-docs.sh"' "$phase0_script"
+assert_contains 'run_leg_async "test-bounded-entry" "$repo_root/tests/test-bounded-entry.sh"' "$phase0_script"
 assert_contains 'run_leg_async "test-storage-retention" "$repo_root/tests/test-storage-retention.sh"' "$phase0_script"
+assert_contains 'python3 "$bounded_runner" --timeout-seconds "$phase0_leg_timeout_seconds" --' "$phase0_script"
+assert_contains 'trap '\''cleanup_phase0; exit 129'\'' HUP' "$phase0_script"
 assert_contains 'run_leg_async "test-simulator-cleanup" "$repo_root/tests/test-simulator-cleanup.sh"' "$phase0_script"
 
 tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-phase0-agg.XXXXXX")"
-trap 'rm -rf "$tmp_dir"' EXIT
+phase_owned_pids=""
+cleanup_phase0_fixture() {
+  local pid
+  for pid in $phase_owned_pids; do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  for pid in $phase_owned_pids; do
+    wait "$pid" 2>/dev/null || true
+  done
+  rm -rf "$tmp_dir"
+}
+trap cleanup_phase0_fixture EXIT INT TERM HUP
+
+write_interrupt_fixture() {
+  local fixture="$1"
+  cat >"$fixture" <<'FIXTURE'
+#!/usr/bin/env bash
+set -euo pipefail
+proof_dir="${WILTED_INTERRUPT_PROOF_DIR:?}"
+mkdir -p "$proof_dir"
+(
+  trap 'exit 0' INT TERM HUP
+  while :; do sleep 1; done
+) &
+grandchild_pid=$!
+printf '%s\n' "$$" >"$proof_dir/child.pid"
+printf '%s\n' "$grandchild_pid" >"$proof_dir/grandchild.pid"
+trap 'wait "$grandchild_pid" 2>/dev/null || true; exit 0' INT TERM HUP
+wait "$grandchild_pid"
+FIXTURE
+  chmod +x "$fixture"
+}
+
+wait_for_file() {
+  local file="$1"
+  local attempt
+  for attempt in $(seq 1 50); do
+    [[ -s "$file" ]] && return 0
+    sleep 0.1
+  done
+  printf 'assertion failed: timed out waiting for %s\n' "$file" >&2
+  return 1
+}
+
+assert_stopped() {
+  local pid="$1"
+  local label="$2"
+  local attempt
+  for attempt in $(seq 1 30); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  printf 'assertion failed: %s pid=%s survived inner-shell TERM\n' "$label" "$pid" >&2
+  ps -p "$pid" -o pid=,ppid=,state=,command= >&2 || true
+  return 1
+}
+
+assert_inner_interrupt_cleanup() {
+  local mode="$1"
+  local proof_dir="$tmp_dir/$mode-proof"
+  local output="$tmp_dir/$mode-interrupt.log"
+  local fixture="$tmp_dir/$mode-fixture.sh"
+  local peer_pid phase_pid child_pid grandchild_pid result
+
+  write_interrupt_fixture "$fixture"
+  sleep 60 &
+  peer_pid=$!
+  phase_owned_pids="$peer_pid"
+  env WILTED_BOUNDED_ENTRY=1 PHASE0_INTERRUPT_TEST_LEG="$fixture" \
+    PHASE0_INTERRUPT_TEST_MODE="$mode" WILTED_INTERRUPT_PROOF_DIR="$proof_dir" \
+    bash "$phase0_script" >"$output" 2>&1 &
+  phase_pid=$!
+  phase_owned_pids="$phase_owned_pids $phase_pid"
+  wait_for_file "$proof_dir/grandchild.pid" || {
+    cat "$output" >&2
+    return 1
+  }
+  child_pid="$(<"$proof_dir/child.pid")"
+  grandchild_pid="$(<"$proof_dir/grandchild.pid")"
+  kill -TERM "$phase_pid"
+  set +e
+  wait "$phase_pid"
+  result=$?
+  set -e
+  [[ "$result" -eq 143 ]] || {
+    printf 'assertion failed: phase0 %s inner shell expected 143, got %s\n' "$mode" "$result" >&2
+    cat "$output" >&2
+    return 1
+  }
+  assert_stopped "$child_pid" "phase0-$mode child"
+  assert_stopped "$grandchild_pid" "phase0-$mode descendant"
+  kill -0 "$peer_pid" 2>/dev/null || {
+    printf 'assertion failed: unrelated peer died during phase0 %s cleanup\n' "$mode" >&2
+    return 1
+  }
+  kill -TERM "$peer_pid" 2>/dev/null || true
+  wait "$peer_pid" 2>/dev/null || true
+  phase_owned_pids=""
+  printf 'phase0 inner interrupt fixture passed mode=%s child=%s descendant=%s\n' \
+    "$mode" "$child_pid" "$grandchild_pid"
+}
+
+assert_inner_interrupt_cleanup async
+assert_inner_interrupt_cleanup sync
 
 base_output="$tmp_dir/selftest.log"
 forced_output="$tmp_dir/forced.log"

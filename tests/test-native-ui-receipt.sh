@@ -1,18 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  source "$repo_root/scripts/lib/test-runner.sh"
+  wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
+fi
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 temp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-native-ui-receipt.XXXXXX")"
 trap 'rm -rf "$temp_root"' EXIT
 fixture="$temp_root/repo"
-mkdir -p "$fixture/.githooks" "$fixture/scripts" "$fixture/WiltedMac" "$fixture/docs" "$temp_root/bin"
+mkdir -p "$fixture/.githooks" "$fixture/scripts/lib" "$fixture/WiltedMac" "$fixture/docs" "$temp_root/bin"
 cp "$repo_root/.githooks/pre-push" "$fixture/.githooks/pre-push"
 cp "$repo_root/scripts/native-ui-receipt.py" "$fixture/scripts/native-ui-receipt.py"
 cp "$repo_root/scripts/mac-ui-surface.paths" "$fixture/scripts/mac-ui-surface.paths"
+cp "$repo_root/scripts/run-bounded.py" "$fixture/scripts/run-bounded.py"
+cp "$repo_root/scripts/lib/test-runner.sh" "$fixture/scripts/lib/test-runner.sh"
 
 cat >"$fixture/scripts/test-gate.sh" <<'GATE'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  source "$repo_root/scripts/lib/test-runner.sh"
+  wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
+fi
 printf 'run\n' >>"${WILTED_FAKE_GATE_LOG:?}"
 for leg in xcodegen-reproducible wiltedkit-tests cloudsync-tests listener-tests wiltedproducer-tests macos-unit-tests ios-unit-tests macos-ui-tests ios-pixel-snapshot-tests; do
   printf 'native.leg.start name=%s\n' "$leg"

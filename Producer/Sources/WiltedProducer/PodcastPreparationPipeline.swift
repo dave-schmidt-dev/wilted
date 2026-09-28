@@ -316,10 +316,20 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
 
         let collector = WorkerOutputCollector(onProgress: onProgress)
         errors.fileHandleForReading.readabilityHandler = { handle in
-            collector.appendProgress(handle.availableData)
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            collector.appendProgress(data)
         }
         output.fileHandleForReading.readabilityHandler = { handle in
-            collector.appendResult(handle.availableData)
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            collector.appendResult(data)
         }
         do { try process.run() } catch {
             throw PodcastPreparationError.workerUnavailable(String(describing: error))
@@ -508,7 +518,7 @@ public actor PodcastPreparationPipeline {
     /// This file's own source hash is computed with this value normalized out;
     /// it makes a semantic edit fail the coverage test until this fingerprint
     /// block is deliberately updated.
-    public static let pipelineSourceHash = "sha256:4267abde1373154d96bc0faeb4d060bf67222cccb8a0f0cab6b752d7ec9dfae1"
+    public static let pipelineSourceHash = "sha256:216ad002e46279ed5654ab126b40feddfe7314c6208dbd4148c111848bea7f66"
 
     /// Includes the external Python packages imported by the worker. The
     /// runtime itself now lives in this repository under `Producer/Runtime`,

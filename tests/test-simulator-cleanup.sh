@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  source "$repo_root/scripts/lib/test-runner.sh"
+  wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
+fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-sim-test.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
@@ -141,6 +146,7 @@ done
 git -C "$recorder_repo" init -q
 cp "$repo_root/scripts/record-ios-snapshots.sh" "$recorder_repo/scripts/record-ios-snapshots.sh"
 cp "$repo_root/scripts/build-with-cache.py" "$recorder_repo/scripts/build-with-cache.py"
+cp "$repo_root/scripts/run-bounded.py" "$recorder_repo/scripts/run-bounded.py"
 cp "$repo_root/scripts/select-ios-simulator.py" "$recorder_repo/scripts/select-ios-simulator.py"
 cp "$repo_root/scripts/lib/simctl_gate_lib.sh" "$recorder_repo/scripts/lib/simctl_gate_lib.sh"
 recorder_state="$tmp/recorder.json"

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  source "$repo_root/scripts/lib/test-runner.sh"
+  wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
+fi
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 gate="$repo_root/scripts/test-gate.sh"
 native_gate_validation="$repo_root/scripts/lib/native-gate-validation.sh"
@@ -382,6 +388,9 @@ assert_snapshot_contract() {
   assert_contains 'kill -KILL "$test_host_pid"' "$gate"
   assert_contains 'trap cleanup EXIT' "$gate"
   assert_contains 'WILTED_XCODE_TEST_TIMEOUT_SECONDS' "$gate"
+  assert_contains 'WILTED_NATIVE_LEG_TIMEOUT_SECONDS' "$gate"
+  assert_contains 'scripts/run-bounded.py' "$gate"
+  assert_contains 'WILTED_TEST_TIMEOUT_SECONDS="$timeout_seconds"' "$gate"
   assert_contains 'native.timeout label=$label seconds=$xcode_test_timeout_seconds' "$gate"
   assert_contains 'phase=$timeout_phase' "$gate"
   assert_contains "grep -q 'Testing started' \"\$tmp_root/\$label.log\"" "$gate"
@@ -428,7 +437,9 @@ assert_private_simulator_contract() {
   assert_contains 'gate_sweep wilted' "$gate"
   assert_contains 'GATE_UI_TEST_LOCK_PID_FILE="$lock_pid_file" gate_ui_test_lock' "$gate"
   assert_contains '--simulator-udid "$WILTED_UI_TEST_SIMULATOR_UDID"' "$gate"
-  assert_contains 'gate_ui_test_lock --label "$label" python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test-without-building' "$gate"
+  assert_contains 'WILTED_UI_LOCK_PID_FILE="$lock_pid_file"' "$gate"
+  assert_contains 'gate_ui_test_lock --label "$label"' "$gate"
+  assert_contains 'python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test-without-building' "$gate"
   assert_contains 'run_leg "${leg_names[8]}" "${leg_reports[8]}" leg_ios_ui_tests' "$gate"
   assert_contains 'create_gate_simulator ios-units' "$gate"
   assert_contains 'create_gate_simulator ios-pixel-ui' "$gate"
@@ -445,9 +456,10 @@ assert_fail_stops_its_leg_contract() {
   local fail_block
   fail_block="$(sed -n '/^fail()/,/^}$/p' "$gate")"
   assert_block_contains 'exit 1' "$fail_block"
-  # run_leg runs each leg as one pipeline element, so an exit inside the leg
-  # ends that leg while PIPESTATUS still carries its status back to run_leg.
-  assert_contains 'command_status="${PIPESTATUS[0]}"' "$gate"
+  # The FIFO logger keeps the leg function in this shell, so its direct status
+  # remains available while the inner signal trap owns its supervisor.
+  assert_contains 'command_status=$?' "$gate"
+  assert_contains 'wilted_finish_logger' "$gate"
   assert_contains 'udid="$(create_gate_simulator ios-units)" || return 1' "$gate"
   assert_contains 'project="$(find_project)" || return 1' "$gate"
 }

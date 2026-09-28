@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  source "$repo_root/scripts/lib/test-runner.sh"
+  wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
+fi
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/test-runner.sh
+source "$repo_root/scripts/lib/test-runner.sh"
 # shellcheck source=lib/temp-sweep.sh
 source "$repo_root/scripts/lib/temp-sweep.sh"
 # Phase 0 legs run in parallel and some mint their own wilted-* temp roots; a
@@ -11,11 +19,20 @@ source "$repo_root/scripts/lib/temp-sweep.sh"
 wilted_sweep_stale_temp_dirs
 tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-phase0.XXXXXX")"
 phase0_self_test="${PHASE0_SELF_TEST:-0}"
+bounded_runner="$repo_root/scripts/run-bounded.py"
+phase0_leg_timeout_seconds="${PHASE0_LEG_TIMEOUT_SECONDS:-1800}"
 if [[ ! -d "$tmp_root" ]]; then
   printf '%s\n' 'error: unable to create validated phase-0 temp directory' >&2
   exit 1
 fi
-trap '[[ -d "$tmp_root" ]] && rm -rf "$tmp_root"' EXIT
+[[ -f "$bounded_runner" ]] || {
+  printf 'error: bounded runner is missing: %s\n' "$bounded_runner" >&2
+  exit 127
+}
+[[ "$phase0_leg_timeout_seconds" =~ ^[1-9][0-9]*$ ]] || {
+  printf 'error: PHASE0_LEG_TIMEOUT_SECONDS must be a positive integer\n' >&2
+  exit 2
+}
 
 forced_fail_leg="${PHASE0_FORCE_FAIL_LEG:-}"
 
@@ -24,6 +41,29 @@ declare -a leg_pids=()
 declare -a leg_dirs=()
 declare -i failed_legs=0
 declare -i total_legs=0
+
+stop_active_legs() {
+  local i pid
+  for pid in "${leg_pids[@]:-}"; do
+    wilted_signal_supervisor_pid "$pid"
+  done
+  for i in "${!leg_pids[@]}"; do
+    pid="${leg_pids[$i]}"
+    wilted_reap_supervisor_pid "$pid"
+    leg_pids[$i]=""
+  done
+}
+
+cleanup_phase0() {
+  wilted_stop_active_supervisor
+  stop_active_legs
+  [[ -d "$tmp_root" ]] && rm -rf "$tmp_root"
+}
+
+trap cleanup_phase0 EXIT
+trap 'cleanup_phase0; exit 130' INT
+trap 'cleanup_phase0; exit 143' TERM
+trap 'cleanup_phase0; exit 129' HUP
 
 is_forced_fail_leg() {
   [[ "${forced_fail_leg}" == "$1" ]]
@@ -96,14 +136,8 @@ run_leg_async() {
     return
   fi
 
-  (
-    set +e
-    bash "$script_path" >"$leg_dir/stdout.log" 2>"$leg_dir/stderr.log"
-    status=$?
-    set -e
-    printf '%s\n' "$status" >"$leg_dir/status"
-    printf 'phase0.leg.complete name=%s status=%s\n' "$name" "$status" >&2
-  ) &
+  python3 "$bounded_runner" --timeout-seconds "$phase0_leg_timeout_seconds" -- \
+    bash "$script_path" >"$leg_dir/stdout.log" 2>"$leg_dir/stderr.log" &
   pid=$!
 
   leg_pids[idx]="$pid"
@@ -124,14 +158,11 @@ collect_parallel_legs() {
       wait "$pid"
       wait_status=$?
       set -e
-      if (( wait_status != 0 )); then
-        :
-      fi
-    else
-      wait_status=0
-    fi
-
-    if [[ -f "$leg_dir/status" ]]; then
+      leg_pids[$i]=""
+      status="$wait_status"
+      printf '%s\n' "$status" > "$leg_dir/status"
+      printf 'phase0.leg.complete name=%s status=%s\n' "$name" "$status" >&2
+    elif [[ -f "$leg_dir/status" ]]; then
       status="$(cat "$leg_dir/status")"
     else
       status=1
@@ -150,7 +181,6 @@ run_leg_sync() {
   local name="$1"
   local script_path="$2"
   shift 2
-  local args=("$@")
 
   local leg_dir="$tmp_root/$name"
   local status=0
@@ -169,8 +199,10 @@ run_leg_sync() {
   elif [[ "$phase0_self_test" == "1" ]]; then
     status=0
   else
+    wilted_start_supervisor python3 "$bounded_runner" --timeout-seconds "$phase0_leg_timeout_seconds" -- \
+      bash "$script_path" "$@" >"$leg_dir/stdout.log" 2>"$leg_dir/stderr.log"
     set +e
-    bash "$script_path" "${args[@]}" >"$leg_dir/stdout.log" 2>"$leg_dir/stderr.log"
+    wilted_wait_active_supervisor
     status=$?
     set -e
   fi
@@ -192,7 +224,21 @@ run_leg_sync() {
   fi
 }
 
+if [[ -n "${PHASE0_INTERRUPT_TEST_LEG:-}" ]]; then
+  case "${PHASE0_INTERRUPT_TEST_MODE:-}" in
+    async) run_leg_async "interrupt-fixture" "$PHASE0_INTERRUPT_TEST_LEG" ;;
+    sync) run_leg_sync "interrupt-fixture" "$PHASE0_INTERRUPT_TEST_LEG" ;;
+    *)
+      printf '%s\n' 'error: PHASE0_INTERRUPT_TEST_MODE must be async or sync' >&2
+      exit 2
+      ;;
+  esac
+  collect_parallel_legs
+  exit "$failed_legs"
+fi
+
 run_leg_async "test-build-with-cache" "$repo_root/tests/test-build-with-cache.sh"
+run_leg_async "test-bounded-entry" "$repo_root/tests/test-bounded-entry.sh"
 run_leg_async "test-no-global-tmp" "$repo_root/tests/test-no-global-tmp.sh"
 run_leg_async "assert-mac-first-docs" "$repo_root/scripts/assert-mac-first-docs.sh"
 run_leg_async "test-contract-fixtures" "$repo_root/tests/test-contract-fixtures.sh"

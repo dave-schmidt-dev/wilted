@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  source "$repo_root/scripts/lib/test-runner.sh"
+  wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
+fi
+
 # Proves the startup temp sweep (scripts/lib/temp-sweep.sh) actually removes
 # abandoned wilted-* temp directories, never touches one young enough that a
 # concurrent run could still own it, and that wiring it into the native gate

@@ -28,19 +28,19 @@ deadcode:
 	uv run --group dev vulture
 
 test:
-	uv run --group dev pytest
+	uv run --group dev python ../../scripts/run-bounded.py --timeout-seconds "$${WILTED_TEST_TIMEOUT_SECONDS:-1800}" -- pytest
 
 test-unit:
-	uv run --group dev pytest -m unit
+	uv run --group dev python ../../scripts/run-bounded.py --timeout-seconds "$${WILTED_TEST_TIMEOUT_SECONDS:-1800}" -- pytest -m unit
 
 test-integration:
-	uv run --group dev pytest -m integration
+	uv run --group dev python ../../scripts/run-bounded.py --timeout-seconds "$${WILTED_TEST_TIMEOUT_SECONDS:-1800}" -- pytest -m integration
 
 test-e2e:
-	uv run --group dev pytest -m e2e
+	uv run --group dev python ../../scripts/run-bounded.py --timeout-seconds "$${WILTED_TEST_TIMEOUT_SECONDS:-1800}" -- pytest -m e2e
 
 test-tui:
-	uv run --group dev pytest -m tui
+	uv run --group dev python ../../scripts/run-bounded.py --timeout-seconds "$${WILTED_TEST_TIMEOUT_SECONDS:-1800}" -- pytest -m tui
 
 validate: lint deadcode test
 

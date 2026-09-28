@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+
+from test_bounded_runner import BoundedRunnerTests
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -160,6 +163,152 @@ class BuildWithCacheTests(unittest.TestCase):
 
         self.assertEqual(exit_result.returncode, 23)
         self.assertEqual(signal_result.returncode, -signal.SIGTERM)
+
+    def test_test_timeout_environment_bounds_the_cached_child(self) -> None:
+        self.env["WILTED_TEST_TIMEOUT_SECONDS"] = "0.2"
+        result = self.run_helper(
+            "run", "swiftpm", f"test-timeout-{os.getpid()}", "--", "swift", "test",
+            "--sleep-seconds", "20",
+            timeout=5,
+        )
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertIn("run-bounded: timeout", result.stderr)
+
+    def test_reexec_deadline_does_not_seed_cache_command_deadline(self) -> None:
+        """Exercise reexec -> cache helper -> runner -> Swift with recorded argv."""
+        fixture = self.temp_path / "deadline-fixture"
+        scripts = fixture / "scripts"
+        (scripts / "lib").mkdir(parents=True)
+        shutil.copy(ROOT / "scripts/lib/test-runner.sh", scripts / "lib/test-runner.sh")
+        shutil.copy(ROOT / "scripts/lib/temp-sweep.sh", scripts / "lib/temp-sweep.sh")
+        shutil.copy(HELPER, scripts / "build-with-cache.py")
+        shutil.copy(ROOT / "scripts/test-phase0.sh", scripts / "test-phase0.sh")
+        shutil.copy(ROOT / "scripts/run-bounded.py", scripts / "run-bounded-real.py")
+        reexec_record = self.temp_path / "reexec-deadline.txt"
+        (self.bin_dir / "python3").write_text(
+            "#!/bin/sh\n"
+            "if [ \"${1:-}\" = \"$REEXEC_RUNNER\" ]; then\n"
+            "  printf '%s\\t%s\\t%s\\n' \"$1\" \"$2\" \"$3\" >> \"$REEXEC_RECORD\"\n"
+            "fi\n"
+            f"exec '{PYTHON}' \"$@\"\n",
+            encoding="utf-8",
+        )
+        (self.bin_dir / "python3").chmod(0o755)
+        (scripts / "run-bounded.py").write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            "with Path(os.environ['DEADLINE_RECORD']).open('a', encoding='utf-8') as record:\n"
+            "    record.write('\\t'.join((sys.argv[1], sys.argv[2], os.environ.get('WILTED_TEST_TIMEOUT_SECONDS', 'absent'))) + '\\n')\n"
+            "os.execv(sys.executable, [sys.executable, str(Path(__file__).with_name('run-bounded-real.py')), *sys.argv[1:]])\n",
+            encoding="utf-8",
+        )
+        (scripts / "entry.sh").write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            "repo_root=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")/..\" && pwd)\"\n"
+            "if [[ \"${WILTED_BOUNDED_ENTRY:-0}\" != 1 ]]; then\n"
+            "  source \"$repo_root/scripts/lib/test-runner.sh\"\n"
+            "  wilted_reexec_bounded \"${BASH_SOURCE[0]}\" \"$@\"\n"
+            "fi\n"
+            "exec python3 \"$repo_root/scripts/build-with-cache.py\" run swiftpm deadline-collision -- swift test\n",
+            encoding="utf-8",
+        )
+        (scripts / "entry.sh").chmod(0o755)
+        (scripts / "phase-entry.sh").write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            "repo_root=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")/..\" && pwd)\"\n"
+            "exec python3 \"$repo_root/scripts/build-with-cache.py\" run swiftpm phase-deadline-collision -- swift test\n",
+            encoding="utf-8",
+        )
+        (scripts / "phase-entry.sh").chmod(0o755)
+        fake_swift = self.bin_dir / "swift"
+        fake_swift.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            "Path(os.environ['SWIFT_RECORD']).write_text(os.environ.get('WILTED_TEST_TIMEOUT_SECONDS', 'absent'))\n"
+            "raise SystemExit(int(os.environ.get('SWIFT_EXIT_STATUS', '0')))\n",
+            encoding="utf-8",
+        )
+        fake_swift.chmod(0o755)
+
+        def invoke(extra: dict[str, str], expected: tuple[str, str], status: int = 0) -> None:
+            deadline_record = self.temp_path / f"deadline-{expected[0]}-{expected[1]}.txt"
+            swift_record = self.temp_path / f"swift-{expected[0]}-{expected[1]}.txt"
+            deadline_record.unlink(missing_ok=True)
+            swift_record.unlink(missing_ok=True)
+            reexec_record.unlink(missing_ok=True)
+            env = self.env.copy()
+            for name in (
+                "WILTED_BOUNDED_ENTRY", "WILTED_TEST_TIMEOUT_SECONDS",
+                "WILTED_TEST_RUNNER_TIMEOUT_SECONDS",
+            ):
+                env.pop(name, None)
+            env |= {
+                "DEADLINE_RECORD": str(deadline_record),
+                "REEXEC_RECORD": str(reexec_record),
+                "REEXEC_RUNNER": str(scripts / "run-bounded.py"),
+                "SWIFT_RECORD": str(swift_record),
+                "SWIFT_EXIT_STATUS": str(status),
+                **extra,
+            }
+            result = subprocess.run(
+                ["bash", str(scripts / "entry.sh")], cwd=fixture, env=env,
+                text=True, capture_output=True, timeout=12, check=False,
+            )
+            self.assertEqual(result.returncode, status, result.stderr)
+            rows = [line.split("\t") for line in deadline_record.read_text().splitlines()]
+            self.assertEqual([(row[0], float(row[1])) for row in rows], [
+                ("--timeout-seconds", float(expected[0])),
+                ("--timeout-seconds", float(expected[1])),
+            ])
+            self.assertEqual(reexec_record.read_text().splitlines(), [
+                f"{scripts / 'run-bounded.py'}\t--timeout-seconds\t{expected[0]}"
+            ])
+            self.assertEqual(swift_record.read_text(), extra.get("WILTED_TEST_TIMEOUT_SECONDS", "absent"))
+
+        def invoke_phase(extra: dict[str, str], command_timeout: str) -> None:
+            deadline_record = self.temp_path / f"phase-deadline-{command_timeout}.txt"
+            swift_record = self.temp_path / f"phase-swift-{command_timeout}.txt"
+            phase_tmp = self.temp_path / f"phase-tmp-{command_timeout}"
+            deadline_record.unlink(missing_ok=True)
+            swift_record.unlink(missing_ok=True)
+            phase_tmp.mkdir()
+            env = self.env.copy()
+            for name in (
+                "WILTED_BOUNDED_ENTRY", "WILTED_TEST_TIMEOUT_SECONDS",
+                "WILTED_TEST_RUNNER_TIMEOUT_SECONDS",
+            ):
+                env.pop(name, None)
+            env |= {
+                "DEADLINE_RECORD": str(deadline_record),
+                "SWIFT_RECORD": str(swift_record),
+                "SWIFT_EXIT_STATUS": "0",
+                "TMPDIR": str(phase_tmp),
+                "PHASE0_INTERRUPT_TEST_LEG": str(scripts / "phase-entry.sh"),
+                "PHASE0_INTERRUPT_TEST_MODE": "sync",
+                **extra,
+            }
+            result = subprocess.run(
+                ["bash", str(scripts / "test-phase0.sh")], cwd=fixture, env=env,
+                text=True, capture_output=True, timeout=12, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rows = [line.split("\t") for line in deadline_record.read_text().splitlines()]
+            self.assertEqual([(row[0], float(row[1])) for row in rows], [
+                ("--timeout-seconds", 1800.0),
+                ("--timeout-seconds", 1800.0),
+                ("--timeout-seconds", float(command_timeout)),
+            ])
+            self.assertEqual(swift_record.read_text(), extra.get("WILTED_TEST_TIMEOUT_SECONDS", "absent"))
+            self.assertFalse(any(phase_tmp.iterdir()), "phase fixture left a temp directory")
+
+        invoke({}, ("1800", "300"))
+        invoke({"WILTED_TEST_TIMEOUT_SECONDS": "17"}, ("1800", "17"))
+        invoke({"WILTED_TEST_RUNNER_TIMEOUT_SECONDS": "9"}, ("9", "300"))
+        invoke({}, ("1800", "300"), status=23)
+        invoke_phase({}, "300")
+        invoke_phase({"WILTED_TEST_TIMEOUT_SECONDS": "17"}, "17")
 
     def test_xcode_labels_share_a_lock(self) -> None:
         first = subprocess.Popen(

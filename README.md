@@ -44,6 +44,14 @@ not change its siblings. A legacy shared `.githooks` setting is migrated only
 when this is the sole worktree; with linked siblings, installation refuses
 without changing Git configuration.
 
+## Bounded tests and scratch
+
+`make validate`, `make native-ui`, the gate scripts, and the shell test entrypoints use the repository's bounded runner (`scripts/run-bounded.py`) to apply finite deadlines and clean up the command's observed child processes, including descendants that leave the original process group. Test entry scripts opt into the shared shell boundary in `scripts/lib/test-runner.sh`; the marker prevents recursive supervision. `scripts/build-with-cache.py` reuses the checkout's shared `.build` caches and bounds each build/test command. The five test targets in `Producer/Runtime/Makefile` (`test`, `test-unit`, `test-integration`, `test-e2e`, and `test-tui`) run pytest through the same supervisor. The wrapper defaults are 1,800 seconds for an entrypoint and 300 seconds for an individual build command; `WILTED_TEST_RUNNER_TIMEOUT_SECONDS` and `WILTED_TEST_TIMEOUT_SECONDS` override those budgets. These limits cover different scopes: the entrypoint limit caps the full aggregate, while the nested command or leg limit caps one child. The separate supervisors are intentional, and whichever deadline expires first ends its owned work. A timeout or cleanup failure is nonzero, and a deferred native UI leg is still a deferral, not a pass.
+
+Create ephemeral Wilted scratch below the inherited `$TMPDIR` with a unique `mktemp -d` path, register cleanup before starting child work, stop/reap owned children, and preserve only cited evidence under `.logs/`. The native and Phase 0 gates remove their own scratch on normal exit and handled signals; before starting, they sweep only root-level `wilted-*` entries older than 24 hours, excluding `wilted-spec*`. The active-tree check `scripts/check-no-global-tmp.py` rejects hard-coded absolute global temporary-root references in operational scripts and documentation. Captain and worker procedures are recorded in the internal plan overlay and bounded-task template; those templates require caller-shell cleanup and reuse of shared `.build` caches.
+
+Implementation notes and verification records are retained in [`.logs/leak-repair-2026-09-28/`](.logs/leak-repair-2026-09-28/).
+
 ## Scope
 
 Larder is the one place kept episodes wait. The active podcast appears in Now Playing instead of a second Ready row; the durable queue retains its position for playback succession. Larder groups waiting episodes as Ready, Needs preparation, and Not downloaded, and shows a completed preparation summary only when a successful terminal journal matches the audio revision currently ready to play. A transcript by itself or a journal for an older revision is not presented as prepared.
