@@ -29,6 +29,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from unittest import mock
 
+from wilted_worker import ad_audit as _worker_ad_audit
+from wilted_worker import ad_removal as _worker_ad_removal
+from wilted_worker import commercial_recovery as _worker_commercial_recovery
+from wilted_worker import commercial_seeds as _worker_commercial_seeds
+from wilted_worker import cue_timing as _worker_cue_timing
+from wilted_worker import edge_recovery as _worker_edge_recovery
+from wilted_worker import glossary as _worker_glossary
+from wilted_worker import gpu_admission as _worker_gpu_admission
+from wilted_worker import reporting as _worker_reporting
+from wilted_worker import span_bounds as _worker_span_bounds
+from wilted_worker import tail_recovery as _worker_tail_recovery
+from wilted_worker import transcript_sources as _worker_transcript_sources
+_WORKER_PATCH_MODULES = {'recover_commercial_evidence_reads': _worker_commercial_seeds, 'recover_sparse_commercial_reads': _worker_commercial_seeds, 'recover_transcript_end_postroll': _worker_tail_recovery, 'recover_transcript_start_preroll': _worker_edge_recovery, 'recover_unclaimed_explicit_sponsor_reads': _worker_commercial_recovery, 'resize_oversized_ad_spans': _worker_span_bounds}
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKER_PATH = REPO_ROOT / "Producer" / "Workers" / "wilted_pipeline.py"
 RUNTIME_ADS_PATH = REPO_ROOT / "Producer" / "Runtime" / "src" / "wilted" / "ads.py"
@@ -1079,7 +1092,7 @@ class ProgressTests(unittest.TestCase):
         logger.addHandler(handler)
         logger.propagate = False
         try:
-            with mock.patch.object(wp, "progress", side_effect=OSError("stderr closed")), \
+            with mock.patch.object(_worker_reporting, "progress", side_effect=OSError("stderr closed")), \
                     mock.patch.object(handler, "handleError") as handled, redirect_stderr(io.StringIO()):
                 logger.warning("the detector is inside an except block right now")
             handled.assert_called_once()
@@ -1100,7 +1113,7 @@ class AdDetectionTests(unittest.TestCase):
         llm = FakeLLM()
         ads = install_fake_ads(llm)
         with redirect_stderr(io.StringIO()), \
-                mock.patch.object(wp, "probe_duration", return_value=200.0):
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             _path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
         self.assertTrue(llm.loaded)
         self.assertTrue(llm.closed)
@@ -1128,7 +1141,7 @@ class AdDetectionTests(unittest.TestCase):
 
         ads.detect_ads = detect
         with redirect_stderr(io.StringIO()), \
-                mock.patch.object(wp, "probe_duration", return_value=200.0):
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             wp.detect_and_cut(self.request, self.audio, [], self.segments)
         self.assertEqual(observed, [(True, True)])
 
@@ -1136,7 +1149,7 @@ class AdDetectionTests(unittest.TestCase):
         llm = FakeLLM(fail_generate=RuntimeError("llama_decode returned -1"))
         install_fake_ads(llm)
         with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised, \
-                mock.patch.object(wp, "probe_duration", return_value=200.0):
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             wp.detect_and_cut(self.request, self.audio, [], self.segments)
         self.assertEqual(raised.exception.code, "ads-backend-failed")
         self.assertIn("llama_decode returned -1", str(raised.exception))
@@ -1146,7 +1159,7 @@ class AdDetectionTests(unittest.TestCase):
         llm = FakeLLM(fail_load=FileNotFoundError("GGUF model file not found: /models/default.gguf"))
         install_fake_ads(llm)
         with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised, \
-                mock.patch.object(wp, "probe_duration", return_value=200.0):
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             wp.detect_and_cut(self.request, self.audio, [], self.segments)
         self.assertEqual(raised.exception.code, "ads-model-unavailable")
         self.assertIn("/models/default.gguf", str(raised.exception))
@@ -1169,7 +1182,7 @@ class AdDetectionTests(unittest.TestCase):
 
         ads.detect_ads = detect
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=200.0):
+        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             wp.detect_and_cut(self.request, self.audio, [], self.segments)
         detail = next(json.loads(line)["detail"] for line in stream.getvalue().splitlines()
                       if json.loads(line)["stage"] == "ads.detect.discarded")
@@ -1187,7 +1200,7 @@ class AdDetectionTests(unittest.TestCase):
         self.addCleanup(logger.setLevel, logging.NOTSET)
         llm = FakeLLM()
         install_fake_ads(llm)
-        with redirect_stderr(io.StringIO()), mock.patch.object(wp, "probe_duration", return_value=200.0):
+        with redirect_stderr(io.StringIO()), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             wp.detect_and_cut(self.request, self.audio, [], self.segments)
         self.assertEqual(logger.level, logging.ERROR)
         self.assertEqual([h for h in logger.handlers if isinstance(h, wp.DiscardedRuns)], [])
@@ -1196,7 +1209,7 @@ class AdDetectionTests(unittest.TestCase):
         llm = FakeLLM()
         install_fake_ads(llm, detections=[FakeAd(0.0, 2.0)])
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=4.0):
+        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=4.0):
             _path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
         self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 2.0, "label": "sponsor", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9}])
         self.assertEqual(keeps, [])
@@ -1213,7 +1226,7 @@ class AdDetectionTests(unittest.TestCase):
         llm = FakeLLM()
         install_fake_ads(llm, detections=[FakeAd(6.72, 456.88, label="sponsor_read")])
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=563.17):
+        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=563.17):
             path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
         # Nothing cut, and the audio handed back is the audio handed in:
         # preparation writes over the download, so an over-cut is permanent.
@@ -1227,7 +1240,7 @@ class AdDetectionTests(unittest.TestCase):
         llm = FakeLLM()
         install_fake_ads(llm, detections=[FakeAd(6.72, 187.0, label="sponsor_read")])
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=563.17):
+        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=563.17):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
         self.assertEqual([span["startSeconds"] for span in spans], [6.72])
         stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
@@ -1241,7 +1254,7 @@ class AdDetectionTests(unittest.TestCase):
             FakeAd(0.0, 240.0), FakeAd(250.0, 400.0), FakeAd(410.0, 400.0 + 90.0),
         ])
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=600.0):
+        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=600.0):
             path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
         self.assertEqual((path, spans, keeps), (self.audio, [], []))
         details = {
@@ -1262,7 +1275,7 @@ class AdDetectionTests(unittest.TestCase):
         llm = FakeLLM(preroll_program_start_id=-1)
         install_fake_ads(llm, detections=[FakeAd(6.72, 250.0, label="sponsor_read")])
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=459.0):
+        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=459.0):
             path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
         self.assertEqual(
             (path, [(span["startSeconds"], span["endSeconds"]) for span in spans], keeps),
@@ -1280,7 +1293,7 @@ class AdDetectionTests(unittest.TestCase):
         llm = FakeLLM(preroll_program_start_id=0, rescan_evidence_id=-1)
         install_fake_ads(llm, detections=[FakeAd(6.72, 250.0, label="sponsor_read")])
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=459.0):
+        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=459.0):
             path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
         self.assertEqual((path, spans, keeps), (self.audio, [], []))
         stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
@@ -1911,7 +1924,7 @@ class AdDetectionTests(unittest.TestCase):
         llm = FakeLLM(preroll_program_start_id=9, preroll_program_id=-1, boundary_starts_program=False)
         install_fake_ads(llm, detections=[FakeAd(0.0, 456.88, label="sponsor_read")])
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=563.17):
+        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=563.17):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.OVERSIZED)
         self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 180.0,
                                   "label": "sponsor_read", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9}])
@@ -1933,7 +1946,7 @@ class AdDetectionTests(unittest.TestCase):
         llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=-1)
         install_fake_ads(llm)
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=200.0):
+        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
         # The cut runs to where the program begins, not to the last
         # advertising cue: the thirty-two seconds between them are the spot's
@@ -1950,7 +1963,7 @@ class AdDetectionTests(unittest.TestCase):
         llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=1)
         install_fake_ads(llm)
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=200.0):
+        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
         self.assertEqual(spans, [])
         skipped = [json.loads(line) for line in stream.getvalue().splitlines()
@@ -1960,7 +1973,7 @@ class AdDetectionTests(unittest.TestCase):
     def test_a_show_that_opens_on_itself_is_never_asked_twice(self):
         llm = FakeLLM(preroll_program_start_id=0)
         install_fake_ads(llm)
-        with redirect_stderr(io.StringIO()), mock.patch.object(wp, "probe_duration", return_value=200.0):
+        with redirect_stderr(io.StringIO()), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
         self.assertEqual(spans, [])
         self.assertEqual([r for r in llm.requests if r.get("field") == "program_id"], [])
@@ -1971,7 +1984,7 @@ class AdDetectionTests(unittest.TestCase):
         llm = FakeLLM(preroll_program_start_id=1, preroll_program_id=-1)
         install_fake_ads(llm)
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=200.0):
+        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
         self.assertEqual(spans, [])
         self.assertIn("only 6.4s long", stream.getvalue())
@@ -1979,7 +1992,7 @@ class AdDetectionTests(unittest.TestCase):
     def test_an_opening_the_detector_already_claimed_is_not_reviewed_again(self):
         llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=-1)
         install_fake_ads(llm, detections=[FakeAd(0.0, 51.9)])
-        with redirect_stderr(io.StringIO()), mock.patch.object(wp, "probe_duration", return_value=200.0):
+        with redirect_stderr(io.StringIO()), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
         self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 51.9,
                                   "label": "sponsor", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9}])
@@ -1992,7 +2005,7 @@ class AdDetectionTests(unittest.TestCase):
         # starts after the first second does not mean the opening is handled.
         llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=-1)
         install_fake_ads(llm, detections=[FakeAd(6.4, 51.9)])
-        with redirect_stderr(io.StringIO()), mock.patch.object(wp, "probe_duration", return_value=200.0):
+        with redirect_stderr(io.StringIO()), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
         # One span, from the first second to where the program begins: the
         # recovered opening absorbs the partial detection rather than sitting
@@ -2004,7 +2017,7 @@ class AdDetectionTests(unittest.TestCase):
         llm = FakeLLM(fail_generate=None)
         install_fake_ads(llm)
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=200.0):
+        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
         # `answer` is the detector's own "[]", which is not an ID object: a
         # malformed completion leaves the audio alone rather than guessing.
@@ -2045,7 +2058,7 @@ class AdDetectionTests(unittest.TestCase):
         llm.generate = flaky
         segments = [FakeSegment(0, 2, "buy this"), FakeSegment(2, 4, "and this"), FakeSegment(4, 6, "content")]
         with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised, \
-                mock.patch.object(wp, "probe_duration", return_value=200.0):
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             wp.detect_and_cut(self.request, self.audio, [], segments)
         self.assertEqual(raised.exception.code, "ads-backend-failed")
         self.assertIn("3 of 4", str(raised.exception))
@@ -2604,7 +2617,7 @@ class ExplicitSponsorRecoveryTests(unittest.TestCase):
         ads = install_fake_ads(llm)
         ads.detect_ads = lambda _segments, _backend: list(detections)
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=duration):
+        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=duration):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
         events = [json.loads(line) for line in stream.getvalue().splitlines()]
         return spans, events
@@ -3085,7 +3098,7 @@ class ExplicitSponsorRecoveryTests(unittest.TestCase):
         ads = install_fake_ads(llm)
         ads.detect_ads = lambda _segments, _backend: []
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=5000.0):
+        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=5000.0):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
         return spans, [json.loads(line) for line in stream.getvalue().splitlines()]
 
@@ -4007,7 +4020,7 @@ class LegacySponsorRecoveryTests(unittest.TestCase):
             FakeSegment(216.0, 248.75, "this is the sponsor message"),
             FakeSegment(248.75, 252.0, "and now back to the show"),
         ]
-        with redirect_stderr(io.StringIO()), mock.patch.object(wp, "probe_duration", return_value=300.0):
+        with redirect_stderr(io.StringIO()), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=300.0):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
         self.assertEqual(
             spans,
@@ -4030,7 +4043,7 @@ class LegacySponsorRecoveryTests(unittest.TestCase):
             FakeSegment(212.25, 216.0, "this week brought a guest to your attention"),
             FakeSegment(216.0, 248.75, "and now back to the show"),
         ]
-        with redirect_stderr(io.StringIO()), mock.patch.object(wp, "probe_duration", return_value=300.0):
+        with redirect_stderr(io.StringIO()), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=300.0):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
         self.assertEqual(spans, [])
 
@@ -4127,7 +4140,7 @@ class PreflightTests(unittest.TestCase):
         ads.detect_ads = detect
         with mock.patch.object(transcribe, "transcribe_audio", transcribe_audio), \
                 mock.patch.dict(os.environ, {"PATH": self.tools}), \
-                mock.patch.object(wp, "probe_duration", return_value=1.0), redirect_stderr(io.StringIO()):
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=1.0), redirect_stderr(io.StringIO()):
             wp.run({
                 "audioPath": str(self.audio),
                 "removeAds": True,
@@ -4148,7 +4161,7 @@ class PreflightTests(unittest.TestCase):
         events = []
         install_fake_speech_stack(events=events, statuses=({"resident_models": 1}, {"resident_models": 0}))
         stream = io.StringIO()
-        with mock.patch.object(wp.time, "sleep"), redirect_stderr(stream):
+        with mock.patch.object(_worker_gpu_admission.time, "sleep"), redirect_stderr(stream):
             lock = wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True)
             with lock:
                 events.append("ads.work")
@@ -4193,9 +4206,9 @@ class PreflightTests(unittest.TestCase):
             return 11.0 if "evict:stt" in events else 0.0
 
         with mock.patch.dict(os.environ, {"PATH": self.tools}), \
-                mock.patch.object(wp, "probe_duration", return_value=1.0), \
-                mock.patch.object(wp.time, "monotonic", side_effect=clock), \
-                mock.patch.object(wp.time, "sleep"), redirect_stderr(io.StringIO()), \
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=1.0), \
+                mock.patch.object(_worker_gpu_admission.time, "monotonic", side_effect=clock), \
+                mock.patch.object(_worker_gpu_admission.time, "sleep"), redirect_stderr(io.StringIO()), \
                 self.assertRaises(wp.WorkerError) as raised:
             wp.run({
                 "audioPath": str(self.audio),
@@ -4212,7 +4225,7 @@ class PreflightTests(unittest.TestCase):
         events = []
         install_fake_speech_stack(events=events, statuses=({"resident_models": "unknown"},))
         with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised, \
-                mock.patch.object(wp, "probe_duration", return_value=200.0):
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             with wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True):
                 self.fail("unsafe admission must not yield")
         self.assertEqual(raised.exception.code, "ads-model-wait-failed")
@@ -4230,7 +4243,7 @@ class PreflightTests(unittest.TestCase):
         install_fake_ads(llm)
         stream = io.StringIO()
         with mock.patch.dict(os.environ, {"PATH": self.tools}), \
-                mock.patch.object(wp, "probe_duration", return_value=1.0), \
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=1.0), \
                 redirect_stderr(stream):
             result = wp.run({
                 "audioPath": str(self.audio),
@@ -4276,7 +4289,7 @@ class PreflightTests(unittest.TestCase):
             clock_value[0] += 0.1
             return current
 
-        with mock.patch.object(wp.time, "monotonic", side_effect=clock), \
+        with mock.patch.object(_worker_gpu_admission.time, "monotonic", side_effect=clock), \
                 redirect_stderr(io.StringIO()), \
                 wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True):
             pass
@@ -4297,10 +4310,10 @@ class PreflightTests(unittest.TestCase):
         stream = io.StringIO()
         blocked = BlockingIOError()
         blocked.errno = wp.errno.EAGAIN
-        with mock.patch.object(wp.fcntl, "flock", side_effect=blocked), \
-                mock.patch.object(wp, "GPU_LOCK_ACQUISITION_TIMEOUT_S", 10.0), \
-                mock.patch.object(wp.time, "monotonic", side_effect=clock), \
-                mock.patch.object(wp.time, "sleep"), redirect_stderr(stream), \
+        with mock.patch.object(_worker_gpu_admission.fcntl, "flock", side_effect=blocked), \
+                mock.patch.object(_worker_gpu_admission, "GPU_LOCK_ACQUISITION_TIMEOUT_S", 10.0), \
+                mock.patch.object(_worker_gpu_admission.time, "monotonic", side_effect=clock), \
+                mock.patch.object(_worker_gpu_admission.time, "sleep"), redirect_stderr(stream), \
                 self.assertRaises(wp.WorkerError) as raised:
             with wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=False):
                 self.fail("contended lock must not yield")
@@ -4335,9 +4348,9 @@ class PreflightTests(unittest.TestCase):
             return current
 
         events = []
-        with mock.patch.object(wp.fcntl, "flock", side_effect=flock), \
-                mock.patch.object(wp.time, "monotonic", side_effect=clock), \
-                mock.patch.object(wp.time, "sleep"), redirect_stderr(io.StringIO()):
+        with mock.patch.object(_worker_gpu_admission.fcntl, "flock", side_effect=flock), \
+                mock.patch.object(_worker_gpu_admission.time, "monotonic", side_effect=clock), \
+                mock.patch.object(_worker_gpu_admission.time, "sleep"), redirect_stderr(io.StringIO()):
             with wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=False):
                 events.append("ads.work")
         self.assertEqual(events, ["ads.work"])
@@ -4353,8 +4366,8 @@ class PreflightTests(unittest.TestCase):
             time.sleep(0.02)
             return "done"
 
-        with mock.patch.object(wp, "GPU_LOCK_PROGRESS_INTERVAL_S", 0.005), \
-                mock.patch.object(wp, "STT_EVICTION_BARRIER_POLL_INTERVAL_S", 0.001), \
+        with mock.patch.object(_worker_gpu_admission, "GPU_LOCK_PROGRESS_INTERVAL_S", 0.005), \
+                mock.patch.object(_worker_gpu_admission, "STT_EVICTION_BARRIER_POLL_INTERVAL_S", 0.001), \
                 redirect_stderr(stream):
             result = wp._speech_rpc_with_progress(  # noqa: SLF001 - direct invariant regression
                 delayed,
@@ -4386,8 +4399,8 @@ class PreflightTests(unittest.TestCase):
 
         llm.close = close
         install_fake_ads(llm)
-        with mock.patch.object(wp.fcntl, "flock", side_effect=fake_flock), redirect_stderr(io.StringIO()), \
-                mock.patch.object(wp, "probe_duration", return_value=200.0):
+        with mock.patch.object(_worker_gpu_admission.fcntl, "flock", side_effect=fake_flock), redirect_stderr(io.StringIO()), \
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             wp.detect_and_cut(
                 {"audioPath": str(self.audio)},
                 self.audio,
@@ -4411,7 +4424,7 @@ class PreflightTests(unittest.TestCase):
                 events = []
                 if raises:
                     with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError), \
-                            mock.patch.object(wp, "probe_duration", return_value=200.0):
+                            mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
                         wp.detect_and_cut(
                             {"audioPath": str(self.audio)},
                             self.audio,
@@ -4421,7 +4434,7 @@ class PreflightTests(unittest.TestCase):
                         )
                 else:
                     with redirect_stderr(io.StringIO()), \
-                            mock.patch.object(wp, "probe_duration", return_value=200.0):
+                            mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
                         wp.detect_and_cut(
                             {"audioPath": str(self.audio)},
                             self.audio,
@@ -4506,7 +4519,7 @@ class GlossaryTests(unittest.TestCase):
         stages = [json.loads(line)["stage"] for line in err.getvalue().splitlines()]
         self.assertEqual(stages, ["transcript.glossary.terms", "transcript.glossary.complete"])
         self.assertEqual(wp.polish_with_notes({}, cues), cues, "no notes, no pass")
-        with mock.patch.object(wp, "build_glossary", side_effect=RuntimeError("boom")):
+        with mock.patch.object(_worker_glossary, "build_glossary", side_effect=RuntimeError("boom")):
             with redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(wp.polish_with_notes({"episodeNotes": "x"}, cues), cues)
         self.assertIn("transcript.glossary.failed", err.getvalue())
@@ -4660,7 +4673,7 @@ class RunTests(unittest.TestCase):
     def test_a_published_transcript_that_matches_its_audio_is_kept_and_measured(self):
         install_fake_wilted({"vtt": [FakeSegment(0, 1, "published"), FakeSegment(3590, 3595, "words")]})
         with redirect_stderr(io.StringIO()) as stream, mock.patch.object(
-            wp, "probe_duration", return_value=3600.0
+            _worker_cue_timing, "probe_duration", return_value=3600.0
         ):
             result = wp.run({"audioPath": str(self.audio), "removeAds": False,
                              "allowSpeechToText": False, "publishedTranscript": self.PUBLISHED})
@@ -4681,7 +4694,7 @@ class RunTests(unittest.TestCase):
         install_fake_wilted({"vtt": [FakeSegment(0, 1, "published"), FakeSegment(3590, 3595, "words")]},
                             transcriptions={wp.ALIGNED_STT_MODEL: [FakeSegment(0, 1, "aligned words")]})
         with redirect_stderr(io.StringIO()) as stream, mock.patch.object(
-            wp, "probe_duration", return_value=3700.0
+            _worker_cue_timing, "probe_duration", return_value=3700.0
         ):
             result = wp.run({"audioPath": str(self.audio), "removeAds": False,
                              "readableTranscript": False, "publishedTranscript": self.PUBLISHED})
@@ -4705,7 +4718,7 @@ class RunTests(unittest.TestCase):
                     transcriptions={wp.ALIGNED_STT_MODEL: [FakeSegment(0, 1, "aligned words")]},
                 )
                 with redirect_stderr(io.StringIO()), mock.patch.object(
-                    wp, "probe_duration", return_value=10_800.0
+                    _worker_cue_timing, "probe_duration", return_value=10_800.0
                 ):
                     result = wp.run({"audioPath": str(self.audio), "removeAds": False,
                                      "readableTranscript": False, "publishedTranscript": self.PUBLISHED})
@@ -4717,7 +4730,7 @@ class RunTests(unittest.TestCase):
         # possible misalignment for a certain loss.
         install_fake_wilted({"vtt": [FakeSegment(0, 1, "published words")]})
         with redirect_stderr(io.StringIO()) as stream, mock.patch.object(
-            wp, "probe_duration", side_effect=OSError("ffprobe missing")
+            _worker_cue_timing, "probe_duration", side_effect=OSError("ffprobe missing")
         ):
             result = wp.run({"audioPath": str(self.audio), "removeAds": False,
                              "allowSpeechToText": False, "publishedTranscript": self.PUBLISHED})
@@ -4730,10 +4743,10 @@ class RunTests(unittest.TestCase):
         # the destructive half of this defect: with no transcription allowed
         # the episode keeps its audio rather than losing conversation to it.
         install_fake_wilted({"vtt": [FakeSegment(0, 1, "published"), FakeSegment(3590, 3595, "words")]})
-        detect = mock.patch.object(wp, "detect_and_cut", side_effect=AssertionError("a misaligned transcript drove the cut"))
+        detect = mock.patch.object(_worker_ad_removal, "detect_and_cut", side_effect=AssertionError("a misaligned transcript drove the cut"))
         with detect as detector, redirect_stderr(io.StringIO()), mock.patch.object(
-            wp, "preflight_ad_removal"
-        ), mock.patch.object(wp, "probe_duration", return_value=3700.0):
+            _worker_ad_audit, "preflight_ad_removal"
+        ), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=3700.0):
             result = wp.run({"audioPath": str(self.audio), "removeAds": True,
                              "transcriptPolicy": "noLocalSTT", "publishedTranscript": self.PUBLISHED})
         detector.assert_not_called()
@@ -4743,9 +4756,9 @@ class RunTests(unittest.TestCase):
     def test_untimed_prose_never_drives_ad_removal(self):
         install_fake_wilted()
         install_fake_trafilatura(prose_transcript("untimed prose words"))
-        detect = mock.patch.object(wp, "detect_and_cut", side_effect=AssertionError("prose drove ad removal"))
+        detect = mock.patch.object(_worker_ad_removal, "detect_and_cut", side_effect=AssertionError("prose drove ad removal"))
         with detect as detector, redirect_stderr(io.StringIO()), mock.patch.object(
-            wp, "preflight_ad_removal"
+            _worker_ad_audit, "preflight_ad_removal"
         ):
             result = wp.run({
                 "audioPath": str(self.audio), "removeAds": True,
@@ -4815,7 +4828,7 @@ class OutcomeContractTests(unittest.TestCase):
         transcribe = mock.Mock(side_effect=AssertionError("STT must not start"))
         install_fake_wilted()
         sys.modules["wilted.transcribe"].transcribe_audio = transcribe
-        with mock.patch.object(wp, "preflight_ad_removal") as preflight, self.assertRaises(wp.WorkerError) as raised:
+        with mock.patch.object(_worker_ad_audit, "preflight_ad_removal") as preflight, self.assertRaises(wp.WorkerError) as raised:
             wp.run({"protocolVersion": 2, "audioPath": str(self.audio), "outputPath": "/tmp/cut.mp3",
                     "removeAds": True, "transcriptPolicy": "noLocalSTT"})
         self.assertEqual(raised.exception.code, "aligned-stt-required")
@@ -4831,9 +4844,9 @@ class OutcomeContractTests(unittest.TestCase):
     def test_v2_no_ads_uses_the_required_aligned_pass_and_emits_a_report(self):
         install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: [FakeSegment(0, 1, "programme")]})
         install_fake_ads(FakeLLM())
-        with mock.patch.object(wp, "preflight_ad_removal"), \
-                mock.patch.object(wp, "prepare_ad_model_lock", return_value=wp.contextlib.nullcontext()), \
-                mock.patch.object(wp, "probe_duration", return_value=10.0), redirect_stderr(io.StringIO()):
+        with mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
+                mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=wp.contextlib.nullcontext()), \
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=10.0), redirect_stderr(io.StringIO()):
             result = wp.run({"protocolVersion": 2, "audioPath": str(self.audio), "outputPath": "/tmp/cut.mp3",
                              "removeAds": True, "alignedTranscriptModel": wp.ALIGNED_STT_MODEL})
         self.assertEqual(result["timing"], "aligned")
@@ -4965,8 +4978,8 @@ class OutcomeContractTests(unittest.TestCase):
             captured["command"] = command
             Path(command[-1]).write_bytes(b"\x00")
 
-        with mock.patch.object(wp, "_run_render_with_progress", side_effect=fake_run), \
-             mock.patch.object(wp, "probe_duration", return_value=7.5):
+        with mock.patch.object(_worker_cue_timing, "_run_render_with_progress", side_effect=fake_run), \
+             mock.patch.object(_worker_cue_timing, "probe_duration", return_value=7.5):
             wp.render_keep_segments(source, output, keeps)
 
         command = captured["command"]
@@ -4996,7 +5009,7 @@ class AlignedSTTCacheTests(unittest.TestCase):
         )
 
     def run_pipeline(self, request=None):
-        with mock.patch.object(wp, "probe_duration", return_value=1.0), redirect_stderr(io.StringIO()):
+        with mock.patch.object(_worker_cue_timing, "probe_duration", return_value=1.0), redirect_stderr(io.StringIO()):
             return wp.run(request or self.request)
 
     def test_reuses_a_detector_compatible_transcript_with_the_explicit_model(self):
@@ -5020,10 +5033,10 @@ class AlignedSTTCacheTests(unittest.TestCase):
         # `.start_s`, and `.end_s` for the detector rather than return JSON.
         install_fake_wilted()
         install_fake_ads(FakeLLM())
-        with mock.patch.object(wp, "detect_and_cut") as detector:
+        with mock.patch.object(_worker_ad_removal, "detect_and_cut") as detector:
             self.request["removeAds"] = True
-            with mock.patch.object(wp, "preflight_ad_removal"), \
-                    mock.patch.object(wp, "prepare_ad_model_lock", return_value=wp.contextlib.nullcontext()):
+            with mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
+                    mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=wp.contextlib.nullcontext()):
                 # The detector is not reached because this stub prevents the
                 # production cut path; its input is still observable below.
                 detector.return_value = (self.audio, [], [])
@@ -5114,10 +5127,10 @@ class AlignedSTTCacheTests(unittest.TestCase):
         )
         self.request["removeAds"] = True
         install_fake_ads(FakeLLM())
-        with mock.patch.object(wp, "preflight_ad_removal"), \
-                mock.patch.object(wp, "prepare_ad_model_lock", return_value=wp.contextlib.nullcontext()), \
-                mock.patch.object(wp, "detect_and_cut", side_effect=wp.WorkerError("ads-down", "detector unavailable")), \
-                mock.patch.object(wp, "probe_duration", return_value=1.0), redirect_stderr(io.StringIO()):
+        with mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
+                mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=wp.contextlib.nullcontext()), \
+                mock.patch.object(_worker_ad_removal, "detect_and_cut", side_effect=wp.WorkerError("ads-down", "detector unavailable")), \
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=1.0), redirect_stderr(io.StringIO()):
             with self.assertRaises(wp.WorkerError) as raised:
                 wp.run(self.request)
         self.assertEqual(raised.exception.code, "ads-down")
@@ -5853,7 +5866,7 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
             FakeSegment(20.0, 30.0, "third segment"),
         ]
         self.patches = [
-            mock.patch.object(wp, name, passthrough)
+            mock.patch.object(_WORKER_PATCH_MODULES[name], name, passthrough)
             for name, passthrough in (
                 ("recover_unclaimed_explicit_sponsor_reads", _passthrough_detections),
                 ("recover_sparse_commercial_reads", _passthrough_detections),
@@ -6042,7 +6055,7 @@ class AuditedDetectorAdapterTests(unittest.TestCase):
                 if _name == "resize_oversized_ad_spans":
                     return args[3], frozenset()
                 return args[3]
-            patcher = mock.patch.object(wp, name, record)
+            patcher = mock.patch.object(_WORKER_PATCH_MODULES[name], name, record)
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -6719,8 +6732,9 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
 
         self.calls.clear()
         segments = list(replay_call[1])
-        with mock.patch.object(wp, "probe_duration", lambda _path: replay_call[2]), \
-                mock.patch.object(wp, "prepare_ad_model_lock", lambda *_a, **_k: None), \
+        with mock.patch.object(_worker_cue_timing, "probe_duration", lambda _path: replay_call[2]), \
+                mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", lambda *_a, **_k: None), \
+                mock.patch.object(_worker_ad_removal, "analyze_ad_detections", wp.analyze_ad_detections), \
                 redirect_stderr(io.StringIO()):
             wp.detect_and_cut({}, Path("/nowhere/in.m4a"), [], segments)
         live_call = self.analyzed()
@@ -6741,7 +6755,7 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         def refuse(*_args, **_kwargs):
             self.fail("the replay reached speech-to-text")
 
-        with mock.patch.object(wp, "transcribe_with_daemon", refuse):
+        with mock.patch.object(_worker_transcript_sources, "transcribe_with_daemon", refuse):
             spans, _ = self.replay(case, detections=[(1.0, 2.0)])
         self.assertEqual([(span.start, span.end) for span in spans], [(1.0, 2.0)])
 
@@ -7085,7 +7099,7 @@ class AdKindContractTests(unittest.TestCase):
         llm = FakeLLM()
         install_fake_ads(llm, detections=list(detections))
         with redirect_stderr(io.StringIO()), \
-                mock.patch.object(wp, "probe_duration", return_value=total):
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=total):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
         return spans
 
@@ -7203,7 +7217,7 @@ class AdKindContractTests(unittest.TestCase):
         self.assertEqual(len(merged), 1)
         install_fake_ads(llm, detections=merged)
         with redirect_stderr(io.StringIO()), \
-                mock.patch.object(wp, "probe_duration", return_value=100.0):
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=100.0):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
         self.assertEqual(len(spans), 1)
         self.assertEqual(
@@ -7226,7 +7240,7 @@ class AdKindContractTests(unittest.TestCase):
             for index in range(20)
         ]
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(wp, "probe_duration", return_value=810.0):
+        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=810.0):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
         credits = [span for span in spans if span["kind"] == "credits"]
         self.assertEqual(len(credits), 1)
@@ -7293,7 +7307,7 @@ class ProducedSpanConfidenceTests(unittest.TestCase):
         llm = FakeLLM(**llm_kwargs)
         install_fake_ads(llm)
         with redirect_stderr(io.StringIO()), \
-                mock.patch.object(wp, "probe_duration", return_value=600.0):
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=600.0):
             _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
         return spans
 
