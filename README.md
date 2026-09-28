@@ -92,7 +92,10 @@ Explicitly excluded from the active Mac milestone: automatic classification, wea
 | `contracts/` | Domain, CloudKit, and audio contracts with checked-in fixtures and evidence. |
 | `Probes/` | Credential-free speech, extraction, persistence, audio, and signed-runtime probes. |
 | `Producer/Workers/adcorpus/` | Hand-labelled ground truth for the ad detector: labels and cache pointers only, no podcast prose or audio. |
+| `Producer/Workers/wilted_pipeline.py` | Stable executable protocol boundary for one preparation request. |
+| `Producer/Workers/wilted_worker/` | Focused Python implementation modules behind the worker entry point. |
 | `Producer/Sources/WiltedProducer/LocalLibrary/` | Versioned SwiftData library store split into 23 focused core, type, schema, and behavior files. |
+| `Producer/Sources/WiltedProducer/Preparation/` | Focused Swift preparation pipeline types, IPC runner, response handling, and commit behavior. |
 | `Producer/Tests/WiltedProducerTests/LocalLibraryStoreTests*.swift` | Fourteen LocalLibraryStore behavior test files. |
 | `WiltedMacTests/WiltedMacModelTests*.swift`, `WiltedMacTests/WiltedMacModelTestDoubles.swift` | Twenty-eight Mac model test and test-double files. |
 | `WiltediOS/ListenerAppModel*.swift`, `WiltediOS/ListenerAppTypes.swift` | Nine listener model, type, and extension files. |
