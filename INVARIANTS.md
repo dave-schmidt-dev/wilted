@@ -78,7 +78,7 @@ threshold: 3
 rationale: CloudKit is a transfer service, not the source of truth or a real-time channel. Both apps retain local state; completed Mac revisions automatically publish metadata plus deterministic bounded byte chunks, catalog fetches never stage audio, and iOS explicitly fetches, validates, and atomically reconstructs a selected revision before caching it for offline playback. Persisted zone changes/deletions survive relaunch, but engine tokens advance only after corresponding local data or send acknowledgements commit; pending chunks gate publication only for their own revision. Every typed account change quarantines local work until explicit review resumes the current engine, and an operation generation prevents pre-quarantine fetch/send completions from committing afterward.
 
 ### W-INV-008 — Cross-target fixtures are authoritative
-area: ["WiltedKit/**", "WiltedMacTests/**", "WiltediOSTests/**", "CloudSync/**", "Listener/**"]
+area: ["WiltedKit/**", "WiltedMacTests/**", "WiltediOSTests/**", "CloudSync/**", "Listener/**", "Producer/Tests/Fixtures/**", "Producer/Tests/WiltedProducerTests/LocalLibraryStoreTests*.swift"]
 gate_test: test-gate.sh
 threshold: 3
 rationale: Publish, decode, merge, completion, deletion, version mismatch, offline cache, partial failure, delayed delivery, typed account transitions, and deterministic account-change interleavings use shared fixtures so Mac and iOS cannot silently diverge.
