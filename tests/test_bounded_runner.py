@@ -79,10 +79,13 @@ class BoundedRunnerTests(unittest.TestCase):
 
     def wait_file(self, path: Path) -> int:
         deadline = time.monotonic() + 4
-        while not path.exists() and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            if path.exists():
+                pid_text = path.read_text()
+                if pid_text:
+                    return int(pid_text)
             time.sleep(.01)
-        self.assertTrue(path.exists(), f"fixture did not reach barrier: {path}")
-        return int(path.read_text())
+        self.fail(f"fixture did not write a PID before barrier deadline: {path}")
 
     def assert_dead(self, pid: int) -> None:
         deadline = time.monotonic() + 4
@@ -208,6 +211,12 @@ class BoundedRunnerTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 10)
 
     def test_parallel_separate_groups_survive_leader_exit_cleanup(self) -> None:
+        readiness_race = self.path / "readiness-race.ready"
+        readiness_race.touch()
+        with mock.patch.object(Path, "read_text", side_effect=["", "12345"]) as read_text:
+            self.assertEqual(self.wait_file(readiness_race), 12345)
+        self.assertEqual(read_text.call_count, 2)
+
         launched = [self.command("separate") for _ in range(12)]
         launched += [self.command("exit-separate") for _ in range(13)]
         children = [self.wait_file(ready) for _, ready, _ in launched]
