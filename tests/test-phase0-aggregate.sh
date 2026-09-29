@@ -33,11 +33,13 @@ expected_legs=(
   "test-install-mac-app"
   "test-temp-sweep"
   "test-storage-retention"
+  "test-temp-leaks"
   "test-git-hooks"
   "test-simulator-cleanup"
   "test-native-ui-receipt"
   "test-release-wrappers"
   "test-file-size"
+  "test-attended-library-sync"
 )
 if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
   expected_legs+=("test-audio-contract-ios-build")
@@ -52,12 +54,14 @@ expected_count="${#expected_legs[@]}"
 run_phase0_self_test() {
   local output_file="$1"
   local force_leg="$2"
+  local phase_parent="$tmp_dir/phase-parent"
+  mkdir -p "$phase_parent"
 
   set +e
   if [[ -n "$force_leg" ]]; then
-    PHASE0_SELF_TEST=1 PHASE0_FORCE_FAIL_LEG="$force_leg" bash "$phase0_script" >"$output_file" 2>&1
+    TMPDIR="$phase_parent" PHASE0_SELF_TEST=1 PHASE0_FORCE_FAIL_LEG="$force_leg" bash "$phase0_script" >"$output_file" 2>&1
   else
-    PHASE0_SELF_TEST=1 bash "$phase0_script" >"$output_file" 2>&1
+    TMPDIR="$phase_parent" PHASE0_SELF_TEST=1 bash "$phase0_script" >"$output_file" 2>&1
   fi
   local status=$?
   set -e
@@ -102,9 +106,10 @@ assert_contains() {
   fi
 }
 
-assert_contains 'run_leg_async "assert-mac-first-docs" "$repo_root/scripts/assert-mac-first-docs.sh"' "$phase0_script"
+assert_contains 'run_leg_async "assert-mac-first-docs" "$repo_root/tests/test-mac-first-docs.sh"' "$phase0_script"
 assert_contains 'run_leg_async "test-bounded-entry" "$repo_root/tests/test-bounded-entry.sh"' "$phase0_script"
 assert_contains 'run_leg_async "test-storage-retention" "$repo_root/tests/test-storage-retention.sh"' "$phase0_script"
+assert_contains 'run_leg_async "test-temp-leaks" "$repo_root/tests/test-temp-leaks.sh"' "$phase0_script"
 assert_contains 'python3 "$bounded_runner" --timeout-seconds "$phase0_leg_timeout_seconds" --' "$phase0_script"
 assert_contains 'trap '\''cleanup_phase0; exit 129'\'' HUP' "$phase0_script"
 assert_contains 'run_leg_async "test-simulator-cleanup" "$repo_root/tests/test-simulator-cleanup.sh"' "$phase0_script"
@@ -216,6 +221,24 @@ assert_inner_interrupt_cleanup() {
 
 assert_inner_interrupt_cleanup async
 assert_inner_interrupt_cleanup sync
+
+leak_fixture="$tmp_dir/leak-fixture.sh"
+cat >"$leak_fixture" <<'FIXTURE'
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "${TMPDIR:?}/wilted-fixture-leak"
+FIXTURE
+chmod +x "$leak_fixture"
+leak_parent="$tmp_dir/leak-parent"
+leak_output="$tmp_dir/leak.log"
+mkdir -p "$leak_parent"
+set +e
+TMPDIR="$leak_parent" PHASE0_INTERRUPT_TEST_LEG="$leak_fixture" \
+  PHASE0_INTERRUPT_TEST_MODE=sync bash "$phase0_script" >"$leak_output" 2>&1
+leak_status=$?
+set -e
+assert_nonzero_exit "$leak_status" "contained phase0 child leak"
+assert_contains 'temp.leak label=phase0-leg-interrupt-fixture entry=wilted-fixture-leak' "$leak_output"
 
 base_output="$tmp_dir/selftest.log"
 forced_output="$tmp_dir/forced.log"

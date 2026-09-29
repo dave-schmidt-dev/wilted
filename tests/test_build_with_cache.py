@@ -180,7 +180,9 @@ class BuildWithCacheTests(unittest.TestCase):
         scripts = fixture / "scripts"
         (scripts / "lib").mkdir(parents=True)
         shutil.copy(ROOT / "scripts/lib/test-runner.sh", scripts / "lib/test-runner.sh")
+        shutil.copy(ROOT / "scripts/lib/test-temp-state.sh", scripts / "lib/test-temp-state.sh")
         shutil.copy(ROOT / "scripts/lib/temp-sweep.sh", scripts / "lib/temp-sweep.sh")
+        shutil.copy(ROOT / "scripts/check-temp-leaks.py", scripts / "check-temp-leaks.py")
         shutil.copy(HELPER, scripts / "build-with-cache.py")
         shutil.copy(ROOT / "scripts/test-phase0.sh", scripts / "test-phase0.sh")
         shutil.copy(ROOT / "scripts/run-bounded.py", scripts / "run-bounded-real.py")

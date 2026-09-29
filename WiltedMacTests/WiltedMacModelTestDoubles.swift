@@ -37,6 +37,23 @@ actor StoreCapture {
     func capture(_ store: LocalLibraryStore) { self.store = store }
 }
 
+@MainActor
+extension WiltedMacModel {
+    /// Seeds Menu membership for a pure projection fixture without claiming a
+    /// durable Feed decision was exercised.
+    func seedPodcastQueueMembershipForTesting(_ episode: WiltedMacEpisode) {
+        podcastQueueIDs.append(episode.id)
+    }
+}
+
+@MainActor
+func waitForFeedDecisionWriters(_ model: WiltedMacModel) async {
+    let writers = Array(model.subscriptionWriteTasks.values)
+    for writer in writers {
+        await writer.value
+    }
+}
+
 actor FailingBootstrap {
     private(set) var attempts = 0
 
@@ -83,7 +100,8 @@ final class ModelTestRemoteCommandSource: WiltedRemoteCommandSource {
 /// model that bootstraps this store sees it as a candidate for automatic Menu
 /// admission.
 func installPreparedMenuEpisode(
-    into store: LocalLibraryStore, directory: URL, suffix: String
+    into store: LocalLibraryStore, directory: URL, suffix: String,
+    durationSeconds: TimeInterval = 12, playbackSeconds: TimeInterval = 0
 ) async throws -> ItemID {
     let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
     let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/menu-admission-\(suffix).xml"))
@@ -106,7 +124,7 @@ func installPreparedMenuEpisode(
     try Data("audio".utf8).write(to: mediaURL)
     try await store.finalizePodcastDownload(
         revision: try AudioRevision(
-            itemID: episodeID, revisionID: revisionID, durationSeconds: 12, byteCount: 5,
+            itemID: episodeID, revisionID: revisionID, durationSeconds: durationSeconds, byteCount: 5,
             contentHash: "sha256:" + String(repeating: "a", count: 64),
             mediaType: "audio/mpeg", createdAt: created, schemaVersion: 3
         ),
@@ -121,6 +139,13 @@ func installPreparedMenuEpisode(
         episodeID: episodeID, revisionID: revisionID, policyDigest: "d",
         pipelineFingerprint: "f", semanticVersion: "v", producedAt: created
     ))
+    if playbackSeconds > 0 {
+        try await store.save(playback: try PlaybackState(
+            itemID: episodeID, revisionID: revisionID, sessionID: "prepared-menu-fixture",
+            sequence: 1, positionSeconds: playbackSeconds, durationSeconds: durationSeconds,
+            completed: false, intent: .progress, deviceID: "mac-test", updatedAt: created
+        ))
+    }
     return episodeID
 }
 

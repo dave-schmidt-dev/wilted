@@ -17,14 +17,6 @@ private final class RecordingNowPlayingSink: WiltedNowPlayingSink {
 
 @MainActor
 final class WiltedMacPlaybackHandoffTests: XCTestCase {
-    private var directories: [URL] = []
-
-    override func tearDown() async throws {
-        directories.forEach { try? FileManager.default.removeItem(at: $0) }
-        directories.removeAll()
-        try await super.tearDown()
-    }
-
     func testPlayingAnEpisodePublishesItBeforeItsTranscriptLoads() async throws {
         let (model, sink, directory) = makeModel()
         let first = try XCTUnwrap(model.episodes.first)
@@ -85,9 +77,7 @@ final class WiltedMacPlaybackHandoffTests: XCTestCase {
 
     private func makeModel() -> (WiltedMacModel, RecordingNowPlayingSink, URL) {
         let sink = RecordingNowPlayingSink()
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wilted-playback-handoff-\(UUID().uuidString)", isDirectory: true)
-        directories.append(directory)
+        let directory = wiltedTemporaryDirectory("playback-handoff")
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
             stateDirectoryOverride: directory,

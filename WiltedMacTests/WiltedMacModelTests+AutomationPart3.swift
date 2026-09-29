@@ -6,6 +6,22 @@ import WiltedProducer
 @testable import WiltedMac
 
 extension WiltedMacModelTests {
+    func testInitialEpisodeMetadataCountDefaultsMigratesAndRejectsInvalidValues() throws {
+        XCTAssertEqual(WiltedAutomationSettings.defaults.initialEpisodeMetadataCount, 5)
+        XCTAssertEqual(WiltedAutomationSettings.validInitialEpisodeMetadataCount(1), 1)
+        XCTAssertEqual(WiltedAutomationSettings.validInitialEpisodeMetadataCount(100), 100)
+        XCTAssertNil(WiltedAutomationSettings.validInitialEpisodeMetadataCount(0))
+        XCTAssertNil(WiltedAutomationSettings.validInitialEpisodeMetadataCount(101))
+
+        let legacy = #"{"version":1,"refreshPolicy":{"kind":"manual"},"downloadPolicy":"manual","processingPolicy":{"kind":"immediate"},"transcriptPolicy":"bestAvailable","removeAds":true}"#
+        let malformed = #"{"version":1,"refreshPolicy":{"kind":"manual"},"downloadPolicy":"manual","processingPolicy":{"kind":"immediate"},"transcriptPolicy":"bestAvailable","removeAds":true,"initialEpisodeMetadataCount":999}"#
+        for payload in [legacy, malformed] {
+            let decoded = try JSONDecoder().decode(WiltedAutomationSettings.self, from: Data(payload.utf8))
+            XCTAssertEqual(decoded.initialEpisodeMetadataCount, 5)
+            XCTAssertTrue(decoded.autoAddPreparedToMenu)
+        }
+    }
+
     /// Hiding the window, minimising it, or closing the last one must not stop
     /// the audio. It did: the scene-phase handler called a method that paused,
     /// because one call was serving both "not frontmost" and "quitting". David

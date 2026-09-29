@@ -328,13 +328,7 @@ extension WiltedMacModelTests {
 
         // Restoring B must make it eligible again
         model.restoreSkippedFeedEpisode(second)
-        for _ in 0..<50 {
-            if model.episodes.first(where: { $0.id == secondID.rawValue })?.retiredAt == nil {
-                break
-            }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        try await settle(model)
+        await waitForFeedDecisionWriters(model)
 
         let restoredSecond = try XCTUnwrap(model.episodes.first { $0.id == secondID.rawValue })
         XCTAssertNil(restoredSecond.retiredAt)

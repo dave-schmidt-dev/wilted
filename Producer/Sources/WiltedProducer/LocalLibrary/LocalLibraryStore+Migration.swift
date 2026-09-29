@@ -35,32 +35,29 @@ extension LocalLibraryStore {
         // Validate a disposable clone. SwiftData may checkpoint or remove WAL
         // sidecars as it opens a store, so opening retainedURL itself would make
         // the rollback artifact differ from the post-checkpoint source.
-        let validationDirectory = manager.temporaryDirectory.appendingPathComponent("wilted-v5-validation-\(UUID().uuidString)", isDirectory: true)
-        try manager.createDirectory(at: validationDirectory, withIntermediateDirectories: true)
-        let validationURL = validationDirectory.appendingPathComponent(sourceName)
-        // The checkpointed main file is self-contained. Keep sidecars out of the
-        // disposable validation clone because SQLite may delete them on open.
-        try manager.copyItem(at: sourceURL, to: validationURL)
-        do {
-            let schema = Schema(versionedSchema: LocalLibrarySchemaV5.self)
-            let configuration = ModelConfiguration(schema: schema, url: validationURL, cloudKitDatabase: .none)
-            _ = try ModelContainer(for: schema, configurations: [configuration])
-        } catch {
-            // Legacy V1-V4 stores are still supported. Upgrade only the disposable
-            // validation clone to V5; the retained copy and source remain untouched.
+        try withMigrationValidationDirectory(manager: manager, sourceName: sourceName) { validationURL in
+            // The checkpointed main file is self-contained. Keep sidecars out of the
+            // disposable validation clone because SQLite may delete them on open.
+            try manager.copyItem(at: sourceURL, to: validationURL)
             do {
                 let schema = Schema(versionedSchema: LocalLibrarySchemaV5.self)
                 let configuration = ModelConfiguration(schema: schema, url: validationURL, cloudKitDatabase: .none)
-                _ = try ModelContainer(for: schema, migrationPlan: LocalLibraryV5MigrationPlan.self,
-                                        configurations: [configuration])
-                let reopenedConfiguration = ModelConfiguration(schema: schema, url: validationURL, cloudKitDatabase: .none)
-                _ = try ModelContainer(for: schema, configurations: [reopenedConfiguration])
+                _ = try ModelContainer(for: schema, configurations: [configuration])
             } catch {
-                try? manager.removeItem(at: validationDirectory)
-                throw LocalLibraryStoreError.migrationPreflightFailed("retained V5 copy could not be opened: \(error)")
+                // Legacy V1-V4 stores are still supported. Upgrade only the disposable
+                // validation clone to V5; the retained copy and source remain untouched.
+                do {
+                    let schema = Schema(versionedSchema: LocalLibrarySchemaV5.self)
+                    let configuration = ModelConfiguration(schema: schema, url: validationURL, cloudKitDatabase: .none)
+                    _ = try ModelContainer(for: schema, migrationPlan: LocalLibraryV5MigrationPlan.self,
+                                            configurations: [configuration])
+                    let reopenedConfiguration = ModelConfiguration(schema: schema, url: validationURL, cloudKitDatabase: .none)
+                    _ = try ModelContainer(for: schema, configurations: [reopenedConfiguration])
+                } catch {
+                    throw LocalLibraryStoreError.migrationPreflightFailed("retained V5 copy could not be opened: \(error)")
+                }
             }
         }
-        try? manager.removeItem(at: validationDirectory)
         // Copy only after validation has closed so SQLite cannot clean up the
         // rollback artifact's sidecars. This preserves every post-checkpoint
         // source file, including zero-length WAL/SHM files.
@@ -97,6 +94,17 @@ extension LocalLibraryStore {
         try validateWALCheckpointOutput(result.output, walByteCount: walByteCount)
     }
 
+    private nonisolated static func withMigrationValidationDirectory<T>(
+        manager: FileManager, sourceName: String, operation: (URL) throws -> T
+    ) throws -> T {
+        let directory = manager.temporaryDirectory.appendingPathComponent(
+            "wilted-v5-validation-\(UUID().uuidString)", isDirectory: true
+        )
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? manager.removeItem(at: directory) }
+        return try operation(directory.appendingPathComponent(sourceName))
+    }
+
     private nonisolated static func validateWALCheckpointOutput(_ output: String, walByteCount: Int64?) throws {
         let fields = output.split { character in
             character == "|" || character == " " || character == "\t" || character == "\r" || character == "\n"
@@ -108,6 +116,14 @@ extension LocalLibraryStore {
     }
 
     #if DEBUG
+    /// Exercises the production validation-directory lifetime with a real
+    /// throwing copy operation before any SwiftData container opens the file.
+    internal nonisolated static func withMigrationValidationDirectoryForTesting(
+        _ operation: (URL) throws -> Void
+    ) throws {
+        try withMigrationValidationDirectory(manager: .default, sourceName: "validation.sqlite", operation: operation)
+    }
+
     /// Deterministic parser seam for WAL checkpoint failure cases.
     internal nonisolated static func validateWALCheckpointOutputForTesting(_ output: String, walByteCount: Int64? = nil) throws {
         try validateWALCheckpointOutput(output, walByteCount: walByteCount)

@@ -189,6 +189,17 @@ parse_result_bundle_test_count() {
   jq -er '.totalTestCount | numbers | select(. > 0)' "$summary_file"
 }
 
+result_bundle_summary_passed() {
+  jq -e '
+    type == "object" and .result == "Passed" and
+    (.totalTestCount | type == "number") and
+    (.passedTests | type == "number") and (.passedTests >= 0) and
+    (.failedTests | type == "number") and (.failedTests == 0) and
+    (.skippedTests | type == "number") and (.skippedTests >= 0) and
+    (.passedTests + .failedTests + .skippedTests == .totalTestCount)
+  ' "$summary_file" >/dev/null
+}
+
 validate_mac_ui_selector() {
   local selector="$1"
   if [[ ! "$selector" =~ ^WiltedMacUITests/WiltedMacSmokeUITests/test[A-Za-z0-9_]+$ ]]; then
@@ -255,18 +266,24 @@ assert_result_bundle_tests() {
   local reported expected_minimum
 
   if [[ "$native_self_test" == "1" ]]; then
-    if is_forced_zero "$label"; then
-      printf '%s\n' '{"totalTestCount":0}' >"$summary_file"
+    if [[ "${NATIVE_FORCE_FAILED_RESULT_SUMMARY_LEG:-}" == "$label" ]]; then
+      mkdir -p "$result_bundle"
+      printf '%s\n' 'self_test_macos_ui_failed_summary' >"$result_bundle/self-test-evidence"
+      printf '%s\n' '{"totalTestCount":11,"passedTests":1,"failedTests":9,"skippedTests":1,"result":"Failed"}' >"$summary_file"
+    elif is_forced_zero "$label"; then
+      printf '%s\n' '{"totalTestCount":0,"passedTests":0,"failedTests":0,"skippedTests":0,"result":"Passed"}' >"$summary_file"
     elif [[ "$label" == "ios-pixel-snapshot-tests" && "$forced_missing_ios_mvp_journey" == "1" ]]; then
-      printf '%s\n' '{"totalTestCount":10}' >"$summary_file"
+      printf '%s\n' '{"totalTestCount":10,"passedTests":10,"failedTests":0,"skippedTests":0,"result":"Passed"}' >"$summary_file"
     elif [[ "$label" == "macos-unit-tests" ]]; then
-      printf '%s\n' '{"totalTestCount":30}' >"$summary_file"
+      printf '%s\n' '{"totalTestCount":30,"passedTests":30,"failedTests":0,"skippedTests":0,"result":"Passed"}' >"$summary_file"
     elif [[ "$label" == "macos-ui-tests" ]]; then
-      printf '{"totalTestCount":%s}\n' "$(mac_ui_declared_test_count)" >"$summary_file"
+      local ui_count
+      ui_count="$(mac_ui_declared_test_count)"
+      printf '{"totalTestCount":%s,"passedTests":%s,"failedTests":0,"skippedTests":0,"result":"Passed"}\n' "$ui_count" "$ui_count" >"$summary_file"
     elif [[ "$label" == "ios-pixel-snapshot-tests" ]]; then
-      printf '%s\n' '{"totalTestCount":11}' >"$summary_file"
+      printf '%s\n' '{"totalTestCount":11,"passedTests":11,"failedTests":0,"skippedTests":0,"result":"Passed"}' >"$summary_file"
     else
-      printf '%s\n' '{"totalTestCount":2}' >"$summary_file"
+      printf '%s\n' '{"totalTestCount":2,"passedTests":2,"failedTests":0,"skippedTests":0,"result":"Passed"}' >"$summary_file"
     fi
   else
     require_tool xcrun
@@ -288,6 +305,11 @@ assert_result_bundle_tests() {
   if [[ "$reported" -lt "$expected_minimum" ]]; then
     printf 'native.insufficient-tests label=%s reported=%s expected_minimum=%s result_bundle=%s\n' \
       "$label" "$reported" "$expected_minimum" "$result_bundle" >&2
+    return 1
+  fi
+  if ! result_bundle_summary_passed "$summary_file"; then
+    printf 'native.result-summary-failed label=%s result_bundle=%s\n' \
+      "$label" "$result_bundle" >&2
     return 1
   fi
   printf 'native.tests label=%s reported=%s\n' "$label" "$reported"

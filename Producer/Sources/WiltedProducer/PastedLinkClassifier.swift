@@ -13,6 +13,9 @@ public enum PastedLinkKind: Equatable, Sendable {
     /// asked for; the feed is offered, never taken, because a blog's feed is a
     /// different subscription from the one article the reader pasted.
     case articleAdvertisingFeed(URL)
+    /// A supported Apple Podcasts show link resolved through the bounded
+    /// directory lookup. The caller still asks for confirmation before follow.
+    case podcastCatalogShow(PodcastCatalogShow)
 }
 
 public enum PastedLinkClassifierError: Error, Equatable, LocalizedError, Sendable {
@@ -40,15 +43,26 @@ public struct PastedLinkClassifier: Sendable {
     public static let maximumSniffBytes = 128 * 1_024
 
     private let loader: any PodcastFeedLoading
+    private let catalogLookupClient: PodcastCatalogLookupClient
 
-    public init(loader: any PodcastFeedLoading = URLSessionPodcastFeedLoader()) {
+    public init(
+        loader: any PodcastFeedLoading = URLSessionPodcastFeedLoader(),
+        catalogLookupClient: PodcastCatalogLookupClient = PodcastCatalogLookupClient()
+    ) {
         self.loader = loader
+        self.catalogLookupClient = catalogLookupClient
     }
 
     public func classify(_ url: URL) async throws -> PastedLinkKind {
         guard url.scheme?.lowercased() == "https", url.host != nil,
               url.user == nil, url.password == nil else {
             throw PastedLinkClassifierError.invalidURL
+        }
+        if url.host?.lowercased() == "podcasts.apple.com", url.path.lowercased().contains("/podcast/") {
+            guard let collectionID = PodcastCatalogLookupClient.collectionID(fromApplePodcastURL: url) else {
+                throw PastedLinkClassifierError.invalidURL
+            }
+            return .podcastCatalogShow(try await catalogLookupClient.lookup(collectionID: collectionID))
         }
         // Only extensions that no article uses short-circuit the fetch. A path
         // that merely contains "feed" is not one of them: an article at

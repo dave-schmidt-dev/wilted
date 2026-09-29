@@ -300,6 +300,34 @@ final class WiltedMacSyncLifecycle {
         operationTask?.cancel()
     }
 
+    /// Stops and drains all finite observers and operations before a fixture
+    /// root is removed. The synchronous `cancel()` remains suitable for UI
+    /// actions; fixture ownership calls this awaited variant.
+    func close() async {
+        cancelRequested = true
+        operationTask?.cancel()
+        statusTask?.cancel()
+        coordinatorStatusTask?.cancel()
+        accountTask?.cancel()
+        quarantineTask?.cancel()
+        await cancelTransport?()
+        let operation = operationTask
+        let status = statusTask
+        let coordinatorStatus = coordinatorStatusTask
+        let account = accountTask
+        let quarantine = quarantineTask
+        await operation?.value
+        await status?.value
+        await coordinatorStatus?.value
+        await account?.value
+        await quarantine?.value
+        operationTask = nil
+        statusTask = nil
+        coordinatorStatusTask = nil
+        accountTask = nil
+        quarantineTask = nil
+    }
+
     /// Quarantines operations after an account-owner change until explicitly reset.
     func quarantineAccount() {
         cancel()

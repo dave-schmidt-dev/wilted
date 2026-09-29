@@ -1,4 +1,4 @@
-.PHONY: validate native-meta native native-ui lint deadcode file-size check-fast install-hooks install app-icon ad-corpus ad-corpus-replay ad-corpus-adopt
+.PHONY: validate validate-inner native-meta native native-ui lint deadcode file-size check-fast install-hooks install app-icon ad-corpus ad-corpus-replay ad-corpus-adopt
 
 lint:
 	@$(MAKE) -C Producer/Runtime lint
@@ -16,6 +16,9 @@ install-hooks:
 	@$(MAKE) -C Producer/Runtime install-hooks
 
 validate:
+	@bash -c 'source scripts/lib/test-temp-state.sh; WILTED_TEMP_LEAK_CHECKER="$(CURDIR)/scripts/check-temp-leaks.py"; wilted_full_run "$(CURDIR)" $(MAKE) validate-inner'
+
+validate-inner:
 	@python3 scripts/check-no-global-tmp.py
 	@python3 scripts/check_file_size.py --all
 	@bash tests/test-phase0-aggregate.sh

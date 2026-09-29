@@ -10,7 +10,6 @@ extension WiltedMacMenuView {
         showsGroupName: Bool
     ) -> some View {
         let group = WiltedMacModel.menuGroup(for: episode)
-        let subtitle = "\(episode.feedTitle) · \(episode.releasedAt.formatted(date: .numeric, time: .omitted))"
         return VStack(spacing: 0) {
             Rectangle()
                 .fill(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
@@ -28,10 +27,11 @@ extension WiltedMacMenuView {
                     .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     .lineLimit(1)
-                Text(showsGroupName ? "\(subtitle) · \(group.displayName)" : subtitle)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .lineLimit(1)
+                WiltedMacEpisodeMetadata(
+                    episode: episode,
+                    lifecycleLabel: showsGroupName ? group.displayName : nil,
+                    identifier: "wilted-menu-metadata-\(episode.id)"
+                )
                 // Preparing stays in Downloaded, and this is the figure that
                 // says so; the row does not move groups while it runs.
                 if episode.preparationState.isRunning,

@@ -52,12 +52,18 @@ extension LocalLibraryStore {
     @discardableResult
     public func savePodcastEpisodes(
         _ episodes: [PodcastEpisode],
-        admission: PodcastEpisodeAdmission
+        admission: PodcastEpisodeAdmission,
+        initialMetadataLimit: Int? = nil
     ) throws -> PodcastEpisodeAdmissionResult {
-        // One admission path, not two. A claiming limit of zero is exactly this
-        // call, and keeping a second hand-written copy of the admit-and-upsert
-        // sequence is how the two drift apart.
-        try admitPodcastEpisodes(episodes, admission: admission, claimingNewest: 0).admission
+        // The cap is only meaningful while creating a subscription. Existing
+        // rows still refresh even outside it, so a later resubscribe cannot
+        // make factual metadata stale or re-admit old hidden episodes.
+        try admitPodcastEpisodes(
+            episodes,
+            admission: admission,
+            claimingNewest: 0,
+            initialMetadataLimit: initialMetadataLimit
+        ).admission
     }
 
     /// What one admission claimed for automatic download.
@@ -90,7 +96,8 @@ extension LocalLibraryStore {
         _ episodes: [PodcastEpisode],
         admission: PodcastEpisodeAdmission,
         claimingNewest limit: Int,
-        claimedAt: Timestamp = Timestamp(Date())
+        claimedAt: Timestamp = Timestamp(Date()),
+        initialMetadataLimit: Int? = nil
     ) throws -> PodcastAutomationAdmissionResult {
         guard !episodes.isEmpty else {
             return PodcastAutomationAdmissionResult(
@@ -102,7 +109,12 @@ extension LocalLibraryStore {
         let existing = Set(
             try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>()).map(\.id)
         )
-        let admitted = try admittedPodcastEpisodes(episodes, admission: admission, in: context)
+        let admitted = try admittedPodcastEpisodes(
+            episodes,
+            admission: admission,
+            initialMetadataLimit: initialMetadataLimit,
+            in: context
+        )
         try upsertPodcastEpisodes(admitted, in: context)
         let newlyAdmitted = admitted.filter { !existing.contains($0.itemID.rawValue) }
         var claimed: [ItemID] = []
@@ -232,6 +244,7 @@ extension LocalLibraryStore {
     private func admittedPodcastEpisodes(
         _ episodes: [PodcastEpisode],
         admission: PodcastEpisodeAdmission,
+        initialMetadataLimit: Int?,
         in context: ModelContext
     ) throws -> [PodcastEpisode] {
         let dismissed = Set(
@@ -255,16 +268,27 @@ extension LocalLibraryStore {
                 admitted.append(contentsOf: group)
                 continue
             }
-            var kept = group.filter { episode in
-                if existing.contains(episode.itemID.rawValue) { return true }
-                guard let published = episode.publishedTime?.date else { return false }
-                return published >= horizon
-            }
-            if admission == .backfill, kept.count < Self.podcastSubscriptionMinimumBackfill {
-                let keptIDs = Set(kept.map(\.itemID.rawValue))
-                kept.append(contentsOf: Self.newestFirst(group)
-                    .filter { !keptIDs.contains($0.itemID.rawValue) }
-                    .prefix(Self.podcastSubscriptionMinimumBackfill - kept.count))
+            var kept: [PodcastEpisode]
+            if admission == .backfill, let cap = initialMetadataLimit, (1...100).contains(cap) {
+                // The cap is a metadata window, not a retention policy. Every
+                // existing row is refreshed, while only a deterministic newest
+                // slice can create a new row during the first subscription.
+                let newestIDs = Set(Self.initialMetadataFirst(group).prefix(cap).map(\.itemID.rawValue))
+                kept = group.filter {
+                    existing.contains($0.itemID.rawValue) || newestIDs.contains($0.itemID.rawValue)
+                }
+            } else {
+                kept = group.filter { episode in
+                    if existing.contains(episode.itemID.rawValue) { return true }
+                    guard let published = episode.publishedTime?.date else { return false }
+                    return published >= horizon
+                }
+                if admission == .backfill, kept.count < Self.podcastSubscriptionMinimumBackfill {
+                    let keptIDs = Set(kept.map(\.itemID.rawValue))
+                    kept.append(contentsOf: Self.newestFirst(group)
+                        .filter { !keptIDs.contains($0.itemID.rawValue) }
+                        .prefix(Self.podcastSubscriptionMinimumBackfill - kept.count))
+                }
             }
             admitted.append(contentsOf: kept)
         }
@@ -307,6 +331,19 @@ extension LocalLibraryStore {
             default: return lhs.offset < rhs.offset
             }
         }.map(\.element)
+    }
+
+    /// Initial subscription ordering is independent of feed parser order so
+    /// equal or absent publication dates remain predictable across refreshes.
+    private static func initialMetadataFirst(_ episodes: [PodcastEpisode]) -> [PodcastEpisode] {
+        episodes.sorted { left, right in
+            switch (left.publishedTime?.date, right.publishedTime?.date) {
+            case let (left?, right?) where left != right: return left > right
+            case (nil, .some): return false
+            case (.some, nil): return true
+            default: return left.itemID.rawValue < right.itemID.rawValue
+            }
+        }
     }
 
     private static func admissionHorizon(subscribedAt: Date, admission: PodcastEpisodeAdmission) -> Date {

@@ -333,6 +333,8 @@ extension WiltedMacModel {
                 case .articleAdvertisingFeed(let feedURL):
                     self.advertisedFeed = feedURL
                     self.addArticle()
+                case .podcastCatalogShow(let show):
+                    self.handPodcastFeedToSubscriptions(show.feedURL)
                 }
             } catch is CancellationError {
                 self.linkDraftStatus = nil

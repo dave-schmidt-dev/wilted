@@ -15,12 +15,26 @@ import CloudKit
 
 extension WiltedMacModel {
 #if canImport(WiltedProducer)
+    /// Array-compatible rows paired with the sequence at which their store
+    /// read began. This is transient read provenance, never a second store.
+    struct LibraryEpisodeRows: RandomAccessCollection {
+        let values: [WiltedMacEpisode]
+        let readEpoch: UInt64
+        var startIndex: Int { values.startIndex }
+        var endIndex: Int { values.endIndex }
+        subscript(position: Int) -> WiltedMacEpisode { values[position] }
+    }
+
 #if canImport(WiltedProducer)
     func refreshPodcastQueueState() async {
         guard let store else { return }
         podcastQueueRefreshGeneration &+= 1
         let generation = podcastQueueRefreshGeneration
         guard let state = try? await store.podcastQueueState() else { return }
+        // The test barrier holds a real actor-read state while a later Keep
+        // commits and advances the generation, proving that old queue bytes
+        // cannot publish after the decision.
+        await podcastQueueReadBarrierForTesting?()
         guard generation == podcastQueueRefreshGeneration else { return }
         podcastQueueIDs = state.episodeIDs.map(\.rawValue)
         applyMenuSortIfNeeded()
@@ -169,8 +183,8 @@ extension WiltedMacModel {
     /// refresh failed would take the library away over a transient error.
     func reloadLibraryRows() async {
         guard let store, let values = try? await loadLibrary(from: store) else { return }
+        guard applyEpisodes(values.episodes) else { return }
         articles = values.articles
-        applyEpisodes(values.episodes)
         subscriptions = values.subscriptions
     }
 
@@ -181,7 +195,9 @@ extension WiltedMacModel {
     }
 
     func loadLibrary(from store: LocalLibraryStore) async throws
-        -> (articles: [WiltedMacArticle], episodes: [WiltedMacEpisode], subscriptions: [WiltedMacSubscription]) {
+        -> (articles: [WiltedMacArticle], episodes: LibraryEpisodeRows, subscriptions: [WiltedMacSubscription]) {
+        libraryReadEpoch &+= 1
+        let readEpoch = libraryReadEpoch
         let snapshot = try await store.podcastLibrarySnapshot()
 
         var articleValues: [WiltedMacArticle] = []
@@ -280,6 +296,9 @@ extension WiltedMacModel {
                 summary: Self.episodeSummary(notes: episode.notes, fallback: episode.author ?? feedTitle),
                 notes: episode.notes, artworkURL: episode.artworkURL ?? feeds[episode.feedID]?.artworkURL,
                 releasedAt: (episode.publishedTime ?? episode.createdAt).date,
+                publishedAt: episode.publishedTime?.date,
+                sourceDurationSeconds: episode.durationSeconds,
+                playableDurationSeconds: revision?.revision.durationSeconds,
                 durationSeconds: revision?.revision.durationSeconds ?? episode.durationSeconds,
                 playbackSeconds: playbackState?.positionSeconds ?? 0,
                 isPlayed: listeningState?.completedAt != nil, retiredAt: retiredAt?.date, removalKind: removalKind,
@@ -295,18 +314,28 @@ extension WiltedMacModel {
                 feedURL: episode.feedURL
             ))
         }
-        return (articleValues, episodeValues, subscriptionValues)
+        return (articleValues, LibraryEpisodeRows(values: episodeValues, readEpoch: readEpoch), subscriptionValues)
     }
 
     func loadDismissedEpisodes(from store: LocalLibraryStore) async throws -> [WiltedMacDismissedEpisode] {
-        let feeds = Dictionary(uniqueKeysWithValues: try await store.podcastFeeds().map { ($0.itemID, $0.title) })
-        let preparedItemIDs = Set(try await store.preparationRuns().map(\.itemID))
+        let snapshot = try await store.podcastLibrarySnapshot()
+        let feeds = snapshot.feeds
+        let episodeByID = Dictionary(uniqueKeysWithValues: snapshot.episodes.map { ($0.itemID, $0) })
+        let preparedItemIDs = Set(snapshot.preparationRuns.map(\.itemID))
         return try await store.dismissedPodcastEpisodes().map { dismissal in
-            WiltedMacDismissedEpisode(
+            let episode = episodeByID[dismissal.episodeID]
+            // V13's migration placeholder uses the invalid URL and its
+            // dismissal time as creation time. It is a durable removal record,
+            // not proof of a source date or source duration.
+            let factualEpisode = episode?.feedURL.host == "wilted.invalid" ? nil : episode
+            return WiltedMacDismissedEpisode(
                 id: dismissal.episodeID.rawValue,
                 feedID: dismissal.feedID?.rawValue,
                 title: dismissal.title ?? "Removed podcast episode",
-                feedTitle: dismissal.feedID.flatMap { feeds[$0] },
+                feedTitle: dismissal.feedID.flatMap { feeds[$0]?.title }
+                    ?? factualEpisode.flatMap { feeds[$0.feedID]?.title },
+                publishedAt: factualEpisode?.publishedTime?.date,
+                sourceDurationSeconds: factualEpisode?.durationSeconds,
                 dismissedAt: dismissal.dismissedAt.date,
                 hasPreparationHistory: preparedItemIDs.contains(dismissal.episodeID)
             )
@@ -408,8 +437,8 @@ extension WiltedMacModel {
         Task { [weak self] in
             guard let self else { return }
             guard let values = try? await self.loadLibrary(from: store) else { return }
+            guard self.applyEpisodes(values.episodes) else { return }
             self.articles = values.articles
-            self.applyEpisodes(values.episodes)
             self.subscriptions = values.subscriptions
             self.dismissedEpisodes = (try? await self.loadDismissedEpisodes(from: store)) ?? self.dismissedEpisodes
         }

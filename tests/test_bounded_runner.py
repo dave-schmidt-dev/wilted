@@ -28,6 +28,7 @@ if mode == 'child':
     if os.environ.get('SEPARATE_GROUP') == '1': os.setsid()
     Path(ready).write_text(str(os.getpid()))
     while True: time.sleep(.1)
+Path(ready + '.leader').write_text(str(os.getpid()))
 env = os.environ.copy()
 if mode in ('separate', 'exit-separate'): env['SEPARATE_GROUP'] = '1'
 child = os.posix_spawn(sys.executable, [sys.executable, __file__, ready, release, 'child'], env)
@@ -48,6 +49,7 @@ class BoundedRunnerTests(unittest.TestCase):
         self.fixture.write_text(FIXTURE, encoding="utf-8")
         self.peers: list[subprocess.Popen[bytes]] = []
         self.supervisors: list[subprocess.Popen[str]] = []
+        self.fixture_identities: dict[int, tuple[str, int]] = {}
         self.fixture_number = 0
 
     def tearDown(self) -> None:
@@ -59,6 +61,8 @@ class BoundedRunnerTests(unittest.TestCase):
                 except subprocess.TimeoutExpired:
                     supervisor.kill()
                     supervisor.communicate(timeout=4)
+        self._capture_fixture_markers()
+        self._cleanup_fixture_groups()
         for peer in self.peers:
             if peer.poll() is None:
                 peer.kill()
@@ -83,9 +87,59 @@ class BoundedRunnerTests(unittest.TestCase):
             if path.exists():
                 pid_text = path.read_text()
                 if pid_text:
-                    return int(pid_text)
+                    pid = int(pid_text)
+                    self._track_fixture_pid(pid)
+                    return pid
             time.sleep(.01)
         self.fail(f"fixture did not write a PID before barrier deadline: {path}")
+
+    def _process_identity(self, pid: int) -> tuple[str, int] | None:
+        result = subprocess.run(
+            ["/bin/ps", "-o", "lstart=,pgid=", "-p", str(pid)],
+            text=True, capture_output=True, check=False, timeout=2,
+        )
+        fields = result.stdout.strip().rsplit(maxsplit=1)
+        if result.returncode or len(fields) != 2:
+            return None
+        try:
+            return fields[0], int(fields[1])
+        except ValueError:
+            return None
+
+    def _track_fixture_pid(self, pid: int) -> None:
+        identity = self._process_identity(pid)
+        if identity is not None:
+            self.fixture_identities[pid] = identity
+
+    def _capture_fixture_markers(self) -> None:
+        for marker in self.path.rglob("*.ready*"):
+            try:
+                self._track_fixture_pid(int(marker.read_text()))
+            except (OSError, ValueError):
+                continue
+
+    def _cleanup_fixture_groups(self) -> None:
+        def live_groups() -> set[int]:
+            return {
+                group for pid, identity in self.fixture_identities.items()
+                if (current := self._process_identity(pid)) == identity
+                for group in (identity[1],)
+            }
+
+        groups = live_groups()
+        for group in groups:
+            try:
+                os.killpg(group, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + 2
+        while live_groups() and time.monotonic() < deadline:
+            time.sleep(.03)
+        for group in live_groups():
+            try:
+                os.killpg(group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
     def assert_dead(self, pid: int) -> None:
         deadline = time.monotonic() + 4
@@ -97,8 +151,8 @@ class BoundedRunnerTests(unittest.TestCase):
             time.sleep(.03)
         self.fail(f"owned child is still live: {pid}")
 
-    def wait_tracked(self, process: subprocess.Popen[str], pid: int) -> None:
-        deadline = time.monotonic() + 5
+    def wait_tracked(self, process: subprocess.Popen[str], pid: int, timeout: float = 5) -> None:
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             ready, _, _ = select.select([process.stderr], [], [], .1)
             if ready and f"tracked pid={pid}" in process.stderr.readline():
@@ -122,6 +176,8 @@ class BoundedRunnerTests(unittest.TestCase):
         process, ready, release = self.command("separate")
         pid = self.wait_file(ready)
         self.assertEqual(os.getpgid(pid), pid, "separate-group fixture did not create its own group")
+        # A setsid child must be observed before releasing its parent.
+        self.wait_tracked(process, pid)
         release.touch()
         code, stderr = self.finish(process)
         self.assertEqual(code, 0, stderr)
@@ -217,14 +273,14 @@ class BoundedRunnerTests(unittest.TestCase):
             self.assertEqual(self.wait_file(readiness_race), 12345)
         self.assertEqual(read_text.call_count, 2)
 
-        launched = [self.command("separate") for _ in range(12)]
-        launched += [self.command("exit-separate") for _ in range(13)]
+        launched = [self.command("separate", timeout=30) for _ in range(12)]
+        launched += [self.command("exit-separate", timeout=30) for _ in range(13)]
         children = [self.wait_file(ready) for _, ready, _ in launched]
         self.assertEqual(len(set(children)), 25)
         for pid in children:
             self.assertEqual(os.getpgid(pid), pid)
         for (process, _, _), pid in zip(launched, children, strict=True):
-            self.wait_tracked(process, pid)
+            self.wait_tracked(process, pid, timeout=20)
         for _, _, release in launched:
             release.touch()
         for process, _, _ in launched:
@@ -256,6 +312,33 @@ class BoundedRunnerTests(unittest.TestCase):
             result = module.run(5, [PYTHON, "-c", "import time; time.sleep(.5)"])
         self.assertEqual(result, 125)
         self.assertLess(time.monotonic() - started, 2)
+
+    def test_owned_groups_exclude_zombies_and_reused_pids(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("run_bounded_owned_groups", RUNNER)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        tree = module.OwnedTree(10, "parent-start")
+        tree.known.update({
+            20: "nested-leader-start",
+            21: "nested-child-start",
+            40: "zombie-only-start",
+            50: "old-start",
+            60: "foreign-group-start",
+        })
+        tree.groups.update({20, 40, 50})
+        table = {
+            10: module.Process(10, 1, "parent-start", "Z", 10),
+            20: module.Process(20, 10, "nested-leader-start", "Z", 20),
+            21: module.Process(21, 20, "nested-child-start", "S", 20),
+            40: module.Process(40, 10, "zombie-only-start", "Z", 40),
+            50: module.Process(50, 10, "replacement-start", "S", 50),
+            60: module.Process(60, 10, "foreign-group-start", "S", 99),
+        }
+        self.assertEqual(tree.owned_groups(table), [20])
 
     def test_post_identity_inspection_failure_still_tears_down(self) -> None:
         import importlib.util
@@ -316,6 +399,138 @@ class BoundedRunnerTests(unittest.TestCase):
                 self.assertEqual(code, -signum, stderr)
                 self.assert_dead(pid)
 
+    def test_killed_during_identity_lookup_cleans_unreleased_fixture(self) -> None:
+        ready, release = self.path / "startup.ready", self.path / "startup.go"
+        barrier = self.path / "startup-identity.ready"
+        startup = """
+import importlib.util, sys, time
+from pathlib import Path
+runner, fixture, ready, release, barrier = sys.argv[1:]
+spec = importlib.util.spec_from_file_location('startup_run_bounded', runner)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+def held_identity(pid):
+    Path(barrier).write_text(str(pid))
+    while True: time.sleep(.01)
+module.leader_start = held_identity
+sys.exit(module.run(3, [sys.executable, fixture, ready, release, 'success']))
+"""
+        process = subprocess.Popen(
+            [PYTHON, "-c", startup, str(RUNNER), str(self.fixture), str(ready),
+             str(release), str(barrier)],
+            text=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        self.supervisors.append(process)
+        leader = self.wait_file(barrier)
+        descendant = self.wait_file(ready)
+        os.kill(process.pid, signal.SIGKILL)
+        code, stderr = self.finish(process)
+        self.assertEqual(code, -signal.SIGKILL, stderr)
+        self.assert_dead(leader)
+        self.assert_dead(descendant)
+
+    def test_early_interrupt_with_inherited_ignore_survives_startup_barrier(self) -> None:
+        ready = self.path / "early-int.ready"
+        release = self.path / "early-int.go"
+        barrier = self.path / "identity.ready"
+        resume = self.path / "identity.go"
+        startup = """
+import importlib.util, signal, sys, time
+from pathlib import Path
+runner, fixture, ready, release, barrier, resume = sys.argv[1:]
+assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
+spec = importlib.util.spec_from_file_location('early_run_bounded', runner)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+original = module.leader_start
+def held_identity(pid):
+    Path(barrier).write_text(str(pid))
+    while not Path(resume).exists(): time.sleep(.01)
+    return original(pid)
+module.leader_start = held_identity
+sys.exit(module.run(3, [sys.executable, fixture, ready, release, 'success']))
+"""
+
+        def ignore_int() -> None:
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+        process = subprocess.Popen(
+            [PYTHON, "-c", startup, str(RUNNER), str(self.fixture), str(ready),
+             str(release), str(barrier), str(resume)],
+            text=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            preexec_fn=ignore_int,
+        )
+        self.supervisors.append(process)
+        leader = self.wait_file(barrier)
+        descendant = self.wait_file(ready)
+        os.kill(process.pid, signal.SIGINT)
+        resume.touch()
+        code, stderr = self.finish(process)
+        self.assertEqual(code, -signal.SIGINT, stderr)
+        self.assert_dead(leader)
+        self.assert_dead(descendant)
+
+    def test_original_signal_environment_reaches_child_and_is_restored(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("run_bounded_signal_state", RUNNER)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        managed = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+        saved_handlers = {sig: signal.getsignal(sig) for sig in managed}
+        saved_mask = signal.pthread_sigmask(signal.SIG_SETMASK, {signal.SIGUSR1})
+        try:
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            signal.signal(signal.SIGTERM, lambda *_args: None)
+            expected_handlers = {sig: signal.getsignal(sig) for sig in managed}
+            expected_mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+            child = """
+import signal, time
+assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
+assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
+assert signal.pthread_sigmask(signal.SIG_BLOCK, []) == {signal.SIGUSR1}
+time.sleep(.1)
+"""
+            self.assertEqual(module.run(3, [PYTHON, "-c", child]), 0)
+            self.assertEqual({sig: signal.getsignal(sig) for sig in managed}, expected_handlers)
+            self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, []), expected_mask)
+            original_popen = module.subprocess.Popen
+            def missing_command(argv, *args, **kwargs):
+                if "--watchdog" in argv:
+                    return original_popen(argv, *args, **kwargs)
+                raise FileNotFoundError
+            with mock.patch.object(module.subprocess, "Popen", side_effect=missing_command):
+                with self.assertRaises(FileNotFoundError):
+                    module.run(3, ["missing-command"])
+            self.assertEqual({sig: signal.getsignal(sig) for sig in managed}, expected_handlers)
+            self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, []), expected_mask)
+            with mock.patch.object(module, "leader_start", return_value=None):
+                self.assertEqual(module.run(3, [PYTHON, "-c", "import time; time.sleep(5)"]), 125)
+            self.assertEqual({sig: signal.getsignal(sig) for sig in managed}, expected_handlers)
+            self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, []), expected_mask)
+            original_popen = module.subprocess.Popen
+            startup_children = []
+            def fail_watchdog(argv, *args, **kwargs):
+                if "--watchdog" in argv:
+                    raise OSError("controlled watchdog startup failure")
+                process = original_popen(argv, *args, **kwargs)
+                if argv[:2] == [PYTHON, "-c"]:
+                    startup_children.append(process)
+                return process
+            with mock.patch.object(module.subprocess, "Popen", side_effect=fail_watchdog):
+                self.assertEqual(module.run(3, [PYTHON, "-c", "import time; time.sleep(5)"]), 125)
+            self.assertEqual(startup_children, [], "command launched without its watchdog")
+            self.assertEqual({sig: signal.getsignal(sig) for sig in managed}, expected_handlers)
+            self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, []), expected_mask)
+        finally:
+            for sig, handler in saved_handlers.items():
+                signal.signal(sig, handler)
+            signal.pthread_sigmask(signal.SIG_SETMASK, saved_mask)
+
     def test_invalid_timeout_and_unrelated_peer(self) -> None:
         invalid = subprocess.run(
             [PYTHON, str(RUNNER), "--timeout-seconds", "nan", "--", "true"],
@@ -327,6 +542,8 @@ class BoundedRunnerTests(unittest.TestCase):
         self.peers.append(peer)
         process, ready, release = self.command("separate")
         pid = self.wait_file(ready)
+        # A setsid child must be observed before releasing its parent.
+        self.wait_tracked(process, pid)
         release.touch()
         code, stderr = self.finish(process)
         self.assertEqual(code, 0, stderr)

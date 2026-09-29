@@ -149,7 +149,7 @@ extension WiltedMacModelTests {
 
     func testArticlePlaybackStateLoadsFromStore() async throws {
         let directory = temporaryDirectory("article-playback-state")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let articleURL = try XCTUnwrap(URL(string: "https://example.test/article-progress"))
         let itemID = try ItemID.derive(from: articleURL)
@@ -193,7 +193,7 @@ extension WiltedMacModelTests {
 
     func testLivePlaybackReadoutTracksScrubbingWithoutStoreReload() async throws {
         let directory = temporaryDirectory("live-playback-readout")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: directory,
             preferences: WiltedMacTestPreferences.ephemeral()
@@ -215,7 +215,7 @@ extension WiltedMacModelTests {
 
     func testSwitchingPlaybackItemsRetainsOutgoingProgress() async throws {
         let directory = temporaryDirectory("switch-playback-progress")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: directory,
             preferences: WiltedMacTestPreferences.ephemeral()
@@ -247,7 +247,7 @@ extension WiltedMacModelTests {
 
     func testFailedArticleSwitchDoesNotCopyOutgoingProgressIntoDestination() async throws {
         let directory = temporaryDirectory("failed-switch-playback-progress")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: directory,
             preferences: WiltedMacTestPreferences.ephemeral()
@@ -310,6 +310,7 @@ extension WiltedMacModelTests {
     func testEpisodePlaybackIndicatorsKeepCurrentPlaybackOutOfUpNext() throws {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         let current = try XCTUnwrap(model.episodes.first)
@@ -350,6 +351,7 @@ extension WiltedMacModelTests {
     func testPlaybackAndMenuActionsRequireCompletedPreparation() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         let base = WiltedMacEpisode(
@@ -379,6 +381,7 @@ extension WiltedMacModelTests {
     func testMenuUpcomingKeepsEveryDurableEntryAroundThePlayingOne() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         func entry(_ id: String, at published: TimeInterval) -> WiltedMacEpisode {

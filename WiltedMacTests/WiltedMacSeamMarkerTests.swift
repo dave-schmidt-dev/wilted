@@ -107,8 +107,8 @@ final class WiltedMacSeamMarkerTests: XCTestCase {
 
     @MainActor
     func testAPreparedEpisodeSchedulesItsFirstCutAndTheSwitchClearsIt() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = wiltedTemporaryDirectory("seam-marker")
+
         let model = WiltedMacModel(
             arguments: [
                 "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts",
@@ -150,8 +150,8 @@ final class WiltedMacSeamMarkerTests: XCTestCase {
 
     @MainActor
     func testTheMarkerPreferenceDefaultsOnAndPersists() {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = wiltedTemporaryDirectory("seam-marker")
+
         let preferences = WiltedMacTestPreferences.ephemeral()
         let first = WiltedMacModel(stateDirectoryOverride: root, preferences: preferences)
         XCTAssertTrue(first.marksRemovedAds)
@@ -163,8 +163,8 @@ final class WiltedMacSeamMarkerTests: XCTestCase {
 
     @MainActor
     func testTheMarkerSoundsOnceAtTheSeamAndAgainAfterARewind() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = wiltedTemporaryDirectory("seam-marker")
+
         let model = WiltedMacModel(
             arguments: [
                 "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts",

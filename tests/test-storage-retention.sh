@@ -45,6 +45,37 @@ pass_marker="$test_root/pass-path"
 env TMPDIR="$tmp_root/pass" SPEC_MARKER="$pass_marker" bash "$wrapper" bash -c 'printf "%s\n" "$TMPDIR" >"$SPEC_MARKER"; test -d "$WILTED_SPEC_SCRATCH"'
 pass_path="$(cat "$pass_marker")"
 [[ ! -e "$pass_path" ]] && pass 'success exit cleaned scratch' || fail 'success scratch survived'
+invalid_root="$tmp_root/invalid"
+missing_root="$tmp_root/missing"
+mkdir -p "$invalid_root" "$missing_root"
+set +e
+env TMPDIR="$invalid_root" WILTED_SPEC_SCRATCH_TIMEOUT_SECONDS=invalid bash "$wrapper" true
+invalid_status=$?
+set -e
+[[ "$invalid_status" -eq 2 && -z "$(find "$invalid_root" -maxdepth 1 -name 'wilted-spec.*' -print -quit)" ]] && pass 'invalid timeout cleans scratch' || fail 'invalid timeout leaked scratch'
+missing_scripts="$test_root/missing-runner/scripts"
+mkdir -p "$missing_scripts/lib"
+cp "$wrapper" "$missing_scripts/with-spec-scratch.sh"
+cp "$root/scripts/lib/test-temp-state.sh" "$missing_scripts/lib/test-temp-state.sh"
+set +e
+env TMPDIR="$missing_root" bash "$missing_scripts/with-spec-scratch.sh" true
+missing_status=$?
+set -e
+[[ "$missing_status" -eq 2 && -z "$(find "$missing_root" -maxdepth 1 -name 'wilted-spec.*' -print -quit)" ]] && pass 'missing runner cleans scratch' || fail 'missing runner leaked scratch'
+success_child="$test_root/success-child.pid"
+env TMPDIR="$tmp_root/pass" SUCCESS_CHILD="$success_child" bash "$wrapper" bash -c 'sleep 20 & echo $! >"$SUCCESS_CHILD"; exit 0'
+[[ ! -e "$pass_path" && ! -e "$tmp_root/pass"/wilted-spec.* ]] || fail 'success wrapper leaked scratch'
+! kill -0 "$(cat "$success_child")" 2>/dev/null && pass 'success exit reaped grandchild' || fail 'success grandchild survived'
+
+timeout_marker="$test_root/timeout-path"
+timeout_child="$test_root/timeout-child.pid"
+set +e
+env TMPDIR="$tmp_root/fail" WILTED_SPEC_SCRATCH_TIMEOUT_SECONDS=1 SPEC_MARKER="$timeout_marker" TIMEOUT_CHILD="$timeout_child" bash "$wrapper" bash -c 'printf "%s\n" "$TMPDIR" >"$SPEC_MARKER"; sleep 20 & echo $! >"$TIMEOUT_CHILD"; wait'
+timeout_status=$?
+set -e
+[[ "$timeout_status" -eq 124 ]] && pass 'timeout status reported' || fail "timeout status $timeout_status, expected 124"
+[[ ! -e "$(cat "$timeout_marker")" ]] && pass 'timeout exit cleaned scratch' || fail 'timeout scratch survived'
+! kill -0 "$(cat "$timeout_child")" 2>/dev/null && pass 'timeout exit reaped grandchild' || fail 'timeout grandchild survived'
 fail_marker="$test_root/fail-path"
 set +e
 env TMPDIR="$tmp_root/fail" SPEC_MARKER="$fail_marker" bash "$wrapper" bash -c 'printf "%s\n" "$TMPDIR" >"$SPEC_MARKER"; exit 23'
@@ -54,7 +85,16 @@ fail_path="$(cat "$fail_marker")"
 [[ "$fail_status" -eq 23 ]] && pass 'failure exit status preserved' || fail "failure status $fail_status, expected 23"
 [[ ! -e "$fail_path" ]] && pass 'failure exit cleaned scratch' || fail 'failure scratch survived'
 signal_marker="$test_root/signal-path"
-env TMPDIR="$tmp_root/signal" SPEC_MARKER="$signal_marker" bash "$wrapper" bash -c 'printf "%s\n" "$TMPDIR" >"$SPEC_MARKER"; trap "exit 0" TERM; while :; do sleep 1; done' >"$test_root/signal.log" 2>&1 &
+signal_child="$test_root/signal-child.pid"
+signal_order="$test_root/signal-order"
+signal_command="$test_root/signal-command.sh"
+cat >"$signal_command" <<'SH'
+#!/usr/bin/env bash
+bash -c 'trap '\''test -d "$TMPDIR" && printf retained >"$SIGNAL_ORDER"; sleep .1; exit 0'\'' TERM; printf "%s\n" "$TMPDIR" >"$SPEC_MARKER"; while :; do sleep .1; done' &
+echo $! >"$SIGNAL_CHILD"
+wait
+SH
+env TMPDIR="$tmp_root/signal" SPEC_MARKER="$signal_marker" SIGNAL_CHILD="$signal_child" SIGNAL_ORDER="$signal_order" bash "$wrapper" bash "$signal_command" >"$test_root/signal.log" 2>&1 &
 wrapper_pid=$!
 (
     sleep 6
@@ -71,6 +111,8 @@ if [[ ! -s "$signal_marker" ]]; then fail 'signal child did not start'; kill -TE
     set -e
     [[ "$signal_status" -eq 143 ]] && pass 'TERM status reported' || fail "TERM status $signal_status, expected 143"
     [[ ! -e "$signal_path" ]] && pass 'TERM exit cleaned scratch' || fail 'TERM scratch survived'
+    ! kill -0 "$(cat "$signal_child")" 2>/dev/null && pass 'TERM exit reaped grandchild' || fail 'TERM grandchild survived'
+    [[ -f "$signal_order" && "$(cat "$signal_order")" == retained ]] && pass 'TERM descendant cleanup precedes parent deletion' || fail 'parent scratch vanished before descendant cleanup'
 fi
 kill "$watchdog_pid" 2>/dev/null || true
 wait "$watchdog_pid" 2>/dev/null || true

@@ -29,6 +29,7 @@ extension WiltedMacModel {
             || arguments.contains("--wilted-ui-fixture-podcasts")
             || arguments.contains("--wilted-ui-fixture-download-failure")
             || arguments.contains("--wilted-ui-fixture-long-transcript")
+            || arguments.contains("--wilted-ui-fixture-subscription-intake-26")
     }
 
     /// Whether this process is running the unit tests.
@@ -108,7 +109,7 @@ extension WiltedMacModel {
     // MARK: - App-open automation
 
     var lastAutomationRefreshAt: Date? {
-        preferences.object(forKey: Self.lastAutomationRefreshPreferenceKey) as? Date
+        observedLastAutomationRefreshAt
     }
 
     /// The Feeds header's persisted success boundary. `nil` is intentionally
@@ -122,6 +123,7 @@ extension WiltedMacModel {
 
     func setLastAutomationRefresh(_ date: Date) {
         preferences.set(date, forKey: Self.lastAutomationRefreshPreferenceKey)
+        observedLastAutomationRefreshAt = date
     }
 
     private func setAutomationStatus(_ status: WiltedAutomationStatus) {
@@ -163,7 +165,7 @@ extension WiltedMacModel {
     /// recovered download.
     func startAutomationOnLaunch() {
 #if canImport(WiltedProducer)
-        guard !fixtureMode, let coordinator = automationCoordinator() else { return }
+        guard !isClosingTemporaryState, !fixtureMode, let coordinator = automationCoordinator() else { return }
         automationTask = Task {
             await coordinator.reconcile()
             await coordinator.run(trigger: .launch)
@@ -175,7 +177,7 @@ extension WiltedMacModel {
     /// harmless.
     func startAutomationTicker(interval: TimeInterval = WiltedMacModel.automationTickInterval) {
 #if canImport(WiltedProducer)
-        guard !fixtureMode, automationTicker == nil, store != nil else { return }
+        guard !isClosingTemporaryState, !fixtureMode, automationTicker == nil, store != nil else { return }
         automationTicker = Task { [weak self] in
             while !Task.isCancelled {
                 do {
@@ -226,7 +228,7 @@ extension WiltedMacModel {
     /// called.
     func startTicketDrainTicker(interval: TimeInterval = WiltedMacModel.ticketDrainTickInterval) {
 #if canImport(WiltedProducer)
-        guard !fixtureMode, ticketDrainTicker == nil, store != nil else { return }
+        guard !isClosingTemporaryState, !fixtureMode, ticketDrainTicker == nil, store != nil else { return }
         ticketDrainTicker = Task { [weak self] in
             while !Task.isCancelled {
                 do {
@@ -274,7 +276,7 @@ extension WiltedMacModel {
     /// is precisely when nothing else is checkpointing.
     func startPlaybackCheckpointTicker(interval: TimeInterval = WiltedMacModel.playbackCheckpointInterval) {
 #if canImport(WiltedProducer)
-        guard !fixtureMode, playbackCheckpointTicker == nil, store != nil else { return }
+        guard !isClosingTemporaryState, !fixtureMode, playbackCheckpointTicker == nil, store != nil else { return }
         playbackCheckpointTicker = Task { [weak self] in
             while !Task.isCancelled {
                 do {
@@ -322,7 +324,7 @@ extension WiltedMacModel {
     /// at each call site.
     func runAutomation(trigger: WiltedAutomationTrigger) {
 #if canImport(WiltedProducer)
-        guard !fixtureMode, let coordinator = automationCoordinator() else { return }
+        guard !isClosingTemporaryState, !fixtureMode, let coordinator = automationCoordinator() else { return }
         automationTask = Task { await coordinator.run(trigger: trigger) }
 #endif
     }
@@ -330,7 +332,7 @@ extension WiltedMacModel {
     /// Resumes claims that outlived the process that made them.
     func reconcileAutomation() {
 #if canImport(WiltedProducer)
-        guard !fixtureMode, let coordinator = automationCoordinator() else { return }
+        guard !isClosingTemporaryState, !fixtureMode, let coordinator = automationCoordinator() else { return }
         automationTask = Task { await coordinator.reconcile() }
 #endif
     }
@@ -344,6 +346,35 @@ extension WiltedMacModel {
         automationTask = nil
         Task { await coordinator?.cancel() }
         automationStatus = .cancelled
+#endif
+    }
+
+    /// The synchronous half used by model deinitialization. It only cancels;
+    /// `waitForAutomationForTemporaryState` supplies the awaited close path.
+    func cancelAutomationForTemporaryState() {
+#if canImport(WiltedProducer)
+        automationTask?.cancel()
+        automationTicker?.cancel()
+        ticketDrainTicker?.cancel()
+        playbackCheckpointTicker?.cancel()
+#endif
+    }
+
+    func waitForAutomationForTemporaryState() async {
+#if canImport(WiltedProducer)
+        let task = automationTask
+        let ticker = automationTicker
+        let drainTicker = ticketDrainTicker
+        let checkpointTicker = playbackCheckpointTicker
+        await task?.value
+        await ticker?.value
+        await drainTicker?.value
+        await checkpointTicker?.value
+        await automation?.cancel()
+        automationTask = nil
+        automationTicker = nil
+        ticketDrainTicker = nil
+        playbackCheckpointTicker = nil
 #endif
     }
 

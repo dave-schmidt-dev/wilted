@@ -29,6 +29,15 @@ pass() { printf 'temp-sweep.ok %s\n' "$*" >&2; }
 [[ -f "$lib" ]] || { fail "missing $lib"; exit 1; }
 # shellcheck source=../scripts/lib/temp-sweep.sh
 source "$lib"
+WILTED_TEMP_LEAK_CHECKER="$repo_root/scripts/check-temp-leaks.py"
+# shellcheck source=../scripts/lib/test-temp-state.sh
+source "$repo_root/scripts/lib/test-temp-state.sh"
+
+mark_dead_owned() {
+    local canonical
+    canonical="$(cd -P "$1" 2>/dev/null && pwd)" || return 1
+    printf 'pid=99999\nstarted=dead-owner\npath=%s\n' "$canonical" >"$canonical/.wilted-temp-owned"
+}
 
 hermetic_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-temp-sweep-test.XXXXXX")"
 # The undeletable-directory case below sets the macOS user-immutable flag to
@@ -40,6 +49,31 @@ backdate() {
     # Same tool the sweep itself uses for its reference file, so this
     # exercises real mtime comparison rather than a mocked clock.
     touch -t "$(date -v-"$2"H '+%Y%m%d%H%M.%S')" "$1"
+}
+
+assert_gate_initialization_cleanup() {
+    local label="$1" expected_status="$2" parent audit_parent output status leftover
+    shift 2
+    parent="$hermetic_root/gate-init-$label-parent"
+    audit_parent="$hermetic_root/gate-init-$label-audit"
+    output="$hermetic_root/gate-init-$label.log"
+    mkdir -p "$parent" "$audit_parent"
+    set +e
+    env WILTED_BOUNDED_ENTRY=1 NATIVE_SELF_TEST=1 WILTED_MAC_UI=1 \
+        TMPDIR="$parent" WILTED_NATIVE_TEMP_AUDIT_PARENT="$audit_parent" \
+        "$@" bash "$gate" >"$output" 2>&1
+    status=$?
+    set -e
+    [[ "$status" -eq "$expected_status" ]] || {
+        fail "gate $label exited $status, expected $expected_status"
+        cat "$output" >&2
+        return
+    }
+    leftover="$(find "$parent" -maxdepth 1 -name 'wilted-*' -print -quit)"
+    [[ -z "$leftover" ]] || fail "gate $label left owned temp root: $leftover"
+    leftover="$(find "$audit_parent" -maxdepth 1 -name 'native-temp-audit.*' -print -quit)"
+    [[ -z "$leftover" ]] || fail "gate $label left initialization audit root: $leftover"
+    pass "gate $label cleans initialization roots"
 }
 
 # --- (b) the sweep function itself: stale goes, fresh and non-wilted survive,
@@ -56,6 +90,8 @@ spec_dir="$sweep_root/wilted-spec.owner-review"
 # it never targets.
 undeletable_dir="$sweep_root/wilted-undeletable.ghi789"
 mkdir -p "$stale_dir" "$fresh_dir" "$untouched_dir" "$undeletable_dir" "$spec_dir"
+mark_dead_owned "$stale_dir"
+mark_dead_owned "$undeletable_dir"
 backdate "$stale_dir" 48
 backdate "$spec_dir" 48
 backdate "$untouched_dir" 48
@@ -86,6 +122,42 @@ if [[ ! -d "$spec_dir" ]]; then
 else
     pass 'historical spec workspace is left for the dry-run collector'
 fi
+if [[ ! -d "$fresh_dir" ]]; then
+    fail "fresh directory younger than the cutoff was removed: $fresh_dir"
+fi
+unmarked_dir="$sweep_root/wilted-unmarked"
+symlink_dir="$sweep_root/wilted-symlink"
+mkdir "$unmarked_dir"
+ln -s "$untouched_dir" "$symlink_dir"
+backdate "$unmarked_dir" 48
+wilted_sweep_stale_temp_dirs "$sweep_root" 24 >/dev/null 2>&1
+[[ -d "$unmarked_dir" ]] && pass 'stale unmarked directory is preserved' || fail 'unmarked directory was swept'
+[[ -L "$symlink_dir" ]] && pass 'stale symlink is preserved' || fail 'symlink was swept'
+active_owner="$sweep_root/wilted-active-owner"
+active_child="$sweep_root/wilted-active-child"
+mkdir "$active_owner" "$active_child"
+active_owner_canonical="$(cd -P "$active_owner" 2>/dev/null && pwd)"
+printf 'pid=%s\nstarted=%s\npath=%s\n' "$$" "$(ps -o lstart= -p "$$")" "$active_owner_canonical" >"$active_owner/.wilted-temp-owned"
+mark_dead_owned "$active_child"
+backdate "$active_owner" 48
+backdate "$active_child" 48
+sleep 20 >"$active_child/open" &
+child_file_pid=$!
+wilted_sweep_stale_temp_dirs "$sweep_root" 24 >/dev/null 2>&1
+[[ -d "$active_owner" ]] && pass 'live marker owner without open root is preserved' || fail 'live marker owner was swept'
+[[ -d "$active_child" ]] && pass 'active descendant file is preserved' || fail 'active child file root was swept'
+kill "$child_file_pid" 2>/dev/null || true
+wait "$child_file_pid" 2>/dev/null || true
+visibility_unknown="$sweep_root/wilted-visibility-unknown"
+mkdir "$visibility_unknown"
+mark_dead_owned "$visibility_unknown"
+backdate "$visibility_unknown" 48
+visibility_bin="$hermetic_root/visibility-bin"
+mkdir "$visibility_bin"
+printf '#!/usr/bin/env bash\nexit 2\n' >"$visibility_bin/ps"
+chmod +x "$visibility_bin/ps"
+PATH="$visibility_bin:$PATH" wilted_sweep_stale_temp_dirs "$sweep_root" 24 >/dev/null 2>&1
+[[ -d "$visibility_unknown" ]] && pass 'process-visibility failure preserves stale owned directory' || fail 'unverifiable owner was swept'
 if [[ ! -d "$undeletable_dir" ]]; then
     fail 'the immutable stale directory should have survived (rm -rf cannot remove it)'
 else
@@ -106,6 +178,35 @@ else
     pass 'sweep reports the correct kept count'
 fi
 
+# A wrapper can be launched through a /var-style spelling while find reports
+# the canonical path. The marker and sweep must compare that one identity, so a
+# killed owner is reclaimed rather than retained forever by string mismatch.
+slash_parent="$hermetic_root//slash-parent/"
+slash_owned="$slash_parent/wilted-slash-spelling"
+mkdir -p "$slash_owned"
+wilted_temp_mark_owned "$slash_owned/"
+marker_path="$(sed -n 's/^path=//p' "$slash_owned/.wilted-temp-owned")"
+slash_owned_canonical="$(cd -P "$slash_owned" 2>/dev/null && pwd)"
+[[ "$marker_path" == "$slash_owned_canonical" ]] || fail 'owned marker did not canonicalize its path'
+printf 'pid=99999\nstarted=dead-owner\npath=%s\n' "$marker_path" >"$slash_owned/.wilted-temp-owned"
+backdate "$slash_owned" 48
+wilted_sweep_stale_temp_dirs "$slash_parent/" 24 >/dev/null 2>&1
+[[ ! -d "$slash_owned" ]] && pass 'canonical slash spelling reclaims a crashed owned root' || fail 'slash spelling retained a crashed owned root'
+
+# These exits occur before a native leg can start, so each uses the real wrapper
+# under a dedicated parent and audit directory. No production build or TMPDIR
+# sweep is involved.
+failing_snapshot_checker="$hermetic_root/failing-snapshot.py"
+printf 'import sys\nsys.exit(73)\n' >"$failing_snapshot_checker"
+assert_gate_initialization_cleanup snapshot-failure 73 "WILTED_TEMP_LEAK_CHECKER=$failing_snapshot_checker"
+marker_failure_bin="$hermetic_root/marker-failure-bin"
+mkdir -p "$marker_failure_bin"
+printf '#!/usr/bin/env bash\nexit 1\n' >"$marker_failure_bin/ps"
+chmod +x "$marker_failure_bin/ps"
+assert_gate_initialization_cleanup marker-failure 1 "PATH=$marker_failure_bin:$PATH"
+assert_gate_initialization_cleanup invalid-timeout 2 'WILTED_NATIVE_LEG_TIMEOUT_SECONDS=0'
+assert_gate_initialization_cleanup missing-runner 127 "WILTED_BOUNDED_RUNNER=$hermetic_root/no-runner"
+
 # --- (a) wiring: a gate started after a killed prior run sweeps that run's
 #     leftovers, never a genuinely concurrent one, and leaves nothing of its
 #     own behind either ---
@@ -114,6 +215,7 @@ mkdir -p "$gate_tmpdir"
 killed_prior_run="$gate_tmpdir/wilted-native-gate.deadbeef"
 concurrent_run="$gate_tmpdir/wilted-native-gate.stillalive"
 mkdir -p "$killed_prior_run" "$concurrent_run"
+mark_dead_owned "$killed_prior_run"
 backdate "$killed_prior_run" 48
 # concurrent_run is left at its natural (just-created) mtime, standing in for
 # another gate invocation that started seconds ago and is still working.

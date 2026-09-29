@@ -232,7 +232,7 @@ extension WiltedMacModelTests {
 
         XCTAssertEqual(model.subscriptions.count, 1, "one feed, however many times it is offered")
         XCTAssertEqual(model.selectedPodcastFeedID, model.subscriptions.first?.id)
-        XCTAssertEqual(model.podcastOperationMessage, "Already following this podcast.")
+        XCTAssertEqual(model.podcastOperationMessage, "Already following Repeat show.")
     }
 
     /// A cancelled check still resumes; by then the listener may have started
@@ -278,8 +278,8 @@ extension WiltedMacModelTests {
         await model.waitForPodcastOperations()
 
         XCTAssertEqual(model.subscriptions.map(\.title), ["Gated show"])
-        XCTAssertNil(model.podcastFeedDraftStatus,
-                     "the cancelled check must not report on the address that replaced it")
+        XCTAssertEqual(model.podcastFeedDraftStatus, "Gated show added with 0 episodes.",
+                       "the cancelled check must not report on the address that replaced it")
         XCTAssertFalse(model.isCheckingPodcastSubscription)
     }
 

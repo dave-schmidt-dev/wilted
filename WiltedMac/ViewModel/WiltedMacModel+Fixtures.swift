@@ -15,6 +15,12 @@ import CloudKit
 
 extension WiltedMacModel {
 #if canImport(WiltedProducer)
+    static func fixtureStateDirectoryOverride(arguments: [String]) -> URL? {
+        guard let index = arguments.firstIndex(of: "--wilted-ui-fixture-state-directory"),
+              arguments.indices.contains(index + 1) else { return nil }
+        return URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+    }
+
     func installFixture(ready: Bool, preparing: Bool = false, podcasts: Bool = false) {
         if preparing {
             let url = URL(string: "https://example.test/wilted-preparing-fixture")!
@@ -53,7 +59,7 @@ extension WiltedMacModel {
             createdAt: Date(timeIntervalSince1970: 1_700_000_000)
         )]
         if podcasts { installPodcastFixture(in: store) }
-        Task {
+        fixtureInstallTask = Task {
             try? await store.save(article: article)
             if let fixtureTranscript {
                 try? await store.saveReadyRevision(revision, mediaURL: mediaURL, transcript: fixtureTranscript)
@@ -388,31 +394,11 @@ extension WiltedMacModel {
     static func stateDirectory(fixtureMode: Bool) -> URL {
         if fixtureMode {
             let temporaryDirectory = FileManager.default.temporaryDirectory
-            // XCUITest terminates the fixture host it drives by design, so this
-            // process's own previous wilted-ui-fixture-<pid> directory (from a
-            // prior launch that never got to run any cleanup, trapped or
-            // otherwise) is still sitting in $TMPDIR. Shell callers get this
-            // from scripts/lib/temp-sweep.sh; this is its Swift equivalent,
-            // scoped only to the family this function itself creates. The 24h
-            // cutoff mirrors that library's and is the same safety argument: a
-            // directory nothing has touched in a day belongs to a run that is
-            // not coming back, and a fixture launch that is still running is at
-            // most minutes old.
-            sweepStaleFixtureDirectories(in: temporaryDirectory)
-            // Suffixed per instance, not just per process: a single xctest
-            // process constructs many fixture-mode models across unrelated
-            // test methods, and now that fixture downloads write real store
-            // rows (Phase 1b), a PID-only path let one model's completed
-            // download satisfy another's `completedResult` cache lookup and
-            // silently skip its cancellation/failure simulation. Tests that
-            // want two instances to share state (relaunch simulation) already
-            // pass an explicit `stateDirectoryOverride` rather than relying on
-            // this default.
-            return temporaryDirectory
-                .appendingPathComponent(
-                    "wilted-ui-fixture-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)",
-                    isDirectory: true
-                )
+            // Fixture roots are minted by `makeOwnedFixtureState`, which marks
+            // each root and ties its lifetime to the model that created it.
+            // This retained branch is only a compatibility fallback for callers
+            // that ask for the path directly.
+            return temporaryDirectory.appendingPathComponent("Wilted-fixture", isDirectory: true)
         }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -422,7 +408,7 @@ extension WiltedMacModel {
     /// Removes abandoned `wilted-ui-fixture-*` directories under `root` older
     /// than 24 hours. Never throws and never fails the caller: this is
     /// housekeeping in front of a fixture launch, not a precondition for one.
-    private static func sweepStaleFixtureDirectories(in root: URL) {
+    static func sweepStaleFixtureDirectories(in root: URL) {
         let maxAge: TimeInterval = 24 * 60 * 60
         let fileManager = FileManager.default
         guard let entries = try? fileManager.contentsOfDirectory(
@@ -430,9 +416,8 @@ extension WiltedMacModel {
         ) else { return }
         let cutoff = Date().addingTimeInterval(-maxAge)
         for entry in entries {
-            // Re-validated here, in the loop that deletes, not only by relying
-            // on this being the only prefix `stateDirectory` ever mints.
-            guard entry.lastPathComponent.hasPrefix("wilted-ui-fixture-") else { continue }
+            guard WiltedMacTemporaryState.isOwnedFixtureDirectory(entry),
+                  WiltedMacTemporaryState.ownerIsLive(entry) == false else { continue }
             guard let modified = (try? entry.resourceValues(forKeys: [.contentModificationDateKey]))
                 .flatMap(\.contentModificationDate), modified < cutoff else { continue }
             try? fileManager.removeItem(at: entry)

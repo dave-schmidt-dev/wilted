@@ -27,5 +27,4 @@ Producer/Tests/WiltedProducerTests/LocalLibrarySyncRepositoryTests.swift legacy 
 Producer/Tests/WiltedProducerTests/PlaybackControllerTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 WiltedKit/Tests/WiltedSyncTests/SyncSmokeTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 WiltedMacTests/WiltedMacSyncLifecycleTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
-WiltedMacTests/WiltedVisualSystemTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 app/wilted_app_store_connect_bridge.py legacy 2026-09-25: over 800 lines when the rule was adopted

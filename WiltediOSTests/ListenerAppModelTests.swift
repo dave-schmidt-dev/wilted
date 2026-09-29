@@ -34,23 +34,15 @@ final class ListenerAppModelTests: XCTestCase {
         }
     }
 
-    func testProductionLaunchRetainsRealRemoteCommandHandlerAndHandlesPause() async throws {
-        var launchedModel: WiltedListenerAppModel?
-        for _ in 0..<200 {
-            if let model = WiltediOSApp.launchedModelForTesting {
-                launchedModel = model
-                break
-            }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
+    /// Task 2.8: a normal launch hosts the library list and never builds the listener model, so
+    /// the listener model is constructed directly instead of read back from the app scene.
+    func testProductionRemoteCommandInstallRetainsRealHandlerAndHandlesPause() async throws {
+        let harness = try await PlaybackHarness.make()
+        await harness.model.installSystemRemoteCommands()
 
-        let model = try XCTUnwrap(
-            launchedModel,
-            "the hosted test must reach the actual model retained by the app scene"
-        )
         let commands = try XCTUnwrap(
-            model.installedSystemRemoteCommandsForTesting,
-            "the actual launched model must retain its one production command bridge"
+            harness.model.installedSystemRemoteCommandsForTesting,
+            "the listener model must retain its one production command bridge"
         )
         XCTAssertEqual(commands.receivePause(nil), .success,
                        "the real production target action must still own its installed pause handler")

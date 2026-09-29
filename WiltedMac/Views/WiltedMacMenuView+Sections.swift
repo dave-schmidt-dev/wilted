@@ -157,14 +157,17 @@ extension WiltedMacMenuView {
     /// The selected presentation sections. Status owns the lifecycle actions;
     /// Feed and Date are neutral views over the same durable listening order.
     @ViewBuilder var groupList: some View {
-        let sections = model.menuSections()
+        let sections = WiltedMacEpisodePresentationSections.displaySections(
+            model.menuSections(),
+            grouping: model.menuGrouping,
+            sort: model.menuSort,
+            isDeferredForOffPeak: { model.isDeferredForOffPeak($0) }
+        )
         let total = model.menuWaitingEpisodes.count
         if model.menuFilteredEpisodes.isEmpty {
             Text(model.isSearchingMenu
                  ? (model.isSearchingTranscripts ? "Still reading transcripts…" : "No episodes match this search.")
-                 : (model.menuWaitingEpisodes.isEmpty
-                    ? "Nothing is in Larder. Keep an episode from Feeds."
-                    : "No episode is in this group right now."))
+                 : emptyMenuCopy)
                 .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .accessibilityIdentifier("wilted-menu-empty")
@@ -210,6 +213,26 @@ extension WiltedMacMenuView {
                 tailDropTarget
             }
         }
+    }
+
+    private var emptyLarderCopy: String {
+        switch model.automationSettings.downloadPolicy {
+        case .manual:
+            "Nothing is in Larder. Keep an episode from Feeds, then download it."
+        case .newestOnePerEnabledFeed, .newestThreePerEnabledFeed, .allNewlyAdmittedUpToTwenty:
+            "Nothing is in Larder. Kept episodes download according to the automatic download setting."
+        }
+    }
+
+    private var emptyMenuCopy: String {
+        if model.menuFilter == .downloaded { return emptyDownloadedCopy }
+        return model.menuWaitingEpisodes.isEmpty ? emptyLarderCopy : "No episode is in this group right now."
+    }
+
+    private var emptyDownloadedCopy: String {
+        model.automationSettings.downloadEverythingOnMenu
+            ? "Downloaded audio is empty. Kept episodes download automatically in Larder."
+            : "Downloaded audio is empty. Keep an episode, then download it here."
     }
 
     /// Status keeps its established automation identifiers; the two new
@@ -292,4 +315,93 @@ extension WiltedMacMenuView {
         .accessibilityIdentifier("wilted-menu-articles")
     }
 
+}
+
+/// Presentation-only row grouping for the Larder. It never changes the
+/// durable queue, the model's sort fallback, or lifecycle eligibility.
+enum WiltedMacEpisodePresentationSections {
+    static func displaySections(
+        _ sections: [WiltedMacMenuSection],
+        grouping: WiltedMacMenuGrouping,
+        sort: WiltedMacMenuSort = .custom,
+        calendar: Calendar = .autoupdatingCurrent,
+        now: Date = Date(),
+        isDeferredForOffPeak: (String) -> Bool = { _ in false }
+    ) -> [WiltedMacMenuSection] {
+        let active = sections.flatMap(\.episodes).filter { episode in
+            episode.downloadState.isInFlight
+                || (episode.preparationState.isRunning && !isDeferredForOffPeak(episode.id))
+        }
+        let activeIDs = Set(active.map(\.id))
+        let remaining = sections.compactMap { section -> WiltedMacMenuSection? in
+            let episodes = presentationOrder(
+                section.episodes.filter { !activeIDs.contains($0.id) }, sort: sort
+            )
+            guard !episodes.isEmpty else { return nil }
+            return WiltedMacMenuSection(
+                id: section.id, title: section.title, detail: section.detail,
+                statusGroup: section.statusGroup, episodes: episodes
+            )
+        }
+        let content = grouping == .date
+            ? publicationDateSections(remaining.flatMap(\.episodes), calendar: calendar, now: now)
+            : remaining
+        guard !active.isEmpty else { return content }
+        return [WiltedMacMenuSection(
+            id: "active-work", title: "Active work", detail: "download or preparation in progress",
+            statusGroup: nil, episodes: active
+        )] + content
+    }
+
+    /// Newest keeps unknown feed publication facts after known facts while it
+    /// presents each existing status or feed section. It deliberately does
+    /// not rewrite the model's durable comparator or merge lifecycle sections.
+    static func presentationOrder(
+        _ episodes: [WiltedMacEpisode], sort: WiltedMacMenuSort
+    ) -> [WiltedMacEpisode] {
+        guard sort == .newest else { return episodes }
+        return episodes.filter { $0.publishedAt != nil }
+            + episodes.filter { $0.publishedAt == nil }
+    }
+
+    /// `releasedAt` stays the legacy sort/grouping fallback, but a section
+    /// header describes only the feed's actual optional publication date.
+    /// Unknown facts are collected last rather than borrowing intake time.
+    static func publicationDateSections(
+        _ episodes: [WiltedMacEpisode], calendar: Calendar, now: Date
+    ) -> [WiltedMacMenuSection] {
+        var dated: [(date: Date, episodes: [WiltedMacEpisode])] = []
+        var unknown: [WiltedMacEpisode] = []
+        for episode in episodes {
+            guard let publishedAt = episode.publishedAt else {
+                unknown.append(episode)
+                continue
+            }
+            let date = calendar.startOfDay(for: publishedAt)
+            if let index = dated.firstIndex(where: { calendar.isDate($0.date, inSameDayAs: date) }) {
+                dated[index].episodes.append(episode)
+            } else {
+                dated.append((date, [episode]))
+            }
+        }
+        let known = dated.map { value in
+            WiltedMacMenuSection(
+                id: "publication-date-\(value.date.timeIntervalSinceReferenceDate)",
+                title: publicationDateTitle(value.date, calendar: calendar, now: now), detail: nil,
+                statusGroup: nil, episodes: value.episodes
+            )
+        }
+        guard !unknown.isEmpty else { return known }
+        return known + [WiltedMacMenuSection(
+            id: "publication-date-unknown", title: "Unknown publication date", detail: nil,
+            statusGroup: nil, episodes: unknown
+        )]
+    }
+
+    private static func publicationDateTitle(_ date: Date, calendar: Calendar, now: Date) -> String {
+        if calendar.isDate(date, inSameDayAs: now) { return "Today" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           calendar.isDate(date, inSameDayAs: yesterday) { return "Yesterday" }
+        return date.formatted(date: .abbreviated, time: .omitted)
+    }
 }

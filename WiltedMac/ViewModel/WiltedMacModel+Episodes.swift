@@ -14,6 +14,18 @@ import CloudKit
 #endif
 
 extension WiltedMacModel {
+    /// Rejects a snapshot that began before a durable Feed decision committed.
+    /// Existing fixture arrays intentionally remain source-compatible below.
+    @discardableResult
+    func applyEpisodes(
+        _ loaded: LibraryEpisodeRows, allowsAutomaticAdmissions: Bool = true
+    ) -> Bool {
+        guard loaded.readEpoch >= lastAppliedLibraryReadEpoch else { return false }
+        lastAppliedLibraryReadEpoch = loaded.readEpoch
+        applyEpisodes(loaded.values, allowsAutomaticAdmissions: allowsAutomaticAdmissions)
+        return true
+    }
+
 #if canImport(WiltedProducer)
     /// Loads each feed and stores what the subscription horizon admits.
     ///
@@ -25,38 +37,84 @@ extension WiltedMacModel {
     struct PodcastRefreshResult {
         var newEpisodeIDs: [ItemID] = []
         var duplicateSubscription: ItemID?
+        var successfulFeedTitles: [String] = []
         var successfulFeedCount = 0
         var failedFeedCount = 0
     }
 
     private struct PodcastRefreshAllFeedsFailed: Error {}
+    struct PodcastSubscriptionPartialFailure: Error {
+        let feedTitle: String
+        let wasAlreadySubscribed: Bool
+    }
 
-    func refreshPodcastURLs(_ urls: [URL], subscribing: Bool) async throws -> PodcastRefreshResult {
+    func refreshPodcastURLs(
+        _ urls: [URL], subscribing: Bool, initialMetadataLimit: Int? = nil, requestID: UUID? = nil
+    ) async throws -> PodcastRefreshResult {
         guard let store else { throw CancellationError() }
         var withheld = 0
         var result = PodcastRefreshResult()
         for url in urls {
             try Task.checkCancellation()
+            var persistedSubscriptionTitle: String?
+            var wasAlreadySubscribed = false
             do {
                 let loaded = try await podcastFeedClient.load(url)
+                try Task.checkCancellation()
+                guard requestID == nil || podcastSubscriptionRequestID == requestID else {
+                    throw CancellationError()
+                }
                 try await store.save(feed: loaded.feed)
+                try Task.checkCancellation()
                 if subscribing {
                     let inserted = try await store.subscribeIfNeeded(PodcastSubscription(
                         feedID: loaded.feed.itemID, subscribedAt: Timestamp(Date())
                     ))
-                    if !inserted { result.duplicateSubscription = loaded.feed.itemID }
+                    if !inserted {
+                        result.duplicateSubscription = loaded.feed.itemID
+                        wasAlreadySubscribed = true
+                    }
+                    persistedSubscriptionTitle = loaded.feed.title
+                    try Task.checkCancellation()
                 }
-                let admission = try await store.savePodcastEpisodes(
-                    loaded.episodes, admission: subscribing ? .backfill : .incremental
-                )
+                var needsInitialAdmission = subscribing && !wasAlreadySubscribed
+                if subscribing, !needsInitialAdmission {
+                    let existingEpisodes = try await store.podcastEpisodes(for: loaded.feed.itemID)
+                    needsInitialAdmission = existingEpisodes.isEmpty
+                }
+                let admissionKind: LocalLibraryStore.PodcastEpisodeAdmission =
+                    needsInitialAdmission ? .backfill : .incremental
+                let admissionLimit = needsInitialAdmission ? initialMetadataLimit : nil
+                let admission: LocalLibraryStore.PodcastEpisodeAdmissionResult
+                if let podcastEpisodeAdmissionOperationForTesting {
+                    admission = try await podcastEpisodeAdmissionOperationForTesting(
+                        loaded.episodes, admissionKind, admissionLimit
+                    )
+                } else {
+                    admission = try await store.savePodcastEpisodes(
+                        loaded.episodes, admission: admissionKind, initialMetadataLimit: admissionLimit
+                    )
+                }
+                try Task.checkCancellation()
                 withheld += loaded.droppedEpisodeCount + admission.skipped
                 result.newEpisodeIDs.append(contentsOf: admission.newlyAdmitted)
+                result.successfulFeedTitles.append(loaded.feed.title)
                 result.successfulFeedCount += 1
             } catch is CancellationError {
+                if subscribing, let persistedSubscriptionTitle {
+                    throw PodcastSubscriptionPartialFailure(
+                        feedTitle: persistedSubscriptionTitle, wasAlreadySubscribed: wasAlreadySubscribed
+                    )
+                }
                 throw CancellationError()
             } catch PodcastFeedClientError.cancelled {
                 throw PodcastFeedClientError.cancelled
             } catch {
+                if subscribing, let persistedSubscriptionTitle {
+                    throw PodcastSubscriptionPartialFailure(
+                        feedTitle: persistedSubscriptionTitle, wasAlreadySubscribed: wasAlreadySubscribed
+                    )
+                }
                 guard !subscribing else { throw error }
                 result.failedFeedCount += 1
             }
@@ -65,11 +123,17 @@ extension WiltedMacModel {
             throw PodcastRefreshAllFeedsFailed()
         }
         withheldPodcastEpisodeCount = withheld
+        try Task.checkCancellation()
         let values = try await loadLibrary(from: store)
+        let dismissed = try await loadDismissedEpisodes(from: store)
+        try Task.checkCancellation()
+        guard requestID == nil || podcastSubscriptionRequestID == requestID else {
+            throw CancellationError()
+        }
+        guard applyEpisodes(values.episodes) else { return result }
         articles = values.articles
-        applyEpisodes(values.episodes)
         subscriptions = values.subscriptions
-        dismissedEpisodes = try await loadDismissedEpisodes(from: store)
+        dismissedEpisodes = dismissed
         return result
     }
 
@@ -87,7 +151,7 @@ extension WiltedMacModel {
     /// the run it would start already exists -- while its turn was still
     /// coming. A run this process started keeps the state this process gave it
     /// until it reaches a terminal one of its own.
-    func applyEpisodes(_ loaded: [WiltedMacEpisode]) {
+    func applyEpisodes(_ loaded: [WiltedMacEpisode], allowsAutomaticAdmissions: Bool = true) {
 #if canImport(WiltedProducer)
         // The preparation queue counts as running. An episode waiting for the
         // run slot has no task and no deferred job, so a reload used to reset
@@ -112,7 +176,7 @@ extension WiltedMacModel {
         for id in pendingMenuAdditions where !candidates.contains(id) {
             candidates.append(id)
         }
-        if !candidates.isEmpty { autoAddPreparedEpisodesToMenu(candidates) }
+        if allowsAutomaticAdmissions, !candidates.isEmpty { autoAddPreparedEpisodesToMenu(candidates) }
     }
 
     /// The episodes that became prepared on this reload, and only those.

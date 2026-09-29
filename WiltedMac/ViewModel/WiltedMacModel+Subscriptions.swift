@@ -106,9 +106,11 @@ extension WiltedMacModel {
         await podcastSubscriptionClassificationTask?.value
         await bootstrapRecoveryTask?.value
         let refresh = podcastRefreshTask
-        let downloads = Array(podcastDownloadTasks.values)
+        let subscriptionWrites = Array(subscriptionWriteTasks.values)
         let restores = Array(podcastRestoreTasks.values)
+        for task in subscriptionWrites { await task.value }
         await refresh?.value
+        let downloads = Array(podcastDownloadTasks.values)
         for task in downloads { _ = try? await task.value }
         for task in restores { await task.value }
     }
@@ -127,7 +129,7 @@ extension WiltedMacModel {
     func setSubscription(_ subscription: WiltedMacSubscription, enabled: Bool) {
 #if canImport(WiltedProducer)
         guard let store, let feedID = try? ItemID(rawValue: subscription.id) else { return }
-        Task { [weak self] in
+        trackSubscriptionWrite { [weak self] in
             guard let self else { return }
             do {
                 try await store.save(subscription: PodcastSubscription(
@@ -156,7 +158,7 @@ extension WiltedMacModel {
 #if canImport(WiltedProducer)
         guard let store, let feedID = try? ItemID(rawValue: subscription.id) else { return }
         undoableRemoval = nil
-        Task { [weak self] in
+        trackSubscriptionWrite { [weak self] in
             guard let self else { return }
             do {
                 let removed = try await store.unsubscribeFromPodcast(feedID: feedID)
@@ -196,7 +198,7 @@ extension WiltedMacModel {
         let wasPlaying = currentPodcastEpisodeID == episode.id
         undoableSkip = episode
         podcastOperationMessage = "Marked \(episode.title) completed. Undo completion restores it."
-        Task { [weak self] in
+        trackSubscriptionWrite { [weak self] in
             guard let self, let store = self.store, let id = try? ItemID(rawValue: episode.id) else { return }
             do {
                 // `lastRevisionID` stays nil on purpose: a skip is not
@@ -235,7 +237,7 @@ extension WiltedMacModel {
 #if canImport(WiltedProducer)
         undoableSkip = nil
         podcastOperationMessage = "Restoring \(episode.title)…"
-        Task { [weak self] in
+        trackSubscriptionWrite { [weak self] in
             guard let self, let store = self.store, let id = try? ItemID(rawValue: episode.id) else { return }
             do {
                 let restored = try await store.undoCompletedAndRetiredEpisode(id)
@@ -272,7 +274,7 @@ extension WiltedMacModel {
         // Read before the removal runs: once the row is gone there is nothing
         // left to compare the playing episode against.
         let wasPlaying = currentPodcastEpisodeID == episode.id
-        Task { [weak self] in
+        trackSubscriptionWrite { [weak self] in
             guard let self else { return }
             if wasPlaying { await self.stopPlaybackForRemovedEpisode() }
             if await self.dismissEpisode(episode) == false {
@@ -411,28 +413,67 @@ extension WiltedMacModel {
 #endif
 
 #if canImport(WiltedProducer)
-    func startPodcastRefresh(urls: [URL], subscribing: Bool) {
-        guard podcastRefreshTask == nil else { return }
+    /// Tracks finite subscription writes so fixture teardown can cancel and
+    /// drain them before its owned store directory is removed.
+    func trackSubscriptionWrite(_ operation: @escaping @MainActor () async -> Void) {
+        guard !isClosingTemporaryState else { return }
+        let id = UUID()
+        let task = Task { [weak self] in
+            await operation()
+            self?.subscriptionWriteTasks[id] = nil
+        }
+        subscriptionWriteTasks[id] = task
+    }
+
+    func startPodcastRefresh(
+        urls: [URL], subscribing: Bool,
+        initialMetadataLimit: Int? = nil,
+        requestID: UUID? = nil
+    ) {
+        guard !isClosingTemporaryState, podcastRefreshTask == nil else { return }
         isRefreshingPodcasts = true
         undoableRemoval = nil
         podcastOperationMessage = subscribing ? "Adding podcast feed…" : "Refreshing subscribed podcasts…"
+        let ledgerToken = UUID()
+        let operationID = UUID()
+        podcastRefreshOperationID = operationID
         podcastRefreshTask = Task { [weak self] in
             guard let self else { return }
+            defer {
+                self.subscriptionWriteTasks[ledgerToken] = nil
+                if self.podcastRefreshOperationID == operationID,
+                   (requestID == nil || self.podcastSubscriptionRequestID == requestID) {
+                    self.isRefreshingPodcasts = false
+                    self.podcastRefreshTask = nil
+                    self.podcastRefreshOperationID = nil
+                    if subscribing {
+                        self.isCheckingPodcastSubscription = false
+                        self.podcastSubscriptionRequestID = nil
+                    }
+                }
+            }
             do {
-                let result = try await self.refreshPodcastURLs(urls, subscribing: subscribing)
+                let result = try await self.refreshPodcastURLs(
+                    urls, subscribing: subscribing, initialMetadataLimit: initialMetadataLimit, requestID: requestID
+                )
+                guard self.podcastRefreshOperationID == operationID,
+                      requestID == nil || self.podcastSubscriptionRequestID == requestID else { return }
                 self.lastPodcastRefreshNewEpisodeIDs = result.newEpisodeIDs.map(\.rawValue)
+                if !subscribing, result.successfulFeedCount > 0 {
+                    self.setLastAutomationRefresh(Date())
+                }
                 if subscribing {
+                    let showName = result.successfulFeedTitles.first ?? "this podcast"
                     self.podcastFeedDraft = ""
                     if let duplicate = result.duplicateSubscription {
-                        // Nothing was added, so the answer is the feed already
-                        // followed: point at it rather than report a failure.
                         self.selectedPodcastFeedID = duplicate.rawValue
-                        self.podcastOperationMessage = "Already following this podcast."
+                        self.podcastFeedDraftStatus = "Already following \(showName)."
+                        self.podcastOperationMessage = "Already following \(showName)."
                     } else {
                         self.selectedPodcastFeedID = nil
-                        self.podcastOperationMessage = result.newEpisodeIDs.isEmpty
-                            ? "Podcast subscription added."
-                            : "Podcast subscription added with \(result.newEpisodeIDs.count) episode\(result.newEpisodeIDs.count == 1 ? "" : "s")."
+                        let count = result.newEpisodeIDs.count
+                        self.podcastFeedDraftStatus = "\(showName) added with \(count) episode\(count == 1 ? "" : "s")."
+                        self.podcastOperationMessage = self.podcastFeedDraftStatus
                     }
                 } else {
                     self.podcastOperationMessage = result.newEpisodeIDs.isEmpty
@@ -440,14 +481,32 @@ extension WiltedMacModel {
                         : "Added \(result.newEpisodeIDs.count) new episode\(result.newEpisodeIDs.count == 1 ? "" : "s")."
                 }
             } catch is CancellationError {
+                guard self.podcastRefreshOperationID == operationID,
+                      requestID == nil || self.podcastSubscriptionRequestID == requestID else { return }
+                self.podcastFeedDraftStatus = subscribing ? Self.podcastCheckCancelledStatus : self.podcastFeedDraftStatus
                 self.podcastOperationMessage = "Podcast refresh cancelled."
             } catch PodcastFeedClientError.cancelled {
+                guard self.podcastRefreshOperationID == operationID,
+                      requestID == nil || self.podcastSubscriptionRequestID == requestID else { return }
+                self.podcastFeedDraftStatus = subscribing ? Self.podcastCheckCancelledStatus : self.podcastFeedDraftStatus
                 self.podcastOperationMessage = "Podcast refresh cancelled."
+            } catch let partial as PodcastSubscriptionPartialFailure {
+                guard self.podcastRefreshOperationID == operationID,
+                      requestID == nil || self.podcastSubscriptionRequestID == requestID else { return }
+                let prefix = partial.wasAlreadySubscribed ? "Already following \(partial.feedTitle)" : "\(partial.feedTitle) was added"
+                self.podcastFeedDraftStatus = "\(prefix), but its episode metadata could not be saved. Retry refresh."
+                self.podcastOperationMessage = self.podcastFeedDraftStatus
             } catch {
+                guard self.podcastRefreshOperationID == operationID,
+                      requestID == nil || self.podcastSubscriptionRequestID == requestID else { return }
+                self.podcastFeedDraftStatus = subscribing
+                    ? "Podcast feed unavailable. Check the address or retry when online."
+                    : self.podcastFeedDraftStatus
                 self.podcastOperationMessage = "Podcast feed unavailable. Check the address or retry when online."
             }
-            self.isRefreshingPodcasts = false
-            self.podcastRefreshTask = nil
+        }
+        if let podcastRefreshTask {
+            subscriptionWriteTasks[ledgerToken] = podcastRefreshTask
         }
     }
 

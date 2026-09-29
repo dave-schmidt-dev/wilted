@@ -13,10 +13,53 @@
 # The team identifier is never pinned in `project.yml`; it is supplied here the
 # same way `scripts/test-gate.sh` supplies it, so committed source stays
 # credential-free and free of a pinned Apple team.
+#
+# `--library-sync` extends the same flow for the attended iPhone library-sync
+# run: it builds both Development apps, installs the iOS app on
+# WILTED_DEVICE_ID, quits any running Mac app, and relaunches the Development
+# Mac app with WILTED_LIBRARY_SYNC=1. Run `scripts/attended-cloudkit-run.sh
+# --help` for details.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root" || exit 1
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/attended-cloudkit-run.sh [STEP | --library-sync | --help]
+
+Steps (default: all):
+  generate       regenerate the Xcode project from project.yml
+  mac            build the signed Development Mac producer
+  ios            build the signed Development iOS listener
+  install        install the built iOS listener on WILTED_DEVICE_ID
+  all            generate, mac, ios
+
+Modes:
+  --library-sync  attended iPhone library-sync run:
+                  1. build the Development Mac and iOS apps
+                  2. install the iOS app on the device in WILTED_DEVICE_ID
+                  3. quit any running com.zerodelta.wilted.mac (fails if it
+                     does not exit)
+                  4. launch the Development Mac app with
+                     open -n --env WILTED_LIBRARY_SYNC=1 <app>
+                  5. verify by bundle id and process path that the running
+                     instance is the Development build
+                  The installed Debug app in /Applications is not modified.
+                  Restore the daily-driver app afterwards with: make install
+  -h, --help      print this help and exit
+
+Environment:
+  WILTED_DEVICE_ID                      paired device identifier (required for
+                                        install and --library-sync)
+  WILTED_DEVELOPMENT_TEAM               Apple team id (default 4CJ49V6QHW)
+  WILTED_ALLOW_PROVISIONING_UPDATES=1   pass -allowProvisioningUpdates
+USAGE
+}
+
+case "${1:-}" in
+  -h|--help|help) usage; exit 0 ;;
+esac
 
 wilted_development_team="${WILTED_DEVELOPMENT_TEAM:-4CJ49V6QHW}"
 allow_updates="${WILTED_ALLOW_PROVISIONING_UPDATES:-0}"
@@ -25,6 +68,9 @@ build_cache="$repo_root/scripts/build-with-cache.py"
 derived="$(python3 "$build_cache" path xcode attended-cloudkit)"
 log_dir="$repo_root/.logs/attended-cloudkit"
 container='iCloud.com.zerodelta.wilted'
+mac_bundle_id='com.zerodelta.wilted.mac'
+mac_app_path="$derived/Build/Products/Development/WiltedMac.app"
+ios_app_path="$derived/Build/Products/Development-iphoneos/WiltediOS.app"
 
 step() { printf '\n== %s\n' "$*"; }
 info() { printf '   %s\n' "$*"; }
@@ -118,10 +164,8 @@ cmd_mac() {
     -project "$project" -scheme WiltedMac -configuration Development \
     -destination 'platform=macOS,arch=arm64' \
     "${args[@]}"
-  local app
-  app="$derived/Build/Products/Development/WiltedMac.app"
-  verify_artifact 'mac' "$app" 'Contents/embedded.provisionprofile'
-  printf '\nMAC_APP=%s\n' "$app"
+  verify_artifact 'mac' "$mac_app_path" 'Contents/embedded.provisionprofile'
+  printf '\nMAC_APP=%s\n' "$mac_app_path"
 }
 
 cmd_ios() {
@@ -132,22 +176,69 @@ cmd_ios() {
     -project "$project" -scheme WiltediOS -configuration Development \
     -destination 'generic/platform=iOS' \
     "${args[@]}"
-  local app
-  app="$derived/Build/Products/Development-iphoneos/WiltediOS.app"
-  verify_artifact 'ios' "$app" 'embedded.mobileprovision'
-  printf '\nIOS_APP=%s\n' "$app"
+  verify_artifact 'ios' "$ios_app_path" 'embedded.mobileprovision'
+  printf '\nIOS_APP=%s\n' "$ios_app_path"
 }
 
 cmd_install() {
   require_tool xcrun
   local device="${WILTED_DEVICE_ID:-}"
   [[ -n "$device" ]] || fail 'set WILTED_DEVICE_ID to the paired device identifier'
-  local app
-  app="$derived/Build/Products/Development-iphoneos/WiltediOS.app"
-  [[ -d "$app" ]] || fail 'no iOS product to install; run the ios step first'
+  [[ -d "$ios_app_path" ]] || fail 'no iOS product to install; run the ios step first'
   step "Installing listener on device $device"
-  xcrun devicectl device install app --device "$device" "$app" || fail 'device install failed'
+  xcrun devicectl device install app --device "$device" "$ios_app_path" || fail 'device install failed'
   info 'listener installed'
+}
+
+# Attended library-sync run. The device is checked first so a missing
+# WILTED_DEVICE_ID fails before any build starts. The installed Debug app is
+# only quit, never modified; `make install` restores it.
+cmd_library_sync() {
+  [[ -n "${WILTED_DEVICE_ID:-}" ]] || fail 'set WILTED_DEVICE_ID to the paired device identifier'
+  require_tool open; require_tool osascript
+  # shellcheck source=lib/app-identity.sh
+  source "$repo_root/scripts/lib/app-identity.sh"
+
+  step 'Library-sync run: building Development apps'
+  cmd_mac
+  cmd_ios
+  cmd_install
+
+  step "Quitting running $mac_bundle_id"
+  info 'the installed Debug app is left untouched; restore it afterwards with: make install'
+  if [[ -n "$(wilted_running_bundle_pids "$mac_bundle_id")" ]]; then
+    osascript -e "tell application id \"$mac_bundle_id\" to quit" >/dev/null 2>&1 || true
+    wilted_wait_for_bundle_exit "$mac_bundle_id" 10 \
+      || fail "a running $mac_bundle_id did not exit; quit it manually and rerun"
+  fi
+  info "no $mac_bundle_id instance running"
+
+  step 'Launching Development Mac app with WILTED_LIBRARY_SYNC=1'
+  # --env is explicit on purpose: LaunchServices does not inherit the shell.
+  open -n --env WILTED_LIBRARY_SYNC=1 "$mac_app_path" || fail 'open failed'
+
+  local expected_dir pid path bad='' found=0 tries=20
+  expected_dir="$(cd -P "$mac_app_path" && pwd -P)/Contents/MacOS/"
+  [[ "$(wilted_bundle_identifier "$mac_app_path")" == "$mac_bundle_id" ]] \
+    || fail "built app bundle id is not $mac_bundle_id"
+  while (( tries > 0 )); do
+    found=0; bad=''
+    while read -r pid path; do
+      [[ -n "$pid" && "$path" == *.app/Contents/MacOS/* ]] || continue
+      [[ "$(wilted_bundle_identifier "${path%%.app/Contents/MacOS/*}.app")" == "$mac_bundle_id" ]] || continue
+      if [[ "$path" == "$expected_dir"* ]]; then found=1; else bad="$bad $pid:$path"; fi
+    done < <(ps -axo pid=,comm= 2>/dev/null || true)
+    [[ -z "$bad" && "$found" == 1 ]] && break
+    [[ -n "$bad" ]] && break
+    sleep 0.5; tries=$((tries - 1))
+  done
+  [[ -z "$bad" ]] || fail "a non-Development $mac_bundle_id is running:$bad"
+  [[ "$found" == 1 ]] || fail "Development Mac app did not start from $mac_app_path"
+  info "running Development instance verified: $mac_bundle_id from $expected_dir"
+
+  step 'Library-sync run ready'
+  info 'Mac app is publishing (WILTED_LIBRARY_SYNC=1); iOS app is installed on the device'
+  info 'restore the daily-driver Debug app with: make install'
 }
 
 case "${1:-all}" in
@@ -156,5 +247,8 @@ case "${1:-all}" in
   ios) cmd_ios ;;
   install) cmd_install ;;
   all) cmd_generate; cmd_mac; cmd_ios ;;
-  *) fail "unknown step: $1 (expected generate|mac|ios|install|all)" ;;
+  --library-sync)
+    (( $# == 1 )) || fail "--library-sync takes no further arguments (got: ${*:2})"
+    cmd_library_sync ;;
+  *) fail "unknown step: $1 (expected generate|mac|ios|install|all|--library-sync|--help)" ;;
 esac

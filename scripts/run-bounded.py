@@ -86,6 +86,8 @@ class OwnedTree:
     """Track only descendants observed from a known process identity."""
 
     def __init__(self, leader_pid: int, leader_start: str) -> None:
+        self.leader_pid = leader_pid
+        self.leader_start = leader_start
         self.known: dict[int, str] = {leader_pid: leader_start}
         self.groups: set[int] = {leader_pid}
         self.ignored: set[int] = set()
@@ -97,7 +99,10 @@ class OwnedTree:
             changed = False
             live_parents = {
                 pid for pid, start in self.known.items()
-                if (parent := table.get(pid)) is not None and parent.start == start
+                if (parent := table.get(pid)) is not None
+                and (parent.start == start or (
+                    pid == self.leader_pid and not start and parent.pgid == self.leader_pid
+                ))
             }
             for process in table.values():
                 if (process.pid not in self.known and process.pid not in self.ignored
@@ -109,11 +114,20 @@ class OwnedTree:
         return table
 
     def live(self, table: dict[int, Process]) -> list[int]:
-        return [
+        live = {
             pid for pid, start in self.known.items()
             if (process := table.get(pid)) is not None
-            and process.start == start and not process.state.startswith("Z")
-        ]
+            and (process.start == start or (
+                pid == self.leader_pid and not start and process.pgid == self.leader_pid
+            ))
+            and not process.state.startswith("Z")
+        }
+        groups = set(self.owned_groups(table))
+        live.update(
+            process.pid for process in table.values()
+            if process.pgid in groups and not process.state.startswith("Z")
+        )
+        return sorted(live)
 
     def cleanup(self, grace_seconds: float = GRACE_SECONDS) -> bool:
         """Signal observed owned PIDs, rescanning so reparented children remain owned."""
@@ -172,8 +186,33 @@ class OwnedTree:
                 pass
 
     def owned_groups(self, table: dict[int, Process]) -> list[int]:
-        """Return the original owned session group and observed child groups."""
-        return sorted(self.groups)
+        """Return current live members of original or observed child-owned groups.
+
+        The initial child session remains eligible while its original leader
+        identity has not been replaced: a fast-exiting shell can leave an
+        unobserved child in that initial group before the next table scan.
+        """
+        groups = {
+            process.pgid
+            for pid, start in self.known.items()
+            if (process := table.get(pid)) is not None
+            and (process.start == start or (
+                pid == self.leader_pid and not start and process.pgid == self.leader_pid
+            ))
+            and not process.state.startswith("Z")
+            and process.pgid in self.groups
+        }
+        leader = table.get(self.leader_pid)
+        if (
+            self.leader_pid in self.groups
+            and (leader is None or leader.start == self.leader_start or not self.leader_start)
+            and any(
+                process.pgid == self.leader_pid and not process.state.startswith("Z")
+                for process in table.values()
+            )
+        ):
+            groups.add(self.leader_pid)
+        return sorted(groups)
 
     @staticmethod
     def signal_group(pgid: int, signum: int) -> None:
@@ -210,9 +249,72 @@ def kill_unidentified_group(child: subprocess.Popen[object]) -> int:
     return EXIT_CLEANUP_FAILED
 
 
-def watchdog(control_fd: int, leader_pid: int, start: str) -> int:
-    """Keep cleanup independent from the supervisor's process group and life."""
+def watchdog(startup_fd: int, control_fd: int) -> int:
+    """Attach cleanup before launch, so an abandoned supervisor cannot orphan it."""
+    startup = bytearray()
+    control = bytearray()
+    parent_gone = False
+    control_open = True
+    leader_pid: int | None = None
+    while leader_pid is None:
+        try:
+            readable, _, _ = select.select(
+                [startup_fd] + ([control_fd] if control_open else []),
+                [], [], INSPECTION_INTERVAL_SECONDS,
+            )
+            if control_open and control_fd in readable:
+                message = os.read(control_fd, 128)
+                if not message:
+                    parent_gone = True
+                    control_open = False
+                else:
+                    control.extend(message)
+            if startup_fd in readable:
+                chunk = os.read(startup_fd, 64)
+                if not chunk:
+                    return 0
+                startup.extend(chunk)
+                if b"\n" in startup:
+                    leader_pid = int(startup.split(b"\n", 1)[0])
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            emit(f"watchdog-startup-failed: {error}")
+            return EXIT_CLEANUP_FAILED
+
+    start: str | None = None
+    while start is None and not parent_gone:
+        if b"\n" in control:
+            line, _, remainder = control.partition(b"\n")
+            if not line.startswith(b"I") or remainder:
+                emit("watchdog-identity-message-invalid")
+                return EXIT_CLEANUP_FAILED
+            try:
+                start = line[1:].decode("ascii")
+            except UnicodeDecodeError:
+                emit("watchdog-identity-message-invalid")
+                return EXIT_CLEANUP_FAILED
+            break
+        try:
+            readable, _, _ = select.select([control_fd], [], [], INSPECTION_INTERVAL_SECONDS)
+            if readable:
+                message = os.read(control_fd, 128)
+                if not message:
+                    parent_gone = True
+                    control_open = False
+                else:
+                    control.extend(message)
+        except (OSError, subprocess.SubprocessError) as error:
+            emit(f"watchdog-identity-read-failed: {error}")
+            return EXIT_CLEANUP_FAILED
+    if start is None:
+        start = leader_start(leader_pid)
+    if start is None:
+        emit(f"watchdog-identity-unavailable pid={leader_pid}")
+        start = ""
     tree = OwnedTree(leader_pid, start)
+    emit(f"watchdog-ready pid={leader_pid}")
+    if parent_gone:
+        emit("watchdog-parent-gone")
+        return 0 if tree.cleanup() else EXIT_CLEANUP_FAILED
     while True:
         try:
             readable, _, _ = select.select(
@@ -257,112 +359,144 @@ def heartbeat_interval() -> float:
 
 def run(timeout: float, argv: list[str]) -> int:
     managed = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
-    old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, managed)
-    restore_mask = lambda: signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
-    child = subprocess.Popen(
-        argv, start_new_session=True, close_fds=False, preexec_fn=restore_mask
-    )
-    start = leader_start(child.pid)
-    if start is None:
-        result = kill_unidentified_group(child)
-        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
-        return result
-    tree = OwnedTree(child.pid, start)
-    try:
-        read_fd, write_fd = os.pipe()
-        watcher = subprocess.Popen(
-            [sys.executable, __file__, "--watchdog", str(read_fd), str(child.pid), start],
-            pass_fds=(read_fd,), start_new_session=True, close_fds=True,
-            preexec_fn=restore_mask,
-        )
-    except (OSError, subprocess.SubprocessError) as error:
-        emit(f"watchdog-start-failed: {error}")
-        tree.cleanup()
-        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
-        return EXIT_CLEANUP_FAILED
-    os.close(read_fd)
-    tree.ignored.add(watcher.pid)
+    handlers = {sig: signal.getsignal(sig) for sig in managed}
     received: list[int] = []
+    old_mask = None
 
     def interrupted(signum: int, _frame: object) -> None:
         received.append(signum)
 
-    handlers = {sig: signal.signal(sig, interrupted) for sig in managed}
-    signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
-    outcome: int | None = None
-    cleanup_ok = False
+    def restore_child_signal_state() -> None:
+        # Replacing an inherited SIG_IGN in this supervisor must not change
+        # the signal environment of the command or its detached watchdog.
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+
     try:
-        deadline = time.monotonic() + timeout
-        interval = heartbeat_interval()
-        last_heartbeat = time.monotonic()
-        next_inspection = last_heartbeat
-        while True:
-            now = time.monotonic()
-            if now >= next_inspection:
-                known = set(tree.known)
-                tree.scan()
-                for pid in sorted(set(tree.known) - known):
-                    emit(f"tracked pid={pid}")
-                next_inspection = now + INSPECTION_INTERVAL_SECONDS
-            if now - last_heartbeat >= interval:
-                emit(f"running elapsed={now - (deadline - timeout):.0f}s pid={child.pid}")
-                last_heartbeat = now
-            if received:
-                outcome = -received[0]
-                break
-            if child.poll() is not None:
-                outcome = child.returncode
-                break
-            if now >= deadline:
-                emit(f"timeout seconds={timeout:g} pid={child.pid}")
-                outcome = EXIT_TIMEOUT
-                break
-            time.sleep(POLL_SECONDS)
-        cleanup_ok = tree.cleanup()
-        if not cleanup_ok:
-            outcome = EXIT_CLEANUP_FAILED
+        # A Bash background leg inherits ignored INT. Blocking that signal
+        # alone still discards it until SIG_IGN is replaced. Record it before
+        # any child can publish readiness or identity inspection can stall.
+        for sig in managed:
+            signal.signal(sig, interrupted)
+        old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, managed)
+        startup_read_fd, startup_write_fd = os.pipe()
+        control_read_fd, control_write_fd = os.pipe()
         try:
-            child.wait(timeout=GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            outcome = EXIT_CLEANUP_FAILED
-    except (OSError, subprocess.SubprocessError, ValueError) as error:
-        emit(f"supervisor-inspection-failed: {error}")
-        cleanup_ok = tree.cleanup()
+            watcher = subprocess.Popen(
+                [sys.executable, __file__, "--watchdog", str(startup_read_fd), str(control_read_fd)],
+                pass_fds=(startup_read_fd, control_read_fd), start_new_session=True,
+                close_fds=True, preexec_fn=restore_child_signal_state,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            emit(f"watchdog-start-failed: {error}")
+            for fd in (startup_read_fd, startup_write_fd, control_read_fd, control_write_fd):
+                os.close(fd)
+            return EXIT_CLEANUP_FAILED
+        os.close(startup_read_fd)
+        os.close(control_read_fd)
+
+        def announce_child() -> None:
+            restore_child_signal_state()
+            try:
+                os.write(startup_write_fd, f"{os.getpid()}\n".encode("ascii"))
+            finally:
+                os.close(startup_write_fd)
+
         try:
-            child.wait(timeout=GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            emit(f"supervisor-cleanup-incomplete pid={child.pid}")
-        outcome = EXIT_CLEANUP_FAILED
+            child = subprocess.Popen(
+                argv, start_new_session=True, pass_fds=(startup_write_fd,),
+                preexec_fn=announce_child,
+            )
+        except (OSError, subprocess.SubprocessError):
+            os.close(startup_write_fd)
+            os.close(control_write_fd)
+            watcher.wait(timeout=WATCHDOG_WAIT_SECONDS)
+            raise
+        os.close(startup_write_fd)
+        start = leader_start(child.pid)
+        if start is None:
+            result = kill_unidentified_group(child)
+            os.close(control_write_fd)
+            watcher.wait(timeout=WATCHDOG_WAIT_SECONDS)
+            return result
+        os.write(control_write_fd, b"I" + start.encode("ascii") + b"\n")
+        tree = OwnedTree(child.pid, start)
+        tree.ignored.add(watcher.pid)
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+        outcome: int | None = None
+        cleanup_ok = False
+        try:
+            deadline = time.monotonic() + timeout
+            interval = heartbeat_interval()
+            last_heartbeat = time.monotonic()
+            next_inspection = last_heartbeat
+            while True:
+                now = time.monotonic()
+                if now >= next_inspection:
+                    known = set(tree.known)
+                    tree.scan()
+                    for pid in sorted(set(tree.known) - known):
+                        emit(f"tracked pid={pid}")
+                    next_inspection = now + INSPECTION_INTERVAL_SECONDS
+                if now - last_heartbeat >= interval:
+                    emit(f"running elapsed={now - (deadline - timeout):.0f}s pid={child.pid}")
+                    last_heartbeat = now
+                if received:
+                    outcome = -received[0]
+                    break
+                if child.poll() is not None:
+                    outcome = child.returncode
+                    break
+                if now >= deadline:
+                    emit(f"timeout seconds={timeout:g} pid={child.pid}")
+                    outcome = EXIT_TIMEOUT
+                    break
+                time.sleep(POLL_SECONDS)
+            cleanup_ok = tree.cleanup()
+            if not cleanup_ok:
+                outcome = EXIT_CLEANUP_FAILED
+            try:
+                child.wait(timeout=GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                outcome = EXIT_CLEANUP_FAILED
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            emit(f"supervisor-inspection-failed: {error}")
+            cleanup_ok = tree.cleanup()
+            try:
+                child.wait(timeout=GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                emit(f"supervisor-cleanup-incomplete pid={child.pid}")
+            outcome = EXIT_CLEANUP_FAILED
+        finally:
+            os.close(control_write_fd)
+            try:
+                watcher.wait(timeout=WATCHDOG_WAIT_SECONDS)
+            except subprocess.TimeoutExpired:
+                emit("watchdog-cleanup-timeout")
+                outcome = EXIT_CLEANUP_FAILED
+            else:
+                if watcher.returncode != 0:
+                    emit(f"watchdog-cleanup-failed status={watcher.returncode}")
+                    outcome = EXIT_CLEANUP_FAILED
+        if outcome is None:
+            return EXIT_CLEANUP_FAILED
+        if outcome < 0:
+            signal.signal(-outcome, signal.SIG_DFL)
+            os.kill(os.getpid(), -outcome)
+        return outcome
+
     finally:
         for sig, handler in handlers.items():
             signal.signal(sig, handler)
-        try:
-            if cleanup_ok:
-                os.write(write_fd, b"D")
-        except OSError:
-            pass
-        os.close(write_fd)
-        try:
-            watcher.wait(timeout=WATCHDOG_WAIT_SECONDS)
-        except subprocess.TimeoutExpired:
-            emit("watchdog-cleanup-timeout")
-            outcome = EXIT_CLEANUP_FAILED
-        else:
-            if watcher.returncode != 0:
-                emit(f"watchdog-cleanup-failed status={watcher.returncode}")
-                outcome = EXIT_CLEANUP_FAILED
-    if outcome is None:
-        return EXIT_CLEANUP_FAILED
-    if outcome < 0:
-        signal.signal(-outcome, signal.SIG_DFL)
-        os.kill(os.getpid(), -outcome)
-    return outcome
+        if old_mask is not None:
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
 
 
 def main(argv: list[str]) -> int:
-    if argv[:1] == ["--watchdog"] and len(argv) == 4:
+    if argv[:1] == ["--watchdog"] and len(argv) == 3:
         try:
-            return watchdog(int(argv[1]), int(argv[2]), argv[3])
+            return watchdog(int(argv[1]), int(argv[2]))
         except ValueError:
             return EXIT_USAGE
     try:

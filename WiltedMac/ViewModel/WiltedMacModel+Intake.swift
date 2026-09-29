@@ -244,32 +244,8 @@ extension WiltedMacModel {
     /// exactly as they were. The Menu then offers the one step the episode's
     /// group says it is waiting for -- Download, then Prepare, then Play.
     func keepEpisode(_ episode: WiltedMacEpisode) {
-        guard !podcastQueueIDs.contains(episode.id) else { return }
-        // The optimistic half first: the row moves on the next render even
-        // before the durable round trip, exactly as a removal does.
-        podcastQueueIDs.append(episode.id)
-        podcastOperationMessage = "Kept \(episode.title). It is in Larder."
-        if automationSettings.downloadEverythingOnMenu,
-           Self.menuGroup(for: episode) == .available {
-            // The override fetches what it kept through the same admission the
-            // row's Download button and the group's bulk action use, so a
-            // later arrival is no different from one already on the Menu. An
-            // episode that already has its audio is not fetched again.
-            downloadEpisode(episode)
-        }
 #if canImport(WiltedProducer)
-        guard let playback, let id = try? ItemID(rawValue: episode.id) else { return }
-        playbackOperationTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                await self.fixturePodcastInstallTask?.value
-                try await playback.addPodcastQueueEpisode(id)
-                await self.refreshPodcastQueueState()
-            } catch {
-                self.podcastQueueIDs.removeAll { $0 == episode.id }
-                self.podcastOperationMessage = "\(episode.title) could not be kept."
-            }
-        }
+        decideFeedEpisodes(.keep, episodes: [episode])
 #endif
     }
 
@@ -282,20 +258,8 @@ extension WiltedMacModel {
     /// the records alive until that lands.
     func skipFeedEpisode(_ episode: WiltedMacEpisode) {
 #if canImport(WiltedProducer)
-        guard let store, let id = try? ItemID(rawValue: episode.id) else { return }
-        withdrawPreparationRequest(for: episode.id)
         undoableSkip = nil
-        podcastOperationMessage =
-            "Skipped \(episode.title). Its download, prepared cut and transcript are untouched."
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await store.retireEpisode(id)
-                await self.reloadLibraryRows()
-            } catch {
-                self.podcastOperationMessage = "\(episode.title) could not be skipped."
-            }
-        }
+        decideFeedEpisodes(.skip, episodes: [episode])
 #endif
     }
 
@@ -313,18 +277,7 @@ extension WiltedMacModel {
     /// store operation -- see `restoreEpisode(_ dismissal:)`.
     func restoreSkippedFeedEpisode(_ episode: WiltedMacEpisode) {
 #if canImport(WiltedProducer)
-        guard let store, let id = try? ItemID(rawValue: episode.id) else { return }
-        podcastOperationMessage = "Restoring \(episode.title)…"
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                _ = try await store.restoreEpisode(id)
-                await self.reloadLibraryRows()
-                self.podcastOperationMessage = "Restored \(episode.title) to Feeds."
-            } catch {
-                self.podcastOperationMessage = "\(episode.title) could not be restored."
-            }
-        }
+        decideFeedEpisodes(.restore, episodes: [episode])
 #endif
     }
 
@@ -419,13 +372,32 @@ extension WiltedMacModel {
 
     func removeEpisodeFromUpNext(_ episodeID: String) {
 #if canImport(WiltedProducer)
-        guard let playback, let id = try? ItemID(rawValue: episodeID) else { return }
+        guard !isClosingTemporaryState,
+              let playback, let id = try? ItemID(rawValue: episodeID) else { return }
         playbackOperationStatus = "Updating Larder…"
-        Task { [weak self] in
-            try? await playback.removePodcastQueueEpisode(id)
-            await self?.refreshPodcastQueueState()
-            self?.playbackOperationStatus = nil
+        let token = UUID()
+        let predecessors = Array(subscriptionWriteTasks.values)
+        let task = Task { @MainActor [weak self] in
+            defer { self?.subscriptionWriteTasks[token] = nil }
+            guard let self else { return }
+            // Queue removal is durable, so it serializes behind every writer
+            // already entered in the finite ledger before touching playback.
+            for predecessor in predecessors { await predecessor.value }
+            guard !self.isClosingTemporaryState, !Task.isCancelled else { return }
+            do {
+                try await playback.removePodcastQueueEpisode(id)
+                guard !self.isClosingTemporaryState, !Task.isCancelled else { return }
+                await self.refreshPodcastQueueState()
+                guard !self.isClosingTemporaryState, !Task.isCancelled else { return }
+                self.playbackOperationStatus = nil
+            } catch {
+                guard !self.isClosingTemporaryState, !Task.isCancelled else { return }
+                self.playbackOperationStatus = "Could not update Larder."
+            }
         }
+        // Register before the task reaches its first await so close and tests
+        // drain this exact durable writer rather than an unrelated playback task.
+        subscriptionWriteTasks[token] = task
 #endif
     }
 

@@ -307,24 +307,29 @@ extension WiltedMacModelTests {
     func testASkippedFeedEpisodeRestoresToFeedsFromFeeds() async throws {
         let fixture = try await skipFixture("feeds-restore")
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let store = try LocalLibraryStore(url: fixture.directory.appendingPathComponent("library.sqlite"))
         let episode = try XCTUnwrap(fixture.model.episodes.first { $0.id == fixture.episodeID.rawValue })
         XCTAssertTrue(fixture.model.feedsEpisodes.contains { $0.id == episode.id })
 
         fixture.model.skipFeedEpisode(episode)
-        try await settle(fixture.model)
+        await waitForFeedDecisionWriters(fixture.model)
         let skipped = try XCTUnwrap(fixture.model.skippedFeedEpisodes.first { $0.id == episode.id })
+        let skippedRemovalKind = try await store.removalKind(for: fixture.episodeID)
         XCTAssertNotNil(skipped.retiredAt)
+        XCTAssertEqual(skippedRemovalKind, .retired)
         XCTAssertFalse(fixture.model.feedsEpisodes.contains { $0.id == episode.id })
 
         fixture.model.restoreSkippedFeedEpisode(skipped)
-        try await settle(fixture.model)
+        await waitForFeedDecisionWriters(fixture.model)
 
         let restored = try XCTUnwrap(fixture.model.episodes.first { $0.id == episode.id })
+        let restoredRemovalKind = try await store.removalKind(for: fixture.episodeID)
         XCTAssertNil(restored.retiredAt, "restore clears the retirement")
+        XCTAssertNil(restoredRemovalKind, "restore clears the durable retirement")
         XCTAssertFalse(restored.isPlayed, "restore does not write a completion record")
         XCTAssertTrue(fixture.model.feedsEpisodes.contains { $0.id == episode.id },
                       "the row returns to the set Feeds renders")
-        XCTAssertEqual(fixture.model.podcastOperationMessage, "Restored \(restored.title) to Feeds.")
+        XCTAssertEqual(fixture.model.podcastOperationMessage, "Restored 1 episode.")
     }
 
     /// 2.4: Feeds renders a restore control for skipped and removed rows, with
@@ -396,7 +401,7 @@ extension WiltedMacModelTests {
         let removed = try XCTUnwrap(model.dismissedEpisodes.first { $0.id == dismissedID.rawValue })
 
         model.restoreSkippedFeedEpisode(skipped)
-        try await settle(model)
+        await waitForFeedDecisionWriters(model)
         model.restoreEpisode(removed)
         await model.waitForPodcastOperations()
 

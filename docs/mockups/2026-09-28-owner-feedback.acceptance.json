@@ -1,0 +1,24 @@
+{
+  "prototype": "illustrative owner-feedback mockup; not a live app claim",
+  "fixtures": {
+    "elm-001": { "title": "Autumn Walk", "show": "Field Notes", "date": "Sep 28, 2026", "sourceDuration": "42 min", "preparedPlayableDuration": "28 min", "visibleOnlyWhenReady": true },
+    "tide-002": { "title": "Tide Table", "show": "Field Notes", "date": "Sep 27, 2026", "sourceDuration": "31 min", "preparedPlayableDuration": null },
+    "moss-003": { "title": "Moss Study", "show": "Garden Radio", "date": "Unknown date", "sourceDuration": "19 min", "preparedPlayableDuration": null },
+    "ash-004": { "title": "Ash and Air", "show": "Garden Radio", "date": "Sep 24, 2026", "sourceDuration": "35 min", "preparedPlayableDuration": "24 min" },
+    "rill-005": { "title": "Rill", "show": "Field Notes", "date": "Sep 22, 2026", "sourceDuration": "24 min", "preparedPlayableDuration": null },
+    "fern-006": { "title": "Fern Line", "show": "Garden Radio", "date": "Sep 20, 2026", "sourceDuration": "27 min", "preparedPlayableDuration": "22 min" },
+    "ai-daily-001": { "title": "Daily Brief 1", "show": "The AI Daily Brief", "date": "Sep 18, 2026", "sourceDuration": "18 min", "preparedPlayableDuration": null }
+  },
+  "cases": [
+    { "id": "NAV-001", "fixture": "elm-001", "outcome": "Feeds, Larder, Settings and episode detail use the same fixture metadata." },
+    { "id": "INTAKE-001", "fixture": "ai-daily-001", "outcome": "The AI Daily Brief Apple ID 1680633614 admits exactly 5, 10, or valid custom canonical metadata records and honors the Settings default." },
+    { "id": "SUB-001", "fixture": "ai-daily-001", "outcome": "Recognized Apple URL gives pending then success feedback, admits canonical rows to Feeds, and does no audio work." },
+    { "id": "SUB-002", "fixture": "ai-daily-001", "outcome": "Cancel, duplicate, and unsupported URL retain input and give named inline feedback." },
+    { "id": "DECISION-001", "fixture": "elm-001", "outcome": "Keep starts pending, then moves the canonical item to Larder; Skip moves it to Off the list." },
+    { "id": "BULK-001", "fixture": "tide-002", "outcome": "Bulk Skip moves successful selections, retains the failed Tide selection, and retries only that selected item." },
+    { "id": "LARDER-001", "fixture": "fern-006", "outcome": "Episodes contains all lifecycle rows; Downloaded audio is a separate subset with an empty state only when it has no audio records, and only ready items expose Play." },
+    { "id": "ORDER-001", "fixture": "moss-003", "outcome": "Custom order stays explicit; Newest sorts dated rows first and leaves unknown dates last." },
+    { "id": "RESTORE-001", "fixture": "rill-005", "outcome": "Restore returns one canonical skipped fixture to Feeds." },
+    { "id": "LINK-001", "fixture": "moss-003", "outcome": "Missing episode page remains unavailable and never substitutes the feed URL." }
+  ]
+}

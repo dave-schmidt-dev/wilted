@@ -115,7 +115,7 @@ extension WiltedMacModelTests {
         // Kept: every episode is waiting, each in exactly one Menu group, and
         // none remains in Feeds.
         for value in [available, downloaded, preparing, ready] {
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
         XCTAssertTrue(model.feedsEpisodes.isEmpty)
         XCTAssertEqual(model.menuWaitingEpisodes.count, 4)
@@ -133,18 +133,40 @@ extension WiltedMacModelTests {
                       "the inbox row's buttons are that list, not a hand-kept set")
     }
 
-    func testKeepPutsAnEpisodeOnTheMenuWithoutTouchingItsAudio() {
-        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
-        let prepared = WiltedMacEpisode(
-            id: "keep-prepared", title: "Prepared", feedTitle: "Show", summary: "",
-            artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            durationSeconds: 600, playbackSeconds: 12, downloadState: .completed,
-            preparationState: .prepared(summary: "Ad removed"), isReadyMediaAvailable: true
+    func testKeepPutsAnEpisodeOnTheMenuWithoutTouchingItsAudio() async throws {
+        let directory = wiltedTemporaryDirectory("keep-preserves-audio")
+        let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        let episodeID = try await installPreparedMenuEpisode(
+            into: store, directory: directory, suffix: "keep-preserves-audio",
+            durationSeconds: 600, playbackSeconds: 12
         )
-        model.installEpisodeForTesting(prepared)
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory, storeBootstrap: { _ in store },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        addTeardownBlock { await model.close() }
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        let prepared = try XCTUnwrap(model.episodes.first { $0.id == episodeID.rawValue })
+        let preparationBeforeKeep = prepared.preparationState
+        let audioBeforeKeep = prepared.isReadyMediaAvailable
+        let loadedMediaBeforeKeep = try await store.readyRevision(for: episodeID)
+        let durableMediaBeforeKeep = try XCTUnwrap(loadedMediaBeforeKeep)
+        let durablePreparationBeforeKeep = try await store.preparationOutcome(
+            for: episodeID, revisionID: durableMediaBeforeKeep.revision.revisionID
+        )
+        let durableMediaBytesBeforeKeep = try Data(contentsOf: durableMediaBeforeKeep.mediaURL)
+        let loadedPlaybackBeforeKeep = try await store.playbackState(
+            for: episodeID, revisionID: durableMediaBeforeKeep.revision.revisionID
+        )
+        let durablePlaybackBeforeKeep = try XCTUnwrap(loadedPlaybackBeforeKeep)
+        let durableListeningBeforeKeep = try await store.listeningState(for: episodeID)
+        XCTAssertEqual(prepared.playbackSeconds, 12)
+        XCTAssertNil(durableListeningBeforeKeep)
         XCTAssertTrue(model.feedsEpisodes.contains { $0.id == prepared.id })
 
         model.keepEpisode(prepared)
+        await waitForFeedDecisionWriters(model)
 
         XCTAssertTrue(model.podcastQueueIDs.contains(prepared.id), "the kept episode waits on the Menu")
         XCTAssertTrue(model.menuWaitingEpisodes.contains { $0.id == prepared.id })
@@ -153,10 +175,26 @@ extension WiltedMacModelTests {
             return XCTFail("the kept row must still exist")
         }
         XCTAssertEqual(after.downloadState, .completed, "Keep must not change the download")
-        XCTAssertEqual(after.preparationState, .prepared(summary: "Ad removed"),
+        XCTAssertEqual(after.preparationState, preparationBeforeKeep,
                        "Keep must not change the prepared cut")
-        XCTAssertEqual(after.isReadyMediaAvailable, true, "Keep must not change the transcript's audio")
+        XCTAssertEqual(after.isReadyMediaAvailable, audioBeforeKeep, "Keep must not change the transcript's audio")
         XCTAssertEqual(after.playbackSeconds, 12, "Keep must not change the saved position")
+        let loadedPlaybackAfterKeep = try await store.playbackState(
+            for: episodeID, revisionID: durablePlaybackBeforeKeep.revisionID
+        )
+        let durablePlaybackAfterKeep = try XCTUnwrap(loadedPlaybackAfterKeep)
+        let loadedMediaAfterKeep = try await store.readyRevision(for: episodeID)
+        let durableMediaAfterKeep = try XCTUnwrap(loadedMediaAfterKeep)
+        let durablePreparationAfterKeep = try await store.preparationOutcome(
+            for: episodeID, revisionID: durableMediaAfterKeep.revision.revisionID
+        )
+        let durableMediaBytesAfterKeep = try Data(contentsOf: durableMediaAfterKeep.mediaURL)
+        let durableListeningAfterKeep = try await store.listeningState(for: episodeID)
+        XCTAssertEqual(durablePlaybackAfterKeep, durablePlaybackBeforeKeep)
+        XCTAssertEqual(durableMediaAfterKeep, durableMediaBeforeKeep)
+        XCTAssertEqual(durablePreparationAfterKeep, durablePreparationBeforeKeep)
+        XCTAssertEqual(durableMediaBytesAfterKeep, durableMediaBytesBeforeKeep)
+        XCTAssertEqual(durableListeningAfterKeep, durableListeningBeforeKeep)
     }
 
     func testAnEpisodeAlreadyWaitingIsNotOfferedInFeeds() {
@@ -165,7 +203,7 @@ extension WiltedMacModelTests {
         model.installEpisodeForTesting(episode)
         XCTAssertTrue(model.feedsEpisodes.contains { $0.id == episode.id })
 
-        model.keepEpisode(episode)
+        model.seedPodcastQueueMembershipForTesting(episode)
 
         XCTAssertFalse(model.feedsEpisodes.contains { $0.id == episode.id },
                        "an episode waiting on the Menu is not a Feeds arrival")
@@ -212,7 +250,7 @@ extension WiltedMacModelTests {
         let preparing = destinationEpisode("group-preparing", download: .completed,
                                            preparation: .preparing(stage: "Preparing…"))
         model.installEpisodeForTesting(preparing)
-        model.keepEpisode(preparing)
+        model.seedPodcastQueueMembershipForTesting(preparing)
 
         XCTAssertEqual(WiltedMacModel.menuGroup(for: preparing), .downloaded,
                        "preparing is a state, not a group")
@@ -234,7 +272,7 @@ extension WiltedMacModelTests {
                                        preparation: .prepared(summary: "Ready"))
         for value in [available, downloaded, ready] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
 
         model.menuFilter = .downloaded
@@ -259,7 +297,7 @@ extension WiltedMacModelTests {
                                        preparation: .prepared(summary: "Ready"))
         for value in [available, downloaded, preparing, ready] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
 
         // One group, one set: a heading's count is the size of the rows it

@@ -7,7 +7,6 @@ import WiltedSync
 @testable import WiltedProducer
 
 extension LocalLibraryStoreTests {
-    // MARK: - Podcast subscription admission
 
     /// Builds one feed's worth of episodes at fixed offsets from `origin`, so a
     /// test can say "published 40 days ago" without arithmetic at every call.
@@ -136,6 +135,104 @@ extension LocalLibraryStoreTests {
         }
         built.append(contentsOf: try (0..<undated).map { try episode("undated-\($0)", published: nil) })
         return (feed, built)
+    }
+
+    func testInitialSubscriptionMetadataLimitSelectsExactNewestFactualEpisodes() async throws {
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        for limit in [5, 10] {
+            let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+            let feedURL = URL(string: "https://podcasts.example.test/initial-\(limit)/feed.xml")!
+            let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: Array(1...26))
+            let store = try LocalLibraryStore(url: url)
+            try await store.save(feed: feed)
+            try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+
+            let result = try await store.savePodcastEpisodes(
+                all, admission: .backfill, initialMetadataLimit: limit
+            )
+            let stored = try await store.podcastEpisodes(for: feed.itemID).compactMap(\.rssGUID).sorted()
+            XCTAssertEqual(result.saved.count, limit)
+            XCTAssertEqual(stored, (1...limit).map { "day-\($0)" }.sorted())
+        }
+    }
+
+    func testInitialMetadataLimitLeavesUnknownDatesOutsideTheFactualNewestCap() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/initial-undated/feed.xml")!
+        let (feed, all) = try episodes(
+            feedURL: feedURL, origin: origin, daysAgo: Array(1...24), undated: 2
+        )
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+
+        _ = try await store.savePodcastEpisodes(all, admission: .backfill, initialMetadataLimit: 5)
+        let stored = try await store.podcastEpisodes(for: feed.itemID).compactMap(\.rssGUID).sorted()
+
+        XCTAssertEqual(stored, ["day-1", "day-2", "day-3", "day-4", "day-5"])
+    }
+
+    func testInitialMetadataLimitBreaksTiesByCanonicalEpisodeIdentity() async throws {
+        let origin = Date(timeIntervalSince1970: 1_700_000_000), feedURL = URL(string: "https://podcasts.example.test/initial-ties/feed.xml")!
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL), published = Timestamp(origin.addingTimeInterval(-86_400))
+        let feed = try PodcastFeed(itemID: feedID, canonicalURL: feedURL, title: "Ties", createdAt: Timestamp(origin))
+        let all = try (0..<6).map { index in
+            let guid = "tie-\(index)"
+            let enclosureURL = URL(string: "https://podcasts.example.test/audio/\(guid).mp3")!
+            return try PodcastEpisode(itemID: ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: guid, enclosureURL: enclosureURL), feedID: feedID, feedURL: feedURL, rssGUID: guid, title: guid, publishedTime: published, enclosureURL: enclosureURL, enclosureMediaType: "audio/mpeg", createdAt: Timestamp(origin))
+        }
+        let expected = Array(all.map(\.itemID.rawValue).sorted().prefix(5))
+        for offered in [all, Array(all.reversed())] {
+            let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+            let store = try LocalLibraryStore(url: url); try await store.save(feed: feed)
+            try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+            _ = try await store.savePodcastEpisodes(offered, admission: .backfill, initialMetadataLimit: 5)
+            let stored = try await store.podcastEpisodes(for: feed.itemID).map(\.itemID.rawValue).sorted()
+            XCTAssertEqual(stored, expected, "equal dates choose the canonical identities independent of RSS order")
+        }
+    }
+
+    func testInitialMetadataLimitRefreshesKnownOlderRowWithoutAdmittingNewOlderRows() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/initial-existing/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: Array(1...7))
+        let existing = all[6]
+        let updatedExisting = try PodcastEpisode(
+            itemID: existing.itemID, feedID: existing.feedID, feedURL: existing.feedURL,
+            rssGUID: existing.rssGUID, title: "Corrected older title", publishedTime: existing.publishedTime,
+            enclosureURL: existing.enclosureURL, enclosureMediaType: existing.enclosureMediaType,
+            createdAt: existing.createdAt
+        )
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(episode: existing)
+        let expectedListening = PodcastListeningState(episodeID: existing.itemID, completedAt: Timestamp(origin), lastRevisionID: try RevisionID(rawValue: "rev-initial-cap"), updatedAt: Timestamp(origin))
+        try await store.saveListening(expectedListening)
+        let revision = try AudioRevision(itemID: existing.itemID, revisionID: RevisionID(rawValue: "rev-initial-cap"), durationSeconds: 60, byteCount: 4, contentHash: "sha256:\(String(repeating: "a", count: 64))", mediaType: "audio/mp4", createdAt: Timestamp(origin), schemaVersion: 1)
+        let mediaURL = url.deletingLastPathComponent().appendingPathComponent("initial-cap.m4a"); try Data([0, 1, 2, 3]).write(to: mediaURL)
+        try await store.saveReadyRevision(revision, mediaURL: mediaURL)
+        let outcome = PodcastPreparationOutcome(episodeID: existing.itemID, revisionID: revision.revisionID, policyDigest: "initial-cap", pipelineFingerprint: "fixture", semanticVersion: "1", producedAt: Timestamp(origin))
+        try await store.savePreparationOutcome(outcome)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+
+        let result = try await store.savePodcastEpisodes(
+            Array(all.dropLast()) + [updatedExisting], admission: .backfill, initialMetadataLimit: 5
+        )
+        let stored = try await store.podcastEpisodes(for: feed.itemID)
+        let refreshed = try XCTUnwrap(stored.first(where: { $0.itemID == existing.itemID }))
+        let listening = try await store.listeningState(for: existing.itemID)
+        let retainedRevision = try await store.readyRevision(for: existing.itemID)
+        let retainedOutcome = try await store.preparationOutcome(for: existing.itemID, revisionID: revision.revisionID)
+
+        XCTAssertEqual(result.newlyAdmitted.count, 5)
+        XCTAssertEqual(stored.count, 6, "only the five capped rows plus the known older row belong in the initial window")
+        XCTAssertEqual(refreshed.title, "Corrected older title")
+        XCTAssertEqual(listening, expectedListening, "metadata refresh must preserve a listener's completed revision")
+        XCTAssertEqual(retainedRevision?.revision.revisionID, revision.revisionID)
+        XCTAssertEqual(retainedRevision?.mediaURL, mediaURL)
+        XCTAssertEqual(retainedOutcome, outcome, "metadata refresh must not discard prepared audio's durable outcome")
     }
 
     /// Subscribing must not empty a decade of back catalogue into the Larder,

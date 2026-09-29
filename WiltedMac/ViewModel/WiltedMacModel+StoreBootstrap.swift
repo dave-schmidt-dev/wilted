@@ -105,7 +105,7 @@ extension WiltedMacModel {
             announceStartupStep(.loadingLibrary)
             let library = try await loadLibrary(from: configuredStore)
             articles = library.articles
-            episodes = library.episodes
+            applyEpisodes(library.episodes, allowsAutomaticAdmissions: false)
             subscriptions = library.subscriptions
             lifetimeStatistics = try await configuredStore.lifetimeStatistics()
             dismissedEpisodes = try await loadDismissedEpisodes(from: configuredStore)
@@ -166,6 +166,7 @@ extension WiltedMacModel {
             startAutomationTicker()
             startPlaybackCheckpointTicker()
             startTicketDrainTicker()
+            startLibrarySyncIfEnabled()
         } catch let invalidationFailure as WiltedMacStaleInvalidationFailure {
             configureStoreDependencies(nil)
             startupState = .failed(WiltedMacStartupFailure(
@@ -422,7 +423,8 @@ extension WiltedMacModel {
             selectedSyncFactory = makeWiltedMacLiveSyncTransportFactory(configuration: liveConfiguration)
         }
 #endif
-        syncLifecycle = configuredStore.map {
+        // WILTED_LIBRARY_SYNC=1: the library publisher is this app's only sync engine.
+        syncLifecycle = WiltedMacLibraryPublisher.isEnabled() ? nil : configuredStore.map {
             WiltedMacSyncLifecycle(
                 store: $0,
                 transportFactory: fixtureMode ? nil : selectedSyncFactory,

@@ -16,7 +16,7 @@ extension WiltedMacModelTests {
         preferences.removePersistentDomain(forName: suite)
         defer { preferences.removePersistentDomain(forName: suite) }
         let directory = temporaryDirectory("order")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
 
         let first = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
         XCTAssertEqual(first.larderSort, .newest, "a fresh install lists newest first")
@@ -38,7 +38,7 @@ extension WiltedMacModelTests {
         preferences.removePersistentDomain(forName: suite)
         defer { preferences.removePersistentDomain(forName: suite) }
         let directory = temporaryDirectory("order-migration")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         preferences.set(WiltedMacLibraryOrder.oldest.rawValue, forKey: WiltedMacModel.libraryOrderPreferenceKey)
 
         let migrated = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
@@ -72,7 +72,7 @@ extension WiltedMacModelTests {
         let alpha = ready("order-alpha", title: "Alpha")
         for value in [zulu, alpha] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
         model.menuSort = .title
         let before = model.menuDisplayEpisodeIDs
@@ -103,7 +103,7 @@ extension WiltedMacModelTests {
         )
         for value in [ready, unknown] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
 
         // The whole-Menu total sums the waiting set; an unknown duration is
@@ -175,7 +175,7 @@ extension WiltedMacModelTests {
         let available = episode("group-available", feed: "Daily Field", daysAgo: 3, download: .notDownloaded)
         for value in [ready, downloaded, available] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
 
         XCTAssertEqual(model.menuGrouping, .status)
@@ -200,6 +200,7 @@ extension WiltedMacModelTests {
     func testMenuSortReordersOnlyUpcomingEpisodesAndKeepsCurrentInPlace() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         func episode(_ id: String, title: String, length: TimeInterval, published: TimeInterval) -> WiltedMacEpisode {
@@ -244,7 +245,7 @@ extension WiltedMacModelTests {
         preferences.removePersistentDomain(forName: suite)
         defer { preferences.removePersistentDomain(forName: suite) }
         let directory = temporaryDirectory("speed")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
 
         let first = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
         XCTAssertEqual(first.playbackRate, 1.25, "a fresh install listens at 1.25×, the owner's default")
@@ -260,7 +261,7 @@ extension WiltedMacModelTests {
 
     func testFixtureLaunchesStartFromTheDefaultOrderAndLeaveNothingBehind() {
         let directory = temporaryDirectory("fixture-order")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
 
         let fixture = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: directory, preferences: WiltedMacTestPreferences.ephemeral())
         XCTAssertEqual(fixture.libraryOrder, .newest)

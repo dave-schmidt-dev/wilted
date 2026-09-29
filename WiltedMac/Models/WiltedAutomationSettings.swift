@@ -277,7 +277,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         removeAds: true,
         autoAddPreparedToMenu: true,
         downloadEverythingOnMenu: false,
-        prepareEverythingDownloaded: false
+        prepareEverythingDownloaded: false,
+        initialEpisodeMetadataCount: 5
     )
 
     let version: Int
@@ -302,10 +303,14 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     /// Off by default for the same reason: preparation spends model time.
     let prepareEverythingDownloaded: Bool
 
+    /// Initial subscription metadata only; it never admits audio, downloads, or Keeps.
+    let initialEpisodeMetadataCount: Int
+
     init(refreshPolicy: WiltedAutomationRefreshPolicy, downloadPolicy: WiltedAutomationDownloadPolicy,
          processingPolicy: WiltedAutomationProcessingPolicy, transcriptPolicy: WiltedAutomationTranscriptPolicy,
          removeAds: Bool, autoAddPreparedToMenu: Bool = true,
-         downloadEverythingOnMenu: Bool = false, prepareEverythingDownloaded: Bool = false) {
+         downloadEverythingOnMenu: Bool = false, prepareEverythingDownloaded: Bool = false,
+         initialEpisodeMetadataCount: Int = 5) {
         version = Self.currentVersion
         self.refreshPolicy = refreshPolicy
         self.downloadPolicy = downloadPolicy
@@ -315,6 +320,7 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         self.autoAddPreparedToMenu = autoAddPreparedToMenu
         self.downloadEverythingOnMenu = downloadEverythingOnMenu
         self.prepareEverythingDownloaded = prepareEverythingDownloaded
+        self.initialEpisodeMetadataCount = Self.validInitialEpisodeMetadataCount(initialEpisodeMetadataCount) ?? 5
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -322,6 +328,7 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         case autoAddPreparedToMenu
         case downloadEverythingOnMenu
         case prepareEverythingDownloaded
+        case initialEpisodeMetadataCount
         case legacyReadableTranscriptPass = "readableTranscriptPass"
     }
 
@@ -355,6 +362,9 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
             try container.decodeIfPresent(Bool.self, forKey: .downloadEverythingOnMenu) ?? false
         prepareEverythingDownloaded =
             try container.decodeIfPresent(Bool.self, forKey: .prepareEverythingDownloaded) ?? false
+        initialEpisodeMetadataCount = Self.validInitialEpisodeMetadataCount(
+            try container.decodeIfPresent(Int.self, forKey: .initialEpisodeMetadataCount) ?? 5
+        ) ?? 5
         // Settings saved before the single-pass pipeline included this no-op
         // preference. Deliberately accept and discard it on migration.
         _ = try? container.decode(Bool.self, forKey: .legacyReadableTranscriptPass)
@@ -375,9 +385,15 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         try container.encode(autoAddPreparedToMenu, forKey: .autoAddPreparedToMenu)
         try container.encode(downloadEverythingOnMenu, forKey: .downloadEverythingOnMenu)
         try container.encode(prepareEverythingDownloaded, forKey: .prepareEverythingDownloaded)
+        try container.encode(initialEpisodeMetadataCount, forKey: .initialEpisodeMetadataCount)
     }
 
-    var isValid: Bool { version == Self.currentVersion && refreshPolicy.isValid }
+    static func validInitialEpisodeMetadataCount(_ value: Int) -> Int? { (1...100).contains(value) ? value : nil }
+
+    var isValid: Bool {
+        version == Self.currentVersion && refreshPolicy.isValid
+            && Self.validInitialEpisodeMetadataCount(initialEpisodeMetadataCount) != nil
+    }
 
     /// True when the two saved preferences cannot both be honoured. Ad removal
     /// is timed from an aligned local pass and never from a publisher's cues,

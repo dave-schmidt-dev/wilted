@@ -16,6 +16,7 @@ extension WiltedMacModelTests {
     func testNextMenuEpisodeSkipsTheJustFinishedEpisodeStillAtTheHeadOfTheQueue() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         let finished = WiltedMacEpisode(
@@ -45,6 +46,7 @@ extension WiltedMacModelTests {
     func testNextMenuEpisodeSkipsARetiredEpisodeAtTheHeadOfTheQueue() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         var retired = WiltedMacEpisode(
@@ -83,6 +85,7 @@ extension WiltedMacModelTests {
     func testNextMenuEpisodeSkipsAHiddenEpisodeAtTheHeadOfTheQueue() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         let hidden = WiltedMacEpisode(
@@ -120,6 +123,7 @@ extension WiltedMacModelTests {
     func testNextMenuEpisodeReturnsNilForAnEmptyQueue() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
 
@@ -133,6 +137,7 @@ extension WiltedMacModelTests {
     func testNextMenuEpisodeReturnsNilWhenEveryQueuedEpisodeIsIneligible() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         let firstIneligible = WiltedMacEpisode(
@@ -158,6 +163,7 @@ extension WiltedMacModelTests {
     func testPreparedMenuCandidatesFollowLarderOrderAndExcludeCurrentAndQueued() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         func episode(_ id: String, releasedAt: TimeInterval, prepared: Bool = true) -> WiltedMacEpisode {
@@ -197,7 +203,7 @@ extension WiltedMacModelTests {
     func testAddAllPreparedEpisodesAppendsDurableQueueWithoutChangingCurrent() async throws {
         let root = temporaryDirectory("bulk-menu")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+
         let currentID = "item-" + String(repeating: "1", count: 64)
         let preparedID = "item-" + String(repeating: "2", count: 64)
         let model = WiltedMacModel(
@@ -240,6 +246,7 @@ extension WiltedMacModelTests {
     func testBulkMenuAddShowsAQueueWhenNothingIsPlaying() async {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         guard let prepared = model.preparedEpisodesReadyForMenu.first else {
@@ -256,8 +263,8 @@ extension WiltedMacModelTests {
     }
 
     func testMenuDownwardBeforeMoveUsesPostRemovalIndexAndPersists() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = wiltedTemporaryDirectory("model-state")
+
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let storeURL = root.appendingPathComponent("library.sqlite")
         var store = try LocalLibraryStore(url: storeURL)
@@ -284,7 +291,7 @@ extension WiltedMacModelTests {
     /// still excludes it.
     func testLibraryProjectionIncludesPreparationEvidenceBeyondThePrepDisplayLimit() async throws {
         let directory = temporaryDirectory("prep-evidence-beyond-cap")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let feedURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/beyond-cap-feed.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
         let enclosureURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/beyond-cap-episode.mp3"))
@@ -357,7 +364,7 @@ extension WiltedMacModelTests {
     /// model was built with, not a fresh one.
     func testBootstrapImportsDeferredPreparationsFromPreferencesIntoTickets() async throws {
         let directory = temporaryDirectory("reconcile-imports-deferrals")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let feedURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/reconcile-bootstrap/feed.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
         let enclosureURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/reconcile-bootstrap/episode.mp3"))

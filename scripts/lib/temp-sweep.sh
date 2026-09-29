@@ -10,10 +10,10 @@
 # collects them in between. Measured 2026-09-04: 1,019 wilted-* entries, of
 # which 587 were older than three days and 4.9 GB came back when they went.
 #
-# So the durable fix is a sweep at startup rather than more trap coverage. The
-# age cutoff is the whole safety argument: a directory nothing has touched for
-# a day belongs to a run that is not coming back, and a concurrent run's
-# directory is minutes old.
+# The sweep is only a crash backstop. Age is never ownership: it may remove a
+# stale root only when its creator marked it as Wilted-owned and no process
+# currently has it open. Borrowed, unmarked, symlinked, or unverifiable roots
+# remain evidence for an explicit owner review.
 
 # Default age past which an untouched wilted-* temp directory is abandoned.
 WILTED_TEMP_SWEEP_MAX_AGE_HOURS="${WILTED_TEMP_SWEEP_MAX_AGE_HOURS:-24}"
@@ -30,9 +30,11 @@ WILTED_TEMP_SWEEP_MAX_AGE_HOURS="${WILTED_TEMP_SWEEP_MAX_AGE_HOURS:-24}"
 wilted_sweep_stale_temp_dirs() {
     local root="${1:-${TMPDIR:?TMPDIR must be set}}"
     local max_age_hours="${2:-$WILTED_TEMP_SWEEP_MAX_AGE_HOURS}"
-    local removed=0 kept=0 entry
+    local removed=0 kept=0 entry owner_marker live_status live_output owner_pid owner_started owner_status owner_output owner_path
 
-    [[ -d "$root" ]] || return 0
+    [[ -d "$root" && ! -L "$root" ]] || return 0
+    root="$(cd -P "$root" 2>/dev/null && pwd)" || return 0
+    [[ -n "$root" && -d "$root" && ! -L "$root" ]] || return 0
 
     # `-mtime +N` counts whole days and rounds the wrong way for an hourly
     # cutoff, so the cutoff is a reference file `find` compares against.
@@ -49,11 +51,35 @@ wilted_sweep_stale_temp_dirs() {
         # list: this loop is the thing that actually deletes, and it must
         # refuse on its own even if a future edit changes how entries reach it.
         [[ "$(basename -- "$entry")" == wilted-* ]] || continue
-        # Spec workspaces can hold review evidence and have no recorded owner;
-        # leave historical ones for the explicit dry-run backlog collector.
-        [[ "$(basename -- "$entry")" == wilted-spec* ]] && continue
-        # Never follow a symlink out of the temp root.
-        [[ -L "$entry" ]] && { rm -f "$entry" 2>/dev/null && removed=$((removed + 1)); continue; }
+        # Never follow a symlink, remove unknown roots, or infer ownership from
+        # a prefix. The marker is created by the owning wrapper immediately
+        # after mktemp succeeds.
+        [[ -d "$entry" && ! -L "$entry" ]] || continue
+        owner_marker="$entry/.wilted-temp-owned"
+        [[ -f "$owner_marker" && ! -L "$owner_marker" ]] || continue
+        owner_pid="$(sed -n 's/^pid=//p' "$owner_marker")"
+        owner_started="$(sed -n 's/^started=//p' "$owner_marker")"
+        owner_path="$(sed -n 's/^path=//p' "$owner_marker")"
+        [[ "$owner_pid" =~ ^[1-9][0-9]*$ && -n "$owner_started" && "$owner_path" == "$entry" ]] || continue
+        set +e
+        owner_output="$(ps -o lstart= -p "$owner_pid" 2>&1)"
+        owner_status=$?
+        set -e
+        # Only ps(1)'s documented missing-process result establishes absence.
+        # Permission and inspection errors are indistinguishable from a live
+        # owner to this safety backstop, so they remain untouched.
+        if (( owner_status == 0 )); then
+            [[ -n "$owner_output" ]] && continue
+            continue
+        fi
+        [[ "$owner_status" -eq 1 && -z "$owner_output" ]] || continue
+        # A live descriptor proves this root is still in use even if the mtime
+        # is old. If lsof cannot answer, preserve it rather than guessing.
+        set +e
+        live_output="$(lsof -t +D "$entry" 2>&1)"
+        live_status=$?
+        set -e
+        [[ "$live_status" -eq 1 && -z "$live_output" ]] || continue
         if rm -rf "$entry" 2>/dev/null; then
             removed=$((removed + 1))
         fi

@@ -10,16 +10,33 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/test-runner.sh
 source "$repo_root/scripts/lib/test-runner.sh"
+WILTED_TEMP_LEAK_CHECKER="${WILTED_TEMP_LEAK_CHECKER:-$repo_root/scripts/check-temp-leaks.py}"
+# shellcheck source=lib/test-temp-state.sh
+source "$repo_root/scripts/lib/test-temp-state.sh"
 # shellcheck source=lib/temp-sweep.sh
 source "$repo_root/scripts/lib/temp-sweep.sh"
-# Phase 0 legs run in parallel and some mint their own wilted-* temp roots; a
-# killed prior aggregate run leaves those behind with no trap left to run.
-# Sweep before this run mints its own, same 24h cutoff so a genuinely
-# concurrent phase-0 run's directories (minutes old) are never touched.
+inherited_tmp="$(cd -P "${TMPDIR:?TMPDIR must be set}" 2>/dev/null && pwd)" || exit 1
+audit_parent_input="${WILTED_PHASE0_TEMP_AUDIT_PARENT:-$repo_root/.logs}"
+mkdir -p "$audit_parent_input"
+audit_parent="$(cd -P "$audit_parent_input" 2>/dev/null && pwd)" || exit 1
+audit_root="$(mktemp -d "$audit_parent/phase0-temp-audit.XXXXXX")" || exit 1
+tmp_root=""
+
+cleanup_phase0_initialization() {
+  trap - EXIT INT TERM HUP
+  wilted_temp_remove_owned_pair "$tmp_root" "$inherited_tmp" wilted-phase0. "$audit_root" "$audit_parent" phase0-temp-audit.
+}
+
+trap 'status=$?; cleanup_phase0_initialization; exit "$status"' EXIT
+trap 'cleanup_phase0_initialization; exit 130' INT
+trap 'cleanup_phase0_initialization; exit 143' TERM
+trap 'cleanup_phase0_initialization; exit 129' HUP
+wilted_temp_snapshot "$inherited_tmp" "$audit_root/parent-before.json"
 wilted_sweep_stale_temp_dirs
-tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-phase0.XXXXXX")"
+tmp_root="$(mktemp -d "$inherited_tmp/wilted-phase0.XXXXXX")"
+wilted_temp_mark_owned "$tmp_root"
 phase0_self_test="${PHASE0_SELF_TEST:-0}"
-bounded_runner="$repo_root/scripts/run-bounded.py"
+bounded_runner="${WILTED_BOUNDED_RUNNER:-$repo_root/scripts/run-bounded.py}"
 phase0_leg_timeout_seconds="${PHASE0_LEG_TIMEOUT_SECONDS:-1800}"
 if [[ ! -d "$tmp_root" ]]; then
   printf '%s\n' 'error: unable to create validated phase-0 temp directory' >&2
@@ -55,12 +72,25 @@ stop_active_legs() {
 }
 
 cleanup_phase0() {
+  local status=$?
+  trap - EXIT INT TERM HUP
   wilted_stop_active_supervisor
   stop_active_legs
-  [[ -d "$tmp_root" ]] && rm -rf "$tmp_root"
+  wilted_temp_remove_owned_child "$tmp_root" "$inherited_tmp" wilted-phase0. || true
+  tmp_root=""
+  wilted_temp_finish_audit "$inherited_tmp" "$audit_root" "$audit_root/parent-before.json" phase0-parent "$audit_parent" phase0-temp-audit. || true
+  audit_root=""
+  return "$status"
 }
 
-trap cleanup_phase0 EXIT
+verify_parent_temp_audit() {
+  wilted_temp_remove_owned_child "$tmp_root" "$inherited_tmp" wilted-phase0. || return 1
+  tmp_root=""
+  wilted_temp_snapshot "$inherited_tmp" "$audit_root/parent-after.json"
+  wilted_temp_compare "$audit_root/parent-before.json" "$audit_root/parent-after.json" phase0-parent
+}
+
+trap 'status=$?; cleanup_phase0; exit "$status"' EXIT
 trap 'cleanup_phase0; exit 130' INT
 trap 'cleanup_phase0; exit 143' TERM
 trap 'cleanup_phase0; exit 129' HUP
@@ -98,10 +128,13 @@ run_leg_async() {
   local script_path="$2"
   local idx="${#leg_names[@]}"
   local leg_dir="$tmp_root/$name"
+  local leg_tmp="$leg_dir/work"
   local pid=""
   local status=0
 
   mkdir -p "$leg_dir"
+  mkdir -p "$leg_tmp"
+  wilted_temp_snapshot "$leg_tmp" "$leg_dir/before.json"
   leg_names[idx]="$name"
   leg_dirs[idx]="$leg_dir"
 
@@ -136,7 +169,7 @@ run_leg_async() {
     return
   fi
 
-  python3 "$bounded_runner" --timeout-seconds "$phase0_leg_timeout_seconds" -- \
+  env TMPDIR="$leg_tmp" python3 "$bounded_runner" --timeout-seconds "$phase0_leg_timeout_seconds" -- \
     bash "$script_path" >"$leg_dir/stdout.log" 2>"$leg_dir/stderr.log" &
   pid=$!
 
@@ -174,6 +207,11 @@ collect_parallel_legs() {
       ((failed_legs += 1))
       record_leg_failure "$name" "$leg_dir" "$status"
     fi
+    wilted_temp_snapshot "$leg_dir/work" "$leg_dir/after.json" || status=1
+    if ! wilted_temp_compare "$leg_dir/before.json" "$leg_dir/after.json" "phase0-leg-$name"; then
+      status=1
+      ((failed_legs += 1))
+    fi
   done
 }
 
@@ -183,10 +221,13 @@ run_leg_sync() {
   shift 2
 
   local leg_dir="$tmp_root/$name"
+  local leg_tmp="$leg_dir/work"
   local status=0
   local status_file="$leg_dir/status"
 
   mkdir -p "$leg_dir"
+  mkdir -p "$leg_tmp"
+  wilted_temp_snapshot "$leg_tmp" "$leg_dir/before.json"
   ((total_legs += 1))
 
   print_leg_status "phase0.leg.start name=$name"
@@ -199,7 +240,7 @@ run_leg_sync() {
   elif [[ "$phase0_self_test" == "1" ]]; then
     status=0
   else
-    wilted_start_supervisor python3 "$bounded_runner" --timeout-seconds "$phase0_leg_timeout_seconds" -- \
+    wilted_start_supervisor env TMPDIR="$leg_tmp" python3 "$bounded_runner" --timeout-seconds "$phase0_leg_timeout_seconds" -- \
       bash "$script_path" "$@" >"$leg_dir/stdout.log" 2>"$leg_dir/stderr.log"
     set +e
     wilted_wait_active_supervisor
@@ -222,6 +263,11 @@ run_leg_sync() {
     ((failed_legs += 1))
     record_leg_failure "$name" "$leg_dir" "$status"
   fi
+  wilted_temp_snapshot "$leg_tmp" "$leg_dir/after.json" || status=1
+  if ! wilted_temp_compare "$leg_dir/before.json" "$leg_dir/after.json" "phase0-leg-$name"; then
+    status=1
+    ((failed_legs += 1))
+  fi
 }
 
 if [[ -n "${PHASE0_INTERRUPT_TEST_LEG:-}" ]]; then
@@ -240,7 +286,7 @@ fi
 run_leg_async "test-build-with-cache" "$repo_root/tests/test-build-with-cache.sh"
 run_leg_async "test-bounded-entry" "$repo_root/tests/test-bounded-entry.sh"
 run_leg_async "test-no-global-tmp" "$repo_root/tests/test-no-global-tmp.sh"
-run_leg_async "assert-mac-first-docs" "$repo_root/scripts/assert-mac-first-docs.sh"
+run_leg_async "assert-mac-first-docs" "$repo_root/tests/test-mac-first-docs.sh"
 run_leg_async "test-contract-fixtures" "$repo_root/tests/test-contract-fixtures.sh"
 run_leg_async "test-domain-contract" "$repo_root/tests/test-domain-contract.sh"
 run_leg_async "test-cloudkit-contract" "$repo_root/tests/test-cloudkit-contract.sh"
@@ -254,11 +300,13 @@ run_leg_async "test-preparation-runtime" "$repo_root/tests/test-preparation-runt
 run_leg_async "test-install-mac-app" "$repo_root/tests/test-install-mac-app.sh"
 run_leg_async "test-temp-sweep" "$repo_root/tests/test-temp-sweep.sh"
 run_leg_async "test-storage-retention" "$repo_root/tests/test-storage-retention.sh"
+run_leg_async "test-temp-leaks" "$repo_root/tests/test-temp-leaks.sh"
 run_leg_async "test-git-hooks" "$repo_root/tests/test-git-hooks.sh"
 run_leg_async "test-simulator-cleanup" "$repo_root/tests/test-simulator-cleanup.sh"
 run_leg_async "test-native-ui-receipt" "$repo_root/tests/test-native-ui-receipt.sh"
 run_leg_async "test-release-wrappers" "$repo_root/tests/test-release-wrappers.sh"
 run_leg_async "test-file-size" "$repo_root/tests/test-file-size.sh"
+run_leg_async "test-attended-library-sync" "$repo_root/tests/test-attended-library-sync.sh"
 if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
   run_leg_async "test-audio-contract-ios-build" "$repo_root/tests/test-audio-contract-ios-build.sh"
 fi
@@ -270,6 +318,8 @@ collect_parallel_legs
 
 run_leg_sync "test-signed-speech-runtime" "$repo_root/tests/test-signed-speech-runtime.sh" \
   --harness "$repo_root/Probes/SignedSpeechRuntimeProbe/fake-speech-socket-harness.py"
+
+verify_parent_temp_audit
 
 print_leg_status "phase0.complete failed_legs=${failed_legs} total_legs=${total_legs}"
 if (( failed_legs > 0 )); then

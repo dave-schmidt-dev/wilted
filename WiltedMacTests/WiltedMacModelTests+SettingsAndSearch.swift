@@ -56,7 +56,7 @@ extension WiltedMacModelTests {
     /// leaves nothing available and disables the bulk action.
     func testDownloadEverythingOverrideAdmitsTheWholeAvailableGroup() async throws {
         let directory = temporaryDirectory("download-everything-override")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/download-everything.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
         let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
@@ -109,6 +109,7 @@ extension WiltedMacModelTests {
         }
         XCTAssertEqual(episodes.count, 2)
         for episode in episodes { model.keepEpisode(episode) }
+        await waitForFeedDecisionWriters(model)
         XCTAssertEqual(model.menuDownloadableEpisodes.count, 2, "both rows are Available before the override")
 
         model.updateAutomationSettings { settings in
@@ -135,7 +136,7 @@ extension WiltedMacModelTests {
     /// leaves the other groups alone.
     func testPrepareEverythingOverridePreparesTheWholeDownloadedGroup() {
         let model = WiltedMacModel(
-            arguments: ["--wilted-ui-fixture-ready"], preferences: WiltedMacTestPreferences.ephemeral()
+            arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: wiltedTemporaryDirectory("fixture"), preferences: WiltedMacTestPreferences.ephemeral()
         )
         let downloaded = destinationEpisode(
             "override-prepare-downloaded", download: .completed, preparation: .notPrepared
@@ -145,7 +146,7 @@ extension WiltedMacModelTests {
         )
         for value in [downloaded, available] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
 
         model.updateAutomationSettings { settings in
@@ -173,7 +174,7 @@ extension WiltedMacModelTests {
         let other = searchEpisode("search-other", notes: "A different subject")
         for value in [matching, other] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
 
         model.librarySearchQuery = "winter garden"
@@ -190,7 +191,7 @@ extension WiltedMacModelTests {
         let other = searchEpisode("search-transcript-other", notes: "Nothing visible matches")
         for value in [named, other] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
         model.librarySearchQuery = "cormorant"
         model.installTranscriptSearchMatchesForTesting([named.id])
@@ -204,7 +205,7 @@ extension WiltedMacModelTests {
     /// A query below the floor never schedules a transcript read at all.
     func testAShortQueryNeverSchedulesATranscriptRead() async throws {
         let directory = temporaryDirectory("short-query")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory,
             storeBootstrap: { url in try LocalLibraryStore(url: url) },
@@ -230,7 +231,7 @@ extension WiltedMacModelTests {
         let second = searchEpisode("search-clear-second", notes: "Two")
         for value in [first, second] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
         model.librarySearchQuery = "cormorant"
         model.installTranscriptSearchMatchesForTesting([first.id])
@@ -253,7 +254,7 @@ extension WiltedMacModelTests {
         )
         for value in [available, downloaded] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
 
         XCTAssertFalse(model.isSearchingMenu)
@@ -299,7 +300,7 @@ extension WiltedMacModelTests {
         )
         for value in [ready, downloaded] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
         let playableTotal = model.menuGroupAudioSummary(.playable)
         let menuTotal = model.menuAudioSummary

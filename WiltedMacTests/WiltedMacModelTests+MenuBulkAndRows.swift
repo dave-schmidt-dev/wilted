@@ -38,7 +38,7 @@ extension WiltedMacModelTests {
                                        preparation: .prepared(summary: "Ready"))
         for value in [available, started, untouched, ready] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
 
         model.clearMenuGroup(.downloaded)
@@ -64,7 +64,7 @@ extension WiltedMacModelTests {
                                        preparation: .prepared(summary: "Ready"))
         for value in [started, fresh, ready] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
 
         XCTAssertEqual(model.menuGroupClearLabel(.downloaded), "Remove all 2 from Larder")
@@ -78,7 +78,7 @@ extension WiltedMacModelTests {
         let fresh = destinationEpisode("report-fresh", download: .completed, preparation: .notPrepared)
         for value in [started, fresh] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
 
         model.clearMenuGroup(.downloaded)
@@ -93,7 +93,7 @@ extension WiltedMacModelTests {
         let freshModel = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let neverStarted = destinationEpisode("report-never", download: .completed, preparation: .notPrepared)
         freshModel.installEpisodeForTesting(neverStarted)
-        freshModel.keepEpisode(neverStarted)
+        freshModel.seedPodcastQueueMembershipForTesting(neverStarted)
         freshModel.clearMenuGroup(.downloaded)
         XCTAssertEqual(freshModel.podcastOperationMessage,
                        "Removed all 1 in Downloaded from Larder. No download, prepared cut, transcript, or listening history was touched.")
@@ -109,7 +109,7 @@ extension WiltedMacModelTests {
                                        preparation: .prepared(summary: "Ready"))
         for value in [available, downloaded, preparing, ready] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
 
         XCTAssertEqual(model.menuDownloadableEpisodes.map(\.id), [available.id],
@@ -157,7 +157,7 @@ extension WiltedMacModelTests {
         let prepared = destinationEpisode("bulk-prepared", download: .completed, preparation: .prepared(summary: "Ready"))
         for episode in [notDownloaded, queued, downloading, failed, cancelled, notPrepared, preparing, prepared] {
             model.installEpisodeForTesting(episode)
-            model.keepEpisode(episode)
+            model.seedPodcastQueueMembershipForTesting(episode)
         }
 
         XCTAssertEqual(Set(model.menuDownloadableEpisodes.map(\.id)), Set([notDownloaded.id, failed.id, cancelled.id]))
@@ -177,7 +177,7 @@ extension WiltedMacModelTests {
     /// leaves every other group's rows in their prior state.
     func testPrepareAllStartsOnlyTheDownloadedGroupsEligibleRows() {
         let model = WiltedMacModel(
-            arguments: ["--wilted-ui-fixture-ready"], preferences: WiltedMacTestPreferences.ephemeral()
+            arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: wiltedTemporaryDirectory("fixture"), preferences: WiltedMacTestPreferences.ephemeral()
         )
         let available = destinationEpisode("start-available", download: .notDownloaded, preparation: .notPrepared)
         let downloaded = destinationEpisode("start-downloaded", download: .completed, preparation: .notPrepared)
@@ -187,7 +187,7 @@ extension WiltedMacModelTests {
                                        preparation: .prepared(summary: "Ready"))
         for value in [available, downloaded, preparing, ready] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
 
         model.prepareAllDownloadedMenuEpisodes()
@@ -211,13 +211,13 @@ extension WiltedMacModelTests {
 
     func testPrepareAllNowOverridesDeferredRowsWithoutDuplicatingRunningWork() throws {
         let (directory, model, deferred) = try automationFixture("prepare-all-now-deferred")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         model.setAutomationSettings(WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual,
             processingPolicy: .offPeak(try offPeakWindow()),
             transcriptPolicy: .alwaysTranscribe, removeAds: false
         ))
-        model.keepEpisode(deferred)
+        model.seedPodcastQueueMembershipForTesting(deferred)
         model.admitAutomaticPreparation(for: deferred, at: try localDate(hour: 12))
         XCTAssertEqual(model.menuPreparableEpisodes.map(\.id), [deferred.id])
         XCTAssertTrue(model.menuPreparationsInFlight.isEmpty, "a row waiting for off-peak is not running")
@@ -255,7 +255,7 @@ extension WiltedMacModelTests {
                                  preparation: .notPrepared)
         for value in [readyKnown, readyUnknown, downloaded] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
 
         XCTAssertEqual(model.menuGroupAudioSummary(.playable).seconds, 600)

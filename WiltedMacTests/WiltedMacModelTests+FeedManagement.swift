@@ -54,7 +54,7 @@ extension WiltedMacModelTests {
     /// with no way to see or manage them. The model has to surface every one.
     func testEveryStoredSubscriptionAppearsInTheFeedsList() async throws {
         let directory = temporaryDirectory("feeds-list")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let (model, _) = try await modelWithFeeds(["Beta", "Alpha"], directory: directory)
 
         XCTAssertEqual(model.subscriptions.map(\.title), ["Alpha", "Beta"], "feeds list by title")
@@ -64,7 +64,7 @@ extension WiltedMacModelTests {
 
     func testRefreshingARedirectedSubscriptionDoesNotReadOldEpisodesAsNew() async throws {
         let directory = temporaryDirectory("redirected-feed-refresh")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let subscribedURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/subscribed/feed.xml"))
         let finalURL = try XCTUnwrap(URL(string: "https://cdn.example.test/moved/feed.xml"))
         let feed = """
@@ -98,7 +98,7 @@ extension WiltedMacModelTests {
     /// them: re-enabling has to bring the same episodes back.
     func testDisablingAFeedHidesItsEpisodesWithoutDiscardingThem() async throws {
         let directory = temporaryDirectory("feeds-disable")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let (model, _) = try await modelWithFeeds(["Alpha", "Beta"], directory: directory)
         let alpha = try XCTUnwrap(model.subscriptions.first { $0.title == "Alpha" })
 
@@ -119,7 +119,7 @@ extension WiltedMacModelTests {
     /// the library alone.
     func testUnsubscribingRemovesOnlyThatFeed() async throws {
         let directory = temporaryDirectory("feeds-unsubscribe")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let (model, _) = try await modelWithFeeds(["Alpha", "Beta"], directory: directory)
         let alpha = try XCTUnwrap(model.subscriptions.first { $0.title == "Alpha" })
 
@@ -135,7 +135,7 @@ extension WiltedMacModelTests {
     /// the store kept re-admitting the identity on every refresh.
     func testRemovingAnEpisodeOutlivesTheProcess() async throws {
         let directory = temporaryDirectory("episode-remove")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let (model, _) = try await modelWithFeeds(["Alpha", "Beta"], directory: directory)
         let unwanted = try XCTUnwrap(model.episodes.first { $0.feedTitle == "Alpha" })
 
@@ -164,7 +164,7 @@ extension WiltedMacModelTests {
     /// the store confirms the dismissal, not just the optimistic hide.
     func testRemovingAnEpisodeRecordsItForUndo() async throws {
         let directory = temporaryDirectory("episode-remove-undo")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let (model, _) = try await modelWithFeeds(["Alpha", "Beta"], directory: directory)
         let unwanted = try XCTUnwrap(model.episodes.first { $0.feedTitle == "Alpha" })
 
@@ -179,7 +179,7 @@ extension WiltedMacModelTests {
     /// recent removal is one keystroke away from being undone.
     func testASecondRemovalReplacesTheFirstsUndoRecord() async throws {
         let directory = temporaryDirectory("episode-remove-undo-replace")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let (model, _) = try await modelWithFeeds(["Alpha", "Beta"], directory: directory)
         let first = try XCTUnwrap(model.episodes.first { $0.feedTitle == "Alpha" })
         let second = try XCTUnwrap(model.episodes.first { $0.feedTitle == "Beta" })
@@ -210,8 +210,7 @@ extension WiltedMacModelTests {
     }
 
     func temporaryDirectory(_ suffix: String) -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("wilted-mac-model-\(suffix)-\(UUID().uuidString)", isDirectory: true)
+        wiltedTemporaryDirectory(suffix)
     }
 
     /// Builds one downloaded, transcript-ready podcast episode -- the

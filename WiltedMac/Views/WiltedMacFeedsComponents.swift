@@ -2,15 +2,50 @@ import AppKit
 import SwiftUI
 import WiltedDomain
 
+/// Native tri-state selection exposes a real `.mixed` checkbox state.
+struct WiltedMacFeedsSelectionControl: NSViewRepresentable {
+    let state: NSControl.StateValue
+    let identifier: String
+    let toggle: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(toggle: toggle) }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(checkboxWithTitle: "Select all", target: context.coordinator, action: #selector(Coordinator.changed))
+        button.allowsMixedState = true
+        button.identifier = NSUserInterfaceItemIdentifier(identifier)
+        button.setAccessibilityIdentifier(identifier)
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.toggle = toggle
+        button.state = state
+    }
+
+    final class Coordinator: NSObject {
+        var toggle: () -> Void
+        init(toggle: @escaping () -> Void) { self.toggle = toggle }
+        @objc func changed() { toggle() }
+    }
+}
+
 struct WiltedMacFeedsEpisodeRow: View {
     @Bindable var model: WiltedMacModel
     let episode: WiltedMacEpisode
+    let isSelected: Bool
+    let setSelected: (Bool) -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var isShowingNotes = false
     @State private var isHoveringTitle = false
 
     var body: some View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
+            Toggle("Select \(episode.title)", isOn: Binding(get: { isSelected }, set: setSelected))
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .disabled(model.pendingFeedDecisionIDs.contains(episode.id))
+                .accessibilityIdentifier("wilted-feeds-select-\(episode.id)")
             VStack(alignment: .leading, spacing: 2) {
                 Button {
                     isShowingNotes = true
@@ -29,18 +64,33 @@ struct WiltedMacFeedsEpisodeRow: View {
                 .popover(isPresented: $isShowingNotes, arrowEdge: .bottom) {
                     notesPopover
                 }
-                Text("\(episode.feedTitle) · \(episode.lifecyclePresentation.primaryLabel)")
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .lineLimit(1)
+                WiltedMacEpisodeMetadata(
+                    episode: episode,
+                    lifecycleLabel: episode.lifecyclePresentation.primaryLabel,
+                    identifier: "wilted-feeds-metadata-\(episode.id)"
+                )
+                if model.pendingFeedDecisionIDs.contains(episode.id) {
+                    HStack(spacing: WiltedTheme.Spacing.xSmall) {
+                        ProgressView().controlSize(.small)
+                        Text("Saving decision…")
+                    }
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-feeds-decision-pending-\(episode.id)")
+                }
+                if model.failedFeedDecisionIDs.contains(episode.id) {
+                    Text("Could not save this decision. Try again.")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-feeds-decision-failed-\(episode.id)")
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             ForEach(WiltedMacFeedsAction.allCases) { action in
-                Button(action.rawValue) {
-                    decide(action)
-                }
-                .accessibilityLabel("\(action.rawValue) \(episode.title)")
-                .accessibilityIdentifier("wilted-feeds-\(action.rawValue.lowercased())-\(episode.id)")
+                decisionButton(
+                    action,
+                    identifier: "wilted-feeds-\(action.rawValue.lowercased())-\(episode.id)"
+                )
             }
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
@@ -54,9 +104,10 @@ struct WiltedMacFeedsEpisodeRow: View {
                 .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
-            Text("\(episode.feedTitle) · \(episode.releasedAt.formatted(date: .numeric, time: .omitted))")
-                .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            WiltedMacEpisodeMetadata(
+                episode: episode,
+                identifier: "wilted-feeds-notes-metadata-\(episode.id)"
+            )
             Divider()
             ScrollView {
                 if let notes = episode.notes, !notes.isEmpty {
@@ -81,11 +132,10 @@ struct WiltedMacFeedsEpisodeRow: View {
             HStack {
                 Spacer()
                 ForEach(WiltedMacFeedsAction.allCases) { action in
-                    Button(action.rawValue) {
-                        decide(action)
-                    }
-                    .accessibilityLabel("\(action.rawValue) \(episode.title)")
-                    .accessibilityIdentifier("wilted-feeds-decide-\(action.rawValue.lowercased())-\(episode.id)")
+                    decisionButton(
+                        action,
+                        identifier: "wilted-feeds-decide-\(action.rawValue.lowercased())-\(episode.id)"
+                    )
                     // Return keeps from inside the popover.
                     .keyboardShortcut(action == .keep ? .defaultAction : nil)
                 }
@@ -103,6 +153,25 @@ struct WiltedMacFeedsEpisodeRow: View {
         switch action {
         case .keep: model.keepEpisode(episode)
         case .skip: model.skipFeedEpisode(episode)
+        }
+    }
+
+    @ViewBuilder private func decisionButton(
+        _ action: WiltedMacFeedsAction, identifier: String
+    ) -> some View {
+        if action == .keep {
+            Button(action.rawValue) { decide(action) }
+                .buttonStyle(.borderedProminent)
+                .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                .accessibilityLabel("\(action.rawValue) \(episode.title)")
+                .accessibilityIdentifier(identifier)
+                .disabled(model.pendingFeedDecisionIDs.contains(episode.id))
+        } else {
+            Button(action.rawValue) { decide(action) }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("\(action.rawValue) \(episode.title)")
+                .accessibilityIdentifier(identifier)
+                .disabled(model.pendingFeedDecisionIDs.contains(episode.id))
         }
     }
 }

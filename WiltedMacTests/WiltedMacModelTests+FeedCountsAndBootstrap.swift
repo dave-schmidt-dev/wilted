@@ -160,7 +160,7 @@ extension WiltedMacModelTests {
         let notStarted = episode("not-started", position: 0, played: false)
         for value in [handFinished, stoppedShort, stillGoing, notStarted] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
 
         // The Menu row asks the model's one predicate before it offers Play.

@@ -9,7 +9,7 @@ import WiltedProducer
 final class WiltedMacModelTests: XCTestCase {
     func testBootstrapPublishesOnlyDeviceLocalLedgerTotals() async throws {
         let directory = temporaryDirectory("lifetime-statistics")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let model = WiltedMacModel(
             arguments: [],
             stateDirectoryOverride: directory,
@@ -46,7 +46,7 @@ final class WiltedMacModelTests: XCTestCase {
 
     func testLoadingIsObservableUntilBootstrapAndInitialRefreshComplete() async throws {
         let directory = temporaryDirectory("loading")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let gate = BootstrapGate()
         let articleURL = try XCTUnwrap(URL(string: "https://example.test/migrated-article"))
         let itemID = try ItemID.derive(from: articleURL)
@@ -84,7 +84,7 @@ final class WiltedMacModelTests: XCTestCase {
 
     func testFailureExposesRetainedV5ArtifactAndInjectedRecoveryAction() async throws {
         let directory = temporaryDirectory("failure")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let bootstrap = FailingBootstrap()
         var presentedURL: URL?
         let model = WiltedMacModel(
@@ -113,7 +113,7 @@ final class WiltedMacModelTests: XCTestCase {
 
     func testRetryIsBoundedToOneRecoveryAttempt() async {
         let directory = temporaryDirectory("retry")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let bootstrap = FailingBootstrap()
         let model = WiltedMacModel(
             arguments: [],
@@ -139,7 +139,7 @@ final class WiltedMacModelTests: XCTestCase {
 
     func testReadyModelDoesNotBootstrapAgainWhenRootTaskReappears() async {
         let directory = temporaryDirectory("ready-terminal")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let bootstrap = SuccessfulBootstrap()
         let model = WiltedMacModel(
             arguments: [],
@@ -161,7 +161,7 @@ final class WiltedMacModelTests: XCTestCase {
 
     func testFixtureModeRemainsImmediatelyUsable() {
         let directory = temporaryDirectory("fixture")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
 
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
@@ -175,7 +175,7 @@ final class WiltedMacModelTests: XCTestCase {
 
     func testStoreBootstrapReadmitsStaleKnownSourceFailureWithoutRedownloading() async throws {
         let directory = temporaryDirectory("pipeline-invalidation-bootstrap")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let audioURL = directory.appendingPathComponent("source.mp3")
         let sourceBytes = Data("source-audio".utf8)
@@ -285,7 +285,7 @@ final class WiltedMacModelTests: XCTestCase {
 
     func testAudioRouteRecoveryAutomaticallyAttemptsOnceThenExposesManualRetry() async throws {
         let directory = temporaryDirectory("audio-route-recovery")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
             stateDirectoryOverride: directory,

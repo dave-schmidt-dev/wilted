@@ -180,8 +180,25 @@ struct WiltedMacDismissedEpisode: Identifiable, Hashable, Sendable {
     let feedID: String?
     let title: String
     let feedTitle: String?
+    /// The feed's publication time, if the dismissed record is a real
+    /// episode. A dismissal timestamp is not publication evidence.
+    var publishedAt: Date? = nil
+    /// The source enclosure duration. It remains available after dismissal
+    /// because the source record survives even though its ready revision does
+    /// not.
+    var sourceDurationSeconds: TimeInterval? = nil
     let dismissedAt: Date
     let hasPreparationHistory: Bool
+
+    var presentation: WiltedMacEpisodePresentation {
+        WiltedMacEpisodePresentation(
+            title: title,
+            showTitle: feedTitle,
+            publishedAt: publishedAt,
+            sourceDurationSeconds: sourceDurationSeconds,
+            playableDurationSeconds: nil
+        )
+    }
 }
 
 struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
@@ -194,7 +211,18 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     /// The feed's show notes in full, for the Now Playing pane.
     var notes: String? = nil
     let artworkURL: URL?
+    /// Existing sort and caller fallback. `publishedAt` is the factual
+    /// display value and deliberately stays nil when a feed did not publish
+    /// one; this date remains for stable ordering of older callers.
     let releasedAt: Date
+    var publishedAt: Date? = nil
+    /// The duration the feed published for its enclosure. It is independent
+    /// of a prepared revision and remains stable through lifecycle changes.
+    var sourceDurationSeconds: TimeInterval? = nil
+    /// The ready revision duration, when a finished local cut is actually
+    /// available. The presentation gate below prevents an unprepared or
+    /// missing revision from being represented as playable.
+    var playableDurationSeconds: TimeInterval? = nil
     let durationSeconds: TimeInterval?
     var playbackSeconds: TimeInterval
     /// Whether the durable record says this episode is finished.
@@ -231,6 +259,87 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     /// it. Hand-built rows may leave it absent.
     var feedURL: URL? = nil
 
+    /// Compatibility constructor for existing fixtures and previews. Their
+    /// long-standing `releasedAt` and `durationSeconds` arguments were the
+    /// only facts they carried, so preserve them as known fixture metadata.
+    /// Store-backed loading must use the explicit-facts initializer below.
+    init(
+        id: String,
+        title: String,
+        feedTitle: String,
+        summary: String,
+        notes: String? = nil,
+        artworkURL: URL?,
+        releasedAt: Date,
+        durationSeconds: TimeInterval?,
+        playbackSeconds: TimeInterval,
+        isPlayed: Bool = false,
+        retiredAt: Date? = nil,
+        removalKind: PodcastEpisodeRemovalKind? = nil,
+        downloadState: WiltedMacEpisodeDownloadState,
+        preparationState: WiltedMacEpisodePreparationState = .notPrepared,
+        isReadyMediaAvailable: Bool = true,
+        feedID: String? = nil,
+        feedURL: URL? = nil
+    ) {
+        self.init(
+            id: id, title: title, feedTitle: feedTitle, summary: summary, notes: notes,
+            artworkURL: artworkURL, releasedAt: releasedAt, publishedAt: releasedAt,
+            sourceDurationSeconds: durationSeconds, playableDurationSeconds: nil,
+            durationSeconds: durationSeconds, playbackSeconds: playbackSeconds, isPlayed: isPlayed,
+            retiredAt: retiredAt, removalKind: removalKind, downloadState: downloadState,
+            preparationState: preparationState, isReadyMediaAvailable: isReadyMediaAvailable,
+            feedID: feedID, feedURL: feedURL
+        )
+    }
+
+    /// Store-backed constructor. `publishedAt` and `sourceDurationSeconds`
+    /// deliberately have no fallback: nil is a fact the metadata view names
+    /// as unknown, rather than an intake or download timestamp in disguise.
+    init(
+        id: String,
+        title: String,
+        feedTitle: String,
+        summary: String,
+        notes: String? = nil,
+        artworkURL: URL?,
+        releasedAt: Date,
+        publishedAt: Date?,
+        sourceDurationSeconds: TimeInterval?,
+        playableDurationSeconds: TimeInterval? = nil,
+        durationSeconds: TimeInterval?,
+        playbackSeconds: TimeInterval,
+        isPlayed: Bool = false,
+        retiredAt: Date? = nil,
+        removalKind: PodcastEpisodeRemovalKind? = nil,
+        downloadState: WiltedMacEpisodeDownloadState,
+        preparationState: WiltedMacEpisodePreparationState = .notPrepared,
+        isReadyMediaAvailable: Bool = true,
+        feedID: String? = nil,
+        feedURL: URL? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.feedTitle = feedTitle
+        self.summary = summary
+        self.notes = notes
+        self.artworkURL = artworkURL
+        self.releasedAt = releasedAt
+        self.publishedAt = publishedAt
+        self.sourceDurationSeconds = sourceDurationSeconds
+        self.playableDurationSeconds = playableDurationSeconds
+        self.durationSeconds = durationSeconds
+        self.playbackSeconds = playbackSeconds
+        self.isPlayed = isPlayed
+        self.retiredAt = retiredAt
+        self.removalKind = removalKind
+        self.downloadState = downloadState
+        self.preparationState = preparationState
+        self.isReadyMediaAvailable = isReadyMediaAvailable
+        self.feedID = feedID
+        self.feedURL = feedURL
+    }
+
     var lifecyclePresentation: WiltedMacEpisodeLifecyclePresentation {
         WiltedMacEpisodeLifecyclePresentation(
             downloadState: downloadState,
@@ -239,10 +348,22 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         )
     }
 
+    var presentation: WiltedMacEpisodePresentation {
+        WiltedMacEpisodePresentation(
+            title: title,
+            showTitle: feedTitle,
+            publishedAt: publishedAt,
+            sourceDurationSeconds: sourceDurationSeconds,
+            playableDurationSeconds: preparationState.isPrepared && isReadyMediaAvailable
+                ? playableDurationSeconds : nil
+        )
+    }
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.id == rhs.id && lhs.title == rhs.title && lhs.feedTitle == rhs.feedTitle &&
             lhs.summary == rhs.summary && lhs.notes == rhs.notes && lhs.artworkURL == rhs.artworkURL && lhs.releasedAt == rhs.releasedAt &&
-            lhs.durationSeconds == rhs.durationSeconds && lhs.playbackSeconds == rhs.playbackSeconds &&
+            lhs.publishedAt == rhs.publishedAt && lhs.sourceDurationSeconds == rhs.sourceDurationSeconds &&
+            lhs.playableDurationSeconds == rhs.playableDurationSeconds && lhs.durationSeconds == rhs.durationSeconds && lhs.playbackSeconds == rhs.playbackSeconds &&
             lhs.isPlayed == rhs.isPlayed && lhs.retiredAt == rhs.retiredAt && lhs.removalKind == rhs.removalKind &&
             lhs.downloadState == rhs.downloadState && lhs.preparationState == rhs.preparationState &&
             lhs.isReadyMediaAvailable == rhs.isReadyMediaAvailable && lhs.feedID == rhs.feedID &&

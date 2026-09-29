@@ -47,8 +47,12 @@ targets:
         product: WiltedDomain
       - package: WiltedKit
         product: WiltedSync
+      - package: WiltedKit
+        product: WiltedLibrary
       - package: WiltedCloudKit
         product: WiltedCloudKit
+      - package: WiltedCloudKit
+        product: WiltedCloudKitLibrary
       - package: WiltedProducer
         product: WiltedProducer
     settings:
@@ -118,8 +122,12 @@ targets:
         product: WiltedDomain
       - package: WiltedKit
         product: WiltedSync
+      - package: WiltedKit
+        product: WiltedLibrary
       - package: WiltedCloudKit
         product: WiltedCloudKit
+      - package: WiltedCloudKit
+        product: WiltedCloudKitLibrary
       - package: WiltedListener
         product: WiltedListener
     settings:
@@ -160,6 +168,7 @@ targets:
         UILaunchScreen: {}
         UIBackgroundModes:
           - audio
+          - remote-notification
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown
@@ -179,10 +188,14 @@ targets:
         product: WiltedDomain
       - package: WiltedKit
         product: WiltedSync
+      - package: WiltedKit
+        product: WiltedLibrary
       - package: WiltedProducer
         product: WiltedProducer
       - package: WiltedCloudKit
         product: WiltedCloudKit
+      - package: WiltedCloudKit
+        product: WiltedCloudKitLibrary
       - package: WiltedListener
         product: WiltedListener
     settings:
@@ -203,8 +216,12 @@ targets:
         product: WiltedDomain
       - package: WiltedKit
         product: WiltedSync
+      - package: WiltedKit
+        product: WiltedLibrary
       - package: WiltedCloudKit
         product: WiltedCloudKit
+      - package: WiltedCloudKit
+        product: WiltedCloudKitLibrary
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.ios.tests

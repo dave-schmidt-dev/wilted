@@ -7,13 +7,14 @@ if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
   wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
 fi
 
-# Credential-free native gate for the generated Mac/iOS project.  The live
-# gate uses only local XcodeGen, SwiftPM, xcodebuild, and simctl capabilities.
-# NATIVE_SELF_TEST is intentionally hermetic and is used by the meta-test.
-
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/test-runner.sh
 source "$repo_root/scripts/lib/test-runner.sh"
+WILTED_TEMP_LEAK_CHECKER="${WILTED_TEMP_LEAK_CHECKER:-$repo_root/scripts/check-temp-leaks.py}"
+# shellcheck source=lib/test-temp-state.sh
+source "$repo_root/scripts/lib/test-temp-state.sh"
+# shellcheck source=lib/mac-test-parent.sh
+source "$repo_root/scripts/lib/mac-test-parent.sh"
 project_yml="$repo_root/project.yml"
 native_self_test="${NATIVE_SELF_TEST:-0}"
 native_interrupt_test_command="${NATIVE_INTERRUPT_TEST_COMMAND:-}"
@@ -23,13 +24,6 @@ forced_snapshot_baseline="${NATIVE_FORCE_SNAPSHOT_BASELINE:-}"
 forced_missing_ios_mvp_journey="${NATIVE_FORCE_MISSING_IOS_MVP_JOURNEY:-0}"
 forced_screen_locked="${NATIVE_FORCE_SCREEN_LOCKED:-0}"
 wilted_development_team="${WILTED_DEVELOPMENT_TEAM:-4CJ49V6QHW}"
-# macOS XCUITest has no headless mode: it drives real HID events through
-# WindowServer, so the macos-ui-tests leg seizes the operator's cursor,
-# keyboard, and window focus for its whole run. It is therefore opt-in and
-# defers by default. A deferred leg is NOT a passed leg -- it is counted and
-# reported separately, and `native.passed` names it, so a green gate can never
-# be read as evidence the Mac UI suite ran. Opt in with `make native-ui` or
-# WILTED_MAC_UI=1.
 wilted_mac_ui="${WILTED_MAC_UI:-0}"
 xcode_test_timeout_seconds="${WILTED_XCODE_TEST_TIMEOUT_SECONDS:-300}"
 native_leg_timeout_seconds="${WILTED_NATIVE_LEG_TIMEOUT_SECONDS:-1800}"
@@ -39,61 +33,43 @@ ios_ui_device_name='iPhone 17 Pro'
 ios_ui_baseline_geometry='402x874 normalized to 390x844'
 # shellcheck source=lib/temp-sweep.sh
 source "$repo_root/scripts/lib/temp-sweep.sh"
-# A prior run that died to SIGKILL or a harness timeout never ran its own EXIT
-# trap, so its wilted-native-gate.XXXXXX directory is still sitting in
-# $TMPDIR. Sweep before minting this run's own directory, not after: the 24h
-# cutoff is what keeps this safe next to a gate that is genuinely still
-# running, whose directory is at most minutes old.
+inherited_tmp="$(cd -P "${TMPDIR:?TMPDIR must be set}" 2>/dev/null && pwd)" || exit 1
+native_audit_parent="$(wilted_temp_prepare_parent "${WILTED_NATIVE_TEMP_AUDIT_PARENT:-$repo_root/.logs}")" || exit 1
+native_audit_root="$(mktemp -d "$native_audit_parent/native-temp-audit.XXXXXX")" || exit 1
+tmp_root=""
+cleanup_initialization() { trap - EXIT INT TERM HUP; wilted_temp_remove_owned_pair "$tmp_root" "$inherited_tmp" wilted-native-gate. "$native_audit_root" "$native_audit_parent" native-temp-audit.; }
+trap 'status=$?; cleanup_initialization; exit "$status"' EXIT
+trap 'cleanup_initialization; exit 130' INT
+trap 'cleanup_initialization; exit 143' TERM
+trap 'cleanup_initialization; exit 129' HUP
+wilted_temp_snapshot "$inherited_tmp" "$native_audit_root/parent-before.json"
 wilted_sweep_stale_temp_dirs
-tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-native-gate.XXXXXX")"
+tmp_root="$(mktemp -d "$inherited_tmp/wilted-native-gate.XXXXXX")"
+wilted_temp_mark_owned "$tmp_root"
+wilted_temp_save_output_streams
 build_with_cache="$repo_root/scripts/build-with-cache.py"
-bounded_runner="$repo_root/scripts/run-bounded.py"
+bounded_runner="${WILTED_BOUNDED_RUNNER:-$repo_root/scripts/run-bounded.py}"
 # A failed real Mac UI run is the one disposable artifact worth retaining for
 # diagnosis. The default lives under the repository's ignored .logs directory;
 # the override keeps the meta-test hermetic.
 macos_ui_failure_diagnostics_dir="${WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR:-$repo_root/.logs/native-gate-diagnostics}"
-
 cleanup_mac_test_hosts() {
-  local test_host_pattern test_host_pid test_host_pids alive_pids="" killed=0
-  test_host_pattern='\.build/xcode/.*/WiltedMac\.app/Contents/MacOS/WiltedMac'
-  test_host_pids="$(pgrep -f "$test_host_pattern" 2>/dev/null || true)"
-  for test_host_pid in $test_host_pids; do
-    if kill -0 "$test_host_pid" 2>/dev/null; then
-      alive_pids="$alive_pids $test_host_pid"
-    fi
-  done
-  [[ -n "$alive_pids" ]] || return 0
-  kill $alive_pids 2>/dev/null || true
-  sleep 1
-  for test_host_pid in $alive_pids; do
-    if kill -0 "$test_host_pid" 2>/dev/null; then
-      kill -KILL "$test_host_pid" 2>/dev/null || true
-    fi
-  done
-  sleep 1
-  for test_host_pid in $alive_pids; do
-    if ! kill -0 "$test_host_pid" 2>/dev/null; then
-      killed=$((killed + 1))
-    fi
-  done
-  status "native.cleanup mac-test-hosts-killed=$killed"
+  wilted_cleanup_mac_test_hosts "$repo_root"
 }
 
 cleanup() {
-  wilted_stop_active_ui_lock
-  wilted_stop_active_supervisor
-  wilted_finish_logger || true
-  cleanup_mac_test_hosts
-  rm -rf "$tmp_root"
+  local status=$?
+  trap - EXIT INT TERM HUP
+  wilted_temp_cleanup_native_gate "$tmp_root" "$inherited_tmp" "$native_audit_root" "$native_audit_parent" || true
+  tmp_root=""; native_audit_root=""
+  return "$status"
 }
-
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 trap 'cleanup; exit 129' HUP
 # shellcheck source=lib/simctl_gate_lib.sh
 source "$repo_root/scripts/lib/simctl_gate_lib.sh"
-
 [[ -f "$bounded_runner" ]] || {
   printf 'native.error bounded runner is missing: %s\n' "$bounded_runner" >&2
   exit 127
@@ -102,7 +78,6 @@ source "$repo_root/scripts/lib/simctl_gate_lib.sh"
   printf '%s\n' 'native.error WILTED_NATIVE_LEG_TIMEOUT_SECONDS must be a positive integer' >&2
   exit 2
 }
-
 leg_names=(
   xcodegen-reproducible
   wiltedkit-tests
@@ -211,6 +186,7 @@ run_leg() {
   local output_file="$tmp_root/$name.log"
   local result_bundle="$tmp_root/$name.xcresult"
   local command_status=0 logger_status=0 stream_file="$tmp_root/$name.stream"
+  wilted_temp_prepare_leg "$tmp_root" "$name"
 
   if is_deferred_leg "$name"; then
     deferred_legs+=1
@@ -236,8 +212,6 @@ run_leg() {
     command_status=0
   elif [[ "$native_self_test" == "1" && "$name" != "interrupt-fixture" ]]; then
     if [[ "$report_mode" == "xctest" ]]; then
-      # Distinct totals make the meta-test prove which capture is authoritative.
-      # Reverting run_leg to the package leg's inner tee reports two, not three.
       printf '%s\n' \
         "Test Case '-[SelfTest testOne]' passed (0.000 seconds)." \
         "Test Case '-[SelfTest testTwo]' passed (0.000 seconds)." \
@@ -256,7 +230,7 @@ run_leg() {
   else
     wilted_start_logger "$output_file" "$stream_file"
     set +e
-    "$@" >&9 2>&1
+    TMPDIR="$WILTED_TEMP_LEG_WORK" "$@" >&9 2>&1
     command_status=$?
     wilted_finish_logger
     logger_status=$?
@@ -265,6 +239,8 @@ run_leg() {
       command_status="$logger_status"
     fi
   fi
+
+  if ! wilted_temp_audit_leg "$tmp_root" "$name"; then command_status=1; fi
 
   if [[ "$command_status" -eq 0 && "$report_mode" == "count" ]]; then
     set +e
@@ -497,6 +473,7 @@ xcode_test_leg() {
   require_tool xmllint
   assert_test_sources "$label" "$source_dir"
   project="$(find_project)" || return 1
+  if [[ "$scheme" == "WiltedMac" ]]; then wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/$scheme.xcscheme" "$WILTED_TEMP_LEG_WORK" || fail "could not bind $label XCTest to its owned temp parent"; fi
   [[ "$xcode_test_timeout_seconds" =~ ^[1-9][0-9]*$ ]] ||
     fail 'WILTED_XCODE_TEST_TIMEOUT_SECONDS must be a positive integer'
   cleanup_mac_test_hosts
@@ -582,6 +559,13 @@ screen_is_locked() {
   ioreg -n Root -d1 -a 2>/dev/null | grep -A 1 'CGSSessionScreenIsLocked' | grep -q '<true/>'
 }
 
+wait_macos_ui_supervisor() {
+  local supervisor_status=0
+  wilted_wait_active_supervisor || supervisor_status=$?
+  WILTED_UI_LOCK_PID_FILE=""
+  return "$supervisor_status"
+}
+
 leg_macos_ui_tests() {
   local label=macos-ui-tests
   local source_dir="$integration_root/WiltedMacUITests"
@@ -613,8 +597,8 @@ leg_macos_ui_tests() {
     fail 'WILTED_DEVELOPMENT_TEAM must be a ten-character Apple team identifier'
     return 1
   fi
-
   cleanup_mac_test_hosts
+  wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/WiltedMac.xcscheme" "$WILTED_TEMP_LEG_WORK" || fail "could not bind $label XCTest to its owned temp parent"
   label_data="$(build_cache_path xcode "$cache_key")"
   if ! run_with_build_cache xcode "$cache_key" xcodebuild build-for-testing \
     -project "$project" \
@@ -698,8 +682,7 @@ leg_macos_ui_tests() {
     -parallel-testing-enabled NO \
     -quiet &
   WILTED_ACTIVE_SUPERVISOR_PID=$!
-  wilted_wait_active_supervisor
-  WILTED_UI_LOCK_PID_FILE=""
+  wait_macos_ui_supervisor
 }
 
 leg_ios_ui_tests() {
@@ -760,9 +743,6 @@ else
   validate_ios_pixel_snapshot_baselines "$repo_root"
 fi
 
-# Preflight, not a leg check: the UI leg runs eighth, so a locked screen
-# discovered there costs twelve minutes of build and seven of activation
-# timeouts before saying anything useful.
 if ! is_deferred_leg macos-ui-tests && screen_is_locked; then
   status 'native.macos-ui.screen-locked remedy="unlock the Mac and rerun make native-ui"'
   fail 'the macOS UI leg cannot activate an application while the screen is locked'
@@ -785,14 +765,18 @@ run_leg "${leg_names[6]}" "${leg_reports[6]}" leg_ios_unit_tests
 run_leg "${leg_names[7]}" "${leg_reports[7]}" leg_macos_ui_tests
 run_leg "${leg_names[8]}" "${leg_reports[8]}" leg_ios_ui_tests
 
+wilted_temp_remove_owned_child "$tmp_root" "$inherited_tmp" wilted-native-gate. || fail 'native temp root ownership changed before cleanup'
+tmp_root=""
+wilted_temp_snapshot "$inherited_tmp" "$native_audit_root/parent-after.json"
+if ! wilted_temp_compare "$native_audit_root/parent-before.json" "$native_audit_root/parent-after.json" native-parent; then
+  failed_legs=$((failed_legs + 1))
+fi
 status "native.complete failed_legs=$failed_legs total_legs=$completed_legs deferred_legs=$deferred_legs"
 if [[ "$failed_legs" -ne 0 ]]; then
   status "native.failed count=$failed_legs"
   exit 1
 fi
 if [[ "$deferred_legs" -ne 0 ]]; then
-  # Named, not merely counted. This line is the only thing standing between a
-  # green gate and the false claim that every leg ran.
   status "native.deferred count=$deferred_legs legs=${deferred_leg_names[*]} rerun=\"make native-ui\""
   status "native.passed count=$completed_legs deferred=$deferred_legs"
 else

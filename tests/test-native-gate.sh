@@ -10,10 +10,10 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 gate="$repo_root/scripts/test-gate.sh"
 native_gate_validation="$repo_root/scripts/lib/native-gate-validation.sh"
+# shellcheck source=../scripts/lib/mac-test-parent.sh
+source "$repo_root/scripts/lib/mac-test-parent.sh"
 # shellcheck source=../scripts/lib/temp-sweep.sh
 source "$repo_root/scripts/lib/temp-sweep.sh"
-# This meta-test mints its own wilted-native-gate-meta.XXXXXX root on every
-# run; sweep abandoned ones from a killed prior run before adding another.
 wilted_sweep_stale_temp_dirs
 tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-native-gate-meta.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -21,7 +21,9 @@ trap 'rm -rf "$tmp_dir"' EXIT
 run_case() {
   local label="$1"
   local output="$2"
+  local case_tmp="$tmp_dir/$label-parent"
   shift 2
+  mkdir -p "$case_tmp"
   set +e
   # Every pre-existing case asserts against a gate that RUNS the macOS UI leg.
   # The leg now defers unless opted in, so opt in here; the deferral path has
@@ -32,7 +34,7 @@ run_case() {
   # on the repository's own `.logs/native-gate-diagnostics`, so running the
   # headless gate destroyed the evidence the previous `make native-ui` kept.
   # Cases that need their own directory pass it in "$@", which wins over this.
-  env NATIVE_SELF_TEST=1 WILTED_MAC_UI=1 \
+  env TMPDIR="$case_tmp" NATIVE_SELF_TEST=1 WILTED_MAC_UI=1 \
     WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR="$tmp_dir/diagnostics/$label" \
     "$@" >"$output" 2>&1
   local result=$?
@@ -111,6 +113,23 @@ assert_gatekeeper_contract() {
 }
 
 assert_gatekeeper_contract
+
+assert_mac_test_parent_static_contract() {
+  assert_contains 'wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/$scheme.xcscheme" "$WILTED_TEMP_LEG_WORK"' "$gate"
+  assert_contains 'wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/WiltedMac.xcscheme" "$WILTED_TEMP_LEG_WORK"' "$gate"
+  assert_contains 'TMPDIR="$WILTED_TEMP_LEG_WORK" "$@"' "$gate"
+  assert_contains 'without exporting a host-owned' "$repo_root/scripts/lib/mac-test-parent.sh"
+  assert_contains 'source "$repo_root/scripts/lib/mac-test-parent.sh"' "$gate"
+  assert_contains 'source "$repo_root/scripts/lib/mac-test-parent.sh"' \
+    "$repo_root/scripts/record-mac-snapshots.sh"
+  assert_contains 'source "$repo_root/scripts/lib/mac-test-parent.sh"' \
+    "$repo_root/scripts/record-walkthrough-frames.sh"
+}
+assert_mac_test_parent_static_contract
+wilted_mac_test_parent_selftest "$tmp_dir" "$gate"
+cleanup_proof="$(wilted_mac_test_host_cleanup_selftest "$tmp_dir" "$repo_root")"
+assert_block_contains 'owned-host-matched=1' "$cleanup_proof"
+assert_block_contains 'foreign-peer-preserved=1' "$cleanup_proof"
 
 assert_wiltedkit_sync_contract() {
   assert_contains 'WiltedSyncTests' "$gate"
@@ -382,10 +401,12 @@ assert_snapshot_contract() {
   assert_contains 'validate_pixel_snapshot_baselines "$integration_root"' "$gate"
   assert_contains 'validate_ios_pixel_snapshot_baselines "$integration_root"' "$gate"
   assert_contains 'NATIVE_FORCE_SNAPSHOT_BASELINE' "$gate"
-  assert_contains 'test_host_pattern' "$gate"
-  assert_contains "test_host_pattern='\\.build/xcode/.*/WiltedMac\\.app/Contents/MacOS/WiltedMac'" "$gate"
-  assert_contains 'native.cleanup mac-test-hosts-killed=' "$gate"
-  assert_contains 'kill -KILL "$test_host_pid"' "$gate"
+  assert_contains 'wilted_cleanup_mac_test_hosts "$repo_root"' "$gate"
+  assert_contains 'wilted_mac_test_host_pattern' "$repo_root/scripts/lib/mac-test-parent.sh"
+  assert_contains 'canonical_root="$(cd -P "$repo_root"' "$repo_root/scripts/lib/mac-test-parent.sh"
+  assert_contains 'cache_root="$canonical_root/.build/xcode"' "$repo_root/scripts/lib/mac-test-parent.sh"
+  assert_contains 'native.cleanup mac-test-hosts-matched=' "$repo_root/scripts/lib/mac-test-parent.sh"
+  assert_contains 'foreign-peer-preserved=1' "$repo_root/scripts/lib/mac-test-parent.sh"
   assert_contains 'trap cleanup EXIT' "$gate"
   assert_contains 'WILTED_XCODE_TEST_TIMEOUT_SECONDS' "$gate"
   assert_contains 'WILTED_NATIVE_LEG_TIMEOUT_SECONDS' "$gate"
@@ -402,7 +423,8 @@ assert_snapshot_contract() {
   assert_validation_contains 'expected_test_count_floor'
   assert_validation_contains 'macos-unit-tests) printf'
   assert_validation_contains 'ios-pixel-snapshot-tests) printf'
-  assert_validation_contains "printf '{\"totalTestCount\":%s}\\n' \"\$(mac_ui_declared_test_count)\""
+  assert_validation_contains 'ui_count="$(mac_ui_declared_test_count)"'
+  assert_validation_contains 'result":"Passed"'
   for method in \
     testEveryPreviewStateHasLightAndDarkPixelBaselines \
     testPixelSnapshotSelectorsAreUniqueAndComplete \
@@ -519,6 +541,8 @@ assert_result_bundle_contract() {
   assert_validation_contains 'xcrun xcresulttool get test-results summary'
   assert_validation_contains 'totalTestCount'
   assert_validation_contains 'parse_result_bundle_test_count'
+  assert_validation_contains 'result_bundle_summary_passed'
+  assert_block_contains 'wait_macos_ui_supervisor' "$(sed -n '/^leg_macos_ui_tests()/,/^leg_ios_ui_tests()/p' "$gate")"
   assert_contains '-resultBundlePath' "$gate"
   assert_validation_contains 'native.result-bundle-missing'
   if rg -q -- '--xunit-output|assert_xunit_tests|count\(//testcase\)' "$gate" "$native_gate_validation"; then
@@ -549,6 +573,10 @@ assert_result_bundle_contract() {
 }
 
 assert_result_bundle_contract
+ui_wait_helper="$(sed -n '/^wait_macos_ui_supervisor()/,/^}/p' "$gate")"
+set +e; bash -c 'eval "$1"; WILTED_UI_LOCK_PID_FILE=fixture; wilted_wait_active_supervisor() { return 42; }; wait_macos_ui_supervisor; status=$?; [[ -z "$WILTED_UI_LOCK_PID_FILE" ]] || exit 99; exit "$status"' _ "$ui_wait_helper"
+ui_wait_status=$?; set -e
+[[ "$ui_wait_status" -eq 42 ]] || { printf 'assertion failed: UI supervisor status was masked (%s)\n' "$ui_wait_status" >&2; exit 1; }
 
 # The retained failure bundle is the only record of why a macOS UI journey
 # failed, and it is written by a run that cannot be repeated cheaply. Prove the
@@ -737,6 +765,11 @@ assert_contains 'native.zero-tests label=macos-ui-tests' "$mac_ui_zero_log"
 assert_contains 'native.ui-leg.failure-bundle leg=macos-ui-tests path=' "$mac_ui_zero_log"
 assert_contains 'self_test_macos_ui_zero_test_evidence' \
   "$mac_ui_zero_diagnostics/macos-ui-tests.xcresult/self-test-evidence"
+mac_ui_summary_log="$tmp_dir/mac-ui-summary.log"; mac_ui_summary_diagnostics="$tmp_dir/mac-ui-summary-diagnostics"
+mac_ui_summary_status="$(run_case mac-ui-summary "$mac_ui_summary_log" env WILTED_MAC_UI=1 \
+  NATIVE_FORCE_FAILED_RESULT_SUMMARY_LEG=macos-ui-tests WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR="$mac_ui_summary_diagnostics" bash "$gate")"
+[[ "$mac_ui_summary_status" -ne 0 ]] || { cat "$mac_ui_summary_log" >&2; exit 1; }; assert_contains 'native.result-summary-failed label=macos-ui-tests' "$mac_ui_summary_log"
+[[ -f "$mac_ui_summary_diagnostics/macos-ui-tests.xcresult/self-test-evidence" ]] || { cat "$mac_ui_summary_log" >&2; exit 1; }
 
 # A locked screen makes every UI journey fail its activation timeout, which
 # reads as a broken application. The leg must say so before it spends twenty

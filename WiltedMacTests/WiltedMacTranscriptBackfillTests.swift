@@ -48,9 +48,7 @@ final class WiltedMacTranscriptBackfillTests: XCTestCase {
 @MainActor
 final class WiltedMacArticleRemovalTests: XCTestCase {
     func testRemovingAnArticleClearsItFromTheLibrary() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wilted-removal-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let directory = wiltedTemporaryDirectory("article-removal")
 
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],

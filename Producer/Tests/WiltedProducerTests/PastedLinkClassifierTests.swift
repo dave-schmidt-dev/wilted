@@ -88,6 +88,16 @@ struct PastedLinkClassifierTests {
         }
     }
 
+    @Test func resolvesOnlySupportedAppleShowLinksThroughTheCatalogClient() async throws {
+        let lookup = PodcastCatalogLookupClient(loader: BodyLoader(body: Data(#"{"results":[{"collectionId":1680633614,"kind":"podcast","collectionName":"The AI Daily Brief","feedUrl":"https://anchor.fm/s/f7cac464/podcast/rss"}]}"#.utf8), url: PodcastCatalogLookupClient.lookupURL(collectionID: 1_680_633_614)))
+        let classifier = PastedLinkClassifier(loader: RefusingLoader(), catalogLookupClient: lookup)
+        let kind = try await classifier.classify(URL(string: "https://podcasts.apple.com/us/podcast/the-ai-daily-brief/id1680633614?uo=4")!)
+        #expect(kind == .podcastCatalogShow(PodcastCatalogShow(
+            collectionID: 1_680_633_614, title: "The AI Daily Brief",
+            feedURL: URL(string: "https://anchor.fm/s/f7cac464/podcast/rss")!
+        )))
+    }
+
     @Test func reportsAnUnreachableAddressRatherThanGuessing() async {
         let classifier = PastedLinkClassifier(loader: StatusLoader(statusCode: 404))
         do {

@@ -24,7 +24,7 @@ extension WiltedMacModelTests {
     /// happened later in real dispatch order got discarded.
     func testInterleavedRegisterAndConsumeSettleOnTheLaterTransition() async throws {
         let directory = temporaryDirectory("ticket-interleave")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let libraryURL = directory.appendingPathComponent("library.sqlite")
         let storeCapture = StoreCapture()
 
@@ -78,7 +78,7 @@ extension WiltedMacModelTests {
     /// from the store -- not inferred from in-memory model state.
     func testAFailingDownloadAndAFailingPreparationBothSettleOnANamedTerminalTicket() async throws {
         let directory = temporaryDirectory("ticket-failure-classification")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/ticket-failure.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
         let downloadEnclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/ticket-failure-download.mp3"))
@@ -165,7 +165,7 @@ extension WiltedMacModelTests {
     /// run start rather than before either.
     func testTheAdmittedPolicyEqualsTheSnapshotCapturedAtRequest() async throws {
         let directory = temporaryDirectory("ticket-admitted-policy")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/ticket-policy.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
         let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/ticket-policy.mp3"))
@@ -245,7 +245,7 @@ extension WiltedMacModelTests {
     /// that admission so the run's later ticket read sees the retry policy.
     func testRetryPreparationReplacesAFailedTicketsRemoveAdsPolicy() async throws {
         let directory = temporaryDirectory("ticket-retry-policy")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let preferences = WiltedMacTestPreferences.ephemeral()
         preferences.set(1, forKey: WiltedMacModel.preparationRequestSequencePreferenceKey)
         let model = WiltedMacModel(
@@ -303,7 +303,7 @@ extension WiltedMacModelTests {
     /// serialize transfers.
     func testTwoOrdinaryDownloadsStillOverlapAfterPreparationOrderingLanded() async throws {
         let directory = temporaryDirectory("download-overlap")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/overlap.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
         let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
@@ -364,6 +364,7 @@ extension WiltedMacModelTests {
     func testMenuAndLarderIndicatorsShareTheCurrentQueueSnapshot() throws {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         let current = try XCTUnwrap(model.episodes.first)

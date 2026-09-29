@@ -31,6 +31,12 @@ final class WiltedMacModel {
     var advertisedFeed: URL?
     var podcastFeedDraftStatus: String?
     var isCheckingPodcastSubscription = false
+    /// The current subscription request owns composer feedback until it
+    /// finishes or is cancelled; an older task may never overwrite it.
+    var podcastSubscriptionRequestID: UUID?
+    /// Request-local first-load cap captured before a pasted page is classified.
+    /// It never changes the saved automation default.
+    var pendingPodcastSubscriptionInitialMetadataCount: Int?
     /// Identifies the in-flight subscription check, so a cancelled one cannot
     /// write over its successor's state when it finally resumes.
     var podcastSubscriptionCheckGeneration = 0
@@ -158,6 +164,9 @@ final class WiltedMacModel {
     }
     /// Automation reads this one validated value, never individual preference keys.
     var automationSettings = WiltedAutomationSettings.defaults
+    /// Kept observable for Feeds: a successful refresh must redraw its actual
+    /// completion time instead of waiting for another unrelated model change.
+    var observedLastAutomationRefreshAt: Date?
     /// How much bigger than the system's own text the window draws itself.
     ///
     /// The Mac has no Dynamic Type to inherit, so the app carries this and the
@@ -251,12 +260,43 @@ final class WiltedMacModel {
     let fixtureMode: Bool
 
 #if canImport(WiltedProducer)
+    /// Ownership exists only for fixture roots this model created itself.
+    /// Injected roots belong to their caller (the app, a test, or a relaunch
+    /// scenario) and are never removed by this model.
+    let temporaryState: WiltedMacTemporaryState?
+    /// A root created by the central XCTest helper. Its helper closes every
+    /// registered model before its final per-test removal.
+    let registeredTestRoot: URL?
+    var isClosingTemporaryState = false
+    var temporaryStateCloseTask: Task<Void, Never>?
     var store: LocalLibraryStore?
     var coordinator: PreparationCoordinator?
     var playback: PlaybackController?
     var syncLifecycle: WiltedMacSyncLifecycle?
     /// Podcast feeds Wilted follows, newest subscription first.
     var subscriptions: [WiltedMacSubscription] = []
+    /// Read-order metadata only. A committed Feed decision advances this
+    /// boundary so a snapshot that began beforehand cannot publish over it.
+    var libraryReadEpoch: UInt64 = 0
+    var lastAppliedLibraryReadEpoch: UInt64 = 0
+    /// Exact Feed rows whose durable decision has started. This is separate
+    /// from Menu admission retry state because a decision failure stays
+    /// selected and retryable instead of becoming an automatic arrival.
+    var pendingFeedDecisionIDs: Set<String> = []
+    var failedFeedDecisionIDs: Set<String> = []
+    /// The final Feed writer in admission order. Feed decisions await this
+    /// chain, while unrelated subscription work remains independently live.
+    var feedDecisionWriteTailToken: UUID?
+    /// Nil in production. Regression tests use these deterministic seams to
+    /// observe the pre-write and committed-but-not-published boundaries.
+    var feedDecisionBeforeCommitForTesting: (@Sendable () async throws -> Void)?
+    var feedDecisionAfterDurableCommitForTesting: (@Sendable () async -> Void)?
+    var podcastQueueReadBarrierForTesting: (@Sendable () async -> Void)?
+    /// Nil in production. Regression tests can fail only the episode-admission
+    /// step after the real feed and subscription writes have committed.
+    var podcastEpisodeAdmissionOperationForTesting: (@Sendable (
+        [PodcastEpisode], LocalLibraryStore.PodcastEpisodeAdmission, Int?
+    ) async throws -> LocalLibraryStore.PodcastEpisodeAdmissionResult)?
     /// Durable removals remain visible even when no feed is subscribed.
     var dismissedEpisodes: [WiltedMacDismissedEpisode] = []
 
@@ -281,6 +321,9 @@ final class WiltedMacModel {
     var preparationTask: Task<Void, Never>?
     var syncReconciliationTask: Task<Void, Never>?
     var podcastRefreshTask: Task<Void, Never>?
+    /// Every refresh task carries this identity so a cancelled predecessor
+    /// cannot clear a replacement's visible work state when it returns late.
+    var podcastRefreshOperationID: UUID?
     var bootstrapRecoveryTask: Task<Void, Never>?
     /// The system's media widget, and the media keys that drive it. Both are
     /// injected and both are optional: they are process-global system state, so
@@ -365,14 +408,20 @@ final class WiltedMacModel {
     /// Seeds one episode deferred to off-peak, so the UI leg has a row whose
     /// only way forward is the override.
     var fixtureEpisodeIsDeferred = false
+    /// Host-only owner-feedback fixture; production keeps the injected client.
+    let fixtureSubscriptionIntakeMode: Bool
     let podcastFeedClient: PodcastFeedClient
     let mediaAvailabilityChecker: any WiltedMacMediaAvailabilityChecking
     let pastedLinkClassifier: PastedLinkClassifier
     var linkClassificationTask: Task<Void, Never>?
     var podcastSubscriptionClassificationTask: Task<Void, Never>?
     var fixtureRevision: StoredAudioRevision?
+    var fixtureInstallTask: Task<Void, Never>?
     var fixturePodcastInstallTask: Task<Void, Never>?
     var playbackOperationTask: Task<Void, Never>?
+    /// Every finite subscription, Feed-decision, or Restore writer. Close and
+    /// deinit cancel and drain this ledger before an owned fixture root goes.
+    var subscriptionWriteTasks: [UUID: Task<Void, Never>] = [:]
     var audioRouteRecoveryInFlight = false
     var audioRouteRecoveryAttempted = false
     var isPodcastPlayback = false
@@ -409,9 +458,26 @@ final class WiltedMacModel {
         // policy snapshot from these settings; the rest of the stored
         // preferences are read after it.
         automationSettings = Self.loadAutomationSettings(from: self.preferences)
+        observedLastAutomationRefreshAt = self.preferences.object(
+            forKey: Self.lastAutomationRefreshPreferenceKey
+        ) as? Date
 
 #if canImport(WiltedProducer)
-        let stateDirectory = stateDirectoryOverride ?? Self.stateDirectory(fixtureMode: usesFixtureMode)
+        let stateDirectory: URL
+        if let stateDirectoryOverride = stateDirectoryOverride ?? Self.fixtureStateDirectoryOverride(arguments: arguments) {
+            temporaryState = nil
+            stateDirectory = stateDirectoryOverride
+            registeredTestRoot = WiltedMacTemporaryState.markedTestRoot(containing: stateDirectoryOverride)
+        } else if usesFixtureMode {
+            let state = Self.makeOwnedFixtureState()
+            temporaryState = state
+            stateDirectory = state.directory
+            registeredTestRoot = nil
+        } else {
+            temporaryState = nil
+            stateDirectory = Self.stateDirectory(fixtureMode: false)
+            registeredTestRoot = nil
+        }
         self.libraryURL = stateDirectory.appendingPathComponent("library.sqlite")
         self.mediaDirectory = stateDirectory.appendingPathComponent("media", isDirectory: true)
         self.syncTransportFactory = syncTransportFactory
@@ -436,7 +502,10 @@ final class WiltedMacModel {
         self.retainedArtifactPresenter = retainedArtifactPresenter ?? { url in
             NSWorkspace.shared.activateFileViewerSelecting([url])
         }
-        self.podcastFeedClient = podcastFeedClient
+        fixtureSubscriptionIntakeMode = arguments.contains("--wilted-ui-fixture-subscription-intake-26")
+        self.podcastFeedClient = Self.subscriptionIntakeFixtureClient(
+            enabled: fixtureSubscriptionIntakeMode, fallback: podcastFeedClient
+        )
         self.mediaAvailabilityChecker = mediaAvailabilityChecker
         self.pastedLinkClassifier = pastedLinkClassifier
         fixtureDownloadFailuresRemaining = arguments.contains("--wilted-ui-fixture-download-failure") ? 1 : 0
@@ -519,6 +588,56 @@ final class WiltedMacModel {
         playback?.defaultRate = Float(playbackRate)
 #endif
         installRemoteCommands()
+#if canImport(WiltedProducer)
+        if let registeredTestRoot {
+            WiltedMacTemporaryState.register(self, forTestRoot: registeredTestRoot)
+        }
+#endif
+    }
+
+    isolated deinit {
+#if canImport(WiltedProducer)
+        // Deinitialization cannot await. Capture task and root values only,
+        // then let a post-model task settle writers before deleting an owned
+        // root. The closures do not capture `self`, so this cannot resurrect
+        // the model while a fixture store finishes a cancellation-ignoring
+        // write.
+        isClosingTemporaryState = true
+        let temporaryState = temporaryState
+        let voidTasks = [
+            startupTask,
+            preparationTask,
+            syncReconciliationTask,
+            podcastRefreshTask,
+            bootstrapRecoveryTask,
+            linkClassificationTask,
+            podcastSubscriptionClassificationTask,
+            fixturePodcastInstallTask,
+            fixtureInstallTask,
+            playbackOperationTask,
+            menuAdditionTask,
+            automationTask,
+            automationTicker,
+            ticketDrainTicker,
+            playbackCheckpointTicker
+        ].compactMap { $0 }
+            + Array(podcastPreparationTasks.values)
+            + Array(podcastRestoreTasks.values)
+            + Array(subscriptionWriteTasks.values)
+        let downloadTasks = Array(podcastDownloadTasks.values)
+        let automation = automation
+        let syncLifecycle = syncLifecycle
+        cancelPendingTemporaryStateWork()
+        Task { @MainActor in
+            await closeOwnedTemporaryStateAfterDeinit(
+                temporaryState,
+                voidTasks: voidTasks,
+                downloadTasks: downloadTasks,
+                automation: automation,
+                syncLifecycle: syncLifecycle
+            )
+        }
+#endif
     }
 
 #if canImport(WiltedProducer)

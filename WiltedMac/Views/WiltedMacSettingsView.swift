@@ -111,6 +111,17 @@ struct WiltedMacSettingsView: View {
                 }
                 .accessibilityIdentifier("wilted-automation-refresh-policy")
 
+                Picker("Initial episode metadata", selection: initialMetadataCountBinding) {
+                    Text("5 latest").tag(5)
+                    Text("10 latest").tag(10)
+                }
+                .accessibilityIdentifier("wilted-automation-initial-metadata-count")
+                TextField("Custom initial episodes (1–100)", value: initialMetadataCountBinding, format: .number)
+                    .accessibilityIdentifier("wilted-automation-initial-metadata-custom")
+                Text("This limits initial episode metadata only. It never downloads audio or keeps episodes.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+
                 Text("Refresh adds metadata only. Download and preparation begin after Keep moves an episode to Larder.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
@@ -211,6 +222,16 @@ struct WiltedMacSettingsView: View {
             set: { label in
                 guard let policy = WiltedAutomationRefreshPolicy.fromSettingsControlLabel(label) else { return }
                 replaceAutomationSettings(refreshPolicy: policy)
+            }
+        )
+    }
+
+    private var initialMetadataCountBinding: Binding<Int> {
+        Binding(
+            get: { model.automationSettings.initialEpisodeMetadataCount },
+            set: { value in
+                guard WiltedAutomationSettings.validInitialEpisodeMetadataCount(value) != nil else { return }
+                replaceAutomationSettings(initialEpisodeMetadataCount: value)
             }
         )
     }
@@ -317,7 +338,8 @@ struct WiltedMacSettingsView: View {
         removeAds: Bool? = nil,
         autoAddPreparedToMenu: Bool? = nil,
         downloadEverythingOnMenu: Bool? = nil,
-        prepareEverythingDownloaded: Bool? = nil
+        prepareEverythingDownloaded: Bool? = nil,
+        initialEpisodeMetadataCount: Int? = nil
     ) {
         model.updateAutomationSettings { settings in
             WiltedAutomationSettings(
@@ -328,7 +350,8 @@ struct WiltedMacSettingsView: View {
                 removeAds: removeAds ?? settings.removeAds,
                 autoAddPreparedToMenu: autoAddPreparedToMenu ?? settings.autoAddPreparedToMenu,
                 downloadEverythingOnMenu: downloadEverythingOnMenu ?? settings.downloadEverythingOnMenu,
-                prepareEverythingDownloaded: prepareEverythingDownloaded ?? settings.prepareEverythingDownloaded
+                prepareEverythingDownloaded: prepareEverythingDownloaded ?? settings.prepareEverythingDownloaded,
+                initialEpisodeMetadataCount: initialEpisodeMetadataCount ?? settings.initialEpisodeMetadataCount
             )
         }
     }

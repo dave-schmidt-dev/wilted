@@ -120,7 +120,7 @@ extension WiltedMacModelTests {
     /// `installFixture` runs before the stored preferences are read, and a
     /// fixture host has nothing stored, so the load emptied the seed before the
     /// first render and the control never appeared.
-    func testADeferredFixtureLaunchStillHoldsItsDeferralAfterInitialisation() throws {
+    func testADeferredFixtureLaunchStillHoldsItsDeferralAfterInitialisation() async throws {
         let directory = temporaryDirectory("deferred-fixture-survives-init")
         defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
@@ -143,6 +143,7 @@ extension WiltedMacModelTests {
         let kept = try XCTUnwrap(model.feedsEpisodes.first,
                                  "Feeds must offer the row the leg keeps")
         model.keepEpisode(kept)
+        await waitForFeedDecisionWriters(model)
         XCTAssertEqual(kept.id, deferredID,
                        "the leg keeps the first Feeds row, so that row has to be the deferred "
                        + "one or the Menu never draws a Prepare now control")

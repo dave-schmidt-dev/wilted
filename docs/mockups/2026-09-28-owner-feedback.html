@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wilted — Owner feedback prototype</title>
+<style>
+  :root { color-scheme:dark; --bg:#101512; --panel:#18201b; --soft:#223027; --line:#344238; --ink:#edf1ed; --muted:#a8b5aa; --leaf:#83bd8d; --warn:#d9b76a; --bad:#df8c82 }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif }
+  .app { min-height:100vh; display:grid; grid-template-columns:220px minmax(0,1fr) }
+  aside { min-height:100vh; padding:20px 10px 14px; border-right:1px solid var(--line); background:#101512; display:flex; flex-direction:column }
+  .brand { padding:0 10px 6px; font-size:20px; font-weight:700 }
+  .prototype { padding:0 10px 18px; color:var(--muted); font-size:12px }
+  nav { margin-top:8px } nav button { width:100%; border:0; border-radius:6px; background:transparent; color:var(--muted); text-align:left }
+  nav button.active { background:var(--soft); color:var(--ink) }
+  .sidebar-totals { margin-top:auto; padding:14px 8px 0; border-top:1px solid var(--line); color:var(--muted); font-size:12px }
+  .sidebar-totals div { display:flex; justify-content:space-between; padding:3px 0 }.sidebar-totals b { color:var(--ink); font-weight:500 }
+  .detail-shell { min-width:0; min-height:100vh; max-height:100vh; display:flex; flex-direction:column; background:#141a16 }
+  main { position:relative; width:100%; max-width:1000px; flex:1; overflow:auto; margin:0 auto; padding:28px 34px }
+  .compact-player { min-height:112px; display:grid; grid-template-columns:42px minmax(180px,1fr) auto; gap:8px 12px; align-items:center; padding:10px 26px; border-top:1px solid var(--line); background:#18201b; color:var(--muted) }
+  .compact-player .art { grid-row:span 2; width:42px; height:42px; border-radius:5px; background:#344238 }.compact-player strong { color:var(--ink) }.compact-player .transport { display:flex; gap:7px; align-items:center }.compact-player .position { display:flex; gap:9px; align-items:center; grid-column:2 / 4; font-size:12px }.compact-player .rail { flex:1; height:4px; background:#344238; border-radius:99px }.compact-player .rail i { display:block; width:36%; height:100%; background:var(--leaf); border-radius:99px }.compact-player .player-actions { display:flex; gap:6px; justify-content:flex-end }
+  .feeds-header { display:flex; align-items:center; gap:12px; margin-top:20px }.feeds-header h2 { margin-right:auto }.subscribe-anchor { display:flex; justify-content:flex-end; margin-top:14px }
+  h1,h2,p { margin:0 } h1 { font-size:28px } h2 { font-size:17px }
+  button,input,select { font:inherit }
+  button { border:1px solid var(--line); border-radius:6px; padding:6px 10px; background:#202a23; color:var(--ink); cursor:pointer }
+  button.primary,.keep { border-color:#68a875; background:#4c8d59 }
+  button.skip { background:transparent } button:disabled { opacity:.55; cursor:default }
+  input,select { border:1px solid var(--line); border-radius:6px; padding:6px 8px; background:#101512; color:var(--ink) }
+  label,.tools,.header,.row,.actions,.status { display:flex; gap:9px; align-items:center }
+  label,.tools { flex-wrap:wrap } .header { justify-content:space-between; gap:18px }
+  .sub,.meta,.muted { color:var(--muted) } .meta { font-size:13px }
+  .card { margin-top:18px; padding:16px; border:1px solid var(--line); border-radius:8px; background:var(--panel) }
+  .composer-popover { position:absolute; z-index:2; right:34px; top:84px; width:min(640px,calc(100% - 68px)); padding:14px; border:1px solid var(--line); border-radius:8px; background:#18201b; box-shadow:0 16px 30px #0008 }
+  .row { padding:13px 0; border-top:1px solid var(--line); align-items:flex-start }
+  .row:first-child { border-top:0 } .title { flex:1; min-width:0 }
+  .title strong,.title span { display:block } .actions { justify-content:flex-end }
+  .chip { border:1px solid var(--line); border-radius:99px; padding:2px 7px; color:var(--muted); font-size:12px }
+  .chip.pending { border-color:var(--warn); color:var(--warn) } .chip.ready { border-color:var(--leaf); color:var(--leaf) }
+  .notice { min-height:23px; color:var(--muted); font-size:13px } .notice.error { color:var(--bad) } .notice.ok { color:var(--leaf) }
+  .detail { margin-top:8px; padding:11px; border-radius:7px; background:#141a16 }
+  .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:8px } .stat { padding:10px; border-radius:7px; background:var(--soft) } .stat b { display:block }
+  .proposal { border-left:3px solid var(--warn) }
+  .bar { width:80px; height:6px; overflow:hidden; border-radius:99px; background:#314137 } .bar i { display:block; width:55%; height:100%; background:var(--leaf); animation:move 1s ease-in-out infinite alternate }
+  .empty { padding:24px 0; color:var(--muted) } .hidden { display:none }
+  @keyframes move { to { transform:translateX(80%) } }
+  @media (max-width:650px) {
+    .app { display:block; min-height:0 } aside { min-height:80px; height:80px; padding:12px; border-right:0; border-bottom:1px solid var(--line); display:flex; flex-direction:row; align-items:center; gap:8px }
+    .brand,.prototype { padding:0 } .prototype { margin-right:auto } nav { display:flex; gap:2px } nav button { width:auto; padding:7px 8px; text-align:center }
+    .sidebar-totals { display:none }.detail-shell { min-height:calc(100vh - 80px); max-height:none } main { overflow:visible; margin:0 auto; padding:24px 14px } .compact-player { position:sticky; bottom:0; min-height:94px; padding:8px 14px; grid-template-columns:38px minmax(0,1fr) }.compact-player .player-actions { grid-column:2; justify-content:flex-start }.compact-player .position { grid-column:1 / 3 }.composer-popover { position:static; width:auto; margin-top:14px; box-shadow:none }.header { align-items:flex-start; flex-direction:column } .row { flex-wrap:wrap } .actions { width:100%; justify-content:flex-start } .stats { grid-template-columns:repeat(2,1fr) }
+  }
+</style>
+<body><div class="app"><aside><div class="brand">Wilted</div><div class="prototype">Illustrative prototype</div><nav id="nav"><button data-page="larder">Larder</button><button class="active" data-page="feeds">Feeds</button><button data-page="settings">Settings</button></nav><div class="sidebar-totals" data-sidebar-totals><div><span>Ready</span><b>49 min</b></div><div><span>Needs preparation</span><b>35 min</b></div><div><span>In Larder</span><b>1 hr 24 min</b></div></div></aside><section class="detail-shell"><main id="view"></main><footer class="compact-player" data-compact-player><span class="art"></span><div><strong>Autumn Walk</strong><br><span>Field Notes · Sep 28, 2026</span></div><div class="player-actions"><button>1×</button><button>Share</button></div><div class="transport"><button aria-label="Previous">◀</button><button aria-label="Play compact player">Play</button><button aria-label="Next">▶</button></div><div class="position"><span>14:08</span><span class="rail"><i></i></span><span>42:00</span><button>Transcript</button><button>Notes</button><button>Larder</button><button>Volume</button></div></footer></section></div>
+<script>
+const episodes = {
+  'elm-001': { id:'elm-001', title:'Autumn Walk', show:'Field Notes', date:'Sep 28, 2026', time:Date.parse('2026-09-28'), sourceDuration:'42 min', preparedDuration:'28 min', page:'https://example.invalid/episodes/autumn-walk' },
+  'tide-002': { id:'tide-002', title:'Tide Table', show:'Field Notes', date:'Sep 27, 2026', time:Date.parse('2026-09-27'), sourceDuration:'31 min', preparedDuration:null, page:'https://example.invalid/episodes/tide-table' },
+  'moss-003': { id:'moss-003', title:'Moss Study', show:'Garden Radio', date:'Unknown date', time:0, sourceDuration:'19 min', preparedDuration:null, page:null },
+  'ash-004': { id:'ash-004', title:'Ash and Air', show:'Garden Radio', date:'Sep 24, 2026', time:Date.parse('2026-09-24'), sourceDuration:'35 min', preparedDuration:'24 min', page:'https://example.invalid/episodes/ash-and-air' },
+  'rill-005': { id:'rill-005', title:'Rill', show:'Field Notes', date:'Sep 22, 2026', time:Date.parse('2026-09-22'), sourceDuration:'24 min', preparedDuration:null, page:'https://example.invalid/episodes/rill' },
+  'fern-006': { id:'fern-006', title:'Fern Line', show:'Garden Radio', date:'Sep 20, 2026', time:Date.parse('2026-09-20'), sourceDuration:'27 min', preparedDuration:'22 min', page:'https://example.invalid/episodes/fern-line' }
+};
+const aiDailyFixtures = Object.fromEntries(Array.from({ length:10 }, (_, index) => {
+  const number = index + 1, id = `ai-daily-${String(number).padStart(3,'0')}`;
+  return [id, { id, title:`Daily Brief ${number}`, show:'The AI Daily Brief', date:`Sep ${18-index}, 2026`, time:Date.parse(`2026-09-${String(18-index).padStart(2,'0')}`), sourceDuration:`${18+index} min`, preparedDuration:null, page:`https://example.invalid/episodes/${id}` }];
+}));
+Object.assign(episodes, aiDailyFixtures);
+const intakeFixtures = Object.keys(aiDailyFixtures);
+const state = {
+  page:'feeds', undecided:['elm-001','tide-002','moss-003'], larder:['ash-004','fern-006'], off:['rill-005'],
+  work:{ 'ash-004':'preparing', 'fern-006':'ready' }, selected:new Set(), lastRefresh:'Never', refreshing:false,
+  notice:'', noticeKind:'', offOpen:true, composer:false, count:5, customCount:12, defaultCount:5,
+  sort:'custom', larderFilter:'episodes', detail:null, bulkFailure:null, subscriptions:[], subscriptionURL:'https://podcasts.apple.com/us/podcast/the-ai-daily-brief/id1680633614', feedOperation:null, futureDownload:false, futureSearch:''
+};
+const $ = selector => document.querySelector(selector);
+const esc = value => String(value).replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char]));
+function metadata(episode, status) {
+  const prepared = status === 'ready' && episode.preparedDuration ? ` · Prepared playable ${esc(episode.preparedDuration)}` : '';
+  return `${esc(episode.show)} · ${esc(episode.date)} · Source ${esc(episode.sourceDuration)}${prepared}`;
+}
+function move(id, destination) {
+  for (const list of ['undecided','larder','off']) state[list] = state[list].filter(item => item !== id);
+  state[destination].push(id);
+}
+function row(id, area) {
+  const episode = episodes[id], status = state.work[id] || 'available', checked = state.selected.has(id) ? 'checked' : '';
+  let actions;
+  if (area === 'feeds') actions = `<button class="keep" data-keep="${id}">Keep</button><button class="skip" data-skip="${id}">Skip</button>`;
+  else if (area === 'off') actions = `<button data-restore="${id}">Restore</button>`;
+  else if (status === 'ready') actions = `<button class="primary" data-play="${id}">Play</button>`;
+  else if (status === 'preparing' || status === 'downloading') actions = `<span class="chip pending">${esc(status[0].toUpperCase()+status.slice(1))}</span>`;
+  else actions = `<button data-work="${id}">${status === 'downloaded' ? 'Prepare' : 'Download'}</button>`;
+  const label = area === 'feeds' ? 'Undecided' : area === 'off' ? 'Skipped' : status;
+  return `<div class="row" data-episode="${id}">
+    ${area === 'feeds' ? `<input aria-label="Select ${esc(episode.title)}" type="checkbox" data-select="${id}" ${checked}>` : ''}
+    <div class="title"><strong>${esc(episode.title)}</strong><span class="meta">${metadata(episode, status)}</span></div>
+    <span class="chip ${status === 'ready' ? 'ready' : ''}">${esc(label)}</span><div class="actions">${actions}<button data-detail="${id}">Details</button></div></div>`;
+}
+function detail() {
+  if (!state.detail) return '';
+  const episode = episodes[state.detail], status = state.work[state.detail] || 'available';
+  const link = episode.page ? `<a href="${episode.page}" data-episode-page="${episode.id}">Episode page</a>` : `<span data-missing-page="${episode.id}">Episode page unavailable — no link was supplied.</span>`;
+  return `<div class="detail" data-detail-panel="${episode.id}"><b>${esc(episode.title)}</b><p class="meta">${metadata(episode,status)}</p><p>Waveform and share use this episode record. ${link}</p></div>`;
+}
+function composer() {
+  const custom = state.count === 'custom';
+  return `<section class="composer-popover" data-composer><h2>Subscribe to a show</h2><div class="tools">
+    <label>Apple Podcasts URL <input id="apple-url" value="${esc(state.subscriptionURL)}"></label>
+    <label>Initial episodes <select id="count"><option value="5" ${state.count === 5 ? 'selected' : ''}>5</option><option value="10" ${state.count === 10 ? 'selected' : ''}>10</option><option value="custom" ${custom ? 'selected' : ''}>Custom</option></select></label>
+    <input id="custom-count" class="${custom ? '' : 'hidden'}" type="number" min="1" max="100" value="${state.customCount}" aria-label="Custom initial episode count">
+    <button class="primary" data-subscribe>Subscribe</button><button data-cancel-subscribe>Cancel</button></div>
+    <p class="notice ${state.noticeKind}" data-subscribe-notice>${esc(state.notice || 'Mock lookup recognizes The AI Daily Brief (Apple ID 1680633614). Metadata only; no audio downloads.')}</p></section>`;
+}
+function subscriptionCard() {
+  if (!state.subscriptions.length) return `<section class="card" data-subscriptions><h2>Subscriptions</h2><p class="muted">No subscriptions added in this illustrative session.</p></section>`;
+  return `<section class="card" data-subscriptions><h2>Subscriptions</h2>${state.subscriptions.map(sub => `<div class="row"><div class="title"><strong>${esc(sub.show)}</strong><span class="meta">Apple ID ${esc(sub.appleID)} · ${sub.fixtureIds.length} initial metadata records · no audio downloaded</span><span data-intake-ids="${sub.fixtureIds.join(',')}">${sub.fixtureIds.map(id => esc(episodes[id].title)).join(' · ')}</span></div></div>`).join('')}</section>`;
+}
+function feeds() {
+  const all = state.undecided.length && state.selected.size === state.undecided.length, selected = state.selected.size;
+  const operation = state.feedOperation ? `<section class="card" data-feed-operation data-operation-kind="${state.feedOperation.kind}"><div class="status">${state.feedOperation.kind === 'pending' ? '<span class="bar"><i></i></span>' : ''}<strong>${esc(state.feedOperation.text)}</strong></div></section>` : '';
+  return `<h1>Feeds</h1><div class="feeds-header"><h2>Feeds</h2><span class="muted" data-last-refresh>Last updated: ${state.lastRefresh}</span>${state.refreshing ? '<span class="status"><span class="bar"><i></i></span>Refreshing</span>' : '<button class="primary" data-refresh>Refresh</button>'}</div><p class="sub">New episodes from your subscriptions are undecided. Refresh only admits metadata; Keep moves an episode to Larder, where its next step becomes available.</p><div class="subscribe-anchor"><button data-composer>＋ Subscribe to a podcast</button></div>
+    ${state.composer ? composer() : ''}${operation}<section class="card" data-new-episodes><div class="tools"><h2>New episodes (${state.undecided.length})</h2><label><input id="all" type="checkbox" ${all ? 'checked' : ''}> Select all visible</label><button data-bulk-keep ${selected ? '' : 'disabled'}>Keep selected (${selected})</button><button data-bulk-skip ${selected ? '' : 'disabled'}>Skip selected (${selected})</button>${state.bulkFailure ? '<button class="primary" data-retry>Retry failed Skip</button>' : ''}</div><div id="feed-rows">${state.undecided.map(id => row(id,'feeds')).join('') || '<div class="empty">Nothing undecided. A future refresh can admit metadata.</div>'}</div><div class="notice ${state.noticeKind}" data-notice>${esc(state.notice)}</div>${detail()}</section>
+    ${subscriptionCard()}<section class="card" data-off-list><button data-toggle-off><h2>Off the list (${state.off.length})</h2></button>${state.offOpen ? state.off.map(id => row(id,'off')).join('') : ''}</section>`;
+}
+function larder() {
+  let ids = [...state.larder];
+  if (state.sort === 'newest') ids.sort((left,right) => episodes[right].time - episodes[left].time);
+  const active = ids.filter(id => ['downloading','preparing'].includes(state.work[id]));
+  ids = [...active, ...ids.filter(id => !active.includes(id))];
+  const downloaded = ids.filter(id => ['downloading','downloaded','preparing','ready'].includes(state.work[id]));
+  const shown = state.larderFilter === 'downloaded' ? downloaded : ids;
+  const heading = state.larderFilter === 'downloaded' ? 'Downloaded audio' : 'Episodes';
+  const empty = state.larderFilter === 'downloaded' ? '<div class="empty" data-downloaded-empty>Downloaded audio is empty. Keep an episode, then download it here.</div>' : '<div class="empty">No episodes are kept in Larder.</div>';
+  return `<div class="header"><div><h1>Larder</h1><p class="sub">Active work appears first. Play is available only after preparation is ready.</p></div><div class="tools"><label>View <select id="larder-filter"><option value="episodes" ${state.larderFilter === 'episodes' ? 'selected' : ''}>All episodes</option><option value="downloaded" ${state.larderFilter === 'downloaded' ? 'selected' : ''}>Downloaded audio</option></select></label><label>Order <select id="sort"><option value="custom" ${state.sort === 'custom' ? 'selected' : ''}>Custom</option><option value="newest" ${state.sort === 'newest' ? 'selected' : ''}>Newest</option></select></label></div></div><section class="card" data-larder-episodes><div class="tools"><h2>${heading}</h2><span class="muted">Audio received and preparation are separate states.</span></div>${shown.length ? shown.map(id => row(id,'larder')).join('') : empty}${detail()}</section>`;
+}
+function settings() {
+  return `<h1>Settings</h1><p class="sub">Listening and storage figures below are illustrative, stable local metrics.</p>
+    <section class="card"><h2>Initial intake</h2><div class="tools"><label>Default count <select id="default-count"><option value="5" ${state.defaultCount === 5 ? 'selected' : ''}>5</option><option value="10" ${state.defaultCount === 10 ? 'selected' : ''}>10</option><option value="custom" ${state.defaultCount === 'custom' ? 'selected' : ''}>Custom 12</option></select></label><span class="muted">Subscribe may override it with 5, 10, or 1–100 custom episodes.</span></div></section>
+    <section class="card"><h2>Seven local statistics</h2><div class="stats"><div class="stat"><b>146 min</b>Lifetime played minutes</div><div class="stat"><b>1.7 GB</b>Lifetime received</div><div class="stat"><b>3</b>Retries</div><div class="stat"><b>15 min</b>Total manually skipped minutes</div><div class="stat"><b>Sep 1, 2026</b>Tracking start</div><div class="stat"><b>12</b>Kept</div><div class="stat"><b>4</b>Prepared</div></div></section>
+    <section class="card proposal"><h2>Future proposals</h2><div class="tools"><label><input id="future-download" type="checkbox" ${state.futureDownload ? 'checked' : ''}> Auto-download per feed (off by default)</label><label>Catalog search <input id="future-search" placeholder="Proposal only" value="${esc(state.futureSearch)}"></label></div><p class="muted">These controls demonstrate feedback only; they do not enable a live policy or catalog.</p></section>`;
+}
+function render() {
+  document.querySelectorAll('nav button').forEach(button => button.classList.toggle('active',button.dataset.page === state.page));
+  $('#view').innerHTML = state.page === 'feeds' ? feeds() : state.page === 'larder' ? larder() : settings();
+  const all = $('#all'); if (all) all.indeterminate = state.selected.size > 0 && state.selected.size < state.undecided.length;
+}
+function admitSubscription() {
+  const count = state.count === 'custom' ? state.customCount : state.count;
+  if (!Number.isInteger(count) || count < 1 || count > 100) { state.notice='Choose a whole initial count from 1 to 100.'; state.noticeKind='error'; state.feedOperation={ kind:'error', text:state.notice }; render(); return; }
+  if (!state.subscriptionURL.includes('id1680633614')) { state.notice='This illustrative lookup recognizes only Apple ID 1680633614.'; state.noticeKind='error'; state.feedOperation={ kind:'error', text:state.notice }; render(); return; }
+  if (state.subscriptions.some(sub => sub.appleID === '1680633614')) { state.notice='The AI Daily Brief is already subscribed; no duplicate was added.'; state.noticeKind='error'; state.feedOperation={ kind:'error', text:state.notice }; render(); return; }
+  const fixtureIds = intakeFixtures.slice(0,count);
+  state.feedOperation={ kind:'pending', text:'Looking up The AI Daily Brief…' }; render();
+  setTimeout(() => { state.subscriptions.push({ show:'The AI Daily Brief', appleID:'1680633614', fixtureIds }); state.undecided.push(...fixtureIds); state.notice=`Lookup found The AI Daily Brief. Added ${fixtureIds.length} metadata records; no audio downloaded.`; state.noticeKind='ok'; state.feedOperation={ kind:'success', text:state.notice }; render(); },300);
+}
+document.addEventListener('click', event => {
+  const button = event.target.closest('button'); if (!button) return;
+  if (button.dataset.page) { state.page=button.dataset.page; state.notice=''; render(); return; }
+  if (button.dataset.composer !== undefined) { state.composer=true; state.notice=''; render(); return; }
+  if (button.dataset.cancelSubscribe !== undefined) { state.composer=false; state.notice='Subscription cancelled; inputs are retained for the next attempt.'; state.noticeKind=''; render(); return; }
+  if (button.dataset.subscribe !== undefined) { admitSubscription(); return; }
+  if (button.dataset.keep) { const id=button.dataset.keep; state.notice=`Keep pending for ${episodes[id].title}…`; state.noticeKind=''; render(); setTimeout(() => { move(id,'larder'); state.work[id]='available'; state.notice=`${episodes[id].title} is kept in Larder.`; state.noticeKind='ok'; render(); },350); return; }
+  if (button.dataset.skip) { move(button.dataset.skip,'off'); state.selected.delete(button.dataset.skip); state.notice=`${episodes[button.dataset.skip].title} moved to Off the list.`; state.noticeKind='ok'; render(); return; }
+  if (button.dataset.bulkKeep !== undefined) { [...state.selected].forEach(id => move(id,'larder')); state.selected.clear(); state.notice='Selected episodes are kept in Larder.'; state.noticeKind='ok'; render(); return; }
+  if (button.dataset.bulkSkip !== undefined) { const failing=[...state.selected].find(id => id === 'tide-002'); [...state.selected].filter(id => id !== failing).forEach(id => move(id,'off')); state.selected = new Set(failing ? [failing] : []); state.bulkFailure=failing || null; state.notice=failing ? 'Tide Table could not be skipped. Its selection is retained for retry.' : 'Selected episodes moved to Off the list.'; state.noticeKind=failing ? 'error' : 'ok'; render(); return; }
+  if (button.dataset.retry !== undefined) { move(state.bulkFailure,'off'); state.selected.clear(); state.notice=`${episodes[state.bulkFailure].title} moved to Off the list after retry.`; state.noticeKind='ok'; state.bulkFailure=null; render(); return; }
+  if (button.dataset.restore) { move(button.dataset.restore,'undecided'); state.notice=`${episodes[button.dataset.restore].title} restored to Feeds.`; state.noticeKind='ok'; render(); return; }
+  if (button.dataset.work) { const id=button.dataset.work; state.work[id]=state.work[id] === 'downloaded' ? 'preparing' : 'downloading'; render(); setTimeout(() => { state.work[id]=state.work[id] === 'downloading' ? 'downloaded' : 'ready'; render(); },300); return; }
+  if (button.dataset.play) { state.notice=`Playing ${episodes[button.dataset.play].title} (illustrative).`; state.noticeKind='ok'; render(); return; }
+  if (button.dataset.detail) { state.detail=state.detail === button.dataset.detail ? null : button.dataset.detail; render(); return; }
+  if (button.dataset.refresh !== undefined) { state.refreshing=true; state.notice=''; state.feedOperation={ kind:'pending', text:'Refreshing feed metadata…' }; render(); setTimeout(() => { state.refreshing=false; state.lastRefresh='Sep 28, 2026, 10:15 AM'; state.notice='Refresh succeeded; no audio changed.'; state.noticeKind='ok'; state.feedOperation={ kind:'success', text:state.notice }; render(); },300); return; }
+  if (button.dataset.toggleOff !== undefined) { state.offOpen=!state.offOpen; render(); }
+});
+document.addEventListener('change', event => {
+  if (event.target.dataset.select) { event.target.checked ? state.selected.add(event.target.dataset.select) : state.selected.delete(event.target.dataset.select); render(); return; }
+  if (event.target.id === 'all') { state.undecided.forEach(id => event.target.checked ? state.selected.add(id) : state.selected.delete(id)); render(); return; }
+  if (event.target.id === 'count') { state.count=event.target.value === 'custom' ? 'custom' : Number(event.target.value); render(); return; }
+  if (event.target.id === 'custom-count') { state.customCount=Number(event.target.value); return; }
+  if (event.target.id === 'sort') { state.sort=event.target.value; render(); return; }
+  if (event.target.id === 'larder-filter') { state.larderFilter=event.target.value; render(); return; }
+  if (event.target.id === 'default-count') { state.defaultCount=event.target.value === 'custom' ? 'custom' : Number(event.target.value); state.count=state.defaultCount; state.notice='Default intake count saved for this illustrative prototype.'; render(); return; }
+  if (event.target.id === 'future-download') state.futureDownload=event.target.checked;
+  if (event.target.id === 'future-search') state.futureSearch=event.target.value;
+});
+document.addEventListener('input', event => { if (event.target.id === 'apple-url') state.subscriptionURL=event.target.value; });
+render();
+</script></body></html>

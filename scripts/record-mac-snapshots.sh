@@ -19,11 +19,38 @@ set -Eeuo pipefail
 #        (default: every method in WiltedPixelSnapshotTests)
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-build_cache="$repo_root/scripts/build-with-cache.py"
-tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-record-snapshots.XXXXXX")"
-trap 'rm -rf "$tmp_root"' EXIT
+# shellcheck source=lib/test-runner.sh
+source "$repo_root/scripts/lib/test-runner.sh"
+if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
+  wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
+fi
 
 status() { printf '%s\n' "$*" >&2; }
+
+build_cache="$repo_root/scripts/build-with-cache.py"
+# shellcheck source=lib/mac-test-parent.sh
+source "$repo_root/scripts/lib/mac-test-parent.sh"
+# shellcheck source=lib/test-temp-state.sh
+source "$repo_root/scripts/lib/test-temp-state.sh"
+temp_parent="$(cd -P "${TMPDIR:?TMPDIR must be set}" 2>/dev/null && pwd)" || exit 1
+tmp_root="$(mktemp -d "$temp_parent/wilted-record-snapshots.XXXXXX")"
+
+cleanup_tmp_root() {
+  local result=$?
+  trap - EXIT INT TERM HUP
+  if [[ -n "$tmp_root" ]]; then
+    if ! wilted_temp_remove_owned_child "$tmp_root" "$temp_parent" wilted-record-snapshots.; then
+      status "record.cleanup.failed root=$tmp_root"
+      [[ "$result" -ne 0 ]] || result=1
+    fi
+  fi
+  exit "$result"
+}
+trap cleanup_tmp_root EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+wilted_temp_mark_owned "$tmp_root"
 
 root="$tmp_root/record-root"
 mkdir -p "$root/WiltedKit" "$root/Producer" "$root/CloudSync" "$root/Listener"
@@ -40,22 +67,10 @@ xcodegen generate --spec "$root/project.yml" --project "$root" --project-root "$
 
 scheme="$root/Wilted.xcodeproj/xcshareddata/xcschemes/WiltedMac.xcscheme"
 [[ -f "$scheme" ]] || { status "missing generated scheme: $scheme"; exit 1; }
-python3 - "$scheme" <<'PY'
-import sys, xml.etree.ElementTree as ET
-path = sys.argv[1]
-tree = ET.parse(path)
-action = tree.getroot().find("TestAction")
-if action is None:
-    raise SystemExit("generated scheme has no TestAction")
-action.set("shouldUseLaunchSchemeArgsEnv", "NO")
-variables = action.find("EnvironmentVariables")
-if variables is None:
-    variables = ET.SubElement(action, "EnvironmentVariables")
-ET.SubElement(variables, "EnvironmentVariable", {
-    "key": "WILTED_RECORD_SNAPSHOTS", "value": "1", "isEnabled": "YES",
-})
-tree.write(path, encoding="UTF-8", xml_declaration=True)
-PY
+test_tmp_parent="$tmp_root/xctest-temp"
+mkdir -p "$test_tmp_parent"
+test_tmp_parent="$(cd -P "$test_tmp_parent" && pwd)"
+wilted_mac_test_scheme_configure "$scheme" "$test_tmp_parent" WILTED_RECORD_SNAPSHOTS=1
 
 declare -a only=()
 if [[ $# -gt 0 ]]; then
@@ -69,16 +84,18 @@ fi
 snapshots="WiltedMacTests/__Snapshots__/WiltedPixelSnapshotTests"
 
 status "record.start methods=${*:-all}"
-python3 "$build_cache" run xcode mac-snapshot-recording -- xcodebuild test \
+command_status=0
+WILTED_TEST_TMPDIR="$test_tmp_parent" python3 "$build_cache" run xcode mac-snapshot-recording -- xcodebuild test \
   -project "$root/Wilted.xcodeproj" \
   -scheme WiltedMac \
   -destination 'platform=macOS' \
   -parallel-testing-enabled NO \
-  "${only[@]}" >"$tmp_root/record.log" 2>&1 || {
+  "${only[@]}" >"$tmp_root/record.log" 2>&1 || command_status=$?
+if [[ "$command_status" -ne 0 ]]; then
     status 'record.failed; last 40 lines follow'
     tail -40 "$tmp_root/record.log" >&2
-    exit 1
-  }
+    exit "$command_status"
+fi
 
 # Copy every baseline back and let git report what actually moved. Deciding
 # here which files "changed" would only duplicate what the working tree already

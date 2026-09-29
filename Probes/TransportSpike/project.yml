@@ -1,0 +1,104 @@
+name: TransportSpike
+
+# Throwaway spike hosts for the CloudKit transfer and handoff probes. Generate with:
+#   xcodegen generate --spec Probes/TransportSpike/project.yml
+# The generated TransportSpike.xcodeproj is gitignored.
+
+options:
+  bundleIdPrefix: com.zerodelta.wilted.spike
+  deploymentTarget:
+    macOS: "14.0"
+    iOS: "17.0"
+  developmentLanguage: en
+
+packages:
+  TransportSpike:
+    path: .
+
+configs:
+  Debug: debug
+  Development: debug
+  Release: release
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: 4CJ49V6QHW
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  SpikeMac:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: App
+        includes:
+          - SpikeMacApp.swift
+          - SpikeRunnerView.swift
+    dependencies:
+      - package: TransportSpike
+        product: SpikeCore
+      - package: TransportSpike
+        product: SpikeCloudKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.spike.mac
+        PRODUCT_NAME: SpikeMac
+        CODE_SIGN_ENTITLEMENTS: App/SpikeMac.entitlements
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Spike Mac
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_NSHumanReadableCopyright: Throwaway transport spike
+
+  SpikeiOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: App
+        includes:
+          - SpikeiOSApp.swift
+          - SpikeRunnerView.swift
+    dependencies:
+      - package: TransportSpike
+        product: SpikeCore
+      - package: TransportSpike
+        product: SpikeCloudKit
+    # The plist is generated inside the gitignored .xcodeproj so no untracked file lands in the tree.
+    info:
+      path: TransportSpike.xcodeproj/SpikeiOS-Info.plist
+      properties:
+        CFBundleDisplayName: Spike iOS
+        # Silent pushes from the handoff subscription wake the app through this mode.
+        UIBackgroundModes:
+          - remote-notification
+        # Lets the JSON report be pulled from Documents through Files or devicectl.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.spike.ios
+        PRODUCT_NAME: SpikeiOS
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_ENTITLEMENTS: App/SpikeiOS.entitlements
+        INFOPLIST_FILE: TransportSpike.xcodeproj/SpikeiOS-Info.plist
+
+schemes:
+  SpikeMac:
+    build:
+      targets:
+        SpikeMac: all
+    run:
+      config: Development
+  SpikeiOS:
+    build:
+      targets:
+        SpikeiOS: all
+    run:
+      config: Development

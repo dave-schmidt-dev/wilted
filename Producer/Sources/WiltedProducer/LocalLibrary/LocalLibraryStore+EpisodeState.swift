@@ -4,7 +4,129 @@ import SwiftData
 import WiltedDomain
 import WiltedSync
 
+public struct PodcastQueueAppendResult: Sendable {
+    public let state: PodcastQueueState
+    public let newlyAdded: [ItemID]
+    public let alreadyQueued: [ItemID]
+    public let unresolved: [ItemID]
+    public let queueReadCount: Int
+    public let queueWriteCount: Int
+    public let episodeRecordFetchCount: Int
+}
+
+public struct PodcastEpisodeBatchResult: Sendable {
+    public let committed: [ItemID]
+    public let alreadyAtTarget: [ItemID]
+    public let unresolved: [ItemID]
+    public let retiredAtByID: [ItemID: Timestamp]
+    public let episodeRecordFetchCount: Int
+    public let listeningRecordFetchCount: Int
+    public let saveCount: Int
+}
+
 extension LocalLibraryStore {
+    /// Appends unique IDs in caller order using one queue read and one durable
+    /// replacement. Existing positions and the current episode stay intact.
+    public func appendPodcastQueueEpisodes(_ requested: [ItemID]) throws -> PodcastQueueAppendResult {
+        let state = try podcastQueueState()
+        let unique = uniqueEpisodeIDs(requested)
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+        let byID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
+        let existing = Set(state.episodeIDs)
+        let alreadyQueued = unique.filter { id in
+            guard let record = byID[id.rawValue] else { return false }
+            return existing.contains(id) && record.removalKind == nil
+        }
+        let eligible = unique.filter { id in
+            guard let record = byID[id.rawValue] else { return false }
+            return !existing.contains(id) && record.removalKind == nil
+        }
+        let accepted = Set(alreadyQueued).union(eligible)
+        let unresolved = unique.filter { !accepted.contains($0) }
+        guard !eligible.isEmpty else {
+            return PodcastQueueAppendResult(
+                state: state, newlyAdded: [], alreadyQueued: alreadyQueued, unresolved: unresolved,
+                queueReadCount: 1, queueWriteCount: 0, episodeRecordFetchCount: 1
+            )
+        }
+        let updated = try PodcastQueueState(
+            episodeIDs: state.episodeIDs + eligible, currentEpisodeID: state.currentEpisodeID
+        )
+        try replacePodcastQueue(updated)
+        return PodcastQueueAppendResult(
+            state: updated, newlyAdded: eligible, alreadyQueued: alreadyQueued, unresolved: unresolved,
+            queueReadCount: 1, queueWriteCount: 1, episodeRecordFetchCount: 1
+        )
+    }
+
+    /// Retires a visible Feed selection in one context and one record fetch.
+    /// Missing and dismissed IDs are unresolved; an already-retired row is a
+    /// truthful idempotent success with its stored retirement timestamp.
+    public func retireEpisodes(_ requested: [ItemID], at retiredAt: Timestamp = Timestamp(Date())) throws -> PodcastEpisodeBatchResult {
+        let unique = uniqueEpisodeIDs(requested)
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+        let byID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
+        var committed: [ItemID] = []
+        var unresolved: [ItemID] = []
+        var alreadyAtTarget: [ItemID] = []
+        var retiredAtByID: [ItemID: Timestamp] = [:]
+        for id in unique {
+            guard let record = byID[id.rawValue] else { unresolved.append(id); continue }
+            if record.removalKind == PodcastEpisodeRemovalKind.retired.rawValue {
+                alreadyAtTarget.append(id)
+                if let retiredAt = record.retiredAt { retiredAtByID[id] = Timestamp(retiredAt) }
+                continue
+            }
+            guard record.removalKind == nil else { unresolved.append(id); continue }
+            record.retiredAt = retiredAt.date
+            record.removalKind = PodcastEpisodeRemovalKind.retired.rawValue
+            committed.append(id)
+        }
+        if !committed.isEmpty { try context.save() }
+        return PodcastEpisodeBatchResult(
+            committed: committed, alreadyAtTarget: alreadyAtTarget, unresolved: unresolved,
+            retiredAtByID: retiredAtByID,
+            episodeRecordFetchCount: 1, listeningRecordFetchCount: 0, saveCount: committed.isEmpty ? 0 : 1
+        )
+    }
+
+    /// Restores only Feed-retired rows. A dismissed row remains the stronger
+    /// removal and continues through its existing explicit restore pathway.
+    public func restoreEpisodes(_ requested: [ItemID]) throws -> PodcastEpisodeBatchResult {
+        let unique = uniqueEpisodeIDs(requested)
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+        let byID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
+        let listening = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>())
+        let listeningByID = Dictionary(uniqueKeysWithValues: listening.map { ($0.id, $0) })
+        let now = Date()
+        var committed: [ItemID] = []
+        var unresolved: [ItemID] = []
+        var alreadyAtTarget: [ItemID] = []
+        for id in unique {
+            guard let record = byID[id.rawValue] else { unresolved.append(id); continue }
+            if record.removalKind == nil { alreadyAtTarget.append(id); continue }
+            guard record.removalKind == PodcastEpisodeRemovalKind.retired.rawValue else { unresolved.append(id); continue }
+            record.removalKind = nil; record.retiredAt = nil
+            listeningByID[id.rawValue]?.lastRevisionID = nil
+            listeningByID[id.rawValue]?.updatedAt = now
+            committed.append(id)
+        }
+        if !committed.isEmpty { try context.save() }
+        return PodcastEpisodeBatchResult(
+            committed: committed, alreadyAtTarget: alreadyAtTarget, unresolved: unresolved,
+            retiredAtByID: [:],
+            episodeRecordFetchCount: 1, listeningRecordFetchCount: 1, saveCount: committed.isEmpty ? 0 : 1
+        )
+    }
+
+    private func uniqueEpisodeIDs(_ requested: [ItemID]) -> [ItemID] {
+        var seen = Set<ItemID>()
+        return requested.filter { seen.insert($0).inserted }
+    }
+
     public func savePreparationOutcome(_ outcome: PodcastPreparationOutcome) throws {
         let context = ModelContext(container)
         try upsertPreparationOutcome(outcome, in: context)

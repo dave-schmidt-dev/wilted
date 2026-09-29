@@ -11,7 +11,7 @@ extension WiltedMacModelTests {
     /// 1.2: an admission that raises is named instead of swallowed.
     func testAFailedAutoAddNamesTheFailureInTheStatusLine() async throws {
         let directory = temporaryDirectory("auto-add-failure")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let model = preparedAdmissionModel(in: directory, suffix: "failure")
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
@@ -30,7 +30,7 @@ extension WiltedMacModelTests {
     /// 1.2: the failed admission is held and retried on the next reload.
     func testAutoAddRetriesAFailedMenuAdmissionOnTheNextReload() async throws {
         let directory = temporaryDirectory("auto-add-retry")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let model = preparedAdmissionModel(in: directory, suffix: "retry")
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
@@ -74,7 +74,7 @@ extension WiltedMacModelTests {
                                            preparation: .notPrepared)
         for value in [ready, downloaded, available] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
 
         XCTAssertEqual(model.menuUpcomingEpisodeIDs.count, model.menuWaitingEpisodes.count,
@@ -97,6 +97,7 @@ extension WiltedMacModelTests {
     func testActivePodcastIsExcludedFromLarderPresentationWhilePlayingOrPaused() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         let current = destinationEpisode(
@@ -139,31 +140,52 @@ extension WiltedMacModelTests {
     /// queue; the episode's row, records, and listening state stay.
     func testRemovingADurableMenuEntryLeavesItsLibraryRowUntouched() async throws {
         let directory = temporaryDirectory("menu-remove-leaves-row")
-        defer { try? FileManager.default.removeItem(at: directory) }
+
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts",
                         "--wilted-ui-fixture-prepared"],
             stateDirectoryOverride: directory, preferences: WiltedMacTestPreferences.ephemeral()
         )
         let episode = try XCTUnwrap(model.episodes.first { $0.preparationState.isPrepared })
+        let store = try XCTUnwrap(model.store)
+        let episodeID = try ItemID(rawValue: episode.id)
         model.keepEpisode(episode)
         // The durable add has to land before the removal, or the two writes
         // race and the later add can put the entry back on the queue.
-        await model.waitForPlaybackOperationForTesting()
-        for _ in 0..<100 {
-            if model.podcastQueueIDs.contains(episode.id) { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await waitForFeedDecisionWriters(model)
         XCTAssertTrue(model.podcastQueueIDs.contains(episode.id))
+        let beforeQueue = try await store.podcastQueueState()
+        let beforeRows = try await store.podcastEpisodes()
+        let beforeRow = try XCTUnwrap(beforeRows.first { $0.itemID == episodeID })
+        let beforeReady = try await store.readyRevision(for: episodeID)
+        let beforeAudio = try XCTUnwrap(beforeReady)
+        let beforePreparation = try await store.preparationOutcome(
+            for: episodeID, revisionID: beforeAudio.revision.revisionID
+        )
+        let beforeListening = try await store.listeningState(for: episodeID)
+        let beforeAudioData = try Data(contentsOf: beforeAudio.mediaURL)
+        XCTAssertEqual(beforeQueue.episodeIDs, [episodeID])
 
         model.removeEpisodeFromUpNext(episode.id)
-        for _ in 0..<100 {
-            if !model.podcastQueueIDs.contains(episode.id), model.playbackOperationStatus == nil { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await model.waitForPodcastOperations()
 
         XCTAssertFalse(model.podcastQueueIDs.contains(episode.id),
                        "the durable entry left the queue")
+        let afterQueue = try await store.podcastQueueState()
+        let afterRow = try await store.podcastEpisodes().first { $0.itemID == episodeID }
+        let afterAudio = try await store.readyRevision(for: episodeID)
+        let afterPreparation = try await store.preparationOutcome(
+            for: episodeID, revisionID: beforeAudio.revision.revisionID
+        )
+        let afterListening = try await store.listeningState(for: episodeID)
+        let afterAudioData = try afterAudio.map { try Data(contentsOf: $0.mediaURL) }
+        XCTAssertTrue(afterQueue.episodeIDs.isEmpty, "the durable queue is empty")
+        XCTAssertEqual(afterRow, beforeRow)
+        XCTAssertEqual(afterAudio?.revision, beforeAudio.revision)
+        XCTAssertEqual(afterAudio?.mediaURL, beforeAudio.mediaURL)
+        XCTAssertEqual(afterAudioData, beforeAudioData)
+        XCTAssertEqual(afterPreparation, beforePreparation)
+        XCTAssertEqual(afterListening, beforeListening)
         let retained = try XCTUnwrap(model.episodes.first { $0.id == episode.id },
                                      "removal from the queue is not retirement; the row stays")
         XCTAssertNil(retained.retiredAt)
@@ -249,8 +271,8 @@ extension WiltedMacModelTests {
     /// 1.5: a drop past the last row appends. The index the helper answers
     /// with is the count of the queue the dragged row leaves behind.
     func testTailInsertionIndexAppendsPastTheLastRow() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = wiltedTemporaryDirectory("model-state")
+
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let storeURL = root.appendingPathComponent("library.sqlite")
         var store = try LocalLibraryStore(url: storeURL)
@@ -283,7 +305,7 @@ extension WiltedMacModelTests {
                                         preparation: .prepared(summary: "Ready"))
         for value in [first, second] {
             model.installEpisodeForTesting(value)
-            model.keepEpisode(value)
+            model.seedPodcastQueueMembershipForTesting(value)
         }
         let before = model.podcastQueueIDs
 

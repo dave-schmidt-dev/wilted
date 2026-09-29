@@ -51,7 +51,9 @@ python3 "$repo_root/tests/test_runtime_make_runner.py"
 native_fixture="$tmp_root/native-interrupt-fixture.sh"
 native_proof="$tmp_root/native-interrupt-proof"
 native_bin="$tmp_root/native-bin"
-mkdir -p "$native_bin"
+native_parent="$tmp_root/native-interrupt-parent"
+native_audit_parent="$tmp_root/native-interrupt-audit"
+mkdir -p "$native_bin" "$native_parent" "$native_audit_parent"
 cat >"$native_fixture" <<'FIXTURE'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -84,12 +86,17 @@ FAKE_SWIFT
 chmod +x "$native_bin/swift"
 
 wait_for_native_file() {
-  local file="$1" attempt
-  for attempt in $(seq 1 50); do
+  local file="$1" timeout_seconds="${2:-5}" attempt attempts
+  [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || {
+    printf 'native interruption fixture timeout must be a positive integer, got %s\n' "$timeout_seconds" >&2
+    return 2
+  }
+  attempts=$((timeout_seconds * 10))
+  for ((attempt = 0; attempt < attempts; attempt += 1)); do
     [[ -s "$file" ]] && return 0
     sleep 0.1
   done
-  printf 'native interruption fixture timed out waiting for %s\n' "$file" >&2
+  printf 'native interruption fixture timed out after %ss waiting for %s\n' "$timeout_seconds" "$file" >&2
   return 1
 }
 
@@ -104,15 +111,44 @@ assert_native_stopped() {
   return 1
 }
 
+# Model a proof file published after the old 50-poll window without adding
+# wall-clock delay to this regression suite. The production fixture below uses
+# a separate bounded 20-second readiness allowance for aggregate contention.
+native_fixture_readiness_timeout_seconds=20
+readiness_delay_bin="$tmp_root/readiness-delay-bin"
+readiness_delay_count="$tmp_root/readiness-delay.count"
+readiness_delay_proof="$tmp_root/readiness-delayed.pid"
+mkdir -p "$readiness_delay_bin"
+cat >"$readiness_delay_bin/sleep" <<'SLEEP'
+#!/usr/bin/env bash
+set -euo pipefail
+count=0
+[[ ! -s "$READINESS_DELAY_COUNT" ]] || count="$(<"$READINESS_DELAY_COUNT")"
+count=$((count + 1))
+printf '%s\n' "$count" >"$READINESS_DELAY_COUNT"
+if [[ "$count" -eq 52 ]]; then
+  printf '%s\n' 4242 >"$READINESS_DELAY_PROOF"
+fi
+SLEEP
+chmod +x "$readiness_delay_bin/sleep"
+PATH="$readiness_delay_bin:$PATH" READINESS_DELAY_COUNT="$readiness_delay_count" \
+  READINESS_DELAY_PROOF="$readiness_delay_proof" \
+  wait_for_native_file "$readiness_delay_proof" "$native_fixture_readiness_timeout_seconds"
+[[ "$(<"$readiness_delay_count")" -eq 52 ]] || {
+  printf '%s\n' 'native fixture readiness allowance did not tolerate delayed publication beyond 50 polls' >&2
+  exit 1
+}
+
 sleep 60 &
 native_peer_pid=$!
 native_owned_pids="$native_peer_pid"
 env WILTED_BOUNDED_ENTRY=1 NATIVE_SELF_TEST=1 \
   PATH="$native_bin:$PATH" NATIVE_INTERRUPT_TEST_COMMAND="$native_fixture" WILTED_INTERRUPT_PROOF_DIR="$native_proof" \
+  TMPDIR="$native_parent" WILTED_NATIVE_TEMP_AUDIT_PARENT="$native_audit_parent" \
   bash "$repo_root/scripts/test-gate.sh" >"$tmp_root/native-interrupt.log" 2>&1 &
 native_gate_pid=$!
 native_owned_pids="$native_owned_pids $native_gate_pid"
-wait_for_native_file "$native_proof/grandchild.pid" || {
+wait_for_native_file "$native_proof/grandchild.pid" "$native_fixture_readiness_timeout_seconds" || {
   cat "$tmp_root/native-interrupt.log" >&2
   exit 1
 }
@@ -130,6 +166,11 @@ set -e
 }
 assert_native_stopped "$native_child_pid" child
 assert_native_stopped "$native_grandchild_pid" descendant
+native_leftover="$(find "$native_parent" -maxdepth 1 -name 'wilted-native-gate.*' -print -quit)"
+[[ -z "$native_leftover" ]] || {
+  printf 'native interruption fixture left owned root %s\n' "$native_leftover" >&2
+  exit 1
+}
 kill -0 "$native_peer_pid" 2>/dev/null || {
   printf '%s\n' 'native interruption fixture killed unrelated peer' >&2
   exit 1

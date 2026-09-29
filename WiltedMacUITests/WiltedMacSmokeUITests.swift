@@ -2,6 +2,8 @@ import XCTest
 
 @MainActor
 final class WiltedMacSmokeUITests: XCTestCase {
+    private var fixtureStateDirectory: URL?
+    private var launchedFixtureApps: [XCUIApplication] = []
     /// Absorbs:
     /// - testEachDestinationExclusivelyOccupiesTheDetailRegion
     /// - testSidebarListsDestinationsOnlyAndNotTheArticleList (sidebar assertion only)
@@ -645,8 +647,33 @@ final class WiltedMacSmokeUITests: XCTestCase {
 
     private func launch(arguments: [String]) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"] + arguments
+        app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"] + arguments + [
+            "--wilted-ui-fixture-state-directory", fixtureRoot().path,
+        ]
         app.launch()
+        launchedFixtureApps.append(app)
+        guard app.windows.firstMatch.waitForExistence(timeout: 10) else {
+            XCTFail("Fixture app did not present a window before smoke assertions")
+            fatalError("Fixture app window is unavailable")
+        }
         return app
+    }
+
+    private func fixtureRoot() -> URL {
+        if let fixtureStateDirectory { return fixtureStateDirectory }
+        do {
+            let root = try WiltedMacUITemporaryState.fixtureRoot(prefix: "wilted-ui-test")
+            addTeardownBlock { [weak self, root] in
+                self?.launchedFixtureApps.forEach { $0.terminate() }
+                try WiltedMacUITemporaryState.removeFixtureRoot(root)
+            }
+            // Register removal before creating the fixture root.
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+            fixtureStateDirectory = root
+            return root
+        } catch {
+            XCTFail("Could not create owned UI fixture root: \(error)")
+            fatalError("The UI test runner temporary directory is unavailable")
+        }
     }
 }

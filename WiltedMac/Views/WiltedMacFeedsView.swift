@@ -14,6 +14,9 @@ struct WiltedMacFeedsView: View {
     @Bindable private var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
     @State private var isOffListExpanded = false
+    @State private var selectedFeedEpisodeIDs: Set<String> = []
+    /// This changes one request only; Settings remains the saved default.
+    @State private var subscriptionInitialMetadataOverride: Int?
 
     init(model: WiltedMacModel) {
         _model = Bindable(model)
@@ -28,8 +31,8 @@ struct WiltedMacFeedsView: View {
                 .fixedSize(horizontal: false, vertical: true)
             addFeedControl
             inbox
-            restorableEpisodes
             feedManagement
+            restorableEpisodes
         }
     }
 
@@ -61,9 +64,11 @@ struct WiltedMacFeedsView: View {
                     ForEach(Array(model.skippedFeedEpisodes.enumerated()), id: \.element.id) { index, episode in
                         if index > 0 { Divider() }
                         restorableRow(
-                            title: episode.title,
+                            presentation: episode.presentation,
                             detail: "Skipped",
-                            identifier: "wilted-feeds-restore-skipped-\(episode.id)"
+                            identifier: "wilted-feeds-restore-skipped-\(episode.id)",
+                            isPending: model.pendingFeedDecisionIDs.contains(episode.id),
+                            failed: model.failedFeedDecisionIDs.contains(episode.id)
                         ) {
                             model.restoreSkippedFeedEpisode(episode)
                         }
@@ -71,9 +76,9 @@ struct WiltedMacFeedsView: View {
                     ForEach(Array(model.dismissedEpisodes.enumerated()), id: \.element.id) { index, dismissal in
                         if index > 0 || !model.skippedFeedEpisodes.isEmpty { Divider() }
                         restorableRow(
-                            title: dismissal.title,
+                            presentation: dismissal.presentation,
                             detail: "Removed",
-                            identifier: "wilted-feeds-restore-removed-\(dismissal.id)"
+                            identifier: "wilted-feeds-restore-removed-\(dismissal.id)", isPending: false, failed: false
                         ) {
                             model.restoreEpisode(dismissal)
                         }
@@ -88,21 +93,43 @@ struct WiltedMacFeedsView: View {
     }
 
     private func restorableRow(
-        title: String, detail: String, identifier: String, action: @escaping () -> Void
+        presentation: WiltedMacEpisodePresentation,
+        detail: String,
+        identifier: String,
+        isPending: Bool,
+        failed: Bool,
+        action: @escaping () -> Void
     ) -> some View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
+                Text(presentation.title)
                     .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     .lineLimit(1)
-                Text(detail)
+                WiltedMacEpisodeMetadata(
+                    presentation: presentation,
+                    lifecycleLabel: detail,
+                    identifier: identifier.replacingOccurrences(of: "restore", with: "metadata")
+                )
+                if isPending {
+                    HStack(spacing: WiltedTheme.Spacing.xSmall) {
+                        ProgressView().controlSize(.small)
+                        Text("Restoring…")
+                    }
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier(identifier.replacingOccurrences(of: "restore", with: "pending"))
+                } else if failed {
+                    Text("Could not restore. Try again.")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier(identifier.replacingOccurrences(of: "restore", with: "failed"))
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Button("Restore", action: action)
-                .accessibilityLabel("Restore \(title)")
+                .disabled(isPending)
+                .accessibilityLabel("Restore \(presentation.title)")
                 .accessibilityIdentifier(identifier)
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
@@ -114,27 +141,56 @@ struct WiltedMacFeedsView: View {
     /// Skip -- and nothing else. The download, the preparation and the play
     /// all belong to the Menu, where the episode waits once kept.
     @ViewBuilder private var inbox: some View {
+        let visible = model.feedsEpisodes
+        let visibleIDs = Set(visible.map(\.id))
+        let selected = visible.filter { selectedFeedEpisodeIDs.contains($0.id) }
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             HStack {
                 Text("New episodes")
                     .wiltedFont(.title)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 Spacer()
-                Text("\(model.feedsEpisodes.count)")
+                Text("\(visible.count)")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-feeds-count")
             }
-            if model.feedsEpisodes.isEmpty {
+            WiltedMacPodcastOperationMessage(model: model)
+            if visible.isEmpty {
                 Text("Nothing new. Every episode from your feeds is already in Larder.")
                     .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-feeds-empty")
             } else {
+                HStack(spacing: WiltedTheme.Spacing.small) {
+                    WiltedMacFeedsSelectionControl(
+                        state: selected.isEmpty ? .off : (selected.count == visible.count ? .on : .mixed),
+                        identifier: "wilted-feeds-select-all"
+                    ) {
+                        selectedFeedEpisodeIDs = selected.count == visible.count ? [] : visibleIDs
+                    }
+                    Text("\(selected.count) selected")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    Spacer()
+                    Button("Keep selected") { model.decideFeedEpisodes(.keep, episodes: selected) }
+                        .disabled(selected.isEmpty || selected.contains { model.pendingFeedDecisionIDs.contains($0.id) })
+                        .accessibilityIdentifier("wilted-feeds-keep-selected")
+                    Button("Skip selected") { model.decideFeedEpisodes(.skip, episodes: selected) }
+                        .disabled(selected.isEmpty || selected.contains { model.pendingFeedDecisionIDs.contains($0.id) })
+                        .accessibilityIdentifier("wilted-feeds-skip-selected")
+                }
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(model.feedsEpisodes.enumerated()), id: \.element.id) { index, episode in
+                    ForEach(Array(visible.enumerated()), id: \.element.id) { index, episode in
                         if index > 0 { Divider() }
-                        WiltedMacFeedsEpisodeRow(model: model, episode: episode)
+                        WiltedMacFeedsEpisodeRow(
+                            model: model, episode: episode,
+                            isSelected: selectedFeedEpisodeIDs.contains(episode.id),
+                            setSelected: { selected in
+                                if selected { selectedFeedEpisodeIDs.insert(episode.id) }
+                                else { selectedFeedEpisodeIDs.remove(episode.id) }
+                            }
+                        )
                     }
                 }
                 .wiltedCard(colorScheme)
@@ -147,6 +203,9 @@ struct WiltedMacFeedsView: View {
                 // enough; the identifier creates the container on its own.
             }
         }
+        .onChange(of: visibleIDs) { _, currentVisibleIDs in
+            selectedFeedEpisodeIDs.formIntersection(currentVisibleIDs)
+        }
     }
 
     /// Subscribing behind a button, matching the Larder's Add article. The
@@ -156,6 +215,7 @@ struct WiltedMacFeedsView: View {
         HStack {
             Spacer()
             Button {
+                subscriptionInitialMetadataOverride = nil
                 model.isPresentingSubscribeComposer = true
             } label: {
                 Label(WiltedScreenCopy.subscribeToPodcast, systemImage: "plus")
@@ -182,6 +242,20 @@ struct WiltedMacFeedsView: View {
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: WiltedTheme.Spacing.medium) {
+                Picker("Initial metadata", selection: subscriptionInitialMetadataCount) {
+                    Text("5 latest").tag(5)
+                    Text("10 latest").tag(10)
+                }
+                .accessibilityIdentifier("wilted-podcast-subscribe-initial-metadata-count")
+                TextField("Custom 1–100", value: subscriptionInitialMetadataCount, format: .number)
+                    .frame(width: 120)
+                    .accessibilityIdentifier("wilted-podcast-subscribe-initial-metadata-custom")
+                Text("Metadata only")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-podcast-subscribe-initial-metadata-note")
+            }
+            HStack(spacing: WiltedTheme.Spacing.medium) {
                 WiltedMacLinkField(
                     text: $model.podcastFeedDraft,
                     placeholder: "https://example.com/podcast/feed.xml",
@@ -193,7 +267,9 @@ struct WiltedMacFeedsView: View {
                     Button("Cancel") { model.cancelPodcastSubscriptionCheck() }
                         .accessibilityIdentifier("wilted-podcast-subscribe-cancel")
                 } else {
-                    Button("Subscribe") { model.addPodcastFeedDraft() }
+                    Button("Subscribe") {
+                        subscribe()
+                    }
                         .keyboardShortcut(.return)
                         .accessibilityIdentifier("wilted-podcast-subscribe")
                 }
@@ -213,6 +289,22 @@ struct WiltedMacFeedsView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-podcast-subscribe-composer")
+    }
+
+    private var subscriptionInitialMetadataCount: Binding<Int> {
+        Binding(
+            get: { subscriptionInitialMetadataOverride ?? model.automationSettings.initialEpisodeMetadataCount },
+            set: { value in
+                guard WiltedAutomationSettings.validInitialEpisodeMetadataCount(value) != nil else { return }
+                subscriptionInitialMetadataOverride = value
+            }
+        )
+    }
+
+    private func subscribe() {
+        let initialMetadataCount = subscriptionInitialMetadataOverride
+        model.addPodcastFeedDraft(initialMetadataCount: initialMetadataCount)
+        subscriptionInitialMetadataOverride = nil
     }
 
     /// Feeds owns its refresh action at the page header, ahead of either list.

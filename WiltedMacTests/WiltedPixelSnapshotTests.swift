@@ -135,6 +135,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
             )
             let model = WiltedMacModel(
                 arguments: ["--wilted-ui-fixture-ready"],
+                stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
                 preferences: WiltedMacTestPreferences.ephemeral()
             )
             model.selectedNavigation = .settings
@@ -165,7 +166,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
 
     func testMacPlayerShellPixelBaselines() {
         for appearance in WiltedAppearance.allCases {
-            let model = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"], preferences: WiltedMacTestPreferences.ephemeral())
+            let model = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: wiltedTemporaryDirectory("fixture"), preferences: WiltedMacTestPreferences.ephemeral())
             if let article = model.articles.first { model.openNowPlaying(for: article) }
             let variant = WiltedVisualVariant(
                 appearance: appearance,
@@ -186,6 +187,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
     func testMacFullWindowPlayerRendersAtDetailHeight() throws {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         if let article = model.articles.first { model.openNowPlaying(for: article) }
@@ -214,6 +216,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         for appearance in WiltedAppearance.allCases {
             let model = WiltedMacModel(
                 arguments: ["--wilted-ui-fixture-ready"],
+                stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
                 preferences: WiltedMacTestPreferences.ephemeral()
             )
             model.selectedNavigation = .settings
@@ -241,7 +244,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                     "--wilted-ui-fixture-article-flow",
                     "--wilted-ui-fixture-podcasts",
                     "--wilted-ui-fixture-ready"
-                ], preferences: WiltedMacTestPreferences.ephemeral()
+                ], stateDirectoryOverride: wiltedTemporaryDirectory("fixture"), preferences: WiltedMacTestPreferences.ephemeral()
             )
             let variant = WiltedVisualVariant(
                 appearance: appearance,
@@ -526,15 +529,8 @@ final class WiltedPixelSnapshotTests: XCTestCase {
     }
 
     private func baselineTestURL(for testName: String) throws -> URL {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WiltedPixelSnapshotTests", isDirectory: true)
-        if !FileManager.default.fileExists(atPath: tempDir.path) {
-            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        }
+        let tempDir = wiltedTemporaryDirectory("pixel-baseline-test")
         let snapshotURL = tempDir.appendingPathComponent("\(UUID().uuidString)-\(testName).png")
-        addTeardownBlock {
-            try? FileManager.default.removeItem(at: snapshotURL)
-        }
         return snapshotURL
     }
 
