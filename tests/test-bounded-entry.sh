@@ -265,8 +265,8 @@ env WILTED_BOUNDED_ENTRY=1 NATIVE_SELF_TEST=1 NATIVE_INTERRUPT_UI_TEST=1 \
   bash "$repo_root/scripts/test-gate.sh" >"$tmp_root/native-ui-interrupt.log" 2>&1 &
 ui_gate_pid=$!
 native_owned_pids="$native_owned_pids $ui_gate_pid"
-wait_for_native_file "$ui_proof/grandchild.pid" || { cat "$tmp_root/native-ui-interrupt.log" >&2; exit 1; }
-wait_for_native_file "$ui_lock_helper_pid_proof" || { cat "$tmp_root/native-ui-interrupt.log" >&2; exit 1; }
+wait_for_native_file "$ui_proof/grandchild.pid" "$native_fixture_readiness_timeout_seconds" || { cat "$tmp_root/native-ui-interrupt.log" >&2; exit 1; }
+wait_for_native_file "$ui_lock_helper_pid_proof" "$native_fixture_readiness_timeout_seconds" || { cat "$tmp_root/native-ui-interrupt.log" >&2; exit 1; }
 ui_child_pid="$(<"$ui_proof/child.pid")"
 ui_descendant_pid="$(<"$ui_proof/grandchild.pid")"
 ui_lock_helper_pid="$(<"$ui_lock_helper_pid_proof")"
@@ -281,7 +281,7 @@ wait "$ui_gate_pid"
 ui_result=$?
 set -e
 [[ "$ui_result" -eq 143 ]] || { cat "$tmp_root/native-ui-interrupt.log" >&2; exit 1; }
-wait_for_native_file "$ui_lock_publication_proof" || { cat "$tmp_root/native-ui-interrupt.log" >&2; exit 1; }
+wait_for_native_file "$ui_lock_publication_proof" "$native_fixture_readiness_timeout_seconds" || { cat "$tmp_root/native-ui-interrupt.log" >&2; exit 1; }
 ui_lock_pid="$(<"$ui_lock_publication_proof")"
 [[ "$ui_lock_pid" == "$ui_lock_helper_pid" ]] || {
   printf 'native UI-lock fixture published unexpected PID %s (helper %s)\n' "$ui_lock_pid" "$ui_lock_helper_pid" >&2

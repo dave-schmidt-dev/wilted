@@ -327,15 +327,18 @@ parse_xctest_output_count() {
       line = $0
       sub(/^.*Executed /, "", line)
       sub(/ tests,.*$/, "", line)
-      if (line ~ /^[0-9]+$/) last = line
+      if (line ~ /^[0-9]+$/) { xctest = line; seen = 1 }
     }
+    # Each Swift Testing product prints its own run summary (a package with an
+    # XCTest-only product also prints an empty one), so they add up rather
+    # than the last one winning.
     /Test run with [0-9]+ tests / {
       line = $0
       sub(/^.*Test run with /, "", line)
       sub(/ tests.*$/, "", line)
-      if (line ~ /^[0-9]+$/) last = line
+      if (line ~ /^[0-9]+$/) { swift_testing += line; seen = 1 }
     }
-    END { if (last != "") print last }
+    END { if (seen) print xctest + swift_testing }
   ' "$output_file")"
   if [[ -z "$reported" ]]; then
     reported="$(grep -Ec "^Test Case '.*' (passed|failed|skipped)" "$output_file" || true)"

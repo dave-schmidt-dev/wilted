@@ -510,7 +510,8 @@ assert_stray_host_cleanup_contract
 
 assert_ios_mvp_journey_contract() {
   local fixture="$repo_root/WiltediOS/ListenerMVPFixture.swift"
-  local app="$repo_root/WiltediOS/WiltediOSApp.swift"
+  # The fixture launch path moved out of the thin app launcher with the library root swap.
+  local app="$repo_root/WiltediOS/LegacyListenerRoot.swift"
   local listener_view="$repo_root/WiltediOS/ListenerAppView.swift"
   local journey="$repo_root/WiltediOSUITests/WiltediOSMVPFlowUITests.swift"
 

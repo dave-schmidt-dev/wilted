@@ -51,6 +51,7 @@ class BoundedRunnerTests(unittest.TestCase):
         self.supervisors: list[subprocess.Popen[str]] = []
         self.fixture_identities: dict[int, tuple[str, int]] = {}
         self.fixture_number = 0
+        self.stderr_seen: dict[int, str] = {}
 
     def tearDown(self) -> None:
         for supervisor in self.supervisors:
@@ -152,11 +153,20 @@ class BoundedRunnerTests(unittest.TestCase):
         self.fail(f"owned child is still live: {pid}")
 
     def wait_tracked(self, process: subprocess.Popen[str], pid: int, timeout: float = 5) -> None:
+        # Read the raw fd: select() cannot see lines already held in a text-mode buffer.
+        seen = self.stderr_seen.setdefault(process.pid, "")
+        fd = process.stderr.fileno()
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            ready, _, _ = select.select([process.stderr], [], [], .1)
-            if ready and f"tracked pid={pid}" in process.stderr.readline():
+            if f"tracked pid={pid}" in seen:
                 return
+            ready, _, _ = select.select([fd], [], [], .1)
+            if ready:
+                chunk = os.read(fd, 4096)
+                if not chunk:
+                    break
+                seen += chunk.decode(errors="replace")
+                self.stderr_seen[process.pid] = seen
         self.fail(f"runner never tracked separate descendant {pid}")
 
     def finish(self, process: subprocess.Popen[str]) -> tuple[int, str]:
@@ -239,8 +249,8 @@ class BoundedRunnerTests(unittest.TestCase):
     def test_long_command_emits_progress_without_capturing_stdout(self) -> None:
         env = os.environ | {"WILTED_BOUNDED_HEARTBEAT_SECONDS": "0.05"}
         result = subprocess.run(
-            [PYTHON, str(RUNNER), "--timeout-seconds", "2", "--", "/bin/sh", "-c", "sleep .2"],
-            text=True, capture_output=True, check=False, timeout=4, env=env,
+            [PYTHON, str(RUNNER), "--timeout-seconds", "10", "--", "/bin/sh", "-c", "sleep 1.5"],
+            text=True, capture_output=True, check=False, timeout=15, env=env,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("run-bounded: running", result.stderr)
@@ -269,12 +279,17 @@ class BoundedRunnerTests(unittest.TestCase):
     def test_parallel_separate_groups_survive_leader_exit_cleanup(self) -> None:
         readiness_race = self.path / "readiness-race.ready"
         readiness_race.touch()
-        with mock.patch.object(Path, "read_text", side_effect=["", "12345"]) as read_text:
+        # The PID is synthetic: never let teardown adopt a real process that reuses it.
+        with (
+            mock.patch.object(Path, "read_text", side_effect=["", "12345"]) as read_text,
+            mock.patch.object(self, "_track_fixture_pid"),
+        ):
             self.assertEqual(self.wait_file(readiness_race), 12345)
         self.assertEqual(read_text.call_count, 2)
 
-        launched = [self.command("separate", timeout=30) for _ in range(12)]
-        launched += [self.command("exit-separate", timeout=30) for _ in range(13)]
+        # The runner budget must outlast the serial observation waits below under load.
+        launched = [self.command("separate", timeout=120) for _ in range(12)]
+        launched += [self.command("exit-separate", timeout=120) for _ in range(13)]
         children = [self.wait_file(ready) for _, ready, _ in launched]
         self.assertEqual(len(set(children)), 25)
         for pid in children:
