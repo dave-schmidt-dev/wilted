@@ -8,6 +8,12 @@ public protocol CloudKitZoneBootstrap: Sendable {
     func cancel() async
     /// Invalidates the cached result so the next operation must save the zone again.
     func invalidate() async
+    /// The zone this bootstrap owns, which is also the only zone its engine may fetch.
+    nonisolated var zoneID: CKRecordZone.ID? { get }
+}
+
+public extension CloudKitZoneBootstrap {
+    nonisolated var zoneID: CKRecordZone.ID? { nil }
 }
 
 /// A deterministic offline bootstrap used by injected drivers and tests.
@@ -71,8 +77,10 @@ public actor CloudKitZoneBootstrapState {
 /// Saves the custom zone once per bootstrap instance. CloudKit zone saves are idempotent.
 public actor LiveCloudKitZoneBootstrap: CloudKitZoneBootstrap {
     private let state: CloudKitZoneBootstrapState
+    public nonisolated let zoneID: CKRecordZone.ID?
 
     public init(database: CKDatabase, zoneID: CKRecordZone.ID = CKRecordZone.ID(zoneName: "WiltedZone", ownerName: CKCurrentUserDefaultName)) {
+        self.zoneID = zoneID
         let zone = CKRecordZone(zoneID: zoneID)
         self.state = CloudKitZoneBootstrapState {
             _ = try await database.save(zone)

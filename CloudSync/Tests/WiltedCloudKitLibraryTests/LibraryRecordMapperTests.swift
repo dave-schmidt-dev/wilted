@@ -309,10 +309,11 @@ final class CloudKitLibraryTransportTests: XCTestCase {
         }
     }
 
-    func testPublishSendsOwnRecordAndScanReadsDeviceRecordsAndIntents() async throws {
+    /// Polling reads named records (see `LibraryMediaRecordTests`); only `discoverPeers` scans the zone.
+    func testPublishSendsOwnRecordAndDiscoverPeersScansTheZoneOnce() async throws {
         let position = try makePosition()
         let saved = stamped(try mapper.record(playback: position, channel: .nowPlaying), 1_700_000_000)
-        let intent = try LibraryIntent.requestMedia(entryID: item("ep-1"), deviceID: "phone", createdAt: Date(timeIntervalSince1970: 5), id: "i-1")
+        let intent = try LibraryIntent.requestMedia(entryID: item("ep-1"), deviceID: "ipad", createdAt: Date(timeIntervalSince1970: 5), id: "i-1")
         let intentRecord = stamped(try mapper.record(intent: intent), 1_700_000_001)
         let main = ScriptedDriver(send: { [.sent(saved: [saved], failed: [], deleted: [], failedDeletes: [:]), .sendCompleted] })
         // A real factory builds a fresh engine per call, and a stream cannot be re-consumed after cancellation.
@@ -322,13 +323,10 @@ final class CloudKitLibraryTransportTests: XCTestCase {
         let log = FactoryLog()
         let transport = try makeTransport(writer: false, first: main, later: makeScan, log: log)
         try await transport.publish(position, as: .nowPlaying)
-        let records = try await transport.fetchDeviceRecords()
-        XCTAssertEqual(records.nowPlaying.map(\.record), [position])
-        XCTAssertEqual(records.nowPlaying[0].serverModifiedAt, Date(timeIntervalSince1970: 1_700_000_000))
-        XCTAssertTrue(records.progress.isEmpty)
-        let intents = try await transport.listIntents()
-        XCTAssertEqual(intents, [intent])
-        XCTAssertEqual(log.states.count, 2, "each scan reads the whole zone through a stateless engine")
+        XCTAssertTrue(log.states.isEmpty, "publishing creates no scan engine")
+        let devices = try await transport.discoverPeers()
+        XCTAssertEqual(devices, 2, "the phone and the ipad that sent the intent")
+        XCTAssertEqual(log.states.count, 1, "discovery reads the whole zone through one stateless engine")
     }
 
     func testAccountChangeQuarantinesTheTransport() async throws {

@@ -17,6 +17,9 @@ struct LibraryRow: Identifiable, Equatable, Sendable {
     let removalText: String?
     /// "Paused on Mac at mm:ss (as of hh:mm)" from the Mac's last checkpoint for this entry.
     let checkpointText: String?
+    /// True when some device has started the episode and it is not completed; the only rows
+    /// that offer Mark done.
+    var isStarted: Bool = false
 }
 
 /// How the removed section is ordered, always newest first.
@@ -51,6 +54,8 @@ final class LibraryAppModel: ObservableObject {
     @Published private(set) var queued: [LibraryRow] = []
     /// Retired or dismissed entries the Mac no longer queues.
     @Published private(set) var removed: [LibraryRow] = []
+    /// Live entries with no queue slot: the episodes still waiting for a Keep or Skip decision.
+    @Published private(set) var new: [LibraryRow] = []
     /// Ordering of `removed`; changing it re-sorts in place without a fetch.
     @Published var removedSort: LibraryRemovedSort = .decisionDate {
         didSet { if removedSort != oldValue { removed = LibraryRowBuilder.sorted(removed, by: removedSort) } }
@@ -61,11 +66,43 @@ final class LibraryAppModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var lastSynchronizedAt: Date?
     @Published private(set) var accountQuarantined = false
+    /// On-demand audio state per entry; an entry with no value is `.available`. Written by
+    /// `LibraryAppModel+Media`, which owns the request, download, verify and cache flow.
+    @Published var media: [ItemID: LibraryMediaState] = [:]
+    /// What "Continue from Mac" would do right now; nil when no other device outranks this one.
+    /// Written by `LibraryAppModel+Handoff`.
+    @Published var continuation: LibraryContinuation?
+    /// Why the phone stopped or could not hand over, in words; nil when there is nothing to say.
+    @Published var handoffMessage: String?
+    /// Decisions sent to the Mac and not yet settled; written by `LibraryAppModel+Decisions`.
+    /// They only shape the display; the phone never writes library state.
+    @Published var decisions: [PendingDecision] = []
+    /// Why a decision was rolled back, per entry, in words.
+    @Published var decisionNotices: [ItemID: String] = [:]
 
-    private let transport: any LibraryTransport
-    private let deviceID: String
-    private let now: @Sendable () -> Date
-    private let clockFormat: LibraryClockFormat
+    let transport: any LibraryTransport
+    let deviceID: String
+    let now: @Sendable () -> Date
+    let mediaCache: any LibraryMediaCache
+    let mediaTiming: LibraryMediaTiming
+    /// This device's side of live handoff; the only writer of its playback records.
+    let coordinator: HandoffCoordinator
+    let handoffTiming: LibraryHandoffTiming
+    let decisionTiming: LibraryDecisionTiming
+    /// The mirrored content as last fetched, before any optimistic overlay.
+    var decisionContent = LibrarySnapshot()
+    /// Entries some device has started, from the last device-record fetch.
+    var startedEntries: Set<ItemID> = []
+    var decisionPoll: Task<Void, Never>?
+    /// Mutable handoff bookkeeping, owned by `LibraryAppModel+Handoff`.
+    let handoffState = LibraryHandoffState()
+    /// Entry durations from the last sync, to clamp a resumed position.
+    var entryDurations: [ItemID: Double] = [:]
+    /// One live request per entry; the run id lets a cancelled run detect that it was replaced.
+    var mediaRuns: [ItemID: LibraryMediaRun] = [:]
+    /// Verified files that still need their `mediaCached` acknowledgement sent to the Mac.
+    var unacknowledgedMedia: [ItemID: RevisionID] = [:]
+    let clockFormat: LibraryClockFormat
     private let recovery: LibraryAccountRecovery?
     private var store: any LibraryStore
     private var reconciler: LibraryReconciler
@@ -78,10 +115,20 @@ final class LibraryAppModel: ObservableObject {
         store: any LibraryStore = InMemoryLibraryStore(),
         deviceID: String,
         recovery: LibraryAccountRecovery? = nil,
+        mediaCache: (any LibraryMediaCache)? = nil,
+        mediaTiming: LibraryMediaTiming = LibraryMediaTiming(),
+        handoffTiming: LibraryHandoffTiming = LibraryHandoffTiming(),
+        decisionTiming: LibraryDecisionTiming = LibraryDecisionTiming(),
         now: @escaping @Sendable () -> Date = { Date() },
         timeZone: TimeZone = .current
     ) {
         self.transport = transport
+        self.mediaCache = mediaCache ?? FileMediaCache(rootURL: FileMediaCache.defaultRoot())
+        self.mediaTiming = mediaTiming
+        self.handoffTiming = handoffTiming
+        self.decisionTiming = decisionTiming
+        self.coordinator = HandoffCoordinator(
+            transport: transport, deviceID: deviceID, clock: now, sleep: handoffTiming.settleSleep)
         self.store = store
         self.deviceID = deviceID
         self.recovery = recovery
@@ -125,9 +172,9 @@ final class LibraryAppModel: ObservableObject {
 
     /// A silent push arrived; returns true when the visible library changed.
     func handleSilentPush() async -> Bool {
-        let before = queued + removed
+        let before = new + queued + removed
         await refresh()
-        return before != queued + removed
+        return before != new + queued + removed
     }
 
     /// Discards the quarantined account's replica and starts from an empty one.
@@ -139,7 +186,11 @@ final class LibraryAppModel: ObservableObject {
         accountQuarantined = false
         queued = []
         removed = []
+        new = []
         checkpoints = [:]
+        continuation = nil
+        discardDecisionsAfterAccountChange()
+        await discardMediaAfterAccountChange()
         await refresh()
     }
 
@@ -153,12 +204,30 @@ final class LibraryAppModel: ObservableObject {
         case let .failure(error):
             errorMessage = Self.message(for: error)
         }
-        if let records = try? await transport.fetchDeviceRecords() {
-            checkpoints = Self.checkpoints(from: records, excluding: deviceID)
-        }
+        let records = try? await transport.fetchDeviceRecords()
+        if let records { checkpoints = Self.checkpoints(from: records, excluding: deviceID) }
         let content = await store.state().content
+        entryDurations = content.entries.compactMapValues(\.durationSeconds)
+        decisionContent = content
+        if let records { startedEntries = Self.startedEntries(from: records) }
+        rebuildRows()
+        await refreshMediaFromCache()
+        if let records { await updateContinuation(from: records) }
+        await resolveDecisions()
+    }
+
+    /// Projects the fetched content, with unsettled decisions laid over it, into the three sections.
+    func rebuildRows() {
+        let visible = LibraryDecisionOverlay.apply(decisions, to: decisionContent)
         (queued, removed) = LibraryRowBuilder.rows(
-            content: content, checkpoints: checkpoints, clock: clockFormat, removedSort: removedSort)
+            content: visible, checkpoints: checkpoints, clock: clockFormat, removedSort: removedSort,
+            started: startedEntries)
+        new = LibraryRowBuilder.newRows(content: visible, checkpoints: checkpoints, clock: clockFormat)
+    }
+
+    /// Entries any device, this one included, has played past the start.
+    static func startedEntries(from records: LibraryDeviceRecords) -> Set<ItemID> {
+        Set((records.nowPlaying + records.progress).filter { $0.record.positionSeconds > 0 }.map(\.record.entryID))
     }
 
     /// The winning record per entry among every device except this one, across both
@@ -206,26 +275,43 @@ enum LibraryRowBuilder {
         content: LibrarySnapshot,
         checkpoints: [ItemID: ObservedPlayback],
         clock: LibraryClockFormat,
-        removedSort: LibraryRemovedSort = .decisionDate
+        removedSort: LibraryRemovedSort = .decisionDate,
+        started: Set<ItemID> = []
     ) -> (queued: [LibraryRow], removed: [LibraryRow]) {
-        func row(_ entry: LibraryEntry) -> LibraryRow {
-            LibraryRow(
-                id: entry.id,
-                title: entry.title,
-                showTitle: content.sources[entry.sourceID]?.title ?? "Unknown show",
-                durationText: entry.durationSeconds.map(LibraryClockFormat.duration),
-                removal: entry.removal,
-                removedAt: entry.removedAt,
-                publishedAt: entry.publishedAt,
-                removalText: removalText(entry.removal),
-                checkpointText: checkpoints[entry.id].map { checkpointText($0, clock: clock) }
-            )
+        let row = { (entry: LibraryEntry) in
+            makeRow(entry, content: content, checkpoints: checkpoints, clock: clock, started: started)
         }
         let queued = content.queue.compactMap { content.entries[$0.entryID] }.map(row)
         let removed = content.entries.values
             .filter { $0.removal != .none && content.slots[$0.id] == nil }
             .map(row)
         return (queued, sorted(removed, by: removedSort))
+    }
+
+    /// Live podcast episodes with no queue slot, newest first: the ones awaiting Keep or Skip.
+    static func newRows(content: LibrarySnapshot, checkpoints: [ItemID: ObservedPlayback], clock: LibraryClockFormat) -> [LibraryRow] {
+        content.entries.values
+            .filter { $0.removal == .none && $0.kind == .podcastEpisode && content.slots[$0.id] == nil }
+            .map { makeRow($0, content: content, checkpoints: checkpoints, clock: clock, started: []) }
+            .sorted { ($0.publishedAt, $0.id.rawValue) > ($1.publishedAt, $1.id.rawValue) }
+    }
+
+    private static func makeRow(
+        _ entry: LibraryEntry, content: LibrarySnapshot, checkpoints: [ItemID: ObservedPlayback],
+        clock: LibraryClockFormat, started: Set<ItemID>
+    ) -> LibraryRow {
+        LibraryRow(
+            id: entry.id,
+            title: entry.title,
+            showTitle: content.sources[entry.sourceID]?.title ?? "Unknown show",
+            durationText: entry.durationSeconds.map(LibraryClockFormat.duration),
+            removal: entry.removal,
+            removedAt: entry.removedAt,
+            publishedAt: entry.publishedAt,
+            removalText: removalText(entry.removal),
+            checkpointText: checkpoints[entry.id].map { checkpointText($0, clock: clock) },
+            isStarted: started.contains(entry.id) && content.listening[entry.id]?.isCompleted != true
+        )
     }
 
     /// Newest first by the chosen date. Decision order puts rows with no `removedAt` after

@@ -154,21 +154,16 @@ final class WiltedMacLibraryPublisherTests: XCTestCase {
         XCTAssertEqual(snapshot.entries[id("a")]?.title, "From A")
     }
 
-    func testCurrentPlaybackPublishesOncePerChange() async throws {
+    func testPublisherNeverWritesPlaybackRecords() async throws {
         let server = makeServer()
         let source = FakeStateSource(state([episode("a")], playback: position("a")))
         let pub = publisher(source, server: server)
-        let first = try await pub.sync()
-        let again = try await pub.sync()
-        let records = try await InMemoryLibraryTransport(deviceID: "phone", server: server).fetchDeviceRecords()
-        XCTAssertTrue(first.playbackPublished)
-        XCTAssertFalse(again.playbackPublished)
-        XCTAssertEqual(records.nowPlaying.map(\.record), [position("a")])
-        XCTAssertEqual(records.progress.map(\.record), [position("a")])
-
+        _ = try await pub.sync()
         await source.set(state([episode("a")], playback: position("a", seconds: 90)))
-        let moved = try await pub.sync()
-        XCTAssertTrue(moved.playbackPublished)
+        _ = try await pub.sync()
+        let records = try await InMemoryLibraryTransport(deviceID: "phone", server: server).fetchDeviceRecords()
+        XCTAssertTrue(records.nowPlaying.isEmpty, "the handoff coordinator is the only writer of NowPlaying")
+        XCTAssertTrue(records.progress.isEmpty, "the handoff coordinator is the only writer of Progress")
     }
 
     func testIntentsReachTheSinkOnceAndAFailedDeliveryIsRetried() async throws {

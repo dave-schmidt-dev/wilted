@@ -114,8 +114,24 @@ public protocol CloudKitEngineDriver: Sendable {
     var events: AsyncStream<CloudKitEngineEvent> { get async }
     func ensureZone() async throws
     func fetchChanges() async throws
+    /// Fetches only `zoneIDs`, so a zone holding bulk data (audio) is never staged by a state fetch.
+    func fetchChanges(zoneIDs: Set<CKRecordZone.ID>) async throws
     /// Fetches records by identity for explicit, on-demand asset retrieval.
     func fetchRecords(_ ids: [CKRecord.ID]) async throws -> [CKRecord]
+    /// Fetches records by identity through the database, with no engine and no zone scan.
+    /// A record (or zone) that does not exist is omitted rather than failing the call.
+    func fetchRecordsIfPresent(_ ids: [CKRecord.ID], desiredKeys: [CKRecord.FieldKey]?) async throws -> [CKRecord]
+    /// Ensures one more custom zone exists (the media zone), independent of the engine's own zone.
+    func ensureZone(_ zoneID: CKRecordZone.ID) async throws
+    /// Saves one record with a raw `CKModifyRecordsOperation`, overwriting any server copy.
+    /// `progress` receives the fraction (0...1) of the record uploaded so far.
+    func saveRecordRaw(_ record: CKRecord, progress: @escaping @Sendable (Double) -> Void) async throws
+    /// Fetches one record with a raw `CKFetchRecordsOperation` and moves its `assetField` file to
+    /// `destination` before returning, since CloudKit may delete the temporary file afterwards.
+    func fetchAssetRecordRaw(_ id: CKRecord.ID, assetField: String, to destination: URL,
+                             progress: @escaping @Sendable (Double) -> Void) async throws -> CKRecord
+    /// Deletes records with a raw operation; a record that is already gone counts as deleted.
+    func deleteRecordsRaw(_ ids: [CKRecord.ID]) async throws
     func sendChanges() async throws
     func cancelOperations() async
     func resetZoneBootstrap() async
@@ -129,9 +145,34 @@ public typealias CloudKitEngineDriverFactory = @Sendable (Data?) throws -> any C
 public extension CloudKitEngineDriver {
     func ensureZone() async throws {}
     func resetZoneBootstrap() async {}
+    func fetchChanges(zoneIDs: Set<CKRecordZone.ID>) async throws { try await fetchChanges() }
     func fetchRecords(_ ids: [CKRecord.ID]) async throws -> [CKRecord] {
         guard ids.isEmpty else { throw CloudKitSyncError.cloudKit(code: -1, message: "Explicit record fetch is unavailable") }
         return []
+    }
+    func fetchRecordsIfPresent(_ ids: [CKRecord.ID], desiredKeys: [CKRecord.FieldKey]?) async throws -> [CKRecord] {
+        guard ids.isEmpty else { throw Self.rawOperationsUnavailable }
+        return []
+    }
+    func ensureZone(_ zoneID: CKRecordZone.ID) async throws { throw Self.rawOperationsUnavailable }
+    func saveRecordRaw(_ record: CKRecord, progress: @escaping @Sendable (Double) -> Void) async throws {
+        throw Self.rawOperationsUnavailable
+    }
+    func fetchAssetRecordRaw(_ id: CKRecord.ID, assetField: String, to destination: URL,
+                             progress: @escaping @Sendable (Double) -> Void) async throws -> CKRecord {
+        throw Self.rawOperationsUnavailable
+    }
+    func deleteRecordsRaw(_ ids: [CKRecord.ID]) async throws { throw Self.rawOperationsUnavailable }
+    private static var rawOperationsUnavailable: CloudKitSyncError {
+        .cloudKit(code: -1, message: "Raw CloudKit operations are unavailable")
+    }
+}
+
+/// Which zones a `CKSyncEngine` fetch covers. Every Wilted engine is scoped to the zone it owns so
+/// the engine (which eagerly downloads asset bytes) never reads the media zone.
+public enum CloudKitFetchScope {
+    public static func options(zoneIDs: Set<CKRecordZone.ID>) -> CKSyncEngine.FetchChangesOptions {
+        CKSyncEngine.FetchChangesOptions(scope: .zoneIDs(Array(zoneIDs)))
     }
 }
 
@@ -190,10 +231,14 @@ public actor LiveCloudKitEngineDriver: CloudKitEngineDriver {
     private let delegate: CloudKitEngineDelegateProxy
     private let zoneBootstrap: any CloudKitZoneBootstrap
     private let recordFetchCoordinator: CloudKitRecordFetchCoordinator
+    /// Zones `fetchChanges()` covers: the bootstrap's own zone unless a scope is given.
+    public nonisolated let fetchScopeZoneIDs: Set<CKRecordZone.ID>?
+    private var ensuredZones: Set<CKRecordZone.ID> = []
 
     public init(database: CKDatabase, stateSerialization: CKSyncEngine.State.Serialization? = nil,
                 automaticallySync: Bool = false,
                 zoneBootstrap: (any CloudKitZoneBootstrap)? = nil,
+                fetchScope: Set<CKRecordZone.ID>? = nil,
                 recordProvider: @escaping @Sendable (CKRecord.ID) async -> CKRecord? = { _ in nil },
                 recordFetcher: (@Sendable ([CKRecord.ID]) async throws -> [CKRecord])? = nil) {
         self.database = database
@@ -206,7 +251,9 @@ public actor LiveCloudKitEngineDriver: CloudKitEngineDriver {
         var configuration = CKSyncEngine.Configuration(database: database, stateSerialization: stateSerialization, delegate: delegate)
         configuration.automaticallySync = automaticallySync
         self.engine = CKSyncEngine(configuration)
-        self.zoneBootstrap = zoneBootstrap ?? LiveCloudKitZoneBootstrap(database: database)
+        let bootstrap = zoneBootstrap ?? LiveCloudKitZoneBootstrap(database: database)
+        self.zoneBootstrap = bootstrap
+        self.fetchScopeZoneIDs = fetchScope ?? bootstrap.zoneID.map { [$0] }
     }
 
     /// The production recovery constructor. Each call creates a new delegate,
@@ -240,7 +287,12 @@ public actor LiveCloudKitEngineDriver: CloudKitEngineDriver {
 
     public var events: AsyncStream<CloudKitEngineEvent> { get async { delegate.events } }
     public func ensureZone() async throws { try await zoneBootstrap.ensureZone() }
-    public func fetchChanges() async throws { try await engine.fetchChanges() }
+    public func fetchChanges() async throws {
+        if let fetchScopeZoneIDs { try await fetchChanges(zoneIDs: fetchScopeZoneIDs) } else { try await engine.fetchChanges() }
+    }
+    public func fetchChanges(zoneIDs: Set<CKRecordZone.ID>) async throws {
+        try await engine.fetchChanges(CloudKitFetchScope.options(zoneIDs: zoneIDs))
+    }
     public func fetchRecords(_ ids: [CKRecord.ID]) async throws -> [CKRecord] {
         try await recordFetchCoordinator.fetch(ids)
     }
@@ -252,7 +304,10 @@ public actor LiveCloudKitEngineDriver: CloudKitEngineDriver {
         await zoneBootstrap.cancel()
         await engine.cancelOperations()
     }
-    public func resetZoneBootstrap() async { await zoneBootstrap.invalidate() }
+    public func resetZoneBootstrap() async {
+        ensuredZones = []
+        await zoneBootstrap.invalidate()
+    }
     public func addPendingRecordZoneChanges(_ changes: [CKSyncEngine.PendingRecordZoneChange]) async {
         engine.state.add(pendingRecordZoneChanges: changes)
     }
@@ -316,5 +371,118 @@ private actor CloudKitEngineDelegateProxy: CKSyncEngineDelegate {
     func nextRecordZoneChangeBatch(_ context: CKSyncEngine.SendChangesContext, syncEngine: CKSyncEngine) async -> CKSyncEngine.RecordZoneChangeBatch? {
         let scoped = syncEngine.state.pendingRecordZoneChanges.filter { context.options.scope.contains($0) }
         return await CKSyncEngine.RecordZoneChangeBatch(pendingChanges: scoped, recordProvider: recordProvider)
+    }
+}
+
+// MARK: - Raw operations (no engine)
+
+/// Result slot shared between a raw `CKOperation`'s callbacks and the awaiting task.
+private final class RawOperationOutcome: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failure: Error?
+    private var record: CKRecord?
+
+    func fail(_ error: Error) { lock.withLock { if failure == nil { failure = error } } }
+    func succeed(_ value: CKRecord) { lock.withLock { record = value } }
+    var error: Error? { lock.withLock { failure } }
+    var value: CKRecord? { lock.withLock { record } }
+}
+
+extension LiveCloudKitEngineDriver {
+    public func fetchRecordsIfPresent(_ ids: [CKRecord.ID], desiredKeys: [CKRecord.FieldKey]?) async throws -> [CKRecord] {
+        guard !ids.isEmpty else { return [] }
+        let results = try await database.records(for: ids, desiredKeys: desiredKeys)
+        var found: [CKRecord] = []
+        for (_, result) in results {
+            switch result {
+            case let .success(record): found.append(record)
+            case let .failure(error):
+                let code = (error as? CKError)?.code
+                if code == .unknownItem || code == .zoneNotFound { continue }
+                throw error
+            }
+        }
+        return found
+    }
+
+    public func ensureZone(_ zoneID: CKRecordZone.ID) async throws {
+        guard !ensuredZones.contains(zoneID) else { return }
+        _ = try await database.save(CKRecordZone(zoneID: zoneID))
+        ensuredZones.insert(zoneID)
+    }
+
+    public func saveRecordRaw(_ record: CKRecord, progress: @escaping @Sendable (Double) -> Void) async throws {
+        let operation = CKModifyRecordsOperation(recordsToSave: [record], recordIDsToDelete: nil)
+        operation.savePolicy = .allKeys
+        operation.qualityOfService = .userInitiated
+        operation.perRecordProgressBlock = { _, fraction in progress(fraction) }
+        let outcome = RawOperationOutcome()
+        operation.perRecordSaveBlock = { _, result in
+            if case let .failure(error) = result { outcome.fail(error) }
+        }
+        try await run(operation, outcome: outcome) { continuation in
+            operation.modifyRecordsResultBlock = { continuation.resume(with: $0) }
+        }
+    }
+
+    public func fetchAssetRecordRaw(_ id: CKRecord.ID, assetField: String, to destination: URL,
+                                    progress: @escaping @Sendable (Double) -> Void) async throws -> CKRecord {
+        let operation = CKFetchRecordsOperation(recordIDs: [id])
+        operation.qualityOfService = .userInitiated
+        operation.perRecordProgressBlock = { _, fraction in progress(fraction) }
+        let outcome = RawOperationOutcome()
+        // The asset's temporary file is only guaranteed for this callback, so it moves here.
+        operation.perRecordResultBlock = { _, result in
+            switch result {
+            case let .failure(error): outcome.fail(error)
+            case let .success(record):
+                guard let asset = record[assetField] as? CKAsset, let source = asset.fileURL else {
+                    outcome.fail(CloudKitSyncError.assetUnavailable(id.recordName))
+                    return
+                }
+                do {
+                    try? FileManager.default.removeItem(at: destination)
+                    try FileManager.default.moveItem(at: source, to: destination)
+                    outcome.succeed(record)
+                } catch { outcome.fail(CloudKitSyncError.assetCopyFailed(error.localizedDescription)) }
+            }
+        }
+        try await run(operation, outcome: outcome) { continuation in
+            operation.fetchRecordsResultBlock = { continuation.resume(with: $0) }
+        }
+        guard let record = outcome.value else { throw CloudKitSyncError.assetUnavailable(id.recordName) }
+        return record
+    }
+
+    public func deleteRecordsRaw(_ ids: [CKRecord.ID]) async throws {
+        guard !ids.isEmpty else { return }
+        let operation = CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: ids)
+        operation.qualityOfService = .userInitiated
+        let outcome = RawOperationOutcome()
+        operation.perRecordDeleteBlock = { _, result in
+            if case let .failure(error) = result, (error as? CKError)?.code != .unknownItem { outcome.fail(error) }
+        }
+        do {
+            try await run(operation, outcome: outcome) { continuation in
+                operation.modifyRecordsResultBlock = { continuation.resume(with: $0) }
+            }
+        } catch let error as CKError where error.code == .zoneNotFound || error.code == .unknownItem {
+            return
+        }
+    }
+
+    /// Adds `operation` to the database, cancelling it with the calling task, and throws the first
+    /// recorded per-record failure even when the operation as a whole reports success.
+    private func run(_ operation: CKDatabaseOperation, outcome: RawOperationOutcome,
+                     install: (CheckedContinuation<Void, Error>) -> Void) async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                install(continuation)
+                database.add(operation)
+            }
+        } onCancel: {
+            operation.cancel()
+        }
+        if let error = outcome.error { throw error }
     }
 }

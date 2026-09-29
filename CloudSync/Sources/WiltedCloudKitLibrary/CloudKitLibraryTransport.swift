@@ -21,8 +21,8 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     private enum Operation { case fetch, send }
     private let driverFactory: CloudKitEngineDriverFactory
     private let outbox: CloudKitLibraryOutbox
-    private let log = Logger(subsystem: "com.zerodelta.wilted", category: "CloudKitLibraryTransport")
-    private var driver: any CloudKitEngineDriver
+    let log = Logger(subsystem: "com.zerodelta.wilted", category: "CloudKitLibraryTransport")
+    var driver: any CloudKitEngineDriver
     private var mainEpoch = 0
     private var activeEpoch = -1
     private var consumer: Task<Void, Never>?
@@ -31,14 +31,23 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     private var resetCount = 0
     private var scanCount = 0
     private var operationGenerationValue: UInt64 = 0
-    private var quarantined = false
+    var quarantined = false
     private var knownOwnerToken: String?
     private var operation: Operation?
     private var waiter: CheckedContinuation<Void, Error>?
     private var fetchAcc = LibraryFetchAccumulator()
     private var sendAcc = LibrarySendAccumulator()
-    private var serverRecords: [String: CKRecord] = [:]
+    var serverRecords: [String: CKRecord] = [:]
     private var busy = false
+    /// Devices and entries learned from fetched records, so targeted fetches know which names to ask for.
+    var peers = LibraryPeerDirectory()
+    var intentCache: [String: LibraryIntent] = [:]
+    /// Outcomes already fetched; an outcome is immutable, so a cached one never needs refreshing.
+    var outcomeCache: [String: IntentOutcome] = [:]
+    /// This device's own sent intent ids; nil until first loaded from its index record.
+    var ownIntentIDs: Set<String>?
+    /// Seconds without upload or download progress before a media transfer is abandoned.
+    let mediaWatchdogInterval: TimeInterval
     private var gate: [CheckedContinuation<Void, Never>] = []
     private let accountContinuation: AsyncStream<CloudKitAccountChangeSignal>.Continuation
     public private(set) var provisionalFetchToken: LibraryChangeToken?
@@ -49,7 +58,9 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     public init(deviceID: String, isLibraryWriter: Bool, driver: any CloudKitEngineDriver,
                 driverFactory: @escaping CloudKitEngineDriverFactory, outbox: CloudKitLibraryOutbox,
                 state: LibraryChangeToken? = nil, knownOwnerToken: String? = nil,
-                mapper: LibraryRecordMapper = LibraryRecordMapper()) throws {
+                mapper: LibraryRecordMapper = LibraryRecordMapper(),
+                mediaWatchdogInterval: TimeInterval = 300) throws {
+        self.mediaWatchdogInterval = mediaWatchdogInterval
         self.deviceID = deviceID
         self.isLibraryWriter = isLibraryWriter
         self.driver = driver
@@ -155,6 +166,8 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         let id = try mapper.recordID(intent: intent).recordName
         // An intent is immutable, so an existing record with this id is the same request.
         try await write(name: id, conflictIsSuccess: true) { try self.mapper.record(intent: intent, existing: $0) }
+        // Second write: if it fails the caller retries `send`, and the immutable intent above is then a no-op.
+        try await recordOwnIntent(intent.id)
     }
 
     public func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws {
@@ -163,19 +176,6 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         }
         let id = try mapper.recordID(playback: record, channel: channel).recordName
         try await write(name: id, conflictIsSuccess: false) { try self.mapper.record(playback: record, channel: channel, existing: $0) }
-    }
-
-    public func listIntents() async throws -> [LibraryIntent] {
-        try await scan().intents.values.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
-    }
-
-    public func fetchDeviceRecords() async throws -> LibraryDeviceRecords {
-        let observed = try await scan().playback.values
-        func ordered(_ channel: PlaybackChannel) -> [ObservedPlayback] {
-            observed.filter { $0.channel == channel }.map(\.observed)
-                .sorted { ($0.record.deviceID, $0.record.entryID.rawValue) < ($1.record.deviceID, $1.record.entryID.rawValue) }
-        }
-        return LibraryDeviceRecords(nowPlaying: ordered(.nowPlaying), progress: ordered(.progress))
     }
 
     public func commitFetchedState(_ token: LibraryChangeToken?) async throws {
@@ -202,9 +202,8 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     // MARK: Device records
 
     /// Every device record and intent, read by a throwaway engine with no state so it sees the
-    /// whole zone. The main engine only reports changes since its token, and those are not
-    /// persisted anywhere a cold launch could recover them from.
-    private func scan() async throws -> LibraryFetchAccumulator {
+    /// whole zone. Only `discoverPeers()` uses it: polling reads named records instead.
+    func scan() async throws -> LibraryFetchAccumulator {
         await acquire()
         defer { release() }
         guard !quarantined else { throw CloudKitSyncError.quarantined }
@@ -220,7 +219,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         } catch { throw failure(error) }
     }
 
-    private func write(name: String, conflictIsSuccess: Bool, build: (CKRecord?) throws -> CKRecord) async throws {
+    func write(name: String, conflictIsSuccess: Bool, build: (CKRecord?) throws -> CKRecord) async throws {
         await acquire()
         defer { release() }
         guard !quarantined else { throw CloudKitSyncError.quarantined }
@@ -246,17 +245,18 @@ public actor CloudKitLibraryTransport: LibraryTransport {
 
     // MARK: Engine plumbing
 
-    private func runFetch(on target: any CloudKitEngineDriver, epoch: Int) async throws -> LibraryFetchAccumulator {
+    func runFetch(on target: any CloudKitEngineDriver, epoch: Int) async throws -> LibraryFetchAccumulator {
         try await target.ensureZone()
         fetchAcc = LibraryFetchAccumulator()
         operation = .fetch
         activeEpoch = epoch
         defer { operation = nil; activeEpoch = -1 }
-        try await wait { try await target.fetchChanges() }
+        let zones: Set<CKRecordZone.ID> = [mapper.zoneID]
+        try await wait { try await target.fetchChanges(zoneIDs: zones) }
         return fetchAcc
     }
 
-    private func runSend(saves: [CKRecord], deletes: [CKRecord.ID]) async throws -> LibrarySendAccumulator {
+    func runSend(saves: [CKRecord], deletes: [CKRecord.ID]) async throws -> LibrarySendAccumulator {
         outbox.set(saves)
         defer { outbox.clear() }
         sendAcc = LibrarySendAccumulator()
@@ -314,16 +314,16 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         }
     }
 
-    private func acquire() async {
+    func acquire() async {
         if !busy { busy = true; return }
         await withCheckedContinuation { gate.append($0) }
     }
 
-    private func release() {
+    func release() {
         if gate.isEmpty { busy = false } else { gate.removeFirst().resume() }
     }
 
-    private func failure(_ error: Error) -> Error {
+    func failure(_ error: Error) -> Error {
         if quarantined { return CloudKitSyncError.accountChanged }
         if error is LibraryTransportError || error is LibraryRecordMapperError { return error }
         return CloudKitSyncError.map(error)
@@ -392,9 +392,28 @@ public actor CloudKitLibraryTransport: LibraryTransport {
                 case let .playback(channel, value):
                     serverRecords[name] = record
                     fetchAcc.playback[name] = (channel, ObservedPlayback(record: value, serverModifiedAt: record.modificationDate ?? .distantPast))
+                    peers.note(device: value.deviceID, entry: value.entryID)
                 case let .intent(value):
                     serverRecords[name] = record
                     fetchAcc.intents[name] = value
+                    intentCache[name] = value
+                    peers.note(device: value.deviceID)
+                case let .offer(offer):
+                    serverRecords[name] = record
+                    peers.note(entry: offer.entryID)
+                case let .offerIndex(index):
+                    serverRecords[name] = record
+                    index.entryIDs.forEach { peers.note(entry: $0) }
+                case let .intentIndex(index):
+                    serverRecords[name] = record
+                    peers.note(device: index.deviceID)
+                case let .outcome(outcome):
+                    serverRecords[name] = record
+                    outcomeCache[name] = outcome
+                    peers.note(device: outcome.deviceID)
+                case let .outcomeIndex(index):
+                    serverRecords[name] = record
+                    peers.note(device: index.deviceID)
                 }
             } catch {
                 log.error("Skipping undecodable record \(name, privacy: .public): \(String(describing: error), privacy: .public)")

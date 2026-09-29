@@ -11,11 +11,18 @@ public actor InMemoryLibraryServer {
     private var keyVersions: [LibraryRecordKey: UInt64] = [:]
     private var snapshot = LibrarySnapshot()
     private var intents: [LibraryIntent] = []
+    private var outcomes: [String: IntentOutcome] = [:]
     private var nowPlaying: [String: ObservedPlayback] = [:]
     private var progress: [String: ObservedPlayback] = [:]
     private var manualNow: Date?
+    private var mediaOffers: [ItemID: LibraryMediaOffer] = [:]
+    private var mediaFiles: [ItemID: URL] = [:]
+    private let mediaDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wilted-inmemory-media-\(UUID().uuidString)", isDirectory: true)
 
     public init(writerDeviceID: String) { self.writerDeviceID = writerDeviceID }
+
+    deinit { try? FileManager.default.removeItem(at: mediaDirectory) }
 
     /// Pins the server clock used for `serverModifiedAt`; nil returns to the real clock.
     public func setClock(_ date: Date?) { manualNow = date }
@@ -61,6 +68,18 @@ public actor InMemoryLibraryServer {
 
     func allIntents() -> [LibraryIntent] { intents }
 
+    func publishOutcome(_ outcome: IntentOutcome, from deviceID: String) throws {
+        guard deviceID == writerDeviceID else {
+            throw LibraryTransportError.ownershipViolation("\(deviceID) may not write intent outcomes")
+        }
+        // An outcome is immutable, so a republish after a restart keeps the first answer.
+        if outcomes[outcome.intentID] == nil { outcomes[outcome.intentID] = outcome }
+    }
+
+    func allOutcomes() -> [IntentOutcome] {
+        outcomes.values.sorted { ($0.decidedAt, $0.intentID) < ($1.decidedAt, $1.intentID) }
+    }
+
     func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel, from deviceID: String) throws {
         guard record.deviceID == deviceID else {
             throw LibraryTransportError.ownershipViolation("\(deviceID) may not write records for \(record.deviceID)")
@@ -70,6 +89,46 @@ public actor InMemoryLibraryServer {
         case .nowPlaying: nowPlaying[deviceID] = observed
         case .progress: progress["\(deviceID)/\(record.entryID.rawValue)"] = observed
         }
+    }
+
+    func publishMedia(_ offer: LibraryMediaOffer, fileURL: URL, from deviceID: String) throws {
+        guard deviceID == writerDeviceID else {
+            throw LibraryTransportError.ownershipViolation("\(deviceID) may not publish media")
+        }
+        var stored: URL?
+        if offer.state == .ready {
+            try FileManager.default.createDirectory(at: mediaDirectory, withIntermediateDirectories: true)
+            let copy = mediaDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.copyItem(at: fileURL, to: copy)
+            stored = copy
+        }
+        dropMediaFile(for: offer.entryID)
+        mediaOffers[offer.entryID] = offer
+        mediaFiles[offer.entryID] = stored
+    }
+
+    func allMediaOffers() -> [LibraryMediaOffer] {
+        mediaOffers.values.sorted { $0.entryID.rawValue < $1.entryID.rawValue }
+    }
+
+    /// The server-held file behind a ready offer still current for that entry and revision.
+    func mediaFile(for offer: LibraryMediaOffer) throws -> URL {
+        guard let current = mediaOffers[offer.entryID], current == offer, current.state == .ready,
+              let file = mediaFiles[offer.entryID]
+        else { throw LibraryTransportError.transport("no ready media is offered for \(offer.entryID)") }
+        return file
+    }
+
+    func removeMedia(entryID: ItemID, from deviceID: String) throws {
+        guard deviceID == writerDeviceID else {
+            throw LibraryTransportError.ownershipViolation("\(deviceID) may not remove media")
+        }
+        dropMediaFile(for: entryID)
+        mediaOffers[entryID] = nil
+    }
+
+    private func dropMediaFile(for entryID: ItemID) {
+        if let old = mediaFiles.removeValue(forKey: entryID) { try? FileManager.default.removeItem(at: old) }
     }
 
     func deviceRecords() -> LibraryDeviceRecords {
@@ -133,11 +192,52 @@ public actor InMemoryLibraryTransport: LibraryTransport {
 
     public func listIntents() async throws -> [LibraryIntent] { await server.allIntents() }
 
+    public func publishIntentOutcome(_ outcome: IntentOutcome) async throws {
+        try await server.publishOutcome(outcome, from: deviceID)
+    }
+
+    public func intentOutcomes() async throws -> [IntentOutcome] { await server.allOutcomes() }
+
     public func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws {
         try await server.publish(record, as: channel, from: deviceID)
     }
 
     public func fetchDeviceRecords() async throws -> LibraryDeviceRecords { await server.deviceRecords() }
+
+    public func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws {
+        try await server.publishMedia(offer, fileURL: fileURL, from: deviceID)
+    }
+
+    public func mediaOffers() async throws -> [LibraryMediaOffer] { await server.allMediaOffers() }
+
+    /// Delivers a private copy in fixed-size chunks so `progress` reports real byte counts.
+    public func fetchMedia(_ offer: LibraryMediaOffer, progress: @escaping MediaProgressHandler) async throws -> URL {
+        let source = try await server.mediaFile(for: offer)
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("wilted-media-\(UUID().uuidString)")
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+            throw LibraryTransportError.transport("cannot create delivery file")
+        }
+        do {
+            let reader = try FileHandle(forReadingFrom: source)
+            let writer = try FileHandle(forWritingTo: destination)
+            defer { try? reader.close(); try? writer.close() }
+            var received: Int64 = 0
+            while let chunk = try reader.read(upToCount: Self.deliveryChunkSize), !chunk.isEmpty {
+                try Task.checkCancellation()
+                try writer.write(contentsOf: chunk)
+                received += Int64(chunk.count)
+                progress(received)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
+        return destination
+    }
+
+    public func removeMedia(entryID: ItemID) async throws { try await server.removeMedia(entryID: entryID, from: deviceID) }
+
+    private static let deliveryChunkSize = 1 << 20
 
     public func commitFetchedState(_ token: LibraryChangeToken?) async throws { committedFetchToken = token }
 

@@ -102,9 +102,9 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
 
 // MARK: - Inbound intents
 
-/// Receives follower intents. Phase 2 has no consumer for `requestMedia`, so each one is
-/// recorded and logged and nothing is written; a producer-service consumer plugs in through
-/// `consumer` without the model or any view writing producer state (W-INV-005).
+/// Receives follower intents (`requestMedia`, `mediaCached`), records them, and routes each to
+/// `consumer` (the ledger-guarded media service); without a consumer it only logs. Nothing here
+/// writes producer state (W-INV-005).
 actor WiltedMacLibraryIntentSink: LibraryIntentSink {
     typealias Consumer = @Sendable (LibraryIntent) async throws -> Void
 
@@ -118,16 +118,32 @@ actor WiltedMacLibraryIntentSink: LibraryIntentSink {
         guard seen.insert(intent.id).inserted else { return }
         switch intent.action {
         case let .requestMedia(entryID):
-            recorded.append(intent)
-            guard let consumer else {
-                librarySyncLog.notice("requestMedia for \(entryID.rawValue, privacy: .public) recorded; no Phase 2 consumer, no-op")
-                return
-            }
-            do { try await consumer(intent) } catch {
-                seen.remove(intent.id)
-                recorded.removeAll { $0.id == intent.id }
-                throw error
-            }
+            try await record(intent, describing: "requestMedia for \(entryID.rawValue)")
+        case let .mediaCached(entryID, revisionID, deviceID):
+            try await record(intent, describing: "mediaCached for \(entryID.rawValue) revision \(revisionID.rawValue) on \(deviceID)")
+        case let .keep(entryID):
+            try await record(intent, describing: "keep for \(entryID.rawValue)")
+        case let .skip(entryID):
+            try await record(intent, describing: "skip for \(entryID.rawValue)")
+        case let .markDone(entryID):
+            try await record(intent, describing: "markDone for \(entryID.rawValue)")
+        case let .restore(entryID):
+            try await record(intent, describing: "restore for \(entryID.rawValue)")
+        case let .reorder(entryID, afterEntryID):
+            try await record(intent, describing: "reorder of \(entryID.rawValue) after \(afterEntryID?.rawValue ?? "front")")
+        }
+    }
+
+    private func record(_ intent: LibraryIntent, describing summary: String) async throws {
+        recorded.append(intent)
+        guard let consumer else {
+            librarySyncLog.notice("\(summary, privacy: .public) recorded; no consumer, no-op")
+            return
+        }
+        do { try await consumer(intent) } catch {
+            seen.remove(intent.id)
+            recorded.removeAll { $0.id == intent.id }
+            throw error
         }
     }
 }
@@ -146,6 +162,10 @@ struct WiltedMacUnavailableLibraryTransport: LibraryTransport {
     func listIntents() async throws -> [LibraryIntent] { throw failure }
     func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws { throw failure }
     func fetchDeviceRecords() async throws -> LibraryDeviceRecords { throw failure }
+    func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws { throw failure }
+    func mediaOffers() async throws -> [LibraryMediaOffer] { throw failure }
+    func fetchMedia(_ offer: LibraryMediaOffer, progress: @escaping MediaProgressHandler) async throws -> URL { throw failure }
+    func removeMedia(entryID: ItemID) async throws { throw failure }
 }
 
 enum WiltedMacLibraryTransports {
@@ -204,6 +224,10 @@ final class WiltedMacLibrarySyncController {
     private(set) var lastReport: LibraryPublishReport?
     private(set) var lastFailure: String?
     private(set) var passCount = 0
+    /// The media service, inbound poller and intent ledger; stopped with the controller.
+    var inbound: WiltedMacInboundRuntime?
+    /// The only writer of the Mac's playback records; stopped with the controller.
+    var handoff: WiltedMacHandoffController?
     private weak var model: WiltedMacModel?
     private let triggers: AsyncStream<Void>.Continuation
     private var loop: Task<Void, Never>?
@@ -232,8 +256,13 @@ final class WiltedMacLibrarySyncController {
         observe()
     }
 
+    /// Asks for a publisher pass now (still coalesced and debounced), e.g. after a phone decision.
+    func requestPublish() { triggers.yield() }
+
     func stop() {
         stopped = true
+        inbound?.stop()
+        handoff?.stop()
         loop?.cancel()
         triggers.finish()
     }
@@ -295,15 +324,43 @@ extension WiltedMacModel {
         let source = WiltedMacLocalLibraryStateSource(store: store, deviceID: deviceID) { [weak self] in
             await MainActor.run { self?.librarySyncPlaybackSample() }
         }
-        let sink = WiltedMacLibraryIntentSink(consumer: mediaRequestConsumer)
-        let publisher = WiltedMacLibraryPublisher(
-            source: source,
-            transport: transport ?? WiltedMacLibraryTransports.production(deviceID: deviceID, hostsTests: Self.hostsTests),
-            sink: sink, isEnabled: true
+        let resolvedTransport = transport ?? WiltedMacLibraryTransports.production(deviceID: deviceID, hostsTests: Self.hostsTests)
+        let syncDirectory = libraryURL.deletingLastPathComponent().appendingPathComponent("library-sync", isDirectory: true)
+        let inbound = WiltedMacInboundRuntime(
+            source: WiltedMacLocalReadyAudioSource(store: store), transport: resolvedTransport,
+            directory: syncDirectory,
+            isPlaying: { [weak self] in await MainActor.run { self?.isPlaying ?? false } },
+            // The one whole-zone scan: it teaches the transport the peer and entry names to poll.
+            discover: { _ = try await (resolvedTransport as? CloudKitLibraryTransport)?.discoverPeers() }
         )
+        // Decision intents (keep, skip, mark done, restore, reorder) go to the applier, which shares
+        // the media service's ledger; media intents keep their existing route.
+        let applier = WiltedMacIntentApplier(
+            host: self, ledger: inbound.ledger,
+            book: WiltedMacIntentOutcomeBook(fileURL: syncDirectory.appendingPathComponent("intent-outcomes.json")),
+            transport: resolvedTransport,
+            onApplied: { [weak self] in self?.librarySyncController?.requestPublish() }
+        )
+        let sink = WiltedMacLibraryIntentSink(consumer: mediaRequestConsumer ?? { intent in
+            if intent.action.isDecision { try await applier.apply(intent) } else { await inbound.consume(intent) }
+        })
+        let publisher = WiltedMacLibraryPublisher(source: source, transport: resolvedTransport, sink: sink, isEnabled: true)
         let controller = WiltedMacLibrarySyncController(
             model: self, publisher: publisher, sink: sink, debounce: debounce, retryDelay: retryDelay
         )
+        controller.inbound = inbound
+        inbound.start(sink: sink)
+        let handoff = WiltedMacHandoffController(
+            coordinator: HandoffCoordinator(transport: resolvedTransport, deviceID: deviceID),
+            player: WiltedMacModelHandoffPlayer(model: self, audio: WiltedMacLocalReadyAudioSource(store: store)),
+            deviceID: deviceID,
+            latestRecords: {
+                guard let poller = await MainActor.run(body: { inbound.poller }) else { return nil }
+                return await poller.latestDeviceRecords
+            }
+        )
+        controller.handoff = handoff
+        handoff.start()
         objc_setAssociatedObject(self, &librarySyncControllerKey, controller, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         return true
     }
@@ -313,15 +370,12 @@ extension WiltedMacModel {
         objc_setAssociatedObject(self, &librarySyncControllerKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
     }
 
-    /// Everything whose change should republish. Position ticks are deliberately absent:
-    /// the position rides along with the next queue, removal or play/pause change.
+    /// Everything whose change should republish: the queue and removals. Playback is published
+    /// by the handoff controller, so play, pause and position changes do not wake the publisher.
     func librarySyncObservedInputs() {
         _ = podcastQueueIDs
         _ = episodes
         _ = dismissedEpisodes
-        _ = currentPodcastEpisodeID
-        _ = isPodcastPlayback
-        _ = isPlaying
     }
 
     func librarySyncPlaybackSample() -> WiltedMacPlaybackSample? {
@@ -337,6 +391,59 @@ extension WiltedMacModel {
         let created = "mac-\(UUID().uuidString)"
         preferences.set(created, forKey: Self.libraryDeviceIDPreferenceKey)
         return created
+    }
+}
+
+// MARK: - Handoff player
+
+/// `WiltedMacHandoffPlayer` over the model's playback path: it reads the live engine, and pauses
+/// exactly as the transport toggle does, including the durable checkpoint.
+@MainActor
+final class WiltedMacModelHandoffPlayer: WiltedMacHandoffPlayer {
+    private weak var model: WiltedMacModel?
+    private let audio: any WiltedMacReadyAudioSource
+
+    init(model: WiltedMacModel, audio: any WiltedMacReadyAudioSource) {
+        self.model = model
+        self.audio = audio
+    }
+
+    func handoffSample() -> WiltedMacPlaybackSample? {
+        guard let model, var sample = model.librarySyncPlaybackSample() else { return nil }
+        if let playback = model.playback {
+            sample.positionSeconds = max(0, playback.livePositionSeconds)
+            sample.isPlaying = playback.liveIsPlaying
+            sample.rate = Double(playback.playbackRate)
+        }
+        return sample
+    }
+
+    func handoffRevision(for entryID: ItemID) async -> RevisionID? {
+        if let playback = model?.playback, playback.itemID == entryID, let loaded = playback.revisionID { return loaded }
+        return try? await audio.readyAudio(for: entryID)?.revisionID
+    }
+
+    func pauseAndCheckpoint() async {
+        guard let model, let playback = model.playback else { return }
+        do {
+            try await playback.pauseAndCheckpoint()
+            model.isPlaying = playback.isPlaying
+            model.refreshPlaybackReadout()
+            await model.queueCurrentPlaybackCheckpoint()
+        } catch {
+            librarySyncLog.error("Handoff pause failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    func trackPlayback(onChange: @escaping @MainActor () -> Void) {
+        guard let model else { return }
+        withObservationTracking {
+            _ = model.isPlaying
+            _ = model.currentPodcastEpisodeID
+            _ = model.isPodcastPlayback
+        } onChange: {
+            Task { @MainActor in onChange() }
+        }
     }
 }
 #endif

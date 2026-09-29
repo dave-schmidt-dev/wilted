@@ -12,6 +12,10 @@ public struct DevicePlaybackPosition: Codable, Sendable, Equatable {
     public let isPlaying: Bool
     /// Handoff epoch; a takeover sets it to the maximum seen plus one.
     public let epoch: Int
+    /// The publishing device's own clock when it wrote the record. Absent on records from
+    /// older builds. A reader compares it with the server modification date to derive that
+    /// device's clock offset.
+    public let publishedAt: Date?
 
     public init(
         deviceID: String,
@@ -20,7 +24,8 @@ public struct DevicePlaybackPosition: Codable, Sendable, Equatable {
         positionSeconds: Double,
         rate: Double = 1,
         isPlaying: Bool,
-        epoch: Int
+        epoch: Int,
+        publishedAt: Date? = nil
     ) throws {
         guard !deviceID.isEmpty else { throw DomainError.invalidValue(field: "deviceID", reason: "must not be empty") }
         guard positionSeconds.isFinite, positionSeconds >= 0 else {
@@ -37,10 +42,11 @@ public struct DevicePlaybackPosition: Codable, Sendable, Equatable {
         self.rate = rate
         self.isPlaying = isPlaying
         self.epoch = epoch
+        self.publishedAt = publishedAt
     }
 
     private enum CodingKeys: String, CodingKey {
-        case deviceID, entryID, revision, positionSeconds, rate, isPlaying, epoch
+        case deviceID, entryID, revision, positionSeconds, rate, isPlaying, epoch, publishedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -52,7 +58,8 @@ public struct DevicePlaybackPosition: Codable, Sendable, Equatable {
             positionSeconds: c.decode(Double.self, forKey: .positionSeconds),
             rate: c.decode(Double.self, forKey: .rate),
             isPlaying: c.decode(Bool.self, forKey: .isPlaying),
-            epoch: c.decode(Int.self, forKey: .epoch)
+            epoch: c.decode(Int.self, forKey: .epoch),
+            publishedAt: c.decodeIfPresent(Date.self, forKey: .publishedAt)
         )
     }
 }

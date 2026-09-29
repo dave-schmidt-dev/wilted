@@ -4,7 +4,8 @@ import WiltedCloudKit
 import WiltedDomain
 import WiltedLibrary
 
-/// The seven CloudKit record types of the library zone.
+/// The CloudKit record types of the library zone. The audio itself is `WiltedAudio` in the media zone
+/// (`LibraryMediaRecord`); the library zone holds only small offer and index records for it.
 public enum LibraryRecordType: String, CaseIterable, Sendable {
     case entry = "LibraryEntryRecord"
     case source = "LibrarySourceRecord"
@@ -13,6 +14,16 @@ public enum LibraryRecordType: String, CaseIterable, Sendable {
     case progress = "ProgressRecord"
     case listening = "ListeningRecord"
     case intent = "IntentRecord"
+    /// The Mac's offer of audio for one entry (`LibraryMediaOffer`).
+    case offer = "MediaOfferRecord"
+    /// The entries that currently have an offer, so a phone finds offers without a zone scan.
+    case offerIndex = "MediaOfferIndexRecord"
+    /// The intent ids one device has sent, so the Mac finds them without a zone scan.
+    case intentIndex = "IntentIndexRecord"
+    /// The Mac's answer to one intent (`IntentOutcome`); only the library writer writes it.
+    case outcome = "IntentOutcomeRecord"
+    /// The intent ids the Mac has answered for one device, so that device finds its outcomes without a zone scan.
+    case outcomeIndex = "IntentOutcomeIndexRecord"
 
     /// Record-name prefix. Names for device-written records embed the device id, so each
     /// record has exactly one writer and two devices can never collide on a name.
@@ -25,6 +36,11 @@ public enum LibraryRecordType: String, CaseIterable, Sendable {
         case .progress: "progress:"
         case .listening: "listening:"
         case .intent: "intent:"
+        case .offer: "offer:"
+        case .offerIndex: "offerindex:"
+        case .intentIndex: "intentindex:"
+        case .outcome: "outcome:"
+        case .outcomeIndex: "outcomeindex:"
         }
     }
 }
@@ -47,6 +63,11 @@ public enum LibraryDecodedRecord: Sendable, Equatable {
     case library(LibraryChange)
     case playback(PlaybackChannel, DevicePlaybackPosition)
     case intent(LibraryIntent)
+    case offer(LibraryMediaOffer)
+    case offerIndex(LibraryOfferIndex)
+    case intentIndex(LibraryIntentIndex)
+    case outcome(IntentOutcome)
+    case outcomeIndex(IntentOutcomeIndex)
     case skipped(recordType: String)
 }
 
@@ -67,9 +88,12 @@ public struct LibraryRecordMapper: Sendable {
     public static let maximumPayloadBytes = 256 * 1024
 
     public let zoneID: CKRecordZone.ID
+    /// The zone holding `WiltedAudio` records; engines and scans never read it.
+    public let mediaZoneID: CKRecordZone.ID
 
     public init(ownerName: String = CKCurrentUserDefaultName) {
         zoneID = CKRecordZone.ID(zoneName: Self.zoneName, ownerName: ownerName)
+        mediaZoneID = CKRecordZone.ID(zoneName: LibraryMediaRecord.zoneName, ownerName: ownerName)
     }
 
     // MARK: Names
@@ -107,6 +131,28 @@ public struct LibraryRecordMapper: Sendable {
         try id(.intent, [intent.deviceID, intent.id])
     }
 
+    public func recordID(offerFor entryID: ItemID) throws -> CKRecord.ID { try id(.offer, [entryID.rawValue]) }
+
+    /// The single offer index record; only the library writer writes it.
+    public var offerIndexRecordID: CKRecord.ID { CKRecord.ID(recordName: LibraryRecordType.offerIndex.namePrefix + "library", zoneID: zoneID) }
+
+    public func recordID(intentIndexFor deviceID: String) throws -> CKRecord.ID { try id(.intentIndex, [deviceID]) }
+
+    public func recordID(outcome: IntentOutcome) throws -> CKRecord.ID { try id(.outcome, [outcome.deviceID, outcome.intentID]) }
+
+    public func recordID(outcomeIntentID: String, deviceID: String) throws -> CKRecord.ID { try id(.outcome, [deviceID, outcomeIntentID]) }
+
+    public func recordID(outcomeIndexFor deviceID: String) throws -> CKRecord.ID { try id(.outcomeIndex, [deviceID]) }
+
+    public func recordID(intentID: String, deviceID: String) throws -> CKRecord.ID { try id(.intent, [deviceID, intentID]) }
+
+    /// The device record names for `deviceID`, used for targeted fetches.
+    public func recordID(nowPlayingFor deviceID: String) throws -> CKRecord.ID { try id(.nowPlaying, [deviceID]) }
+
+    public func recordID(progressFor deviceID: String, entryID: ItemID) throws -> CKRecord.ID {
+        try id(.progress, [deviceID, entryID.rawValue])
+    }
+
     private func id(_ type: LibraryRecordType, _ parts: [String]) throws -> CKRecord.ID {
         let name = type.namePrefix + parts.joined(separator: ":")
         guard !parts.contains(where: \.isEmpty), name.utf8.count <= 255,
@@ -142,6 +188,26 @@ public struct LibraryRecordMapper: Sendable {
 
     public func record(intent: LibraryIntent, existing: CKRecord? = nil) throws -> CKRecord {
         try save(.intent, recordID(intent: intent), intent, existing)
+    }
+
+    public func record(offer: LibraryMediaOffer, existing: CKRecord? = nil) throws -> CKRecord {
+        try save(.offer, recordID(offerFor: offer.entryID), offer, existing)
+    }
+
+    public func record(offerIndex: LibraryOfferIndex, existing: CKRecord? = nil) throws -> CKRecord {
+        try save(.offerIndex, offerIndexRecordID, offerIndex, existing)
+    }
+
+    public func record(intentIndex: LibraryIntentIndex, existing: CKRecord? = nil) throws -> CKRecord {
+        try save(.intentIndex, recordID(intentIndexFor: intentIndex.deviceID), intentIndex, existing)
+    }
+
+    public func record(outcome: IntentOutcome, existing: CKRecord? = nil) throws -> CKRecord {
+        try save(.outcome, recordID(outcome: outcome), outcome, existing)
+    }
+
+    public func record(outcomeIndex: IntentOutcomeIndex, existing: CKRecord? = nil) throws -> CKRecord {
+        try save(.outcomeIndex, recordID(outcomeIndexFor: outcomeIndex.deviceID), outcomeIndex, existing)
     }
 
     private func save<Value: Encodable>(_ type: LibraryRecordType, _ id: CKRecord.ID, _ value: Value, _ existing: CKRecord?) throws -> CKRecord {
@@ -199,6 +265,26 @@ public struct LibraryRecordMapper: Sendable {
                 let value = try Self.decoder.decode(LibraryIntent.self, from: data)
                 try expect(name, recordID(intent: value))
                 return .intent(value)
+            case .offer:
+                let value = try Self.decoder.decode(LibraryMediaOffer.self, from: data)
+                try expect(name, recordID(offerFor: value.entryID))
+                return .offer(value)
+            case .offerIndex:
+                let value = try Self.decoder.decode(LibraryOfferIndex.self, from: data)
+                try expect(name, offerIndexRecordID)
+                return .offerIndex(value)
+            case .intentIndex:
+                let value = try Self.decoder.decode(LibraryIntentIndex.self, from: data)
+                try expect(name, recordID(intentIndexFor: value.deviceID))
+                return .intentIndex(value)
+            case .outcome:
+                let value = try Self.decoder.decode(IntentOutcome.self, from: data)
+                try expect(name, recordID(outcome: value))
+                return .outcome(value)
+            case .outcomeIndex:
+                let value = try Self.decoder.decode(IntentOutcomeIndex.self, from: data)
+                try expect(name, recordID(outcomeIndexFor: value.deviceID))
+                return .outcomeIndex(value)
             }
         } catch let error as LibraryRecordMapperError {
             throw error

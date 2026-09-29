@@ -156,6 +156,10 @@ struct UnavailableLibraryTransport: LibraryTransport {
     func listIntents() async throws -> [LibraryIntent] { throw failure }
     func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws { throw failure }
     func fetchDeviceRecords() async throws -> LibraryDeviceRecords { throw failure }
+    func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws { throw failure }
+    func mediaOffers() async throws -> [LibraryMediaOffer] { throw failure }
+    func fetchMedia(_ offer: LibraryMediaOffer, progress: @escaping MediaProgressHandler) async throws -> URL { throw failure }
+    func removeMedia(entryID: ItemID) async throws { throw failure }
 }
 
 /// Read-only mirror persisted as JSON. The iPhone queues no local changes, so content, per-record

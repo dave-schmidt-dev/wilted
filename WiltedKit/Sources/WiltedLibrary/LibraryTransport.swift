@@ -141,6 +141,9 @@ public struct LibraryDeviceRecords: Sendable, Equatable {
     }
 }
 
+/// Cumulative bytes received so far by a media download.
+public typealias MediaProgressHandler = @Sendable (Int64) -> Void
+
 public enum LibraryTransportError: Error, Equatable, Sendable {
     /// The store changed between staging and commit; re-stage from the new state.
     case staleStagedBatch
@@ -166,15 +169,40 @@ public protocol LibraryTransport: Sendable {
     /// Idempotent by `LibraryIntent.id`.
     func send(intent: LibraryIntent) async throws
     func listIntents() async throws -> [LibraryIntent]
+    /// Mac only: records the answer to one intent. Immutable and idempotent by `intentID`.
+    func publishIntentOutcome(_ outcome: IntentOutcome) async throws
+    /// Every outcome the Mac has published, oldest first.
+    func intentOutcomes() async throws -> [IntentOutcome]
     /// Publishes this device's own record; `record.deviceID` must be this device.
     func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws
     func fetchDeviceRecords() async throws -> LibraryDeviceRecords
+    /// Mac only: offers `fileURL` as the audio for `offer`. The transport takes its own copy.
+    func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws
+    /// Current offers, one per entry, learned without staging any audio.
+    func mediaOffers() async throws -> [LibraryMediaOffer]
+    /// Downloads the audio for a ready `offer` and returns a file the caller owns and must
+    /// verify (`MediaFetcher`); `progress` receives the cumulative bytes received.
+    func fetchMedia(_ offer: LibraryMediaOffer, progress: @escaping MediaProgressHandler) async throws -> URL
+    /// Mac only: withdraws the audio and offer for `entryID`.
+    func removeMedia(entryID: ItemID) async throws
     func commitFetchedState(_ token: LibraryChangeToken?) async throws
     func commitSentState(_ token: LibraryChangeToken?) async throws
 }
 
 public extension LibraryTransport {
     func operationGeneration() async -> UInt64 { 0 }
+    func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws {
+        throw LibraryTransportError.transport("media transfer is not supported by this transport")
+    }
+    func publishIntentOutcome(_ outcome: IntentOutcome) async throws {
+        throw LibraryTransportError.transport("intent outcomes are not supported by this transport")
+    }
+    func intentOutcomes() async throws -> [IntentOutcome] { [] }
+    func mediaOffers() async throws -> [LibraryMediaOffer] { [] }
+    func fetchMedia(_ offer: LibraryMediaOffer, progress: @escaping MediaProgressHandler) async throws -> URL {
+        throw LibraryTransportError.transport("media transfer is not supported by this transport")
+    }
+    func removeMedia(entryID: ItemID) async throws {}
     func commitFetchedState(_ token: LibraryChangeToken?) async throws {}
     func commitSentState(_ token: LibraryChangeToken?) async throws {}
 }

@@ -10,7 +10,6 @@ struct LibraryPublishReport: Sendable, Equatable {
     var conflicts = 0
     var retryable = 0
     var terminal = 0
-    var playbackPublished = false
     var intentsDelivered = 0
     var intentFailures = 0
 
@@ -18,6 +17,9 @@ struct LibraryPublishReport: Sendable, Equatable {
 }
 
 /// Publishes the Mac's library state through a `LibraryTransport` and relays inbound intents.
+///
+/// It never writes playback records: `HandoffCoordinator` (driven by `WiltedMacHandoffController`)
+/// is the only writer of the Mac's NowPlaying and Progress, so an epoch is never published twice.
 ///
 /// Default OFF: nothing is contacted unless `WILTED_LIBRARY_SYNC=1`. The publisher is the
 /// library's single writer, so it seeds its per-record base versions from the server on the
@@ -37,7 +39,6 @@ actor WiltedMacLibraryPublisher {
     private var published: LibrarySnapshot?
     private var versions: [LibraryRecordKey: UInt64] = [:]
     private var nextLocalSeq: UInt64 = 1
-    private var lastPlayback: DevicePlaybackPosition?
     private var deliveredIntentIDs = Set<String>()
 
     init(
@@ -59,7 +60,6 @@ actor WiltedMacLibraryPublisher {
         var report = LibraryPublishReport()
         let state = try await source.currentState()
         try await publishState(state, into: &report)
-        try await publishPlayback(state.currentPlayback, into: &report)
         try await relayIntents(into: &report)
         return report
     }
@@ -114,16 +114,6 @@ actor WiltedMacLibraryPublisher {
         try await transport.commitFetchedState(batch.token)
         published = snapshot
         return snapshot
-    }
-
-    // MARK: - Playback
-
-    private func publishPlayback(_ playback: DevicePlaybackPosition?, into report: inout LibraryPublishReport) async throws {
-        guard let playback, playback != lastPlayback else { return }
-        try await transport.publish(playback, as: .nowPlaying)
-        try await transport.publish(playback, as: .progress)
-        lastPlayback = playback
-        report.playbackPublished = true
     }
 
     // MARK: - Intents
